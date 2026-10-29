@@ -5,6 +5,8 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
+#[path = "tests/columnar_parity.rs"]
+mod columnar_parity;
 #[path = "tests/speed.rs"]
 mod speed;
 

@@ -878,6 +878,7 @@ mod columnar_parity {
                         run: 0,
                         ordinal,
                         starts,
+                        opens: starts,
                         state,
                         manifest,
                     })
@@ -885,7 +886,7 @@ mod columnar_parity {
             })
             .unwrap();
         }
-        let projected = projector.finish().unwrap().downcast::<Vec<Hour>>().unwrap();
+        let projected = projector.take().unwrap().downcast::<Vec<Hour>>().unwrap();
         let handed = projected
             .iter()
             .map(|hour| (hour.all, hour.counts.len()))

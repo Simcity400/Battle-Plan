@@ -300,6 +300,7 @@ impl Scan {
             branch_id: branch.to_string(),
             window: ordinal,
         };
+        let cpu = ::replay_frame::cpu::scope("division log reply", None);
         let reply = self.reply(source, &params, context, cancelled)?;
         series::write_reply(
             writer,
@@ -307,6 +308,8 @@ impl Scan {
             ordinal as u64,
             &reply,
         )?;
+        drop(cpu);
+        let cpu = ::replay_frame::cpu::scope("division log manifest", None);
         let manifest = self.manifest(
             source,
             &BranchParams {
@@ -321,6 +324,8 @@ impl Scan {
             0,
             &manifest,
         )?;
+        drop(cpu);
+        let _cpu = ::replay_frame::cpu::scope("division log counts", None);
         self.counts.publish(writer, branch, cancelled)
     }
 }

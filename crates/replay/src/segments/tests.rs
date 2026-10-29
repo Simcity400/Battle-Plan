@@ -13,8 +13,86 @@ impl Operator for Seen {
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(self.0))
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(std::mem::take(&mut self.0)))
+    }
+}
+
+/// The dictionary size of the state each segment starts from.
+struct Started(Option<usize>);
+
+impl Operator for Started {
+    fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
+        self.0 = Some(match start {
+            Start::Restart(state) => state.dictionary().len(),
+            Start::Run { .. } => 0,
+        });
+        Ok(())
+    }
+
+    fn hour(&mut self, _: &Hour<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(std::mem::take(&mut self.0)))
+    }
+}
+
+/// Each hour it saw and whether it started the walk; it cannot start from a restart whose
+/// dictionary holds `refused` strings.
+struct Picky {
+    refused: usize,
+    seen: Vec<(i32, bool)>,
+}
+
+impl Operator for Picky {
+    fn starts_at(&self, start: Start<'_>) -> bool {
+        match start {
+            Start::Restart(state) => state.dictionary().len() != self.refused,
+            Start::Run { .. } => true,
+        }
+    }
+
+    fn hour(&mut self, hour: &Hour<'_>) -> io::Result<()> {
+        self.seen.push((hour.hour, hour.starts));
+        Ok(())
+    }
+
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(std::mem::take(&mut self.seen)))
+    }
+}
+
+/// Each hour it saw, whether it started the walk and opened a segment, and each run it was
+/// carried into; it cannot start a run of a branch an earlier run is of.
+#[derive(Default)]
+struct Continuing {
+    seen: Vec<(i32, bool, bool)>,
+    crossed: Vec<i32>,
+}
+
+impl Operator for Continuing {
+    fn starts_at(&self, start: Start<'_>) -> bool {
+        !matches!(start, Start::Run { continues: true })
+    }
+
+    fn cross(&mut self, first: i32) -> io::Result<()> {
+        self.crossed.push(first);
+        Ok(())
+    }
+
+    fn hour(&mut self, hour: &Hour<'_>) -> io::Result<()> {
+        assert!(hour.state.dictionary().len() <= (hour.ordinal + 1) as usize);
+        self.seen.push((hour.hour, hour.starts, hour.opens));
+        Ok(())
+    }
+
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new((
+            std::mem::take(&mut self.seen),
+            std::mem::take(&mut self.crossed),
+        )))
     }
 }
 
@@ -29,7 +107,7 @@ impl Operator for Failing {
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
         Ok(Box::new(()))
     }
 }
@@ -43,7 +121,7 @@ impl Operator for Panicking {
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
         Ok(Box::new(()))
     }
 }
@@ -88,6 +166,134 @@ fn segments_reach_the_caller_in_order_with_their_own_hours() {
             .map(|&(branch, hour, run, ordinal, _)| (branch, hour, run, ordinal))
             .collect();
         assert_eq!(walked, expected);
+    }
+}
+
+/// Each segment's operators see the state its first hour applies to: empty at a run's start,
+/// else what its restart holds (here, one dictionary string per hour before it).
+#[test]
+fn operators_start_from_the_state_before_the_first_hour() {
+    let runs = [(1, 0, 3 * UNIT_ORDINALS)];
+    let file = opened(&runs);
+    let make = |_: &Segment| -> io::Result<Operators> { Ok(vec![Box::new(Started(None))]) };
+    let mut sizes = Vec::new();
+    run(&file, 2, 2, &make, &mut |_, results| {
+        let [started] = <[_; 1]>::try_from(results).unwrap();
+        sizes.push(*started.downcast::<Option<usize>>().unwrap());
+        Ok(())
+    })
+    .unwrap();
+    let ordinals = UNIT_ORDINALS as usize;
+    assert_eq!(sizes, [Some(0), Some(ordinals), Some(2 * ordinals)]);
+}
+
+/// A segment its operators cannot start is walked by the walk of the segment before, on from
+/// the hour before it, within its run only, and its results are its own: every hour is
+/// walked once, in order, and only a walk's first hour starts it.
+#[test]
+fn a_segment_its_operators_cannot_start_is_walked_by_the_one_before() {
+    let runs = [(1, 0, 4 * UNIT_ORDINALS), (2, 9_000, 2 * UNIT_ORDINALS)];
+    let file = opened(&runs);
+    // Each run's second restart holds one string per hour before it.
+    let refused = UNIT_ORDINALS as usize;
+    let make = |_: &Segment| -> io::Result<Operators> {
+        Ok(vec![Box::new(Picky {
+            refused,
+            seen: Vec::new(),
+        })])
+    };
+    for (threads, ahead) in [(1, 1), (1, 2), (4, 1), (4, 2)] {
+        let mut walks = Vec::new();
+        run(&file, threads, ahead, &make, &mut |_, results| {
+            walks.push(
+                results
+                    .into_iter()
+                    .next()
+                    .map(|seen| *seen.downcast::<Vec<(i32, bool)>>().unwrap()),
+            );
+            Ok(())
+        })
+        .unwrap();
+        // Each segment's first hour; the second restart of each run is walked on through.
+        let starts: Vec<Option<bool>> = walks
+            .iter()
+            .map(|seen| {
+                seen.as_ref()
+                    .and_then(|seen| seen.first())
+                    .map(|&(_, starts)| starts)
+            })
+            .collect();
+        assert_eq!(starts, [true, false, true, true, true, false].map(Some));
+        for seen in walks.iter().flatten() {
+            assert!(seen.iter().skip(1).all(|&(_, starts)| !starts));
+        }
+        let hours: Vec<i32> = walks
+            .iter()
+            .flatten()
+            .flatten()
+            .map(|&(hour, _)| hour)
+            .collect();
+        let expected: Vec<i32> = runs
+            .iter()
+            .flat_map(|&(_, first, ordinals)| (0..ordinals as i32).map(move |at| first + at))
+            .collect();
+        assert_eq!(hours, expected);
+    }
+}
+
+/// A run of a branch an earlier run is of, which its operators cannot start, is walked by the
+/// walk of that earlier run's last segment, from empty tables, past the runs between, and its
+/// results are its own; the rest of the run walks from its restarts.
+#[test]
+fn a_branch_s_later_run_its_operators_cannot_start_is_walked_by_its_earlier_run() {
+    let units = UNIT_ORDINALS as i32;
+    let runs = [
+        (1, 0, 2 * UNIT_ORDINALS),
+        (2, 50_000, UNIT_ORDINALS),
+        (1, 90_000, UNIT_ORDINALS + 5),
+    ];
+    let file = opened(&runs);
+    let make = |_: &Segment| -> io::Result<Operators> { Ok(vec![Box::new(Continuing::default())]) };
+    let hours = |first: i32, count: i32| (first..first + count).collect::<Vec<_>>();
+    for threads in [1, 4] {
+        let mut walks = Vec::new();
+        run(&file, threads, 2, &make, &mut |_, results| {
+            walks.push(results.into_iter().next().map(|walked| {
+                *walked
+                    .downcast::<(Vec<(i32, bool, bool)>, Vec<i32>)>()
+                    .unwrap()
+            }));
+            Ok(())
+        })
+        .unwrap();
+        let walked: Vec<Option<(Vec<i32>, Vec<i32>)>> = walks
+            .iter()
+            .map(|walk| {
+                walk.as_ref().map(|(seen, crossed)| {
+                    (
+                        seen.iter().map(|&(hour, ..)| hour).collect(),
+                        crossed.clone(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            walked,
+            [
+                Some((hours(0, units), vec![])),
+                Some((hours(units, units), vec![])),
+                Some((hours(50_000, units), vec![])),
+                Some((hours(90_000, units), vec![90_000])),
+                Some((hours(90_000 + units, 5), vec![])),
+            ]
+        );
+        for (seen, _) in walks.iter().flatten() {
+            for &(hour, starts, opens) in seen {
+                assert_eq!(opens, hour == seen[0].0, "hour {hour}");
+                // Every segment here starts a walk, or a crossing into its run.
+                assert_eq!(starts, opens, "hour {hour}");
+            }
+        }
     }
 }
 

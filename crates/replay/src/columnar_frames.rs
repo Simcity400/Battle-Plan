@@ -261,9 +261,38 @@ impl Views {
                 .get_mut(section.table)
                 .ok_or_else(|| invalid("A section names a table past the schema"))? = true;
         }
+        self.frame(
+            state,
+            &present,
+            restart,
+            (manifest.branch, manifest.hour),
+            metrics(manifest),
+        )
+    }
+
+    /// The frame of `state` as a restart restored it, before the walk's first hour, dated
+    /// `hour` of `branch`: every view is built anew, and no table reads as read.
+    pub fn restored(&mut self, state: &State, branch: u64, hour: i32) -> io::Result<DecodedFrame> {
+        self.frame(
+            state,
+            &[false; TABLE_COUNT],
+            true,
+            (branch, hour),
+            Metrics::default(),
+        )
+    }
+
+    fn frame(
+        &mut self,
+        state: &State,
+        present: &[bool; TABLE_COUNT],
+        restart: bool,
+        (branch, hour): (u64, i32),
+        metrics: Metrics,
+    ) -> io::Result<DecodedFrame> {
         let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
         // A continuing walk's deltas apply to the hour before.
-        let baseline = manifest.hour.saturating_sub(1);
+        let baseline = hour.saturating_sub(1);
         for at in 0..self.selected.len() {
             let table = self.selected[at];
             let index = table.index();
@@ -272,10 +301,10 @@ impl Views {
             self.views[index] = Some(view);
         }
         Ok(DecodedFrame {
-            branch: manifest.branch,
-            hour: manifest.hour,
+            branch,
+            hour,
             tables,
-            metrics: metrics(manifest),
+            metrics,
         })
     }
 
@@ -814,12 +843,32 @@ impl Recording {
         &self,
         segment: &Segment,
         state: &mut State,
+        visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        self.begin_segment(segment, state)?;
+        self.walk_begun(segment, state, visit)
+    }
+
+    /// Puts into `state` what `segment`'s first hour applies to: its restart's tables, or
+    /// empty tables at its run's start.
+    pub fn begin_segment(&self, segment: &Segment, state: &mut State) -> io::Result<()> {
+        match segment.restart {
+            Some(at) => self.restore(segment.run, at, state),
+            None => {
+                *state = State::new(schema()?)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// `segment`'s hours from `state` as [`Self::begin_segment`] left it, as
+    /// [`Self::walk_segment`] visits them.
+    pub fn walk_begun(
+        &self,
+        segment: &Segment,
+        state: &mut State,
         mut visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        match segment.restart {
-            Some(at) => self.restore(segment.run, at, state)?,
-            None => *state = State::new(schema()?)?,
-        }
         self.walk_hours(segment, state, &mut visit)
     }
 

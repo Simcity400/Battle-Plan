@@ -285,7 +285,7 @@ impl Operator for Projector {
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(self.hours))
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(std::mem::take(&mut self.hours)))
     }
 }

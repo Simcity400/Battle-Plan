@@ -37,6 +37,7 @@ use ts_rs::TS;
 use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
 
 pub mod block;
+pub mod columnar;
 mod newest;
 pub mod prepared;
 
@@ -371,6 +372,15 @@ fn deletion_signature(row: &DivisionEquipmentDeletionRow) -> (u32, u32, u8, Opti
         row.cause.map(|cause| cause as u8),
     )
 }
+/// What a columnar walk leaves the ordered scan to date and name: the template read hour at
+/// the last census, the hour the census last built its presentations, and the names a walk
+/// that built them before its end gave the templates they name.
+#[derive(Default)]
+struct Walked {
+    census_template: Option<i32>,
+    built: Option<i32>,
+    names: HashMap<u64, Option<TemplateName>>,
+}
 #[derive(Default, Serialize, Deserialize)]
 pub struct Scan {
     /// The recording's format, which dates its daily tables
@@ -405,6 +415,10 @@ pub struct Scan {
     /// block, which the carried scan may have had.
     #[serde(skip)]
     irregular: bool,
+    /// While hours a columnar walk projected are kept ([`columnar`]): what only earlier
+    /// walks know.
+    #[serde(skip)]
+    walked: Walked,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -449,34 +463,128 @@ impl Scan {
         raw: u32,
         presentation: Option<&Presentation>,
     ) -> DivisionLogEntry {
-        DivisionLogEntry {
-            id: format!("{id}:{}:{hour}", status),
-            division: id.to_string(),
-            read_hour: hour,
-            hour,
-            by: true,
-            after_hour: None,
-            kind,
-            status: status.into(),
-            tag: self.links.get(raw).cloned(),
-            country_hour: hour,
-            name: None,
-            name_missing: Some("Division name not recorded at this observation".into()),
-            icon: None,
-            icon_missing: Some("Division template artwork not recorded at this observation".into()),
-            presentation_hour: presentation.map(|value| value.hour),
-            template: presentation.map(|value| value.template_id.to_string()),
-            template_name: None,
-            template_missing: Some("Template name not recorded at this observation".into()),
-            template_hour: presentation.and_then(|value| value.template_hour),
-            province: presentation.map(|value| value.province),
-            place_hour: presentation.map(|value| value.hour),
-            place_at_event: kind == DivisionLogKind::Created,
-            killer_tag: None,
-            killer_hour: None,
-            killer_division: None,
-        }
+        entry(&self.links, id, hour, kind, status, raw, presentation)
     }
+
+    /// The hour a columnar walk projected ([`columnar`]), kept as
+    /// [`Self::observe_with_changes`] keeps the hour it reads: a candidate the branch saw
+    /// before, or met by its first census, is no first sighting, and the dates only earlier
+    /// hours know are dated.
+    pub fn observe_projected(&mut self, projected: columnar::Hour) -> io::Result<()> {
+        let hour = projected.hour;
+        if self
+            .previous_hour
+            .is_some_and(|last| last.checked_add(1) != Some(hour))
+        {
+            self.gap();
+        }
+        let census_template = self.walked.census_template;
+        if let Some(complete) = projected.template_read {
+            self.template_hour = complete.then_some(hour);
+        }
+        let template = self.template_hour;
+        let baseline = !self.available;
+        let first = self.events.len();
+        for columnar::Projected {
+            mut event,
+            candidate,
+            restored,
+        } in projected.events
+        {
+            if let Some(id) = candidate {
+                if !(self.seen.insert(id) && !baseline) {
+                    continue;
+                }
+                event.row.after_hour = self
+                    .previous_census
+                    .filter(|last| last.checked_add(1) == Some(hour));
+            }
+            // A presentation of the hour dates its template read now; one of the last census,
+            // as at that census.
+            let census = event
+                .presentation
+                .as_ref()
+                .is_some_and(|presentation| presentation.hour != hour);
+            let read = if census { census_template } else { template };
+            let date = |at: &mut Option<i32>| {
+                if *at == Some(block::INHERITED) {
+                    *at = read;
+                }
+            };
+            date(&mut event.row.template_hour);
+            if let Some(presentation) = &mut event.presentation {
+                date(&mut presentation.template_hour);
+                // Named from a restart's census its walk took for the hour before's, which an
+                // earlier hour built: named as that build named it.
+                if restored.is_some_and(|taken| self.walked.built != Some(taken))
+                    && let Some(name) = self.walked.names.get(&presentation.template_id)
+                {
+                    presentation.template = name.clone();
+                }
+            }
+            self.events.push(event);
+        }
+        if projected.census {
+            self.available = true;
+            self.previous_census = Some(hour);
+            self.walked.census_template = self.template_hour;
+        } else {
+            self.previous_census = None;
+        }
+        if projected.built {
+            self.walked.built = Some(hour);
+        }
+        if let Some(names) = projected.names {
+            self.walked.names = names;
+        }
+        self.losses_available |= projected.losses;
+        for (reason, count) in projected.warnings {
+            *self.warnings.entry((hour, reason)).or_default() += count;
+        }
+        self.previous_hour = Some(hour);
+        self.counts.observe(hour, &self.events[first..])
+    }
+}
+
+/// One division log row of `id` at `hour`, its country through `links`.
+fn entry(
+    links: &LinkTags,
+    id: u64,
+    hour: i32,
+    kind: DivisionLogKind,
+    status: &str,
+    raw: u32,
+    presentation: Option<&Presentation>,
+) -> DivisionLogEntry {
+    DivisionLogEntry {
+        id: format!("{id}:{}:{hour}", status),
+        division: id.to_string(),
+        read_hour: hour,
+        hour,
+        by: true,
+        after_hour: None,
+        kind,
+        status: status.into(),
+        tag: links.get(raw).cloned(),
+        country_hour: hour,
+        name: None,
+        name_missing: Some("Division name not recorded at this observation".into()),
+        icon: None,
+        icon_missing: Some("Division template artwork not recorded at this observation".into()),
+        presentation_hour: presentation.map(|value| value.hour),
+        template: presentation.map(|value| value.template_id.to_string()),
+        template_name: None,
+        template_missing: Some("Template name not recorded at this observation".into()),
+        template_hour: presentation.and_then(|value| value.template_hour),
+        province: presentation.map(|value| value.province),
+        place_hour: presentation.map(|value| value.hour),
+        place_at_event: kind == DivisionLogKind::Created,
+        killer_tag: None,
+        killer_hour: None,
+        killer_division: None,
+    }
+}
+impl Scan {
     #[cfg(any(test, feature = "test-support"))]
     fn observe(&mut self, frame: &DecodedFrame) {
         self.observe_with_changes(frame, None);
@@ -1039,7 +1147,13 @@ pub fn template_icon(
     cat: &Arc<Catalogue>,
     row: &replay_data::rows::DivisionTemplateIconRow,
 ) -> Result<String, String> {
-    icon(source, cat, row.priority_unit, row.custom_icon, &row.priority_unit_name)
+    icon(
+        source,
+        cat,
+        row.priority_unit,
+        row.custom_icon,
+        &row.priority_unit_name,
+    )
 }
 
 /// [`template_icon`] from a row's drawing operands.
@@ -1106,12 +1220,7 @@ fn icon(
     // catalogue drawing it: when the shown one cannot draw its choice, the recording's own
     // choice is made again and drawn.
     let drawn = catalogue::draw(
-        || {
-            format!(
-                "division template icon ({})",
-                String::from_utf8_lossy(unit)
-            )
-        },
+        || format!("division template icon ({})", String::from_utf8_lossy(unit)),
         cat,
         |cat| template_sprite(cat, priority_unit, custom, unit),
     );
@@ -1167,6 +1276,7 @@ fn named(
         return row;
     };
     if division_name && let Some((priority_unit, custom, unit)) = &presentation.icon {
+        let _cpu = ::replay_frame::cpu::scope("division log icon", None);
         match icon(source, cat, *priority_unit, *custom, unit) {
             Ok(icon) => {
                 row.icon = Some(icon);
@@ -1181,6 +1291,7 @@ fn named(
     if let Some(status) = &presentation.status
         && division_name
     {
+        let _cpu = ::replay_frame::cpu::scope("division log army name", None);
         let groups = std::cell::OnceCell::new();
         let name = dashboard_text::unit_names::army_name(
             &status.status(),
@@ -1209,6 +1320,7 @@ fn named(
         }
     }
     if let Some(TemplateName(naming)) = &presentation.template {
+        let _cpu = ::replay_frame::cpu::scope("division log template name", None);
         let name = naming
             .clone()
             .and_then(|naming| naming.localise(&cat.localisation))

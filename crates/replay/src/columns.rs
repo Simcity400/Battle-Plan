@@ -3,8 +3,8 @@
 //! the row itself. A table's columns are its schema's fields, in order.
 
 use crate::rows::{RowCodec, TableId};
+pub use replay_columnar::manifest::Status;
 use replay_columnar::{
-    manifest::Status,
     section::Changes,
     state::{Bits, Column, Table},
     walk::State,
@@ -27,6 +27,12 @@ pub fn table(state: &State, table: TableId) -> io::Result<&Table> {
     state
         .table(table.index())
         .ok_or_else(|| invalid(format!("The walker holds no {table:?}")))
+}
+
+/// `table`'s status this hour: what it held, how many rows a partial read missed, or why it
+/// was unavailable.
+pub fn status(state: &State, table: TableId) -> Status {
+    state.status(table.index()).unwrap_or(Status::NotRecorded)
 }
 
 /// Whether `table` holds every live row this hour.

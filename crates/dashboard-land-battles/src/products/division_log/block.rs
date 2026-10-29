@@ -72,7 +72,7 @@ pub const OBSERVED: &str = "divisions.observed";
 /// which the extract of the block alone does not know: the extract dates its
 /// presentations with it until the block's first template read, and the fold
 /// replaces it with the carried hour.
-const INHERITED: i32 = i32::MIN;
+pub(super) const INHERITED: i32 = i32::MIN;
 
 fn start(format: FormatVersion) -> Box<dyn Extract> {
     Box::new(BlockExtract {

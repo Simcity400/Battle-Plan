@@ -3,9 +3,11 @@
 //! Every segment ([`Segment`]) is walked once, on its own worker, from its restart: each
 //! hour goes to the operators made for that segment, which read the walker's typed columns
 //! ([`crate::columns`]) and the hour's changes ([`State::changes`]), not rebuilt rows. A
-//! segment after its run's first starts cold, from its restart alone. Each segment's results
-//! reach the caller in segment order as soon as the segments before it have, so a family's
-//! ordered work (its keys, runs and holders) proceeds while later segments are still walked.
+//! segment after its run's first starts cold, from its restart alone, unless an operator
+//! cannot start from what the restart holds ([`Operator::starts_at`]): the walk of the
+//! segment before then goes on through it. Each segment's results reach the caller in
+//! segment order as soon as the segments before it have, so a family's ordered work (its
+//! keys, runs and holders) proceeds while later segments are still walked.
 
 use crate::columnar_frames::{Recording, Segment, schema};
 use replay_columnar::manifest::Manifest;
@@ -30,18 +32,49 @@ pub struct Hour<'a> {
     pub run: u32,
     /// The hour's ordinal in its run.
     pub ordinal: u32,
-    /// The segment's first hour: the walker holds what its restart restored and this hour,
-    /// and nothing of the hours before.
+    /// The walker holds what its restart restored, or empty tables at its run's start, and
+    /// this hour: nothing of the hours before.
     pub starts: bool,
+    /// The hour starts a segment, a unit the recording can restart at.
+    pub opens: bool,
     pub state: &'a State,
     pub manifest: &'a Manifest<'a>,
 }
 
+/// Where a walk starts.
+#[derive(Clone, Copy)]
+pub enum Start<'a> {
+    /// A restart: the state as the hour before the walk's first left it.
+    Restart(&'a State),
+    /// A run's start, from empty tables; `continues` when an earlier run is of its branch.
+    Run { continues: bool },
+}
+
 /// A family's work on one segment.
 pub trait Operator: Send {
+    /// Whether a walk can start at `start`. When an operator cannot, the walk of the segment
+    /// before it in its branch (the run's segment before, or the branch's earlier run's last)
+    /// goes on through it and hands its results. Both walks decide alike.
+    fn starts_at(&self, start: Start<'_>) -> bool {
+        let _ = start;
+        true
+    }
+    /// The walk's start, before its first hour, `first` of `branch`. What the hour before
+    /// held is known here only.
+    fn start(&mut self, start: Start<'_>, branch: u64, first: i32) -> io::Result<()> {
+        let _ = (start, branch, first);
+        Ok(())
+    }
+    /// The walk goes on into a later run of its branch, whose first hour, `first`, applies to
+    /// empty tables.
+    fn cross(&mut self, first: i32) -> io::Result<()> {
+        let _ = first;
+        Ok(())
+    }
     fn hour(&mut self, hour: &Hour<'_>) -> io::Result<()>;
-    /// The segment's result, for the family's ordered work.
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn Any + Send>>;
+    /// The result of the segment just walked, for the family's ordered work: taken at each
+    /// segment's end, the walk going on through the next.
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>>;
 }
 
 /// The operators each segment runs, in one order for every segment.
@@ -79,35 +112,114 @@ impl Drop for Unwinding<'_> {
     }
 }
 
-/// One segment walked through its operators, until `stopped`.
+fn starts_at(operators: &Operators, start: Start<'_>) -> bool {
+    operators.iter().all(|operator| operator.starts_at(start))
+}
+
+/// The hour `segment` starts at.
+fn first_hour(recording: &Recording, segment: &Segment) -> io::Result<i32> {
+    let run = recording.run(segment.run)?;
+    i32::try_from(i64::from(run.first_hour) + i64::from(segment.first)).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "A segment starts past the hours",
+        )
+    })
+}
+
+/// Segment `at` walked through its operators, until `stopped`, and on through every segment
+/// after it in its branch that they cannot start ([`Operator::starts_at`]): the next of its
+/// run, else the first of its branch's next run. Each segment's results go to `hand` at its
+/// end; `turn` holds the walk before it goes on, as the look-ahead allows. A segment another
+/// walk goes on through hands nothing here.
 fn walk(
     recording: &Recording,
-    segment: &Segment,
+    segments: &[Segment],
+    at: usize,
     mut operators: Operators,
     stopped: &AtomicBool,
-) -> io::Result<Results> {
-    let branch = recording.run(segment.run)?.branch;
+    hand: &mut dyn FnMut(usize, Results),
+    turn: &dyn Fn(usize) -> bool,
+) -> io::Result<()> {
+    let branch_of = |run: u32| recording.run(run).map(|run| run.branch);
+    let first = &segments[at];
+    let branch = branch_of(first.run)?;
     let mut state = State::new(schema()?)?;
-    let mut ordinal = segment.first;
-    recording.walk_segment(segment, &mut state, |state, manifest, starts| {
-        let hour = Hour {
-            branch,
-            hour: manifest.hour,
-            run: segment.run,
-            ordinal,
-            starts,
-            state,
-            manifest,
-        };
-        for operator in &mut operators {
-            operator.hour(&hour)?;
+    recording.begin_segment(first, &mut state)?;
+    let start = match first.restart {
+        Some(_) => Start::Restart(&state),
+        None => Start::Run {
+            continues: segments[..at].iter().any(|earlier| {
+                earlier.run != first.run && branch_of(earlier.run).ok() == Some(branch)
+            }),
+        },
+    };
+    if !starts_at(&operators, start) {
+        return Ok(());
+    }
+    let hour = first_hour(recording, first)?;
+    for operator in &mut operators {
+        operator.start(start, branch, hour)?;
+    }
+    let (mut walked, mut fresh) = (at, true);
+    loop {
+        let segment = &segments[walked];
+        let mut ordinal = segment.first;
+        recording.walk_begun(segment, &mut state, |state, manifest, starts| {
+            let hour = Hour {
+                branch,
+                hour: manifest.hour,
+                run: segment.run,
+                ordinal,
+                starts: starts && fresh,
+                opens: ordinal == segment.first,
+                state,
+                manifest,
+            };
+            for operator in &mut operators {
+                operator.hour(&hour)?;
+            }
+            ordinal += 1;
+            Ok(!stopped.load(Ordering::Relaxed))
+        })?;
+        fresh = false;
+        let results =
+            engine_allocation::collect_vec(operators.iter_mut().map(|operator| operator.take()))?
+                .into_iter()
+                .collect::<io::Result<Results>>()?;
+        hand(walked, results);
+        if stopped.load(Ordering::Relaxed) {
+            break;
         }
-        ordinal += 1;
-        Ok(!stopped.load(Ordering::Relaxed))
-    })?;
-    engine_allocation::collect_vec(operators.into_iter().map(|operator| operator.finish()))?
-        .into_iter()
-        .collect()
+        let next = match segments.get(walked + 1) {
+            Some(next) if next.run == segment.run => {
+                (!starts_at(&operators, Start::Restart(&state))).then_some(walked + 1)
+            }
+            _ => segments[walked + 1..]
+                .iter()
+                .position(|later| {
+                    later.restart.is_none() && branch_of(later.run).ok() == Some(branch)
+                })
+                .map(|offset| walked + 1 + offset)
+                .filter(|_| !starts_at(&operators, Start::Run { continues: true })),
+        };
+        let Some(next) = next else {
+            break;
+        };
+        if !turn(next) {
+            break;
+        }
+        if segments[next].run != segment.run {
+            recording.begin_segment(&segments[next], &mut state)?;
+            let first = first_hour(recording, &segments[next])?;
+            for operator in &mut operators {
+                operator.cross(first)?;
+            }
+            fresh = true;
+        }
+        walked = next;
+    }
+    Ok(())
 }
 
 /// Walks every segment of `recording` on up to `threads` workers, each hour visiting the
@@ -144,6 +256,20 @@ pub fn run(
         stopped.store(true, Ordering::Relaxed);
         changed.notify_all();
     };
+    // A walk going on through segment `next` waits for the look-ahead, but only once every
+    // segment before it has a walk of its own: one it would wait for might need its worker.
+    let turn = |next: usize| -> bool {
+        let mut held = lock();
+        loop {
+            if held.failure.is_some() || stopped.load(Ordering::Relaxed) {
+                return false;
+            }
+            if next - held.emitted < ahead || held.next < next {
+                return true;
+            }
+            held = changed.wait(held).unwrap_or_else(PoisonError::into_inner);
+        }
+    };
     std::thread::scope(|scope| {
         // First, so a failed spawn also wakes the workers already started.
         let _unwinding = unwinding();
@@ -154,6 +280,12 @@ pub fn run(
                     let at = {
                         let mut held = lock();
                         loop {
+                            // A walk going on through segments hands them itself.
+                            while held.next < segments.len()
+                                && (held.next < held.emitted || held.done.contains_key(&held.next))
+                            {
+                                held.next += 1;
+                            }
                             if held.failure.is_some() || held.next >= segments.len() {
                                 return;
                             }
@@ -165,15 +297,17 @@ pub fn run(
                         held.next += 1;
                         held.next - 1
                     };
-                    let segment = &segments[at];
-                    let walked = make(segment)
-                        .and_then(|operators| walk(recording, segment, operators, &stopped));
-                    match walked {
-                        Ok(results) => {
-                            lock().done.insert(at, results);
-                            changed.notify_all();
-                        }
-                        Err(error) => return fail(error),
+                    let mut hand = |walked: usize, results: Results| {
+                        lock().done.insert(walked, results);
+                        changed.notify_all();
+                    };
+                    let walked = make(&segments[at]).and_then(|operators| {
+                        walk(
+                            recording, &segments, at, operators, &stopped, &mut hand, &turn,
+                        )
+                    });
+                    if let Err(error) = walked {
+                        return fail(error);
                     }
                 }
             });

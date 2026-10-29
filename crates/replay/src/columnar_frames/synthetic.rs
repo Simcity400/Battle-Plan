@@ -62,6 +62,12 @@ impl Synthetic {
         })
     }
 
+    /// The walker's state as of the last hour ended: a restart's, for a segment starting at
+    /// the next hour.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Writes `table`'s input for the hour under way, as the native recorder writes it.
     pub fn table<R: RowCodec>(
         &mut self,

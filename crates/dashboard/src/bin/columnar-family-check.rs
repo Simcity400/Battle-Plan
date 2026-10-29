@@ -3,14 +3,16 @@
 //! finished preparation of the same recording wrote, flushing at the hours that preparation
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
-//! same walk with no operator, which the family's own cost is measured above.
-//! `columnar-family-check --family stability|supply --recording <r.battleplan>
-//!   --columnar <c.h4col> --prepared <prepared store folder> --output <new folder> [--threads N]`
+//! same walk with no operator, which the family's own cost is measured above. Without
+//! `--prepared` it only measures, flushing once at the end.
+//! `columnar-family-check --family stability|supply|division-log --recording <r.battleplan>
+//!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
 //! A family reading game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
 //! also reports the CPU each accounting scope charged over both walks.
 
 use dashboard::prepared_stability::StabilityAccumulator;
 use dashboard_forces::products::supply_health;
+use dashboard_land_battles::products::division_log;
 use dashboard_stability::products::country_stability::columnar as stability;
 use replay::{columnar_frames::Recording, container::Replay, segments};
 use serde_json::json;
@@ -137,6 +139,7 @@ fn first_difference(
 enum Family {
     Stability(StabilityAccumulator),
     Supply(Box<supply_health::prepared::Prepared>),
+    DivisionLog(Box<division_log::Scan>),
 }
 
 impl Family {
@@ -149,6 +152,10 @@ impl Family {
                 std::iter::once(format!("supply-runs-{branch}"))
                     .chain((0..3).map(|bucket| format!("supply-values-{branch}-{bucket}")))
                     .collect(),
+            ),
+            "division-log" => (
+                "division-log-count-keys",
+                vec![format!("division-log-counts-{branch}")],
             ),
             _ => ("stability", vec![format!("stability-{branch}")]),
         }
@@ -163,6 +170,15 @@ impl Family {
         };
         let (catalogue, series) = match name {
             "supply" => ("supply-", ["supply-runs-", "supply-values-"].as_slice()),
+            "division-log" => (
+                "division-log-count-keys-",
+                [
+                    "division-log-manifest-",
+                    "division-log-counts-",
+                    "division-log-",
+                ]
+                .as_slice(),
+            ),
             _ => ("stability-", ["stability-"].as_slice()),
         };
         if let Some(branch) = section
@@ -199,6 +215,14 @@ impl Family {
                 prepared.observe_projected(hour)?;
                 Ok(at)
             }
+            Self::DivisionLog(scan) => {
+                let hour = *hour
+                    .downcast::<division_log::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                scan.observe_projected(hour)?;
+                Ok(at)
+            }
         }
     }
 
@@ -211,6 +235,8 @@ impl Family {
         match self {
             Self::Stability(accumulator) => accumulator.flush_measures(writer, branch, cancelled),
             Self::Supply(prepared) => prepared.flush(writer, branch, cancelled),
+            // Its pages are published at each block's end.
+            Self::DivisionLog(_) => Ok(()),
         }
     }
 }
@@ -221,7 +247,11 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
         Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(result) => result,
     };
-    match result.downcast::<Vec<supply_health::columnar::Hour>>() {
+    let result = match result.downcast::<Vec<supply_health::columnar::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
+    match result.downcast::<Vec<division_log::columnar::Hour>>() {
         Ok(hours) => Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(_) => Err(invalid("A projection returned another result")),
     }
@@ -235,6 +265,10 @@ fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
             hour.downcast_ref::<supply_health::columnar::Hour>()
                 .map(|hour| hour.branch)
         })
+        .or_else(|| {
+            hour.downcast_ref::<division_log::columnar::Hour>()
+                .map(|hour| hour.branch)
+        })
         .ok_or_else(|| invalid("A projection returned another hour"))
 }
 
@@ -246,7 +280,7 @@ impl segments::Operator for Idle {
         Ok(())
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Box<dyn std::any::Any + Send>> {
+    fn take(&mut self) -> io::Result<Box<dyn std::any::Any + Send>> {
         Ok(Box::new(()))
     }
 }
@@ -279,7 +313,7 @@ fn flush_hours(folder: &Path, section: &str) -> io::Result<Vec<i32>> {
 fn run() -> io::Result<()> {
     let usage = || {
         invalid(
-            "columnar-family-check --family F --recording R --columnar C --prepared FOLDER --output NEW [--threads N]",
+            "columnar-family-check --family F --recording R --columnar C [--prepared FOLDER] --output NEW [--threads N]",
         )
     };
     let (mut recording, mut columnar, mut prepared, mut output) = (None, None, None, None);
@@ -309,9 +343,7 @@ fn run() -> io::Result<()> {
             _ => return Err(usage()),
         }
     }
-    let (Some(recording), Some(columnar), Some(prepared), Some(output)) =
-        (recording, columnar, prepared, output)
-    else {
+    let (Some(recording), Some(columnar), Some(output)) = (recording, columnar, output) else {
         return Err(usage());
     };
     std::fs::create_dir(&output)?;
@@ -323,45 +355,64 @@ fn run() -> io::Result<()> {
     // Set before any other thread starts: the scratch store lives under it.
     unsafe { std::env::set_var("LOCALAPPDATA", &local) };
 
-    if !["stability", "supply"].contains(&family.as_str()) {
+    if !["stability", "supply", "division-log"].contains(&family.as_str()) {
         return Err(usage());
     }
     let replay = Replay::open_path(&recording)?;
     let format = replay.format.version();
-    // A family's prototype, configured with the recording's content where it reads some.
-    let prototype = match family.as_str() {
-        "supply" => {
-            let game = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-                .map(PathBuf::from)
-                .ok_or_else(|| invalid("Set BATTLE_PLAN_GAME_DIR to the installed game"))?;
-            let user = std::env::var_os("BATTLE_PLAN_USER_DIR").or_else(|| std::env::var_os("HOI4_USER_DIR"))
-                .map(PathBuf::from)
-                .ok_or_else(|| invalid("Set BATTLE_PLAN_USER_DIR to the game's user folder"))?;
-            engine_executable::executable_tables::initialize(&game)?;
-            let content = dashboard::config::ContentOptions {
-                options: installed_content_core::ResolveOptions {
-                    game_dir: game,
-                    user_dir: user,
-                    cache_dir: output.join("content"),
-                },
-                allow_unverified: false,
-                presentation: Default::default(),
-            };
-            std::fs::create_dir_all(&content.options.cache_dir)?;
-            let source = dashboard::Source::open(
-                dashboard::SourceKey {
-                    source_id: "columnar-family-check".into(),
-                    revision: dashboard::protocol::replay_revision(&recording)?,
-                },
-                recording.clone(),
-                &AtomicBool::new(false),
-            )?;
+    // The recording's source and content, for a family that reads content.
+    let (source, context) = if family == "stability" {
+        (None, None)
+    } else {
+        let game = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
+            .map(PathBuf::from)
+            .ok_or_else(|| invalid("Set BATTLE_PLAN_GAME_DIR to the installed game"))?;
+        let user = std::env::var_os("BATTLE_PLAN_USER_DIR").or_else(|| std::env::var_os("HOI4_USER_DIR"))
+            .map(PathBuf::from)
+            .ok_or_else(|| invalid("Set BATTLE_PLAN_USER_DIR to the game's user folder"))?;
+        engine_executable::executable_tables::initialize(&game)?;
+        let content = dashboard::config::ContentOptions {
+            options: installed_content_core::ResolveOptions {
+                game_dir: game,
+                user_dir: user,
+                cache_dir: output.join("content"),
+            },
+            allow_unverified: false,
+            presentation: Default::default(),
+        };
+        std::fs::create_dir_all(&content.options.cache_dir)?;
+        let source = dashboard::Source::open(
+            dashboard::SourceKey {
+                source_id: "columnar-family-check".into(),
+                revision: dashboard::protocol::replay_revision(&recording)?,
+            },
+            recording.clone(),
+            &AtomicBool::new(false),
+        )?;
+        (
+            Some(source),
+            Some(dashboard::config::LoadContext {
+                content: Some(content),
+            }),
+        )
+    };
+    // Supply's prototype, configured with the content's defines.
+    let prototype = match (family.as_str(), &source, &context) {
+        ("supply", Some(source), Some(context)) => {
             let mut prepared = supply_health::prepared::Prepared::default();
-            prepared.configure(&source, Some(&content))?;
+            prepared.configure(source, context.content.as_ref())?;
             Some(prepared)
         }
         _ => None,
     };
+    // Each branch's row blocks' last hours, by their ordinal in the branch.
+    let mut block_ends: BTreeMap<(u64, i32), usize> = BTreeMap::new();
+    let mut ordinals: BTreeMap<u64, usize> = BTreeMap::new();
+    for block in &replay.index {
+        let ordinal = ordinals.entry(block.branch).or_default();
+        block_ends.insert((block.branch, block.last_hour), *ordinal);
+        *ordinal += 1;
+    }
     let file = Recording::open(std::fs::read(&columnar)?)?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(format!("The columnar file is damaged: {damage}")));
@@ -384,10 +435,15 @@ fn run() -> io::Result<()> {
     let (process_before, thread_before) = cpu();
     let mut accumulators: BTreeMap<u64, Family> = BTreeMap::new();
     let mut emit_ns = 0_u64;
+    let mut publish_ns = 0_u64;
     let make = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
-        Ok(match &prototype {
-            Some(prepared) => vec![Box::new(prepared.projector(replay.format)?)],
-            None => vec![Box::new(stability::Projector::new(format)?)],
+        Ok(match (family.as_str(), &prototype) {
+            ("supply", Some(prepared)) => vec![Box::new(prepared.projector(replay.format)?)],
+            ("division-log", _) => vec![Box::new(division_log::columnar::Projector::new(
+                replay.format,
+                replay.capture_mode,
+            )?)],
+            _ => vec![Box::new(stability::Projector::new(format)?)],
         })
     };
     segments::run(&file, threads, 2 * threads, &make, &mut |_, results| {
@@ -397,23 +453,44 @@ fn run() -> io::Result<()> {
                 let branch = branch(&*hour)?;
                 if !flushes.contains_key(&branch) {
                     let mut hours = Vec::new();
-                    for section in Family::sections(&family, branch).1 {
-                        hours.extend(flush_hours(&prepared, &section)?);
+                    if let Some(prepared) = &prepared {
+                        for section in Family::sections(&family, branch).1 {
+                            hours.extend(flush_hours(prepared, &section)?);
+                        }
                     }
                     hours.sort_unstable();
                     hours.dedup();
                     flushes.insert(branch, hours);
                 }
-                let state = accumulators
-                    .entry(branch)
-                    .or_insert_with(|| match &prototype {
-                        Some(prepared) => Family::Supply(Box::new(prepared.fresh())),
-                        None => Family::Stability(StabilityAccumulator::default()),
-                    });
+                let state = accumulators.entry(branch).or_insert_with(|| {
+                    match (family.as_str(), &prototype) {
+                        ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
+                        ("division-log", _) => {
+                            Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
+                        }
+                        _ => Family::Stability(StabilityAccumulator::default()),
+                    }
+                });
                 let (_, at) = state.observe(hour)?;
-                if flushes[&branch].binary_search(&at).is_ok() {
+                let publishing = cpu().1;
+                if let Family::DivisionLog(scan) = state {
+                    // Its window, manifest and counts are published at each block's end.
+                    if let (Some(&ordinal), Some(source), Some(context)) =
+                        (block_ends.get(&(branch, at)), &source, &context)
+                    {
+                        scan.publish_block(
+                            source,
+                            context,
+                            &mut writer,
+                            branch,
+                            ordinal,
+                            &cancelled,
+                        )?;
+                    }
+                } else if flushes[&branch].binary_search(&at).is_ok() {
                     state.flush(&mut writer, branch, &cancelled)?;
                 }
+                publish_ns += cpu().1 - publishing;
             }
         }
         emit_ns += cpu().1 - started;
@@ -434,10 +511,62 @@ fn run() -> io::Result<()> {
         .path();
 
     let written = sections(&scratch)?;
-    let reference = sections(&prepared)?;
+    let hours = file.hours().max(1) as f64;
+    let mut report = json!({
+        "family": family,
+        "recording": recording,
+        "columnar": columnar,
+        "threads": threads,
+        "segments": file.segments().len(),
+        "hours": file.hours(),
+        "wall_seconds": walked,
+        "process_cpu_us_per_hour": (process_after - process_before) as f64 / 1e3 / hours,
+        "walk_only_cpu_us_per_hour": walk_cpu as f64 / 1e3 / hours,
+        "walk_only_wall_seconds": walk_wall,
+        "family_cpu_us_per_hour": (process_after - process_before).saturating_sub(walk_cpu) as f64 / 1e3 / hours,
+        "emit_cpu_us_per_hour": emit_ns as f64 / 1e3 / hours,
+        "emit_publish_cpu_us_per_hour": publish_ns as f64 / 1e3 / hours,
+        "caller_cpu_us_per_hour": (thread_after - thread_before) as f64 / 1e3 / hours,
+        "sections_written": written.len(),
+        "scopes": scopes.then(replay_frame::cpu::snapshot),
+    });
+    if let Some(prepared) = &prepared {
+        compare(
+            &mut report,
+            &family,
+            &recording,
+            &store,
+            prepared,
+            &local,
+            &written,
+            &written_key,
+            &accumulators,
+        )?;
+    }
+    std::fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+/// Adds to `report` how the sections `written` compare with the `prepared` reference's.
+fn compare(
+    report: &mut serde_json::Value,
+    family: &str,
+    recording: &Path,
+    store: &store::Store,
+    prepared: &Path,
+    local: &Path,
+    written: &BTreeMap<String, Vec<Vec<u8>>>,
+    written_key: &store::SourceKey,
+    accumulators: &BTreeMap<u64, Family>,
+) -> io::Result<()> {
+    let reference = sections(prepared)?;
     // Every section either store holds of the family, so a branch or section the walk
     // missed is compared too.
-    let owns = |name: &str| Family::owns(&family, name).is_some();
+    let owns = |name: &str| Family::owns(family, name).is_some();
     let names: std::collections::BTreeSet<&String> = written
         .keys()
         .chain(reference.keys().filter(|name| owns(name)))
@@ -461,8 +590,8 @@ fn run() -> io::Result<()> {
         .nth(3)
         .ok_or_else(|| invalid("--prepared is not a prepared store folder"))?;
     unsafe { std::env::set_var("LOCALAPPDATA", root) };
-    let reference_store = dashboard::prepared::recording_store(&recording)?;
-    unsafe { std::env::set_var("LOCALAPPDATA", &local) };
+    let reference_store = dashboard::prepared::recording_store(recording)?;
+    unsafe { std::env::set_var("LOCALAPPDATA", local) };
     let reference_key = reference_store
         .saved_key()?
         .ok_or_else(|| invalid("The reference store holds no key"))?;
@@ -473,16 +602,16 @@ fn run() -> io::Result<()> {
         .chain(
             reference
                 .keys()
-                .filter_map(|name| Family::owns(&family, name)),
+                .filter_map(|name| Family::owns(family, name)),
         )
         .collect();
     for branch in &branches {
-        let (catalogue, sections) = Family::sections(&family, *branch);
+        let (catalogue, sections) = Family::sections(family, *branch);
         for section in sections {
             semantic.insert(
                 section.clone(),
                 first_difference(
-                    (&store, &written_key),
+                    (store, written_key),
                     (&reference_store, &reference_key),
                     (catalogue, &section),
                     *branch,
@@ -490,33 +619,10 @@ fn run() -> io::Result<()> {
             );
         }
     }
-    let hours = file.hours().max(1) as f64;
-    let report = json!({
-        "family": family,
-        "recording": recording,
-        "columnar": columnar,
-        "threads": threads,
-        "segments": file.segments().len(),
-        "hours": file.hours(),
-        "wall_seconds": walked,
-        "process_cpu_us_per_hour": (process_after - process_before) as f64 / 1e3 / hours,
-        "walk_only_cpu_us_per_hour": walk_cpu as f64 / 1e3 / hours,
-        "walk_only_wall_seconds": walk_wall,
-        "family_cpu_us_per_hour": (process_after - process_before).saturating_sub(walk_cpu) as f64 / 1e3 / hours,
-        "emit_cpu_us_per_hour": emit_ns as f64 / 1e3 / hours,
-        "caller_cpu_us_per_hour": (thread_after - thread_before) as f64 / 1e3 / hours,
-        "sections_written": written.len(),
-        "branches": branches,
-        "sections_differing": differing,
-        "first_series_difference": semantic,
-        "sections": compared,
-        "scopes": scopes.then(replay_frame::cpu::snapshot),
-    });
-    std::fs::write(
-        output.join("report.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    report["branches"] = json!(branches);
+    report["sections_differing"] = json!(differing);
+    report["first_series_difference"] = json!(semantic);
+    report["sections"] = json!(compared);
     Ok(())
 }
 
