@@ -468,9 +468,9 @@ impl Store {
             return Ok(());
         }
         if let Some(held) = self.roots.get_mut(&(kind, owner))
-            && let Some(slot) = reads.and_then(|reads| reads.root_slots.get(&(kind, owner)))
+            && let Some(slot) = reads.and_then(|reads| reads.root_slot(kind, owner))
         {
-            held.slot = *slot;
+            held.slot = slot;
         }
         let certificate = if self.settling_owned {
             reads.and_then(|reads| reads.root_certificate(kind, owner))
@@ -581,8 +581,7 @@ impl Store {
             (kind, owner),
             Held {
                 slot: reads
-                    .and_then(|reads| reads.root_slots.get(&(kind, owner)))
-                    .copied()
+                    .and_then(|reads| reads.root_slot(kind, owner))
                     .unwrap_or(usize::MAX),
                 receiver,
                 accumulator,
@@ -1093,9 +1092,7 @@ impl Store {
             operands::variant_capability()
         };
         let certificate = if self.settling_owned {
-            reads
-                .and_then(|reads| reads.variant_certificates.get(&(handle, pointer)))
-                .copied()
+            reads.and_then(|reads| reads.variant_certificate(handle, pointer))
         } else {
             operands::variant_sequence(pointer)
         };
@@ -1178,9 +1175,7 @@ impl Store {
             Variant {
                 refs: self.variants.get(&handle).map_or(0, |held| held.refs),
                 lifetime: if self.settling_owned {
-                    reads
-                        .and_then(|reads| reads.variant_lifetimes.get(&(handle, pointer)))
-                        .copied()
+                    reads.and_then(|reads| reads.variant_lifetime(handle, pointer))
                 } else {
                     operands::observed_lifetime_sequence(pointer)
                 },
@@ -1373,9 +1368,7 @@ impl Store {
         reads: Option<&NativeReads>,
     ) -> Result<(), &'static str> {
         let certificate = if self.settling_owned {
-            reads
-                .and_then(|reads| reads.state_certificates.get(&(id, country)))
-                .copied()
+            reads.and_then(|reads| reads.state_certificate(id, country))
         } else {
             operands::state_sequence(id)
         };
@@ -1384,8 +1377,8 @@ impl Store {
             && held.pointer == pointer
         {
             held.seen = self.turn;
-            if let Some(slot) = reads.and_then(|reads| reads.state_slots.get(&(id, country))) {
-                held.slot = *slot;
+            if let Some(slot) = reads.and_then(|reads| reads.state_slot(id, country)) {
+                held.slot = slot;
             }
             return Ok(());
         }
@@ -1427,8 +1420,7 @@ impl Store {
             (id, country),
             State {
                 slot: reads
-                    .and_then(|reads| reads.state_slots.get(&(id, country)))
-                    .copied()
+                    .and_then(|reads| reads.state_slot(id, country))
                     .unwrap_or(usize::MAX),
                 pointer,
                 certificate,
@@ -1503,7 +1495,7 @@ mod tests {
     fn current(stamp: u64) -> bool {
         stamp & 1 != 0 && PROOF.load(std::sync::atomic::Ordering::SeqCst) == stamp
     }
-    fn observe(enabled: bool) {
+    pub(super) fn observe(enabled: bool) {
         let next = PROOF
             .fetch_add(2, std::sync::atomic::Ordering::SeqCst)
             .wrapping_add(2);
@@ -1511,8 +1503,8 @@ mod tests {
         PROOF.store(stamp, std::sync::atomic::Ordering::SeqCst);
         operands::variant_availability(stamp, current);
     }
-    static MEMBERSHIP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    struct Enabled;
+    pub(super) static MEMBERSHIP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) struct Enabled;
     impl Drop for Enabled {
         fn drop(&mut self) {
             operands::patched(false);

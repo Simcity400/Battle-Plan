@@ -1,26 +1,43 @@
 //! Range-owned native reads and warm certificates; cold admission and row edits stay ordered.
 use super::*;
 
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+mod reference;
+
 #[derive(Default)]
 pub(super) struct NativeReads {
     pub complete: bool,
-    pub root_certificates: Map<(u8, u64), (u64, u64)>,
-    pub root_slots: Map<(u8, u64), usize>,
     pub membership_observation: Option<((u64, u64), usize)>,
-    pub state_certificates: Map<(u32, u32), (u64, u64)>,
-    pub state_slots: Map<(u32, u32), usize>,
-    pub variant_certificates: Map<(u64, usize), (u64, u64)>,
-    pub variant_lifetimes: Map<(u64, usize), (u64, u64)>,
     roots: Vec<RootRead>,
-    root_indices: Map<(u8, u64), Option<usize>>,
+    root_indices: Map<(u8, u64), RootObservation>,
     roots_used: usize,
     memberships: Vec<MembershipRead>,
     membership_indices: Map<u64, usize>,
-    states: Map<(u32, u32), Option<StateRead>>,
+    states: Map<(u32, u32), StateObservation>,
     variants: Vec<VariantRead>,
-    variant_indices: Map<(u64, usize), Option<usize>>,
+    variant_indices: Map<(u64, usize), VariantObservation>,
     variants_used: usize,
     variant_refresh: Option<bool>,
+}
+/// A root's warm certificate with its registry slot, and its index in `roots`.
+#[derive(Default)]
+struct RootObservation {
+    sequence: Option<((u64, u64), usize)>,
+    read: Option<usize>,
+}
+/// A state's warm certificate with its registry slot, and its attrition read.
+#[derive(Default)]
+struct StateObservation {
+    sequence: Option<((u64, u64), usize)>,
+    read: Option<StateRead>,
+}
+/// A variant's certificate with its lifetime, and its index in `variants`.
+#[derive(Default)]
+struct VariantObservation {
+    sequence: Option<((u64, u64), (u64, u64))>,
+    read: Option<usize>,
 }
 pub(super) struct RootRead {
     receiver: usize,
@@ -125,13 +142,7 @@ pub(super) struct StateRead {
 impl NativeReads {
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
         self.complete = true;
-        self.root_certificates.clear();
-        self.root_slots.clear();
         self.membership_observation = None;
-        self.state_certificates.clear();
-        self.state_slots.clear();
-        self.variant_certificates.clear();
-        self.variant_lifetimes.clear();
         self.root_indices.clear();
         self.roots_used = 0;
         self.variants_used = 0;
@@ -139,32 +150,19 @@ impl NativeReads {
         self.membership_indices.clear();
         self.states.clear();
         self.variant_indices.clear();
-        engine_allocation::reserve_map(&mut self.root_certificates, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.root_slots, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.state_certificates, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.state_slots, divisions.saturating_mul(2))?;
-        engine_allocation::reserve_map(&mut self.variant_certificates, divisions)?;
-        engine_allocation::reserve_map(&mut self.variant_lifetimes, divisions)?;
         engine_allocation::reserve_map(&mut self.root_indices, divisions.saturating_mul(2))?;
         engine_allocation::reserve_map(&mut self.membership_indices, divisions)?;
         engine_allocation::reserve_map(&mut self.states, divisions.saturating_mul(2))?;
         engine_allocation::reserve_map(&mut self.variant_indices, divisions)
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.root_certificates.capacity() * std::mem::size_of::<((u8, u64), (u64, u64))>()
-            + self.root_slots.capacity() * std::mem::size_of::<((u8, u64), usize)>()
-            + self.state_certificates.capacity() * std::mem::size_of::<((u32, u32), (u64, u64))>()
-            + self.state_slots.capacity() * std::mem::size_of::<((u32, u32), usize)>()
-            + self.variant_certificates.capacity()
-                * std::mem::size_of::<((u64, usize), (u64, u64))>()
-            + self.variant_lifetimes.capacity() * std::mem::size_of::<((u64, usize), (u64, u64))>()
-            + self.roots.capacity() * std::mem::size_of::<RootRead>()
+        self.roots.capacity() * std::mem::size_of::<RootRead>()
             + self
                 .roots
                 .iter()
                 .map(|root| root.rows.allocated_bytes())
                 .sum::<usize>()
-            + self.root_indices.capacity() * std::mem::size_of::<((u8, u64), Option<usize>)>()
+            + self.root_indices.capacity() * std::mem::size_of::<((u8, u64), RootObservation)>()
             + self.memberships.capacity() * std::mem::size_of::<MembershipRead>()
             + self
                 .memberships
@@ -172,14 +170,15 @@ impl NativeReads {
                 .map(|read| read.variants.capacity() * std::mem::size_of::<(u32, u64, usize)>())
                 .sum::<usize>()
             + self.membership_indices.capacity() * std::mem::size_of::<(u64, usize)>()
-            + self.states.capacity() * std::mem::size_of::<((u32, u32), Option<StateRead>)>()
+            + self.states.capacity() * std::mem::size_of::<((u32, u32), StateObservation)>()
             + self.variants.capacity() * std::mem::size_of::<VariantRead>()
             + self
                 .variants
                 .iter()
                 .map(|read| read.values.capacity() * 8)
                 .sum::<usize>()
-            + self.variant_indices.capacity() * std::mem::size_of::<((u64, usize), Option<usize>)>()
+            + self.variant_indices.capacity()
+                * std::mem::size_of::<((u64, usize), VariantObservation)>()
     }
     #[allow(clippy::too_many_arguments)]
     pub fn capture(
@@ -274,7 +273,9 @@ impl NativeReads {
         let identity = (kind, owner);
         let index_slot = match self.root_indices.entry(identity) {
             std::collections::hash_map::Entry::Occupied(_) => return,
-            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(None),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(RootObservation::default())
+            }
         };
         // Cold/full admissions stay in the original ordered slow path. Warm
         // receivers are already registered; a slot hint never trusts a table pointer.
@@ -285,8 +286,7 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        self.root_certificates.insert(identity, certificate);
-        self.root_slots.insert(identity, slot);
+        index_slot.sequence = Some((certificate, slot));
         let certificate = Some(certificate);
         if held.is_some_and(|held| {
             held.receiver == receiver
@@ -333,7 +333,7 @@ impl NativeReads {
             Ok(())
         });
         self.complete &= read.ready;
-        *index_slot = Some(index);
+        index_slot.read = Some(index);
         self.roots_used += 1;
     }
     pub fn root(
@@ -344,7 +344,9 @@ impl NativeReads {
         accumulator: usize,
         certificate: Option<(u64, u64)>,
     ) -> Option<&RootRead> {
-        let read = self.roots.get((*self.root_indices.get(&(kind, owner))?)?)?;
+        let read = self
+            .roots
+            .get(self.root_indices.get(&(kind, owner))?.read?)?;
         (read.ready
             && certificate.is_some()
             && read.certificate == certificate
@@ -442,7 +444,9 @@ impl NativeReads {
     ) {
         let state_slot = match self.states.entry((id, country)) {
             std::collections::hash_map::Entry::Occupied(_) => return,
-            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(None),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(StateObservation::default())
+            }
         };
         let held = store.states.get(&(id, country));
         let hint = held.map_or(usize::MAX, |held| held.slot);
@@ -451,29 +455,13 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        self.state_certificates.insert((id, country), certificate);
-        self.state_slots.insert((id, country), slot);
+        state_slot.sequence = Some((certificate, slot));
         let certificate = Some(certificate);
         if held.is_some_and(|held| held.pointer == pointer && held.certificate == certificate) {
             return;
         }
-        let mut values = [Err("state attrition unavailable"); 3];
-        for (index, key) in [
-            engine_executable::modifier_keys::ATTRITION,
-            engine_executable::modifier_keys::ATTRITION_FOR_CONTROLLER,
-            engine_executable::modifier_keys::ENEMY_ATTRITION,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            values[index] = engine_native::cstate::movement_modifier(
-                memory, base, state, pointer, country, key,
-            );
-            if values[index].is_err() {
-                break;
-            }
-        }
-        *state_slot = Some(StateRead {
+        let values = state_attrition(memory, base, state, pointer, country);
+        state_slot.read = Some(StateRead {
             pointer,
             certificate,
             values,
@@ -486,7 +474,7 @@ impl NativeReads {
         country: u32,
         certificate: Option<(u64, u64)>,
     ) -> Option<&StateRead> {
-        let read = self.states.get(&(id, country))?.as_ref()?;
+        let read = self.states.get(&(id, country))?.read.as_ref()?;
         (certificate.is_some() && read.certificate == certificate && read.pointer == pointer)
             .then_some(read)
     }
@@ -510,29 +498,14 @@ impl NativeReads {
             self.complete = false;
             return;
         }
-        let index_slot = self
-            .variant_indices
-            .entry((handle, pointer))
-            .or_insert(None);
+        let index_slot = self.variant_indices.entry((handle, pointer)).or_default();
         let certificate = operands::observed_variant_sequence(pointer)
             .and_then(|_| operands::variant_sequence(pointer));
         let availability = operands::variant_capability();
         let lifetime = operands::observed_lifetime_sequence(pointer);
         let held = store.variants.get(&handle);
-        if let (Some(certificate), Some(lifetime)) = (certificate, lifetime) {
-            if engine_allocation::advisory(|| {
-                engine_allocation::reserve_map(&mut self.variant_certificates, 1)?;
-                engine_allocation::reserve_map(&mut self.variant_lifetimes, 1)
-            })
-            .is_err()
-            {
-                self.complete = false;
-                return;
-            }
-            self.variant_certificates
-                .insert((handle, pointer), certificate);
-            self.variant_lifetimes.insert((handle, pointer), lifetime);
-        } else {
+        index_slot.sequence = certificate.zip(lifetime);
+        if index_slot.sequence.is_none() {
             self.complete = false;
         }
         if !fresh_membership
@@ -593,14 +566,32 @@ impl NativeReads {
             read.result = Err(VARIANT_WITHDRAWN);
         }
         self.complete &= read.ready;
-        *index_slot = Some(index);
+        index_slot.read = Some(index);
         self.variants_used += 1;
     }
     pub fn has_variant(&self, handle: u64, pointer: usize) -> bool {
-        self.variant_certificates.contains_key(&(handle, pointer))
+        self.variant_sequence(handle, pointer).is_some()
     }
     pub fn root_certificate(&self, kind: u8, owner: u64) -> Option<(u64, u64)> {
-        self.root_certificates.get(&(kind, owner)).copied()
+        Some(self.root_indices.get(&(kind, owner))?.sequence?.0)
+    }
+    pub fn root_slot(&self, kind: u8, owner: u64) -> Option<usize> {
+        Some(self.root_indices.get(&(kind, owner))?.sequence?.1)
+    }
+    pub fn state_certificate(&self, id: u32, country: u32) -> Option<(u64, u64)> {
+        Some(self.states.get(&(id, country))?.sequence?.0)
+    }
+    pub fn state_slot(&self, id: u32, country: u32) -> Option<usize> {
+        Some(self.states.get(&(id, country))?.sequence?.1)
+    }
+    pub fn variant_certificate(&self, handle: u64, pointer: usize) -> Option<(u64, u64)> {
+        Some(self.variant_sequence(handle, pointer)?.0)
+    }
+    pub fn variant_lifetime(&self, handle: u64, pointer: usize) -> Option<(u64, u64)> {
+        Some(self.variant_sequence(handle, pointer)?.1)
+    }
+    fn variant_sequence(&self, handle: u64, pointer: usize) -> Option<((u64, u64), (u64, u64))> {
+        self.variant_indices.get(&(handle, pointer))?.sequence
     }
     pub fn variant_observed(
         &self,
@@ -612,7 +603,7 @@ impl NativeReads {
     ) -> Option<&VariantRead> {
         let read = self
             .variants
-            .get((*self.variant_indices.get(&(handle, pointer))?)?)?;
+            .get(self.variant_indices.get(&(handle, pointer))?.read?)?;
         (read.ready
             && certificate.is_some()
             && read.certificate == certificate
@@ -621,6 +612,61 @@ impl NativeReads {
             && (owned || read.lifetime == operands::observed_lifetime_sequence(pointer)))
         .then_some(read)
     }
+}
+
+/// The three attrition terms `cstate::movement_modifier` gives one key at a
+/// time. Its selection ignores the key and its lookup reads and validates the
+/// whole accumulator, so one selection and one full read serve all three.
+fn state_attrition(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    state: usize,
+    country: u32,
+) -> [Result<i64, &'static str>; 3] {
+    use engine_executable::modifier_keys::{ATTRITION, ATTRITION_FOR_CONTROLLER, ENEMY_ATTRITION};
+    use engine_native::modifier_accumulator::{Value, lookup_many_at};
+    const KEYS: [u32; 3] = [ATTRITION, ATTRITION_FOR_CONTROLLER, ENEMY_ATTRITION];
+    let mut sorted = KEYS;
+    sorted.sort_unstable();
+    let mut root = 0;
+    let selected = engine_native::cstate::movement_modifier_with(
+        memory,
+        base,
+        game,
+        state,
+        country,
+        KEYS[0],
+        |at, _| {
+            root = at;
+            Ok(0)
+        },
+    );
+    let mut snapshot = None;
+    let mut values = [Err("state attrition unavailable"); 3];
+    for (value, key) in values.iter_mut().zip(KEYS) {
+        *value = selected.and_then(|_| {
+            let raw = match memory.modifier_accumulator_value(root, key) {
+                Some(raw) => raw?,
+                None => {
+                    let raws = *snapshot.get_or_insert_with(|| {
+                        let mut raws = [Value::default(); 3];
+                        lookup_many_at(memory, root, &sorted, &mut raws).map(|()| raws)
+                    });
+                    raws?[sorted.iter().position(|&sorted| sorted == key).unwrap()]
+                }
+            };
+            if raw.present {
+                engine_native::modifier_definition::effective(memory, base, key, raw.raw)
+            } else {
+                Ok(0)
+            }
+        });
+        if value.is_err() {
+            break;
+        }
+    }
+    values
 }
 
 fn state_countries(seed: &DivisionSeed) -> impl Iterator<Item = u32> {
@@ -759,8 +805,13 @@ mod tests {
             );
             let mut reads = NativeReads::default();
             reads.roots.push(read);
-            reads.root_indices.insert((0, owner), Some(0));
-            reads.root_certificates.insert((0, owner), stamp);
+            reads.root_indices.insert(
+                (0, owner),
+                RootObservation {
+                    sequence: Some((stamp, usize::MAX)),
+                    read: Some(0),
+                },
+            );
             let mut staged = Store {
                 settling_owned: true,
                 ..Store::default()

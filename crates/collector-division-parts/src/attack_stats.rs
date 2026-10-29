@@ -536,7 +536,7 @@ impl Captured {
     /// Settle range-local observations in the original census order. Taking
     /// marks, registration, cache admission and history edits still happen once.
     #[allow(clippy::too_many_arguments)]
-    pub fn certify_prepared(
+    pub fn certify_prepared<'a>(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -544,7 +544,7 @@ impl Captured {
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         changes: &dyn Changes,
-        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+        prepared: impl Fn(usize) -> Option<&'a PreparedDivision>,
     ) {
         self.certify_staged(
             memory, base, seeds, outcome, store, changes, prepared, false,
@@ -552,7 +552,7 @@ impl Captured {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn certify_staged(
+    pub fn certify_staged<'a>(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -560,7 +560,7 @@ impl Captured {
         outcome: Outcome,
         store: Option<&mut ArmyStatStore>,
         changes: &dyn Changes,
-        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+        prepared: impl Fn(usize) -> Option<&'a PreparedDivision>,
         defer_owned: bool,
     ) {
         let begin = crate::clock::qpc();
@@ -830,13 +830,13 @@ impl Captured {
     }
     /// Frozen receiver observations only. No native read, registration or mark
     /// drain may occur here after the simulation resumes.
-    pub fn settle_certification(
+    pub fn settle_certification<'a>(
         &mut self,
         base: usize,
         seeds: &[DivisionSeed],
         outcome: Outcome,
         store: &mut ArmyStatStore,
-        prepared: impl Fn(usize) -> Option<PreparedDivision>,
+        prepared: impl Fn(usize) -> Option<&'a PreparedDivision>,
     ) {
         use collector_observers::unit_history_changes as history_changes;
         if std::mem::take(&mut self.scalars_deferred) {

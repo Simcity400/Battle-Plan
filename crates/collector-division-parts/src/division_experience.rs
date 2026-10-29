@@ -6,6 +6,9 @@
 use engine_native::carmy::{self, DivisionSeed};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
+#[cfg(test)]
+mod oracle;
+
 // Range scratch can outlive or move between stores. Complete baselines get
 // distinct stamps; exhaustion disables index reuse rather than reusing a stamp.
 static NEXT_BASELINE: AtomicU64 = AtomicU64::new(1);
@@ -22,6 +25,8 @@ pub(crate) fn next_baseline() -> Option<u64> {
 pub struct Order {
     baseline: Option<u64>,
     entries: Vec<(u64, usize)>,
+    shift: isize,
+    unique: bool,
     #[cfg(test)]
     rebuilds: usize,
     #[cfg(test)]
@@ -31,6 +36,8 @@ impl Order {
     pub fn clear(&mut self) {
         self.baseline = None;
         self.entries.clear();
+        self.shift = 0;
+        self.unique = false;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<(u64, usize)>()
@@ -237,18 +244,31 @@ impl<T: Clone> Store<T> {
         {
             order.probes += 1;
         }
+        if order.baseline != self.baseline {
+            order.clear();
+            order.baseline = self.baseline;
+        }
+        let guess = (self.baseline.is_some() && order.unique)
+            .then(|| index.checked_add_signed(order.shift))
+            .flatten();
         let at = if self
             .held
             .get(index)
             .is_some_and(|held| held.division == seed.division)
         {
             Some(index)
+        } else if guess.is_some_and(|at| {
+            self.held
+                .get(at)
+                .is_some_and(|held| held.division == seed.division)
+        }) {
+            guess
         } else {
             if self.held.is_empty() {
                 return None;
             }
-            if self.baseline.is_none() || order.baseline != self.baseline {
-                order.clear();
+            if self.baseline.is_none() || order.entries.is_empty() {
+                order.entries.clear();
                 if engine_allocation::advisory(|| {
                     engine_allocation::reserve(&mut order.entries, self.held.len())
                 })
@@ -261,6 +281,7 @@ impl<T: Clone> Store<T> {
                             .map(|(at, held)| (held.division, at)),
                     );
                     order.entries.sort_unstable_by_key(|entry| entry.0);
+                    order.unique = order.entries.windows(2).all(|pair| pair[0].0 != pair[1].0);
                     order.baseline = self.baseline;
                     #[cfg(test)]
                     {
@@ -292,6 +313,9 @@ impl<T: Clone> Store<T> {
                 .ok()
                 .map(|at| order.entries[at].1)
         };
+        if let Some(at) = at {
+            order.shift = at as isize - index as isize;
+        }
         at.and_then(|at| self.held.get(at))
             .filter(|held| held.division == seed.division)
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate))

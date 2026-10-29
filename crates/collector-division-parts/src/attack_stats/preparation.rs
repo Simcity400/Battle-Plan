@@ -3,7 +3,6 @@ use super::*;
 use collector_observers::unit_history_changes as history_changes;
 use std::{ops::Range, sync::Arc};
 
-#[derive(Clone, Copy)]
 pub struct PreparedDivision {
     pub(super) experience_certificate: Option<(u64, u64)>,
     pub(super) progression_certificate: Option<(u64, u64)>,
@@ -63,8 +62,8 @@ impl PreparationPart {
                 .map(ScalarOrder::allocated_bytes)
                 .sum::<usize>()
     }
-    pub fn get(&self, index: usize) -> Option<PreparedDivision> {
-        self.rows.get(index.checked_sub(self.range.start)?).copied()
+    pub fn get(&self, index: usize) -> Option<&PreparedDivision> {
+        self.rows.get(index.checked_sub(self.range.start)?)
     }
     /// An absent entry selects ordered lookup; a present `None` is a sampled miss.
     pub fn daily_supply(&self, index: usize) -> Option<&Option<Arc<crate::supply_inputs::Sample>>> {
