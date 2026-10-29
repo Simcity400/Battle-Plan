@@ -1520,6 +1520,37 @@ fn pictures_hold_with(icons: Option<&IconContent>, pictured: bool, visual: Optio
     }
 }
 
+/// Whether prepared lines can be served beside `icons`: as [`pictures_hold_with`], but without
+/// icon content a pictured directory's choices are answered from the catalogue alone.
+fn pictures_serve_with(icons: Option<&IconContent>, pictured: bool, visual: Option<&str>) -> bool {
+    icons.is_none() || pictures_hold_with(icons, pictured, visual)
+}
+
+/// [`pictures_serve_with`] without loading icon content where the store key stamps every file it
+/// read when the lines were prepared (`stamped`) and would read now
+/// ([`equipment_icon::inputs_stamped`]); lines prepared without it load it, to be pictured once it
+/// loads.
+fn pictures_serve(
+    source: &Source,
+    context: &LoadContext,
+    pictured: bool,
+    stamped: bool,
+    visual: Option<&str>,
+) -> bool {
+    let stamped_now = || {
+        context
+            .content()
+            .and_then(|content| source.content(&content.options))
+            .and_then(|content| crate::products::equipment_icon::inputs_stamped(&content.layers))
+            .unwrap_or(false)
+    };
+    if pictured && stamped && stamped_now() {
+        return true;
+    }
+    let (_, icons) = scan_content(source, context, &mut Vec::new());
+    pictures_serve_with(icons.as_deref(), pictured, visual)
+}
+
 /// A branch's last block: its first and last hour and its offset.
 fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
     branch_blocks(replay, branch)
@@ -1588,6 +1619,7 @@ fn scanned_view(
             &params.tag,
             holder,
             icons.as_deref(),
+            catalogue.as_deref(),
             cancelled,
         )?,
     };

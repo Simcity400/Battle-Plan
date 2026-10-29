@@ -82,3 +82,73 @@ fn d16_equipment_reuse_keeps_the_complete_database_refusal() {
     assert_eq!(actual.kind(), expected.kind());
     assert_eq!(actual.to_string(), expected.to_string());
 }
+
+/// Every file icon content reads is one the store key stamps (`recorded_source_files`), so
+/// prepared icon choices hold wherever their directory is read, unless `default.map` names a
+/// file where coverage stops ([`crate::products::equipment_icon::inputs_stamped`]).
+#[test]
+fn icon_content_reads_only_files_the_store_key_stamps() {
+    use crate::products::equipment_icon::inputs_stamped;
+    let (catalogue, _folder) = equipment_catalogue(&[
+        ("common/units/equipment/upgrades/z.txt", "upgrades={}"),
+        (
+            "common/units/equipment/modules/z.txt",
+            "equipment_modules={}",
+        ),
+        (
+            "common/units/equipment/a.txt",
+            "equipments={synthetic_type={}}",
+        ),
+        (
+            "gfx/interface/equipmentdesigner/graphic_db/a.txt",
+            "default = { infantry_equipment_1 = { pool = { icons = { GFX_fallback } } } }",
+        ),
+    ]);
+    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let traced = {
+        let reads = Arc::clone(&reads);
+        catalogue
+            .content
+            .layers
+            .with_read_trace(Arc::new(move |read: installed_content_core::content::ContentRead| {
+                reads.lock().unwrap().push(read.path);
+            }))
+    };
+    let traced = Arc::new(super::tests::layers_catalogue(traced));
+    reads.lock().unwrap().clear();
+    IconContent::load(traced).unwrap();
+    let reads: Vec<String> = std::mem::take(&mut *reads.lock().unwrap())
+        .into_iter()
+        .map(|path| String::from_utf8(path).unwrap())
+        .collect();
+    for read in [
+        "map/default.map",
+        "map/definition.csv",
+        "map/continent.txt",
+        "gfx/interface/equipmentdesigner/graphic_db/a.txt",
+    ] {
+        assert!(reads.iter().any(|path| path == read), "{read}: {reads:?}");
+    }
+    let layers = &catalogue.content.layers;
+    let stamped = layers.recorded_source_files().unwrap();
+    for read in &reads {
+        assert!(
+            stamped
+                .iter()
+                .any(|path| path.ends_with(std::path::Path::new(read))),
+            "{read} is not stamped: {stamped:?}"
+        );
+    }
+    assert!(inputs_stamped(layers).unwrap());
+    // `default.map` may name a continent file below a folder coverage skips.
+    let (uncovered, _folder) = super::tests::folder_catalogue(&[
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=music/continent.txt",
+        ),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0
+"),
+        ("map/music/continent.txt", "continents={synthetic_continent}"),
+    ]);
+    assert!(!inputs_stamped(&uncovered.content.layers).unwrap());
+}

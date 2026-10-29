@@ -2573,6 +2573,28 @@ impl ResolvedLayers {
         Ok(value)
     }
 
+    /// Whether a read of `relative` opens a file the store key stamps
+    /// ([`Self::recorded_source_files`]): a recorded layer's listed covered file or a covered
+    /// record of its archive, as the read's own lookup resolves it, so a Windows alias of a
+    /// folder coverage skips is none.
+    pub fn stamped(&self, relative: &str) -> io::Result<bool> {
+        let Some(path) = sanitize(relative.as_bytes()) else {
+            return Ok(false);
+        };
+        let Some(hit) = self.lookup_path(&path)? else {
+            return Ok(false);
+        };
+        let layer = &self.layers[hit.layer];
+        Ok(layer.overlay.is_none()
+            && self.covered_path(&hit.path)
+            && match layer.source {
+                LayerSource::Folder(_) => {
+                    layer.lookup.folders.get(&hit.path.to_ascii_lowercase()) == Some(&hit.path)
+                }
+                LayerSource::Archive(_) => true,
+            })
+    }
+
     /// Whether the native lookup opens `relative` (folder metadata and archive opening
     /// headers, without reading the payload; loading still verifies the covered bytes).
     pub fn has_file(&self, relative: &str) -> io::Result<bool> {

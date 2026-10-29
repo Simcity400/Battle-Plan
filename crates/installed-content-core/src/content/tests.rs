@@ -4090,3 +4090,22 @@ fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
     drop(reads);
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A read is stamped by the store key only where its own lookup opens a listed covered file:
+/// not one below a folder coverage skips, and not one missing.
+#[test]
+fn stamped_reads_open_listed_covered_files() {
+    let root = std::env::temp_dir().join(format!("stamped-reads-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("map/music")).unwrap();
+    fs::write(root.join("map/continent.txt"), b"continents={a}").unwrap();
+    fs::write(root.join("map/music/continent.txt"), b"continents={b}").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    assert!(layers.stamped("map/continent.txt").unwrap());
+    assert!(!layers.stamped("map/music/continent.txt").unwrap());
+    assert!(!layers.stamped("map/missing.txt").unwrap());
+    let listed = layers.recorded_source_files().unwrap();
+    assert!(listed.iter().any(|path| path.ends_with("map/continent.txt")));
+    assert!(!listed.iter().any(|path| path.ends_with("map/music/continent.txt")));
+    fs::remove_dir_all(root).unwrap();
+}

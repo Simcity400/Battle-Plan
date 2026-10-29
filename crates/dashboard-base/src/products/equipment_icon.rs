@@ -215,6 +215,8 @@ pub struct IconContent {
     sprites: BTreeSet<String>,
     refused_sprites: BTreeMap<String, String>,
     files: Files,
+    /// Whether every file it read is one the store key stamps ([`inputs_stamped`]).
+    stamped: bool,
     /// A digest of what a choice ([`icon_choice`]) reads that the recorded content's hash
     /// does not cover: the graphic pools, the geography and the DLC names. The declared
     /// sprites and texture files are not among them: a choice leaves those questions open.
@@ -224,6 +226,25 @@ pub struct IconContent {
 /// A part's result, its panic resumed here once the parts before it succeeded.
 fn settled<T>(read: std::thread::Result<T>) -> T {
     read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Whether every file icon content reads is one the store key stamps: the folders it lists are,
+/// but `default.map`, as a read resolves it, may name its definitions or continents where
+/// coverage stops.
+pub fn inputs_stamped(layers: &installed_content_core::ResolvedLayers) -> io::Result<bool> {
+    if !layers.stamped("map/default.map")? {
+        return Ok(false);
+    }
+    let default_map = installed_content_core::terrain::read_default_map(layers)?;
+    for name in ["definitions", "continent"] {
+        let Ok(path) = default_map.file(name) else {
+            return Ok(false);
+        };
+        if !layers.stamped(&path)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 impl IconContent {
@@ -339,6 +360,7 @@ impl IconContent {
                     .has_file(path)
                     .map_err(|error| format!("{path}: {error}"))
             }),
+            stamped: inputs_stamped(layers).unwrap_or(false),
             catalogue: Some(catalogue),
             load_warnings: warnings,
             visual: String::new(),
@@ -365,6 +387,11 @@ impl IconContent {
         &self.visual
     }
 
+    /// Whether every file it read is one the store key stamps ([`inputs_stamped`]).
+    pub fn stamped(&self) -> bool {
+        self.stamped
+    }
+
     /// Content from its parts, for fixtures: no geography, the given sprites and files.
     pub fn from_parts(
         units: Database,
@@ -385,6 +412,7 @@ impl IconContent {
             sprites,
             refused_sprites: BTreeMap::new(),
             files: Box::new(move |path| Ok(files.contains(path))),
+            stamped: false,
             visual: String::new(),
         }
         .fingerprinted()

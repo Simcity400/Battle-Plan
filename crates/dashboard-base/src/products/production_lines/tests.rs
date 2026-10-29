@@ -2188,7 +2188,7 @@ fn a_saved_scan_restores_the_scan_it_saved() {
 fn prepared_choices_hold_only_while_their_inputs_do() {
     use crate::products::{
         equipment_icon::{Icon, IconContent, IconHour, icon_choice},
-        production_lines::pictures_hold_with,
+        production_lines::{pictures_hold_with, pictures_serve_with},
     };
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
@@ -2248,7 +2248,8 @@ fn prepared_choices_hold_only_while_their_inputs_do() {
         Ok(Some(Icon::Path(TEXTURE.into())))
     );
     assert!(pictures_hold(Some(&deleted)));
-    // Other graphic pools, or no icon content, refuse it.
+    // Other graphic pools, or no icon content, refuse it; without icon content a reply still
+    // serves it, answering its choices from the catalogue.
     let pooled = content(
         &[TEXTURE],
         &["GFX_fallback"],
@@ -2256,6 +2257,8 @@ fn prepared_choices_hold_only_while_their_inputs_do() {
     );
     assert!(!pictures_hold(Some(&pooled)));
     assert!(!pictures_hold(None));
+    assert!(pictures_serve_with(None, true, Some(&visual)));
+    assert!(!pictures_serve_with(Some(&pooled), true, Some(&visual)));
     assert!(pictures_hold_with(None, false, None));
     assert!(!pictures_hold_with(Some(&with), false, None));
 }

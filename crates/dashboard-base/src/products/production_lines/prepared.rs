@@ -366,6 +366,9 @@ pub struct Directory {
     pub coverage: crate::prepared::coverage::Coverage,
     pub last_block: Option<(i32, i32, u64)>,
     pub pictured: bool,
+    /// Whether every file the icon content read is one the store key stamps
+    /// ([`crate::products::equipment_icon::inputs_stamped`]).
+    pub stamped: bool,
     pub visual: Option<String>,
     pub executable: bool,
     pub pages: u64,
@@ -384,7 +387,7 @@ pub(super) const PICTURED: [TableId; 5] = [
 ];
 
 pub fn directory_section(branch: u64) -> String {
-    format!("production-lines-directory-v1-{branch}")
+    format!("production-lines-directory-v2-{branch}")
 }
 pub fn coverage_section(branch: u64) -> String {
     format!("preparation-family-production-lines-{branch}")
@@ -604,6 +607,7 @@ impl Prepared {
                 },
                 last_block: None,
                 pictured: icons.is_some(),
+                stamped: icons.is_some_and(IconContent::stamped),
                 visual: icons.map(|icons| icons.visual_inputs().to_owned()),
                 executable: engine_executable::executable_tables::is_initialized(),
                 pages: 0,
@@ -1729,7 +1733,7 @@ fn fold_ranges(ranges: Vec<store::Range>, cancelled: &AtomicBool) -> io::Result<
 fn assemble(
     directory: &Directory,
     selected: &str,
-    icons: Option<&IconContent>,
+    catalogue: Option<&Catalogue>,
     language: Arc<str>,
     cancelled: &AtomicBool,
     read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
@@ -1737,7 +1741,7 @@ fn assemble(
     assemble_with(
         directory,
         selected,
-        icons,
+        catalogue,
         language,
         cancelled,
         read,
@@ -1749,16 +1753,14 @@ fn assemble(
 fn assemble_with(
     directory: &Directory,
     selected: &str,
-    icons: Option<&IconContent>,
+    catalogue: Option<&Catalogue>,
     language: Arc<str>,
     cancelled: &AtomicBool,
     mut read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
     fold: impl FnOnce(&mut PageRead<'_>) -> io::Result<Arc<VariantFold>>,
 ) -> io::Result<ScannedLines> {
     let mut assembled = pages::Assembler::default();
-    let localisation = icons
-        .and_then(|icons| icons.catalogue.as_ref())
-        .map(|catalogue| Arc::clone(&catalogue.localisation));
+    let localisation = catalogue.map(|catalogue| Arc::clone(&catalogue.localisation));
     let mut head: pages::PageLog = private::get(
         &mut private::Store::new(&mut ReadPages(&mut read), directory.branch),
         directory.index,
@@ -1900,14 +1902,15 @@ pub fn current(
     let Some(directory) = directory(store, key, branch)? else {
         return Ok(false);
     };
-    let (_, icons) = scan_content(source, context, &mut Vec::new());
     if directory.coverage.schema != crate::prepared::coverage::SCHEMA
         || !directory.coverage.complete
         || directory.last_block != last_block(source.replay_ref(), branch)
         || directory.executable != engine_executable::executable_tables::is_initialized()
-        || !pictures_hold_with(
-            icons.as_deref(),
+        || !pictures_serve(
+            source,
+            context,
             directory.pictured,
+            directory.stamped,
             directory.visual.as_deref(),
         )
     {
@@ -1953,6 +1956,7 @@ pub(super) fn query(
     tag: &str,
     holder: Option<NativeCountry>,
     icons: Option<&IconContent>,
+    catalogue: Option<&Catalogue>,
     cancelled: &AtomicBool,
 ) -> io::Result<(ScannedLines, crate::prepared::coverage::Coverage)> {
     use std::io::Read;
@@ -1972,7 +1976,7 @@ pub(super) fn query(
         .ok_or_else(|| crate::invalid("Production lines are still being prepared"))?;
     if directory.coverage.schema != crate::prepared::coverage::SCHEMA
         || directory.executable != engine_executable::executable_tables::is_initialized()
-        || !pictures_hold_with(icons, directory.pictured, directory.visual.as_deref())
+        || !pictures_serve_with(icons, directory.pictured, directory.visual.as_deref())
     {
         return Err(crate::invalid(
             "Production lines need preparation for the current content",
@@ -2018,7 +2022,7 @@ pub(super) fn query(
     let result = assemble_with(
         &directory,
         &selected,
-        icons,
+        catalogue,
         recorded_language(source.replay_ref()),
         cancelled,
         |section, range| {

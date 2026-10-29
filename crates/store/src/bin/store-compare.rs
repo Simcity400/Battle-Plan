@@ -303,7 +303,7 @@ impl Input {
             {
                 return Err(invalid(format!("Production scan is incomplete: {branch}")));
             }
-            let name = format!("production-lines-directory-v1-{branch}");
+            let name = format!("production-lines-directory-v2-{branch}");
             let directory: Value = serde_json::from_reader(zstd::stream::Decoder::new(
                 self.single_range(&name)?.open(&self.directory)?,
             )?)?;
@@ -721,7 +721,7 @@ mod tests {
             for (section, ranges) in [
                 ("preparation-side-work-v1", vec![SIDE.to_vec()]),
                 (
-                    "production-lines-directory-v1-1",
+                    "production-lines-directory-v2-1",
                     vec![production_directory()],
                 ),
                 (
@@ -806,7 +806,7 @@ mod tests {
             "production-lines-history-v3-01",
             "production-lines-history-v3-1-extra",
             "production-lines-state-v2-1-other",
-            "production-lines-directory-v1-1",
+            "production-lines-directory-v2-1",
             "production-lines-scan-v5-1-474552",
             "production-lines-scan-meta-v5-1-474552",
             "preparation-family-production-lines-1",
@@ -912,7 +912,7 @@ mod tests {
             let input = fixture.store(
                 &format!("invalid-production-directory-{index}"),
                 vec![(
-                    "production-lines-directory-v1-1",
+                    "production-lines-directory-v2-1",
                     vec![compressed(&directory)],
                 )],
                 1,
@@ -951,7 +951,7 @@ mod tests {
         {
             let input = fixture.store(
                 &format!("invalid-production-ranges-{index}"),
-                vec![("production-lines-directory-v1-1", ranges)],
+                vec![("production-lines-directory-v2-1", ranges)],
                 1,
                 true,
             );
@@ -969,7 +969,7 @@ mod tests {
         let changed = fixture.store(
             "public-production-directory-changed",
             vec![(
-                "production-lines-directory-v1-1",
+                "production-lines-directory-v2-1",
                 vec![compressed(&directory)],
             )],
             2,

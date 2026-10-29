@@ -119,7 +119,7 @@ pub fn scan(
     assemble(
         &prepared.directory,
         &selected,
-        icons,
+        icons.and_then(|icons| icons.catalogue.as_deref()),
         recorded_language(replay),
         cancelled,
         |section, range| pages.read_at(section, range),
@@ -147,7 +147,7 @@ pub(super) fn query(
     let result = assemble(
         &directory,
         &selected,
-        icons,
+        icons.and_then(|icons| icons.catalogue.as_deref()),
         recorded_language(source.replay_ref()),
         cancelled,
         |section, range| pages.read_at(section, range),
