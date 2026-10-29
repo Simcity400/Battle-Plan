@@ -1855,6 +1855,30 @@ fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps() {
 }
 
 #[test]
+fn a_sweep_over_more_keys_than_a_count_bound_held_decodes_each_blob_once() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 100..200 {
+        for key in 0..600_u64 {
+            let amount = i128::from(hour / 10) + i128::from(key % 3);
+            values.observe(key, hour, Some(amount), false);
+        }
+    }
+    let mut writer = fixture.writer();
+    values.flush(&mut writer, "values", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let keys: Vec<u64> = (0..600).collect();
+    let hours: Vec<i32> = (100..200).collect();
+    let decodes = BLOB_DECODES.get();
+    for window in hours.chunks(25) {
+        reader.changes_at(&keys, window).unwrap();
+    }
+    assert_eq!(BLOB_DECODES.get() - decodes, keys.len());
+}
+
+#[test]
 fn changes_at_matches_values_at_for_every_window_across_batches_and_gaps() {
     let mut fixture = Fixture::new();
     let flag = AtomicBool::new(false);

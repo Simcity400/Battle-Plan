@@ -2503,8 +2503,54 @@ impl Cached {
         Ok(buckets)
     }
 }
-/// Decoded blobs a reader keeps before it starts again.
+/// Decoded summary levels a reader keeps before it starts again.
 const DECODED_BLOBS: usize = 256;
+/// The decoded blob bytes a reader keeps; beyond them the least recently used go first.
+const DECODED_BYTES: usize = 64 << 20;
+
+/// A reader's decoded blobs by batch and key, the least recently used dropped first once they
+/// hold more than [`DECODED_BYTES`], the latest always kept: a read sweeping thousands of keys
+/// window by window decodes each blob once rather than once a window.
+#[derive(Default)]
+struct Decoded {
+    blobs: HashMap<(u64, u64), (Arc<Cached>, u64)>,
+    used: BTreeMap<u64, (u64, u64)>,
+    clock: u64,
+    bytes: usize,
+}
+
+impl Decoded {
+    /// Whether `id` is held, marking it the most recently used if so.
+    fn touch(&mut self, id: (u64, u64)) -> bool {
+        let Some((_, last)) = self.blobs.get_mut(&id) else {
+            return false;
+        };
+        self.used.remove(last);
+        self.clock += 1;
+        *last = self.clock;
+        self.used.insert(self.clock, id);
+        true
+    }
+
+    fn insert(&mut self, id: (u64, u64), blob: Arc<Cached>) {
+        self.clock += 1;
+        self.bytes += blob.bytes();
+        if let Some((old, last)) = self.blobs.insert(id, (blob, self.clock)) {
+            self.bytes -= old.bytes();
+            self.used.remove(&last);
+        }
+        self.used.insert(self.clock, id);
+        while self.bytes > DECODED_BYTES && self.used.len() > 1 {
+            let (_, oldest) = self.used.pop_first().expect("more than one blob is held");
+            let (blob, _) = self.blobs.remove(&oldest).expect("a used blob is held");
+            self.bytes -= blob.bytes();
+        }
+    }
+
+    fn held(&self, id: (u64, u64)) -> &Arc<Cached> {
+        &self.blobs[&id].0
+    }
+}
 /// The most a blob read reserves before its first read.
 const BLOB_READ_STEP: u64 = 64 << 20;
 
@@ -2523,7 +2569,7 @@ pub struct Reader<'a> {
     files: HashMap<u64, store::Range>,
     hours: HashMap<u64, (i32, i32)>,
     directories: HashMap<(u64, u64), Directory>,
-    cached: HashMap<(u64, u64), Arc<Cached>>,
+    cached: Decoded,
     buckets: HashMap<(u64, u64), Arc<Summaries>>,
     /// Each batch's single-key directory searches so far, and the entry count
     /// its header claims once read.
@@ -2569,7 +2615,7 @@ impl<'a> Reader<'a> {
             files: first.map(|file| (0, file)).into_iter().collect(),
             hours: HashMap::new(),
             directories: HashMap::new(),
-            cached: HashMap::new(),
+            cached: Decoded::default(),
             buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
@@ -2602,7 +2648,7 @@ impl<'a> Reader<'a> {
             files: HashMap::new(),
             hours: HashMap::new(),
             directories: HashMap::new(),
-            cached: HashMap::new(),
+            cached: Decoded::default(),
             buckets: HashMap::new(),
             searches: HashMap::new(),
             tables: HashMap::new(),
@@ -2704,7 +2750,7 @@ impl<'a> Reader<'a> {
         Ok(self.tables[&batch].as_ref().as_ref())
     }
     fn data(&mut self, batch: u64, key: u64) -> io::Result<&Cached> {
-        if !self.cached.contains_key(&(batch, key)) {
+        if !self.cached.touch((batch, key)) {
             let id = self.file(batch)?.id().cache_key();
             let decoded = query::blob((id, key), || {
                 let dir = self.info(batch, key)?;
@@ -2730,12 +2776,9 @@ impl<'a> Reader<'a> {
                 };
                 decode(raw, dir, self.cancelled)
             })?;
-            if self.cached.len() >= DECODED_BLOBS {
-                self.cached.clear();
-            }
             self.cached.insert((batch, key), decoded);
         }
-        Ok(&self.cached[&(batch, key)])
+        Ok(&**self.cached.held((batch, key)))
     }
     /// The blob's summary levels, decoded once and held by this request's scope
     /// rather than the blob, which other replies may hold too.
@@ -2743,7 +2786,7 @@ impl<'a> Reader<'a> {
         if !self.buckets.contains_key(&(batch, key)) {
             let id = self.file(batch)?.id().cache_key();
             self.data(batch, key)?;
-            let blob = Arc::clone(&self.cached[&(batch, key)]);
+            let blob = Arc::clone(self.cached.held((batch, key)));
             let cancelled = self.cancelled;
             let decoded = query::summaries((id, key), || blob.decode_summaries(cancelled))?;
             if self.buckets.len() >= DECODED_BLOBS {
