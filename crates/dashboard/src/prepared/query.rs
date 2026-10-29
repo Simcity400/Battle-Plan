@@ -12,6 +12,8 @@ mod factions_tests;
 mod forces_tests;
 #[cfg(test)]
 mod presentation_tests;
+#[cfg(test)]
+mod stored_tests;
 
 use crate::{
     Source,
@@ -127,6 +129,29 @@ struct StoredQuery {
     fallbacks: std::collections::BTreeSet<String>,
 }
 
+/// A digest of `key`, which kept answers are filed under. The key stamps every file of the
+/// content stack, tens of thousands, so it is serialized and hashed once per key, not per answer.
+fn key_digest(key: &store::SourceKey) -> io::Result<String> {
+    use sha2::Digest;
+    static DIGESTS: std::sync::Mutex<Vec<(store::SourceKey, String)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut digests = DIGESTS.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(at) = digests.iter().position(|(held, _)| held == key) {
+        let found = digests.remove(at);
+        let digest = found.1.clone();
+        digests.insert(0, found);
+        return Ok(digest);
+    }
+    let digest = sha2::Sha256::digest(serde_json::to_vec(key)?)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    digests.insert(0, (key.clone(), digest.clone()));
+    // The keys of the recordings open at once.
+    digests.truncate(8);
+    Ok(digest)
+}
+
 /// Where `request`'s answer at `publication` is kept on disk: under the store's key, every page
 /// published to any of the recording's branches and the executable the engine's tables were read
 /// from, so any later publication, Clear, content or game change misses it, whatever it reads.
@@ -161,7 +186,7 @@ fn stored_answer(
         let identity = engine_executable::executable_tables::get().identity();
         (identity.size, identity.sha256)
     });
-    let identity = serde_json::to_string(&(publication, pages, key, executable))?;
+    let identity = serde_json::to_string(&(publication, pages, key_digest(key)?, executable))?;
     let dependent =
         crate::products::find(&request.product).is_none_or(|product| product.content_dependent);
     Ok(crate::reply_cache::Entry::prepared(
