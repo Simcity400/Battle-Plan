@@ -13,19 +13,16 @@ impl Prepared {
         let ready = evidence::available(frame, TableId::RelationOpinions)
             && (evidence::full_refresh(frame, format)
                 || evidence::available(frame, TableId::SliceReads));
-        self.number("opinions:coverage".into(), hour, ready.then_some(1), false);
+        self.number(Fixed::OpinionCoverage, hour, ready.then_some(1));
         if !ready {
-            let old: Vec<_> = self.owners.keys().cloned().collect();
-            for country in old {
-                self.close_owner(&country, hour);
-            }
+            self.close_opinion_reads(hour);
             return Ok(());
         }
 
         let full = evidence::full_refresh(frame, format);
         let mut selected =
             evidence::current_owners(frame, format, TableId::RelationOpinions, joins);
-        self.expire_opinion_reads(hour, &selected);
+        self.expire_opinion_reads(hour, |country| selected.contains(country));
         let rows = frame.complete::<tables::RelationOpinions>()?;
         self.refresh_opinion_orphans(frame, rows, joins);
         self.include_baseline_opinion_owners(frame, joins, full, &mut selected);
@@ -35,21 +32,35 @@ impl Prepared {
         }
         Ok(())
     }
-    fn expire_opinion_reads(&mut self, hour: i32, selected: &BTreeSet<DiplomacyCountry>) {
-        let expired: Vec<_> = self
-            .owners
-            .iter()
-            .filter(|(country, owner)| {
-                !selected.contains(*country)
-                    && owner.read.is_some_and(|read| {
-                        i64::from(hour) - i64::from(read)
-                            >= i64::from(replay_data::cadence::STAGGER_PERIOD)
+    pub(super) fn expire_opinion_reads(
+        &mut self,
+        hour: i32,
+        selected: impl Fn(&DiplomacyCountry) -> bool,
+    ) {
+        if self.opinion_deadlines.is_none() {
+            self.opinion_deadlines = Some(
+                self.owners
+                    .iter()
+                    .filter_map(|(country, owner)| {
+                        owner.read.map(|read| (deadline(read), country.clone()))
                     })
-            })
-            .map(|(country, _)| country.clone())
-            .collect();
-        for country in expired {
-            self.close_owner(&country, hour);
+                    .collect(),
+            );
+        }
+        let expired = due(
+            self.opinion_deadlines.as_mut().expect("opinion deadlines"),
+            hour,
+        );
+        for (at, country) in expired {
+            if !selected(&country)
+                && self
+                    .owners
+                    .get(&country)
+                    .and_then(|owner| owner.read)
+                    .is_some_and(|read| deadline(read) == at)
+            {
+                self.close_owner(&country, hour);
+            }
         }
     }
     fn refresh_opinion_orphans(
@@ -113,7 +124,7 @@ impl Prepared {
             .max();
 
         let (pairs, unresolved) = self.project_opinion_owner(rows, joins, &country, check)?;
-        self.store_opinion_owner(frame.hour, country, read, pairs, unresolved);
+        self.store_opinion_owner(frame.hour, country, read, &pairs, unresolved, None);
         Ok(())
     }
     fn project_opinion_owner<'j>(
@@ -122,45 +133,50 @@ impl Prepared {
         joins: &'j Joins,
         country: &DiplomacyCountry,
         check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(BTreeMap<&'j DiplomacyCountry, i32>, usize)> {
-        let mut pairs = BTreeMap::new();
-        let mut unresolved = 0;
-        for &raw in joins.aliases.get(country).into_iter().flatten() {
-            let first = rows.partition_point(|row| row.owner_country < raw);
-            let last = rows.partition_point(|row| row.owner_country <= raw);
-            for row in &rows[first..last] {
-                check()?;
-                self.projected_rows += 1;
-                if let Some(target) = joins.raw.get(&row.target_country) {
-                    if pairs.insert(target, row.opinion).is_some() || row.opinion == 0 {
-                        unresolved += 1;
-                    }
-                } else {
-                    unresolved += 1;
-                }
-            }
-        }
-        Ok((pairs, unresolved))
+    ) -> io::Result<(Vec<(&'j DiplomacyCountry, i32)>, usize)> {
+        let selected = joins
+            .aliases
+            .get(country)
+            .into_iter()
+            .flatten()
+            .flat_map(|&raw| {
+                let first = rows.partition_point(|row| row.owner_country < raw);
+                let last = rows.partition_point(|row| row.owner_country <= raw);
+                rows[first..last].iter()
+            })
+            .inspect(|_| self.projected_rows += 1)
+            .map(|row| Ok((row.target_country, row.opinion)));
+        project(selected, move |raw| joins.raw.get(&raw), check)
     }
-    fn store_opinion_owner(
+    /// Stores an owner's read of `pairs`, ascending by target, and the values they came from.
+    pub(super) fn store_opinion_owner(
         &mut self,
         hour: i32,
         country: DiplomacyCountry,
         read: Option<i32>,
-        pairs: BTreeMap<&DiplomacyCountry, i32>,
+        pairs: &[(&DiplomacyCountry, i32)],
         unresolved: usize,
+        projected: Option<Arc<columnar::Values>>,
     ) {
         let known = read.is_some() && unresolved == 0;
+        self.remember_opinion_deadline(&country, read);
         let mut old = self.owners.remove(&country).unwrap_or_default();
+        if let Some(total) = &mut self.owner_unresolved {
+            *total = *total - old.unresolved + unresolved;
+        }
         for (target, pair) in &old.pairs {
-            if !known || !pairs.contains_key(target) {
+            if !known
+                || pairs
+                    .binary_search_by_key(&target, |&(held, _)| held)
+                    .is_err()
+            {
                 self.unindex_pair(&country, target);
                 self.pair_number(&country, target, pair.key, hour, None, false);
             }
         }
         let mut kept = BTreeMap::new();
         if known {
-            for (&target, &value) in &pairs {
+            for &(target, value) in pairs {
                 let (target, held) = match old.pairs.remove_entry(target) {
                     Some((target, pair)) => (target, pair.key),
                     None => (target.clone(), None),
@@ -198,7 +214,38 @@ impl Prepared {
                 known,
                 unresolved,
                 pairs: kept,
+                projected,
             },
         );
     }
+}
+
+/// Pairs by resolved target, each the last row's value, and the rows refusing the owner's proof.
+pub(super) fn project<T: Ord + Copy>(
+    rows: impl Iterator<Item = io::Result<(u32, i32)>>,
+    resolve: impl Fn(u32) -> Option<T>,
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<(Vec<(T, i32)>, usize)> {
+    let mut resolved = Vec::new();
+    let mut unresolved = 0;
+    for row in rows {
+        check()?;
+        let (target, opinion) = row?;
+        match resolve(target) {
+            Some(target) => resolved.push((target, resolved.len(), opinion)),
+            None => unresolved += 1,
+        }
+    }
+    resolved.sort_unstable_by_key(|&(target, at, _)| (target, at));
+    let mut pairs: Vec<(T, i32)> = Vec::with_capacity(resolved.len());
+    for (target, _, opinion) in resolved {
+        if let Some(last) = pairs.last_mut().filter(|last| last.0 == target) {
+            last.1 = opinion;
+            unresolved += 1;
+        } else {
+            unresolved += usize::from(opinion == 0);
+            pairs.push((target, opinion));
+        }
+    }
+    Ok((pairs, unresolved))
 }

@@ -12,7 +12,7 @@ impl Prepared {
         let hour = frame.hour;
         if !evidence::available(frame, TableId::IncomingDiplomaticActions) {
             self.suspend_queue();
-            self.number("queue:coverage".into(), hour, None, false);
+            self.number(Fixed::QueueCoverage, hour, None);
             return Ok(());
         }
         let fresh = slot_read(
@@ -22,81 +22,57 @@ impl Prepared {
             hour,
         );
         if !fresh {
-            self.number(
-                "queue:coverage".into(),
-                hour,
-                self.queue_read.map(i128::from),
-                false,
-            );
+            self.number(Fixed::QueueCoverage, hour, self.queue_read.map(i128::from));
             return Ok(());
         }
 
         let rows = frame.complete::<tables::IncomingDiplomaticActions>()?;
-        let mut found = BTreeSet::new();
-        let Some(handles) = self.queue_handles(hour, rows) else {
+        let projected = project(rows.iter(), joins)?;
+        self.observe_queue(hour, &projected, check)
+    }
+    pub(super) fn observe_queue(
+        &mut self,
+        hour: i32,
+        projected: &Queue,
+        check: &mut dyn FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.number(
+            Fixed::QueueDuplicates,
+            hour,
+            (projected.duplicates > 0).then_some(projected.duplicates as i128),
+        );
+        if projected.duplicates > 0 {
+            self.suspend_queue();
+            self.number(Fixed::QueueCoverage, hour, None);
             return Ok(());
-        };
-        for row in rows {
+        }
+        let mut found = BTreeSet::new();
+        let mut numbered = BTreeMap::new();
+        for (&wire_key, proposal) in &projected.rows {
             check()?;
-            let key = self.proposal_key(hour, row, joins)?;
+            let key = match self.queue_numbered.get(&wire_key) {
+                Some((held, key)) if Arc::ptr_eq(held, proposal) => *key,
+                _ => self.begin_proposal(
+                    hour,
+                    &proposal.row,
+                    proposal.signature.clone(),
+                    proposal.roles.clone(),
+                    proposal.raw_countries.clone(),
+                ),
+            };
             if !found.insert(key) {
                 return Err(io::Error::other(
                     "Duplicate incoming diplomatic action handle in one owner queue",
                 ));
             }
-            self.update_proposal(key, hour, row.last_command_hour);
+            self.update_proposal(key, hour, proposal.row.last_command_hour);
+            numbered.insert(wire_key, (Arc::clone(proposal), key));
         }
-        self.end_missing_proposals(hour, &found, &handles);
+        self.end_missing_proposals(hour, &found, &projected.handles);
+        self.queue_numbered = numbered;
         self.queue_read = Some(hour);
-        self.number("queue:coverage".into(), hour, Some(i128::from(hour)), false);
+        self.number(Fixed::QueueCoverage, hour, Some(i128::from(hour)));
         Ok(())
-    }
-    fn queue_handles(
-        &mut self,
-        hour: i32,
-        rows: &[IncomingDiplomaticActionRow],
-    ) -> Option<BTreeSet<(u32, u64)>> {
-        let mut handles = BTreeSet::new();
-        let duplicates = rows
-            .iter()
-            .filter(|row| !handles.insert((row.country, row.handle)))
-            .count();
-        self.number(
-            "queue:duplicates".into(),
-            hour,
-            (duplicates > 0).then_some(duplicates as i128),
-            false,
-        );
-        if duplicates > 0 {
-            self.suspend_queue();
-            self.number("queue:coverage".into(), hour, None, false);
-            return None;
-        }
-        Some(handles)
-    }
-    fn proposal_key(
-        &mut self,
-        hour: i32,
-        row: &IncomingDiplomaticActionRow,
-        joins: &Joins,
-    ) -> io::Result<u64> {
-        let raw_countries = vec![
-            row.country,
-            row.actor,
-            row.recipient,
-            row.original_actor,
-            row.original_recipient,
-        ];
-        let roles = vec![
-            joins.raw.get(&row.country).cloned(),
-            joins.raw.get(&row.actor).cloned(),
-            joins.raw.get(&row.recipient).cloned(),
-            joins.raw.get(&row.original_actor).cloned(),
-            joins.raw.get(&row.original_recipient).cloned(),
-        ];
-        // Ordinal, wrapper status and action_type establish no episode identity.
-        let signature = serde_json::to_string(&(row.handle, &raw_countries, &roles, row.hour))?;
-        Ok(self.begin_proposal(hour, row, signature, roles, raw_countries))
     }
     fn begin_proposal(
         &mut self,
@@ -158,7 +134,7 @@ impl Prepared {
         &mut self,
         hour: i32,
         found: &BTreeSet<u64>,
-        handles: &BTreeSet<(u32, u64)>,
+        handles: &BTreeMap<(u32, u64), usize>,
     ) {
         let missing: Vec<_> = self
             .queue
@@ -170,7 +146,7 @@ impl Prepared {
             let q = self.queue.get_mut(&key).expect("missing queue");
             // A reused handle seen after a gap is not an absent row. Leave that
             // old episode's disappearance unknown rather than inventing one.
-            let same_handle = handles.contains(&(
+            let same_handle = handles.contains_key(&(
                 q.reply.raw_countries[0],
                 q.reply.handle.parse::<u64>().expect("stored full handle"),
             ));
@@ -185,4 +161,73 @@ impl Prepared {
             self.dirty.insert(key);
         }
     }
+}
+
+pub(super) struct Proposal {
+    row: IncomingDiplomaticActionRow,
+    signature: String,
+    roles: Vec<Option<DiplomacyCountry>>,
+    raw_countries: Vec<u32>,
+}
+#[derive(Clone, Default)]
+pub(super) struct Queue {
+    rows: BTreeMap<u128, Arc<Proposal>>,
+    handles: BTreeMap<(u32, u64), usize>,
+    duplicates: usize,
+}
+impl Queue {
+    pub(super) fn set(&mut self, key: u128, proposal: Option<Arc<Proposal>>) {
+        if let Some(old) = self.rows.remove(&key) {
+            let handle = (old.row.country, old.row.handle);
+            let count = self.handles.get_mut(&handle).expect("queued handle");
+            self.duplicates -= usize::from(*count > 1);
+            *count -= 1;
+            if *count == 0 {
+                self.handles.remove(&handle);
+            }
+        }
+        if let Some(proposal) = proposal {
+            let count = self
+                .handles
+                .entry((proposal.row.country, proposal.row.handle))
+                .or_default();
+            self.duplicates += usize::from(*count > 0);
+            *count += 1;
+            self.rows.insert(key, proposal);
+        }
+    }
+}
+pub(super) fn project_one(
+    row: &IncomingDiplomaticActionRow,
+    joins: &Joins,
+) -> io::Result<Arc<Proposal>> {
+    let raw_countries = vec![
+        row.country,
+        row.actor,
+        row.recipient,
+        row.original_actor,
+        row.original_recipient,
+    ];
+    let roles: Vec<_> = raw_countries
+        .iter()
+        .map(|raw| joins.raw.get(raw).cloned())
+        .collect();
+    // Ordinal, wrapper status and action_type establish no episode identity.
+    let signature = serde_json::to_string(&(row.handle, &raw_countries, &roles, row.hour))?;
+    Ok(Arc::new(Proposal {
+        row: row.clone(),
+        signature,
+        roles,
+        raw_countries,
+    }))
+}
+pub(super) fn project<'a>(
+    rows: impl Iterator<Item = &'a IncomingDiplomaticActionRow>,
+    joins: &Joins,
+) -> io::Result<Queue> {
+    let mut projected = Queue::default();
+    for row in rows {
+        projected.set(row.key(), Some(project_one(row, joins)?));
+    }
+    Ok(projected)
 }

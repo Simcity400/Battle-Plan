@@ -1393,3 +1393,120 @@ fn reserved_target_zero_is_not_resolved_through_a_recorded_alias() {
     assert_eq!(reply["owners"][0]["known"], false);
     assert_eq!(reply["unresolved"], 1);
 }
+#[test]
+fn reads_expire_exactly_a_period_after_their_supplying_hour() {
+    let frames: Vec<_> = (0..=24)
+        .map(|hour| {
+            let mut f = frame(hour, 0);
+            opinions(&mut f, &[(A, B, 5), (B, A, 6)]);
+            let mut back = tuple(112, 0, B, A);
+            back.owner_country = B;
+            back.target_country = A;
+            let mut orphan = tuple(113, 0, A, B);
+            orphan.owner_country = 99999;
+            set_tuples(&mut f, vec![tuple(111, 0, A, B), back, orphan]);
+            if let TableView::Complete(TableRows::SliceReads(reads)) =
+                &mut *f.tables[TableId::SliceReads.index()]
+            {
+                reads.push(SliceReadRow {
+                    table: TableId::RelationTuples.index() as u32,
+                    owner: 99999,
+                    sample_hour: 0,
+                });
+                // Only B is read again before its first read expires.
+                for read in reads
+                    .iter_mut()
+                    .filter(|read| read.owner == B && hour >= 12)
+                {
+                    read.sample_hour = 12;
+                }
+                reads.sort_by_key(|row| (row.table, row.owner));
+            }
+            f
+        })
+        .collect();
+    let a = DiplomacyCountry {
+        tag: "first".into(),
+        slot: 1,
+        country_id: A,
+    };
+    let b = DiplomacyCountry {
+        tag: "second".into(),
+        slot: 2,
+        country_id: B,
+    };
+    let through = |last: usize| {
+        let frames = &frames[..=last];
+        let source = source(frames);
+        let fixture = Fixture::new();
+        let mut scan = prepared::Prepared::default();
+        for f in frames {
+            observe(&mut scan, f);
+        }
+        publish(&fixture, &mut scan, frames);
+        let cancelled = flag();
+        let mut reader = Reader::new(
+            &fixture.store,
+            &fixture.key,
+            prepared::section(1),
+            &cancelled,
+        )
+        .unwrap();
+        let mut at = |prefix: &str, country: &DiplomacyCountry| {
+            reader
+                .value_at(
+                    scan.keys[&prepared::country_key(prefix, country)],
+                    last as i32,
+                )
+                .unwrap()
+                .map(|run| run.value)
+        };
+        let reads = [&a, &b].map(|country| (at("o", country), at("t", country)));
+        let pacts = ask(
+            &source,
+            &fixture,
+            serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
+            last as i32,
+        );
+        let mut present: Vec<_> = pacts["pacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|pact| {
+                (
+                    pact["rawCountries"][0].as_u64().unwrap(),
+                    pact["presentAtEnd"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        present.sort_unstable();
+        (reads, present)
+    };
+    let (reads, present) = through(23);
+    assert_eq!(reads, [(Some(0), Some(0)), (Some(12), Some(12))]);
+    assert_eq!(present, [(1000, true), (1001, true), (99999, true)]);
+    let (reads, present) = through(24);
+    assert_eq!(reads, [(None, None), (Some(12), Some(12))]);
+    assert_eq!(present, [(1000, false), (1001, true), (99999, false)]);
+}
+#[test]
+fn unread_opinions_leave_their_orphan_rows_out_of_the_unresolved_count() {
+    let mut frames: Vec<_> = (0..3).map(|hour| frame(hour, hour)).collect();
+    for f in &mut frames {
+        opinions(f, &[(99999, B, 3)]);
+    }
+    *frames[1].tables[TableId::RelationOpinions.index()] = TableView::Unavailable {
+        reason: "synthetic failure".into(),
+    };
+    let source = source(&frames);
+    let fixture = Fixture::new();
+    let mut scan = prepared::Prepared::default();
+    for f in &frames {
+        observe(&mut scan, f);
+    }
+    publish(&fixture, &mut scan, &frames);
+    let unresolved = |hour| ask(&source, &fixture, opinion_params(hour), 2)["unresolved"].clone();
+    assert_eq!(unresolved(0), 1);
+    assert_eq!(unresolved(1), 0);
+    assert_eq!(unresolved(2), 1);
+}

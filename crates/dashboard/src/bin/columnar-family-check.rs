@@ -4,9 +4,9 @@
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
 //! same walk with no operator, which the family's own cost is measured above. Without
-//! `--prepared` it only measures, flushing once at the end; `--row` folds army and fuel through
-//! their production block paths, both flushing at each row block's end.
-//! `columnar-family-check --family stability|supply|division-log|army|fuel --recording <r.battleplan>
+//! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel and
+//! diplomacy through their production block paths, both flushing at each row block's end.
+//! `columnar-family-check --family stability|supply|division-log|army|fuel|diplomacy_state --recording <r.battleplan>
 //!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
 //! Both walks read only the family's tables; `--all-tables` walks every one. A family reading
 //! game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
@@ -14,6 +14,7 @@
 
 use dashboard::prepared_stability::StabilityAccumulator;
 use dashboard_country_fuel::products::country_fuel;
+use dashboard_diplomacy::products::diplomacy_state;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_land_battles::products::division_log;
 use dashboard_stability::products::country_stability::columnar as stability;
@@ -148,6 +149,7 @@ enum Family {
         Box<country_fuel::prepared::Prepared>,
         replay_data::format::FormatVersion,
     ),
+    Diplomacy(Box<diplomacy_state::prepared::Prepared>),
 }
 
 impl Family {
@@ -158,6 +160,10 @@ impl Family {
             "fuel" => (
                 "fuel",
                 vec![format!("fuel-{branch}"), format!("fuel-days-{branch}")],
+            ),
+            "diplomacy_state" => (
+                diplomacy_state::prepared::FAMILY_NAME,
+                vec![diplomacy_state::prepared::section(branch)],
             ),
             "army" => (
                 "army",
@@ -194,6 +200,12 @@ impl Family {
                 .then(|| text.parse().ok())
                 .flatten()
         };
+        if name == "diplomacy_state" {
+            return section
+                .strip_prefix("diplomacy-state-")
+                .and_then(|rest| digits(rest.strip_suffix("-catalogue").unwrap_or(rest)))
+                .or_else(|| section.strip_prefix("diplomacy-series-").and_then(digits));
+        }
         if name == "army" {
             for prefix in ["army-", "army-aid-"] {
                 if let Some(branch) = section
@@ -264,6 +276,14 @@ impl Family {
                 prepared.observe_projected(hour)?;
                 Ok(at)
             }
+            Self::Diplomacy(prepared) => {
+                let hour = *hour
+                    .downcast::<diplomacy_state::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                prepared.observe_projected(hour)?;
+                Ok(at)
+            }
             Self::Army(prepared) => {
                 let hour = *hour
                     .downcast::<army_size::columnar::Hour>()
@@ -310,6 +330,10 @@ impl Family {
             Self::Supply(prepared) => prepared.flush(writer, branch, cancelled),
             Self::Army(prepared) => prepared.flush(writer, branch, cancelled),
             Self::Fuel(prepared, format) => prepared.flush(writer, branch, *format, cancelled),
+            Self::Diplomacy(prepared) => {
+                prepared.flush(writer, branch, cancelled)?;
+                prepared.save(writer, branch)
+            }
             // Its pages are published at each block's end.
             Self::DivisionLog(_) => Ok(()),
         }
@@ -319,6 +343,10 @@ impl Family {
 /// Splits one segment's projected hours, so each reaches its branch's state alone.
 fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::any::Any + Send>>> {
     let result = match result.downcast::<Vec<country_fuel::columnar::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
+    let result = match result.downcast::<Vec<diplomacy_state::columnar::Hour>>() {
         Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(result) => result,
     };
@@ -342,8 +370,12 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
 
 /// The branch an hour from [`hours`] belongs to.
 fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
-    hour.downcast_ref::<country_fuel::columnar::Hour>()
+    hour.downcast_ref::<diplomacy_state::columnar::Hour>()
         .map(|hour| hour.branch)
+        .or_else(|| {
+            hour.downcast_ref::<country_fuel::columnar::Hour>()
+                .map(|hour| hour.branch)
+        })
         .or_else(|| {
             hour.downcast_ref::<stability::Hour>()
                 .map(|hour| hour.branch)
@@ -448,7 +480,9 @@ fn run() -> io::Result<()> {
         return Err(usage());
     };
     // These row paths read recording data alone.
-    if row && (prepared.is_some() || !matches!(family.as_str(), "army" | "fuel")) {
+    if row
+        && (prepared.is_some() || !matches!(family.as_str(), "army" | "fuel" | "diplomacy_state"))
+    {
         return Err(usage());
     }
     std::fs::create_dir(&output)?;
@@ -460,13 +494,25 @@ fn run() -> io::Result<()> {
     // Set before any other thread starts: the scratch store lives under it.
     unsafe { std::env::set_var("LOCALAPPDATA", &local) };
 
-    if !["stability", "supply", "division-log", "army", "fuel"].contains(&family.as_str()) {
+    if ![
+        "stability",
+        "supply",
+        "division-log",
+        "army",
+        "fuel",
+        "diplomacy_state",
+    ]
+    .contains(&family.as_str())
+    {
         return Err(usage());
     }
     let replay = Replay::open_path(&recording)?;
     let format = replay.format.version();
     // The recording's source and content, for a family that reads content.
-    let (source, context) = if matches!(family.as_str(), "stability" | "army" | "fuel") {
+    let (source, context) = if matches!(
+        family.as_str(),
+        "stability" | "army" | "fuel" | "diplomacy_state"
+    ) {
         (None, None)
     } else {
         let game = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
@@ -527,6 +573,7 @@ fn run() -> io::Result<()> {
         file.select(match family.as_str() {
             "army" => army_size::prepared::TABLES,
             "fuel" => country_fuel::columnar::TABLES,
+            "diplomacy_state" => diplomacy_state::block::TABLES,
             "supply" => supply_health::prepared::TABLES,
             "division-log" => division_log::block::FAMILY.tables,
             _ => stability::TABLES,
@@ -554,6 +601,10 @@ fn run() -> io::Result<()> {
     let make = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
         Ok(match (family.as_str(), &prototype) {
             ("fuel", _) => vec![Box::new(country_fuel::columnar::Projector::new(&replay)?)],
+            ("diplomacy_state", _) => vec![Box::new(diplomacy_state::columnar::Projector::new(
+                replay.format,
+                replay.capture_mode,
+            )?)],
             ("army", _) => vec![Box::new(
                 army_size::prepared::Prepared::default().projector(&replay)?,
             )],
@@ -592,6 +643,7 @@ fn run() -> io::Result<()> {
                     match (family.as_str(), &prototype) {
                         ("army", _) => Family::Army(Box::default()),
                         ("fuel", _) => Family::Fuel(Box::default(), replay.format),
+                        ("diplomacy_state", _) => Family::Diplomacy(Box::default()),
                         ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
                         ("division-log", _) => {
                             Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
@@ -729,12 +781,17 @@ fn row_reference(
             }
         }
     } else {
-        let mut states: BTreeMap<u64, army_size::prepared::Prepared> = BTreeMap::new();
-        let mut tables = army_size::prepared::FAMILY.tables.to_vec();
+        let mut states: BTreeMap<u64, Family> = BTreeMap::new();
+        let contract = if family == "diplomacy_state" {
+            &diplomacy_state::block::FAMILY
+        } else {
+            &army_size::prepared::FAMILY
+        };
+        let mut tables = contract.tables.to_vec();
         tables.sort_unstable_by_key(|table| table.index());
         tables.dedup();
         for block in &replay.index {
-            let mut extract = (army_size::prepared::FAMILY.start)(replay.format);
+            let mut extract = (contract.start)(replay.format);
             let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
             let mut hours = 0_usize;
             replay.read_block_alone(
@@ -748,19 +805,42 @@ fn row_reference(
                 },
                 || Ok(()),
             )?;
+            let state = states.entry(block.branch).or_insert_with(|| {
+                if family == "diplomacy_state" {
+                    Family::Diplomacy(Box::default())
+                } else {
+                    Family::Army(Box::default())
+                }
+            });
             if hours == 0 {
+                if let Family::Diplomacy(state) = state {
+                    state.break_segment();
+                }
                 continue;
             }
-            let state = states.entry(block.branch).or_default();
-            state
-                .fold(
-                    extract.finish()?,
-                    replay,
-                    block,
-                    &|_: i32, result: io::Result<()>| result,
-                    &mut || -> io::Result<()> { Ok(()) },
-                )
-                .map_err(|failure| failure.error)?;
+            match state {
+                Family::Diplomacy(state) => {
+                    diplomacy_state::block::fold(
+                        state,
+                        extract.finish()?,
+                        replay,
+                        &mut |_: i32, result: io::Result<()>| result.map(|_| true),
+                        &mut || Ok(()),
+                    )?;
+                }
+                Family::Army(state) => {
+                    state
+                        .fold(
+                            extract.finish()?,
+                            replay,
+                            block,
+                            &|_: i32, result: io::Result<()>| result,
+                            &mut || -> io::Result<()> { Ok(()) },
+                        )
+                        .map_err(|failure| failure.error)?;
+                }
+                _ => unreachable!("row family"),
+            }
             state.flush(&mut writer, block.branch, &cancelled)?;
         }
     }

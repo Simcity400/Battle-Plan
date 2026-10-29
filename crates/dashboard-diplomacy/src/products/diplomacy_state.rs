@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub mod block;
+pub use prepared::columnar;
 mod evidence;
 pub mod prepared;
 pub mod query;

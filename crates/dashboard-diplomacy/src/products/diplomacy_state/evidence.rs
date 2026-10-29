@@ -59,11 +59,19 @@ impl Joins {
 /// an off-slot timed daily walk, excluding the independently timed intel buffer.
 /// No snapshot/keyframe or table allocation is itself a full-refresh witness.
 pub(super) fn full_refresh(frame: &DecodedFrame, format: FormatVersion) -> bool {
+    full_refresh_at(frame.hour, &frame.metrics, format)
+}
+
+pub(super) fn full_refresh_at(
+    hour: i32,
+    metrics: &replay_frame::frame::Metrics,
+    format: FormatVersion,
+) -> bool {
     TableId::ALL.into_iter().any(|table| {
         table != TableId::CountryIntel
-            && frame.metrics.table_ns[table.index()] != 0
+            && metrics.table_ns[table.index()] != 0
             && matches!(cadence::cadence_in(table, format), Cadence::Daily(_))
-            && !cadence::cadence_in(table, format).is_refresh(frame.hour)
+            && !cadence::cadence_in(table, format).is_refresh(hour)
     })
 }
 

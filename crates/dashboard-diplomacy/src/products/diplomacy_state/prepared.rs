@@ -17,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 
+pub mod columnar;
 mod opinions;
 mod proposals;
 mod tuples;
@@ -53,6 +54,22 @@ enum Series {
     Identity,
 }
 const SERIES_PREFIX: [&str; 4] = ["o", "r", "t", "i"];
+/// The family's fixed series, in the order of `FIXED_NAME`.
+#[derive(Clone, Copy)]
+enum Fixed {
+    OpinionCoverage,
+    TupleCoverage,
+    QueueCoverage,
+    QueueDuplicates,
+    Unresolved,
+}
+const FIXED_NAME: [&str; 5] = [
+    "opinions:coverage",
+    "tuples:coverage",
+    "queue:coverage",
+    "queue:duplicates",
+    "unresolved",
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Entry {
@@ -76,12 +93,23 @@ struct Owner {
     unresolved: usize,
     #[serde(with = "pair_map")]
     pairs: BTreeMap<DiplomacyCountry, Pair>,
+    /// The projected values the pairs were stored from.
+    #[serde(skip)]
+    projected: Option<Arc<columnar::Values>>,
 }
 /// A known pair's opinion and its series key; a restored pair looks its key up again.
 #[derive(Clone, Copy)]
 struct Pair {
     value: i32,
     key: Option<u64>,
+}
+/// A raw tuple owner's supplying read, and the projected rows observed at it.
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
+struct RawRead {
+    read: i32,
+    #[serde(skip)]
+    memo: Option<columnar::TupleMemo>,
 }
 #[derive(Deserialize, Serialize)]
 struct PactLive {
@@ -107,7 +135,7 @@ pub struct Prepared {
     live_countries: BTreeSet<DiplomacyCountry>,
     #[serde(with = "country_map")]
     tuple_reads: BTreeMap<DiplomacyCountry, i32>,
-    raw_tuple_reads: BTreeMap<u32, i32>,
+    raw_tuple_reads: BTreeMap<u32, RawRead>,
     pacts: BTreeMap<u64, PactLive>,
     queue: BTreeMap<u64, QueueLive>,
     pact_keys: BTreeMap<String, u64>,
@@ -128,24 +156,46 @@ pub struct Prepared {
     #[serde(skip)]
     joins: Option<Joins>,
     #[serde(skip)]
+    ids: Option<Arc<columnar::Ids>>,
+    #[serde(skip)]
     country_keys: Option<CountryKeys>,
     #[serde(skip)]
     links: Option<replay_frame::frame::ViewIdentity>,
     /// Numbered country series; `keys` never loses an entry, so a held key stays right.
     #[serde(skip)]
     country_series: HashMap<DiplomacyCountry, [Option<u64>; 4]>,
+    /// Numbered fixed series, by `Fixed`.
+    #[serde(skip)]
+    fixed: [Option<u64>; 5],
     #[serde(skip)]
     pub(super) projected_rows: usize,
+    #[serde(skip)]
+    opinion_deadlines: Option<BTreeSet<(i64, DiplomacyCountry)>>,
+    #[serde(skip)]
+    tuple_deadlines: Option<BTreeSet<(i64, DiplomacyCountry)>>,
+    #[serde(skip)]
+    raw_tuple_deadlines: Option<BTreeSet<(i64, u32)>>,
+    #[serde(skip)]
+    owner_unresolved: Option<usize>,
+    #[serde(skip)]
+    queue_numbered: BTreeMap<u128, (Arc<proposals::Proposal>, u64)>,
 }
 impl Prepared {
     fn key(&mut self, name: String) -> u64 {
         let next = self.keys.len() as u64;
         *self.keys.entry(name).or_insert(next)
     }
-    fn number(&mut self, name: String, hour: i32, value: Option<i128>, starts: bool) {
-        let key = self.key(name);
+    fn number(&mut self, series: Fixed, hour: i32, value: Option<i128>) {
+        let key = match self.fixed[series as usize] {
+            Some(key) => key,
+            None => {
+                let key = self.key(FIXED_NAME[series as usize].to_owned());
+                self.fixed[series as usize] = Some(key);
+                key
+            }
+        };
         self.series
-            .observe_if_changed(key, hour, value, starts, false);
+            .observe_if_changed(key, hour, value, false, false);
     }
     fn held_country_series(&self, series: Series, country: &DiplomacyCountry) -> Option<u64> {
         self.country_series.get(country)?[series as usize]
@@ -198,6 +248,9 @@ impl Prepared {
     }
     fn close_owner(&mut self, country: &DiplomacyCountry, hour: i32) {
         if let Some(owner) = self.owners.remove(country) {
+            if let Some(total) = &mut self.owner_unresolved {
+                *total -= owner.unresolved;
+            }
             for (target, pair) in &owner.pairs {
                 self.unindex_pair(country, target);
                 self.pair_number(country, target, pair.key, hour, None, false);
@@ -238,7 +291,10 @@ impl Prepared {
             let held = self
                 .owners
                 .get_mut(&owner)
-                .and_then(|state| state.pairs.remove(target))
+                .and_then(|state| {
+                    state.projected = None;
+                    state.pairs.remove(target)
+                })
                 .and_then(|pair| pair.key);
             self.pair_number(&owner, target, held, hour, None, false);
         }
@@ -246,8 +302,18 @@ impl Prepared {
     pub fn break_segment(&mut self) {
         self.segment_first = None;
         self.joins = None;
+        self.ids = None;
         self.country_keys = None;
         self.links = None;
+    }
+    /// An hour whose opinions are not read holds no opinion row, an orphan owner's neither.
+    fn close_opinion_reads(&mut self, hour: i32) {
+        let old: Vec<_> = self.owners.keys().cloned().collect();
+        for country in old {
+            self.close_owner(&country, hour);
+        }
+        self.orphan_opinions = 0;
+        self.opinion_view = None;
     }
     fn close_tuple_reads(&mut self, hour: i32) {
         self.raw_tuple_reads.clear();
@@ -258,6 +324,9 @@ impl Prepared {
     }
     fn end_pact(&mut self, key: u64, bounded: bool) {
         let p = self.pacts.get_mut(&key).expect("pact");
+        if let Some(held) = self.raw_tuple_reads.get_mut(&p.raw_owner) {
+            held.memo = None;
+        }
         p.reply.present_at_end = false;
         p.reply.ended_by = bounded;
         self.pact_keys.remove(&p.signature);
@@ -283,6 +352,7 @@ impl Prepared {
         }
     }
     fn end_queue_identities(&mut self, identities: &BTreeSet<DiplomacyCountry>) {
+        self.queue_numbered.clear();
         for (&key, q) in &mut self.queue {
             if q.reply.present_at_end
                 && q.reply
@@ -299,6 +369,7 @@ impl Prepared {
         }
     }
     fn suspend_queue(&mut self) {
+        self.queue_numbered.clear();
         for (&key, q) in &mut self.queue {
             if q.reply.present_at_end {
                 q.reply.present_at_end = false;
@@ -352,38 +423,9 @@ impl Prepared {
     ) -> io::Result<()> {
         check()?;
         let hour = frame.hour;
-        let continuous = self.segment_first.is_some()
-            && self.last_hour.and_then(|h| h.checked_add(1)) == Some(hour);
-        self.series.advance(hour)?;
-        if !continuous {
-            self.end_pacts(None, true);
-            self.suspend_queue();
-            let old: Vec<_> = self.owners.keys().cloned().collect();
-            for country in old {
-                self.close_owner(&country, hour);
-            }
-            self.close_tuple_reads(hour);
-        }
-        self.segment_first.get_or_insert(hour);
-        self.last_hour = Some(hour);
-        self.catalogue.last_hour = Some(hour);
+        let continuous = self.begin_hour(hour)?;
         let Some((joins, read)) = self.update_joins(frame, changes) else {
-            let old: Vec<_> = self.owners.keys().cloned().collect();
-            for country in old {
-                self.close_owner(&country, hour);
-            }
-            self.end_pacts(None, true);
-            self.suspend_queue();
-            self.close_tuple_reads(hour);
-            let old = std::mem::take(&mut self.live_countries);
-            for country in &old {
-                self.country_number(Series::Identity, country, hour, None, false);
-            }
-            self.number("opinions:coverage".into(), hour, None, false);
-            self.number("tuples:coverage".into(), hour, None, false);
-            self.number("queue:coverage".into(), hour, None, false);
-            self.number("unresolved".into(), hour, Some(1), false);
-            self.break_segment();
+            self.refuse_joins(hour);
             return Ok(());
         };
         if read {
@@ -399,16 +441,60 @@ impl Prepared {
         self.opinions(frame, format, &joins, check)?;
         self.tuples(frame, format, &joins, check)?;
         self.proposals(frame, format, &joins, check)?;
-        let unresolved = joins.unresolved
-            + self.orphan_opinions
-            + self
-                .owners
-                .values()
-                .map(|owner| owner.unresolved)
-                .sum::<usize>();
-        self.number("unresolved".into(), hour, Some(unresolved as i128), false);
+        self.publish_unresolved(hour, joins.unresolved);
         self.joins = Some(joins);
         Ok(())
+    }
+    fn begin_hour(&mut self, hour: i32) -> io::Result<bool> {
+        let continuous = self.segment_first.is_some()
+            && self.last_hour.and_then(|h| h.checked_add(1)) == Some(hour);
+        self.series.advance(hour)?;
+        if !continuous {
+            self.end_pacts(None, true);
+            self.suspend_queue();
+            let old: Vec<_> = self.owners.keys().cloned().collect();
+            for country in old {
+                self.close_owner(&country, hour);
+            }
+            self.close_tuple_reads(hour);
+        }
+        self.segment_first.get_or_insert(hour);
+        self.last_hour = Some(hour);
+        self.catalogue.last_hour = Some(hour);
+        Ok(continuous)
+    }
+    fn refuse_joins(&mut self, hour: i32) {
+        let old: Vec<_> = self.owners.keys().cloned().collect();
+        for country in old {
+            self.close_owner(&country, hour);
+        }
+        self.end_pacts(None, true);
+        self.suspend_queue();
+        self.close_tuple_reads(hour);
+        let old = std::mem::take(&mut self.live_countries);
+        for country in &old {
+            self.country_number(Series::Identity, country, hour, None, false);
+        }
+        self.number(Fixed::OpinionCoverage, hour, None);
+        self.number(Fixed::TupleCoverage, hour, None);
+        self.number(Fixed::QueueCoverage, hour, None);
+        self.number(Fixed::Unresolved, hour, Some(1));
+        self.break_segment();
+    }
+    fn publish_unresolved(&mut self, hour: i32, joins: usize) {
+        let owners = *self
+            .owner_unresolved
+            .get_or_insert_with(|| self.owners.values().map(|owner| owner.unresolved).sum());
+        self.number(
+            Fixed::Unresolved,
+            hour,
+            Some((joins + self.orphan_opinions + owners) as i128),
+        );
+    }
+    fn remember_opinion_deadline(&mut self, country: &DiplomacyCountry, read: Option<i32>) {
+        if let (Some(deadlines), Some(read)) = (&mut self.opinion_deadlines, read) {
+            deadlines.insert((deadline(read), country.clone()));
+        }
     }
     fn update_live_countries(&mut self, joins: &Joins, hour: i32, continuous: bool) {
         let now: BTreeSet<_> = joins.countries.values().cloned().collect();
@@ -585,4 +671,18 @@ mod country_map {
             .into_iter()
             .collect())
     }
+}
+
+fn deadline(read: i32) -> i64 {
+    i64::from(read) + i64::from(replay_data::cadence::STAGGER_PERIOD)
+}
+fn due<K: Ord>(deadlines: &mut BTreeSet<(i64, K)>, hour: i32) -> Vec<(i64, K)> {
+    let mut expired = Vec::new();
+    while deadlines
+        .first()
+        .is_some_and(|(at, _)| *at <= i64::from(hour))
+    {
+        expired.push(deadlines.pop_first().expect("due read"));
+    }
+    expired
 }

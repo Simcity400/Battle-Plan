@@ -1,11 +1,11 @@
 use super::*;
 use replay_data::rows::LexicalTokenRow;
 
-struct TupleRead<'a> {
-    hour: i32,
-    read_hour: i32,
-    joins: &'a Joins,
-    tokens: Option<&'a [LexicalTokenRow]>,
+pub(super) struct TupleRead<'a> {
+    pub(super) hour: i32,
+    pub(super) read_hour: i32,
+    pub(super) joins: &'a Joins,
+    pub(super) tokens: Option<&'a [LexicalTokenRow]>,
 }
 struct PactIdentity {
     signature: String,
@@ -27,7 +27,7 @@ impl Prepared {
         let ready = evidence::available(frame, TableId::RelationTuples)
             && (evidence::full_refresh(frame, format)
                 || evidence::available(frame, TableId::SliceReads));
-        self.number("tuples:coverage".into(), hour, ready.then_some(1), false);
+        self.number(Fixed::TupleCoverage, hour, ready.then_some(1));
         if !ready {
             self.end_pacts(None, true);
             self.close_tuple_reads(hour);
@@ -35,14 +35,14 @@ impl Prepared {
         }
 
         let mut selected = evidence::current_owners(frame, format, TableId::RelationTuples, joins);
-        self.expire_tuple_reads(hour, joins, &selected);
+        self.expire_tuple_reads(hour, joins, |owner| selected.contains(owner));
         let rows = frame.complete::<tables::RelationTuples>()?;
         let tokens = frame.complete::<tables::LexicalTokens>().ok();
         let full = evidence::full_refresh(frame, format);
         self.include_baseline_tuple_owners(frame, joins, full, &mut selected);
         let mut owners = self.remember_tuple_reads(frame, joins, full, selected);
         self.include_orphan_tuple_owners(frame, rows, joins, full, &mut owners);
-        self.expire_raw_tuple_reads(hour, &owners);
+        self.expire_raw_tuple_reads(hour, |raw| owners.contains_key(&raw));
         for (raw, read) in owners {
             self.observe_tuple_owner(
                 rows,
@@ -58,23 +58,33 @@ impl Prepared {
         }
         Ok(())
     }
-    fn expire_tuple_reads(
+    pub(super) fn expire_tuple_reads(
         &mut self,
         hour: i32,
         joins: &Joins,
-        selected: &BTreeSet<DiplomacyCountry>,
+        selected: impl Fn(&DiplomacyCountry) -> bool,
     ) {
-        let expired: Vec<_> = self
-            .tuple_reads
-            .iter()
-            .filter(|(owner, read)| {
-                !selected.contains(*owner)
-                    && i64::from(hour) - i64::from(**read)
-                        >= i64::from(replay_data::cadence::STAGGER_PERIOD)
-            })
-            .map(|(owner, _)| owner.clone())
-            .collect();
-        for owner in expired {
+        if self.tuple_deadlines.is_none() {
+            self.tuple_deadlines = Some(
+                self.tuple_reads
+                    .iter()
+                    .map(|(country, &read)| (deadline(read), country.clone()))
+                    .collect(),
+            );
+        }
+        let expired = due(
+            self.tuple_deadlines.as_mut().expect("tuple deadlines"),
+            hour,
+        );
+        for (at, owner) in expired {
+            if selected(&owner)
+                || self
+                    .tuple_reads
+                    .get(&owner)
+                    .is_none_or(|&read| deadline(read) != at)
+            {
+                continue;
+            }
             for raw in joins.aliases.get(&owner).into_iter().flatten() {
                 let keys: Vec<_> = self
                     .pacts_by_owner
@@ -135,6 +145,7 @@ impl Prepared {
                     owners.insert(raw, read);
                 }
                 self.country_number(Series::Tuples, &owner, hour, Some(i128::from(read)), false);
+                self.remember_tuple_deadline(&owner, read);
                 self.tuple_reads.insert(owner, read);
             }
         }
@@ -171,18 +182,30 @@ impl Prepared {
             }
         }
     }
-    fn expire_raw_tuple_reads(&mut self, hour: i32, owners: &BTreeMap<u32, i32>) {
-        let expired_raw: Vec<_> = self
-            .raw_tuple_reads
-            .iter()
-            .filter(|(raw, read)| {
-                !owners.contains_key(raw)
-                    && i64::from(hour) - i64::from(**read)
-                        >= i64::from(replay_data::cadence::STAGGER_PERIOD)
-            })
-            .map(|(&raw, _)| raw)
-            .collect();
-        for raw in expired_raw {
+    pub(super) fn expire_raw_tuple_reads(&mut self, hour: i32, selected: impl Fn(u32) -> bool) {
+        if self.raw_tuple_deadlines.is_none() {
+            self.raw_tuple_deadlines = Some(
+                self.raw_tuple_reads
+                    .iter()
+                    .map(|(&raw, held)| (deadline(held.read), raw))
+                    .collect(),
+            );
+        }
+        let expired_raw = due(
+            self.raw_tuple_deadlines
+                .as_mut()
+                .expect("raw tuple deadlines"),
+            hour,
+        );
+        for (at, raw) in expired_raw {
+            if selected(raw)
+                || self
+                    .raw_tuple_reads
+                    .get(&raw)
+                    .is_none_or(|held| deadline(held.read) != at)
+            {
+                continue;
+            }
             let keys: Vec<_> = self
                 .pacts_by_owner
                 .get(&raw)
@@ -196,6 +219,16 @@ impl Prepared {
             self.raw_tuple_reads.remove(&raw);
         }
     }
+    pub(super) fn remember_tuple_deadline(&mut self, country: &DiplomacyCountry, read: i32) {
+        if let Some(deadlines) = &mut self.tuple_deadlines {
+            deadlines.insert((deadline(read), country.clone()));
+        }
+    }
+    pub(super) fn remember_raw_tuple_deadline(&mut self, raw: u32, read: i32) {
+        if let Some(deadlines) = &mut self.raw_tuple_deadlines {
+            deadlines.insert((deadline(read), raw));
+        }
+    }
     fn observe_tuple_owner(
         &mut self,
         rows: &[RelationTupleRow],
@@ -203,25 +236,32 @@ impl Prepared {
         read: TupleRead<'_>,
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        self.raw_tuple_reads.insert(raw, read.read_hour);
+        self.remember_raw_tuple_deadline(raw, read.read_hour);
+        self.raw_tuple_reads.insert(
+            raw,
+            RawRead {
+                read: read.read_hour,
+                memo: None,
+            },
+        );
         check()?;
         let first = rows.partition_point(|r| r.owner_country < raw);
         let last = rows.partition_point(|r| r.owner_country <= raw);
         let mut found = BTreeSet::new();
         for row in &rows[first..last] {
             check()?;
-            found.insert(self.observe_pact(row, &read)?);
+            found.insert(self.observe_pact(row, &read, spelling(row, read.tokens))?);
         }
         self.end_missing_pacts(raw, &found);
         Ok(())
     }
-    fn observe_pact(
+    pub(super) fn observe_pact(
         &mut self,
         row: &RelationTupleRow,
         observed: &TupleRead<'_>,
+        spelling: Option<String>,
     ) -> io::Result<u64> {
         let joins = observed.joins;
-        let tokens = observed.tokens;
         let read = observed.read_hour;
         let raw_countries = vec![
             row.owner_country,
@@ -233,15 +273,6 @@ impl Prepared {
             .iter()
             .map(|raw| self.role_at_read(joins, *raw, read))
             .collect::<Vec<_>>();
-        let spelling = tokens
-            .and_then(|tokens| {
-                tokens
-                    .binary_search_by_key(&row.type_id, |r| r.token)
-                    .ok()
-                    .map(|i| &tokens[i])
-            })
-            .and_then(|row| std::str::from_utf8(&row.literal).ok())
-            .map(str::to_owned);
         let unresolved_kind = spelling.is_none().then_some(row.type_id);
         let kind = spelling.unwrap_or_else(|| format!("unresolved-token-{}", row.type_id));
         match self.catalogue.kinds.get_mut(&kind) {
@@ -336,7 +367,7 @@ impl Prepared {
             key
         }
     }
-    fn end_missing_pacts(&mut self, raw: u32, found: &BTreeSet<u64>) {
+    pub(super) fn end_missing_pacts(&mut self, raw: u32, found: &BTreeSet<u64>) {
         let missing: Vec<_> = self
             .pacts_by_owner
             .get(&raw)
@@ -349,4 +380,19 @@ impl Prepared {
             self.end_pact(key, false);
         }
     }
+}
+
+pub(super) fn spelling(
+    row: &RelationTupleRow,
+    tokens: Option<&[LexicalTokenRow]>,
+) -> Option<String> {
+    tokens
+        .and_then(|tokens| {
+            tokens
+                .binary_search_by_key(&row.type_id, |r| r.token)
+                .ok()
+                .map(|i| &tokens[i])
+        })
+        .and_then(|row| std::str::from_utf8(&row.literal).ok())
+        .map(str::to_owned)
 }
