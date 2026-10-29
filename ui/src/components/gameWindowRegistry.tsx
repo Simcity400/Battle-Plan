@@ -1,16 +1,17 @@
 // The game-window renderer's windows, registered with the widgets' seam
 // (dashboard/gameWindows.ts): a widget names a window by its semantic selection,
 // and the renderer draws it from the recording at that hour.
-import { Suspense, lazy } from 'react';
 import { registerGameWindow } from '../dashboard/gameWindows';
 import type { GameWindowProps, MioPolicySelection } from '../dashboard/gameWindows';
 import { registerDesignerSnapshot } from '../widgets/division-template/designerSnapshot';
 import type { DesignerRequest } from '../widgets/division-template/designerSnapshot';
 import WidgetState from './WidgetState';
+import { loadable } from './loadable';
 import type { GameWindowProps as RendererProps } from './GameWindow';
 
 // The renderer loads only once a window is first opened.
-const GameWindow = lazy(() => import('./GameWindow'));
+const GameWindow = loadable(() => import('./GameWindow').then(module => module.default),
+  () => <div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>);
 
 /** The renderer's view of a policy chooser selection: the organisation's policy
  * screen at the selection's hour. */
@@ -21,9 +22,7 @@ export function mioPolicyWindow({ selection, active, client, onDiagnostics }: Ga
 
 /** An industrial organisation's policy chooser, as the game draws it. */
 export function MioPolicyChooser(props: GameWindowProps<MioPolicySelection>) {
-  return <Suspense fallback={<div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>}>
-    <GameWindow {...mioPolicyWindow(props)} />
-  </Suspense>;
+  return <GameWindow {...mioPolicyWindow(props)} />;
 }
 
 registerGameWindow<MioPolicySelection>('mioPolicyChooser', MioPolicyChooser);
@@ -37,9 +36,7 @@ export function designerWindow({ client, source, branchId, hour, template, onDia
 
 /** A template's division designer, as the game draws it. */
 export function DivisionDesigner({ request, active }: { request: DesignerRequest; active: boolean }) {
-  return <Suspense fallback={<div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>}>
-    <GameWindow {...designerWindow(request, active)} />
-  </Suspense>;
+  return <GameWindow {...designerWindow(request, active)} />;
 }
 
 registerDesignerSnapshot((request, active) => <DivisionDesigner request={request} active={active} />);

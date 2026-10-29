@@ -1,14 +1,16 @@
-import { Suspense, lazy, useId, useState } from 'react';
+import { useId, useState } from 'react';
 import type { ReactNode, SyntheticEvent } from 'react';
 import type { DashboardClient } from '../dashboard/client';
 import { Icon } from './Icons';
+import { loadable } from './loadable';
 import { Popover, PopoverBody, usePopover } from './Popover';
 import WidgetState from './WidgetState';
 import type { GameWindowTarget } from '../generated/dashboard';
 import './GameWindowPopover.css';
 
 // The renderer loads only once a window is first opened.
-const GameWindow = lazy(() => import('./GameWindow'));
+const GameWindow = loadable(() => import('./GameWindow').then(module => module.default),
+  () => <div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>);
 
 const stop = (event: SyntheticEvent) => event.stopPropagation();
 /** The popover sits in the trigger's React tree, so its pointer, focus, menu and key events
@@ -48,10 +50,8 @@ export default function GameWindowPopover({ client, source, branchId, hour, targ
         <div className="ui-popover-heading"><strong>{shown}</strong><div className="ui-popover-actions">
           <button type="button" className="icon-button ui-popover-action" aria-label={`Close ${shown}`} onClick={menu.close}><Icon name="close" /></button>
         </div></div>
-        <PopoverBody open={menu.open}>{() => <Suspense fallback={<div className="game-window"><WidgetState kind="loading" label="Loading window…" /></div>}>
-          <GameWindow client={client} source={source} branchId={branchId} hour={hour} target={target} active={menu.open}
-            onTitle={setTitle} onDiagnostics={onDiagnostics} />
-        </Suspense>}</PopoverBody>
+        <PopoverBody open={menu.open}>{() => <GameWindow client={client} source={source} branchId={branchId} hour={hour} target={target} active={menu.open}
+          onTitle={setTitle} onDiagnostics={onDiagnostics} />}</PopoverBody>
       </div>
     </Popover>
   </>;

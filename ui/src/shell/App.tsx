@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
   desktopAvailable,
@@ -8,6 +8,7 @@ import {
 } from './api';
 import { Icon } from '../components/Icons';
 import type { IconName } from '../components/Icons';
+import { loadable } from '../components/loadable';
 import { defaultPages, loadPages, savePages } from '../dashboard/pages';
 import type { PageEntry, PageId } from '../dashboard/pages';
 import { clearLayouts, layoutsAtDefault } from '../dashboard/storage';
@@ -38,9 +39,10 @@ import { RecordingNotice } from './recordingNotice';
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
 // Shell-only changes (sidebar, popovers, native state) leave the dashboard and its header alone.
-const Dashboard = memo(lazy(() => import('../dashboard/Dashboard')));
-const Settings = lazy(() => import('./Settings'));
-const SettingsNav = lazy(() => import('./Settings').then(module => ({ default: module.SettingsNav })));
+const Dashboard = memo(loadable(() => import('../dashboard/Dashboard').then(module => module.default),
+  () => <div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>));
+const Settings = loadable(() => import('./Settings').then(module => module.default), () => <p role="status">Loading settings…</p>);
+const SettingsNav = loadable(() => import('./Settings').then(module => module.SettingsNav));
 type Tab = 'map' | 'analytics' | 'settings';
 const TAB_NAMES: Record<Tab, string> = { map: 'The campaign map', analytics: 'Analytics', settings: 'Settings' };
 const PAGE_KEY = 'hoi4-replay.analytics-page.v1';
@@ -379,8 +381,8 @@ export default function App() {
         </div>
         <div className="sidebar-body">
         {tab === 'settings'
-          ? <Suspense fallback={null}><SettingsNav section={settingsSection} icons={appearance.settings.sidebarIcons} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
-            onTarget={target => openSettings(target.section, target)} disabled={switching} /></Suspense>
+          ? <SettingsNav section={settingsSection} icons={appearance.settings.sidebarIcons} onBack={() => void changeTab(lastView.current)} onSection={section => openSettings(section)}
+            onTarget={target => openSettings(target.section, target)} disabled={switching} />
           : <nav className="sidebar-menu" aria-label="Views">
             <AnalyticsNav pages={pages} page={page} active={tab === 'analytics'} disabled={switching} onPages={changePages} onDelete={deletePage} iconMenu={iconMenu}
               onChoose={id => { choosePage(id); void changeTab('analytics'); }} />
@@ -414,8 +416,8 @@ export default function App() {
       <main className="workspace" ref={content}>
         {workspaceBackdrop.kind !== 'same' && <Backdrop className="is-workspace" backdrop={{ ...workspaceBackdrop, kind: workspaceBackdrop.kind }} image={appearance.workspaceImage} />}
         <section id="panel-settings" aria-label="Settings" tabIndex={-1} className="settings-panel" hidden={tab !== 'settings'}>
-          {tab === 'settings' && <Suspense fallback={<p role="status">Loading settings…</p>}><Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
-            onResetPages={pagesReset()} /></Suspense>}
+          {tab === 'settings' && <Settings section={settingsSection} target={settingsTarget} onTargetShown={clearSettingsTarget} folders={folders} folderError={folderError} onFoldersChange={value => { setFolders(value); setFolderError(null); }} native={native.state} metadata={metadata} branch={branch} library={replayLibrary} client={client} appearance={appearance}
+            onResetPages={pagesReset()} />}
         </section>
         <section id="panel-map" aria-labelledby="tab-map" tabIndex={-1}
           className="map-panel" hidden={tab !== 'map'}>
@@ -451,9 +453,7 @@ export default function App() {
 
         <section id="panel-analytics" aria-labelledby="tab-analytics" tabIndex={-1}
           className="analytics-panel" hidden={tab !== 'analytics'}>
-          <Suspense fallback={<div className="panel-loading" role="status"><span className="spinner" />Loading overview…</div>}>
-            <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
-          </Suspense>
+          <WidgetIconsContext.Provider value={widgetIconMenu.icons}><Dashboard page={page} resetToken={layoutReset} path={path} client={client} library={replayLibrary} onPrimaryPath={setDefaultPath} campaignHost={campaignHost} onOpenReady={registerOpen} active={tab === 'analytics'} mapActive={tab === 'map'} mapSwitching={switching} mapReady={!!nativeReady} cameraMode={native.state?.cameraMode ?? 'map'} cameraOverlays={native.state?.cameraOverlays ?? false} onMetadata={setMetadata} onBranch={setBranch} onMapError={reportMap} mapRetry={retry} onUnsaved={setLayoutsUnsaved} pages={pages} playbackHost={playbackHost} flyAircraft={native.state?.flyAircraft ?? null} sideHost={sideHost} /></WidgetIconsContext.Provider>
         </section>
       </main>
       <aside className="workspace-side" ref={setSideHost} aria-label="Map tools" hidden={tab !== 'map'} />

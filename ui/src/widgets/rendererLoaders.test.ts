@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { widgetMetas } from './definitions.ts';
 import { loadWidgetRenderer, rendererLoaders } from './rendererLoaders.ts';
 import { createServer } from 'vite';
@@ -54,9 +56,9 @@ test('lazy body fallback exposes loading readiness only in parity builds', async
       server: { middlewareMode: true, watch: null, hmr: false, ws: false } });
     try {
       const { lazyWidget } = await vite.ssrLoadModule('/ui/src/widgets/lazyWidget.tsx');
-      const body = lazyWidget('synthetic-delayed-widget', ['render']).render({});
-      assert.equal(body.props.fallback.props['data-parity-loading'], mode === 'parity' ? true : undefined);
-      assert.equal(body.props.fallback.props.children, 'Loading widget…');
+      const loading = renderToStaticMarkup(createElement(lazyWidget('synthetic-delayed-widget', ['render']).render, {}));
+      assert.equal(loading.includes('data-parity-loading="true"'), mode === 'parity');
+      assert.match(loading, />Loading widget…</);
     } finally { await vite.close(); }
   }
 });

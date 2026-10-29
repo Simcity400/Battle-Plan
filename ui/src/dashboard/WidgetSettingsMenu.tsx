@@ -1,7 +1,8 @@
 import { loadedWidgetRenderer, loadWidgetRenderer } from '../widgets/rendererLoaders';
 import { Popover, PopoverHeading, usePopover } from '../components/Popover';
-import { lazy, Suspense, useId, useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import { Icon } from '../components/Icons';
+import { loadable } from '../components/loadable';
 import { WidgetSettings } from './settings/WidgetSettings';
 import type { DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './widgets';
@@ -10,11 +11,12 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
   widget: WidgetSpec; template: DashboardTemplate; runtime: WidgetRuntime;
   onApply: (widget: WidgetSpec, view?: boolean) => void; onRemove?: () => void; onReset?: () => void;
 }) {
-  const Settings = useMemo(() => lazy(async () => { await loadWidgetRenderer(widget.kind); return { default: WidgetSettings }; }), [widget.kind]);
+  const Settings = useMemo(() => loadable(async () => { await loadWidgetRenderer(widget.kind); return WidgetSettings; },
+    () => <p role="status">Loading settings…</p>), [widget.kind]);
   const id = useId();
   const menu = usePopover();
   const { trigger, open } = menu;
-  // A widget on screen has loaded its renderer: suspending would hold the fallback for React's reveal delay.
+  // A widget on screen has loaded its renderer, so its settings show at once.
   const loaded = loadedWidgetRenderer(widget.kind) !== undefined;
   return <>
     <button ref={trigger} className="dash-icon-button" type="button" data-widget-settings aria-label={`Configure ${widget.title}`} data-tooltip="Widget settings"
@@ -22,7 +24,7 @@ export default function WidgetSettingsMenu({ widget, template, runtime, onApply,
     <Popover menu={menu} id={id} className="widget-settings-menu" aria-label={`${widget.title} settings`}>
       <PopoverHeading title="Widget settings" menu={menu} onDelete={onRemove} onReset={onReset} />
       {open && (loaded ? <WidgetSettings widget={widget} template={template} runtime={runtime} onChange={onApply} />
-        : <Suspense fallback={<p role="status">Loading settings…</p>}><Settings widget={widget} template={template} runtime={runtime} onChange={onApply} /></Suspense>)}
+        : <Settings widget={widget} template={template} runtime={runtime} onChange={onApply} />)}
     </Popover>
   </>;
 }

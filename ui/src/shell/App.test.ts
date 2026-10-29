@@ -80,9 +80,8 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       transform(source, id) {
         const name = id.replaceAll('\\', '/');
         if (name.endsWith('/shell/App.tsx')) return source.replace(/import \{[^\n]+\} from 'react';/,
-          `import { Suspense } from 'react';
-           const { useState, useRef, useCallback, useEffect, useLayoutEffect } = globalThis.__shellFixture;
-           const memo = value => value; const lazy = () => function Dashboard() {};`);
+          `const { useState, useRef, useCallback, useEffect, useLayoutEffect } = globalThis.__shellFixture;
+           const memo = value => value;`);
         return Object.entries(replacements).find(([suffix]) => name.endsWith(suffix))?.[1];
       },
     }] });
