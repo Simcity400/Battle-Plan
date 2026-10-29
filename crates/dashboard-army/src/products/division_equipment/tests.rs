@@ -1602,6 +1602,55 @@ fn a_stockpile_read_alone_rebuilds_no_country() {
     );
 }
 
+#[test]
+fn a_token_append_rebuilds_only_the_countries_whose_template_need_it_changes() {
+    let count = 4;
+    // Template 5's sub-unit is token 9. At 30 the dictionary gains a token nothing reads; at 50
+    // it gains token 9's spelling, which the need of C0000's and C0001's template lacked.
+    let frames = (2..=60)
+        .map(|offset| {
+            let mut f = unsupplied_frame(count, offset);
+            if let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
+                &mut *f.tables[TableId::DivisionTemplateIcons.index()]
+            {
+                rows[0].subunits[0].token = 9;
+            }
+            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *f.tables[TableId::LexicalTokens.index()]
+            {
+                if offset >= 30 {
+                    rows.push(LexicalTokenRow {
+                        token: 8,
+                        literal: b"unread".to_vec(),
+                    });
+                }
+                if offset >= 50 {
+                    rows.push(LexicalTokenRow {
+                        token: 9,
+                        literal: b"test_line".to_vec(),
+                    });
+                }
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "token-append");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    let at = |offset: i32| {
+        hours
+            .iter()
+            .find(|&&(hour, _, _)| hour == 60_000_000 + offset)
+            .map(|&(_, builds, reference)| (builds, reference))
+    };
+    let every = 2 * count as usize;
+    assert_eq!(at(30), Some((0, every)));
+    let (builds, reference) = at(50).unwrap();
+    assert_eq!(reference, every);
+    assert!(0 < builds && builds < every, "{builds} builds at 50");
+    let tags = ["C0000", "C0001", "C0002", "C0003"];
+    assert_numeric_histories_equal(&source, &context, &fixtures, &tags, 60_000_060);
+}
+
 /// [`scale_frame`] with designs 70 to 72, each country `at` holding `held(at)` in stock.
 fn stock_frame(count: u32, offset: i32, held: impl Fn(u32) -> Vec<(u64, i64)>) -> DecodedFrame {
     let mut f = scale_frame(count, offset);

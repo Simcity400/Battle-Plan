@@ -1297,11 +1297,11 @@ impl Carried {
         let Some(previous) = previous.as_deref() else {
             return Ok((Dirty::All, BTreeSet::new()));
         };
-        // Links, tokens and local clones are shared by every reply. A block's first hour marks
-        // every table changed; its rows are then compared with the hour before.
+        // Links and local clones are shared by every reply; tokens only by template needs, which
+        // the fold asks again ([`Prepared::renew_needs`]). A block's first hour marks every table
+        // changed; its rows are then compared with the hour before.
         if self.shared.members.is_none()
             || !unchanged::<tables::CountryLinks>(previous, frame, changes)
-            || !unchanged::<tables::LexicalTokens>(previous, frame, changes)
             || !unchanged::<tables::CountryLocalSubunits>(previous, frame, changes)
         {
             return Ok((Dirty::All, BTreeSet::new()));
@@ -1813,6 +1813,17 @@ impl Prepared {
         } else {
             carried.dirty(frame, changes)?
         };
+        if !matches!(dirty, Dirty::All)
+            && let Some(previous) = carried.previous.clone()
+            && !unchanged::<tables::LexicalTokens>(&previous, frame, changes)
+        {
+            // The reference rebuilds every country, as a change of the dictionary once did.
+            #[cfg(test)]
+            if self.reference {
+                dirty = Dirty::All;
+            }
+            self.renew_needs(frame, carried, &mut dirty);
+        }
         // A new stockpile read changes only each reply's stockpile part, patched into the others.
         let restock = reads[1] != carried.reads[1] || reads[3] != carried.reads[3];
         #[cfg(test)]
@@ -2132,6 +2143,33 @@ impl Prepared {
             .totals
             .retain(|&(slot, _, _), _| !dirty.contains(slot));
         patch
+    }
+
+    /// The hour's tokens changed but not its links or local sub-units. Only template needs read
+    /// them: each held need is asked again from sources read anew, and a template whose need
+    /// changed is asked again in its countries' rebuild.
+    fn renew_needs(&self, frame: &DecodedFrame, carried: &mut Carried, dirty: &mut Dirty) {
+        let cat = self.cat.clone().flatten();
+        let needs = LazyNeeds {
+            content: division_needs::content(cat.as_ref()),
+            frame,
+            index: None,
+            sources: std::cell::OnceCell::new(),
+            kept: std::cell::RefCell::new(BTreeMap::new()),
+            hourly: std::cell::RefCell::new(Vec::new()),
+        };
+        let templates: Vec<u64> = carried.shared.needs.keys().copied().collect();
+        for template in templates {
+            if carried.shared.needs.get(&template) != Some(&needs.template(frame, template)) {
+                carried.shared.needs.remove(&template);
+                let slots: Vec<u32> = carried.template_slots(template).collect();
+                dirty.slots(slots);
+            }
+        }
+        carried.sources = match needs.sources.get() {
+            Some(Ok(sources)) => Some(Arc::clone(sources.index())),
+            _ => None,
+        };
     }
 
     /// Rebuild or patch each country in tag order, the order a full rebuild numbers operands in.
