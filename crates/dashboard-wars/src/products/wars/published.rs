@@ -153,10 +153,7 @@ fn held_hour(compared: &[TableId], decoded: &DecodedFrame, cat: Option<&Catalogu
             .iter()
             .map(|table| decoded.tables[table.index()].identity())
             .collect(),
-        observed: Hour::read(decoded, None).map(|inputs| {
-            let observations = inputs.observe(decoded, cat);
-            (inputs, observations)
-        }),
+        observed: read_hour(decoded, None, None, cat),
     }
 }
 
@@ -480,7 +477,8 @@ impl Prepared {
             current.tables[index] = packet.tables[index].clone();
         }
         let open: Vec<usize> = self.walk.open.iter().map(|war| war.id).collect();
-        self.walk.observe(&current, None, None, self.cat.as_deref());
+        self.walk
+            .observe(&current, None, None, self.cat.as_deref(), None);
         self.decoded = Some(current);
         self.walked = true;
         for id in open {

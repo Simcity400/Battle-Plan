@@ -1493,7 +1493,7 @@ fn overlapping_branch(hours: i32) -> Replay {
 fn walk_overlapping(hours: i32, redeclare: bool) -> io::Result<WarsReply> {
     let mut walk = Walk::new(1, 100);
     for frame in overlapping_frames(hours, redeclare) {
-        walk.observe(&frame, None, None, None);
+        walk.observe(&frame, None, None, None, None);
     }
     walk.finish(99 + hours, None)
 }
@@ -2709,6 +2709,32 @@ fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
     }
 }
 
+/// A fresh walk of a viewpoint other than the recorded one reads every hour it holds ahead of
+/// it, on other threads, and answers as the walk from the branch start does.
+#[test]
+fn a_walks_tail_reads_its_hours_ahead_of_it() {
+    let frames = walked_frames(100..300, 300);
+    let replay = Arc::new(
+        Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(1, frames.clone())],
+        )
+        .unwrap(),
+    );
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    prepare_walked(&fixture, &frames, 16, |_| {});
+    let all: BTreeSet<i32> = frames.iter().map(|frame| frame.hour).collect();
+    let source = walked_source(&replay);
+    let read_here = || walks::READ.with(std::cell::Cell::get);
+    let before = read_here();
+    let (reply, relations) = walked(&fixture, &source, Some("TWO"), None, &all, None);
+    let read = read_here() - before;
+    assert_eq!(read, 0, "hours read on the walking thread");
+    let expected = scan(&replay, 1, Some("TWO"), None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply, serde_json::to_value(&expected).unwrap());
+    assert_eq!(relations, memberships(&expected));
+}
+
 /// A walk kept across published appends, including counter-only ones that
 /// only extend the last input's coverage, answers as a walk made fresh from
 /// the reloaded store at every commit.
@@ -2877,7 +2903,7 @@ fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
     };
     let mut walk = Walk::new(1, 100);
     for hour in 100..140 {
-        walk.observe(&losses(hour), None, None, None);
+        walk.observe(&losses(hour), None, None, None, None);
     }
     let ids = |walk: &Walk| walk.open.iter().map(|war| war.id).collect::<Vec<_>>();
     let open = ids(&walk);
@@ -2897,8 +2923,8 @@ fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
     // Continued alike, the copy holds what the walk holds of each open war.
     for hour in 140..150 {
         let frame = losses(hour);
-        walk.observe(&frame, None, None, None);
-        copy.observe(&frame, None, None, None);
+        walk.observe(&frame, None, None, None, None);
+        copy.observe(&frame, None, None, None, None);
     }
     assert_eq!(ids(&copy), ids(&walk));
     fn json(value: impl Serialize) -> serde_json::Value {

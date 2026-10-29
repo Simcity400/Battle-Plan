@@ -355,6 +355,44 @@ struct Hour {
     recorded_view: Option<u32>,
     goal_owned: foldhash::HashMap<Pair, rows::WarOwnedRelationRow>,
 }
+/// The inputs a viewpoint reads at an hour and the groups it observes there, or why it cannot.
+type HourRead = Result<(Hour, Vec<Observed>), String>;
+
+/// What `view`, or the viewpoint among `identities`, reads at `decoded`.
+fn read_hour(
+    decoded: &DecodedFrame,
+    view: Option<&str>,
+    identities: Option<&HashSet<(u32, u32)>>,
+    cat: Option<&Catalogue>,
+) -> HourRead {
+    #[cfg(any(test, feature = "test-support"))]
+    walks::READ.with(|count| count.set(count.get() + 1));
+    identities
+        .map_or_else(
+            || Ok(view.map(str::to_owned)),
+            |selected| selected_view(decoded, selected).map(Some),
+        )
+        .and_then(|view| Hour::read(decoded, view.as_deref()))
+        .map(|inputs| {
+            let observations = inputs.observe(decoded, cat);
+            (inputs, observations)
+        })
+}
+
+/// The tables whose change makes a walk read its hour's inputs again.
+fn compared_tables() -> Vec<TableId> {
+    TABLES
+        .iter()
+        .copied()
+        .filter(|&t| {
+            t != TableId::Clock
+                && t != TableId::Campaign
+                && t != TableId::Capitulation
+                && t != TableId::WarRelations
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 struct HeldHour {
     /// Identities, not views: holding a view copies it when the next hour changes it.
@@ -1098,7 +1136,7 @@ fn scan_selected(
                         }
                     };
                     validate_campaign(decoded, replay)?;
-                    walk.observe(decoded, view, identities, cat);
+                    walk.observe(decoded, view, identities, cat, None);
                 }
             }
             Ok(())
@@ -1124,7 +1162,7 @@ pub(crate) fn at_hour(
     .into();
     let mut walk = Walk::new(branch, hour);
     walk.labels = false;
-    walk.observe(&frame, view, None, cat);
+    walk.observe(&frame, view, None, cat, None);
     let mut reply = walk.finish(hour, cat)?;
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.id = format!("@{hour}:{index}");
@@ -1160,16 +1198,6 @@ struct Walk {
 impl Walk {
     fn new(branch: u64, first: i32) -> Self {
         let reply=WarsReply{branch_id:branch.to_string(),available:false,viewpoints:Vec::new(),country_names:Vec::new(),wars:Vec::new(),unobserved:Vec::new(),capitulations_unobserved:Vec::new(),warnings:vec!["War continuity and participant runs are app observations; the game stores no grouped war identity, start/end or join/leave hours.".into(),"Attackers and defenders are oriented by the representative relation's instigator.".into(),"Native groups can overlap. A group the game lists beside the war it is named for, as it does for a new declaration, joins that war; a war's casualties count each of its bilateral relations once.".into()]};
-        let compared: Vec<_> = TABLES
-            .iter()
-            .copied()
-            .filter(|&t| {
-                t != TableId::Clock
-                    && t != TableId::Campaign
-                    && t != TableId::Capitulation
-                    && t != TableId::WarRelations
-            })
-            .collect();
         Self {
             reply,
             previous: None,
@@ -1183,15 +1211,17 @@ impl Walk {
             held: None,
             country_labels: Default::default(),
             labels: true,
-            compared,
+            compared: compared_tables(),
         }
     }
+    /// Observes `decoded`, its hour's inputs `ready` when they were read ahead from this frame.
     fn observe(
         &mut self,
         decoded: &DecodedFrame,
         view: Option<&str>,
         identities: Option<&HashSet<(u32, u32)>>,
         cat: Option<&Catalogue>,
+        ready: Option<HourRead>,
     ) {
         if self.labels {
             self.country_labels.observe(decoded, cat);
@@ -1241,7 +1271,7 @@ impl Walk {
                     .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
         });
         if !same {
-            self.hold(decoded, view, identities, cat);
+            self.hold(decoded, view, identities, cat, ready);
         }
         if let Ok((inputs, observed)) = &self.held.as_ref().expect("held hour").observed {
             if self.labels && (!same || self.previous.is_none()) {
@@ -1374,13 +1404,15 @@ impl Walk {
             self.held = None;
         }
     }
-    /// Hold the inputs `view` reads at `decoded` and the groups it observes there.
+    /// Hold the inputs `view` reads at `decoded` and the groups it observes there, `ready` when
+    /// they were read ahead from this frame.
     fn hold(
         &mut self,
         decoded: &DecodedFrame,
         view: Option<&str>,
         identities: Option<&HashSet<(u32, u32)>>,
         cat: Option<&Catalogue>,
+        ready: Option<HourRead>,
     ) {
         self.held = Some(HeldHour {
             tables: self
@@ -1388,16 +1420,7 @@ impl Walk {
                 .iter()
                 .map(|table| decoded.tables[table.index()].identity())
                 .collect(),
-            observed: identities
-                .map_or_else(
-                    || Ok(view.map(str::to_owned)),
-                    |selected| selected_view(decoded, selected).map(Some),
-                )
-                .and_then(|view| Hour::read(decoded, view.as_deref()))
-                .map(|inputs| {
-                    let observations = inputs.observe(decoded, cat);
-                    (inputs, observations)
-                }),
+            observed: ready.unwrap_or_else(|| read_hour(decoded, view, identities, cat)),
         });
     }
     /// Extend unchanged inputs across accepted hours without walking those hours.

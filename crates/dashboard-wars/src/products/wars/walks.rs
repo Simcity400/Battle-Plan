@@ -35,6 +35,8 @@ thread_local! {
     pub(super) static DECODED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Change inputs decoded on this thread to resume from a point.
     pub(super) static RESTORED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Hours whose inputs were read on this thread.
+    pub(super) static READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// A smaller resume point budget for this thread's walks.
     pub(super) static POINT_BYTES: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
@@ -160,87 +162,205 @@ struct Walker<'r, 'a> {
     ahead: Option<Ahead>,
 }
 
-/// Inputs a walk's tail has read ahead of the one it takes.
+/// Inputs a walk's tail reads ahead of the one it takes: at least this many, and enough to keep
+/// each of its workers busy.
 const AHEAD: u64 = 16;
+const AHEAD_PER_WORKER: u64 = 4;
 
-/// The tail's inputs read here, in order, and decoded on another core: each input's read or
-/// decode failure is returned only when the walk takes that input.
+/// A walk's work for its workers, by its input's ordinal.
+enum Job {
+    /// An input's row, published at its hour, to decode.
+    Decode(u64, i32, Vec<u8>),
+    /// The frame an input leaves the walk holding, whose hour's inputs to read.
+    Read(u64, DecodedFrame),
+}
+
+/// A worker's finished job, by its input's ordinal.
+enum Done {
+    Decoded(u64, io::Result<(Vec<usize>, DecodedFrame)>),
+    Read(u64, HourRead),
+    /// The job panicked: the walk panics with it.
+    Panicked(Box<dyn std::any::Any + Send>),
+}
+
+/// An input read ahead of the walk.
+struct Slot {
+    /// Its hour, or why its row could not be read.
+    hour: io::Result<i32>,
+    decoded: Option<io::Result<(Vec<usize>, DecodedFrame)>>,
+    /// Its hour's inputs once asked for, None inside until they are read.
+    read: Option<Option<HourRead>>,
+}
+
+/// The tail's inputs read here, in order, decoded on other cores and put together here as the
+/// walk puts them together; each frame changing a table the walk compares has its hour's inputs
+/// read on those cores too. Each input's read or decode failure is returned only when the walk
+/// takes that input.
 struct Ahead {
-    /// The next input the walk takes, and the first not yet read.
+    /// The next input the walk takes, the first not yet put together, and the first not yet read.
     next: u64,
+    composed: u64,
     read: u64,
     end: u64,
-    /// The read inputs not yet taken: each one's hour, or why its read failed.
-    queued: VecDeque<io::Result<i32>>,
-    rows: mpsc::Sender<(i32, Vec<u8>)>,
-    decoded: mpsc::Receiver<io::Result<(Vec<usize>, DecodedFrame)>>,
+    /// Inputs `read` ahead of `next`, at most this many.
+    window: u64,
+    /// The inputs from `next` not yet taken.
+    slots: VecDeque<Slot>,
+    /// The frame the walk will hold once it takes the inputs before `composed`.
+    frame: Option<DecodedFrame>,
+    /// Whether each table is one the walk compares.
+    compared: Vec<bool>,
+    jobs: mpsc::Sender<Job>,
+    done: mpsc::Receiver<Done>,
 }
 
 impl Ahead {
-    /// Decodes inputs `next..end` on a thread of `scope`, which ends once this is dropped or
-    /// `stopped` is set.
+    /// Reads inputs `next..end` ahead of a walk that holds `frame`, on threads of `scope` that
+    /// end once this is dropped or `stopped` is set, an hour's inputs read as `read` reads them.
     fn start<'s>(
         scope: &'s std::thread::Scope<'s, '_>,
-        next: u64,
-        end: u64,
+        (next, end): (u64, u64),
+        frame: Option<DecodedFrame>,
         stopped: &'s AtomicBool,
+        read: &'s (dyn Fn(&DecodedFrame) -> HourRead + Sync),
     ) -> Self {
-        let (rows, work) = mpsc::channel::<(i32, Vec<u8>)>();
-        let (done, decoded) = mpsc::channel();
-        scope.spawn(move || {
-            loop {
-                match work.recv_timeout(Duration::from_millis(50)) {
-                    Ok((hour, row)) => {
-                        if done.send(decode(hour, &row)).is_err() {
-                            return;
+        let (jobs, work) = mpsc::channel::<Job>();
+        let (finished, done) = mpsc::channel();
+        let work = Arc::new(Mutex::new(work));
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |cores| cores.get().saturating_sub(1))
+            .min((end - next).div_ceil(AHEAD) as usize)
+            .max(1);
+        for _ in 0..workers {
+            let (work, finished) = (Arc::clone(&work), finished.clone());
+            scope.spawn(move || {
+                loop {
+                    let job = work
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv_timeout(Duration::from_millis(50));
+                    let job = match job {
+                        Ok(job) => job,
+                        Err(mpsc::RecvTimeoutError::Timeout)
+                            if !stopped.load(Ordering::Acquire) =>
+                        {
+                            continue;
                         }
+                        Err(_) => return,
+                    };
+                    let outcome =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
+                            Job::Decode(ordinal, hour, row) => {
+                                Done::Decoded(ordinal, decode(hour, &row))
+                            }
+                            Job::Read(ordinal, frame) => Done::Read(ordinal, read(&frame)),
+                        }));
+                    let panicked = outcome.is_err();
+                    if finished
+                        .send(outcome.unwrap_or_else(Done::Panicked))
+                        .is_err()
+                        || panicked
+                    {
+                        return;
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) if !stopped.load(Ordering::Acquire) => {}
-                    Err(_) => return,
                 }
-            }
-        });
+            });
+        }
+        let mut compared = vec![false; TableId::ALL.len()];
+        for table in compared_tables() {
+            compared[table.index()] = true;
+        }
         Self {
             next,
+            composed: next,
             read: next,
             end,
-            queued: VecDeque::new(),
-            rows,
-            decoded,
+            window: AHEAD.max(AHEAD_PER_WORKER * workers as u64),
+            slots: VecDeque::new(),
+            frame,
+            compared,
+            jobs,
+            done,
         }
     }
 
-    /// The input at `self.next`, after reading the rows up to [`AHEAD`] inputs beyond it.
-    fn take(&mut self, topology: &mut Reader<'_>) -> io::Result<(i32, Vec<usize>, DecodedFrame)> {
-        while self.read < self.end && self.read <= self.next + AHEAD {
-            let read = raw(topology, self.read);
-            self.read += 1;
-            match read {
-                Ok((hour, row)) => {
-                    self.queued.push_back(
-                        self.rows
-                            .send((hour, row))
-                            .map(|()| hour)
-                            .map_err(|_| io::Error::other("Wars input decoding stopped")),
-                    );
-                }
+    /// The input at `self.next` and its hour's inputs if they were read, after reading the rows
+    /// up to the window beyond it.
+    fn take(
+        &mut self,
+        topology: &mut Reader<'_>,
+    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<HourRead>)> {
+        while self.read < self.end && self.read <= self.next + self.window {
+            let hour = match raw(topology, self.read) {
+                Ok((hour, row)) => self
+                    .jobs
+                    .send(Job::Decode(self.read, hour, row))
+                    .map(|()| hour)
+                    .map_err(|_| io::Error::other("Wars input decoding stopped")),
                 Err(error) => {
                     // The walk stops at this input: nothing after it is read.
-                    self.queued.push_back(Err(error));
-                    self.end = self.read;
+                    self.end = self.read + 1;
+                    Err(error)
                 }
+            };
+            self.slots.push_back(Slot {
+                hour,
+                decoded: None,
+                read: None,
+            });
+            self.read += 1;
+        }
+        loop {
+            self.compose();
+            let slot = self
+                .slots
+                .front()
+                .ok_or_else(|| invalid("Wars inputs ran out ahead of the walk"))?;
+            if slot.hour.is_err() || (slot.decoded.is_some() && !matches!(slot.read, Some(None))) {
+                break;
+            }
+            match self.done.recv() {
+                Ok(Done::Decoded(ordinal, decoded)) => {
+                    self.slots[(ordinal - self.next) as usize].decoded = Some(decoded);
+                }
+                Ok(Done::Read(ordinal, read)) => {
+                    self.slots[(ordinal - self.next) as usize].read = Some(Some(read));
+                }
+                Ok(Done::Panicked(panic)) => std::panic::resume_unwind(panic),
+                Err(_) => return Err(io::Error::other("Wars input decoding stopped")),
             }
         }
+        let slot = self.slots.pop_front().expect("the input was read");
         self.next += 1;
-        let hour = self
-            .queued
-            .pop_front()
-            .ok_or_else(|| invalid("Wars inputs ran out ahead of the walk"))??;
-        let (changed, packet) = self
-            .decoded
-            .recv()
-            .map_err(|_| io::Error::other("Wars input decoding stopped"))??;
-        Ok((hour, changed, packet))
+        let hour = slot.hour?;
+        let (changed, packet) = slot.decoded.expect("the input was decoded")?;
+        Ok((hour, changed, packet, slot.read.flatten()))
+    }
+
+    /// Puts the decoded inputs together in order, as [`Resume::step`] does, and asks for the
+    /// hour's inputs of each frame changing a compared table, or of the walk's first frame.
+    fn compose(&mut self) {
+        while let Some(slot) = self.slots.get_mut((self.composed - self.next) as usize) {
+            let Some(Ok((changed, packet))) = &slot.decoded else {
+                return;
+            };
+            let mut read = self.frame.is_none();
+            let mut frame = self.frame.take().unwrap_or_else(|| packet.clone());
+            frame.branch = packet.branch;
+            frame.hour = packet.hour;
+            for &index in changed {
+                frame.tables[index] = packet.tables[index].clone();
+                read |= self.compared[index];
+            }
+            if read {
+                let job = Job::Read(self.composed, frame.clone());
+                if self.jobs.send(job).is_ok() {
+                    slot.read = Some(None);
+                }
+            }
+            self.frame = Some(frame);
+            self.composed += 1;
+        }
     }
 }
 
@@ -281,15 +401,18 @@ impl Walker<'_, '_> {
             .filter(|span| span.value == i128::from(ordinal - self.base) && span.first_hour == hour)
             .ok_or_else(|| invalid("Wars change coverage is missing"))
     }
-    /// The change input at `ordinal`: its hour, its changed tables' indices
-    /// and its decoded packet.
-    fn input(&mut self, ordinal: u64) -> io::Result<(i32, Vec<usize>, DecodedFrame)> {
+    /// The change input at `ordinal`: its hour, its changed tables' indices, its decoded packet
+    /// and, when they were read ahead, the inputs of the hour it leaves the walk holding.
+    fn input(
+        &mut self,
+        ordinal: u64,
+    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<HourRead>)> {
         if let Some(ahead) = self.ahead.as_mut().filter(|ahead| ahead.next == ordinal) {
             return ahead.take(self.topology);
         }
         let (hour, row) = raw(self.topology, ordinal)?;
         let (changed, packet) = decode(hour, &row)?;
-        Ok((hour, changed, packet))
+        Ok((hour, changed, packet, None))
     }
     /// The walk `point` copied, with the decoded inputs it walked through and
     /// the hour it held read again.
@@ -323,7 +446,7 @@ impl Walker<'_, '_> {
             let frame = decoded
                 .as_ref()
                 .ok_or_else(|| invalid("Wars resume point holds inputs without their frame"))?;
-            walk.hold(frame, self.view, self.selected, self.cat);
+            walk.hold(frame, self.view, self.selected, self.cat, None);
         }
         Ok(Resume {
             next: point.next,
@@ -403,7 +526,7 @@ impl Resume {
     ) -> io::Result<series::Run> {
         dashboard_text::metadata::check_cancel(walker.cancelled)?;
         let ordinal = self.next;
-        let (hour, changed, packet) = walker.input(ordinal)?;
+        let (hour, changed, packet, read) = walker.input(ordinal)?;
         #[cfg(any(test, feature = "test-support"))]
         DECODED.with(|count| count.set(count.get() + 1));
         let before = match (self.hour, known) {
@@ -431,7 +554,7 @@ impl Resume {
         }
         let frame = self.decoded.insert(current);
         self.walk
-            .observe(frame, walker.view, walker.selected, walker.cat);
+            .observe(frame, walker.view, walker.selected, walker.cat, read);
         self.next += 1;
         self.hour = Some(hour);
         Ok(span)
@@ -641,8 +764,10 @@ pub(super) fn walk(
     }
     let mut known = None;
     let stopped = AtomicBool::new(false);
+    let (view, catalogue) = (walker.view, walker.cat);
+    let read = move |frame: &DecodedFrame| read_hour(frame, view, selected, catalogue);
     std::thread::scope(|scope| {
-        // Ends the decoding thread before the scope joins it, however the walk ends.
+        // Ends the workers before the scope joins them, however the walk ends.
         struct Stop<'s>(&'s AtomicBool);
         impl Drop for Stop<'_> {
             fn drop(&mut self) {
@@ -650,8 +775,10 @@ pub(super) fn walk(
             }
         }
         let _stop = Stop(&stopped);
-        walker.ahead =
-            (entry.tail.next < end).then(|| Ahead::start(scope, entry.tail.next, end, &stopped));
+        walker.ahead = (entry.tail.next < end).then(|| {
+            let frame = entry.tail.decoded.clone();
+            Ahead::start(scope, (entry.tail.next, end), frame, &stopped, &read)
+        });
         let walked = (|| {
             while entry.tail.next < end {
                 let span = entry.tail.step(&mut walker, known)?;
