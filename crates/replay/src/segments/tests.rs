@@ -1,6 +1,10 @@
 use super::*;
-use crate::columnar_frames::fixtures::{every, recording};
+use crate::columnar_frames::{
+    Budget, Limits,
+    fixtures::{every, recording},
+};
 use replay_columnar::envelope::UNIT_ORDINALS;
+use std::sync::Arc;
 
 /// Each hour a segment's operator saw: its branch, hour, run, ordinal and whether it
 /// started the segment.
@@ -126,47 +130,123 @@ impl Operator for Panicking {
     }
 }
 
+/// Set once, and waited for.
+#[derive(Default)]
+struct Flag(Mutex<bool>, Condvar);
+
+impl Flag {
+    fn set(&self) {
+        *self.0.lock().unwrap() = true;
+        self.1.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut set = self.0.lock().unwrap();
+        while !*set {
+            set = self.1.wait(set).unwrap();
+        }
+    }
+}
+
+/// Holds its walker's share of the budget at its walk's first hour until `failed` is set and
+/// no walker waits for the budget.
+struct Holding {
+    budget: Arc<Budget>,
+    failed: Arc<Flag>,
+}
+
+impl Operator for Holding {
+    fn hour(&mut self, hour: &Hour<'_>) -> io::Result<()> {
+        if hour.starts {
+            self.failed.wait();
+            self.budget.wait_for_no_waiters();
+        }
+        Ok(())
+    }
+
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(()))
+    }
+}
+
+/// Fails as its walk starts, or panics, once a walker waits for the budget; sets `failed`.
+struct Refusing {
+    budget: Arc<Budget>,
+    failed: Arc<Flag>,
+    panics: bool,
+}
+
+impl Operator for Refusing {
+    fn start(&mut self, _: Start<'_>, _: u64, _: i32) -> io::Result<()> {
+        self.budget.wait_for_waiters(1);
+        self.failed.set();
+        assert!(!self.panics, "operator panicked");
+        Err(io::Error::other("operator failed"))
+    }
+
+    fn hour(&mut self, _: &Hour<'_>) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+        Ok(Box::new(()))
+    }
+}
+
 fn opened(runs: &[(u64, i32, u32)]) -> Recording {
     let (bytes, _) = recording(runs, every(runs), 1, |_| {});
-    Recording::open(bytes).unwrap()
+    Recording::open(bytes, Limits::default()).unwrap()
 }
 
 /// Segments walk on several workers, at most a bounded number ahead, and reach the caller
-/// in segment order, each with every hour of its own once, its first marked.
+/// in segment order, each with every hour of its own once, its first marked: of two runs,
+/// and of six runs of twenty segments, three runs of one branch.
 #[test]
 fn segments_reach_the_caller_in_order_with_their_own_hours() {
-    let runs = [(4, 10, 3 * UNIT_ORDINALS + 5), (9, 50_000, 7)];
-    let file = opened(&runs);
-    let make = |_: &Segment| -> io::Result<Operators> { Ok(vec![Box::new(Seen(Vec::new()))]) };
-    for (threads, ahead) in [(1, 1), (3, 1), (8, 2)] {
-        let mut order = Vec::new();
-        let mut hours = Vec::new();
-        run(&file, threads, ahead, &make, &mut |segment, results| {
-            order.push(*segment);
-            let [seen] = <[_; 1]>::try_from(results).unwrap();
-            let seen = *seen.downcast::<Vec<(u64, i32, u32, u32, bool)>>().unwrap();
-            assert!(
-                seen.iter()
-                    .enumerate()
-                    .all(|(at, hour)| hour.4 == (at == 0))
-            );
-            hours.extend(seen);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(order, file.segments());
-        let expected: Vec<_> = (0..)
-            .zip(runs)
-            .flat_map(|(run, (branch, first, ordinals))| {
-                (0..ordinals).map(move |ordinal| (branch, first + ordinal as i32, run, ordinal))
+    let few = [(4, 10, 3 * UNIT_ORDINALS + 5), (9, 50_000, 7)];
+    let many = [
+        (4, 10, 3 * UNIT_ORDINALS + 5),
+        (9, 50_000, 7),
+        (4, 90_000, 5 * UNIT_ORDINALS),
+        (7, 200_000, 2 * UNIT_ORDINALS + 1),
+        (4, 300_000, 6 * UNIT_ORDINALS),
+        (8, 400_000, 1),
+    ];
+    for runs in [&few[..], &many[..]] {
+        let file = opened(runs);
+        let make = |_: &Segment| -> io::Result<Operators> { Ok(vec![Box::new(Seen(Vec::new()))]) };
+        for (threads, ahead) in [(1, 1), (3, 1), (8, 2)] {
+            let mut order = Vec::new();
+            let mut hours = Vec::new();
+            run(&file, threads, ahead, &make, &mut |segment, results| {
+                order.push(*segment);
+                let [seen] = <[_; 1]>::try_from(results).unwrap();
+                let seen = *seen.downcast::<Vec<(u64, i32, u32, u32, bool)>>().unwrap();
+                assert!(
+                    seen.iter()
+                        .enumerate()
+                        .all(|(at, hour)| hour.4 == (at == 0))
+                );
+                hours.extend(seen);
+                Ok(())
             })
-            .collect();
-        let walked: Vec<_> = hours
-            .iter()
-            .map(|&(branch, hour, run, ordinal, _)| (branch, hour, run, ordinal))
-            .collect();
-        assert_eq!(walked, expected);
+            .unwrap();
+            assert_eq!(order, file.segments());
+            let expected: Vec<_> = (0..)
+                .zip(runs)
+                .flat_map(|(run, &(branch, first, ordinals))| {
+                    (0..ordinals).map(move |ordinal| (branch, first + ordinal as i32, run, ordinal))
+                })
+                .collect();
+            let walked: Vec<_> = hours
+                .iter()
+                .map(|&(branch, hour, run, ordinal, _)| (branch, hour, run, ordinal))
+                .collect();
+            assert_eq!(walked, expected);
+        }
     }
+    let file = opened(&many);
+    assert_eq!((file.run_count(), file.segments().len()), (6, 20));
 }
 
 /// Each segment's operators see the state its first hour applies to: empty at a run's start,
@@ -365,4 +445,52 @@ fn the_first_failure_stops_the_run() {
     })
     .unwrap_err();
     assert_eq!(error.to_string(), "caller failed");
+}
+
+/// Three runs on three workers under a budget admitting one walker at a time: one of the
+/// first two runs' walkers holds it until the run stops and the other waits for it, while
+/// the last run's operator fails, or panics, as its walk starts. What the run returned.
+fn stopped_while_waiting(panics: bool) -> std::thread::Result<io::Result<()>> {
+    let runs = [(1, 0, 10), (2, 100, 10), (3, 200, 10)];
+    let (bytes, _) = recording(&runs, every(&runs), 1, |_| {});
+    let budget = Arc::new(Budget::new(1));
+    let limits = Limits {
+        budget: budget.clone(),
+        ..Limits::default()
+    };
+    let file = Recording::open(bytes, limits).unwrap();
+    let failed = Arc::new(Flag::default());
+    let make = |segment: &Segment| -> io::Result<Operators> {
+        let (budget, failed) = (budget.clone(), failed.clone());
+        let operator: Box<dyn Operator> = if segment.run == 2 {
+            Box::new(Refusing {
+                budget,
+                failed,
+                panics,
+            })
+        } else {
+            Box::new(Holding { budget, failed })
+        };
+        Ok(vec![operator])
+    };
+    let walked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(&file, 3, 3, &make, &mut |_, _| Ok(()))
+    }));
+    assert_eq!(budget.walkers(), 0);
+    walked
+}
+
+/// An operator's failure while a walker waits for the budget stops the run: the walker
+/// waiting leaves, the one holding the budget ends its walk, and the failure is returned.
+#[test]
+fn a_failure_while_a_walker_waits_for_the_budget_stops_the_run() {
+    let error = stopped_while_waiting(false).unwrap().unwrap_err();
+    assert_eq!(error.to_string(), "operator failed");
+}
+
+/// An operator's panic while a walker waits for the budget stops the run as a failure does,
+/// and reaches the caller.
+#[test]
+fn a_panic_while_a_walker_waits_for_the_budget_stops_the_run() {
+    assert!(stopped_while_waiting(true).is_err());
 }

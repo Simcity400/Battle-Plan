@@ -6,11 +6,8 @@
 //! table's live rows and changes per hour. Measurement only:
 //! `p3-walk <file> [repetitions] [--rows] [--table=<Name>]`.
 
-use replay::columnar_frames::Recording;
+use replay::columnar_frames::{Limits, Recording, Walker};
 use replay_columnar::{
-    framing,
-    leaf::Reader,
-    manifest::Manifest,
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
 };
@@ -22,6 +19,7 @@ use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
+    sync::atomic::AtomicBool,
     time::Instant,
 };
 
@@ -209,28 +207,34 @@ fn main() -> io::Result<()> {
                 .ok_or_else(|| invalid(format!("No table {name}")))
         })
         .transpose()?;
-    let file = Recording::open(std::fs::read(&path)?)?;
+    let file = Recording::open_path(&path, Limits::default())?;
     if let Some(damage) = file.damage().first() {
-        return Err(invalid(*damage));
+        return Err(invalid(damage.to_string()));
     }
     let schema: Vec<Vec<Column>> = TableId::ALL
         .iter()
         .map(|id| id.schema().iter().map(|&kind| column(kind)).collect())
         .collect();
-    let positions: Vec<(u32, &replay_columnar::envelope::IndexPage)> = (0..file.runs().len()
-        as u32)
-        .flat_map(|run| file.pages(run).iter().map(move |page| (run, page)))
-        .map(|(run, page)| Ok((run, page.as_ref().map_err(|why| invalid(why.clone()))?)))
-        .collect::<io::Result<_>>()?;
+    let (mut units, mut peak_raw, mut restarts) = (0, 0_u64, Vec::new());
+    for run in 0..file.run_count() {
+        for at in 0..file.run(run)?.pages() {
+            let page = file.page(run, at)?;
+            units += page.units.len();
+            peak_raw = peak_raw.max(page.units.iter().map(|unit| unit.raw).sum());
+            if page.restart.is_some() {
+                restarts.push((run, at));
+            }
+        }
+    }
 
+    let stop = AtomicBool::new(false);
     let mut runs = Vec::new();
     for _ in 0..repetitions {
+        let mut walker = Walker::new(&file, &stop)?;
+        walker.time();
         let mut state = State::new(schema.clone())?;
-        let columns = state.columns().to_vec();
-        let (mut decompress_ns, mut manifest_ns, mut apply_ns) = (0u128, 0u128, 0u128);
         let (mut hours, mut sections, mut changed, mut inserted, mut deleted, mut filled) =
             (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
-        let mut peak_raw = 0u64;
         let (mut rows_ns, mut rows_built) = (0u128, 0u64);
         let (mut keyed, mut buffer) = (Vec::new(), Vec::new());
         // Watched table: hours by live-row count, and hours it changed, inserted or deleted.
@@ -240,96 +244,67 @@ fn main() -> io::Result<()> {
         let mut watched_samples = Vec::new();
         let cpu = thread_ns();
         let wall = Instant::now();
-        for &(_, page) in &positions {
-            // Each run starts from empty tables.
-            if page.first == 0 {
-                state = State::new(schema.clone())?;
-            }
-            let begin = Instant::now();
-            let (manifest_unit, tables) = file.unit_streams(page)?;
-            decompress_ns += begin.elapsed().as_nanos();
-            peak_raw = peak_raw.max(page.units.iter().map(|unit| unit.raw).sum());
-            let mut readers: Vec<Option<Reader<'_>>> = tables
-                .iter()
-                .map(|unit| unit.as_ref().map(|unit| Reader::new(&unit.bytes)))
-                .collect();
-            let mut manifests = Reader::new(&manifest_unit.bytes);
-            while let Some(manifest_bytes) =
-                framing::next_manifest(&mut manifests, manifest_unit.bytes.len())?
-            {
-                let read = Instant::now();
-                let manifest = Manifest::read(manifest_bytes, &columns)?;
-                let mut hour_sections = Vec::with_capacity(manifest.sections.len());
-                for section in &manifest.sections {
-                    let reader = readers
-                        .get_mut(section.table)
-                        .and_then(Option::as_mut)
-                        .ok_or_else(|| invalid("A section's table has no unit"))?;
-                    hour_sections.push(framing::next_section(reader, section.bytes as usize)?);
-                }
-                let applied = Instant::now();
-                manifest_ns += (applied - read).as_nanos();
-                state.apply(&manifest, |index| Ok(hour_sections[index]))?;
-                apply_ns += applied.elapsed().as_nanos();
-                hours += 1;
-                sections += manifest.sections.len() as u64;
-                if materialize {
-                    let built = Instant::now();
-                    for section in &manifest.sections {
-                        let changes = state.changes(section.table).expect("schema table");
-                        rows_built += rows(
-                            TableId::ALL[section.table],
-                            state.table(section.table).expect("schema table"),
-                            state.dictionary(),
-                            changes
-                                .changed
-                                .iter()
-                                .chain(&changes.inserted)
-                                .chain(&changes.fill_slots)
-                                .copied()
-                                .collect::<BTreeSet<u32>>()
-                                .into_iter(),
-                            &mut keyed,
-                            &mut buffer,
-                        )? as u64;
-                    }
-                    rows_ns += built.elapsed().as_nanos();
-                }
-                if let Some(table) = watched {
-                    let live = state.table(table).expect("schema table").live().count();
-                    *live_hours.entry(live).or_default() += 1;
-                    if manifest
-                        .sections
-                        .iter()
-                        .any(|section| section.table == table)
-                    {
-                        let changes = state.changes(table).expect("schema table");
-                        watched_sections += 1;
-                        watched_changed += u64::from(!changes.changed.is_empty());
-                        watched_inserted += u64::from(!changes.inserted.is_empty());
-                        watched_deleted += u64::from(!changes.deleted.is_empty());
-                        if watched_samples.len() < 12 {
-                            watched_samples.push(json!({
-                                "hour_ordinal": hours,
-                                "live": live,
-                                "changed": changes.changed.len(),
-                                "inserted": changes.inserted.len(),
-                                "deleted": changes.deleted.len(),
-                            }));
-                        }
-                    }
-                }
+        walker.walk_runs(&mut state, |state, manifest, _| {
+            hours += 1;
+            sections += manifest.sections.len() as u64;
+            if materialize {
+                let built = Instant::now();
                 for section in &manifest.sections {
                     let changes = state.changes(section.table).expect("schema table");
-                    changed += changes.changed.len() as u64;
-                    inserted += changes.inserted.len() as u64;
-                    deleted += changes.deleted.len() as u64;
-                    filled += changes.filled.len() as u64;
+                    rows_built += rows(
+                        TableId::ALL[section.table],
+                        state.table(section.table).expect("schema table"),
+                        state.dictionary(),
+                        changes
+                            .changed
+                            .iter()
+                            .chain(&changes.inserted)
+                            .chain(&changes.fill_slots)
+                            .copied()
+                            .collect::<BTreeSet<u32>>()
+                            .into_iter(),
+                        &mut keyed,
+                        &mut buffer,
+                    )? as u64;
+                }
+                rows_ns += built.elapsed().as_nanos();
+            }
+            if let Some(table) = watched {
+                let live = state.table(table).expect("schema table").live().count();
+                *live_hours.entry(live).or_default() += 1;
+                if manifest
+                    .sections
+                    .iter()
+                    .any(|section| section.table == table)
+                {
+                    let changes = state.changes(table).expect("schema table");
+                    watched_sections += 1;
+                    watched_changed += u64::from(!changes.changed.is_empty());
+                    watched_inserted += u64::from(!changes.inserted.is_empty());
+                    watched_deleted += u64::from(!changes.deleted.is_empty());
+                    if watched_samples.len() < 12 {
+                        watched_samples.push(json!({
+                            "hour_ordinal": hours,
+                            "live": live,
+                            "changed": changes.changed.len(),
+                            "inserted": changes.inserted.len(),
+                            "deleted": changes.deleted.len(),
+                        }));
+                    }
                 }
             }
-        }
+            for section in &manifest.sections {
+                let changes = state.changes(section.table).expect("schema table");
+                changed += changes.changed.len() as u64;
+                inserted += changes.inserted.len() as u64;
+                deleted += changes.deleted.len() as u64;
+                filled += changes.filled.len() as u64;
+            }
+            Ok(true)
+        })?;
         let cpu_ns = thread_ns() - cpu;
         let wall_ns = wall.elapsed().as_nanos();
+        let timings = walker.timings();
         if hours != file.hours() {
             return Err(invalid(format!("Walked {hours} of {} hours", file.hours())));
         }
@@ -337,30 +312,22 @@ fn main() -> io::Result<()> {
             .map(|table| state.table(table).expect("schema table").live().count())
             .sum();
 
-        // A walker starting at a restart restores its run's dictionary chunks through it,
+        // A walker starting at a restart restores the dictionary chunks its tables declare,
         // then every table.
-        let mut restore_ns = Vec::new();
-        for &(run, page) in &positions {
-            if page.restart.is_none() {
-                continue;
-            }
-            let at = file
-                .pages(run)
-                .iter()
-                .position(|held| held.as_ref().is_ok_and(|held| std::ptr::eq(held, page)))
-                .expect("a page of its run");
+        let mut restore_ms = Vec::new();
+        for &(run, at) in &restarts {
             let begin = Instant::now();
             let mut fresh = State::new(schema.clone())?;
-            file.restore(run, at, &mut fresh)?;
-            restore_ns.push(begin.elapsed().as_nanos() as f64 / 1e6);
+            walker.restore(run, at, &mut fresh)?;
+            restore_ms.push(begin.elapsed().as_nanos() as f64 / 1e6);
         }
         let per_hour = |ns: u128| ns as f64 / 1000.0 / hours as f64;
         runs.push(json!({
             "thread_cpu_us_per_hour": per_hour(cpu_ns as u128),
             "wall_us_per_hour": per_hour(wall_ns),
-            "decompress_us_per_hour": per_hour(decompress_ns),
-            "manifest_us_per_hour": per_hour(manifest_ns),
-            "apply_us_per_hour": per_hour(apply_ns),
+            "decompress_us_per_hour": per_hour(timings.decompress_ns.into()),
+            "manifest_us_per_hour": per_hour(timings.manifest_ns.into()),
+            "apply_us_per_hour": per_hour(timings.apply_ns.into()),
             "rows_us_per_hour": per_hour(rows_ns),
             "rows_per_hour": rows_built as f64 / hours as f64,
             "ns_per_row": rows_ns as f64 / rows_built.max(1) as f64,
@@ -371,7 +338,7 @@ fn main() -> io::Result<()> {
             "fills_per_hour": filled as f64 / hours as f64,
             "live_rows_at_end": live,
             "peak_unit_raw_bytes": peak_raw,
-            "restart_start_ms": restore_ns,
+            "restart_start_ms": restore_ms,
             "watched": watched.map(|table| json!({
                 "table": format!("{:?}", TableId::ALL[table]),
                 "hours_by_live_rows": live_hours.iter().map(|(live, hours)| json!([live, hours])).collect::<Vec<_>>(),
@@ -389,9 +356,9 @@ fn main() -> io::Result<()> {
             "file": path,
             "file_bytes": file.len(),
             "hours": file.hours(),
-            "runs_in_file": file.runs().len(),
-            "units": positions.iter().map(|(_, page)| page.units.len()).sum::<usize>(),
-            "restarts": positions.iter().filter(|(_, page)| page.restart.is_some()).count(),
+            "runs_in_file": file.run_count(),
+            "units": units,
+            "restarts": restarts.len(),
             "runs": runs,
         }))?
     );

@@ -10,7 +10,7 @@
 //! [`Views::advance_recorded`]'s: their kinds, changed keys and masks, and deleted keys.
 
 use replay::{
-    columnar_frames::{Recording, Views, schema},
+    columnar_frames::{Limits, Recording, Views, schema},
     container::Replay,
 };
 use replay_columnar::walk::State;
@@ -301,7 +301,7 @@ fn main() -> io::Result<()> {
     let recording = PathBuf::from(args.next().ok_or_else(usage)?);
     let columnar = PathBuf::from(args.next().ok_or_else(usage)?);
     let replay = Replay::open_path(&recording)?;
-    let file = Recording::open(std::fs::read(&columnar)?)?;
+    let file = Recording::open_path(&columnar, Limits::default())?;
     match args.next() {
         Some(flag) if flag == "--time" => {
             println!("{}", serde_json::to_string_pretty(&time(&replay, &file)?)?);

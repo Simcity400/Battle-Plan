@@ -111,6 +111,13 @@ impl Synthetic {
         &mut self,
         visit: impl FnOnce(&State, &Manifest<'_>, &DecodedFrame, bool) -> T,
     ) -> io::Result<T> {
+        self.end_encoded(|state, manifest, frame, starts, _| visit(state, manifest, frame, starts))
+    }
+
+    pub(crate) fn end_encoded<T>(
+        &mut self,
+        visit: impl FnOnce(&State, &Manifest<'_>, &DecodedFrame, bool, &[(Section, Vec<u8>)]) -> T,
+    ) -> io::Result<T> {
         self.sections.sort_by_key(|(section, _)| section.table);
         let appends = self.strings.take_appended();
         let manifest = Manifest {
@@ -141,7 +148,7 @@ impl Synthetic {
         self.state.apply(&manifest, |at| Ok(&sections[at].1[..]))?;
         let frame = self.views.advance(&self.state, &manifest, self.first)?;
         let starts = std::mem::replace(&mut self.first, false);
-        let seen = visit(&self.state, &manifest, &frame, starts);
+        let seen = visit(&self.state, &manifest, &frame, starts, &sections);
         self.hour += 1;
         Ok(seen)
     }

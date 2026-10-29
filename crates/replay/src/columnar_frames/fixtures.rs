@@ -9,7 +9,7 @@ use replay_columnar::{
 };
 
 /// One extent of `raw` appended to `file`, compressed as the converter stores it.
-fn append(
+pub(crate) fn append(
     file: &mut Vec<u8>,
     kind: Kind,
     (run, stream, first, hours): (u32, u32, u32, u32),
@@ -201,4 +201,438 @@ pub(crate) fn recording(
 /// Every ordinal of `runs` at its run's hour.
 pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> Option<i32> + '_ {
     |run, ordinal| Some(runs[run as usize].1 + ordinal as i32)
+}
+
+/// Two live countries, one retaining its first string through unique-string churn.
+pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage)) -> Vec<u8> {
+    use super::synthetic::{Input, Sample, Synthetic};
+    use crate::rows::CountryRow;
+    let schema = schema().unwrap();
+    let columns: Vec<_> = schema.iter().map(Vec::len).collect();
+    let identity = Identity {
+        schema: envelope::schema_digest(&schema),
+        campaign: b"native synthetic".to_vec(),
+        content: Vec::new(),
+        capture_mode: 0,
+    };
+    let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), 0);
+    let mut file = envelope::MAGIC.to_vec();
+    file.extend_from_slice(&envelope::VERSION.to_le_bytes());
+    let mut synthetic = Synthetic::new(&[TableId::Countries], 7, 100).unwrap();
+    let (mut pages, mut chunk_ends, mut next_id) = (Vec::new(), Vec::new(), 0_usize);
+    for unit in 0..units {
+        let first = unit * envelope::UNIT_ORDINALS;
+        let mut manifests = Writer::new();
+        let mut table_bytes = Writer::new();
+        for ordinal in first..first + envelope::UNIT_ORDINALS {
+            let rows = [
+                CountryRow {
+                    id: 1,
+                    tag: b"old string".to_vec(),
+                    stability_raw: 123,
+                    ..Default::default()
+                },
+                CountryRow {
+                    id: 2,
+                    tag: format!("new string {ordinal}").into_bytes(),
+                    stability_raw: i64::from(ordinal),
+                    ..Default::default()
+                },
+            ];
+            synthetic
+                .table(
+                    TableId::Countries,
+                    Input::Snapshot {
+                        rows: &rows,
+                        partial: None,
+                        read: ordinal % 2 == 0,
+                        sample: if ordinal % 2 == 0 {
+                            Sample::FromReadBit
+                        } else {
+                            Sample::Carried(100 + ordinal as i32 - 1)
+                        },
+                    },
+                )
+                .unwrap();
+            synthetic
+                .end_encoded(|_, manifest, _, _, sections| {
+                    let bytes = manifest.write(&columns).unwrap();
+                    framing::put_manifest(&mut manifests, &bytes).unwrap();
+                    for (_, bytes) in sections {
+                        framing::put_section(&mut table_bytes, bytes).unwrap();
+                    }
+                    chain = envelope::chain_hour(
+                        &chain,
+                        &bytes,
+                        sections.iter().map(|(_, bytes)| bytes.as_slice()),
+                    );
+                })
+                .unwrap();
+        }
+        let after = first + envelope::UNIT_ORDINALS - 1;
+        let state = synthetic.state();
+        let chunk_raw = state.dictionary().chunk(next_id).unwrap();
+        let count = state.dictionary().len() - next_id;
+        let chunk = append(
+            &mut file,
+            Kind::DictionaryChunk,
+            (0, 0, after, 0),
+            &chunk_raw,
+        );
+        let ids = (next_id as u32, count as u32);
+        next_id += count;
+        chunk_ends.push(next_id);
+        let mut tables = Vec::new();
+        for table in 0..schema.len() {
+            let held = state.table(table).unwrap();
+            let acquisition = Acquisition {
+                last_read: state.sampled_at(table),
+                ..Default::default()
+            };
+            let raw = restart::write(
+                held,
+                state.status(table).unwrap(),
+                &acquisition,
+                state.truncated_view(table).unwrap_or(&[]),
+            )
+            .unwrap();
+            let extent = append(
+                &mut file,
+                Kind::RestartTable,
+                (0, table as u32, after, 0),
+                &raw,
+            );
+            let mut chunks = Vec::new();
+            state
+                .text_ids(table, |id| {
+                    chunks.push(chunk_ends.partition_point(|&end| end <= id as usize) as u32);
+                    Ok(())
+                })
+                .unwrap();
+            chunks.sort_unstable();
+            chunks.dedup();
+            tables.push(RestartTable {
+                table: table as u32,
+                extent,
+                chunks,
+            });
+        }
+        let units = vec![
+            append(
+                &mut file,
+                Kind::Unit,
+                (0, 0, first, envelope::UNIT_ORDINALS),
+                manifests.bytes(),
+            ),
+            append(
+                &mut file,
+                Kind::Unit,
+                (
+                    0,
+                    TableId::Countries.index() as u32 + 1,
+                    first,
+                    envelope::UNIT_ORDINALS,
+                ),
+                table_bytes.bytes(),
+            ),
+        ];
+        let mut bits = vec![0; TABLE_COUNT.div_ceil(64)];
+        bits[TableId::Countries.index() / 64] |= 1 << (TableId::Countries.index() % 64);
+        let bits = Bits::from_words(bits).unwrap();
+        let mut page = IndexPage {
+            run: 0,
+            first,
+            hours: envelope::UNIT_ORDINALS,
+            first_hour: 100 + first as i32,
+            last_hour: 100 + after as i32,
+            units,
+            restart: Some(RestartDirectory {
+                after,
+                hour: 100 + after as i32,
+                ordinal: unit,
+                chunk,
+                ids,
+                tables,
+            }),
+            sectioned: bits.clone(),
+            read: bits.clone(),
+            status_changed: bits,
+            chain,
+        };
+        tamper(&mut page);
+        pages.push(append(
+            &mut file,
+            Kind::IndexPage,
+            (0, 0, first, envelope::UNIT_ORDINALS),
+            &page.write().unwrap(),
+        ));
+    }
+    let directory = RunDirectory {
+        branch: 7,
+        epoch: envelope::epoch::START,
+        first_hour: 100,
+        ordinals: units * envelope::UNIT_ORDINALS,
+        chain,
+        pages,
+    };
+    let directory = append(
+        &mut file,
+        Kind::RunDirectory,
+        (0, 0, 0, 0),
+        &directory.write(0).unwrap(),
+    );
+    let root = Root {
+        identity,
+        revision: 1,
+        runs: vec![directory],
+        controls: Vec::new(),
+    };
+    let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
+    file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
+    file
+}
+
+/// What a synthetic writer saw of an hour: its frame, and each table's sample hour.
+pub(crate) type Seen = (DecodedFrame, Vec<Option<i32>>);
+
+/// Countries and world tension over `runs` (branch, first hour, units), written as the native
+/// recorder writes them and stored as the converter stores them: each unit's manifests and
+/// sections, and a restart ending every `restart_units`th unit. Strings come back pages
+/// after their last use, as text cells and as an unavailable table's reasons, and a row
+/// leaves and comes back with the string it held. The file, and what the writer saw of each
+/// hour, run after run.
+pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Seen>) {
+    use super::synthetic::{Input, Sample, Synthetic};
+    use crate::rows::{CountryRow, WorldTensionRow};
+    let schema = schema().unwrap();
+    let columns: Vec<_> = schema.iter().map(Vec::len).collect();
+    let identity = Identity {
+        schema: envelope::schema_digest(&schema),
+        campaign: b"churned synthetic".to_vec(),
+        content: Vec::new(),
+        capture_mode: 0,
+    };
+    let streams = [TableId::Countries, TableId::WorldTension];
+    let mut written = vec![0; TABLE_COUNT.div_ceil(64)];
+    for table in streams {
+        written[table.index() / 64] |= 1 << (table.index() % 64);
+    }
+    let written = Bits::from_words(written).unwrap();
+    let mut file = envelope::MAGIC.to_vec();
+    file.extend_from_slice(&envelope::VERSION.to_le_bytes());
+    let (mut directories, mut seen) = (Vec::new(), Vec::new());
+    for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
+        let mut synthetic = Synthetic::new(&streams, branch, first_hour).unwrap();
+        let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), run);
+        let (mut pages, mut chunk_ends) = (Vec::new(), Vec::new());
+        for unit in 0..units {
+            let first = unit * envelope::UNIT_ORDINALS;
+            let after = first + envelope::UNIT_ORDINALS - 1;
+            let mut manifests = Writer::new();
+            let mut sections: Vec<Writer> = streams.iter().map(|_| Writer::new()).collect();
+            for ordinal in first..=after {
+                let mut rows = vec![
+                    CountryRow {
+                        id: 1,
+                        tag: b"old string".to_vec(),
+                        stability_raw: 1,
+                        ..Default::default()
+                    },
+                    CountryRow {
+                        id: 2,
+                        tag: format!("new string {ordinal}").into_bytes(),
+                        stability_raw: i64::from(ordinal),
+                        ..Default::default()
+                    },
+                    // The same 40 strings, each back 2,000 hours after it was last held.
+                    CountryRow {
+                        id: 3,
+                        tag: format!("cycle {}", ordinal / 50 % 40).into_bytes(),
+                        ..Default::default()
+                    },
+                ];
+                if ordinal / 100 % 2 == 0 {
+                    rows.push(CountryRow {
+                        id: 4,
+                        tag: b"returning".to_vec(),
+                        ..Default::default()
+                    });
+                }
+                synthetic
+                    .table(
+                        TableId::Countries,
+                        Input::Snapshot {
+                            rows: &rows,
+                            partial: None,
+                            read: true,
+                            sample: Sample::FromReadBit,
+                        },
+                    )
+                    .unwrap();
+                let block = ordinal / 300;
+                let tension = if block % 2 == 0 {
+                    synthetic.table(
+                        TableId::WorldTension,
+                        Input::Snapshot {
+                            rows: &[WorldTensionRow {
+                                total_raw: i64::from(block),
+                                source_count: 1,
+                                country_aggregate_count: 2,
+                            }],
+                            partial: None,
+                            read: true,
+                            sample: Sample::FromReadBit,
+                        },
+                    )
+                } else {
+                    synthetic.table::<WorldTensionRow>(
+                        TableId::WorldTension,
+                        Input::Unavailable {
+                            reason: &format!("refused {}", block / 2 % 3),
+                            read: false,
+                            sample: Sample::FromReadBit,
+                        },
+                    )
+                };
+                tension.unwrap();
+                synthetic
+                    .end_encoded(|_, manifest, frame, _, encoded| {
+                        let bytes = manifest.write(&columns).unwrap();
+                        framing::put_manifest(&mut manifests, &bytes).unwrap();
+                        for (section, raw) in encoded {
+                            let at = streams
+                                .iter()
+                                .position(|table| table.index() == section.table)
+                                .unwrap();
+                            framing::put_section(&mut sections[at], raw).unwrap();
+                        }
+                        chain = envelope::chain_hour(
+                            &chain,
+                            &bytes,
+                            encoded.iter().map(|(_, raw)| raw.as_slice()),
+                        );
+                        seen.push((
+                            frame.clone(),
+                            frame.tables.iter().map(SharedView::sampled_at).collect(),
+                        ));
+                    })
+                    .unwrap();
+            }
+            let mut extents = vec![append(
+                &mut file,
+                Kind::Unit,
+                (run, framing::MANIFESTS, first, envelope::UNIT_ORDINALS),
+                manifests.bytes(),
+            )];
+            for (table, bytes) in streams.iter().zip(&sections) {
+                if !bytes.bytes().is_empty() {
+                    let stream = framing::table_stream(table.index());
+                    extents.push(append(
+                        &mut file,
+                        Kind::Unit,
+                        (run, stream, first, envelope::UNIT_ORDINALS),
+                        bytes.bytes(),
+                    ));
+                }
+            }
+            extents.sort_by_key(|extent| extent.stream);
+            let restart = if (unit + 1) % restart_units == 0 {
+                let state = synthetic.state();
+                let next_id = chunk_ends.last().copied().unwrap_or(0);
+                let count = state.dictionary().len() - next_id;
+                let chunk = append(
+                    &mut file,
+                    Kind::DictionaryChunk,
+                    (run, 0, after, 0),
+                    &state.dictionary().chunk(next_id).unwrap(),
+                );
+                chunk_ends.push(next_id + count);
+                let mut tables = Vec::new();
+                for table in 0..TABLE_COUNT {
+                    let raw = restart::write(
+                        state.table(table).unwrap(),
+                        state.status(table).unwrap(),
+                        &Acquisition {
+                            last_read: state.sampled_at(table),
+                            ..Default::default()
+                        },
+                        state.truncated_view(table).unwrap_or(&[]),
+                    )
+                    .unwrap();
+                    let mut chunks = Vec::new();
+                    state
+                        .text_ids(table, |id| {
+                            chunks
+                                .push(chunk_ends.partition_point(|&end| end <= id as usize) as u32);
+                            Ok(())
+                        })
+                        .unwrap();
+                    chunks.sort_unstable();
+                    chunks.dedup();
+                    tables.push(RestartTable {
+                        table: table as u32,
+                        extent: append(
+                            &mut file,
+                            Kind::RestartTable,
+                            (run, table as u32, after, 0),
+                            &raw,
+                        ),
+                        chunks,
+                    });
+                }
+                Some(RestartDirectory {
+                    after,
+                    hour: first_hour + after as i32,
+                    ordinal: chunk_ends.len() as u32 - 1,
+                    chunk,
+                    ids: (next_id as u32, count as u32),
+                    tables,
+                })
+            } else {
+                None
+            };
+            let page = IndexPage {
+                run,
+                first,
+                hours: envelope::UNIT_ORDINALS,
+                first_hour: first_hour + first as i32,
+                last_hour: first_hour + after as i32,
+                units: extents,
+                restart,
+                sectioned: written.clone(),
+                read: written.clone(),
+                status_changed: written.clone(),
+                chain,
+            };
+            pages.push(append(
+                &mut file,
+                Kind::IndexPage,
+                (run, 0, first, envelope::UNIT_ORDINALS),
+                &page.write().unwrap(),
+            ));
+        }
+        let directory = RunDirectory {
+            branch,
+            epoch: envelope::epoch::START,
+            first_hour,
+            ordinals: units * envelope::UNIT_ORDINALS,
+            chain,
+            pages,
+        };
+        directories.push(append(
+            &mut file,
+            Kind::RunDirectory,
+            (run, 0, 0, 0),
+            &directory.write(run).unwrap(),
+        ));
+    }
+    let root = Root {
+        identity,
+        revision: 1,
+        runs: directories,
+        controls: Vec::new(),
+    };
+    let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
+    file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
+    (file, seen)
 }

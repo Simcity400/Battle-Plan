@@ -9,7 +9,7 @@
 //! segment order as soon as the segments before it have, so a family's ordered work (its
 //! keys, runs and holders) proceeds while later segments are still walked.
 
-use crate::columnar_frames::{Recording, Segment, schema};
+use crate::columnar_frames::{Recording, Segment, Walker, schema};
 use replay_columnar::manifest::Manifest;
 pub use replay_columnar::walk::State;
 use std::{
@@ -91,23 +91,66 @@ struct Progress {
     failure: Option<io::Error>,
 }
 
+/// A run's progress, and how its workers wait for one another.
+struct Schedule<'a> {
+    recording: &'a Recording,
+    ahead: usize,
+    progress: Mutex<Progress>,
+    changed: Condvar,
+    stopped: AtomicBool,
+}
+
+impl Schedule<'_> {
+    fn lock(&self) -> MutexGuard<'_, Progress> {
+        self.progress.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Keeps the run's first failure and stops every worker.
+    fn fail(&self, error: io::Error) {
+        self.lock().failure.get_or_insert(error);
+        self.stop();
+    }
+
+    /// Stops every worker, those waiting for the recording's budget too.
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::Relaxed);
+        self.changed.notify_all();
+        self.recording.wake();
+    }
+
+    /// A walk going on through segment `next` waits for the look-ahead, but only once every
+    /// segment before it has a walk of its own: one it would wait for might need its worker.
+    /// Its walker gives back its buffers before it waits.
+    fn turn(&self, next: usize, walker: &mut Walker<'_>) -> bool {
+        let mut held = self.lock();
+        loop {
+            if held.failure.is_some() || self.stopped.load(Ordering::Relaxed) {
+                return false;
+            }
+            if next - held.emitted < self.ahead || held.next < next {
+                return true;
+            }
+            walker.park();
+            held = self
+                .changed
+                .wait(held)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
 /// Stops the run when its thread unwinds from a panic, so no other thread waits for it;
 /// the scope then joins every worker and goes on with the panic.
-struct Unwinding<'a> {
-    progress: &'a Mutex<Progress>,
-    changed: &'a Condvar,
-    stopped: &'a AtomicBool,
-}
+struct Unwinding<'a>(&'a Schedule<'a>);
 
 impl Drop for Unwinding<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            self.stopped.store(true, Ordering::Relaxed);
-            let mut held = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
-            held.failure
+            self.0
+                .lock()
+                .failure
                 .get_or_insert_with(|| io::Error::other("A segment walk panicked"));
-            drop(held);
-            self.changed.notify_all();
+            self.0.stop();
         }
     }
 }
@@ -127,25 +170,25 @@ fn first_hour(recording: &Recording, segment: &Segment) -> io::Result<i32> {
     })
 }
 
-/// Segment `at` walked through its operators, until `stopped`, and on through every segment
-/// after it in its branch that they cannot start ([`Operator::starts_at`]): the next of its
-/// run, else the first of its branch's next run. Each segment's results go to `hand` at its
-/// end; `turn` holds the walk before it goes on, as the look-ahead allows. A segment another
-/// walk goes on through hands nothing here.
+/// Segment `at` walked by `walker` through its operators, until stopped, and on through
+/// every segment after it in its branch that they cannot start ([`Operator::starts_at`]):
+/// the next of its run, else the first of its branch's next run. Each segment's results go
+/// to `hand` at its end; the schedule holds the walk before it goes on, as the look-ahead
+/// allows. A segment another walk goes on through hands nothing here.
 fn walk(
-    recording: &Recording,
+    schedule: &Schedule<'_>,
+    walker: &mut Walker<'_>,
     segments: &[Segment],
     at: usize,
     mut operators: Operators,
-    stopped: &AtomicBool,
     hand: &mut dyn FnMut(usize, Results),
-    turn: &dyn Fn(usize) -> bool,
 ) -> io::Result<()> {
+    let recording = schedule.recording;
     let branch_of = |run: u32| recording.run(run).map(|run| run.branch);
     let first = &segments[at];
     let branch = branch_of(first.run)?;
     let mut state = State::new(schema()?)?;
-    recording.begin_segment(first, &mut state)?;
+    walker.begin(first, &mut state)?;
     let start = match first.restart {
         Some(_) => Start::Restart(&state),
         None => Start::Run {
@@ -165,7 +208,7 @@ fn walk(
     loop {
         let segment = &segments[walked];
         let mut ordinal = segment.first;
-        recording.walk_begun(segment, &mut state, |state, manifest, starts| {
+        walker.walk(segment, &mut state, |state, manifest, starts| {
             let hour = Hour {
                 branch,
                 hour: manifest.hour,
@@ -180,7 +223,7 @@ fn walk(
                 operator.hour(&hour)?;
             }
             ordinal += 1;
-            Ok(!stopped.load(Ordering::Relaxed))
+            Ok(!schedule.stopped.load(Ordering::Relaxed))
         })?;
         fresh = false;
         let results =
@@ -188,7 +231,7 @@ fn walk(
                 .into_iter()
                 .collect::<io::Result<Results>>()?;
         hand(walked, results);
-        if stopped.load(Ordering::Relaxed) {
+        if schedule.stopped.load(Ordering::Relaxed) {
             break;
         }
         let next = match segments.get(walked + 1) {
@@ -206,11 +249,11 @@ fn walk(
         let Some(next) = next else {
             break;
         };
-        if !turn(next) {
+        if !schedule.turn(next, walker) {
             break;
         }
         if segments[next].run != segment.run {
-            recording.begin_segment(&segments[next], &mut state)?;
+            walker.begin(&segments[next], &mut state)?;
             let first = first_hour(recording, &segments[next])?;
             for operator in &mut operators {
                 operator.cross(first)?;
@@ -225,8 +268,9 @@ fn walk(
 /// Walks every segment of `recording` on up to `threads` workers, each hour visiting the
 /// operators `make` gives the segment, and hands `emit` each segment's results on the
 /// caller's thread, in segment order. At most `ahead` segments are walked or waiting at once
-/// past the last one handed on, which bounds the results held. The first failure stops
-/// every worker and is returned; a panic stops them too and goes on once they have stopped.
+/// past the last one handed on, which bounds the results held. Each worker keeps one walker,
+/// whose buffers it gives back before it waits. The first failure stops every worker and is
+/// returned; a panic stops them too and goes on once they have stopped.
 pub fn run(
     recording: &Recording,
     threads: usize,
@@ -235,50 +279,31 @@ pub fn run(
     emit: &mut dyn FnMut(&Segment, Results) -> io::Result<()>,
 ) -> io::Result<()> {
     let segments = recording.segments();
-    let ahead = ahead.max(1);
-    let progress = Mutex::new(Progress {
-        next: 0,
-        emitted: 0,
-        done: BTreeMap::new(),
-        failure: None,
-    });
-    let changed = Condvar::new();
-    let stopped = AtomicBool::new(false);
-    let lock =
-        || -> MutexGuard<'_, Progress> { progress.lock().unwrap_or_else(PoisonError::into_inner) };
-    let unwinding = || Unwinding {
-        progress: &progress,
-        changed: &changed,
-        stopped: &stopped,
-    };
-    let fail = |error: io::Error| {
-        lock().failure.get_or_insert(error);
-        stopped.store(true, Ordering::Relaxed);
-        changed.notify_all();
-    };
-    // A walk going on through segment `next` waits for the look-ahead, but only once every
-    // segment before it has a walk of its own: one it would wait for might need its worker.
-    let turn = |next: usize| -> bool {
-        let mut held = lock();
-        loop {
-            if held.failure.is_some() || stopped.load(Ordering::Relaxed) {
-                return false;
-            }
-            if next - held.emitted < ahead || held.next < next {
-                return true;
-            }
-            held = changed.wait(held).unwrap_or_else(PoisonError::into_inner);
-        }
+    let schedule = Schedule {
+        recording,
+        ahead: ahead.max(1),
+        progress: Mutex::new(Progress {
+            next: 0,
+            emitted: 0,
+            done: BTreeMap::new(),
+            failure: None,
+        }),
+        changed: Condvar::new(),
+        stopped: AtomicBool::new(false),
     };
     std::thread::scope(|scope| {
         // First, so a failed spawn also wakes the workers already started.
-        let _unwinding = unwinding();
+        let _unwinding = Unwinding(&schedule);
         for _ in 0..threads.clamp(1, segments.len().max(1)) {
             scope.spawn(|| {
-                let _unwinding = unwinding();
+                let _unwinding = Unwinding(&schedule);
+                let mut walker = match Walker::new(recording, &schedule.stopped) {
+                    Ok(walker) => walker,
+                    Err(error) => return schedule.fail(error),
+                };
                 loop {
                     let at = {
-                        let mut held = lock();
+                        let mut held = schedule.lock();
                         loop {
                             // A walk going on through segments hands them itself.
                             while held.next < segments.len()
@@ -289,32 +314,34 @@ pub fn run(
                             if held.failure.is_some() || held.next >= segments.len() {
                                 return;
                             }
-                            if held.next - held.emitted < ahead {
+                            if held.next - held.emitted < schedule.ahead {
                                 break;
                             }
-                            held = changed.wait(held).unwrap_or_else(PoisonError::into_inner);
+                            walker.park();
+                            held = schedule
+                                .changed
+                                .wait(held)
+                                .unwrap_or_else(PoisonError::into_inner);
                         }
                         held.next += 1;
                         held.next - 1
                     };
                     let mut hand = |walked: usize, results: Results| {
-                        lock().done.insert(walked, results);
-                        changed.notify_all();
+                        schedule.lock().done.insert(walked, results);
+                        schedule.changed.notify_all();
                     };
                     let walked = make(&segments[at]).and_then(|operators| {
-                        walk(
-                            recording, &segments, at, operators, &stopped, &mut hand, &turn,
-                        )
+                        walk(&schedule, &mut walker, segments, at, operators, &mut hand)
                     });
                     if let Err(error) = walked {
-                        return fail(error);
+                        return schedule.fail(error);
                     }
                 }
             });
         }
         for (at, segment) in segments.iter().enumerate() {
             let results = {
-                let mut held = lock();
+                let mut held = schedule.lock();
                 loop {
                     if held.failure.is_some() {
                         return;
@@ -322,17 +349,21 @@ pub fn run(
                     if let Some(results) = held.done.remove(&at) {
                         break results;
                     }
-                    held = changed.wait(held).unwrap_or_else(PoisonError::into_inner);
+                    held = schedule
+                        .changed
+                        .wait(held)
+                        .unwrap_or_else(PoisonError::into_inner);
                 }
             };
             if let Err(error) = emit(segment, results) {
-                return fail(error);
+                return schedule.fail(error);
             }
-            lock().emitted = at + 1;
-            changed.notify_all();
+            schedule.lock().emitted = at + 1;
+            schedule.changed.notify_all();
         }
     });
-    match progress
+    match schedule
+        .progress
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner)
         .failure

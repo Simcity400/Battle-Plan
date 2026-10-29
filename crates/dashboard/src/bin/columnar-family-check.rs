@@ -18,7 +18,11 @@ use dashboard_diplomacy::products::diplomacy_state;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_land_battles::products::division_log;
 use dashboard_stability::products::country_stability::columnar as stability;
-use replay::{columnar_frames::Recording, container::Replay, segments};
+use replay::{
+    columnar_frames::{Limits, Recording},
+    container::Replay,
+    segments,
+};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -564,7 +568,7 @@ fn run() -> io::Result<()> {
         block_ends.insert((block.branch, block.last_hour), *ordinal);
         *ordinal += 1;
     }
-    let mut file = Recording::open(std::fs::read(&columnar)?)?;
+    let mut file = Recording::open_path(&columnar, Limits::default())?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(format!("The columnar file is damaged: {damage}")));
     }

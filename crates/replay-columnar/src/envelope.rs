@@ -35,7 +35,7 @@ mod tests;
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
 pub const VERSION: u32 = 3;
 pub const HEADER_BYTES: usize = 12;
-const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
+pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
 pub const FOOTER_BYTES: usize = 8 + 8 + 16 + 8;
 /// Recorded ordinals per unit; only a run's last unit may hold fewer.

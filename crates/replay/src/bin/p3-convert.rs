@@ -5,7 +5,8 @@
 //! hour's stored metrics against its manifest.
 //!
 //! Output: a version 3 `H4COLUMN` recording (`replay_columnar::envelope`), a run per
-//! continuous span of one branch. A run's units are replay-columnar's framing (the
+//! continuous span of one branch, and with `--run-units`, a run per that many units of a
+//! span, for measuring walks over many runs. A run's units are replay-columnar's framing (the
 //! manifest stream and one stream per table) on the envelope's unit grid and, every
 //! `--restart-units` units, a restart: the dictionary chunk of the run's strings first used
 //! since its previous restart (`walk::Dictionary::read_chunk` bytes), then each table's
@@ -1061,38 +1062,46 @@ struct Options {
     output: PathBuf,
     /// The envelope's unit hours times `--restart-units`, which fits a `u32`.
     restart_hours: u32,
+    /// The envelope's unit hours times `--run-units`: the most a run holds; a span's later
+    /// hours start a run of their own.
+    run_hours: Option<u32>,
     level: i32,
     window_log: u32,
     budget_mb: u32,
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> io::Result<Options> {
-    let usage = || invalid("p3-convert <recording.battleplan> <out.h4col> [--restart-units 9] [--level 3] [--window-log 24] [--budget-mb 30]");
+    let usage = || invalid("p3-convert <recording.battleplan> <out.h4col> [--restart-units 9] [--run-units <n>] [--level 3] [--window-log 24] [--budget-mb 30]");
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage());
     };
-    let (mut restart_units, mut level, mut window_log, mut budget_mb) = (9_u32, 3_i32, 24_u32, 30_u32);
+    let (mut restart_units, mut run_units, mut level, mut window_log, mut budget_mb) = (9_u32, None, 3_i32, 24_u32, 30_u32);
     while let Some(flag) = args.next() {
         let value = args.next().and_then(|value| value.into_string().ok()).ok_or_else(usage)?;
         let number = || value.parse::<i64>().map_err(|_| usage());
         match flag.to_str() {
             Some("--restart-units") => restart_units = u32::try_from(number()?).map_err(|_| usage())?,
+            Some("--run-units") => run_units = Some(u32::try_from(number()?).map_err(|_| usage())?),
             Some("--level") => level = i32::try_from(number()?).map_err(|_| usage())?,
             Some("--window-log") => window_log = u32::try_from(number()?).map_err(|_| usage())?,
             Some("--budget-mb") => budget_mb = u32::try_from(number()?).map_err(|_| usage())?,
             _ => return Err(usage()),
         }
     }
-    if restart_units == 0 {
+    if restart_units == 0 || run_units == Some(0) {
         return Err(usage());
     }
     let restart_hours = envelope::UNIT_ORDINALS
         .checked_mul(restart_units)
         .ok_or_else(|| invalid("--restart-units units pass 2^32 hours"))?;
+    let run_hours = run_units
+        .map(|units| envelope::UNIT_ORDINALS.checked_mul(units).ok_or_else(|| invalid("--run-units units pass 2^32 hours")))
+        .transpose()?;
     Ok(Options {
         input: PathBuf::from(input),
         output: PathBuf::from(output),
         restart_hours,
+        run_hours,
         level,
         window_log,
         budget_mb,
@@ -1157,7 +1166,7 @@ impl Drop for Unfinished {
 }
 
 fn main() -> io::Result<()> {
-    let Options { input, output, restart_hours, level, window_log, budget_mb } = options(std::env::args_os().skip(1))?;
+    let Options { input, output, restart_hours, run_hours, level, window_log, budget_mb } = options(std::env::args_os().skip(1))?;
     let source_bytes = std::fs::metadata(&input)?.len();
     let replay = Replay::open_path(&input)?;
     let (partial, counts) = written_paths(&input, &output)?;
@@ -1197,12 +1206,17 @@ fn main() -> io::Result<()> {
         &replay,
         |recorded, decoded| {
             let begin = Instant::now();
-            // A branch change or a gap ends the run; the next starts from empty tables and
-            // its own dictionary.
-            let continues = run.as_ref().is_some_and(|run| run.branch == decoded.branch && run.last_hour.checked_add(1) == Some(decoded.hour));
+            // A branch change or a gap ends the run, as does `--run-units`; the next starts
+            // from empty tables and its own dictionary.
+            let follows = run.as_ref().is_some_and(|run| run.branch == decoded.branch && run.last_hour.checked_add(1) == Some(decoded.hour));
+            let continues = follows && run.as_ref().is_some_and(|run| run_hours.is_none_or(|hours| run.ordinal < hours));
             if !continues {
-                // A converted recording's later runs start at a branch change or a gap.
-                let epoch = if run.is_none() { envelope::epoch::START } else { envelope::epoch::GAP };
+                // A run `--run-units` ends is continued by the next; others end at a branch change or a gap.
+                let epoch = match (run.is_some(), follows) {
+                    (false, _) => envelope::epoch::START,
+                    (true, true) => envelope::epoch::CONTINUATION,
+                    (true, false) => envelope::epoch::GAP,
+                };
                 if run.take().is_some() {
                     finish_run(&mut file, &mut writers, &dictionary, &mut written)?;
                     for writer in &mut writers {
@@ -1404,6 +1418,7 @@ fn main() -> io::Result<()> {
         "gate": "every written slot each hour, every live slot at every unit's end and at the end, and every hour's stored metrics: no difference",
         "unit_hours": envelope::UNIT_ORDINALS,
         "restart_hours": restart_hours,
+        "run_hours": run_hours,
         "level": level,
         "restart_window_log": window_log,
         "walker_decode_memory": {
@@ -1485,6 +1500,17 @@ mod tests {
         assert!(options(arguments(&["in", "out", "--restart-units", "0"])).is_err());
         // Units are the envelope's grid.
         assert!(options(arguments(&["in", "out", "--unit-hours", "360"])).is_err());
+    }
+
+    #[test]
+    fn runs_end_only_at_branch_changes_and_gaps_unless_cut_into_units() {
+        assert_eq!(options(arguments(&["in", "out"])).unwrap().run_hours, None);
+        let cut = options(arguments(&["in", "out", "--run-units", "9"])).unwrap();
+        assert_eq!(cut.run_hours, Some(9 * envelope::UNIT_ORDINALS));
+        assert!(options(arguments(&["in", "out", "--run-units", "0"])).is_err());
+        let past = (u32::MAX / envelope::UNIT_ORDINALS + 1).to_string();
+        let refused = options(arguments(&["in", "out", "--run-units", &past])).err().unwrap();
+        assert!(refused.to_string().contains("--run-units"), "{refused}");
     }
 
     #[test]

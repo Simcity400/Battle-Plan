@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    columnar_frames::{Recording, Segment, Views, schema},
+    columnar_frames::{Limits, Recording, Segment, Views, Walker, schema},
     format::FormatVersion,
     frame::{DecodedFrame, FrameInput, Metrics, TableInput, TableView},
     native_frame::{FrameHour, FrameWriter},
@@ -8,7 +8,7 @@ use crate::{
     scope::{self, CaptureMode},
 };
 use replay_columnar::{manifest::Manifest, walk::State};
-use std::io::Cursor;
+use std::{io::Cursor, sync::atomic::AtomicBool};
 
 const TABLES: [TableId; 1] = [TableId::Countries];
 
@@ -138,7 +138,7 @@ fn written(hours: i32, settings: Settings) -> (Vec<u8>, Vec<DecodedFrame>) {
 fn a_run_reads_back_from_its_start_and_from_every_restart() {
     let hours = 2 * envelope::UNIT_ORDINALS as i32 + 5;
     let (bytes, frames) = written(hours, EVERY_UNIT);
-    let recording = Recording::open(bytes).unwrap();
+    let recording = Recording::open(bytes, Limits::default()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), hours as u64);
     let segments = recording.segments();
@@ -165,7 +165,10 @@ fn a_run_reads_back_from_its_start_and_from_every_restart() {
         let mut state = State::new(schema().unwrap()).unwrap();
         let mut views = Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
         let before = &frames[segment.first as usize - 1];
-        recording.begin_segment(segment, &mut state).unwrap();
+        Walker::new(&recording, &AtomicBool::new(false))
+            .unwrap()
+            .begin(segment, &mut state)
+            .unwrap();
         same(before, &views.restored(&state, 1, before.hour).unwrap());
         let mut at = segment.first as usize;
         recording
@@ -183,7 +186,7 @@ fn a_run_reads_back_from_its_start_and_from_every_restart() {
 #[test]
 fn a_full_position_closes_before_the_next_hour_and_restarts_only_when_due() {
     let (bytes, _) = written(envelope::UNIT_ORDINALS as i32 + 1, Settings::RECORDING);
-    let recording = Recording::open(bytes).unwrap();
+    let recording = Recording::open(bytes, Limits::default()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(
         recording.segments(),
@@ -277,7 +280,7 @@ fn refused_hours_leave_the_file_whole_and_restarts_wait_for_the_commit() {
         writer.commit(prepared).unwrap();
         writer.restart().unwrap();
     }
-    let recording = Recording::open(file.finish().unwrap().file.into_inner()).unwrap();
+    let recording = Recording::open(file.finish().unwrap().file.into_inner(), Limits::default()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), 3);
 }
