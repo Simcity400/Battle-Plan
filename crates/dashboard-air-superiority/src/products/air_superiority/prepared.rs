@@ -4,6 +4,7 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
+mod days;
 mod first_view;
 mod values;
 
@@ -929,19 +930,16 @@ impl Prepared {
             .collect::<Result<_, _>>()
             .map_err(Into::into)
     }
-    #[allow(clippy::too_many_arguments)]
-    fn samples(
+    /// The hours `params` samples, and the series reading their inputs.
+    fn sampled<'a>(
         &self,
-        store: &store::Store,
-        key: &store::SourceKey,
+        store: &'a store::Store,
+        key: &'a store::SourceKey,
         branch: u64,
         params: &AirParams,
-        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
-        groups: &dashboard_base::products::country_groups::Scan,
-        anchors: &assignment::SideAnchors,
-        sides: &mut Vec<AirSide>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Vec<Snapshot>> {
+        fields: &'a std::sync::OnceLock<Vec<(Field, u64)>>,
+        cancelled: &'a AtomicBool,
+    ) -> io::Result<Sampled<'a>> {
         let (first, last) = hours(params)?;
         let first = if params.view == AirView::Timeline {
             first
@@ -978,13 +976,13 @@ impl Prepared {
                 wanted.extend(run.first_hour..=run.last_hour);
             }
         }
-        let mut values = Reader::new(
+        let values = Reader::new(
             store,
             key,
             format!("air-superiority-{branch}-values"),
             cancelled,
         )?;
-        let mut events = Reader::new(
+        let events = Reader::new(
             store,
             key,
             format!("air-superiority-{branch}-operands"),
@@ -997,25 +995,40 @@ impl Prepared {
                 fields.get_or_init(|| parsed)
             }
         };
+        Ok(Sampled {
+            first,
+            last,
+            wanted,
+            values,
+            events,
+            fields,
+        })
+    }
+    /// Each hour `params` samples, classified in turn against `sides`, which it extends.
+    #[allow(clippy::too_many_arguments)]
+    fn samples(
+        &self,
+        store: &store::Store,
+        key: &store::SourceKey,
+        branch: u64,
+        params: &AirParams,
+        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
+        groups: &dashboard_base::products::country_groups::Scan,
+        anchors: &assignment::SideAnchors,
+        sides: &mut Vec<AirSide>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<Snapshot>> {
+        let mut sampled = self.sampled(store, key, branch, params, fields, cancelled)?;
         let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_days");
-        let mut indices = sides
-            .iter()
-            .enumerate()
-            .map(|(index, side)| (side.key.clone(), index as u32))
-            .collect();
+        let mut indices = catalogue_indices(sides);
         let mut samples = Vec::new();
         let mut rosters = scan::RosterRead::default();
-        let view = (
-            (params.mode == Some(AirMode::Viewpoint))
-                .then_some(params.viewpoint.as_deref())
-                .flatten(),
-            params.viewpoint_country == Some(true),
-        );
+        let view = sampled_view(params);
         values::each_hour(
-            &wanted,
-            fields,
-            &mut values,
-            &mut events,
+            &sampled.wanted,
+            sampled.fields,
+            &mut sampled.values,
+            &mut sampled.events,
             cancelled,
             |hour, projection, auxiliary| {
                 let _cpu =
@@ -1036,6 +1049,109 @@ impl Prepared {
         )?;
         Ok(samples)
     }
+    /// A timeline's days, as [`Self::samples`] classifies them, the days its view already
+    /// classified from this prepared state (`serial`) for another query taken from
+    /// `timelines`, and the days every later query shares kept there.
+    #[allow(clippy::too_many_arguments)]
+    fn timeline_days(
+        &self,
+        store: &store::Store,
+        key: &store::SourceKey,
+        branch: u64,
+        params: &AirParams,
+        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
+        groups: &dashboard_base::products::country_groups::Scan,
+        anchors: &assignment::SideAnchors,
+        sides: &mut Vec<AirSide>,
+        timelines: &days::Timelines,
+        serial: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<Arc<Snapshot>>> {
+        let mut sampled = self.sampled(store, key, branch, params, fields, cancelled)?;
+        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_days");
+        let view = sampled_view(params);
+        let kept = timelines.view((
+            branch,
+            serial,
+            sampled.first,
+            view.0.map(str::to_owned),
+            view.1,
+        ));
+        let mut days = kept
+            .days
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A query cancelled while it waited for another replays nothing.
+        check_cancel(cancelled)?;
+        // Days before the last hour's are the same for every query reaching past them.
+        let last_day = sampled.last.div_euclid(DAY_HOURS);
+        let complete = sampled
+            .wanted
+            .partition_point(|hour| hour.div_euclid(DAY_HOURS) < last_day);
+        let mut samples = days.resume(&kept, &sampled.wanted[..complete], sides, cancelled)?;
+        let mut indices = catalogue_indices(sides);
+        let mut rosters = scan::RosterRead::default();
+        values::each_hour(
+            &sampled.wanted[samples.len()..],
+            sampled.fields,
+            &mut sampled.values,
+            &mut sampled.events,
+            cancelled,
+            |hour, projection, auxiliary| {
+                let _cpu =
+                    replay_frame::cpu::scope_phase("air_superiority:query_sample_classification");
+                #[cfg(test)]
+                days::CLASSIFIED.with(|count| count.set(count.get() + 1));
+                let before = days.before(&kept, samples.len(), complete, sides, hour);
+                let mut sample = scan::prepared_snapshot(
+                    hour,
+                    projection,
+                    groups,
+                    anchors,
+                    view,
+                    (&mut *sides, &mut indices),
+                    &mut rosters,
+                )?;
+                scan::apply_auxiliary(&mut sample, auxiliary);
+                let sample = Arc::new(sample);
+                if let Some(before) = before {
+                    days.keep(timelines, &kept, &sample, before, sides);
+                }
+                samples.push(sample);
+                Ok(())
+            },
+        )?;
+        Ok(samples)
+    }
+}
+
+/// The hours a query samples and the series reading their inputs.
+struct Sampled<'a> {
+    first: i32,
+    last: i32,
+    wanted: Vec<i32>,
+    values: Reader<'a>,
+    events: Reader<'a>,
+    fields: &'a [(Field, u64)],
+}
+
+/// The viewpoint a query classifies its samples for, and whether it is a country.
+fn sampled_view(params: &AirParams) -> (Option<&str>, bool) {
+    (
+        (params.mode == Some(AirMode::Viewpoint))
+            .then_some(params.viewpoint.as_deref())
+            .flatten(),
+        params.viewpoint_country == Some(true),
+    )
+}
+
+/// Each side's index in the catalogue `sides`, by key.
+fn catalogue_indices(sides: &[AirSide]) -> HashMap<String, u32> {
+    sides
+        .iter()
+        .enumerate()
+        .map(|(index, side)| (side.key.clone(), index as u32))
+        .collect()
 }
 
 /// The country groups the published values were chosen against, as complete
@@ -1066,6 +1182,8 @@ struct Hourless {
     groups: dashboard_base::products::country_groups::Scan,
     cache: DayCache,
     fields: std::sync::OnceLock<Vec<(Field, u64)>>,
+    /// Names the timeline days classified from this state ([`days::serial`]).
+    serial: u64,
 }
 
 impl Hourless {
@@ -1180,6 +1298,7 @@ fn hourless(
             groups,
             cache,
             fields: std::sync::OnceLock::new(),
+            serial: days::serial(),
         })
     })
 }
@@ -1265,33 +1384,43 @@ pub fn query(
         .map_err(Into::into);
     }
     let anchors = Arc::clone(&cache.anchors);
-    let mut sides = if params.view == AirView::Timeline {
-        (*cache.sides).clone()
-    } else {
-        Vec::new()
-    };
-    let samples = state.samples(
-        &store,
-        &key,
-        branch,
-        &params,
-        &hourless.fields,
-        groups,
-        &anchors,
-        &mut sides,
-        cancelled,
-    )?;
     let reply = if params.view == AirView::Moment {
+        let mut sides = Vec::new();
+        let samples = state.samples(
+            &store,
+            &key,
+            branch,
+            &params,
+            &hourless.fields,
+            groups,
+            &anchors,
+            &mut sides,
+            cancelled,
+        )?;
         let mut reply = AirReply::Moment(moment_reply(samples, sides, groups, &params, &anchors)?);
         resolve_names(source, groups, context, naming_hour, None, &mut reply);
         check_reply_size(&reply)?;
         reply
     } else {
+        let mut sides = (*cache.sides).clone();
+        let samples = state.timeline_days(
+            &store,
+            &key,
+            branch,
+            &params,
+            &hourless.fields,
+            groups,
+            &anchors,
+            &mut sides,
+            &days::timelines(source),
+            hourless.serial,
+            cancelled,
+        )?;
         let mut segment = scan::DaySegment::default();
         for sample in samples {
             segment
                 .days
-                .insert(sample.hour.div_euclid(DAY_HOURS), Arc::new(sample));
+                .insert(sample.hour.div_euclid(DAY_HOURS), sample);
         }
         cache.segments.push(Arc::new(segment));
         cache.sides = Arc::new(sides);
@@ -1698,6 +1827,85 @@ mod tests {
         assert_eq!(sample(&std::sync::OnceLock::new()), coverage);
     }
 
+    /// A view's kept days answer every last hour, later or earlier than the last asked, as
+    /// classifying each day in turn does, and a query asked again classifies only its last day.
+    fn kept_parity(
+        fixture: &Fixture,
+        state: &Prepared,
+        groups: &dashboard_base::products::country_groups::Scan,
+        request: &AirParams,
+        frames: &[DecodedFrame],
+    ) {
+        let flag = AtomicBool::new(false);
+        let reply = |request: &AirParams, timelines: Option<&days::Timelines>| {
+            let mut cache = state.catalogue(groups);
+            let mut sides = (*cache.sides).clone();
+            let fields = std::sync::OnceLock::new();
+            let (store, key) = (&fixture.store, &fixture.key);
+            let samples = match timelines {
+                Some(timelines) => state
+                    .timeline_days(
+                        store,
+                        key,
+                        1,
+                        request,
+                        &fields,
+                        groups,
+                        &cache.anchors,
+                        &mut sides,
+                        timelines,
+                        0,
+                        &flag,
+                    )
+                    .unwrap(),
+                None => state
+                    .samples(
+                        store,
+                        key,
+                        1,
+                        request,
+                        &fields,
+                        groups,
+                        &cache.anchors,
+                        &mut sides,
+                        &flag,
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .map(Arc::new)
+                    .collect(),
+            };
+            let mut segment = scan::DaySegment::default();
+            for sample in samples {
+                segment
+                    .days
+                    .insert(sample.hour.div_euclid(DAY_HOURS), sample);
+            }
+            cache.segments = vec![Arc::new(segment)];
+            cache.sides = Arc::new(sides);
+            serde_json::to_value(timeline(&cache, request).unwrap()).unwrap()
+        };
+        let hours: Vec<i32> = frames.iter().map(|frame| frame.hour).collect();
+        // Earliest first, so kept days are extended; then latest first, so they are cut short.
+        let forward: Vec<i32> = hours.iter().chain(hours.last()).copied().collect();
+        let backward: Vec<i32> = hours.iter().rev().chain(&hours).copied().collect();
+        for lasts in [forward, backward] {
+            let timelines = days::Timelines::default();
+            for last in lasts {
+                let mut request = request.clone();
+                request.last_hour = Some(last);
+                let kept = reply(&request, Some(&timelines));
+                assert_eq!(kept, reply(&request, None), "{last}");
+                if Some(&last) == hours.last() {
+                    let before = days::CLASSIFIED.with(std::cell::Cell::get);
+                    assert_eq!(reply(&request, Some(&timelines)), kept, "{last}");
+                    let again = days::CLASSIFIED.with(std::cell::Cell::get) - before;
+                    assert!(again <= 1, "{last}: {again} days classified again");
+                }
+            }
+        }
+    }
+
     fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
         let replay = Arc::new(recording(frames.to_vec()));
         let groups = groups(&replay);
@@ -1796,6 +2004,7 @@ mod tests {
                         serde_json::to_value(timeline(&cache, &request).unwrap()).unwrap(),
                         serde_json::to_value(timeline(&cold, &request).unwrap()).unwrap()
                     );
+                    kept_parity(fixture, &state, &groups, &request, frames);
                 }
             }
         }
