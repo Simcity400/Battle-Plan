@@ -12,6 +12,13 @@ pub(super) struct Membership {
 }
 
 impl Membership {
+    pub(super) fn from_counts(grouped: u64, ungrouped: u64, unresolved: bool) -> Option<Self> {
+        Some(Self {
+            grouped: grouped.try_into().ok()?,
+            ungrouped: ungrouped.try_into().ok()?,
+            unresolved,
+        })
+    }
     pub(super) fn coverage(self, prune_observed: bool) -> Coverage {
         if self.unresolved {
             Coverage::Unknown

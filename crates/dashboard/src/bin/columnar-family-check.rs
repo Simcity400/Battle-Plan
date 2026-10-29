@@ -4,9 +4,9 @@
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
 //! same walk with no operator, which the family's own cost is measured above. Without
-//! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel and
-//! diplomacy through their production block paths, both flushing at each row block's end.
-//! `columnar-family-check --family stability|supply|division-log|army|fuel|diplomacy_state --recording <r.battleplan>
+//! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel, diplomacy
+//! and equipment losses through their production block paths, both flushing at each row block's end.
+//! `columnar-family-check --family stability|supply|division-log|army|fuel|diplomacy_state|equipment_losses --recording <r.battleplan>
 //!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
 //! Both walks read only the family's tables; `--all-tables` walks every one. A family reading
 //! game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
@@ -15,6 +15,7 @@
 use dashboard::prepared_stability::StabilityAccumulator;
 use dashboard_country_fuel::products::country_fuel;
 use dashboard_diplomacy::products::diplomacy_state;
+use dashboard_equipment_losses::products::equipment_losses;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_land_battles::products::division_log;
 use dashboard_stability::products::country_stability::columnar as stability;
@@ -154,6 +155,7 @@ enum Family {
         replay_data::format::FormatVersion,
     ),
     Diplomacy(Box<diplomacy_state::prepared::Prepared>),
+    EquipmentLosses(Box<equipment_losses::prepared::Prepared>),
 }
 
 impl Family {
@@ -168,6 +170,10 @@ impl Family {
             "diplomacy_state" => (
                 diplomacy_state::prepared::FAMILY_NAME,
                 vec![diplomacy_state::prepared::section(branch)],
+            ),
+            "equipment_losses" => (
+                "equipment-loss",
+                vec![format!("equipment-loss-values-{branch}")],
             ),
             "army" => (
                 "army",
@@ -209,6 +215,29 @@ impl Family {
                 .strip_prefix("diplomacy-state-")
                 .and_then(|rest| digits(rest.strip_suffix("-catalogue").unwrap_or(rest)))
                 .or_else(|| section.strip_prefix("diplomacy-series-").and_then(digits));
+        }
+        if name == "equipment_losses" {
+            if let Some(branch) = section
+                .strip_prefix("equipment-loss-")
+                .and_then(|rest| rest.strip_suffix("-catalogue"))
+                .and_then(digits)
+            {
+                return Some(branch);
+            }
+            for prefix in [
+                "equipment-loss-values-",
+                "equipment-loss-country-",
+                "equipment-loss-variant-",
+            ] {
+                if let Some(rest) = section.strip_prefix(prefix) {
+                    return digits(if prefix == "equipment-loss-values-" {
+                        rest
+                    } else {
+                        rest.rsplit_once('-')?.0
+                    });
+                }
+            }
+            return None;
         }
         if name == "army" {
             for prefix in ["army-", "army-aid-"] {
@@ -288,6 +317,14 @@ impl Family {
                 prepared.observe_projected(hour)?;
                 Ok(at)
             }
+            Self::EquipmentLosses(prepared) => {
+                let hour = *hour
+                    .downcast::<equipment_losses::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                prepared.observe_projected(hour)?;
+                Ok(at)
+            }
             Self::Army(prepared) => {
                 let hour = *hour
                     .downcast::<army_size::columnar::Hour>()
@@ -338,6 +375,7 @@ impl Family {
                 prepared.flush(writer, branch, cancelled)?;
                 prepared.save(writer, branch)
             }
+            Self::EquipmentLosses(prepared) => prepared.flush(writer, branch, cancelled),
             // Its pages are published at each block's end.
             Self::DivisionLog(_) => Ok(()),
         }
@@ -351,6 +389,10 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
         Err(result) => result,
     };
     let result = match result.downcast::<Vec<diplomacy_state::columnar::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
+    let result = match result.downcast::<Vec<equipment_losses::columnar::Hour>>() {
         Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(result) => result,
     };
@@ -374,8 +416,12 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
 
 /// The branch an hour from [`hours`] belongs to.
 fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
-    hour.downcast_ref::<diplomacy_state::columnar::Hour>()
+    hour.downcast_ref::<equipment_losses::columnar::Hour>()
         .map(|hour| hour.branch)
+        .or_else(|| {
+            hour.downcast_ref::<diplomacy_state::columnar::Hour>()
+                .map(|hour| hour.branch)
+        })
         .or_else(|| {
             hour.downcast_ref::<country_fuel::columnar::Hour>()
                 .map(|hour| hour.branch)
@@ -484,8 +530,13 @@ fn run() -> io::Result<()> {
         return Err(usage());
     };
     // These row paths read recording data alone.
+    // These row paths read recording data alone.
     if row
-        && (prepared.is_some() || !matches!(family.as_str(), "army" | "fuel" | "diplomacy_state"))
+        && (prepared.is_some()
+            || !matches!(
+                family.as_str(),
+                "army" | "fuel" | "diplomacy_state" | "equipment_losses"
+            ))
     {
         return Err(usage());
     }
@@ -505,6 +556,7 @@ fn run() -> io::Result<()> {
         "army",
         "fuel",
         "diplomacy_state",
+        "equipment_losses",
     ]
     .contains(&family.as_str())
     {
@@ -515,7 +567,7 @@ fn run() -> io::Result<()> {
     // The recording's source and content, for a family that reads content.
     let (source, context) = if matches!(
         family.as_str(),
-        "stability" | "army" | "fuel" | "diplomacy_state"
+        "stability" | "army" | "fuel" | "diplomacy_state" | "equipment_losses"
     ) {
         (None, None)
     } else {
@@ -578,6 +630,7 @@ fn run() -> io::Result<()> {
             "army" => army_size::prepared::TABLES,
             "fuel" => country_fuel::columnar::TABLES,
             "diplomacy_state" => diplomacy_state::block::TABLES,
+            "equipment_losses" => equipment_losses::columnar::TABLES,
             "supply" => supply_health::prepared::TABLES,
             "division-log" => division_log::block::FAMILY.tables,
             _ => stability::TABLES,
@@ -608,6 +661,9 @@ fn run() -> io::Result<()> {
             ("diplomacy_state", _) => vec![Box::new(diplomacy_state::columnar::Projector::new(
                 replay.format,
                 replay.capture_mode,
+            )?)],
+            ("equipment_losses", _) => vec![Box::new(equipment_losses::columnar::Projector::new(
+                &replay,
             )?)],
             ("army", _) => vec![Box::new(
                 army_size::prepared::Prepared::default().projector(&replay)?,
@@ -648,6 +704,15 @@ fn run() -> io::Result<()> {
                         ("army", _) => Family::Army(Box::default()),
                         ("fuel", _) => Family::Fuel(Box::default(), replay.format),
                         ("diplomacy_state", _) => Family::Diplomacy(Box::default()),
+                        ("equipment_losses", _) => Family::EquipmentLosses(Box::new(
+                            equipment_losses::prepared::Prepared::new(
+                                &replay,
+                                branch,
+                                hour.downcast_ref::<equipment_losses::columnar::Hour>()
+                                    .expect("equipment loss hour")
+                                    .hour,
+                            ),
+                        )),
                         ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
                         ("division-log", _) => {
                             Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
@@ -657,6 +722,11 @@ fn run() -> io::Result<()> {
                 });
                 let (_, at) = state.observe(hour)?;
                 let publishing = cpu().1;
+                if let Family::EquipmentLosses(prepared) = state {
+                    if block_ends.contains_key(&(branch, at)) {
+                        prepared.finish_block(loss_block_last(&replay, branch, at));
+                    }
+                }
                 if let Family::DivisionLog(scan) = state {
                     // Its window, manifest and counts are published at each block's end.
                     if let (Some(&ordinal), Some(source), Some(context)) =
@@ -680,14 +750,17 @@ fn run() -> io::Result<()> {
         emit_ns += cpu().1 - started;
         Ok(())
     })?;
-    let (process_after, thread_after) = cpu();
-    let walked = wall.elapsed().as_secs_f64();
-
+    let final_publish = cpu().1;
     for (branch, accumulator) in &mut accumulators {
         if flushes.get(branch).is_none_or(Vec::is_empty) {
             accumulator.flush(&mut writer, *branch, &cancelled)?;
         }
     }
+    let final_publish = cpu().1 - final_publish;
+    emit_ns += final_publish;
+    publish_ns += final_publish;
+    let (process_after, thread_after) = cpu();
+    let walked = wall.elapsed().as_secs_f64();
     writer.commit()?;
     let scratch = std::fs::read_dir(local.join("HOI4Replay/prepared"))?
         .next()
@@ -742,6 +815,25 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
+fn loss_block_last(replay: &Replay, branch: u64, last: i32) -> i32 {
+    if replay
+        .index
+        .iter()
+        .rfind(|block| block.branch == branch)
+        .is_some_and(|block| block.last_hour == last)
+    {
+        replay
+            .branches
+            .iter()
+            .find(|start| start.id == branch)
+            .map_or(last, |start| {
+                dashboard_text::metadata::branch_bounds(replay, start).1
+            })
+    } else {
+        last
+    }
+}
+
 /// The production block folds, with the checker's flush at each block's end.
 fn row_reference(
     family: &str,
@@ -759,6 +851,32 @@ fn row_reference(
     let store = store?;
     let mut writer = store.replace(store::SourceKey::capture(recording, &[])?)?;
     let cancelled = AtomicBool::new(false);
+    if family == "equipment_losses" {
+        let mut states = BTreeMap::new();
+        for block in &replay.index {
+            let state = states.entry(block.branch).or_insert_with(|| {
+                equipment_losses::prepared::Prepared::new(replay, block.branch, block.first_hour)
+            });
+            let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+            replay.read_block_alone(
+                block,
+                equipment_losses::columnar::TABLES,
+                |raw, frame| {
+                    let changes =
+                        tracker.observe_updates(frame, std::sync::Arc::new(raw), replay.format);
+                    state.observe_changes(frame, replay, &cancelled, &changes)
+                },
+                || Ok(()),
+            )?;
+            state.finish_block(loss_block_last(replay, block.branch, block.last_hour));
+            state.flush(&mut writer, block.branch, &cancelled)?;
+        }
+        writer.commit()?;
+        return Ok(std::fs::read_dir(root.join("HOI4Replay/prepared"))?
+            .next()
+            .ok_or_else(|| invalid("The row reference store holds no folder"))??
+            .path());
+    }
     if family == "fuel" {
         let source = dashboard::Source::open(
             dashboard::SourceKey {

@@ -180,11 +180,27 @@ struct Country {
 }
 
 /// The existing naming and uncertainty inputs contain changes, not hourly values.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct CountryMetadata {
     scanned: Scanned,
     #[serde(with = "dashboard_core::map_pairs")]
     leaves: BTreeMap<LeafKey, u64>,
+}
+
+/// [`CountryMetadata`] as a flush writes it, borrowed from its country.
+#[derive(Serialize)]
+struct CountryMetadataRef<'a> {
+    scanned: &'a Scanned,
+    #[serde(serialize_with = "borrowed_pairs")]
+    leaves: &'a BTreeMap<LeafKey, u64>,
+}
+
+// map_pairs needs the map itself, not a reference to it.
+fn borrowed_pairs<S: serde::Serializer>(
+    leaves: &&BTreeMap<LeafKey, u64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    dashboard_core::map_pairs::serialize(*leaves, serializer)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -293,7 +309,8 @@ impl Prepared {
         changes: &FrameChanges,
     ) -> io::Result<()> {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        if validate_campaign(frame, replay).is_err() || i64::from(frame.hour) < self.next {
+        if i64::from(frame.hour) < self.next || validate_campaign(frame, replay).is_err() {
+            self.forget_runtime();
             return Ok(());
         }
         let interrupted = self.interrupted || self.next < i64::from(frame.hour);
@@ -872,125 +889,385 @@ impl Prepared {
                     country.scanned.combat_unresolved.extend(&combat_unresolved);
                 }
             }
-            let coverage = country.scanned.coverage.last().map(|span| span.coverage);
-            let reason = country
-                .scanned
-                .destruction_coverage
-                .last()
-                .and_then(|span| span.reason.as_deref());
-            let unread = country
-                .scanned
-                .unread
-                .iter()
-                .filter(|(_, spans)| {
-                    spans
-                        .last()
-                        .is_some_and(|span| span.last_hour == frame.hour)
-                })
-                .fold(0_u8, |mask, (record, _)| mask | (1 << (*record as u8)));
-            let mut changed_read = false;
-            if country.read_key.as_ref().is_none_or(|held| {
-                held.0 != coverage || held.1.as_deref() != reason || held.2 != unread
-            }) {
-                #[cfg(test)]
-                {
-                    self.joins.read_serializations += 1;
-                }
-                let read = serde_json::to_string(&(
-                    coverage,
-                    reason,
-                    country
-                        .scanned
-                        .unread
-                        .keys()
-                        .filter(|record| unread & (1 << (**record as u8)) != 0)
-                        .collect::<Vec<_>>(),
-                ))?;
-                changed_read = country.last_read.as_ref() != Some(&read);
-                country.last_read = Some(read);
-                country.read_key = Some((coverage, reason.map(str::to_owned), unread));
-            }
-            let version = self
-                .values
-                .state(country.actor)
-                .and_then(|state| state.last)
-                .map_or(0, |run| run.value)
-                + i128::from(changed_read);
-            if changed_read || interrupted {
-                #[cfg(test)]
-                {
-                    self.work.emitted += 1;
-                }
-                self.values
-                    .observe(country.actor, frame.hour, Some(version), false);
-            }
-            let mut changed = BTreeSet::new();
-            for (leaf, events) in std::mem::take(&mut country.scanned.events) {
-                if let Some(variant) = leaf.1 {
-                    self.loss_variants.insert(variant);
-                }
-                if leaf.0 == LossSource::SunkShips {
-                    for (sink_hour, delta) in events {
-                        self.values.event(
-                            country.actor,
-                            frame.hour,
-                            &ShipLoss {
-                                sink_hour,
-                                variant: leaf.1,
-                                delta_raw: delta.to_string(),
-                            },
-                        )?;
-                    }
-                    continue;
-                }
-                for (hour, delta) in events {
-                    if hour != frame.hour {
-                        return Err(io::Error::other(format!(
-                            "Equipment loss cause {:?} has an unsupported backdated hour {hour}",
-                            leaf.0
-                        )));
-                    }
-                    *country.totals.entry(leaf).or_default() += delta;
-                    changed.insert(leaf);
-                }
-                let actor = key(&mut self.keys, &("loss", identity, leaf))?;
-                country.leaves.insert(leaf, actor);
-            }
-            let observed = if interrupted {
-                country.leaves.keys().copied().collect()
-            } else {
-                changed.clone()
-            };
-            for leaf in observed {
-                #[cfg(test)]
-                {
-                    self.work.emitted += 1;
-                }
-                let actor = country.leaves[&leaf];
-                let value = country.totals[&leaf];
-                self.values.observe_boundary(
-                    actor,
-                    frame.hour,
-                    Some(value),
-                    false,
-                    changed.contains(&leaf),
-                );
-                if changed.contains(&leaf) {
-                    self.values.event(
-                        actor,
-                        frame.hour,
-                        &LossPoint {
-                            hour: frame.hour,
-                            total_raw: value.to_string(),
-                        },
-                    )?;
-                }
-            }
+            self.publish_country(identity, frame.hour, interrupted, &[])?;
         }
         self.values.through(frame.hour);
         self.next = i64::from(frame.hour) + 1;
         self.interrupted = false;
         Ok(())
+    }
+
+    pub fn projector(&self, replay: &Replay) -> io::Result<super::columnar::Projector> {
+        super::columnar::Projector::new(replay)
+    }
+
+    pub fn observe_projected(&mut self, hour: super::columnar::Hour) -> io::Result<()> {
+        let _cpu =
+            replay_frame::cpu::scope("equipment_losses.columnar.emit", Some("equipment_losses"));
+        let at = hour.hour;
+        if i64::from(at) < self.next {
+            return Ok(());
+        }
+        let Some(input) = hour.input else {
+            self.forget_runtime();
+            return Ok(());
+        };
+        let interrupted = self.interrupted || self.next < i64::from(at);
+        if self.next < i64::from(at) {
+            self.finish_block(at - 1);
+        }
+        self.values.advance(at)?;
+        self.variants
+            .observe_hour(at, input.names, |_| input.variants);
+        self.absent.advance(at.saturating_sub(1));
+        let mut affected = Vec::new();
+        if let Some(identities) = input.identities {
+            affected.extend(self.current.keys().copied());
+            self.current.clear();
+            self.joins.by_slot.clear();
+            for (identity, resolved) in identities {
+                if resolved {
+                    if !self.countries.contains_key(&identity) {
+                        let actor = key(&mut self.keys, &("country", identity))?;
+                        let mut continuation = state(input.format);
+                        continuation
+                            .destruction_withheld
+                            .clone_from(&self.absent_state.destruction_withheld);
+                        self.countries.insert(
+                            identity,
+                            Country {
+                                actor,
+                                scanned: self.absent.clone(),
+                                state: continuation,
+                                totals: BTreeMap::new(),
+                                leaves: BTreeMap::new(),
+                                last_read: None,
+                                read_key: None,
+                            },
+                        );
+                    }
+                    self.current
+                        .entry(identity)
+                        .and_modify(|value| *value = None)
+                        .or_insert(Some(0));
+                } else if self.countries.contains_key(&identity) {
+                    self.current.insert(identity, None);
+                }
+            }
+            for (&identity, index) in &self.current {
+                affected.push(identity);
+                if index.is_some() {
+                    self.joins
+                        .by_slot
+                        .entry(identity.0)
+                        .or_default()
+                        .push(identity);
+                    if !self.countries[&identity].state.exchanges.is_empty() {
+                        self.joins.lend_owners.insert(identity);
+                    }
+                }
+            }
+            self.joins
+                .lend_owners
+                .retain(|identity| self.current.get(identity).is_some_and(Option::is_some));
+        }
+        if input.memberships_whole || !input.membership_complete {
+            if let Some(old) = &self.memberships {
+                for slot in old.keys() {
+                    affected.extend(self.joins.by_slot.get(slot).into_iter().flatten().copied());
+                }
+            }
+            self.memberships = input.membership_complete.then(BTreeMap::new);
+        }
+        if input.membership_complete {
+            let memberships = self.memberships.get_or_insert_with(BTreeMap::new);
+            for (slot, membership) in input.memberships {
+                if memberships.insert(slot, membership) != Some(membership) {
+                    affected.extend(self.joins.by_slot.get(&slot).into_iter().flatten().copied());
+                }
+            }
+        }
+        if input.refresh || interrupted || !input.complete || self.joins.identities_incomplete {
+            affected.extend(self.countries.keys().copied());
+        }
+        self.joins.identities_incomplete = !input.complete;
+        for slot in input
+            .drains
+            .iter()
+            .map(|item| &item.0)
+            .chain(input.records.iter().map(|item| &item.0))
+        {
+            affected.extend(self.joins.by_slot.get(slot).into_iter().flatten().copied());
+        }
+        if input.unresolved.iter().any(|raw| !raw.is_empty()) {
+            affected.extend(self.joins.by_slot.values().flatten().copied());
+        }
+        if input.lend_process {
+            affected.extend(self.joins.lend_owners.iter().copied());
+        }
+        let absent = if input.complete {
+            Selection::Absent
+        } else {
+            Selection::Unresolved
+        };
+        country_metadata_with(
+            &mut self.absent,
+            &mut self.absent_state,
+            at,
+            &input.metadata.table,
+            absent,
+            input.metadata.reads,
+            true,
+            None,
+            &input.metadata.drain,
+            |_, _| Ok(()),
+        )?;
+        let old_lend_read = self.lend_read;
+        if input.lend_read {
+            self.lend_read = Some(at);
+        }
+        affected.sort_unstable();
+        affected.dedup();
+        for identity in affected {
+            let country = self
+                .countries
+                .get_mut(&identity)
+                .expect("projected loss owner");
+            if !country
+                .scanned
+                .unread_active
+                .contains(&LossRecord::LendLease)
+                && let Some(read) = old_lend_read
+            {
+                country.state.exchanges_read = Some(
+                    country
+                        .state
+                        .exchanges_read
+                        .map_or(read, |seen| seen.max(read)),
+                );
+            }
+            country.scanned.advance(at.saturating_sub(1));
+            let selected = match self.current.get(&identity) {
+                Some(Some(_)) => Selection::Found(identity.0),
+                Some(None) => Selection::Unresolved,
+                None => absent,
+            };
+            let membership = self
+                .memberships
+                .as_ref()
+                .and_then(|m| m.get(&identity.0).copied().flatten());
+            let mut drained: &[(LeafKey, i128)] = &[];
+            country_metadata_with(
+                &mut country.scanned,
+                &mut country.state,
+                at,
+                &input.metadata.table,
+                selected,
+                input.metadata.reads,
+                true,
+                Some(input.metadata.land.country(identity.0, membership)),
+                &input.metadata.drain,
+                |_, _| {
+                    if let Ok(index) = input
+                        .drains
+                        .binary_search_by_key(&identity.0, |item| item.0)
+                    {
+                        let amounts = &input.drains[index].1;
+                        if let Some(error) = &amounts.error {
+                            return Err(io::Error::other(error.clone()));
+                        }
+                        drained = &amounts.events;
+                    }
+                    Ok(())
+                },
+            )?;
+            if matches!(selected, Selection::Found(_)) {
+                let records = input
+                    .records
+                    .binary_search_by_key(&identity.0, |item| item.0)
+                    .ok()
+                    .map(|index| &input.records[index].1);
+                if let Some(rows) = records.and_then(|r| r.ships.as_ref()) {
+                    ship_counts(&mut country.scanned, &mut country.state, rows);
+                }
+                if let Some(rows) = records.map(|r| &r.convoys) {
+                    convoy_rows(&mut country.scanned, &mut country.state, at, rows.iter());
+                }
+                if input.lend_process
+                    && (records.is_some_and(|r| !r.lend.is_empty())
+                        || !input.unresolved[2].is_empty()
+                        || self.joins.lend_owners.contains(&identity))
+                {
+                    let rows = records.map_or(&[][..], |r| r.lend.as_slice());
+                    lend_lease_rows(&mut country.scanned, &mut country.state, at, rows.iter());
+                    if country.state.exchanges.is_empty() {
+                        self.joins.lend_owners.remove(&identity);
+                    } else {
+                        self.joins.lend_owners.insert(identity);
+                    }
+                }
+                if let Some(records) = records {
+                    combat_rows(
+                        &mut country.scanned,
+                        &mut country.state,
+                        at,
+                        records.combat.iter(),
+                    );
+                }
+                for unresolved in &input.unresolved[..3] {
+                    country.scanned.unresolved.extend(unresolved);
+                }
+                country
+                    .scanned
+                    .combat_unresolved
+                    .extend(&input.unresolved[3]);
+            }
+            self.publish_country(identity, at, interrupted, drained)?;
+        }
+        self.values.through(at);
+        self.next = i64::from(at) + 1;
+        self.interrupted = false;
+        Ok(())
+    }
+
+    fn publish_country(
+        &mut self,
+        identity: Identity,
+        hour: i32,
+        interrupted: bool,
+        drains: &[(LeafKey, i128)],
+    ) -> io::Result<()> {
+        let country = self
+            .countries
+            .get_mut(&identity)
+            .expect("resolved loss owner");
+        let coverage = country.scanned.coverage.last().map(|span| span.coverage);
+        let reason = country
+            .scanned
+            .destruction_coverage
+            .last()
+            .and_then(|span| span.reason.as_deref());
+        let unread = country
+            .scanned
+            .unread
+            .iter()
+            .filter(|(_, spans)| spans.last().is_some_and(|span| span.last_hour == hour))
+            .fold(0_u8, |mask, (record, _)| mask | (1 << (*record as u8)));
+        let mut changed_read = false;
+        if country.read_key.as_ref().is_none_or(|held| {
+            held.0 != coverage || held.1.as_deref() != reason || held.2 != unread
+        }) {
+            #[cfg(test)]
+            {
+                self.joins.read_serializations += 1;
+            }
+            let read = serde_json::to_string(&(
+                coverage,
+                reason,
+                country
+                    .scanned
+                    .unread
+                    .keys()
+                    .filter(|record| unread & (1 << (**record as u8)) != 0)
+                    .collect::<Vec<_>>(),
+            ))?;
+            changed_read = country.last_read.as_ref() != Some(&read);
+            country.last_read = Some(read);
+            country.read_key = Some((coverage, reason.map(str::to_owned), unread));
+        }
+        let version = self
+            .values
+            .state(country.actor)
+            .and_then(|state| state.last)
+            .map_or(0, |run| run.value)
+            + i128::from(changed_read);
+        if changed_read || interrupted {
+            #[cfg(test)]
+            {
+                self.work.emitted += 1;
+            }
+            self.values
+                .observe(country.actor, hour, Some(version), false);
+        }
+        let events = std::mem::take(&mut country.scanned.events);
+        let mut amounts = Vec::with_capacity(events.len() + drains.len());
+        for (leaf, events) in events {
+            if let Some(variant) = leaf.1 {
+                self.loss_variants.insert(variant);
+            }
+            if leaf.0 == LossSource::SunkShips {
+                for (sink_hour, delta) in events {
+                    self.values.event(
+                        country.actor,
+                        hour,
+                        &ShipLoss {
+                            sink_hour,
+                            variant: leaf.1,
+                            delta_raw: delta.to_string(),
+                        },
+                    )?;
+                }
+                continue;
+            }
+            let mut delta = 0;
+            for (at, amount) in events {
+                if at != hour {
+                    return Err(io::Error::other(format!(
+                        "Equipment loss cause {:?} has an unsupported backdated hour {at}",
+                        leaf.0
+                    )));
+                }
+                delta += amount;
+            }
+            amounts.push((leaf, delta));
+        }
+        for &(leaf, delta) in drains {
+            if let Some(variant) = leaf.1 {
+                self.loss_variants.insert(variant);
+            }
+            amounts.push((leaf, delta));
+        }
+        amounts.sort_unstable_by_key(|item| item.0);
+        let mut changed = Vec::with_capacity(amounts.len());
+        for (leaf, delta) in amounts {
+            *country.totals.entry(leaf).or_default() += delta;
+            if let std::collections::btree_map::Entry::Vacant(entry) = country.leaves.entry(leaf) {
+                entry.insert(key(&mut self.keys, &("loss", identity, leaf))?);
+            }
+            if changed.last() != Some(&leaf) {
+                changed.push(leaf);
+            }
+        }
+        let history = interrupted.then(|| country.leaves.keys().copied().collect::<Vec<_>>());
+        let observed = history.as_deref().unwrap_or(&changed);
+        for &leaf in observed {
+            #[cfg(test)]
+            {
+                self.work.emitted += 1;
+            }
+            let actor = country.leaves[&leaf];
+            let value = country.totals[&leaf];
+            let changed = changed.binary_search(&leaf).is_ok();
+            self.values
+                .observe_boundary(actor, hour, Some(value), false, changed);
+            if changed {
+                self.values.event(
+                    actor,
+                    hour,
+                    &LossPoint {
+                        hour,
+                        total_raw: value.to_string(),
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn forget_runtime(&mut self) {
+        self.joins = CurrentJoins::default();
+        self.current.clear();
+        self.memberships = None;
     }
 
     pub fn bytes(&self) -> usize {
@@ -1067,9 +1344,9 @@ impl Prepared {
                 writer,
                 &format!("equipment-loss-country-{branch}-{}", country.actor),
                 0,
-                &CountryMetadata {
-                    scanned: country.scanned.clone(),
-                    leaves: country.leaves.clone(),
+                &CountryMetadataRef {
+                    scanned: &country.scanned,
+                    leaves: &country.leaves,
                 },
             )?;
         }
@@ -1706,5 +1983,7 @@ pub fn series_query(
     }
 }
 
+#[cfg(test)]
+mod columnar_parity;
 #[cfg(test)]
 mod tests;

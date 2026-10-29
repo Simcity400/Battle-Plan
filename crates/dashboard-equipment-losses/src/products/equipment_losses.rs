@@ -136,6 +136,7 @@ use std::{
 use ts_rs::TS;
 
 mod census;
+pub mod columnar;
 #[cfg(test)]
 mod oracle;
 pub mod prepared;
@@ -710,15 +711,100 @@ fn country_metadata(
     land_coverage: Option<Coverage>,
     inputs: &DestructionInputs,
 ) -> io::Result<()> {
+    let rows = destruction_table_rows(decoded, state)?;
+    let selection = Selection::from_country(country, links.is_some());
     let hour = decoded.hour;
+    country_metadata_with(
+        scanned,
+        state,
+        hour,
+        &decoded.tables[TableId::EquipmentDestruction.index()],
+        selection,
+        [
+            land_read(decoded),
+            matches!(decoded.complete::<tables::SunkShips>(), Ok([_])),
+            decoded.complete::<tables::SunkConvoys>().is_ok(),
+            decoded.complete::<tables::LendLeaseEquipment>().is_ok(),
+        ],
+        land,
+        land_coverage,
+        inputs,
+        |scanned, state| {
+            destruction_amounts(
+                scanned,
+                state,
+                hour,
+                selection
+                    .slot()
+                    .and_then(|slot| inputs.by_slot.get(&slot))
+                    .into_iter()
+                    .flatten()
+                    .map(|&index| &rows[index]),
+            )
+        },
+    )
+}
+
+fn destruction_table_rows<'a>(
+    decoded: &'a DecodedFrame,
+    state: &State,
+) -> io::Result<&'a [replay_data::rows::EquipmentDestructionRow]> {
+    match &*decoded.tables[TableId::EquipmentDestruction.index()] {
+        replay_frame::frame::TableView::Complete(rows) if state.destruction_withheld.is_none() => {
+            rows.rows::<tables::EquipmentDestruction>().ok_or_else(|| {
+                io::Error::other("Equipment destruction table has the wrong row type")
+            })
+        }
+        _ => Ok(&[]),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Selection {
+    Absent,
+    Unresolved,
+    Found(u32),
+}
+
+impl Selection {
+    fn from_country(country: TaggedCountry<'_>, linked: bool) -> Self {
+        match country {
+            TaggedCountry::Absent => Self::Absent,
+            TaggedCountry::Found(_, slot) if linked => Self::Found(slot),
+            _ => Self::Unresolved,
+        }
+    }
+    fn slot(self) -> Option<u32> {
+        match self {
+            Self::Found(slot) => Some(slot),
+            _ => None,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn country_metadata_with(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    table: &replay_frame::frame::TableView,
+    selected: Selection,
+    reads: [bool; 4],
+    land: bool,
+    land_coverage: Option<Coverage>,
+    inputs: &DestructionInputs,
+    amounts: impl FnOnce(&mut Scanned, &State) -> io::Result<()>,
+) -> io::Result<()> {
     scanned.destruction_active.clear();
-    destruction_from(scanned, state, decoded, links, country, inputs)?;
+    if destruction_ready(scanned, state, hour, table, selected, inputs)? {
+        amounts(scanned, state)?;
+    }
     if state.destruction_withheld.is_some() {
         scanned.destruction_active.clear();
     }
-    let found = country.found().is_some() && links.is_some();
+    let found = matches!(selected, Selection::Found(_));
     if land {
-        let complete = found && land_read(decoded);
+        let complete = found && reads[0];
         scanned.read(LossRecord::CombatLog, hour, complete);
         scanned.cover(
             hour,
@@ -729,21 +815,16 @@ fn country_metadata(
             },
         );
     }
-    scanned.read(
+    for (record, complete) in [
         LossRecord::SunkShips,
-        hour,
-        found && matches!(decoded.complete::<tables::SunkShips>(), Ok([_])),
-    );
-    scanned.read(
         LossRecord::SunkConvoys,
-        hour,
-        found && decoded.complete::<tables::SunkConvoys>().is_ok(),
-    );
-    scanned.read(
         LossRecord::LendLease,
-        hour,
-        found && decoded.complete::<tables::LendLeaseEquipment>().is_ok(),
-    );
+    ]
+    .into_iter()
+    .zip(&reads[1..])
+    {
+        scanned.read(record, hour, found && *complete);
+    }
     scanned.advance(hour);
     scanned.last_hour = Some(hour);
     Ok(())
@@ -769,11 +850,17 @@ fn ship_rows<'a>(
             .or_insert((0, entry.sink_hour, entry.victim_equipment_variant))
             .0 += 1;
     }
-    for (key, (count, sunk, variant)) in counts {
-        let seen = state.ships.entry(key).or_default();
-        if count > *seen {
-            let added = (count - *seen) as i64;
-            *seen = count;
+    ship_counts(scanned, state, &counts);
+}
+
+type ShipCounts = BTreeMap<ShipKey, (usize, i32, u64)>;
+
+fn ship_counts(scanned: &mut Scanned, state: &mut State, counts: &ShipCounts) {
+    for (key, &(count, sunk, variant)) in counts {
+        let seen = state.ships.get(key).copied().unwrap_or_default();
+        if count > seen {
+            let added = (count - seen) as i64;
+            state.ships.insert(key.clone(), count);
             let variant = (variant as u32 == VARIANT_TYPE).then_some((variant >> 32) as u32);
             scanned.event((LossSource::SunkShips, variant), sunk, added * AMOUNT_SCALE);
         }
@@ -806,17 +893,19 @@ fn lend_lease_rows<'a>(
     scanned: &mut Scanned,
     state: &mut State,
     hour: i32,
-    rows: impl Iterator<Item = &'a replay_data::rows::LendLeaseEquipmentRow> + Clone,
+    rows: impl Iterator<Item = &'a replay_data::rows::LendLeaseEquipmentRow>,
 ) {
+    // Giver aliases can repeat a key: its last row stands, and a read moves it once.
+    let mut amounts = BTreeMap::new();
+    for row in rows {
+        amounts.insert((row.exchange, row.kind, row.variant), row.amount_raw);
+    }
     // The game deletes an ended exchange with its totals: an exchange
     // the last complete read showed and this one does not ended after
     // that read, and what it moved since is lost.
     let mut present: BTreeMap<u32, BTreeSet<(u8, u32)>> = BTreeMap::new();
-    for row in rows.clone() {
-        present
-            .entry(row.exchange)
-            .or_default()
-            .insert((row.kind, row.variant));
+    for &(exchange, kind, variant) in amounts.keys() {
+        present.entry(exchange).or_default().insert((kind, variant));
     }
     let ended: Vec<u32> = state
         .exchanges
@@ -838,19 +927,17 @@ fn lend_lease_rows<'a>(
     for (exchange, designs) in present {
         state.exchanges.insert(exchange, (hour, designs));
     }
-    for row in rows {
-        let last = state
-            .lend_lease
-            .entry((row.exchange, row.kind, row.variant))
-            .or_default();
-        let delta = i128::from(row.amount_raw) - i128::from(*last);
-        *last = row.amount_raw;
-        let source = if row.kind == engine_resources::clend_lease_exchange::SUNK_KIND {
+    for (key, amount) in amounts {
+        let last = state.lend_lease.entry(key).or_default();
+        let delta = i128::from(amount) - i128::from(*last);
+        *last = amount;
+        let (_, kind, variant) = key;
+        let source = if kind == engine_resources::clend_lease_exchange::SUNK_KIND {
             LossSource::LendLeaseSunk
         } else {
             LossSource::LendLeaseSent
         };
-        scanned.event((source, Some(row.variant)), hour, delta);
+        scanned.event((source, Some(variant)), hour, delta);
     }
     state.exchanges_read = Some(hour);
 }
@@ -950,6 +1037,7 @@ fn destruction(
 }
 
 /// Each complete frame is a fresh hourly drain, even when the wire was Unchanged.
+#[cfg(test)]
 fn destruction_from(
     scanned: &mut Scanned,
     state: &mut State,
@@ -958,25 +1046,53 @@ fn destruction_from(
     country: TaggedCountry<'_>,
     inputs: &DestructionInputs,
 ) -> io::Result<()> {
-    let hour = decoded.hour;
-    let table = &*decoded.tables[TableId::EquipmentDestruction.index()];
+    let rows = destruction_table_rows(decoded, state)?;
+    let selection = Selection::from_country(country, links.is_some());
+    if destruction_ready(
+        scanned,
+        state,
+        decoded.hour,
+        &decoded.tables[TableId::EquipmentDestruction.index()],
+        selection,
+        inputs,
+    )? {
+        destruction_amounts(
+            scanned,
+            state,
+            decoded.hour,
+            selection
+                .slot()
+                .and_then(|slot| inputs.by_slot.get(&slot))
+                .into_iter()
+                .flatten()
+                .map(|&index| &rows[index]),
+        )?;
+    }
+    Ok(())
+}
+
+fn destruction_ready(
+    scanned: &mut Scanned,
+    state: &mut State,
+    hour: i32,
+    table: &replay_frame::frame::TableView,
+    country: Selection,
+    inputs: &DestructionInputs,
+) -> io::Result<bool> {
     if let Some(reason) = &state.destruction_withheld {
         scanned.destruction_cover(hour, hour, Some(reason.clone()));
-        return Ok(());
+        return Ok(false);
     }
-    let rows = match table {
-        replay_frame::frame::TableView::Complete(rows) => {
+    match table {
+        replay_frame::frame::TableView::Complete(_) => {
             scanned.destruction_counted_from.get_or_insert(hour);
-            rows.rows::<tables::EquipmentDestruction>().ok_or_else(|| {
-                io::Error::other("Equipment destruction table has the wrong row type")
-            })?
         }
         replay_frame::frame::TableView::Unavailable { reason } => {
             let partial = reason == EQUIPMENT_DESTRUCTION_PARTIAL_REASON;
             // A deliberately partial startup interval precedes counting.
             // A later partial interval has lost an already counted drain.
             if partial && scanned.destruction_counted_from.is_none() {
-                return Ok(());
+                return Ok(false);
             }
             let kind = if partial {
                 UnknownReason::DestructionGap
@@ -993,28 +1109,28 @@ fn destruction_from(
             if !partial {
                 state.destruction_withheld = Some(detail);
             }
-            return Ok(());
+            return Ok(false);
         }
         replay_frame::frame::TableView::Truncated { .. } => {
             let reason = DESTRUCTION_TRUNCATED.to_owned();
             scanned.destruction_cover(hour, hour, Some(reason.clone()));
             scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
             state.destruction_withheld = Some(reason);
-            return Ok(());
+            return Ok(false);
         }
         replay_frame::frame::TableView::NotRecorded { mode } => {
             let reason = format!("EquipmentDestruction is not recorded in a {mode} recording");
             scanned.destruction_cover(hour, hour, Some(reason.clone()));
             scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
             state.destruction_withheld = Some(reason);
-            return Ok(());
+            return Ok(false);
         }
     };
     // A country absent from complete identity tables cannot own a removal,
     // including one missed by an unavailable supplemental writer.
-    if country == TaggedCountry::Absent {
+    if country == Selection::Absent {
         scanned.destruction_cover(hour, hour, None);
-        return Ok(());
+        return Ok(false);
     }
     let supplemental_reason = if state.destruction_coverage_not_recorded {
         Some("EquipmentDestruction supplemental coverage not recorded".to_owned())
@@ -1029,13 +1145,13 @@ fn destruction_from(
     // there is no raw owner whose identity could make that zero uncertain.
     if !inputs.nonempty {
         scanned.destruction_cover(hour, hour, supplemental_reason);
-        return Ok(());
+        return Ok(false);
     }
-    let (Some(_), TaggedCountry::Found(_, slot)) = (links, country) else {
+    let Selection::Found(_) = country else {
         let reason = "Equipment destruction ownership is unknown: country identity or CountryLinks unavailable".to_owned();
         scanned.destruction_cover(hour, hour, Some(reason.clone()));
         scanned.destruction_unknown(hour, UnknownReason::DestructionUnresolved, reason);
-        return Ok(());
+        return Ok(false);
     };
     let unresolved = inputs.unresolved.clone();
     let owner_reason = (!unresolved.is_empty()).then(|| {
@@ -1051,8 +1167,16 @@ fn destruction_from(
     }
     scanned.destruction_cover(hour, hour, reason);
     scanned.unresolved.extend(unresolved);
-    for &index in inputs.by_slot.get(&slot).into_iter().flatten() {
-        let row = &rows[index];
+    Ok(true)
+}
+
+fn destruction_amounts<'a>(
+    scanned: &mut Scanned,
+    state: &State,
+    hour: i32,
+    rows: impl Iterator<Item = &'a replay_data::rows::EquipmentDestructionRow>,
+) -> io::Result<()> {
+    for row in rows {
         if state.land_source == LandSource::CombatLog
             && !state.include_all_destruction
             && !row.cause.is_air()
