@@ -127,17 +127,16 @@ struct StoredQuery {
     fallbacks: std::collections::BTreeSet<String>,
 }
 
-/// Where `request`'s answer at `publication` is kept on disk: under the store's key and every
-/// page published to the branch, so any later publication, Clear or content change misses it.
-#[allow(clippy::too_many_arguments)]
+/// Where `request`'s answer at `publication` is kept on disk: under the store's key, every page
+/// published to any of the recording's branches and the executable the engine's tables were read
+/// from, so any later publication, Clear, content or game change misses it, whatever it reads.
 fn stored_answer(
     source: &Source,
     request: &ProductRequest,
     content: Option<&ContentOptions>,
     store: &store::Store,
     key: &store::SourceKey,
-    branch: u64,
-    publication: &impl Serialize,
+    publication: &str,
 ) -> io::Result<Option<crate::reply_cache::Entry>> {
     let Some(content) = content else {
         return Ok(None);
@@ -147,8 +146,22 @@ fn stored_answer(
     if !dashboard_base::catalogue::reads_recorded(content) {
         return Ok(None);
     }
-    let pages = super::pipeline::published_pages(store, key, branch)?;
-    let identity = serde_json::to_string(&(publication, pages, key))?;
+    let branches = source.with_metadata(|metadata| {
+        metadata
+            .branches
+            .iter()
+            .filter_map(|branch| branch.id.parse::<u64>().ok())
+            .collect::<Vec<_>>()
+    });
+    let mut pages = Vec::new();
+    for branch in branches {
+        pages.extend(super::pipeline::published_pages(store, key, branch)?);
+    }
+    let executable = engine_executable::executable_tables::is_initialized().then(|| {
+        let identity = engine_executable::executable_tables::get().identity();
+        (identity.size, identity.sha256)
+    });
+    let identity = serde_json::to_string(&(publication, pages, key, executable))?;
     let dependent =
         crate::products::find(&request.product).is_none_or(|product| product.content_dependent);
     Ok(crate::reply_cache::Entry::prepared(
@@ -3059,6 +3072,56 @@ pub fn query(
             fallbacks,
         })
     };
+    // A complete answer kept on disk between sessions, else computed and kept when it can be.
+    let answered = |previous: Option<std::sync::Arc<CachedQuery>>,
+                    publication: String|
+     -> io::Result<CachedQuery> {
+        // Content read outside the recorded coverage is reported on every reply, so no answer is
+        // served from or kept on disk while the read set holds any.
+        let covered = || !source.reply_reads_uncovered(content);
+        // Computing reads what the catalogue has not read yet, whose warnings other replies then
+        // report: a kept answer is served once nothing is left unread.
+        let ready = || {
+            content
+                .and_then(|content| dashboard_base::catalogue::catalogue(source, content).ok())
+                .is_some_and(|catalogue| catalogue.readers_read())
+        };
+        let stored = stored_answer(source, request, content, &store, &key, &publication)?;
+        if covered()
+            && ready()
+            && let Some(kept) = stored
+                .as_ref()
+                .and_then(crate::reply_cache::Entry::get)
+                .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
+        {
+            return Ok(CachedQuery {
+                data: kept.data,
+                short: Default::default(),
+                summaries: Default::default(),
+                fallbacks: kept.fallbacks,
+                session: false,
+            });
+        }
+        let answer = read(previous)?;
+        // Only a complete answer under the binding the source still shows, whose computing
+        // neither read nor added to the session's, is kept: any session's computing gives it and
+        // leaves the session as serving it does.
+        if let Some(entry) = stored
+            && answer.short.is_empty()
+            && !waits(&answer.data)
+            && !answer.session
+            && covered()
+            && content.is_none_or(|content| source.still_admitted(content))
+        {
+            let kept = StoredQuery {
+                data: answer.data.clone(),
+                fallbacks: answer.fallbacks.clone(),
+            };
+            let bytes = dashboard_base::prepared::query::observations::json_bytes(&kept.data);
+            entry.put_later(bytes, move || serde_json::to_string(&kept).ok());
+        }
+        Ok(answer)
+    };
     dashboard_base::prepared::query::observations::bind(source, &key);
     let answer = if let (Some(product), Some(branch)) = (cache_product(&request.product), branch) {
         let supplier = if name == "faction-totals" {
@@ -3108,67 +3171,13 @@ pub fn query(
                         + bytes.total() as usize
                         + reply.summaries.bytes()
                 },
-                |previous| {
-                    // Content read outside the recorded coverage is reported on every reply, so no
-                    // answer is served from or kept on disk while the read set holds any.
-                    let covered = || !source.reply_reads_uncovered(content);
-                    // Computing reads what the catalogue has not read yet, whose warnings other
-                    // replies then report: a kept answer is served once nothing is left unread.
-                    let ready = || {
-                        content
-                            .and_then(|content| {
-                                dashboard_base::catalogue::catalogue(source, content).ok()
-                            })
-                            .is_some_and(|catalogue| catalogue.readers_read())
-                    };
-                    let stored = stored_answer(
-                        source,
-                        request,
-                        content,
-                        &store,
-                        &key,
-                        branch,
-                        &publication,
-                    )?;
-                    if covered()
-                        && ready()
-                        && let Some(kept) = stored
-                            .as_ref()
-                            .and_then(crate::reply_cache::Entry::get)
-                            .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
-                    {
-                        return Ok(CachedQuery {
-                            data: kept.data,
-                            short: Default::default(),
-                            summaries: Default::default(),
-                            fallbacks: kept.fallbacks,
-                            session: false,
-                        });
-                    }
-                    let answer = read(previous)?;
-                    // Only a complete answer under the binding the source still shows, whose
-                    // computing neither read nor added to the session's, is kept: any session's
-                    // computing gives it and leaves the session as serving it does.
-                    if let Some(entry) = stored
-                        && answer.short.is_empty()
-                        && !waits(&answer.data)
-                        && !answer.session
-                        && covered()
-                        && content.is_none_or(|content| source.still_admitted(content))
-                    {
-                        let kept = StoredQuery {
-                            data: answer.data.clone(),
-                            fallbacks: answer.fallbacks.clone(),
-                        };
-                        if let Ok(json) = serde_json::to_string(&kept) {
-                            entry.put(&json);
-                        }
-                    }
-                    Ok(answer)
-                },
+                |previous| answered(previous, serde_json::to_string(&publication)?),
             )?
     } else {
-        std::sync::Arc::new(read(None)?)
+        std::sync::Arc::new(answered(
+            None,
+            serde_json::to_string(&reply_presentation(content))?,
+        )?)
     };
     check_cancel(cancelled)?;
     // What a pending or partial reply waits for: the coverage it found short,

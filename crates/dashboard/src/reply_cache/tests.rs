@@ -544,3 +544,24 @@ fn file_backed_reference_cache_uses_recording_path_and_opened_metadata_revision(
     drop((one, two, changed, reopened));
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn a_write_queued_before_its_folder_is_cleared_or_past_the_queue_is_not_made() {
+    let root = root("queued-writes");
+    let entry = |name: &str| Entry {
+        path: root.join("recording").join(format!("{name}.zst")),
+        key: name.into(),
+    };
+    let written = |name: &str| root.join("recording").join(format!("{name}.zst")).exists();
+    // Written before the clear or dropped after it, the entry is gone either way.
+    entry("cleared").put_later(2, || Some("{}".into()));
+    clear(&root).unwrap();
+    settle();
+    assert!(!written("cleared"));
+    entry("dropped").put_later(QUEUED_BYTES + 1, || Some("{}".into()));
+    entry("kept").put_later(2, || Some("{}".into()));
+    settle();
+    assert!(!written("dropped"), "past what may be queued");
+    assert!(written("kept"), "queued after the clear");
+    clear(&root).unwrap();
+}

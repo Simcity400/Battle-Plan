@@ -13,12 +13,13 @@
 //! entries go once the folder passes [`LIMIT`].
 
 use std::{
+    collections::BTreeMap,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
     sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock, PoisonError,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -37,6 +38,41 @@ const ENTRY_BUDGET: usize = crate::transport::MAX_REPLY_BYTES;
 
 /// Bytes stored since the folder was last measured, so pruning walks it rarely.
 static WRITTEN: AtomicU64 = AtomicU64::new(LIMIT);
+
+type Write = Box<dyn FnOnce() + Send>;
+
+/// Bytes of answers queued for the writer at most: a write that would pass it is dropped, as a
+/// cache write may be.
+const QUEUED_BYTES: usize = 256 << 20;
+/// Bytes of answers queued for the writer now.
+static QUEUED: AtomicUsize = AtomicUsize::new(0);
+/// Each folder's clears so far: a write queued before its folder's clear is not made. Held only
+/// to read or count, so queueing never waits on the writer's I/O.
+static CLEARS: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+/// Held while the writer stores an entry and while a folder is cleared, before [`CLEARS`].
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// The thread entries given to [`Entry::put_later`] are written on, in the order given.
+fn writer() -> &'static std::sync::mpsc::Sender<Write> {
+    static WRITER: OnceLock<std::sync::mpsc::Sender<Write>> = OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (send, receive) = std::sync::mpsc::channel::<Write>();
+        // A writer that cannot start leaves only misses.
+        let _ = std::thread::Builder::new()
+            .name("reply cache writer".into())
+            .spawn(move || receive.into_iter().for_each(|write| write()));
+        send
+    })
+}
+
+/// Waits until every entry given to [`Entry::put_later`] so far is written.
+#[cfg(test)]
+pub(crate) fn settle() {
+    let (done, written) = std::sync::mpsc::channel();
+    if writer().send(Box::new(move || drop(done.send(())))).is_ok() {
+        let _ = written.recv();
+    }
+}
 
 /// The history cache folder beside the content hash cache.
 pub fn folder(options: &installed_content_core::ResolveOptions) -> PathBuf {
@@ -164,6 +200,44 @@ impl Entry {
         Some(json)
     }
 
+    /// [`Self::put`] of the reply `json` gives, both on the writer thread, so the reply asked
+    /// waits for neither. `bytes` is what the queued write holds until then: one that would
+    /// pass [`QUEUED_BYTES`] queued is dropped, as is one whose folder is cleared meanwhile.
+    pub(crate) fn put_later(
+        self,
+        bytes: usize,
+        json: impl FnOnce() -> Option<String> + Send + 'static,
+    ) {
+        if QUEUED
+            .fetch_add(bytes, Ordering::AcqRel)
+            .saturating_add(bytes)
+            > QUEUED_BYTES
+        {
+            QUEUED.fetch_sub(bytes, Ordering::AcqRel);
+            return;
+        }
+        let root = self.path.parent().and_then(Path::parent).map(Path::to_path_buf);
+        let cleared = move |clears: &BTreeMap<PathBuf, u64>| {
+            root.as_ref()
+                .and_then(|root| clears.get(root))
+                .copied()
+                .unwrap_or(0)
+        };
+        let queued = cleared(&CLEARS.lock().unwrap_or_else(PoisonError::into_inner));
+        let write: Write = Box::new(move || {
+            if let Some(json) = json() {
+                let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+                if cleared(&CLEARS.lock().unwrap_or_else(PoisonError::into_inner)) == queued {
+                    self.put(&json);
+                }
+            }
+            QUEUED.fetch_sub(bytes, Ordering::AcqRel);
+        });
+        if writer().send(write).is_err() {
+            QUEUED.fetch_sub(bytes, Ordering::AcqRel);
+        }
+    }
+
     /// Store a reply; a failure leaves only a miss.
     pub(crate) fn put(&self, json: &str) {
         if let Ok(stored) = self.store(json)
@@ -258,8 +332,14 @@ pub fn size(root: &Path) -> u64 {
     entries(root).iter().map(|entry| entry.1).sum()
 }
 
-/// Remove every entry.
+/// Remove every entry, and every write queued for the folder before ([`Entry::put_later`]).
 pub fn clear(root: &Path) -> io::Result<()> {
+    let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+    *CLEARS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(root.to_path_buf())
+        .or_default() += 1;
     match fs::remove_dir_all(root) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),

@@ -82,7 +82,10 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     // What a session reads ahead once it opens, which a kept answer waits for.
     let read_ahead =
         |source: &Source| crate::catalogue::catalogue(source, &content).unwrap().read_readers();
-    let kept = || crate::reply_cache::size(&crate::reply_cache::folder(&content.options));
+    let kept = || {
+        crate::reply_cache::settle();
+        crate::reply_cache::size(&crate::reply_cache::folder(&content.options))
+    };
     let first = fixture.source("disk-first");
     let before = computed();
     // A reply still waiting for preparation is computed and never kept.
@@ -136,6 +139,19 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     read_ahead(&disk_other);
     query_with(&disk_other, &content, "air-missions", other);
     assert_eq!(computed() - before, 5, "answered from disk");
+    // An answer outside the in-memory cache is kept too, under every page the recording has.
+    let identities = serde_json::json!({"branchId":"1"});
+    let size = kept();
+    let fresh = query_with(&quiet, &content, "country-identities", identities.clone());
+    assert_eq!(computed() - before, 6);
+    assert!(kept() > size, "kept");
+    let reopened = fixture.source("disk-identities");
+    read_ahead(&reopened);
+    assert_eq!(
+        query_with(&reopened, &content, "country-identities", identities),
+        fresh
+    );
+    assert_eq!(computed() - before, 6, "answered from disk");
     // An answer whose computing noted a text refusal or a fallback is not kept: served from disk,
     // it would leave them out of the session's shared tallies that later replies report.
     let third = serde_json::json!({"branchId":"1","tag":"GER","view":"history","firstHour":12,"lastHour":18});
@@ -156,7 +172,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     let computing = |note: Option<fn(&Source, &ContentOptions)>| {
         super::super::super::query::COMPUTING.with(|hook| hook.set(note))
     };
-    for (count, (name, note)) in (6..).zip(notes) {
+    for (count, (name, note)) in (7..).zip(notes) {
         let size = kept();
         computing(Some(note));
         query_with(&fixture.source(name), &content, "air-missions", third.clone());
@@ -166,7 +182,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     }
     let size = kept();
     query_with(&fixture.source("disk-plain"), &content, "air-missions", third);
-    assert_eq!(computed() - before, 8);
+    assert_eq!(computed() - before, 9);
     assert!(kept() > size, "kept where computing noted neither");
     // Preparing again after a Clear publishes new pages: the kept answer is not served.
     super::super::super::files(&later, Some(&content))
@@ -180,7 +196,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&again, &content, "air-missions", params),
         prepared
     );
-    assert_eq!(computed() - before, 9, "computed for the new publication");
+    assert_eq!(computed() - before, 10, "computed for the new publication");
     super::super::super::files(&again, Some(&content))
         .unwrap()
         .0
