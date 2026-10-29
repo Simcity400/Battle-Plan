@@ -33,6 +33,7 @@
 
 ## Code
 
+- Make everything as fast and efficient as it can be. Design every part, new or changed, as the best solution built from scratch, not a patch on what is there.
 - Design for 1,500 countries. No caps we made up.
 - Change file-format readers, writers and users together. No backwards compatibility.
 - Depend on the specific crate you use, not the `engine` or `installed-content` bundles.
