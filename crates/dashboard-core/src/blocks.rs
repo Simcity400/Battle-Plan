@@ -129,17 +129,17 @@ pub fn scan_blocks<'a, R>(
     )
 }
 
-/// `blocks`, each read by `read`, handed to `scan` in their given order, with at most
-/// `ahead` blocks read on spare cores ahead of the one `scan` works on (none: every
-/// block is read on the calling thread when `scan` asks for it). Reads share
-/// [`scan_blocks`]'s core budget. Reading ahead stops once `scan` returns or
-/// `cancelled` is set.
-pub fn scan_blocks_by<'a, T: Send, R>(
-    blocks: Vec<&'a BlockIndex>,
+/// `blocks` (or any items read alike), each read by `read`, handed to `scan` in their
+/// given order, with at most `ahead` blocks read on spare cores ahead of the one `scan`
+/// works on (none: every block is read on the calling thread when `scan` asks for it).
+/// Reads share [`scan_blocks`]'s core budget. Reading ahead stops once `scan` returns
+/// or `cancelled` is set.
+pub fn scan_blocks_by<'a, B: Sync, T: Send, R>(
+    blocks: Vec<&'a B>,
     ahead: usize,
     cancelled: &AtomicBool,
-    read_block: &(dyn Fn(&'a BlockIndex) -> io::Result<T> + Sync),
-    scan: impl FnOnce(&mut dyn Iterator<Item = (&'a BlockIndex, io::Result<T>)>) -> io::Result<R>,
+    read_block: &(dyn Fn(&'a B) -> io::Result<T> + Sync),
+    scan: impl FnOnce(&mut dyn Iterator<Item = (&'a B, io::Result<T>)>) -> io::Result<R>,
 ) -> io::Result<R> {
     let readers = ahead;
     let state = Ahead {

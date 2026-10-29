@@ -1193,6 +1193,39 @@ fn assert_reference_publication_tags(
                 "{tag} from a shared fold: spill={spill}, checkpoint={checkpoint}"
             );
         }
+        // The same pages opened from a store, read ahead on spare cores, fold alike.
+        let stored = crate::prepared::series::tests::Fixture::new();
+        let mut writer = stored.writer();
+        for ((section, range), bytes) in &pages.pages {
+            writer.write_at(section, *range, bytes.as_slice()).unwrap();
+        }
+        writer.commit().unwrap();
+        let ranges = variant_ranges(
+            &prepared.directory,
+            &stored.store,
+            &stored.key,
+            &variant_section(1),
+            &flag,
+            &mut |section: &str, range: u64| pages.read_at(section, range),
+        )
+        .unwrap();
+        assert!(!ranges.is_empty(), "spill={spill}, checkpoint={checkpoint}");
+        let ahead = Arc::new(fold_ranges(ranges, &flag).unwrap());
+        let actual = assemble_with(
+            &prepared.directory,
+            &tag_key("GER"),
+            None,
+            recorded_language(replay),
+            &flag,
+            |section, range| pages.read_at(section, range),
+            |_| Ok(Arc::clone(&ahead)),
+        )
+        .unwrap();
+        assert_eq!(
+            saved_bytes(&actual),
+            baseline,
+            "GER from pages read ahead: spill={spill}, checkpoint={checkpoint}"
+        );
         let source = fixture_source(replay, pages);
         for origin in [
             None,

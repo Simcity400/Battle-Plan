@@ -1697,19 +1697,33 @@ fn variant_ranges(
     Ok(pages)
 }
 
-/// [`fold_variants`] over pages already opened.
+/// [`fold_variants`] over pages already opened: each page is read and decoded on its
+/// own, on spare cores, and folded in order.
 fn fold_ranges(ranges: Vec<store::Range>, cancelled: &AtomicBool) -> io::Result<VariantFold> {
     use std::io::Read;
     let _naming = replay_frame::cpu::scope("production naming", Some("production-lines"));
-    let mut fold = VariantFold::new();
-    for mut range in ranges {
+    let decode = |range: &store::Range| -> io::Result<VariantPage> {
         let mut bytes = Vec::new();
-        range.read_to_end(&mut bytes)?;
-        let page: VariantPage = pages::read(&bytes)?;
-        crate::metadata::check_cancel(cancelled)?;
-        fold.push(page);
-    }
-    Ok(fold)
+        range.clone().read_to_end(&mut bytes)?;
+        pages::read(&bytes)
+    };
+    // Half the hardware threads, as the sampled-read loaders use.
+    let ahead = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 2).max(1));
+    dashboard_core::blocks::scan_blocks_by(
+        ranges.iter().collect(),
+        ahead,
+        cancelled,
+        &decode,
+        |pages| {
+            let mut fold = VariantFold::new();
+            for (_, page) in pages {
+                let page = page?;
+                crate::metadata::check_cancel(cancelled)?;
+                fold.push(page);
+            }
+            Ok(fold)
+        },
+    )
 }
 
 fn assemble(
