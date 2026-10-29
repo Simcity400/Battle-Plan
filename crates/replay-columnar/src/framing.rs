@@ -10,10 +10,7 @@
 //! Inside a table unit each section starts at a multiple of 8 bytes from the unit's
 //! start, zero-padded, so its value arrays stay aligned; its length is the manifest's.
 
-use crate::{
-    invalid,
-    leaf::{Reader, Writer},
-};
+use crate::leaf::{Reader, Writer};
 use std::io;
 
 #[cfg(test)]
@@ -52,42 +49,4 @@ pub fn put_section(unit: &mut Writer, section: &[u8]) -> io::Result<()> {
 pub fn next_section<'a>(unit: &mut Reader<'a>, length: usize) -> io::Result<&'a [u8]> {
     unit.align(8)?;
     unit.raw(length)
-}
-
-/// Where one compressed unit is: its stream, the ordinal of its first hour and how many
-/// hours it covers, and its bytes in the file.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Unit {
-    pub stream: u32,
-    pub first: u32,
-    pub hours: u32,
-    pub offset: u64,
-    pub raw: u64,
-    pub stored: u64,
-}
-
-impl Unit {
-    pub(crate) fn write(&self, writer: &mut Writer) -> io::Result<()> {
-        writer.varint(u64::from(self.stream))?;
-        writer.varint(u64::from(self.first))?;
-        writer.varint(u64::from(self.hours))?;
-        writer.varint(self.offset)?;
-        writer.varint(self.raw)?;
-        writer.varint(self.stored)
-    }
-
-    pub(crate) fn read(reader: &mut Reader<'_>) -> io::Result<Self> {
-        let unit = Self {
-            stream: reader.varint_u32()?,
-            first: reader.varint_u32()?,
-            hours: reader.varint_u32()?,
-            offset: reader.varint()?,
-            raw: reader.varint()?,
-            stored: reader.varint()?,
-        };
-        if unit.hours == 0 {
-            return Err(invalid("A unit covers no hours"));
-        }
-        Ok(unit)
-    }
 }

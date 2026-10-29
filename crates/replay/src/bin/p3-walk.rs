@@ -1,4 +1,4 @@
-//! Walks a `p3-convert` file (version 2) from its first hour through replay-columnar's
+//! Walks a `p3-convert` file (version 3) from its first hour through replay-columnar's
 //! reader and reports, per recorded hour, the CPU of decompressing units, reading
 //! manifests and applying sections, then the time to start a walker at each restart.
 //! With `--rows`, also builds the recording's row values for every slot each hour
@@ -6,9 +6,9 @@
 //! table's live rows and changes per hour. Measurement only:
 //! `p3-walk <file> [repetitions] [--rows] [--table=<Name>]`.
 
+use replay::columnar_frames::Recording;
 use replay_columnar::{
-    framing::{self, Unit},
-    index::{Index, Record},
+    framing,
     leaf::Reader,
     manifest::Manifest,
     state::{Cell, Kind as Column, Table},
@@ -83,34 +83,6 @@ fn thread_ns() -> u64 {
     0
 }
 
-fn record(bytes: &[u8], offset: u64, raw: u64, stored: u64) -> io::Result<Vec<u8>> {
-    let start = usize::try_from(offset).map_err(|_| invalid("Record offset exceeds memory"))?;
-    let length = usize::try_from(stored).map_err(|_| invalid("Record length exceeds memory"))?;
-    let stored = start
-        .checked_add(length)
-        .and_then(|end| bytes.get(start..end))
-        .ok_or_else(|| invalid("Record passes the file"))?;
-    // The frame must say the length the index does, before that much is allocated.
-    if zstd::zstd_safe::get_frame_content_size(stored).ok().flatten() != Some(raw) {
-        return Err(invalid("Record's frame and index disagree on its length"));
-    }
-    let raw = usize::try_from(raw).map_err(|_| invalid("Record length exceeds memory"))?;
-    let mut raw_bytes = engine_allocation::vec(raw)?;
-    zstd::bulk::Decompressor::new()?.decompress_to_buffer(stored, &mut raw_bytes)?;
-    if raw_bytes.len() != raw {
-        return Err(invalid("Record decompresses to another length"));
-    }
-    Ok(raw_bytes)
-}
-
-fn unit(bytes: &[u8], unit: &Unit) -> io::Result<Vec<u8>> {
-    record(bytes, unit.offset, unit.raw, unit.stored)
-}
-
-fn restart_record(bytes: &[u8], record_at: &Record) -> io::Result<Vec<u8>> {
-    record(bytes, record_at.offset, record_at.raw, record_at.stored)
-}
-
 /// The format `p3-convert` encodes rows and opaque cells in: this build's.
 const FORMAT: u16 = replay_data::FORMAT_VERSION;
 
@@ -166,7 +138,9 @@ fn rows(
         for column in 0..columns {
             // A snapshot row has no way to say a cell was not recorded.
             if !table.recorded(column, slot) {
-                return Err(invalid(format!("{id:?} slot {slot} column {column} is unrecorded")));
+                return Err(invalid(format!(
+                    "{id:?} slot {slot} column {column} is unrecorded"
+                )));
             }
             let cell = table
                 .column(column)
@@ -235,30 +209,19 @@ fn main() -> io::Result<()> {
                 .ok_or_else(|| invalid(format!("No table {name}")))
         })
         .transpose()?;
-    let bytes = std::fs::read(&path)?;
-    if !bytes.starts_with(b"H4COLUMN") || bytes.get(8..12) != Some(&2u32.to_le_bytes()[..]) {
-        return Err(invalid("Not a version 2 H4COLUMN file"));
+    let file = Recording::open(std::fs::read(&path)?)?;
+    if let Some(damage) = file.damage().first() {
+        return Err(invalid(*damage));
     }
-    let end = bytes
-        .len()
-        .checked_sub(8)
-        .filter(|&end| end >= 12)
-        .ok_or_else(|| invalid("File ends before its index offset"))?;
-    let index_at = usize::try_from(u64::from_le_bytes(
-        bytes[end..].try_into().expect("eight bytes"),
-    ))
-    .ok()
-    .filter(|&at| (12..=end).contains(&at))
-    .ok_or_else(|| invalid("Index offset passes the file"))?;
-    let index = Index::read(&bytes[index_at..end])?;
     let schema: Vec<Vec<Column>> = TableId::ALL
         .iter()
         .map(|id| id.schema().iter().map(|&kind| column(kind)).collect())
         .collect();
-    let mut positions: BTreeMap<u32, Vec<&Unit>> = BTreeMap::new();
-    for unit in &index.units {
-        positions.entry(unit.first).or_default().push(unit);
-    }
+    let positions: Vec<(u32, &replay_columnar::envelope::IndexPage)> = (0..file.runs().len()
+        as u32)
+        .flat_map(|run| file.pages(run).iter().map(move |page| (run, page)))
+        .map(|(run, page)| Ok((run, page.as_ref().map_err(|why| invalid(why.clone()))?)))
+        .collect::<io::Result<_>>()?;
 
     let mut runs = Vec::new();
     for _ in 0..repetitions {
@@ -277,32 +240,22 @@ fn main() -> io::Result<()> {
         let mut watched_samples = Vec::new();
         let cpu = thread_ns();
         let wall = Instant::now();
-        for units in positions.values() {
-            let begin = Instant::now();
-            let mut manifest_unit = None;
-            let mut tables: Vec<Option<Vec<u8>>> = (0..schema.len()).map(|_| None).collect();
-            for unit_at in units {
-                let raw = unit(&bytes, unit_at)?;
-                if unit_at.stream == framing::MANIFESTS {
-                    manifest_unit = Some(raw);
-                } else {
-                    let table = (unit_at.stream - 1) as usize;
-                    *tables
-                        .get_mut(table)
-                        .ok_or_else(|| invalid("Unit names a stream past the schema"))? = Some(raw);
-                }
+        for &(_, page) in &positions {
+            // Each run starts from empty tables.
+            if page.first == 0 {
+                state = State::new(schema.clone())?;
             }
+            let begin = Instant::now();
+            let (manifest_unit, tables) = file.unit_streams(page)?;
             decompress_ns += begin.elapsed().as_nanos();
-            peak_raw = peak_raw.max(units.iter().map(|unit| unit.raw).sum());
-            let manifest_unit =
-                manifest_unit.ok_or_else(|| invalid("A unit position has no manifests"))?;
+            peak_raw = peak_raw.max(page.units.iter().map(|unit| unit.raw).sum());
             let mut readers: Vec<Option<Reader<'_>>> = tables
                 .iter()
-                .map(|bytes| bytes.as_deref().map(Reader::new))
+                .map(|unit| unit.as_ref().map(|unit| Reader::new(&unit.bytes)))
                 .collect();
-            let mut manifests = Reader::new(&manifest_unit);
+            let mut manifests = Reader::new(&manifest_unit.bytes);
             while let Some(manifest_bytes) =
-                framing::next_manifest(&mut manifests, manifest_unit.len())?
+                framing::next_manifest(&mut manifests, manifest_unit.bytes.len())?
             {
                 let read = Instant::now();
                 let manifest = Manifest::read(manifest_bytes, &columns)?;
@@ -377,30 +330,28 @@ fn main() -> io::Result<()> {
         }
         let cpu_ns = thread_ns() - cpu;
         let wall_ns = wall.elapsed().as_nanos();
-        if hours != u64::from(index.hours) {
-            return Err(invalid(format!("Walked {hours} of {} hours", index.hours)));
+        if hours != file.hours() {
+            return Err(invalid(format!("Walked {hours} of {} hours", file.hours())));
         }
         let live: usize = (0..schema.len())
             .map(|table| state.table(table).expect("schema table").live().count())
             .sum();
 
-        // A walker starting at restart k restores the dictionary chunks of every restart
-        // up to k, then every table.
-        let mut chunks = Vec::new();
+        // A walker starting at a restart restores its run's dictionary chunks through it,
+        // then every table.
         let mut restore_ns = Vec::new();
-        for restart in &index.restarts {
-            chunks.push(restart_record(&bytes, &restart.chunk)?);
-            let begin = Instant::now();
-            let raw = restart_record(&bytes, &restart.state)?;
-            let mut fresh = State::new(schema.clone())?;
-            fresh.restore_dictionary(chunks.iter().map(Vec::as_slice))?;
-            let mut reader = Reader::new(&raw);
-            let tables = reader.count()?;
-            for table in 0..tables {
-                let length = reader.count()?;
-                fresh.restore(table, reader.raw(length)?)?;
+        for &(run, page) in &positions {
+            if page.restart.is_none() {
+                continue;
             }
-            reader.finish()?;
+            let at = file
+                .pages(run)
+                .iter()
+                .position(|held| held.as_ref().is_ok_and(|held| std::ptr::eq(held, page)))
+                .expect("a page of its run");
+            let begin = Instant::now();
+            let mut fresh = State::new(schema.clone())?;
+            file.restore(run, at, &mut fresh)?;
             restore_ns.push(begin.elapsed().as_nanos() as f64 / 1e6);
         }
         let per_hour = |ns: u128| ns as f64 / 1000.0 / hours as f64;
@@ -436,10 +387,11 @@ fn main() -> io::Result<()> {
         "{}",
         serde_json::to_string_pretty(&json!({
             "file": path,
-            "file_bytes": bytes.len(),
-            "hours": index.hours,
-            "units": index.units.len(),
-            "restarts": index.restarts.len(),
+            "file_bytes": file.len(),
+            "hours": file.hours(),
+            "runs_in_file": file.runs().len(),
+            "units": positions.iter().map(|(_, page)| page.units.len()).sum::<usize>(),
+            "restarts": positions.iter().filter(|(_, page)| page.restart.is_some()).count(),
             "runs": runs,
         }))?
     );
@@ -466,7 +418,10 @@ mod tests {
     #[test]
     fn the_repetition_count_is_optional_before_or_among_the_options() {
         assert_eq!(parsed(&["walk.h4col"]).unwrap(), walk(3, false, None));
-        assert_eq!(parsed(&["walk.h4col", "--rows"]).unwrap(), walk(3, true, None));
+        assert_eq!(
+            parsed(&["walk.h4col", "--rows"]).unwrap(),
+            walk(3, true, None)
+        );
         assert_eq!(
             parsed(&["walk.h4col", "--table=Countries"]).unwrap(),
             walk(3, false, Some("Countries"))

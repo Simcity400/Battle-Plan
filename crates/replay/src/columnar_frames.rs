@@ -20,14 +20,14 @@ use crate::{
     scope::CaptureMode,
 };
 use replay_columnar::{
-    framing::{self, Unit},
-    index::Index,
+    envelope::{self, Extent, IndexPage, Kind, Root, RunDirectory},
+    framing,
     leaf::Reader,
     manifest::{Manifest, Status},
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
 };
-use std::{collections::BTreeMap, io};
+use std::io;
 
 #[cfg(test)]
 mod tests;
@@ -359,119 +359,442 @@ impl Views {
     }
 }
 
-/// A `p3-convert` recording (`H4COLUMN` version 2): its index over the file's bytes.
+/// A columnar recording (`H4COLUMN` version 3): its root and every run's pages over the
+/// file's bytes ([`replay_columnar::envelope`]). A run directory or page that cannot be read
+/// refuses only what it covers ([`Self::damage`]); the rest stays readable.
 pub struct Recording {
+    /// The file through its last footer whose root verifies.
     bytes: Vec<u8>,
-    index: Index,
+    root: Root,
+    /// Each run's directory, or why it cannot be read.
+    runs: Vec<Result<RunDirectory, String>>,
+    /// Each run's pages, each or why it cannot be read; none for a run that cannot be read.
+    pages: Vec<Vec<Result<IndexPage, String>>>,
+    /// Whether walks check every hour against the pages' hour digest chain.
+    verify: bool,
 }
 
-/// The magic and version a columnar recording starts with.
-const MAGIC: &[u8; 8] = b"H4COLUMN";
-const VERSION: u32 = 2;
+/// Hours a walk can take on its own: from its run's start or from a restart, through the
+/// hour before the run's next restart. Ordinals of the run, inclusive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Segment {
+    pub run: u32,
+    /// The page whose restart the walk starts from; None from the run's start.
+    pub restart: Option<usize>,
+    pub first: u32,
+    pub last: u32,
+}
+
+/// One piece of a stream's unit: the ordinals it covers and where its raw bytes sit in the
+/// unit's concatenation.
+struct Piece {
+    first: u64,
+    end: u64,
+    start: usize,
+    stop: usize,
+}
+
+/// One stream's unit of a page: its pieces' raw bytes concatenated in order.
+pub struct Unit {
+    pub bytes: Vec<u8>,
+    pieces: Vec<Piece>,
+}
+
+impl Unit {
+    /// Whether `start..stop` of the unit lies within the piece covering `ordinal`.
+    fn holds(&self, ordinal: u64, start: usize, stop: usize) -> bool {
+        self.pieces.iter().any(|piece| {
+            (piece.first..piece.end).contains(&ordinal)
+                && piece.start <= start
+                && stop <= piece.stop
+        })
+    }
+}
+
+/// One extent's bytes decompressed, its place, digest and length checked first.
+fn extent_bytes(file: &[u8], extent: &Extent) -> io::Result<Vec<u8>> {
+    let stored = extent.stored_in(file)?;
+    let raw = match zstd::zstd_safe::get_frame_content_size(stored) {
+        Ok(Some(raw)) if extent.kind == Kind::Root || raw == extent.raw => raw,
+        _ => return Err(extent.damaged("differs from its frame's length")),
+    };
+    let raw = usize::try_from(raw).map_err(|_| extent.damaged("exceeds memory"))?;
+    let mut bytes = engine_allocation::vec(raw)?;
+    zstd::bulk::Decompressor::new()?.decompress_to_buffer(stored, &mut bytes)?;
+    if bytes.len() != raw {
+        return Err(extent.damaged("decompresses to another length"));
+    }
+    Ok(bytes)
+}
 
 impl Recording {
-    pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
-        if !bytes.starts_with(MAGIC) || bytes.get(8..12) != Some(&VERSION.to_le_bytes()[..]) {
-            return Err(invalid("Not a version 2 H4COLUMN recording"));
+    pub fn open(mut bytes: Vec<u8>) -> io::Result<Self> {
+        // A torn tail after the last valid footer is no part of the recording.
+        let (root, end) = envelope::last_root(&bytes)?;
+        bytes.truncate(end);
+        let root = Root::read(&extent_bytes(&bytes, &root)?)?;
+        let columns = schema()?;
+        if root.identity.schema != envelope::schema_digest(&columns) {
+            return Err(invalid("The recording's schema differs from this build's"));
         }
-        let end = bytes
-            .len()
-            .checked_sub(8)
-            .filter(|&end| end >= 12)
-            .ok_or_else(|| invalid("The recording ends before its index offset"))?;
-        let at = usize::try_from(u64::from_le_bytes(
-            bytes[end..].try_into().expect("eight bytes"),
-        ))
-        .ok()
-        .filter(|&at| (12..=end).contains(&at))
-        .ok_or_else(|| invalid("The index offset passes the recording"))?;
-        let index = Index::read(&bytes[at..end])?;
-        Ok(Self { bytes, index })
+        let mut runs = engine_allocation::vec(root.runs.len())?;
+        let mut pages = engine_allocation::vec(root.runs.len())?;
+        for (at, run) in root.runs.iter().enumerate() {
+            let run = extent_bytes(&bytes, run)
+                .and_then(|raw| RunDirectory::read(&raw, run, at as u32))
+                .map_err(|error| error.to_string());
+            let run_pages = match &run {
+                Ok(run) => engine_allocation::collect_vec(run.pages.iter().map(|page| {
+                    extent_bytes(&bytes, page)
+                        .and_then(|raw| IndexPage::read(&raw, page, columns.len()))
+                        .map_err(|error| error.to_string())
+                }))?,
+                Err(_) => Vec::new(),
+            };
+            runs.push(run);
+            pages.push(run_pages);
+        }
+        Ok(Self {
+            bytes,
+            root,
+            runs,
+            pages,
+            verify: false,
+        })
     }
 
-    pub fn hours(&self) -> u32 {
-        self.index.hours
+    /// Makes every walk check each hour against the hour digest chain the pages hold.
+    pub fn verify(&mut self, verify: bool) {
+        self.verify = verify;
     }
 
-    /// One unit's decompressed bytes, checked against the index before anything is allocated.
-    fn unit(&self, unit: &Unit) -> io::Result<Vec<u8>> {
-        let start =
-            usize::try_from(unit.offset).map_err(|_| invalid("A unit offset exceeds memory"))?;
-        let length =
-            usize::try_from(unit.stored).map_err(|_| invalid("A unit length exceeds memory"))?;
-        let stored = start
-            .checked_add(length)
-            .and_then(|end| self.bytes.get(start..end))
-            .ok_or_else(|| invalid("A unit passes the recording"))?;
-        if zstd::zstd_safe::get_frame_content_size(stored)
-            .ok()
+    /// Why each run directory or page that cannot be read is refused, naming its scope.
+    pub fn damage(&self) -> Vec<&str> {
+        let runs = self.runs.iter().filter_map(|run| run.as_ref().err());
+        let pages = self
+            .pages
+            .iter()
             .flatten()
-            != Some(unit.raw)
-        {
-            return Err(invalid(
-                "A unit's frame and the index disagree on its length",
-            ));
-        }
-        let raw = usize::try_from(unit.raw).map_err(|_| invalid("A unit length exceeds memory"))?;
-        let mut bytes = engine_allocation::vec(raw)?;
-        zstd::bulk::Decompressor::new()?.decompress_to_buffer(stored, &mut bytes)?;
-        if bytes.len() != raw {
-            return Err(invalid("A unit decompresses to another length"));
-        }
-        Ok(bytes)
+            .filter_map(|page| page.as_ref().err());
+        runs.chain(pages).map(String::as_str).collect()
     }
 
-    /// Every hour from the first, in order: the walker's state once it applied the hour and
-    /// that hour's manifest, with whether the hour starts the walk. `visit` stops the walk by
-    /// returning false.
+    /// Recorded hours over every run that can be read.
+    pub fn hours(&self) -> u64 {
+        self.runs
+            .iter()
+            .filter_map(|run| run.as_ref().ok())
+            .map(|run| u64::from(run.ordinals))
+            .sum()
+    }
+
+    /// Each run's directory, or why it cannot be read.
+    pub fn runs(&self) -> &[Result<RunDirectory, String>] {
+        &self.runs
+    }
+
+    fn run(&self, run: u32) -> io::Result<&RunDirectory> {
+        self.runs
+            .get(run as usize)
+            .ok_or_else(|| invalid("No such run"))?
+            .as_ref()
+            .map_err(|why| invalid(why.clone()))
+    }
+
+    /// Run `run`'s pages, in order, each or why it cannot be read.
+    pub fn pages(&self, run: u32) -> &[Result<IndexPage, String>] {
+        self.pages.get(run as usize).map_or(&[], Vec::as_slice)
+    }
+
+    fn page(&self, run: u32, at: usize) -> io::Result<&IndexPage> {
+        self.pages(run)
+            .get(at)
+            .ok_or_else(|| invalid("No such page"))?
+            .as_ref()
+            .map_err(|why| invalid(why.clone()))
+    }
+
+    /// One extent's bytes, decompressed after its place and digest are checked.
+    pub fn extent(&self, extent: &Extent) -> io::Result<Vec<u8>> {
+        extent_bytes(&self.bytes, extent)
+    }
+
+    /// The file's length through its last valid footer.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// One stream's unit of `page`; None when the page holds none of it.
+    fn stream(&self, page: &IndexPage, stream: u32) -> io::Result<Option<Unit>> {
+        let mut unit: Option<Unit> = None;
+        for extent in page.stream(stream) {
+            let raw = self.extent(extent)?;
+            let unit = unit.get_or_insert_with(|| Unit {
+                bytes: Vec::new(),
+                pieces: Vec::new(),
+            });
+            let start = unit.bytes.len();
+            engine_allocation::reserve(&mut unit.bytes, raw.len())?;
+            unit.bytes.extend_from_slice(&raw);
+            engine_allocation::reserve(&mut unit.pieces, 1)?;
+            unit.pieces.push(Piece {
+                first: u64::from(extent.first),
+                end: u64::from(extent.first) + u64::from(extent.hours),
+                start,
+                stop: unit.bytes.len(),
+            });
+        }
+        Ok(unit)
+    }
+
+    /// `page`'s manifests and each table's sections, as [`Self::stream`] gives them.
+    pub fn unit_streams(&self, page: &IndexPage) -> io::Result<(Unit, Vec<Option<Unit>>)> {
+        let manifests = self
+            .stream(page, framing::MANIFESTS)?
+            .ok_or_else(|| invalid("A page has no manifests"))?;
+        let mut tables: Vec<Option<Unit>> =
+            engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
+        let mut streams: Vec<u32> = page
+            .units
+            .iter()
+            .map(|unit| unit.stream)
+            .filter(|&stream| stream != framing::MANIFESTS)
+            .collect();
+        streams.dedup();
+        for stream in streams {
+            *tables
+                .get_mut((stream - 1) as usize)
+                .ok_or_else(|| invalid("A unit names a stream past the schema"))? =
+                self.stream(page, stream)?;
+        }
+        Ok((manifests, tables))
+    }
+
+    /// Every readable run's segments in order: from the run's start, then from each restart
+    /// a readable page holds.
+    pub fn segments(&self) -> Vec<Segment> {
+        let mut segments = Vec::new();
+        for (run, directory) in self.runs.iter().enumerate() {
+            let Ok(directory) = directory else {
+                continue;
+            };
+            let run = run as u32;
+            let mut start = (None, 0_u32);
+            for (at, page) in self.pages(run).iter().enumerate() {
+                if let Ok(page) = page
+                    && let Some(restart) = &page.restart
+                    && u64::from(restart.after) + 1 < u64::from(directory.ordinals)
+                {
+                    segments.push(Segment {
+                        run,
+                        restart: start.0,
+                        first: start.1,
+                        last: restart.after,
+                    });
+                    start = (Some(at), restart.after + 1);
+                }
+            }
+            if start.1 < directory.ordinals {
+                segments.push(Segment {
+                    run,
+                    restart: start.0,
+                    first: start.1,
+                    last: directory.ordinals - 1,
+                });
+            }
+        }
+        segments
+    }
+
+    /// The page of `segment`'s run whose restart holds the segment's last hour, the run's
+    /// last restart included; None when no readable page holds one.
+    pub fn restart_after(&self, segment: &Segment) -> Option<usize> {
+        self.pages(segment.run).iter().position(|page| {
+            page.as_ref().is_ok_and(|page| {
+                page.restart
+                    .as_ref()
+                    .is_some_and(|restart| restart.after == segment.last)
+            })
+        })
+    }
+
+    /// Replaces `state` with what restart page `at` of `run` holds: the run's dictionary
+    /// chunks through it, each holding the run's next ids, then each table's state.
+    pub fn restore(&self, run: u32, at: usize, state: &mut State) -> io::Result<()> {
+        let directory = self.run(run)?;
+        let restart = self
+            .page(run, at)?
+            .restart
+            .as_ref()
+            .ok_or_else(|| invalid("The page holds no restart"))?;
+        if i64::from(restart.hour) != i64::from(directory.first_hour) + i64::from(restart.after) {
+            return Err(restart
+                .chunk
+                .damaged("belongs to a restart off its run's hours"));
+        }
+        let mut chunks = Vec::new();
+        let mut next_id = 0_u64;
+        for page in self.pages(run).get(..=at).unwrap_or_default() {
+            // A page that cannot be read hides at most a chunk, whose absence the next
+            // restart's ordinal and ids then show.
+            let Ok(page) = page else {
+                continue;
+            };
+            let Some(held) = &page.restart else {
+                continue;
+            };
+            let chunk = extent_bytes(&self.bytes, &held.chunk)?;
+            let count = Reader::new(&chunk).count()? as u64;
+            if held.ordinal as usize != chunks.len()
+                || u64::from(held.ids.0) != next_id
+                || count != u64::from(held.ids.1)
+            {
+                return Err(held
+                    .chunk
+                    .damaged("does not hold the run's next dictionary ids"));
+            }
+            next_id += count;
+            engine_allocation::reserve(&mut chunks, 1)?;
+            chunks.push(chunk);
+        }
+        state.restore_dictionary(chunks.iter().map(Vec::as_slice))?;
+        for table in &restart.tables {
+            state.restore(
+                table.table as usize,
+                &extent_bytes(&self.bytes, &table.extent)?,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Every readable run's hours in order, each run from empty tables: the walker's state
+    /// once it applied the hour and that hour's manifest, with whether the hour starts its
+    /// run. `visit` stops the walk by returning false; a page that cannot be read refuses
+    /// the walk where it reaches it.
     pub fn walk(
         &self,
         state: &mut State,
         mut visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        let columns = state.columns().to_vec();
-        let mut positions: BTreeMap<u32, Vec<&Unit>> = BTreeMap::new();
-        for unit in &self.index.units {
-            let units = positions.entry(unit.first).or_default();
-            engine_allocation::reserve(units, 1)?;
-            units.push(unit);
-        }
-        let mut first = true;
-        for units in positions.values() {
-            let mut manifests = None;
-            let mut tables: Vec<Option<Vec<u8>>> =
-                engine_allocation::collect_vec((0..columns.len()).map(|_| None))?;
-            for unit in units {
-                let raw = self.unit(unit)?;
-                if unit.stream == framing::MANIFESTS {
-                    manifests = Some(raw);
-                } else {
-                    *tables
-                        .get_mut((unit.stream - 1) as usize)
-                        .ok_or_else(|| invalid("A unit names a stream past the schema"))? =
-                        Some(raw);
-                }
+        let mut going = true;
+        for segment in self.segments() {
+            if !going {
+                break;
             }
-            let manifests = manifests.ok_or_else(|| invalid("A unit position has no manifests"))?;
-            let mut readers: Vec<Option<Reader<'_>>> = engine_allocation::collect_vec(
-                tables.iter().map(|bytes| bytes.as_deref().map(Reader::new)),
+            if segment.restart.is_none() {
+                *state = State::new(schema()?)?;
+            }
+            self.walk_hours(&segment, state, &mut |state, manifest, starts| {
+                going = visit(state, manifest, starts && segment.restart.is_none())?;
+                Ok(going)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// `segment`'s hours from its restart restored into `state`, or from empty tables at its
+    /// run's start, as [`Self::walk`] visits them; `starts` is the segment's first hour.
+    pub fn walk_segment(
+        &self,
+        segment: &Segment,
+        state: &mut State,
+        mut visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        match segment.restart {
+            Some(at) => self.restore(segment.run, at, state)?,
+            None => *state = State::new(schema()?)?,
+        }
+        self.walk_hours(segment, state, &mut visit)
+    }
+
+    /// The hours of `segment`'s ordinals, page by page: one manifest per ordinal at its run's
+    /// branch and hour, every manifest and section within the piece covering its ordinal,
+    /// every unit read to its end, and the chain checked when asked.
+    fn walk_hours(
+        &self,
+        segment: &Segment,
+        state: &mut State,
+        visit: &mut dyn FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let run = self.run(segment.run)?;
+        let columns = state.columns().to_vec();
+        let mut chain = match segment.restart {
+            Some(at) => self.page(segment.run, at)?.chain,
+            None => envelope::chain_start(&self.root.identity.chain_bytes()?, segment.run),
+        };
+        let hour = |ordinal: u64| i64::from(run.first_hour) + ordinal as i64;
+        let mut first = true;
+        for (at, page) in self.pages(segment.run).iter().enumerate() {
+            if !(segment.first..=segment.last).contains(&run.pages[at].first) {
+                continue;
+            }
+            // A page that cannot be read refuses only the walks of its segment.
+            let page = page.as_ref().map_err(|why| invalid(why.clone()))?;
+            let refused = |what: &str| {
+                invalid(format!(
+                    "Run {} from ordinal {} {what}",
+                    page.run, page.first
+                ))
+            };
+            let end = u64::from(page.first) + u64::from(page.hours);
+            if i64::from(page.first_hour) != hour(page.first.into())
+                || i64::from(page.last_hour) != hour(end - 1)
+            {
+                return Err(refused("names hours off its ordinals"));
+            }
+            let (manifests, tables) = self.unit_streams(page)?;
+            let mut readers: Vec<Option<(Reader<'_>, &Unit)>> = engine_allocation::collect_vec(
+                tables
+                    .iter()
+                    .map(|unit| unit.as_ref().map(|unit| (Reader::new(&unit.bytes), unit))),
             )?;
-            let mut reader = Reader::new(&manifests);
-            while let Some(bytes) = framing::next_manifest(&mut reader, manifests.len())? {
+            let mut reader = Reader::new(&manifests.bytes);
+            let mut ordinal = u64::from(page.first);
+            loop {
+                let start = reader.at();
+                let Some(bytes) = framing::next_manifest(&mut reader, manifests.bytes.len())?
+                else {
+                    break;
+                };
+                if ordinal >= end || !manifests.holds(ordinal, start, reader.at()) {
+                    return Err(refused("holds a manifest off its ordinals"));
+                }
                 let manifest = Manifest::read(bytes, &columns)?;
+                if manifest.branch != run.branch || i64::from(manifest.hour) != hour(ordinal) {
+                    return Err(refused("holds an hour off its run's branch and hours"));
+                }
                 let mut sections = engine_allocation::vec(manifest.sections.len())?;
                 for section in &manifest.sections {
-                    let reader = readers
+                    let (reader, unit) = readers
                         .get_mut(section.table)
                         .and_then(Option::as_mut)
                         .ok_or_else(|| invalid("A section's table has no unit"))?;
-                    sections.push(framing::next_section(reader, section.bytes as usize)?);
+                    let bytes = framing::next_section(reader, section.bytes as usize)?;
+                    if !unit.holds(ordinal, reader.at() - bytes.len(), reader.at()) {
+                        return Err(refused("holds a section outside its hour's piece"));
+                    }
+                    sections.push(bytes);
+                }
+                if self.verify {
+                    chain = envelope::chain_hour(&chain, bytes, sections.iter().copied());
                 }
                 state.apply(&manifest, |index| Ok(sections[index]))?;
                 if !visit(state, &manifest, first)? {
                     return Ok(());
                 }
                 first = false;
+                ordinal += 1;
+            }
+            if ordinal != end
+                || readers
+                    .iter()
+                    .flatten()
+                    .any(|(reader, _)| reader.finish().is_err())
+            {
+                return Err(refused("does not hold exactly its hours"));
+            }
+            if self.verify && chain != page.chain {
+                return Err(refused("differs from its hour digest chain"));
             }
         }
         Ok(())

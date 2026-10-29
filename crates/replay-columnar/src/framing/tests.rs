@@ -30,11 +30,3 @@ fn sections_start_aligned_and_read_back_by_their_lengths() {
     }
     reader.finish().unwrap();
 }
-
-#[test]
-fn a_unit_covering_no_hours_is_refused() {
-    let mut writer = Writer::new();
-    Unit { stream: 3, first: 720, hours: 0, offset: 12, raw: 1, stored: 1 }.write(&mut writer).unwrap();
-    let bytes = writer.into_bytes();
-    assert!(Unit::read(&mut Reader::new(&bytes)).is_err());
-}
