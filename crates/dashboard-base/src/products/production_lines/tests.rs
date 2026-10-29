@@ -2867,6 +2867,44 @@ fn an_organisation_icon_the_mod_cannot_draw_draws_the_recordings_own_choice() {
     );
 }
 
+/// A picture neither the selection nor the recording can draw is warned on every reply that shows
+/// it, once, a memo hit included: no reply depends on which drew it first.
+#[test]
+fn an_organisation_picture_that_cannot_be_drawn_is_warned_on_every_reply() {
+    use crate::test_fixtures::visual_mods::{Machine, select};
+    let machine = Machine::new("organisation_unavailable");
+    machine.write(
+        "interface/organisations.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_tok textureFile = gfx/tok.png } }",
+    );
+    machine.write("gfx/tok.png", b"not a png");
+    let raw = RawOrganisation {
+        first_hour: 0,
+        token: "tok".into(),
+        name_key: String::new(),
+        icon: String::new(),
+        owner_tag: None,
+        owner_unknown: false,
+        state: None,
+    };
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &[]);
+    let shown = catalogue::catalogue(&source, &options).unwrap();
+    let state = source.state::<Cache>();
+    for reply in ["first", "memo hit"] {
+        let mut warnings = Vec::new();
+        let (key, image) = kept_organisation_picture(&state, &shown, &raw, &mut warnings).unwrap();
+        kept_organisation_picture(&state, &shown, &raw, &mut warnings).unwrap();
+        assert!(key.ends_with("#none"), "{reply}: {key}");
+        assert_eq!(image, None, "{reply}");
+        assert_eq!(warnings.len(), 1, "{reply}: {warnings:?}");
+        assert!(
+            warnings[0].starts_with(&format!("{key}: picture unavailable: ")),
+            "{reply}: {warnings:?}"
+        );
+    }
+}
+
 fn prepared_load<P: crate::products::Product>(
     source: &Source,
     params: &P::Params,

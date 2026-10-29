@@ -1130,8 +1130,8 @@ fn draw_variant_icon(
 
 /// An organisation's picture key and picture as `catalogue` shows it ([`organisation_shown`]),
 /// kept per catalogue in the product's cache by what the choice reads, so a memo hit names what
-/// its first draw named; a picture neither the selection nor the recording can draw is warned
-/// when it is first drawn.
+/// its first draw named; a picture neither the selection nor the recording can draw is warned,
+/// once, on every reply that shows it, whichever reply drew it first.
 fn kept_organisation_picture(
     state: &std::sync::Mutex<Cache>,
     catalogue: &Arc<Catalogue>,
@@ -1146,8 +1146,8 @@ fn kept_organisation_picture(
         .as_ref()
         .filter(|(held, _)| Arc::ptr_eq(held, catalogue))
         .and_then(|(_, drawn)| drawn.get(&key).cloned());
-    let (shown, first) = match kept {
-        Some(drawn) => (organisation_shown(&drawn, catalogue, raw), false),
+    let shown = match kept {
+        Some(drawn) => organisation_shown(&drawn, catalogue, raw),
         None => {
             let drawn = organisation_picture(catalogue, raw, ICON_EDGE);
             let shown = organisation_shown(&drawn, catalogue, raw);
@@ -1158,7 +1158,7 @@ fn kept_organisation_picture(
                 }
                 slot => *slot = Some((Arc::clone(catalogue), [(key, drawn)].into())),
             }
-            (shown, true)
+            shown
         }
     };
     let (key, image) = shown?;
@@ -1166,8 +1166,9 @@ fn kept_organisation_picture(
         key.clone(),
         image
             .map_err(|error| {
-                if first {
-                    warnings.push(format!("{key}: picture unavailable: {error}"));
+                let line = format!("{key}: picture unavailable: {error}");
+                if !warnings.contains(&line) {
+                    warnings.push(line);
                 }
             })
             .ok(),
@@ -1647,6 +1648,32 @@ impl Product for ProductionLines {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        Self::reply(source, params, context, cancelled, true)
+    }
+}
+
+/// The catalogue's shared refusals as a production lines reply names them, read where the
+/// reply is served rather than computed ([`ProductionLines::reply`]).
+pub fn shared_refusals(
+    source: &Source,
+    content: Option<&crate::config::ContentOptions>,
+) -> Vec<String> {
+    content
+        .and_then(|content| catalogue::recorded_catalogue(source, content).ok())
+        .map(|catalogue| catalogue.refusal_lines())
+        .unwrap_or_default()
+}
+
+impl ProductionLines {
+    /// The reply, naming the catalogue's shared refusals when `shared_refusals` asks: a reply
+    /// served by the prepared query names them as it is served ([`shared_refusals`]).
+    pub fn reply(
+        source: &Source,
+        params: &ProductionLinesParams,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+        shared_refusals: bool,
+    ) -> io::Result<ProductionLinesReply> {
         let mut warnings = Vec::new();
         let (catalogue, scanned, approximate) = scanned_view(
             source,
@@ -1793,7 +1820,7 @@ impl Product for ProductionLines {
                 params.tag
             ));
         }
-        if let Some(catalogue) = &catalogue {
+        if shared_refusals && let Some(catalogue) = &catalogue {
             warnings.extend(catalogue.refusal_lines());
         }
         bounded(

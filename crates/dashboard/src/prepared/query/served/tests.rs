@@ -177,3 +177,40 @@ fn cancellation_and_transport_failure_propagate_like_value_serialization() {
     }
     assert!(serde_json::to_writer(Broken, &view).unwrap_err().is_io());
 }
+#[test]
+fn production_lines_name_the_catalogue_s_shared_refusals_as_served() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for content tests");
+    let root = std::env::temp_dir().join(format!("served-production-{}", std::process::id()));
+    let game = root.join("game");
+    dashboard_base::test_fixtures::snow_content::write(&game);
+    let (source, context) = crate::test_fixtures::source_with_content(
+        vec![crate::test_fixtures::world_frame(10, false)],
+        &game,
+    );
+    let content = context.content.unwrap();
+    crate::catalogue::recorded_catalogue(&source, &content)
+        .unwrap()
+        .refuse("synthetic reason", "SYNTH");
+    let served = |product: &str| {
+        let data = json!({"warnings": ["own"]});
+        serde_json::to_value(Served::new(
+            &source,
+            product,
+            product,
+            &data,
+            Some(&content),
+            &Default::default(),
+        ))
+        .unwrap()
+    };
+    // Named where it is served, after the reply's own warnings; no other product names them.
+    let lines = served("production-lines")["warnings"].clone();
+    assert_eq!(lines[0], "own");
+    assert!(
+        lines.to_string().contains("synthetic reason"),
+        "{lines}"
+    );
+    assert!(!served("air-missions").to_string().contains("synthetic reason"));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -17,7 +17,15 @@ impl<'a> Served<'a> {
         fallbacks: &std::collections::BTreeSet<String>,
     ) -> Self {
         let paths = content_warning_paths(product, name);
+        // Production lines name the catalogue's shared refusals as they stand when served, so a
+        // kept reply names the session's as a fresh one does.
+        let shared = if product == "production-lines" {
+            crate::products::production_lines::shared_refusals(source, content)
+        } else {
+            Vec::new()
+        };
         let mut reply = Self::decorate(data, paths, Vec::new(), |warnings| {
+            warnings.extend(shared.iter().cloned());
             source.append_stack_warnings(warnings);
             source.append_changed_warnings(warnings, content);
         });

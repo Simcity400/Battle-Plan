@@ -620,8 +620,9 @@ fn query_data(
                     let params: ProductionLinesParams =
                         serde_json::from_value(request.params.clone())?;
                     ProductionLines::validate(&params).map_err(crate::invalid)?;
-                    serde_json::to_value(ProductionLines::load(
-                        source, &params, &context, cancelled,
+                    // The catalogue's shared refusals are named as the reply is served.
+                    serde_json::to_value(ProductionLines::reply(
+                        source, &params, &context, cancelled, false,
                     )?)?
                 }
                 "production-line-detail" => {
