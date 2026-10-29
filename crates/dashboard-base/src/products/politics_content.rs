@@ -178,6 +178,11 @@ pub fn content_loads(source: &Source) -> usize {
         .sum()
 }
 
+/// A helper thread's read, its panic resumed here once the reads before it succeeded.
+fn settled<T>(read: std::thread::Result<io::Result<T>>) -> io::Result<T> {
+    read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 impl PoliticsContent {
     pub fn idea_is_law(&self, token: &str) -> io::Result<Arc<Option<bool>>> {
         self.idea_classes.get_or_init(&token.to_owned(), |token| {
@@ -192,9 +197,7 @@ impl PoliticsContent {
         self.idea_classes.loads(&token.to_owned())
     }
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
-        let (ideologies, ideology_warnings) =
-            installed_content_core::ideologies::read(&catalogue.content.layers)?;
-        Self::load_prepared(catalogue, ideologies, ideology_warnings)
+        Self::read(catalogue, installed_content_core::ideologies::read)
     }
 
     /// Offline, the corpus ideologies reader owns the ideology notes.
@@ -202,26 +205,46 @@ impl PoliticsContent {
         catalogue: Arc<Catalogue>,
         ideologies: Ideologies,
     ) -> io::Result<Self> {
-        Self::load_prepared(catalogue, ideologies, Vec::new())
+        Self::read(catalogue, |_| Ok((ideologies, Vec::new())))
     }
 
-    fn load_prepared(
+    fn read(
         catalogue: Arc<Catalogue>,
-        ideologies: Ideologies,
-        ideology_warnings: Vec<installed_content_core::Diagnostic>,
+        ideologies: impl FnOnce(
+            &installed_content_core::ResolvedLayers,
+        ) -> io::Result<(Ideologies, Vec<installed_content_core::Diagnostic>)>,
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
-        let mut warnings = catalogue.verification.clone();
+        let (ideologies, ideology_warnings) = ideologies(layers)?;
         // The groups named by this define contain character advisor templates.
         // Read them as advisors rather than ideas.
+        // Read before any helper starts: a define script's metamethods can change later reads.
         let officers = installed_content_core::defines::read(layers)?
             .strings("NCharacter", "OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU")?;
-        let (ideas, advisors, idea_warnings) = installed_content_core::ideas::read(layers, &officers)?;
-        let (characters, character_warnings) = installed_content_core::characters::read(layers, advisors)?;
-        let (traits, trait_warnings) = installed_content_core::leader_traits::read(layers)?;
-        let (modifier_definitions, definition_warnings) =
-            installed_content_core::modifier_definitions::read(layers)?;
-        let names = installed_content_core::names::read(layers)?;
+        let (read, traits, definitions, names) = std::thread::scope(|threads| {
+            let traits = installed_content_core::parallel::spawn(threads, || {
+                installed_content_core::leader_traits::read(layers)
+            });
+            let definitions = installed_content_core::parallel::spawn(threads, || {
+                installed_content_core::modifier_definitions::read(layers)
+            });
+            let names =
+                installed_content_core::parallel::spawn(threads, || installed_content_core::names::read(layers));
+            // Characters need the ideas' advisor templates: the longest chain.
+            let read = (|| {
+                let (ideas, advisors, idea_warnings) =
+                    installed_content_core::ideas::read(layers, &officers)?;
+                let characters = installed_content_core::characters::read(layers, advisors)?;
+                io::Result::Ok((ideas, idea_warnings, characters))
+            })();
+            (read, traits.join(), definitions.join(), names.join())
+        });
+        // The first read to fail in the order above decides, as if read one after another.
+        let (ideas, idea_warnings, (characters, character_warnings)) = read?;
+        let (traits, trait_warnings) = settled(traits)?;
+        let (modifier_definitions, definition_warnings) = settled(definitions)?;
+        let names = settled(names)?;
+        let mut warnings = catalogue.verification.clone();
         for list in [
             idea_warnings,
             character_warnings,
@@ -265,19 +288,52 @@ impl PoliticsContent {
             .power_result
             .get_or_init(|| {
                 let layers = &self.catalogue.content.layers;
-                let decisions = installed_content_core::decisions::read(layers)?;
-                let abilities = installed_content_abilities::abilities::read(layers)?;
-                let (focuses, focus_warnings) = installed_content_focus::focus::read_national(layers)?;
-                let unit_traits = installed_content_core::unit_leader::Traits::registered(layers)?;
+                let (
+                    decisions,
+                    abilities,
+                    focuses,
+                    unit_traits,
+                    scripted_triggers,
+                    buildings,
+                    resources,
+                    aliases,
+                ) = std::thread::scope(|threads| {
+                    use installed_content_core::parallel::spawn;
+                    let abilities = spawn(threads, || installed_content_abilities::abilities::read(layers));
+                    let focuses = spawn(threads, || installed_content_focus::focus::read_national(layers));
+                    let unit_traits = spawn(threads, || {
+                        installed_content_core::unit_leader::Traits::registered(layers)
+                    });
+                    let scripted_triggers =
+                        spawn(threads, || installed_content_core::scripted_triggers::read(layers));
+                    let buildings = spawn(threads, || installed_content_core::buildings::read(layers));
+                    let resources = spawn(threads, || installed_content_core::resources::read(layers));
+                    let aliases = spawn(threads, || installed_content_core::tag_aliases::read(layers));
+                    (
+                        installed_content_core::decisions::read(layers),
+                        abilities.join(),
+                        focuses.join(),
+                        unit_traits.join(),
+                        scripted_triggers.join(),
+                        buildings.join(),
+                        resources.join(),
+                        aliases.join(),
+                    )
+                });
+                // The first read to fail in the order above decides, as if read one after another.
+                let decisions = decisions?;
+                let abilities = settled(abilities)?;
+                let (focuses, focus_warnings) = settled(focuses)?;
+                let unit_traits = settled(unit_traits)?;
                 let triggers = installed_content_core::trigger_keys::TriggerNames::new(
-                    installed_content_core::scripted_triggers::read(layers)?,
+                    settled(scripted_triggers)?,
                     installed_content_core::trigger_keys::CountTriggerNames::new(
-                        &installed_content_core::buildings::read(layers)?,
+                        &settled(buildings)?,
                         &self.ideologies,
-                        &installed_content_core::resources::read(layers)?.0,
+                        &settled(resources)?.0,
                     ),
                 );
-                let aliases = Arc::new(installed_content_core::tag_aliases::read(layers)?);
+                let aliases = Arc::new(settled(aliases)?);
                 let dlcs = layers.dlc_names()?;
                 let warnings = decisions
                     .notes
