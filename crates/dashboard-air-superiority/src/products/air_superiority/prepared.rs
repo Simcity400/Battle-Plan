@@ -932,7 +932,6 @@ impl Prepared {
     #[allow(clippy::too_many_arguments)]
     fn samples(
         &self,
-        source: &Source,
         store: &store::Store,
         key: &store::SourceKey,
         branch: u64,
@@ -998,22 +997,7 @@ impl Prepared {
                 fields.get_or_init(|| parsed)
             }
         };
-        let cpu = replay_frame::cpu::scope_phase("air_superiority:query_values");
-        let observed = values::samples(
-            source,
-            key,
-            branch,
-            self.previous_hour,
-            params.view == AirView::Timeline,
-            &wanted,
-            fields,
-            &mut hours,
-            &mut values,
-            &mut events,
-            cancelled,
-        )?;
-        drop(cpu);
-        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_classification");
+        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_days");
         let mut indices = sides
             .iter()
             .enumerate()
@@ -1021,29 +1005,35 @@ impl Prepared {
             .collect();
         let mut samples = Vec::new();
         let mut rosters = scan::RosterRead::default();
-        for (hour, observed) in observed {
-            let _cpu =
-                replay_frame::cpu::scope_phase("air_superiority:query_sample_classification");
-            check_cancel(cancelled)?;
-            let (projection, auxiliary) = &*observed;
-            let view = (
-                (params.mode == Some(AirMode::Viewpoint))
-                    .then_some(params.viewpoint.as_deref())
-                    .flatten(),
-                params.viewpoint_country == Some(true),
-            );
-            let mut sample = scan::prepared_snapshot(
-                hour,
-                projection,
-                groups,
-                anchors,
-                view,
-                (&mut *sides, &mut indices),
-                &mut rosters,
-            )?;
-            scan::apply_auxiliary(&mut sample, auxiliary);
-            samples.push(sample);
-        }
+        let view = (
+            (params.mode == Some(AirMode::Viewpoint))
+                .then_some(params.viewpoint.as_deref())
+                .flatten(),
+            params.viewpoint_country == Some(true),
+        );
+        values::each_hour(
+            &wanted,
+            fields,
+            &mut values,
+            &mut events,
+            cancelled,
+            |hour, projection, auxiliary| {
+                let _cpu =
+                    replay_frame::cpu::scope_phase("air_superiority:query_sample_classification");
+                let mut sample = scan::prepared_snapshot(
+                    hour,
+                    projection,
+                    groups,
+                    anchors,
+                    view,
+                    (&mut *sides, &mut indices),
+                    &mut rosters,
+                )?;
+                scan::apply_auxiliary(&mut sample, auxiliary);
+                samples.push(sample);
+                Ok(())
+            },
+        )?;
         Ok(samples)
     }
 }
@@ -1281,7 +1271,6 @@ pub fn query(
         Vec::new()
     };
     let samples = state.samples(
-        source,
         &store,
         &key,
         branch,
@@ -1674,7 +1663,6 @@ mod tests {
             let mut sides = Vec::new();
             kept.state
                 .samples(
-                    &source,
                     &fixture.store,
                     &fixture.key,
                     1,
@@ -1712,16 +1700,6 @@ mod tests {
 
     fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
         let replay = Arc::new(recording(frames.to_vec()));
-        let source = Source::from_replay(
-            dashboard_base::source::SourceKey {
-                source_id: "air-prepared-parity".into(),
-                revision: "1".into(),
-            },
-            "synthetic.battleplan".into(),
-            Arc::clone(&replay),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
         let groups = groups(&replay);
         let flag = AtomicBool::new(false);
         let full = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
@@ -1764,7 +1742,6 @@ mod tests {
         let first = frames.first().unwrap().hour;
         let last = frames.last().unwrap().hour;
         for view in [AirView::Moment, AirView::Timeline] {
-            let mut computed = None;
             for (viewpoint, country) in [(None, false), (Some("f:9"), false), (Some("MOD"), true)] {
                 let mut cache = state.catalogue(&groups);
                 let mut request = params(view, first, last);
@@ -1785,7 +1762,6 @@ mod tests {
                 };
                 let samples = state
                     .samples(
-                        &source,
                         &fixture.store,
                         &fixture.key,
                         1,
@@ -1797,28 +1773,6 @@ mod tests {
                         &flag,
                     )
                     .unwrap();
-                if view == AirView::Timeline {
-                    let (bytes, bound, count) =
-                        dashboard_base::prepared::query::observations::usage(
-                            &source,
-                            "air-superiority:daily-values",
-                        );
-                    if let Some(previous) = computed {
-                        assert_eq!(
-                            count, previous,
-                            "viewpoint changes reuse numeric daily inputs"
-                        );
-                    } else {
-                        if frames
-                            .iter()
-                            .any(|frame| frame.hour.rem_euclid(DAY_HOURS) == DAY_HOURS - 1)
-                        {
-                            assert!(count > 0 && bytes > 0);
-                        }
-                        assert!(bytes <= bound);
-                        computed = Some(count);
-                    }
-                }
                 if view == AirView::Moment {
                     let actual =
                         moment_reply(samples, sides, &groups, &request, &cache.anchors).unwrap();

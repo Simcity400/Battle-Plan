@@ -960,25 +960,10 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
             .2 > 1,
             "a moved supplier must invalidate the reply"
         );
-        let daily = dashboard_base::prepared::query::observations::usage(
-            &source,
-            "air-superiority:daily-values",
-        )
-        .2;
-        assert!(daily > 0);
         assert_eq!(partial["coverage"]["lastHour"], 123);
         assert_eq!(partial["rowsApproximate"], true);
         plain(&source);
         let complete = query(&source, params);
-        let (bytes, bound, all_days) = dashboard_base::prepared::query::observations::usage(
-            &source,
-            "air-superiority:daily-values",
-        );
-        assert!(bytes > 0 && bytes <= bound);
-        assert!(
-            all_days > daily,
-            "only newly reached daily blocks add extractions"
-        );
         assert!(complete.get("approximate").is_none());
         assert!(complete.get("rowsApproximate").is_none());
         // Only whole prepared days are exact when a daily cell crosses coverage.

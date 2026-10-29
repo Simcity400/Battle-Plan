@@ -149,7 +149,6 @@ pub(super) fn moment(
     let (first, _) = hours(params)?;
     let samples = if coverage.is_some() && first <= reached.last_hour.unwrap_or(first) {
         Prepared::read_query(&store, &key, branch)?.samples(
-            source,
             &store,
             &key,
             branch,
@@ -230,7 +229,6 @@ pub(super) fn query(
             .is_some_and(|first| first <= reached.last_hour.unwrap())
         {
             for sample in state.samples(
-                source,
                 &store,
                 &key,
                 branch,

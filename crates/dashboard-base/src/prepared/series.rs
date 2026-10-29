@@ -2817,6 +2817,14 @@ impl<'a> Reader<'a> {
         let last = lower(self.count, |batch| Ok(self.hours(batch)?.0 <= to))?;
         Ok(first..last)
     }
+    /// The last hour of the batch that answers `hour` as [`Self::values_at`] does, or `None` when
+    /// none does: a read over many keys takes each batch's hours together.
+    pub fn batch_through(&mut self, hour: i32) -> io::Result<Option<i32>> {
+        let Some(batch) = self.batches(hour, hour)?.next() else {
+            return Ok(None);
+        };
+        Ok(Some(self.hours(batch)?.1))
+    }
     /// Read amounts from the hour's batch once, without reconstructing run bounds.
     pub fn values_at(&mut self, keys: &[u64], hour: i32) -> io::Result<Vec<Option<i128>>> {
         check_cancel(self.cancelled)?;
