@@ -14,17 +14,17 @@
 //! share a walker's `--budget-mb` decode memory.
 
 use replay::{
+    columnar_file::{Closed, FileWriter, Finished, Hour as FileHour, Position, RestartState, Settings, referenced_ids},
     container::{Replay, ReplayStream},
     native_columns::column,
 };
 use replay_columnar::{
-    envelope::{self, Extent, IndexPage, RestartDirectory, RestartTable, RunDirectory},
+    envelope,
     framing,
-    leaf::Writer as Bytes,
     manifest::{self, Manifest, Section, Status},
     restart::{self, Acquisition},
     section::{self, Op, PatchItems, Patches, Run, Scratch, TableHour},
-    state::{Bits, Cell, Kind as Column, Table, Values},
+    state::{Cell, Kind as Column, Table, Values},
 };
 use replay_data::{
     codec::Decoder,
@@ -36,7 +36,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     ffi::OsString,
     fs::File,
-    io::{self, BufWriter, Seek, Write},
+    io::{self, BufWriter},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -444,8 +444,6 @@ struct Writer {
     view: Vec<u32>,
     /// Per column: values written (SET, ADD, FILL, insert) and their field bytes.
     column_values: Vec<(u64, u64)>,
-    /// This table's sections written so far in the current unit.
-    unit: Bytes,
     /// This table's units: raw and stored bytes.
     stored: (u64, u64),
     /// This table's restarts: raw bytes, and compressed alone.
@@ -549,7 +547,6 @@ impl Writer {
             acquisition: Acquisition::default(),
             view: Vec::new(),
             column_values: vec![(0, 0); kinds.len()],
-            unit: Bytes::new(),
             stored: (0, 0),
             restart_bytes: (0, 0),
         })
@@ -564,33 +561,7 @@ impl Writer {
         self.status = Status::NotRecorded;
         self.acquisition = Acquisition::default();
         self.view.clear();
-        self.unit = Bytes::new();
         Ok(())
-    }
-
-    /// The run's dictionary chunks, by restart ordinal, holding an id the table's state
-    /// references: its recorded text cells at live slots and its refusal. `starts` holds each
-    /// chunk's first id, ascending from 0.
-    fn chunks(&self, starts: &[u32]) -> Vec<u32> {
-        let mut used = vec![false; starts.len()];
-        // The last chunk starting at or before an id holds it: an empty chunk starts where
-        // the next does.
-        let mut take = |id: u32| used[starts.partition_point(|&start| start <= id) - 1] = true;
-        if let Some(id) = self.acquisition.refusal {
-            take(id);
-        }
-        for column in 0..self.columns.len() {
-            if let Some(replay_columnar::state::Column::Bytes(ids)) = self.gate.column(column) {
-                for slot in self.gate.live().ones() {
-                    if self.gate.recorded(column, slot)
-                        && let Some(&id) = ids.get(slot as usize)
-                    {
-                        take(id);
-                    }
-                }
-            }
-        }
-        (0..).zip(used).filter_map(|(chunk, used)| used.then_some(chunk)).collect()
     }
 
     /// Writes this hour's section, applies it to the gate and checks every slot it wrote.
@@ -1008,100 +979,6 @@ impl Writer {
     }
 }
 
-/// Each stream's zstd window log for one unit: the largest power of two within its share
-/// of a walker's decode-memory budget by raw size, then one step larger for the largest
-/// streams while the unit stays within the budget. A window never grows past its stream.
-fn unit_windows(raws: &[usize], budget: usize) -> Vec<u32> {
-    const SMALLEST: u32 = 15;
-    const LARGEST: u32 = 24;
-    let total: usize = raws.iter().sum();
-    let mut logs: Vec<u32> = raws
-        .iter()
-        .map(|&raw| {
-            let share = (budget as u128 * raw as u128 / total.max(1) as u128) as usize;
-            (usize::BITS - 1 - share.max(1).leading_zeros()).clamp(SMALLEST, LARGEST)
-        })
-        .collect();
-    let held = |raw: usize, log: u32| raw.min(1 << log);
-    let mut used: usize = raws.iter().zip(&logs).map(|(&raw, &log)| held(raw, log)).sum();
-    let mut order: Vec<usize> = (0..raws.len()).collect();
-    order.sort_unstable_by_key(|&stream| std::cmp::Reverse(raws[stream]));
-    loop {
-        let mut grew = false;
-        for &stream in &order {
-            let (raw, log) = (raws[stream], logs[stream]);
-            if log < LARGEST && (1 << log) < raw {
-                let added = held(raw, log + 1) - held(raw, log);
-                if used + added <= budget {
-                    logs[stream] += 1;
-                    used += added;
-                    grew = true;
-                }
-            }
-        }
-        if !grew {
-            return logs;
-        }
-    }
-}
-
-/// The output file and the runs written so far.
-struct Output {
-    file: BufWriter<File>,
-    level: i32,
-    /// Restart, page and root extents' window; units take theirs from the budget.
-    window_log: u32,
-    /// A walker's decode-memory budget across the streams of one unit.
-    budget: usize,
-    /// Per unit grid position, the decode memory its windows need.
-    walker_memory: Vec<usize>,
-    /// Each finished run's directory.
-    runs: Vec<Extent>,
-    restarts: u64,
-    /// Raw bytes of every page and the root.
-    index_bytes: u64,
-}
-
-impl Output {
-    /// One compressed extent with a `window_log` window, described by its envelope.
-    #[allow(clippy::too_many_arguments)]
-    fn extent(&mut self, kind: envelope::Kind, run: u32, stream: u32, first: u32, hours: u32, raw: &[u8], window_log: u32) -> io::Result<Extent> {
-        let mut compressor = zstd::bulk::Compressor::new(self.level)?;
-        compressor.set_parameter(zstd::zstd_safe::CParameter::WindowLog(window_log))?;
-        let stored = compressor.compress(raw)?;
-        let offset = self.file.stream_position()?;
-        self.file.write_all(&stored)?;
-        Ok(Extent { kind, run, stream, first, hours, offset, stored: stored.len() as u64, raw: raw.len() as u64, digest: envelope::digest(&stored) })
-    }
-
-    /// Every stream's unit of the `hours` ordinals of run `run` from `first`: the manifests'
-    /// first, then each table's in stream order.
-    fn units(&mut self, run: u32, manifests: &mut Bytes, writers: &mut [Writer], first: u32, hours: u32) -> io::Result<Vec<Extent>> {
-        let streams = std::iter::once((framing::MANIFESTS, std::mem::take(manifests).into_bytes()))
-            .chain(writers.iter_mut().enumerate().map(|(table, writer)| (framing::table_stream(table), std::mem::take(&mut writer.unit).into_bytes())));
-        let mut written = Vec::new();
-        for (stream, raw) in streams {
-            if !raw.is_empty() {
-                written.push((stream, raw));
-            }
-        }
-        let raws: Vec<usize> = written.iter().map(|(_, raw)| raw.len()).collect();
-        let logs = unit_windows(&raws, self.budget);
-        self.walker_memory.push(raws.iter().zip(&logs).map(|(&raw, &log)| raw.min(1 << log)).sum());
-        let mut units = Vec::with_capacity(written.len());
-        for ((stream, raw), log) in written.into_iter().zip(logs) {
-            let unit = self.extent(envelope::Kind::Unit, run, stream, first, hours, &raw, log)?;
-            if stream != framing::MANIFESTS {
-                let writer = &mut writers[stream as usize - 1];
-                writer.stored.0 += unit.raw;
-                writer.stored.1 += unit.stored;
-            }
-            units.push(unit);
-        }
-        Ok(units)
-    }
-}
-
 /// Raw and stored bytes written per kind, and dictionary entries over every run, for the
 /// report.
 #[derive(Default)]
@@ -1110,141 +987,73 @@ struct Written {
     chunks: (u64, u64),
     states: (u64, u64),
     entries: u64,
+    restarts: u64,
 }
 
-/// The run being written: its ordinals so far, the chain after the last, and the unit
-/// position under way.
-struct RunState {
-    run: u32,
-    branch: u64,
-    epoch: u8,
-    first_hour: i32,
-    last_hour: i32,
-    ordinal: u32,
-    chain: [u8; 32],
-    /// The position's first and last hour so far; none before its first ordinal.
-    position: Option<(i32, i32)>,
-    sectioned: Vec<u64>,
-    read: Vec<u64>,
-    status_changed: Vec<u64>,
-    /// Each table's status at the run's last ordinal; none before its first.
-    statuses: Option<Vec<Status>>,
-    /// Each restart's dictionary chunk's first id so far, by restart ordinal.
-    chunks: Vec<u32>,
-    pages: Vec<Extent>,
-}
-
-impl RunState {
-    fn new(run: u32, branch: u64, hour: i32, identity: &[u8], tables: usize) -> Self {
-        let words = tables.div_ceil(64);
-        Self {
-            run,
-            branch,
-            // A converted recording's later runs start at a branch change or a gap.
-            epoch: if run == 0 { envelope::epoch::START } else { envelope::epoch::GAP },
-            first_hour: hour,
-            last_hour: hour,
-            ordinal: 0,
-            chain: envelope::chain_start(identity, run),
-            position: None,
-            sectioned: vec![0; words],
-            read: vec![0; words],
-            status_changed: vec![0; words],
-            statuses: None,
-            chunks: Vec::new(),
-            pages: Vec::new(),
+/// Adds a closed position's units and restart to the report's totals.
+fn account(closed: &Closed, writers: &mut [Writer], written: &mut Written) {
+    for unit in &closed.units {
+        let totals = if unit.stream == framing::MANIFESTS {
+            &mut written.manifests
+        } else {
+            &mut writers[unit.stream as usize - 1].stored
+        };
+        *totals = (totals.0 + unit.raw, totals.1 + unit.stored);
+    }
+    if let Some(restart) = &closed.restart {
+        written.chunks = (written.chunks.0 + restart.chunk.raw, written.chunks.1 + restart.chunk.stored);
+        for table in &restart.tables {
+            let (raw, stored) = (table.extent.raw, table.extent.stored);
+            let writer = &mut writers[table.table as usize];
+            writer.restart_bytes = (writer.restart_bytes.0 + raw, writer.restart_bytes.1 + stored);
+            written.states = (written.states.0 + raw, written.states.1 + stored);
         }
+        written.restarts += 1;
     }
 }
 
-fn set(bits: &mut [u64], table: usize) {
-    bits[table / 64] |= 1 << (table % 64);
-}
-
-/// Closes the run's unit position: every stream's unit, the restart ending it when
-/// `restart` (the run's dictionary strings first used since its last restart, then every
-/// table's state alone), and its page.
-#[allow(clippy::too_many_arguments)]
-fn close_position(out: &mut Output, writers: &mut [Writer], manifests: &mut Bytes, dictionary: &mut Dictionary, state: &mut RunState, restart: bool, written: &mut Written) -> io::Result<()> {
-    let Some((first_hour, last_hour)) = state.position.take() else {
-        return Ok(());
-    };
+/// Closes the run's full unit position: the restart ending it when due (the run's dictionary
+/// strings first used since its last restart, then every table's state alone), and its page.
+fn close_position(file: &mut FileWriter<BufWriter<File>>, writers: &mut [Writer], dictionary: &mut Dictionary, restart: bool, written: &mut Written) -> io::Result<()> {
     for writer in writers.iter() {
         writer.check_all(dictionary)?;
     }
-    let first = (state.ordinal - 1) / envelope::UNIT_ORDINALS * envelope::UNIT_ORDINALS;
-    let hours = state.ordinal - first;
-    let units = out.units(state.run, manifests, writers, first, hours)?;
-    if let Some(manifests) = units.first() {
-        written.manifests = (written.manifests.0 + manifests.raw, written.manifests.1 + manifests.stored);
-    }
-    let restart = if restart {
-        let after = state.ordinal - 1;
-        let ids = |id: usize| u32::try_from(id).map_err(|_| invalid("A run's dictionary passes 2^32 ids"));
-        let (first_id, count) = (ids(dictionary.restarted)?, ids(dictionary.bytes.len() - dictionary.restarted)?);
-        let mut chunk = Bytes::new();
-        chunk.varint(u64::from(count))?;
-        for entry in &dictionary.bytes[dictionary.restarted..] {
-            chunk.varint(entry.len() as u64)?;
-            chunk.raw(entry)?;
-        }
+    let closed = if restart {
+        let tables = writers
+            .iter()
+            .map(|writer| {
+                Ok(RestartState {
+                    bytes: restart::write(&writer.gate, writer.status, &writer.acquisition, &writer.view)?,
+                    ids: referenced_ids(&writer.gate, writer.acquisition.refusal)?,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let closed = file.close_with_restart(&dictionary.bytes[dictionary.restarted..], &tables)?;
         dictionary.restarted = dictionary.bytes.len();
-        let chunk = out.extent(envelope::Kind::DictionaryChunk, state.run, 0, after, 0, chunk.bytes(), out.window_log)?;
-        written.chunks = (written.chunks.0 + chunk.raw, written.chunks.1 + chunk.stored);
-        let ordinal = state.chunks.len() as u32;
-        state.chunks.push(first_id);
-        let mut tables = Vec::with_capacity(writers.len());
-        for (table, writer) in writers.iter_mut().enumerate() {
-            let bytes = restart::write(&writer.gate, writer.status, &writer.acquisition, &writer.view)?;
-            let extent = out.extent(envelope::Kind::RestartTable, state.run, table as u32, after, 0, &bytes, out.window_log)?;
-            writer.restart_bytes = (writer.restart_bytes.0 + extent.raw, writer.restart_bytes.1 + extent.stored);
-            written.states = (written.states.0 + extent.raw, written.states.1 + extent.stored);
-            tables.push(RestartTable { table: table as u32, extent, chunks: writer.chunks(&state.chunks) });
-        }
-        out.restarts += 1;
-        Some(RestartDirectory { after, hour: last_hour, ordinal, chunk, ids: (first_id, count), tables })
+        closed
     } else {
-        None
+        file.close_position()?
     };
-    let take = |bits: &mut Vec<u64>| Bits::from_words(std::mem::replace(bits, vec![0; bits.len()]));
-    let page = IndexPage {
-        run: state.run,
-        first,
-        hours,
-        first_hour,
-        last_hour,
-        units,
-        restart,
-        sectioned: take(&mut state.sectioned)?,
-        read: take(&mut state.read)?,
-        status_changed: take(&mut state.status_changed)?,
-        chain: state.chain,
-    }
-    .write()?;
-    out.index_bytes += page.len() as u64;
-    let page = out.extent(envelope::Kind::IndexPage, state.run, 0, first, hours, &page, out.window_log)?;
-    state.pages.push(page);
+    account(&closed, writers, written);
     Ok(())
 }
 
 /// Closes the run's last position, short or not, and writes the run's directory.
-fn finish_run(out: &mut Output, writers: &mut [Writer], manifests: &mut Bytes, dictionary: &mut Dictionary, mut state: RunState, written: &mut Written) -> io::Result<()> {
-    close_position(out, writers, manifests, dictionary, &mut state, false, written)?;
-    written.entries += dictionary.bytes.len() as u64;
-    let directory = RunDirectory {
-        branch: state.branch,
-        epoch: state.epoch,
-        first_hour: state.first_hour,
-        ordinals: state.ordinal,
-        chain: state.chain,
-        pages: state.pages,
+fn finish_run(file: &mut FileWriter<BufWriter<File>>, writers: &mut [Writer], dictionary: &Dictionary, written: &mut Written) -> io::Result<()> {
+    for writer in writers.iter() {
+        writer.check_all(dictionary)?;
     }
-    .write(state.run)?;
-    out.index_bytes += directory.len() as u64;
-    let window_log = out.window_log;
-    let directory = out.extent(envelope::Kind::RunDirectory, state.run, 0, 0, 0, &directory, window_log)?;
-    out.runs.push(directory);
+    let closed = file.finish_run()?;
+    account(&closed, writers, written);
+    written.entries += dictionary.bytes.len() as u64;
     Ok(())
+}
+
+/// The run being converted: its branch, last hour and ordinals so far.
+struct RunState {
+    branch: u64,
+    last_hour: i32,
+    ordinal: u32,
 }
 
 struct Options {
@@ -1353,20 +1162,8 @@ fn main() -> io::Result<()> {
     let replay = Replay::open_path(&input)?;
     let (partial, counts) = written_paths(&input, &output)?;
     let mut stream = ReplayStream::new(&TableId::ALL)?;
-    // Declared before `out`, so a failure closes the file before removing it.
+    // Declared before `file`, so a failure closes the file before removing it.
     let mut unfinished = Unfinished(Some(partial.clone()));
-    let mut out = Output {
-        file: BufWriter::new(File::create(&partial)?),
-        level,
-        window_log,
-        budget: budget_mb as usize * 1_000_000,
-        walker_memory: Vec::new(),
-        runs: Vec::new(),
-        restarts: 0,
-        index_bytes: 0,
-    };
-    out.file.write_all(envelope::MAGIC)?;
-    out.file.write_all(&envelope::VERSION.to_le_bytes())?;
     let mut writers: Vec<Writer> = TableId::ALL
         .iter()
         .map(|&id| Writer::new(id))
@@ -1381,10 +1178,15 @@ fn main() -> io::Result<()> {
         content,
         capture_mode: replay.capture_mode.byte(),
     };
-    let identity_bytes = identity.chain_bytes()?;
+    let settings = Settings {
+        level,
+        window_log,
+        budget: budget_mb as usize * 1_000_000,
+        restart_units: restart_hours / envelope::UNIT_ORDINALS,
+    };
+    let mut file = FileWriter::create(BufWriter::new(File::create(&partial)?), identity, column_counts.clone(), settings)?;
     let mut run: Option<RunState> = None;
     let mut written = Written::default();
-    let mut manifests = Bytes::new();
     let mut dictionary = Dictionary::default();
     let mut scratch = Scratch::default();
     let mut buffer = Vec::new();
@@ -1399,18 +1201,21 @@ fn main() -> io::Result<()> {
             // its own dictionary.
             let continues = run.as_ref().is_some_and(|run| run.branch == decoded.branch && run.last_hour.checked_add(1) == Some(decoded.hour));
             if !continues {
-                if let Some(ended) = run.take() {
-                    finish_run(&mut out, &mut writers, &mut manifests, &mut dictionary, ended, &mut written)?;
+                // A converted recording's later runs start at a branch change or a gap.
+                let epoch = if run.is_none() { envelope::epoch::START } else { envelope::epoch::GAP };
+                if run.take().is_some() {
+                    finish_run(&mut file, &mut writers, &dictionary, &mut written)?;
                     for writer in &mut writers {
                         writer.reset()?;
                     }
                     dictionary = Dictionary::default();
                 }
-                run = Some(RunState::new(out.runs.len() as u32, decoded.branch, decoded.hour, &identity_bytes, writers.len()));
+                file.start_run(decoded.branch, epoch, decoded.hour)?;
+                run = Some(RunState { branch: decoded.branch, last_hour: decoded.hour, ordinal: 0 });
             }
             let state = run.as_mut().expect("a run under way");
             let starts = state.ordinal == 0;
-            let mut hour_raw: Vec<Vec<u8>> = Vec::new();
+            let mut hour_raw: Vec<(usize, Vec<u8>)> = Vec::new();
             let mut statuses = Vec::with_capacity(writers.len());
             let mut read = vec![0_u64; writers.len().div_ceil(64)];
             let mut samples: Vec<(usize, Option<i32>)> = Vec::new();
@@ -1473,28 +1278,17 @@ fn main() -> io::Result<()> {
                         writers[index].hour(rows, changes, complete, &mut dictionary, &mut scratch, &mut buffer)?
                     }
                 };
-                let writer = &mut writers[index];
                 if let Some((bytes, columns, ops)) = written {
-                    framing::put_section(&mut writer.unit, &bytes)?;
                     hour_sections.push(Section {
                         table: index,
                         bytes: bytes.len() as u64,
                         columns,
                         ops,
                     });
-                    set(&mut state.sectioned, index);
-                    hour_raw.push(bytes);
+                    hour_raw.push((index, bytes));
                 }
             }
-            for (table, status) in statuses.iter().enumerate() {
-                if state.statuses.as_ref().is_none_or(|before| before[table] != *status) {
-                    set(&mut state.status_changed, table);
-                }
-            }
-            state.statuses = Some(statuses.clone());
-            for (word, bits) in state.read.iter_mut().zip(&read) {
-                *word |= bits;
-            }
+            let (hour_statuses, hour_read) = (statuses.clone(), read.clone());
             let appends: Vec<&[u8]> = dictionary.bytes[dictionary.appended..].iter().map(Vec::as_slice).collect();
             let manifest = Manifest {
                 branch: decoded.branch,
@@ -1527,15 +1321,19 @@ fn main() -> io::Result<()> {
             if rebuilt != decoded.metrics.stored() {
                 return Err(invalid(format!("hour {} metrics differ from the manifest's", decoded.hour)));
             }
-            framing::put_manifest(&mut manifests, &manifest)?;
-            state.chain = envelope::chain_hour(&state.chain, &manifest, hour_raw.iter().map(Vec::as_slice));
-            state.position = Some(state.position.map_or((decoded.hour, decoded.hour), |(first, _)| (first, decoded.hour)));
+            let sections: Vec<(usize, &[u8])> = hour_raw.iter().map(|(table, bytes)| (*table, bytes.as_slice())).collect();
+            let position = file.hour(FileHour {
+                hour: decoded.hour,
+                manifest: &manifest,
+                sections: &sections,
+                statuses: &hour_statuses,
+                read: &hour_read,
+            })?;
             state.last_hour = decoded.hour;
             hours += 1;
             state.ordinal += 1;
-            if state.ordinal % envelope::UNIT_ORDINALS == 0 {
-                let restart = state.ordinal % restart_hours == 0;
-                close_position(&mut out, &mut writers, &mut manifests, &mut dictionary, state, restart, &mut written)?;
+            if let Position::Full { restart } = position {
+                close_position(&mut file, &mut writers, &mut dictionary, restart, &mut written)?;
             }
             encode_seconds += begin.elapsed().as_secs_f64();
             Ok(())
@@ -1545,16 +1343,12 @@ fn main() -> io::Result<()> {
     for writer in &writers {
         writer.check_all(&dictionary)?;
     }
-    if let Some(ended) = run.take() {
-        finish_run(&mut out, &mut writers, &mut manifests, &mut dictionary, ended, &mut written)?;
+    if run.take().is_some() {
+        finish_run(&mut file, &mut writers, &dictionary, &mut written)?;
     }
     // The source's control records go in with the live recorder's encoding (P4 PR2).
-    let root = envelope::Root { identity, revision: 1, runs: std::mem::take(&mut out.runs), controls: Vec::new() }.write()?;
-    out.index_bytes += root.len() as u64;
-    let window_log = out.window_log;
-    let root = out.extent(envelope::Kind::Root, 0, 0, 0, 0, &root, window_log)?;
-    out.file.write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
-    let file = out.file.into_inner().map_err(io::Error::from)?;
+    let Finished { file, walker_memory, index_bytes } = file.finish()?;
+    let file = file.into_inner().map_err(io::Error::from)?;
     // Durable before it is published under its name.
     file.sync_all()?;
     let total = file.metadata()?.len();
@@ -1562,11 +1356,11 @@ fn main() -> io::Result<()> {
     std::fs::rename(&partial, &output)?;
     unfinished.0 = None;
     let per_hour = |bytes: u64| bytes as f64 / f64::from(hours.max(1));
-    let mut memory = out.walker_memory.clone();
+    let mut memory = walker_memory;
     memory.sort_unstable();
     let (walker_peak, walker_median) = (memory.last().copied().unwrap_or(0), memory.get(memory.len() / 2).copied().unwrap_or(0));
     let fifty = |bytes: u64| per_hour(bytes) * 438_000.0 / 1e9;
-    let restarts = out.restarts;
+    let restarts = written.restarts;
     let sections = writers.iter().fold((0, 0), |sum: (u64, u64), writer| (sum.0 + writer.stored.0, sum.1 + writer.stored.1));
     let restart_alone = writers.iter().fold((0, 0), |sum: (u64, u64), writer| (sum.0 + writer.restart_bytes.0, sum.1 + writer.restart_bytes.1));
     let largest: Vec<serde_json::Value> = {
@@ -1635,7 +1429,7 @@ fn main() -> io::Result<()> {
             "stored_per_restart": (written.chunks.1 + written.states.1) as f64 / restarts.max(1) as f64,
             "tables_alone": {"raw": restart_alone.0, "stored": restart_alone.1},
         },
-        "index_bytes": out.index_bytes,
+        "index_bytes": index_bytes,
         "largest_columns": largest,
         "tables": tables,
     });

@@ -9,6 +9,7 @@
 //! and a run's first hour refuses a truncated read, as the row keyframe a run starts with does.
 
 use crate::{
+    columnar_file::{RestartState, referenced_ids},
     frame::{FrameInput, Metrics, TRUNCATED_KEYFRAME_REASON, TableInput, TableView},
     native_columns::{self, RowCells, TableHour, TableInput as Native},
     format::FormatVersion,
@@ -39,12 +40,20 @@ pub struct FrameWriter {
     starting: bool,
     /// An hour failed after it interned strings: the run cannot continue.
     poisoned: bool,
+    /// The run's strings committed hours appended since the last restart, in id order.
+    since_restart: Vec<Box<[u8]>>,
+    /// An hour is prepared and not yet committed: its strings are interned.
+    pending: bool,
 }
 
 /// Every table's hour, prepared and not yet applied.
 pub struct FrameHour {
     hour: i32,
     tables: Vec<TableHour>,
+    statuses: Vec<Status>,
+    read: Vec<u64>,
+    /// The strings the hour appends to the run's dictionary, in id order.
+    appends: Vec<Box<[u8]>>,
     /// The hour's manifest; its sections are [`FrameHour::sections`], in table order.
     pub manifest: Vec<u8>,
 }
@@ -56,6 +65,20 @@ impl FrameHour {
             let section = table.prepared.as_ref()?.section.as_deref()?;
             Some((index, section))
         })
+    }
+
+    pub fn hour(&self) -> i32 {
+        self.hour
+    }
+
+    /// Each table's status, as the manifest holds them.
+    pub fn statuses(&self) -> &[Status] {
+        &self.statuses
+    }
+
+    /// The read bits, as the manifest holds them.
+    pub fn read(&self) -> &[u64] {
+        &self.read
     }
 }
 
@@ -92,6 +115,8 @@ impl FrameWriter {
             absent,
             starting: true,
             poisoned: false,
+            since_restart: Vec::new(),
+            pending: false,
         })
     }
 
@@ -105,8 +130,14 @@ impl FrameWriter {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
         }
+        // An uncommitted hour's interned strings would be lost to its successor's manifest.
+        if self.pending {
+            self.poisoned = true;
+            return Err(invalid("A prepared hour commits before the next"));
+        }
         let hour = self.prepare(input);
         self.poisoned = hour.is_err();
+        self.pending = hour.is_ok();
         hour
     }
 
@@ -161,6 +192,8 @@ impl FrameWriter {
             tables.push(prepared);
         }
         let appends = self.dictionary.take_appended();
+        let held_statuses = engine_allocation::copy_vec(&statuses)?;
+        let held_read = engine_allocation::copy_vec(&read)?;
         let Metrics {
             total_ns,
             pool_bytes,
@@ -188,6 +221,9 @@ impl FrameWriter {
         Ok(FrameHour {
             hour: input.hour,
             tables,
+            statuses: held_statuses,
+            read: held_read,
+            appends,
             manifest,
         })
     }
@@ -243,14 +279,41 @@ impl FrameWriter {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
         }
+        if let Err(error) = engine_allocation::reserve(&mut self.since_restart, hour.appends.len()) {
+            self.poisoned = true;
+            return Err(error);
+        }
         for (writer, table) in self.tables.iter_mut().zip(hour.tables) {
             if let Err(error) = writer.commit(table.prepared, table.evidence, hour.hour) {
                 self.poisoned = true;
                 return Err(error);
             }
         }
+        self.since_restart.extend(hour.appends);
         self.starting = false;
+        self.pending = false;
         Ok(())
+    }
+
+    /// The restart a position closing after the last committed hour carries: each table's
+    /// state with the dictionary ids it references, and the run's strings appended since the
+    /// previous restart, which this takes.
+    pub fn restart(&mut self) -> io::Result<(Vec<Box<[u8]>>, Vec<RestartState>)> {
+        if self.poisoned {
+            return Err(invalid("A failed hour ended this columnar run"));
+        }
+        if self.pending {
+            return Err(invalid("A restart follows the last hour's commit"));
+        }
+        let mut tables = Vec::new();
+        engine_allocation::reserve(&mut tables, self.tables.len())?;
+        for writer in &self.tables {
+            tables.push(RestartState {
+                bytes: writer.restart()?,
+                ids: referenced_ids(writer.table(), writer.acquisition().refusal)?,
+            });
+        }
+        Ok((std::mem::take(&mut self.since_restart), tables))
     }
 }
 

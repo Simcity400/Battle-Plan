@@ -86,7 +86,8 @@ pub fn write(
     )?;
     writer.keys(&keys)?;
     table.write_columns(&mut writer, &slots)?;
-    let mut unrecorded = Vec::new();
+    // A column's unrecorded slots are live slots, so one reservation holds every column's.
+    let mut unrecorded = engine_allocation::vec(slots.len())?;
     for column in 0..table.kinds().count() {
         unrecorded.clear();
         unrecorded.extend(table.unrecorded_slots(column));
