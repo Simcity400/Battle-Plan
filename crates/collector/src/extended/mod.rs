@@ -213,6 +213,7 @@ macro_rules! spool_pack {
         }
     };
     (@convert $all:expr, $pack:ident; $destination:ident, $conversion:ident, $hour:ident, $slots:ident, $costs:ident) => {{
+        crate::tick_gate::wait();
         let started = qpc();
         let cycles = crate::spool_phases::thread_cycles();
         if crate::allocation::failed() { return $costs; }
@@ -269,6 +270,7 @@ macro_rules! helper_pack {
         }
     };
     (@convert $out:ident, $slots:ident, $pack:ident, $inputs:expr) => {{
+        crate::tick_gate::wait();
         let started = qpc();
         let cycles = crate::spool_phases::thread_cycles();
         let (pack, slot) = $slots.next().unwrap();

@@ -945,6 +945,7 @@ fn decode_loop() {
             Some(job) => {
                 priority
                     .follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Decode);
+                crate::tick_gate::wait();
                 process_owned_job(shared, job, &mut air_bases_memo);
             }
             None => {

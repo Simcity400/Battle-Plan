@@ -4188,6 +4188,7 @@ impl Processor {
                 "phases": crate::spool_phases::SPOOL.status(self.session.qpc_frequency),
                 "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
                 "sizing_phases": crate::spool_phases::SIZING.status(self.session.qpc_frequency),
+                "tick_gate": crate::tick_gate::status(),
                 "conversion_helper": self.helper.is_some(),
                 "conversion_helpers": usize::from(self.helper.is_some()) + usize::from(self.second_helper.is_some()),
                 "conversion_helper_scope": "conversion_helper: whether a persistent helper converts the map tables and the helper packs beside the spool thread; conversion_helpers: how many started, the second converting lane 1 of the helper packs; with none the spool thread converts every table itself",

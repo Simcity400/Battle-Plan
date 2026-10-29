@@ -148,6 +148,9 @@ impl Totals {
 
     /// Start a span on the calling thread; finish or drop it to record.
     pub(crate) fn span(&self, phase: Phase) -> Span<'_> {
+        if phase != Phase::Wait {
+            crate::tick_gate::wait();
+        }
         Span {
             totals: self,
             phase,
@@ -259,6 +262,9 @@ impl<'a> Span<'a> {
 
     /// Record this phase and start the next one at the same instant.
     pub(crate) fn switch(mut self, phase: Phase) -> Span<'a> {
+        if phase != Phase::Wait {
+            crate::tick_gate::wait();
+        }
         let (qpc, cycles) = (crate::sampling::qpc(), thread_cycles());
         let scheduler = crate::thread_diagnostics::Snapshot::now(false);
         self.totals

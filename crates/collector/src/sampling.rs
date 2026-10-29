@@ -2422,7 +2422,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
     let ticking = TICKING.replace(true);
+    crate::tick_gate::enter();
     timing.original(|| unsafe { original(state, commands) });
+    crate::tick_gate::leave();
     TICKING.set(ticking);
     let original_end = qpc();
     if recording {
