@@ -221,6 +221,11 @@ pub struct IconContent {
     visual: String,
 }
 
+/// A part's result, its panic resumed here once the parts before it succeeded.
+fn settled<T>(read: std::thread::Result<T>) -> T {
+    read.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 impl IconContent {
     pub fn load(catalogue: Arc<Catalogue>) -> io::Result<Self> {
         Self::with_equipment(catalogue, None)
@@ -237,27 +242,36 @@ impl IconContent {
         )?;
         let defines = installed_content_core::defines::read(layers)?;
         let mut warnings = Vec::new();
-        let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
         let files = Arc::clone(&catalogue);
-        // The game checks each equipment limit at content load in a fresh empty scope.
-        let enablers = {
-            let world = std::cell::OnceCell::new();
-            installed_content_core::technology::read_enablers(layers, |limit| {
-                world
-                    .get_or_init(|| {
-                        catalogue
-                            .scripted_content()
-                            .and_then(|content| content.unrecorded_trigger_world())
-                    })
-                    .as_ref()
-                    .map_err(Clone::clone)?
-                    .evaluate(limit, crate::triggers::Scopes::empty())
-                    .decided()
-            })?
-        };
-        Ok(Self {
-            units: match units {
-                Some(units) => units,
+        // The enablers, the equipment and the geography read on helper threads while this one
+        // reads the graphics' names and pools; each is taken in the order they were written.
+        let (names, pools, enablers, units, geography) = std::thread::scope(|threads| {
+            use installed_content_core::parallel::spawn;
+            let enablers = spawn(threads, || {
+                // Scripted content's refusal notes reach this thread's consumers when joined, a
+                // panic's too.
+                dashboard_text::catalogue::capture(|| {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        // The game checks each equipment limit at content load in a fresh empty
+                        // scope.
+                        let world = std::cell::OnceCell::new();
+                        installed_content_core::technology::read_enablers(layers, |limit| {
+                            world
+                                .get_or_init(|| {
+                                    catalogue
+                                        .scripted_content()
+                                        .and_then(|content| content.unrecorded_trigger_world())
+                                })
+                                .as_ref()
+                                .map_err(Clone::clone)?
+                                .evaluate(limit, crate::triggers::Scopes::empty())
+                                .decided()
+                        })
+                    }))
+                })
+            });
+            let units = spawn(threads, || match units {
+                Some(units) => Ok(units),
                 None => {
                     let names = layers.key_names()?;
                     match names.equipment_database() {
@@ -267,22 +281,46 @@ impl IconContent {
                             for path in installed_content_core::equipment::files(layers) {
                                 path.read(layers)?;
                             }
-                            Arc::clone(database)
+                            Ok(Arc::clone(database))
                         }
                         // Preserve the loader's stopped reads and complete-database
                         // refusal, including when only a prefix could be registered.
-                        _ => Arc::new(Database::load_complete(layers)?),
+                        _ => Database::load_complete(layers).map(Arc::new),
                     }
                 }
-            },
+            });
+            // The defines' Lua state synchronizes each read, so this thread shares it.
+            let geography = spawn(threads, || {
+                equipment_graphics::context::Content::load(
+                    layers,
+                    &default_map,
+                    &provinces,
+                    &defines,
+                )
+            });
+            let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings);
+            // Taken after the enablers and the equipment, a panic included.
+            let pools = names.as_ref().ok().map(|names| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    equipment_graphics::Content::load(layers, names)
+                }))
+            });
+            let (enablers, units, geography) = (enablers.join(), units.join(), geography.join());
+            (names, pools, enablers, units, geography)
+        });
+        // The first part to fail in the order they were written decides, by error or panic.
+        names?;
+        let (enablers, noted) = settled(enablers);
+        dashboard_text::catalogue::credit(&noted);
+        let enablers = settled(enablers)?;
+        let units = settled(units)?;
+        let pools = settled(pools.expect("the pools are read once the names are"))?;
+        let geography = settled(geography)?;
+        Ok(Self {
+            units,
             enablers,
-            pools: equipment_graphics::Content::load(layers, &names)?,
-            geography: equipment_graphics::context::Content::load(
-                layers,
-                &default_map,
-                &provinces,
-                &defines,
-            )?,
+            pools,
+            geography,
             dlc: layers.dlc_names()?,
             sprites: catalogue
                 .sprites
