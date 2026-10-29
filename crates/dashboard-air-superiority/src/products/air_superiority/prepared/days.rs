@@ -149,6 +149,18 @@ impl Timelines {
         })
     }
 
+    /// The prepared state ([`serial`]) each kept view was classified from, the most recently
+    /// used first.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn kept_views(&self) -> Vec<u64> {
+        self.views
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(view, _)| view.1)
+            .collect()
+    }
+
     /// `view`'s kept days, if it is kept: it admits no view.
     pub(super) fn listed(&self, view: &View) -> Option<Arc<Kept>> {
         let views = self.views.lock().unwrap_or_else(PoisonError::into_inner);

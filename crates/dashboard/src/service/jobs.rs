@@ -1917,9 +1917,26 @@ impl Inner {
         self.signal.notify();
         if let Some((source, content)) = ahead {
             products::read_ahead::warm_in_background(&source, content.clone());
-            products::game_window::warm_in_background(&source, content);
+            products::game_window::warm_in_background(&source, content.clone());
+            warm_air(&source, content);
         }
     }
+}
+
+/// Classifies the Air timeline's default view of each prepared branch on a thread of its own
+/// ([`products::air_superiority::prepared::warm`]), holding the source only while it runs, and
+/// stopping once `content`'s binding is retired.
+fn warm_air(source: &Arc<Source>, content: ContentOptions) {
+    let source = Arc::downgrade(source);
+    let _ = std::thread::Builder::new()
+        .name("air timeline warm".into())
+        .spawn(move || {
+            let Some(source) = source.upgrade() else {
+                return;
+            };
+            let cancelled = content.presentation.cancel();
+            products::air_superiority::prepared::warm(&source, &content, cancelled);
+        });
 }
 
 fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {

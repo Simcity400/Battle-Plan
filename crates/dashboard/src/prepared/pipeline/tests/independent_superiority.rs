@@ -772,6 +772,71 @@ fn air_superiority_quiet_hours_build_no_frame() {
 }
 
 #[test]
+fn the_default_air_timeline_view_is_kept_from_open_once_prepared() {
+    use crate::products::air_superiority::prepared::{kept_views, warm};
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut fixture = Fixture::new(&scenario(111, false));
+    let game = fixture.root.join("game");
+    for (path, text) in [
+        ("hoi4.exe", "test"),
+        (
+            "user/dlc_load.json",
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        ),
+        (
+            "user/settings.txt",
+            "language=l_english force_pow2_textures=no",
+        ),
+        (
+            "map/strategicregions/synthetic.txt",
+            "strategic_region={id=7000 name=REGION provinces={1}}",
+        ),
+        (
+            "localisation/english/synthetic_l_english.yml",
+            "\u{feff}l_english:\n REGION:0 \"English region\"\n",
+        ),
+    ] {
+        let path = game.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let (content, identity) = dashboard_base::test_fixtures::content_identity(&game);
+    let mut wire = records(
+        1,
+        vec![air_frame(1, 100), air_frame(1, 101), air_frame(1, 130)],
+    );
+    let replay::spool::Record::SessionStart(session) = &mut wire[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
+    let source = fixture.source("air-warm");
+    let flag = AtomicBool::new(false);
+    // A branch whose air superiority is still preparing is left to its queries.
+    warm(&source, &content, &flag);
+    assert!(kept_views(&source).is_empty());
+    run(&source, Some(&content), &flag, |_| {}).unwrap();
+    warm(&source, &content, &flag);
+    let warmed = kept_views(&source);
+    assert_eq!(warmed.len(), 1, "the default view of the one branch");
+    // The Air page's first query, bound as every dashboard query is, classifies on that view.
+    let request = crate::transport::ProductRequest {
+        source_id: source.key().source_id.clone(),
+        revision: source.key().revision.clone(),
+        product: "air-superiority".into(),
+        params: serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":100, "lastHour":130, "mode":"sides"}),
+    };
+    crate::prepared::query::query(&source, &request, Some(&content), &flag).unwrap();
+    assert_eq!(kept_views(&source), warmed, "the warmed view, of the same prepared state");
+    super::super::super::files(&source, Some(&content))
+        .unwrap()
+        .0
+        .clear()
+        .unwrap();
+}
+
+#[test]
 fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

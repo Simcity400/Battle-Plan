@@ -1522,6 +1522,70 @@ fn hourless(
     })
 }
 
+/// The prepared state each of `source`'s kept timeline views was classified from, for tests of
+/// their callers.
+#[cfg(any(test, feature = "test-support"))]
+pub fn kept_views(source: &Source) -> Vec<u64> {
+    days::timelines(source).kept_views()
+}
+
+/// Classifies each prepared branch's default timeline view (the whole branch by sides, as the
+/// Air page first asks it) ahead of its first query: one query of its first day keeps the view,
+/// and its answer starts classifying the rest below the user's priority ([`classify_ahead`]), so
+/// the Air page and its jumps find the days kept. A branch whose air superiority is still
+/// preparing is left to its queries.
+pub fn warm(
+    source: &Source,
+    content: &dashboard_core::config::ContentOptions,
+    cancelled: &AtomicBool,
+) {
+    let replay = source.replay_ref();
+    let branches: Vec<(u64, i32)> = replay
+        .branches
+        .iter()
+        .map(|start| {
+            (
+                start.id,
+                dashboard_text::metadata::branch_bounds(replay, start).0,
+            )
+        })
+        .collect();
+    let context = LoadContext {
+        content: Some(content.clone()),
+    };
+    // Bound as the dashboard binds its queries, so the first of them reads the state warmed here.
+    let Ok((_, key)) = dashboard_base::prepared::files(source, Some(content)) else {
+        return;
+    };
+    dashboard_base::prepared::query::observations::bind(source, &key);
+    for (branch, first) in branches {
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let prepared = dashboard_base::prepared::coverage::product_coverage(
+            source,
+            Some(content),
+            branch,
+            "air-superiority",
+            cancelled,
+        )
+        .ok()
+        .flatten()
+        .is_some_and(|coverage| coverage.complete);
+        if !prepared {
+            continue;
+        }
+        let params = serde_json::json!({
+            "branchId": branch.to_string(),
+            "view": "timeline",
+            "firstHour": first,
+            "lastHour": first,
+            "mode": "sides",
+        });
+        let _ = query(source, params, &context, cancelled);
+    }
+}
+
 pub fn query(
     source: &Source,
     params: serde_json::Value,
