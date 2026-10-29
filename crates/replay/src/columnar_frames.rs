@@ -15,8 +15,11 @@
 
 use crate::{
     format::FormatVersion,
-    frame::{DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, SharedView, TableView, not_selected},
-    rows::{Field, List, Opaque, RowChanges, TABLE_COUNT, TableId, TableRows},
+    frame::{
+        DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, SharedView, TableUpdate,
+        TableView, not_selected,
+    },
+    rows::{DeltaRow, Field, List, Opaque, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
 };
 use replay_columnar::{
@@ -27,7 +30,7 @@ use replay_columnar::{
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
 };
-use std::io;
+use std::{io, sync::Arc};
 
 #[cfg(test)]
 mod tests;
@@ -118,6 +121,10 @@ pub struct Views {
     /// Each patched row's key, slot and the columns it changed.
     patches: Vec<(u128, u32, u64)>,
     masks: Vec<(u128, u64)>,
+    /// Whether [`Self::advance_recorded`] asked for the hour's change facts, and each selected
+    /// table's, in selection order.
+    record: bool,
+    facts: Vec<TableUpdate>,
 }
 
 impl Views {
@@ -142,6 +149,76 @@ impl Views {
             deleted: Vec::new(),
             patches: Vec::new(),
             masks: Vec::new(),
+            record: false,
+            facts: Vec::new(),
+        })
+    }
+
+    /// [`Self::advance`], with the hour's change facts in the row recording's shape: a table
+    /// left alone is Unchanged, one the hour changed a Delta whose rows carry their keys and
+    /// the columns the hour wrote (an inserted row every column) but no values, which readers
+    /// take from the frame; a view built anew is a Snapshot of its rows. Tables not selected
+    /// are unavailable, as in the row recording's selected reads.
+    pub fn advance_recorded(
+        &mut self,
+        state: &State,
+        manifest: &Manifest<'_>,
+        restart: bool,
+    ) -> io::Result<(DecodedFrame, RecordedFrame)> {
+        self.record = true;
+        self.facts.clear();
+        engine_allocation::reserve(&mut self.facts, self.selected.len())?;
+        let frame = self.advance(state, manifest, restart);
+        self.record = false;
+        let frame = frame?;
+        let mut slots = [None; TABLE_COUNT];
+        for (at, table) in self.selected.iter().enumerate() {
+            slots[table.index()] = Some(at);
+        }
+        let updates = engine_allocation::collect_vec(self.facts.drain(..).map(Arc::new))?;
+        let recorded = RecordedFrame::from_updates(
+            frame.branch,
+            frame.hour,
+            restart,
+            frame.metrics.clone(),
+            Arc::new(slots),
+            updates,
+            Arc::new(TableUpdate::Unavailable {
+                reason: String::new(),
+            }),
+        )?;
+        Ok((frame, recorded))
+    }
+
+    /// Keeps `update` as the hour's fact for the table being viewed, when facts are asked.
+    fn fact(&mut self, update: impl FnOnce() -> io::Result<TableUpdate>) -> io::Result<()> {
+        if self.record {
+            engine_allocation::reserve(&mut self.facts, 1)?;
+            self.facts.push(update()?);
+        }
+        Ok(())
+    }
+
+    /// The Delta fact of a changed complete table: its inserted rows (every column), then
+    /// its patched rows, in key order, and its deleted keys.
+    fn delta(&self, id: TableId, baseline: i32) -> io::Result<TableUpdate> {
+        // The fields the recording's format wrote, as its own deltas count them.
+        let fields = id.last_change().fields(id, self.format);
+        let row = |key: u128, mask: u64| DeltaRow {
+            format: self.format,
+            key,
+            mask,
+            recorded_fields: fields,
+            values: Vec::new(),
+        };
+        let mut changed = engine_allocation::vec(self.keys.len() + self.patches.len())?;
+        changed.extend(self.keys.iter().map(|&key| row(key, full_mask(fields))));
+        changed.extend(self.patches.iter().map(|&(key, _, mask)| row(key, mask)));
+        changed.sort_unstable_by_key(|row: &DeltaRow| row.key);
+        Ok(TableUpdate::Delta {
+            baseline,
+            changed,
+            deleted: engine_allocation::copy_vec(&self.deleted)?,
         })
     }
 
@@ -160,10 +237,12 @@ impl Views {
                 .ok_or_else(|| invalid("A section names a table past the schema"))? = true;
         }
         let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
+        // A continuing walk's deltas apply to the hour before.
+        let baseline = manifest.hour.saturating_sub(1);
         for at in 0..self.selected.len() {
             let table = self.selected[at];
             let index = table.index();
-            let view = self.view(state, table, present[index], restart)?;
+            let view = self.view(state, table, present[index], restart, baseline)?;
             tables[index] = view.clone();
             self.views[index] = Some(view);
         }
@@ -196,6 +275,7 @@ impl Views {
         id: TableId,
         present: bool,
         restart: bool,
+        baseline: i32,
     ) -> io::Result<SharedView> {
         let index = id.index();
         let status = state
@@ -208,16 +288,25 @@ impl Views {
             .ok_or_else(|| invalid("The walker holds no such table"))?;
         let dictionary = state.dictionary();
         match status {
-            Status::NotRecorded => Ok(match previous {
-                Some(view) if matches!(*view, TableView::NotRecorded { .. }) => view,
-                _ => TableView::NotRecorded { mode: self.mode }.into(),
-            }),
+            Status::NotRecorded => {
+                let mode = self.mode;
+                self.fact(|| Ok(TableUpdate::NotRecorded { mode }))?;
+                Ok(match previous {
+                    Some(view) if matches!(*view, TableView::NotRecorded { .. }) => view,
+                    _ => TableView::NotRecorded { mode }.into(),
+                })
+            }
             Status::Unavailable { reason } => {
                 let reason = dictionary
                     .get(reason)
                     .ok_or_else(|| invalid("A reason names a missing dictionary entry"))?;
                 let reason = std::str::from_utf8(reason)
                     .map_err(|_| invalid("A table's reason is not text"))?;
+                self.fact(|| {
+                    Ok(TableUpdate::Unavailable {
+                        reason: engine_allocation::string(reason)?,
+                    })
+                })?;
                 Ok(match previous {
                     Some(view) if matches!(&*view, TableView::Unavailable { reason: held } if held == reason) => {
                         view
@@ -248,6 +337,12 @@ impl Views {
                     &mut self.keys,
                     self.format,
                 )?;
+                self.fact(|| {
+                    Ok(TableUpdate::Truncated {
+                        rows: rows.try_clone_validated()?,
+                        missing,
+                    })
+                })?;
                 Ok(TableView::Truncated { rows, missing }.into())
             }
             Status::Complete => {
@@ -269,9 +364,11 @@ impl Views {
                         &mut self.keys,
                         self.format,
                     )?;
+                    self.fact(|| Ok(TableUpdate::Snapshot(rows.try_clone_validated()?)))?;
                     return Ok(SharedView::from(TableView::Complete(rows)).with_sampled_at(sampled));
                 };
                 if !present {
+                    self.fact(|| Ok(TableUpdate::Unchanged { baseline }))?;
                     return Ok(previous.with_sampled_at(sampled));
                 }
                 let changes = state
@@ -334,6 +431,10 @@ impl Views {
                     }
                 }
                 if self.patches.is_empty() {
+                    if self.record {
+                        let delta = self.delta(id, baseline)?;
+                        self.fact(|| Ok(delta))?;
+                    }
                     return Ok(SharedView::from(TableView::Complete(held)).with_sampled_at(sampled));
                 }
                 self.patches
@@ -345,6 +446,10 @@ impl Views {
                     }
                     same
                 });
+                if self.record {
+                    let delta = self.delta(id, baseline)?;
+                    self.fact(|| Ok(delta))?;
+                }
                 self.masks.clear();
                 engine_allocation::reserve(&mut self.masks, self.patches.len())?;
                 self.masks

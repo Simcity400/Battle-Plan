@@ -5,15 +5,18 @@
 //! changed table is copied, not changed in place, on both paths.
 //! `columnar-frames <recording.battleplan> <file.h4col> [--time]`; `--time` instead times
 //! the walk alone, the walk with every table's views, and the row decoder of every table,
-//! each keeping no earlier frame; `--time-tables` times each table's views alone.
+//! each keeping no earlier frame; `--time-tables` times each table's views alone; `--facts`
+//! compares each hour's change facts, the row recording's updates against
+//! [`Views::advance_recorded`]'s: their kinds, changed keys and masks, and deleted keys.
 
 use replay::{
     columnar_frames::{Recording, Views, schema},
     container::Replay,
 };
 use replay_columnar::walk::State;
+use replay_data::rows::DeltaRow;
 use replay_data::rows::{TABLE_COUNT, TableId};
-use replay_frame::frame::{DecodedFrame, SharedView, TableView};
+use replay_frame::frame::{DecodedFrame, SharedView, TableUpdate, TableView};
 use serde_json::json;
 use std::{io, path::PathBuf};
 
@@ -163,6 +166,135 @@ fn time_tables(replay: &Replay, file: &Recording) -> io::Result<serde_json::Valu
     Ok(json!({"hours": hours, "views_us_per_hour": total, "tables": tables}))
 }
 
+/// A fact's kind, for reporting.
+fn kind(update: &TableUpdate) -> &'static str {
+    match update {
+        TableUpdate::Snapshot(_) => "snapshot",
+        TableUpdate::Delta { .. } => "delta",
+        TableUpdate::Unchanged { .. } => "unchanged",
+        TableUpdate::Truncated { .. } => "truncated",
+        TableUpdate::Unavailable { .. } => "unavailable",
+        TableUpdate::NotRecorded { .. } => "not recorded",
+        TableUpdate::Incompatible { .. } => "incompatible",
+    }
+}
+
+/// How one table's facts of one hour compare; `keyframe` is whether the row recording's
+/// hour is a keyframe, where a snapshot stands for any continuing complete view.
+fn compare_facts(row: &TableUpdate, columnar: &TableUpdate, keyframe: bool) -> &'static str {
+    match (row, columnar) {
+        (
+            TableUpdate::Delta {
+                changed: want,
+                deleted: want_deleted,
+                ..
+            },
+            TableUpdate::Delta {
+                changed: have,
+                deleted: have_deleted,
+                ..
+            },
+        ) => {
+            let keys = |rows: &[DeltaRow]| rows.iter().map(|row| row.key).collect::<Vec<_>>();
+            let mut want_sorted = want_deleted.clone();
+            want_sorted.sort_unstable();
+            if keys(want) != keys(have) {
+                "delta keys differ"
+            } else if &want_sorted != have_deleted {
+                "deleted keys differ"
+            } else if want.iter().zip(have).any(|(a, b)| a.mask != b.mask) {
+                "masks differ"
+            } else {
+                "same"
+            }
+        }
+        (
+            TableUpdate::Delta {
+                changed, deleted, ..
+            },
+            TableUpdate::Unchanged { .. },
+        ) if changed.is_empty() && deleted.is_empty() => "empty row delta",
+        (TableUpdate::Delta { .. }, TableUpdate::Unchanged { .. }) => {
+            "row delta, columnar unchanged"
+        }
+        (TableUpdate::Snapshot(_), TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. })
+            if keyframe =>
+        {
+            "row keyframe"
+        }
+        _ if kind(row) == kind(columnar) => "same",
+        _ => "kinds differ",
+    }
+}
+
+fn facts(replay: &Replay, file: &Recording) -> io::Result<serde_json::Value> {
+    let mut state = State::new(schema()?)?;
+    let mut views = Views::new(&TableId::ALL, replay.format, replay.capture_mode)?;
+    let mut blocks = replay.index.iter();
+    let mut pending = std::collections::VecDeque::new();
+    let names: Vec<String> = TableId::ALL
+        .iter()
+        .map(|table| format!("{table:?}"))
+        .collect();
+    let mut counts: std::collections::BTreeMap<(usize, &'static str), u64> =
+        std::collections::BTreeMap::new();
+    let mut examples = Vec::new();
+    let mut hours = 0_u64;
+    file.walk(&mut state, |state, manifest, first| {
+        let (_, columnar) = views.advance_recorded(state, manifest, first)?;
+        if pending.is_empty() {
+            let index = blocks
+                .next()
+                .ok_or_else(|| invalid("The columnar file holds more hours than the recording"))?;
+            pending.extend(replay.read_block_recorded_selected(index, &TableId::ALL)?);
+        }
+        let row = pending.pop_front().expect("a recorded hour");
+        if (row.branch, row.hour) != (columnar.branch, columnar.hour) {
+            return Err(invalid(format!(
+                "The recording's hour {} of branch {} meets the columnar file's hour {} of branch {}",
+                row.hour, row.branch, columnar.hour, columnar.branch
+            )));
+        }
+        for index in 0..TableId::ALL.len() {
+            let how = compare_facts(&row.tables[index], &columnar.tables[index], row.keyframe);
+            let count = counts.entry((index, how)).or_default();
+            *count += 1;
+            if how != "same" && *count <= 1 && examples.len() < 80 {
+                examples.push(json!({
+                    "hour": row.hour,
+                    "table": names[index],
+                    "how": how,
+                    "row": kind(&row.tables[index]),
+                    "columnar": kind(&columnar.tables[index]),
+                }));
+            }
+        }
+        hours += 1;
+        Ok(true)
+    })?;
+    if !pending.is_empty() || blocks.next().is_some() || hours != file.hours() {
+        return Err(invalid(format!(
+            "The columnar file's {hours} hours of {} do not cover the recording",
+            file.hours()
+        )));
+    }
+    let mut by_kind: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for ((_, how), count) in &counts {
+        *by_kind.entry(how).or_default() += count;
+    }
+    let differing: Vec<_> = counts
+        .iter()
+        .filter(|((_, how), _)| *how != "same")
+        .map(|((table, how), count)| json!([names[*table], how, count]))
+        .collect();
+    Ok(json!({
+        "hours": hours,
+        "table_hours_by_comparison": by_kind,
+        "differing": differing,
+        "examples": examples,
+    }))
+}
+
 fn main() -> io::Result<()> {
     let mut args = std::env::args_os().skip(1);
     let usage = || invalid("columnar-frames <recording.battleplan> <file.h4col> [--time]");
@@ -173,6 +305,10 @@ fn main() -> io::Result<()> {
     match args.next() {
         Some(flag) if flag == "--time" => {
             println!("{}", serde_json::to_string_pretty(&time(&replay, &file)?)?);
+            return Ok(());
+        }
+        Some(flag) if flag == "--facts" => {
+            println!("{}", serde_json::to_string_pretty(&facts(&replay, &file)?)?);
             return Ok(());
         }
         Some(flag) if flag == "--time-tables" => {
