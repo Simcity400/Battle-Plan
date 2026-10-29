@@ -213,6 +213,24 @@ def manifest():
 def owned(token):
     return (CLAIM / 'token').read_text() == token
 
+def job_file(job, kind):
+    """A job's `started` file, naming its process, and `outcome` file, its exit code and a build's artifacts: for a run that lost its connection to it."""
+    return ROOT / f'job-{job}.{kind}'
+
+def leave(job, kind, value):
+    partial = job_file(job, 'part')
+    partial.write_text(json.dumps(value))
+    partial.replace(job_file(job, kind))
+
+def process_start(pid):
+    """When a live process started, which tells it from a later one given the same id; None once it has ended."""
+    try:
+        fields = (Path('/proc') / str(pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+    # A process reaped between opening and reading its stat reads as ESRCH.
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    return None if fields[0] == 'Z' else fields[19]
+
 def boot_id():
     return Path('/proc/sys/kernel/random/boot_id').read_text()
 
@@ -343,8 +361,8 @@ elif mode == 'acquire':
             print('Took over the claim of a run that ended without releasing it', file=sys.stderr)
     STRANDED.unlink(missing_ok=True)
     (CLAIM / 'token').write_text(token)
-    # Earlier runs' downloads and uploads are done with by now.
-    for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*'), *ROOT.glob('runner-*.b64-*')]:
+    # Earlier runs' downloads, uploads and job files are done with by now.
+    for leftover in [*ROOT.glob('artifacts-*'), *ROOT.glob('incoming-*'), *ROOT.glob('runner-*.b64-*'), *ROOT.glob('job-*')]:
         if leftover.is_dir() and not leftover.is_symlink():
             shutil.rmtree(leftover)
         else:
@@ -360,10 +378,26 @@ elif mode == 'release':
             except BlockingIOError:
                 sys.exit(73)
             shutil.rmtree(CLAIM)
+elif mode == 'outcome':
+    job = sys.argv[2]
+    try:
+        started = json.loads(job_file(job, 'started').read_text())
+    except FileNotFoundError:
+        print('The job has not started', file=sys.stderr)
+        sys.exit(78)
+    # The job's process leaves its outcome before it ends, so once it has ended the outcome is there or never will be.
+    if started['boot'] == boot_id() and process_start(started['pid']) == started['start']:
+        sys.exit(74)
+    path = job_file(job, 'outcome')
+    if not path.exists():
+        print('The job ended without leaving its outcome', file=sys.stderr)
+        sys.exit(1)
+    print(path.read_text())
 elif mode in {'check', 'build', 'ui'}:
-    token = sys.argv[2]
+    token, job = sys.argv[2], sys.argv[3]
+    leave(job, 'started', {'pid': os.getpid(), 'start': process_start(os.getpid()), 'boot': boot_id()})
     assert owned(token)
-    args = sys.argv[3:]
+    args = sys.argv[4:]
     source = None
     if args[:1] == ['--sync']:
         source, args = args[1], args[2:]
@@ -377,6 +411,7 @@ elif mode in {'check', 'build', 'ui'}:
         launched = False
         cache = None
         cache_started = False
+        outcome = {'exit': 1}
         try:
             if source:
                 incoming = None
@@ -475,9 +510,12 @@ elif mode in {'check', 'build', 'ui'}:
                         packer.stdin.close()
                         if packer.wait():
                             raise RuntimeError('Artifact compression failed')
-                    print('BOAT_ARTIFACTS=' + json.dumps(out), flush=True)
-                    print('BOAT_BUNDLE=' + json.dumps({'path': str(bundle), 'size': bundle.stat().st_size, 'sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()}), flush=True)
+                    outcome.update(artifacts=out, bundle={'path': str(bundle), 'size': bundle.stat().st_size, 'sha256': hashlib.sha256(bundle.read_bytes()).hexdigest()})
             sys.exit(result.returncode)
+        except SystemExit as stop:
+            # The status the process exits with: Linux keeps the low byte.
+            outcome['exit'] = stop.code & 0xFF if isinstance(stop.code, int) else 1
+            raise
         finally:
             # The job's command group (Cargo, npm check) must not outlive its claim: the next job prunes incremental files under it.
             # A launch interrupted before Popen returned may have left Cargo running without a handle.
@@ -489,6 +527,7 @@ elif mode in {'check', 'build', 'ui'}:
                 if stopped and not drained and result is not None:
                     drained = drain(result)
                 drained = drained and stopped
+            leave(job, 'outcome', outcome)
             checkpoint()
             if not drained:
                 print('WARNING: processes of this job are still running; the claim stays for quarantine', file=sys.stderr, flush=True)

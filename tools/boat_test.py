@@ -61,24 +61,30 @@ class FakeBoat:
             return OK, []
         raise AssertionError(f"unexpected boat call {args}")
 
-    def remote(self, vmid, *args, stream=False):
+    def quick(self, vmid, *args):
         self.remote_calls.append((vmid, *args))
         mode = args[0]
         if mode == "acquire":
             return self.acquire_status.get(vmid, 0), self.acquire_output.get(vmid, "{}")
         if mode == "release":
             return 0, ""
-        if mode in {"check", "build"} and args[2] == "--sync":
-            self.synced.append(args[3])
-            if self.sync_status:
-                return self.sync_status, ""
-        if mode == "check":
-            return self.cargo_exit, ""
-        if mode == "build":
+        if mode == "outcome":
             artifact = {"path": f"{bt.REMOTE}/target/{bt.TARGET}/release/viewer.exe", "sha256": "0" * 64}
             bundle = {"path": f"{bt.REMOTE}/artifacts-x.tar.xz", "size": 10, "sha256": "0" * 64}
-            return 0, "BOAT_ARTIFACTS=" + json.dumps([artifact]) + "\nBOAT_BUNDLE=" + json.dumps(bundle) + "\n"
-        raise AssertionError(f"unexpected remote call {args}")
+            return 0, json.dumps({"exit": 0, "artifacts": [artifact], "bundle": bundle})
+        raise AssertionError(f"unexpected quick call {args}")
+
+    def remote(self, vmid, mode, token, *args):
+        self.remote_calls.append((vmid, mode, token, *args))
+        if args[:1] == ("--sync",):
+            self.synced.append(args[1])
+            if self.sync_status:
+                return self.sync_status, "j"
+        if mode == "check":
+            return self.cargo_exit, "j"
+        if mode == "build":
+            return 0, "j"
+        raise AssertionError(f"unexpected remote call {mode} {args}")
 
     def ttl_calls(self, vmid):
         return [int(call[3]) for call in self.calls if call[0] == "extend" and call[1] == vmid]
@@ -103,7 +109,7 @@ class Harness(unittest.TestCase):
     def use(self, fake):
         bt.boat = fake.boat
         bt.remote = fake.remote
-        bt.quick = fake.remote
+        bt.quick = fake.quick
         for vmid in fake.vms:
             bt.atomic_json(self.state.pool / (vmid + ".json"), {"id": vmid, "snapshot": bt.SNAPSHOT})
         return fake
@@ -262,7 +268,7 @@ class Acquire(Harness):
 
         def quick(vmid, *args):
             installed.append(any(call[0] == "exec" and "runner-remote.py.b64-000" in " ".join(call) for call in fake.calls))
-            return fake.remote(vmid, *args)
+            return fake.quick(vmid, *args)
 
         bt.quick = quick
         vmid, lock, lease, _ = bt.acquire(self.state, "lane", "large", "t", {})
@@ -368,6 +374,7 @@ class Run(Harness):
 
 
 TLS = '{"error":"could not reach the Boat API at https://boat.dev: error sending request for url (https://boat.dev/api/boat/sandboxes): client error (Connect): tls handshake eof","event":"error"}'
+NOT_READY = '{"code":"sandbox_not_ready","error":"Sandbox a is not ready (state: updating)","event":"error"}'
 LOST = '{"error":"could not reach the Boat API at https://boat.dev: error sending request for url (https://boat.dev/api/boat/sandboxes): connection closed before message completed","event":"error"}'
 
 
@@ -400,8 +407,9 @@ class Attach:
 
 class Transport(unittest.TestCase):
     def setUp(self):
-        self.saved = {name: getattr(bt, name) for name in ("subprocess", "RETRY_SECONDS", "say")}
+        self.saved = {name: getattr(bt, name) for name in ("subprocess", "RETRY_SECONDS", "OUTCOME_SECONDS", "say")}
         bt.RETRY_SECONDS = (0, 0, 0)
+        bt.OUTCOME_SECONDS = 0
         self.runs = []
         self.attaches = []
         self.said = []
@@ -434,6 +442,8 @@ class Transport(unittest.TestCase):
         self.assertTrue(self.transient(-1073741502, "", "exec"))
         self.assertTrue(self.transient(1, LOST, "info"))
         self.assertTrue(self.transient(1, '{"event":"error","status":503}', "extend"))
+        self.assertTrue(self.transient(1, NOT_READY, "info"))
+        self.assertFalse(self.transient(1, NOT_READY, "resume"))
         for command in ("new", "resume", "exec", "snapshot"):
             self.assertFalse(self.transient(1, TLS, command), command)
         self.assertFalse(self.transient(1, '{"code":"snapshot_not_found","event":"error","status":404}', "info"))
@@ -471,8 +481,10 @@ class Transport(unittest.TestCase):
             {"type": "exit", "exitCode": 7, "signal": None, "status": "exited"},
         ], 7)
         self.fake([result(0, '{"pid":42,"processId":42}')], [first, second])
-        self.assertEqual(bt.remote("a", "check"), (7, "one\ntwo\n"))
-        self.assertIn("é\nx", self.said)
+        shown, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(shown), contextlib.redirect_stderr(errors):
+            self.assertEqual(bt.remote("a", "check", "t")[0], 7)
+        self.assertEqual((shown.getvalue(), errors.getvalue()), ("one\ntwo\n", "é\nx\n"))
         self.assertIn("--detach", self.runs[0])
         self.assertEqual([command[-1] for command in self.attaches], ["42", "42"])
 
@@ -480,22 +492,22 @@ class Transport(unittest.TestCase):
         lossy = {"type": "stdout", "data": "AB�CD\n", "nextOffset": 6}
         exit = {"type": "exit", "exitCode": 0, "signal": None, "status": "exited"}
         self.fake([result(0, '{"pid":1}')], [Attach([{"type": "attached"}, lossy, exit], 0)])
-        self.assertEqual(bt.remote("a", "check"), (0, "AB�CD\n"))
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            self.assertEqual(bt.remote("a", "check", "t")[0], 0)
+        self.assertEqual(shown.getvalue(), "AB�CD\n")
         first = Attach([{"type": "attached"}, {"type": "stdout", "data": "AB", "nextOffset": 2}], 1)
         self.fake([result(0, '{"pid":2}')], [first, Attach([{"type": "attached"}, lossy, exit], 0)])
-        self.assertEqual(bt.remote("a", "check"), (0, "AB�CD\n"))
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            self.assertEqual(bt.remote("a", "check", "t")[0], 0)
+        self.assertEqual(shown.getvalue(), "ABAB�CD\n")
         self.assertTrue(any("repeat" in line for line in self.said))
-
-    def test_parsed_output_comes_from_the_whole_final_replay(self):
-        first = Attach([{"type": "attached"}, {"type": "stdout", "data": "diag�", "nextOffset": 5}], 1)
-        whole = {"type": "stdout", "data": "diag�\nBOAT_ARTIFACTS=[]\n", "nextOffset": 24}
-        self.fake([result(0, '{"pid":3}')], [first, Attach([{"type": "attached"}, whole, {"type": "exit", "exitCode": 0}], 0)])
-        self.assertEqual(bt.remote("a", "build"), (0, "diag�\nBOAT_ARTIFACTS=[]\n"))
 
     def test_interrupting_stops_the_remote_job(self):
         self.fake([result(0, '{"pid":42}'), result(0), result(0, '{"pid":42,"running":false}')], [Attach([{"type": "attached"}], None, interrupt=True)])
         with self.assertRaises(KeyboardInterrupt):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertIn(["--kill", "42"], [command[-2:] for command in self.runs])
         self.assertTrue(self.attaches and self.runs[-1][-2:] == ["--status", "42"])
         self.assertFalse(any("may still be running" in line for line in self.said))
@@ -506,14 +518,14 @@ class Transport(unittest.TestCase):
 
         self.fake([result(0, '{"pid":42}'), unlaunchable], [Attach([{"type": "attached"}], None, interrupt=True)])
         with self.assertRaises(KeyboardInterrupt):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertTrue(any("could not stop Boat job 42" in line for line in self.said))
 
     def test_a_status_error_is_not_taken_as_stopped(self):
         error = result(1, '{"event":"error","error":"could not reach the Boat API"}')
         self.fake([result(0, '{"pid":42}'), result(0)] + [error] * 16, [Attach([{"type": "attached"}], None, interrupt=True)])
         with self.assertRaises(KeyboardInterrupt):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertTrue(any("may still be running" in line for line in self.said))
 
     def test_ctrl_c_while_the_job_starts_still_stops_it(self):
@@ -523,7 +535,7 @@ class Transport(unittest.TestCase):
 
         self.fake([started, result(0), result(0, '{"pid":42,"running":false}')])
         with self.assertRaises(KeyboardInterrupt):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertEqual([command[-2:] for command in self.runs[1:]], [["--kill", "42"], ["--status", "42"]])
         self.assertEqual(self.attaches, [])
 
@@ -537,7 +549,7 @@ class Transport(unittest.TestCase):
             self.said.clear()
             self.fake([started])
             with self.assertRaises(KeyboardInterrupt):
-                bt.remote("a", "check")
+                bt.remote("a", "check", "t")
             self.assertEqual(len(self.runs), 1)
             self.assertTrue(any("interrupted while starting" in line for line in self.said))
 
@@ -548,36 +560,43 @@ class Transport(unittest.TestCase):
 
         self.fake([started])
         with self.assertRaises(KeyboardInterrupt):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertTrue(any("interrupted while starting" in line for line in self.said))
 
-    def test_a_reconnect_within_one_pass_keeps_the_whole_replay(self):
+    def test_a_reconnect_within_one_pass_shows_the_whole_output(self):
         frames = [{"type": "attached"}, {"type": "stdout", "data": "ab", "nextOffset": 2}, {"type": "attached", "stdoutOffset": 2, "stderrOffset": 0}, {"type": "stdout", "data": "cd", "nextOffset": 4}, {"type": "exit", "exitCode": 0}]
-        for stream in (False, True):
-            self.fake([result(0, '{"pid":6}')], [Attach(frames, 0)])
-            shown = io.StringIO()
-            with contextlib.redirect_stdout(shown):
-                self.assertEqual(bt.remote("a", "check", stream=stream), (0, "abcd"))
-            self.assertEqual(shown.getvalue(), "abcd" if stream else "")
+        self.fake([result(0, '{"pid":6}')], [Attach(frames, 0)])
+        shown = io.StringIO()
+        with contextlib.redirect_stdout(shown):
+            self.assertEqual(bt.remote("a", "check", "t")[0], 0)
+        self.assertEqual(shown.getvalue(), "abcd")
 
-    def test_a_reconnect_that_skips_output_is_refused(self):
-        frames = [{"type": "attached"}, {"type": "stdout", "data": "ab", "nextOffset": 2}, {"type": "attached", "stdoutOffset": 3, "stderrOffset": 0}, {"type": "stdout", "data": "d", "nextOffset": 4}, {"type": "exit", "exitCode": 0}]
-        self.fake([result(0, '{"pid":7}')], [Attach(frames, 0)])
-        with self.assertRaises(bt.Failure):
-            bt.remote("a", "check")
+    def test_a_job_boat_loses_is_waited_for_and_its_outcome_read_from_the_vm(self):
+        lost = Attach([{"type": "attached"}, {"type": "exit", "exitCode": None, "signal": None, "status": "lost"}], 0)
+        starting = result(0, json.dumps({"exitCode": bt.NOT_STARTED, "stdout": "", "stderr": ""}))
+        running = result(0, json.dumps({"exitCode": bt.STILL_RUNNING, "stdout": "", "stderr": ""}))
+        done = result(0, json.dumps({"exitCode": 0, "stdout": json.dumps({"exit": 7}), "stderr": ""}))
+        self.fake([result(0, '{"pid":42}'), starting, running, done], [lost])
+        code, job = bt.remote("a", "build", "t")
+        self.assertEqual((code, self.runs[0][-1]), (7, job))
+        self.assertEqual(len(self.attaches), 1)
+        self.assertEqual([command[-2:] for command in self.runs[1:]], [["outcome", job]] * 3)
 
-    def test_a_replay_that_does_not_start_at_the_beginning_is_refused(self):
-        first = Attach([{"type": "attached"}, {"type": "stdout", "data": '["a"', "nextOffset": 4}], 1)
-        late = Attach([{"type": "attached", "stdoutOffset": 8, "stderrOffset": 0}, {"type": "stdout", "data": "]", "nextOffset": 9}, {"type": "exit", "exitCode": 0}], 0)
-        self.fake([result(0, '{"pid":5}')], [first, late])
+    def test_a_job_that_never_starts_leaves_no_outcome(self):
+        starting = result(0, json.dumps({"exitCode": bt.NOT_STARTED, "stdout": "", "stderr": "The job has not started"}))
+        lost = Attach([{"type": "attached"}, {"type": "exit", "exitCode": None, "signal": None, "status": "lost"}], 0)
+        self.fake([result(0, '{"pid":42}')] + [starting] * (len(bt.RETRY_SECONDS) + 1), [lost])
         with self.assertRaises(bt.Failure):
-            bt.remote("a", "acquire")
+            bt.remote("a", "check", "t")
+        self.assertEqual(len(self.runs), len(bt.RETRY_SECONDS) + 2)
 
-    def test_a_job_that_never_reports_an_exit_keeps_failing_closed(self):
-        self.fake([result(0, '{"pid":42}')], [Attach([{"type": "attached"}], 1) for _ in range(len(bt.RETRY_SECONDS) + 1)])
+    def test_a_job_that_never_reports_an_exit_nor_leaves_an_outcome_fails_closed(self):
+        gone = result(0, json.dumps({"exitCode": 1, "stdout": "", "stderr": "The job ended without leaving its outcome"}))
+        self.fake([result(0, '{"pid":42}'), gone], [Attach([{"type": "attached"}], 1) for _ in range(len(bt.RETRY_SECONDS) + 1)])
         with self.assertRaises(bt.Failure):
-            bt.remote("a", "check")
+            bt.remote("a", "check", "t")
         self.assertEqual(len(self.attaches), len(bt.RETRY_SECONDS) + 1)
+        self.assertEqual(self.runs[-1][-2:], ["outcome", self.runs[0][-1]])
 
 
 if __name__ == "__main__":

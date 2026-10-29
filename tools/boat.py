@@ -64,8 +64,10 @@ USABLE = {"ready", "idle", "running", "stopped"}
 REMOTE_CLAIMED = 73
 # Waits between attempts when the Boat API drops a connection (bursts of TLS handshake failures, 26 Oct).
 RETRY_SECONDS = (2, 5, 10, 20, 40, 60)
-# STATUS_DLL_INIT_FAILED: Windows could not start boat.exe under load, so nothing reached Boat.
+# STATUS_DLL_INIT_FAILED: Windows could not start boat.exe, so nothing reached Boat.
 LAUNCH_FAILED = 0xC0000142
+# Each child gets a hidden console of its own: one inherited from an agent session that has since ended fails every launch.
+NO_CONSOLE = subprocess.CREATE_NO_WINDOW
 IDEMPOTENT = {"list", "info", "extend", "scp", "push"}
 # Uploads go as base64 command arguments, inside Windows' 32 767-character command line.
 CHUNK_CHARS = 24000
@@ -77,6 +79,10 @@ DOWNLOAD_BYTES = 4 * 1024 * 1024
 DOWNLOAD_WORKERS = 8
 # The remote job's exit when the source could not be synchronized.
 SYNC_FAILED = 79
+# The runner's exits when asked for the outcome of a job that still runs, or that has not started.
+STILL_RUNNING = 74
+NOT_STARTED = 78
+OUTCOME_SECONDS = 15
 
 
 class Failure(Exception):
@@ -148,7 +154,7 @@ def transient(result, idempotent):
     if result.returncode & 0xFFFFFFFF == LAUNCH_FAILED:
         return True
     text = result.stdout + result.stderr
-    return idempotent and ("could not reach the Boat API" in text or '"status":5' in text)
+    return idempotent and ("could not reach the Boat API" in text or '"status":5' in text or '"code":"sandbox_not_ready"' in text)
 
 
 class Held:
@@ -174,7 +180,7 @@ class Held:
 def boat(*args, check=True, idempotent=None, shielded=False):
     idempotent = args[0] in IDEMPOTENT if idempotent is None else idempotent
     # A shielded call runs in its own process group, so the console's Ctrl-C cannot cut its request short.
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if shielded else 0
+    flags = NO_CONSOLE | (subprocess.CREATE_NEW_PROCESS_GROUP if shielded else 0)
     for wait in (*RETRY_SECONDS, None):
         result = subprocess.run([boat_exe(), "--json", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=flags)
         events = parse_events(result.stdout)
@@ -192,30 +198,28 @@ def info(vmid):
     return next(event["sandbox"] for event in events if "sandbox" in event)
 
 
-def attach(vmid, pid, seen, stream):
-    """One `exec --attach` pass: the job's exit code (None if the stream dropped first) and this pass's whole replay."""
-    process = subprocess.Popen([boat_exe(), "--json", "exec", vmid, "--attach", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-    start, replay, exit_code, headers = {"stdout": 0, "stderr": 0}, {"stdout": [], "stderr": []}, None, 0
+class Lost(Exception):
+    """Boat reported that a job ended, without its exit code."""
+
+
+def attach(vmid, pid, seen):
+    """One `exec --attach` pass, shown as it streams: the job's exit code, or None if the stream dropped first."""
+    process = subprocess.Popen([boat_exe(), "--json", "exec", vmid, "--attach", str(pid)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=NO_CONSOLE)
+    start, exit_code = {"stdout": 0, "stderr": 0}, None
     try:
         for line in process.stdout:
             try:
                 event = json.loads(line)
             except ValueError:
-                if stream:
-                    say(line.rstrip())
+                say(line.rstrip())
                 continue
             kind = event.get("type")
             if kind == "attached":
-                # The CLI reconnects on its own with a header at the current offsets; one that skips or rewinds breaks the replay.
-                offsets = {"stdout": event.get("stdoutOffset", 0), "stderr": event.get("stderrOffset", 0)}
-                if offsets != (start if headers else {"stdout": 0, "stderr": 0}):
-                    replay = None
-                start, headers = offsets, headers + 1
+                # The CLI reconnects on its own with a header at the current offsets.
+                start = {"stdout": event.get("stdoutOffset", 0), "stderr": event.get("stderrOffset", 0)}
             elif kind in seen:
                 text, end = event.get("data", ""), event["nextOffset"]
                 begin, start[kind] = start[kind], end
-                if replay is not None:
-                    replay[kind].append(text)
                 if end <= seen[kind]:
                     continue
                 if begin < seen[kind]:
@@ -226,11 +230,10 @@ def attach(vmid, pid, seen, stream):
                         # The CLI replaced undecodable bytes, so the overlap cannot be cut exactly: repeat it, never drop it.
                         say(f"Boat attach: up to {seen[kind] - begin} bytes of {kind} repeat below")
                 seen[kind] = end
-                if stream:
-                    print(text, end="", file=sys.stderr if kind == "stderr" else sys.stdout, flush=True)
+                print(text, end="", file=sys.stderr if kind == "stderr" else sys.stdout, flush=True)
             elif kind == "exit":
                 if event.get("exitCode") is None:
-                    raise Failure(f"Boat remote job {pid} on {vmid} ended without an exit code: {json.dumps(event)}")
+                    raise Lost(f"Boat lost job {pid} on {vmid}: {json.dumps(event)}")
                 exit_code = event["exitCode"]
                 if exit_code:
                     say("Boat remote exit: " + json.dumps(event))
@@ -240,7 +243,7 @@ def attach(vmid, pid, seen, stream):
         if process.poll() is None:
             process.kill()
         process.wait()
-    return exit_code, replay
+    return exit_code
 
 
 def stop(vmid, pid):
@@ -257,24 +260,31 @@ def stop(vmid, pid):
     say(f"WARNING: Boat job {pid} on {vmid} may still be running; its remote claim stays so nothing overlaps it")
 
 
-def remote(vmid, *args, stream=False):
+def remote(vmid, mode, token, *args):
+    """Runs a runner job, showing its output; returns its exit code, read from the VM if Boat loses the job, and the job's id."""
     # Detached, the job outlives a dropped connection; each attach replays from the start, so offsets skip what was seen.
     # Detached exec takes --cwd relative to the sandbox's work directory, so the job changes directory itself.
-    pid, seen, exit_code, replay = None, {"stdout": 0, "stderr": 0}, None, None
+    job, pid, seen, exit_code = uuid.uuid4().hex, None, {"stdout": 0, "stderr": 0}, None
     try:
         with Held() as held:
-            _, events = boat("exec", vmid, "--detach", "--", "bash", "-c", 'cd "$0" && exec bash run.sh "$@"', REMOTE, *args, shielded=True)
+            _, events = boat("exec", vmid, "--detach", "--", "bash", "-c", 'cd "$0" && exec bash run.sh "$@"', REMOTE, mode, token, job, *args, shielded=True)
             pid = next((event["pid"] for event in events if "pid" in event), None)
         if held.interrupted:
             raise KeyboardInterrupt
         if pid is None:
             raise Failure(f"Boat exec --detach on {vmid} returned no process id")
-        for wait in (*RETRY_SECONDS, None):
-            exit_code, replay = attach(vmid, pid, seen, stream)
-            if exit_code is not None or wait is None:
-                break
-            say(f"Boat attach to job {pid} on {vmid} dropped; re-attaching in {wait} s")
-            time.sleep(wait)
+        try:
+            for wait in (*RETRY_SECONDS, None):
+                exit_code = attach(vmid, pid, seen)
+                if exit_code is not None or wait is None:
+                    break
+                say(f"Boat attach to job {pid} on {vmid} dropped; re-attaching in {wait} s")
+                time.sleep(wait)
+        except Lost as error:
+            say(str(error))
+        if exit_code is None:
+            say(f"Waiting for the outcome job {pid} leaves on {vmid}")
+            exit_code = outcome(vmid, job)["exit"]
     except KeyboardInterrupt:
         if pid is None:
             say(f"WARNING: interrupted while starting a Boat job on {vmid}; if it started, its remote claim stays so nothing overlaps it")
@@ -284,15 +294,7 @@ def remote(vmid, *args, stream=False):
             except Exception as error:
                 say(f"WARNING: could not stop Boat job {pid} on {vmid} ({error}); its remote claim stays so nothing overlaps it")
         raise
-    if exit_code is None:
-        raise Failure(f"Boat lost job {pid} on {vmid} after {len(RETRY_SECONDS) + 1} attaches; the remote claim stays so nothing overlaps it")
-    # Callers parse what is returned, so it must be the whole log from offset 0; the displayed text may repeat or be cut.
-    if replay is None:
-        raise Failure(f"Boat replay of job {pid} on {vmid} was not one unbroken log from offset 0, so its output cannot be trusted")
-    stdout, stderr = "".join(replay["stdout"]), "".join(replay["stderr"])
-    if exit_code and stderr and not stream:
-        say(stderr.rstrip())
-    return exit_code, stdout
+    return exit_code, job
 
 
 def quick(vmid, *args):
@@ -310,7 +312,7 @@ def quick(vmid, *args):
 
 
 def git(worktree, *args):
-    return subprocess.run(["git", "-C", str(worktree), *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "-C", str(worktree), *args], check=True, capture_output=True, text=True, creationflags=NO_CONSOLE).stdout.strip()
 
 
 class State:
@@ -678,7 +680,7 @@ def acquire(state, lane, size, token, record, rebuilds=lambda vmid: (0, 0)):
 
 def source_manifest(worktree, cache=None):
     """Hashes of the files Git would send; `cache` keeps them for files whose size and mtime stay put."""
-    names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True).stdout
+    names = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True, creationflags=NO_CONSOLE).stdout
     try:
         known = json.loads(cache.read_text()) if cache else {}
     except (FileNotFoundError, ValueError):
@@ -789,9 +791,9 @@ def send_source(vmid, worktree, manifest, old, stage, token):
     folder.mkdir()
     (folder / name).write_bytes(data)
     # captures/ is ignored, and boat push sends only what Git would; give the upload its own index.
-    subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(folder)], check=True)
+    subprocess.run(["git", "-c", "core.hideDotFiles=false", "init", "--quiet", str(folder)], check=True, creationflags=NO_CONSOLE)
     index = b"100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\t" + os.fsencode(name) + b"\0"
-    subprocess.run(["git", "-C", str(folder), "update-index", "--add", "--info-only", "-z", "--index-info"], input=index, check=True)
+    subprocess.run(["git", "-C", str(folder), "update-index", "--add", "--info-only", "-z", "--index-info"], input=index, check=True, creationflags=NO_CONSOLE)
     _, pushed = boat("push", vmid, str(folder), "--to", f"{REMOTE}/incoming-{token}")
     if not any(event.get("files") == 1 for event in pushed):
         raise Failure(f"Boat push did not confirm the source bundle: {pushed}")
@@ -802,14 +804,28 @@ def manifest_digest(manifest):
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
 
 
-def deliver(vmid, output, outdir):
-    lines = {key: value for key, _, value in (line.partition("=") for line in output.splitlines()) if key in {"BOAT_ARTIFACTS", "BOAT_BUNDLE"}}
-    if len(lines) != 2:
-        raise Failure("The build returned no artifact manifest")
-    artifacts = json.loads(lines["BOAT_ARTIFACTS"])
+def outcome(vmid, job):
+    """What a job left on the VM once it ended: its exit code, and a build's artifacts and their bundle."""
+    # A job Boat lost as it started may not have reached the runner yet.
+    waits = iter(RETRY_SECONDS)
+    while True:
+        status, text = quick(vmid, "outcome", job)
+        if status == STILL_RUNNING:
+            time.sleep(OUTCOME_SECONDS)
+        elif status == NOT_STARTED and (wait := next(waits, None)) is not None:
+            time.sleep(wait)
+        else:
+            break
+    if status:
+        raise Failure(f"Boat job {job} on {vmid} left no outcome ({status}); the remote claim stays so nothing overlaps it")
+    return json.loads(text)
+
+
+def deliver(vmid, job, outdir):
+    artifacts = job.get("artifacts")
     if not artifacts:
         raise Failure("The build produced no exe, dll or pdb")
-    bundle = json.loads(lines["BOAT_BUNDLE"])
+    bundle = job["bundle"]
 
     def fetch(index):
         # An exec returns at most 8 MiB of output: a part's base64 stays under it.
@@ -858,10 +874,10 @@ def refresh_image(vmid, token, worktree, revision):
         status, _ = quick(vmid, "acquire", token)
         if status:
             raise Failure("Could not reclaim the VM before saving the image")
-        status, _ = remote(vmid, step[0], token, *step[1:], stream=True)
+        status, _ = remote(vmid, step[0], token, *step[1:])
         if status:
             raise Failure(f"{' '.join(step)} failed; the image was not saved")
-    status, _ = remote(vmid, "provenance")
+    status, _ = remote(vmid, "provenance", token)
     if status:
         raise Failure("Could not record the toolchain provenance")
     boat("exec", vmid, "--", "sh", "-c", f"echo {revision} > {REMOTE}/source-revision")
@@ -956,7 +972,7 @@ def run(argv):
         if plan:
             changed[plan.key] = None
         # The job synchronizes the tree first; it releases its claim whether that or Cargo fails.
-        status, output = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else cargo), stream=True)
+        status, job = remote(vmid, "ui" if mode == "ui" else mode, token, "--sync", source, *([] if mode == "ui" else cargo))
         claimed = False
         if status == SYNC_FAILED:
             raise Failure("Remote source synchronization failed; see the remote output above")
@@ -968,7 +984,7 @@ def run(argv):
         atomic_json(state.lanes / (lane + ".json"), {"id": vmid, "worktree": str(worktree)})
         if mode == "build" and cargo_exit == 0:
             enter("deliver")
-            artifacts = deliver(vmid, output, outdir)
+            artifacts = deliver(vmid, outcome(vmid, job), outdir)
             record["artifacts_verified"] = True
             record_artifacts(outdir, artifacts, cargo, vmid, worktree, revision, source_digest)
             if refresh:
