@@ -92,6 +92,7 @@ struct Config {
     ready_event: String,
     detach_event: String,
     done_event: String,
+    idle_event: String,
     cancel_file: PathBuf,
     #[serde(default)]
     content_order_note: Option<String>,
@@ -157,7 +158,11 @@ fn refuse_worker_sampler(config: Option<&str>) -> Result<(), &'static str> {
     }
 }
 
-struct Event(HANDLE);
+pub(crate) struct Event(HANDLE);
+// SAFETY: an event handle may be signalled, reset and waited on from any thread.
+unsafe impl Send for Event {}
+// SAFETY: as above; the handle is only closed on drop.
+unsafe impl Sync for Event {}
 impl Event {
     fn create(name: &str) -> Result<Self, &'static str> {
         if name.is_empty() || name.contains('\0') {
@@ -172,9 +177,14 @@ impl Event {
             Ok(Self(handle))
         }
     }
-    fn set(&self) {
+    pub(crate) fn set(&self) {
         unsafe {
             SetEvent(self.0);
+        }
+    }
+    pub(crate) fn reset(&self) {
+        unsafe {
+            ResetEvent(self.0);
         }
     }
     fn signaled(&self) -> bool {
@@ -784,6 +794,7 @@ fn run(
     let ready = Event::create(&config.ready_event)?;
     let detach = Event::create(&config.detach_event)?;
     let done = Event::create(&config.done_event)?;
+    let idle = Event::create(&config.idle_event)?;
     let status_path = config.output_dir.join("status.json");
     crate::hook_failures::configure(&config.output_dir, session.id, process_start);
     write_status(
@@ -1359,6 +1370,7 @@ fn run(
     let mut shared = Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
         .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
     shared.capture_mode = session.capture_mode;
+    shared.tick_idle = Some(idle);
     shared.prepare_roster(&memory);
     shared
         .prepare_clock_capture(&memory)
@@ -8023,7 +8035,7 @@ mod tests {
         let mut value = json!({
             "session_id": 1, "output_dir": "synthetic/session", "replay_dir": "synthetic/replays",
             "session_start": [], "ready_event": "synthetic-ready", "detach_event": "synthetic-detach",
-            "done_event": "synthetic-done", "cancel_file": "synthetic/cancel",
+            "done_event": "synthetic-done", "idle_event": "synthetic-idle", "cancel_file": "synthetic/cancel",
         });
         assert!(
             serde_json::from_value::<Config>(value.clone())
@@ -8046,7 +8058,7 @@ mod tests {
         let mut value = json!({
             "session_id": 1, "output_dir": "synthetic/session", "replay_dir": "synthetic/replays",
             "session_start": [], "ready_event": "synthetic-ready", "detach_event": "synthetic-detach",
-            "done_event": "synthetic-done", "cancel_file": "synthetic/cancel",
+            "done_event": "synthetic-done", "idle_event": "synthetic-idle", "cancel_file": "synthetic/cancel",
         });
         let absent: Config = serde_json::from_value(value.clone()).unwrap();
         assert!(absent.worker_sampler.is_none());
@@ -8082,7 +8094,7 @@ mod tests {
             "session_start": [],
             "ready_event": "synthetic-ready",
             "detach_event": "synthetic-detach",
-            "done_event": "synthetic-done",
+            "done_event": "synthetic-done", "idle_event": "synthetic-idle",
             "cancel_file": "synthetic/cancel",
         });
         let healthy: Config = serde_json::from_value(value.clone()).unwrap();

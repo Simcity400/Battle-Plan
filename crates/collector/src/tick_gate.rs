@@ -15,14 +15,20 @@ const CAP: Duration = Duration::from_millis(200);
 
 static GATE: Gate = Gate::new();
 
-/// The game thread begins its hourly tick.
-pub(crate) fn enter() {
+/// The game thread begins its hourly tick; the recorder's packing waits on `idle` too.
+pub(crate) fn enter(idle: Option<&crate::runtime::Event>) {
     GATE.enter();
+    if let Some(idle) = idle {
+        idle.reset();
+    }
 }
 
-/// The tick returned: release every waiting pipeline thread.
-pub(crate) fn leave() {
+/// The tick returned: release every waiting pipeline thread and the recorder's packing.
+pub(crate) fn leave(idle: Option<&crate::runtime::Event>) {
     GATE.leave();
+    if let Some(idle) = idle {
+        idle.set();
+    }
 }
 
 /// Waits while the game ticks, at most [`CAP`]; never on the ticking thread itself.

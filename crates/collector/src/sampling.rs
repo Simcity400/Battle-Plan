@@ -1132,6 +1132,8 @@ pub struct Shared {
     pub game_score_enabled: bool,
     /// The session's capture mode, set before hook publication.
     pub capture_mode: replay_data::scope::CaptureMode,
+    /// The recorder's event, set while the game is not ticking, which its packing waits on.
+    pub tick_idle: Option<crate::runtime::Event>,
     pub model_inputs: ModelInputStats,
     /// Every slot is allocated before hook installation and never moves.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
@@ -1543,6 +1545,7 @@ impl Shared {
             frequency,
             game_score_enabled: sizing.extended.game_score.enabled,
             capture_mode: replay_data::scope::CaptureMode::Full,
+            tick_idle: None,
             model_inputs: ModelInputStats::default(),
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
@@ -2422,9 +2425,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(shared.trampoline) };
     let ticking = TICKING.replace(true);
-    crate::tick_gate::enter();
+    crate::tick_gate::enter(shared.tick_idle.as_ref());
     timing.original(|| unsafe { original(state, commands) });
-    crate::tick_gate::leave();
+    crate::tick_gate::leave(shared.tick_idle.as_ref());
     TICKING.set(ticking);
     let original_end = qpc();
     if recording {

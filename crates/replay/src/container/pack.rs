@@ -13,6 +13,7 @@ use std::{
 };
 
 type CompressionSource = dyn Fn() -> Option<crate::compression::Compression> + Send + Sync;
+type Gate = dyn Fn() + Send + Sync;
 
 struct Budget {
     compression: AtomicUsize,
@@ -31,6 +32,8 @@ struct Budget {
     promoted: Mutex<Option<std::time::Instant>>,
     timings: Mutex<[Option<std::time::Duration>; 5]>,
     io_bytes: std::sync::atomic::AtomicU64,
+    /// Waits out the game's hourly tick while playing limits apply.
+    gate: std::sync::OnceLock<std::sync::Arc<Gate>>,
     #[cfg(test)]
     readback_table: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -92,6 +95,7 @@ impl Packing {
             promoted: Mutex::new(None),
             timings: Mutex::new([None; 5]),
             io_bytes: std::sync::atomic::AtomicU64::new(0),
+            gate: std::sync::OnceLock::new(),
             #[cfg(test)]
             readback_table: Mutex::new(None),
         });
@@ -168,6 +172,17 @@ impl Packing {
         drop(promoted);
         self.budget.background.store(false, Ordering::Release);
         self.pool.spawn_broadcast(|_| refresh());
+    }
+
+    /// Every packing thread calls `gate` at its item boundaries while playing limits apply:
+    /// the recorder waits out the game's hourly tick there.
+    pub fn set_gate(&self, gate: impl Fn() + Send + Sync + 'static) {
+        let _ = self.budget.gate.set(std::sync::Arc::new(gate));
+    }
+
+    /// The coordinator's own wait at its loop boundaries; nothing once promoted.
+    pub fn wait_for_game(&self) {
+        wait_for_game(&self.budget);
     }
 
     pub fn set_compression(&self, compression: crate::compression::Compression) {
@@ -425,8 +440,18 @@ pub(super) fn refresh() {
             {
                 eprintln!("Recorder worker priority transition failed: {error}");
             }
+            wait_for_game(budget);
         }
     });
+}
+
+/// Playing limits apply until promotion, catch-up included, as for the I/O limit.
+fn wait_for_game(budget: &Budget) {
+    if budget.background.load(Ordering::Acquire)
+        && let Some(gate) = budget.gate.get()
+    {
+        gate();
+    }
 }
 
 #[cfg(test)]
@@ -968,6 +993,28 @@ mod fallback_tests;
 #[cfg(test)]
 mod continuous_tests {
     use super::*;
+
+    /// Packing threads and the coordinator wait for the game at their boundaries while
+    /// playing limits apply, and never once promoted.
+    #[test]
+    fn packing_waits_for_the_game_until_promoted() {
+        use std::sync::Arc;
+        let packing = Packing::with_workers(2).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        packing.set_gate(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        packing.run(refresh);
+        let gated = calls.load(Ordering::SeqCst);
+        assert!(gated >= 2, "run and its item boundary both wait");
+        packing.wait_for_game();
+        assert_eq!(calls.load(Ordering::SeqCst), gated + 1);
+        packing.promote();
+        packing.run(refresh);
+        packing.wait_for_game();
+        assert_eq!(calls.load(Ordering::SeqCst), gated + 1, "a promoted packing never waits");
+    }
 
     #[test]
     fn finalizer_chunk_progress_reaches_persistent_workers_and_is_removed_after_the_job() {

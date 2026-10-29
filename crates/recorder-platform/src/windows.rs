@@ -30,7 +30,11 @@ impl Handle {
         }
     }
     pub fn signaled(&self) -> Result<bool, String> {
-        match unsafe { WaitForSingleObject(self.0, 0) } {
+        self.wait(0)
+    }
+    /// Waits up to `milliseconds` for the handle to be signalled.
+    pub fn wait(&self, milliseconds: u32) -> Result<bool, String> {
+        match unsafe { WaitForSingleObject(self.0, milliseconds) } {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),
             _ => Err(io::Error::last_os_error().to_string()),
@@ -347,6 +351,10 @@ impl engine_native::Memory for ProcessMemory<'_> {
 pub struct Event {
     pub handle: Handle,
 }
+// SAFETY: an event handle may be signalled, reset and waited on from any thread.
+unsafe impl Send for Event {}
+// SAFETY: as above; the handle is only closed on drop.
+unsafe impl Sync for Event {}
 impl Event {
     pub fn open(name: &str) -> Result<Self, String> {
         Ok(Self {

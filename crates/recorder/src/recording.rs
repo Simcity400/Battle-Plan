@@ -660,6 +660,7 @@ impl FinalizingAhead {
         content: &GatheredContent,
         settling: Option<Arc<Settling>>,
         compression: Option<Compression>,
+        idle: Option<Arc<Event>>,
     ) -> Self {
         let stop = settling
             .as_ref()
@@ -691,6 +692,12 @@ impl FinalizingAhead {
                 eprintln!("Continuous packing could not start; spool retained: {error}");
             })
             .ok();
+        // Its memory traffic would slow the game's tick far more than its own work costs.
+        if let (Some(packing), Some(idle)) = (&packing, idle) {
+            packing.set_gate(move || {
+                let _ = idle.handle.wait(200);
+            });
+        }
         let thread = packing.clone().and_then(|packing| std::thread::Builder::new()
             .name("finalize ahead".into())
             .spawn(move || {
@@ -722,6 +729,7 @@ impl FinalizingAhead {
                 let mut last_work = None;
                 let settings = RecorderSettings::path();
                 while !stopped() {
+                    packing.wait_for_game();
                     let work_before = last_work;
                     let frames_before = ahead.written();
                     let before = thread_cpu();
@@ -1907,9 +1915,13 @@ pub(crate) fn capture(
     let ready_name = format!("{prefix}.ready");
     let detach_name = format!("{prefix}.detach");
     let done_name = format!("{prefix}.done");
+    let idle_name = format!("{prefix}.idle");
     let ready = Event::new(&ready_name)?;
     let detach = Event::new(&detach_name)?;
     let done = Event::new(&done_name)?;
+    // Set while the game is not inside its hourly tick, which the collector brackets.
+    let idle = Arc::new(Event::new(&idle_name)?);
+    idle.set()?;
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
     let scripted_maps = scripted_map_demand::read(&content.layers, &content.language)
@@ -1947,7 +1959,7 @@ pub(crate) fn capture(
             "campaign {campaign} has hours waiting to be saved that could not be prepared ({reason})"
         ));
     }
-    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture,"scripted_maps":scripted_maps,"without_history":refused.keys().collect::<Vec<_>>()});
+    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":target,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"idle_event":idle_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture,"scripted_maps":scripted_maps,"without_history":refused.keys().collect::<Vec<_>>()});
     let sampler = match std::env::var("BATTLE_PLAN_WORKER_SAMPLER").or_else(|_| std::env::var("HOI4_WORKER_SAMPLER")) {
         Ok(value) => Some(value),
         Err(std::env::VarError::NotPresent) => None,
@@ -2032,7 +2044,14 @@ pub(crate) fn capture(
         settling.save.store(auto_save(), Ordering::Release);
         settling
     });
-    let ahead = FinalizingAhead::start(&directory, target, &content, settling.clone(), compression);
+    let ahead = FinalizingAhead::start(
+        &directory,
+        target,
+        &content,
+        settling.clone(),
+        compression,
+        Some(Arc::clone(&idle)),
+    );
     let status_path = directory.join("status.json");
     stage(Stage::Recording {
         session: &directory,
