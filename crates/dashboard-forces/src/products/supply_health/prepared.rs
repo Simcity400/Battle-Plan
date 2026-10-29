@@ -169,6 +169,50 @@ impl Prepared {
             return Ok(());
         }
         let _cpu = ::replay_frame::cpu::scope_phase("supply:projection_series");
+        self.publish(frame.hour)
+    }
+
+    /// A branch's state before its first hour, with this one's content.
+    pub fn fresh(&self) -> Self {
+        Self {
+            defines: self.defines,
+            failure: self.failure.clone(),
+            warnings: self.warnings.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// The projection a columnar walk makes of this family's hours, with its defines.
+    pub fn projector(
+        &self,
+        format: replay_data::format::FormatVersion,
+    ) -> io::Result<super::columnar::Projector> {
+        super::columnar::Projector::new(format, self.defines)
+    }
+
+    /// An hour a columnar walk projected ([`super::columnar`]), kept and published as
+    /// [`Self::observe`] keeps and publishes the hour it reads.
+    pub fn observe_projected(&mut self, projected: super::columnar::Hour) -> io::Result<()> {
+        for values in &mut self.values {
+            values.advance(projected.hour)?;
+        }
+        self.runs.advance(projected.hour)?;
+        if self.defines.is_none() {
+            self.scan.available |= projected.land_present;
+            return Ok(());
+        }
+        if let Some(tags) = &projected.tags {
+            self.scan.add_tags(tags);
+            self.versions.resize(self.scan.series.len(), 0);
+        }
+        if !self.scan.observe_projected(&projected) {
+            return Ok(());
+        }
+        self.publish(projected.hour)
+    }
+
+    /// Publishes the countries the hour observed and those that departed.
+    fn publish(&mut self, hour: i32) -> io::Result<()> {
         let observed = self
             .scan
             .observed
@@ -178,7 +222,7 @@ impl Prepared {
             .collect::<Vec<_>>();
         for index in observed {
             let series = &mut self.scan.series[index];
-            let run = series.runs.last().filter(|run| run.last_hour == frame.hour);
+            let run = series.runs.last().filter(|run| run.last_hour == hour);
             let counts = self.scan.counts[index];
             let total = counts.map(|counts| counts.into_iter().map(u64::from).sum::<u64>());
             for (bucket, values) in self.values.iter_mut().enumerate() {
@@ -191,9 +235,9 @@ impl Prepared {
                         });
                 values.observe_if_changed(
                     index as u64,
-                    frame.hour,
+                    hour,
                     count,
-                    run.is_some_and(|run| run.first_hour == frame.hour && run.starts_segment),
+                    run.is_some_and(|run| run.first_hour == hour && run.starts_segment),
                     false,
                 );
                 #[cfg(test)]
@@ -206,18 +250,18 @@ impl Prepared {
                 self.scan.work.emitted += 1;
             }
             if let Some(run) = run {
-                if run.first_hour == frame.hour {
+                if run.first_hour == hour {
                     self.versions[index] += 1;
-                    self.runs.event(index as u64, frame.hour, run)?;
+                    self.runs.event(index as u64, hour, run)?;
                 }
                 self.runs.observe(
                     index as u64,
-                    frame.hour,
+                    hour,
                     Some(self.versions[index]),
-                    run.first_hour == frame.hour && run.starts_segment,
+                    run.first_hour == hour && run.starts_segment,
                 );
             } else {
-                self.runs.observe(index as u64, frame.hour, None, false);
+                self.runs.observe(index as u64, hour, None, false);
             }
             if series.runs.len() > 1 {
                 series.runs.drain(..series.runs.len() - 1);

@@ -4,11 +4,14 @@
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
 //! same walk with no operator, which the family's own cost is measured above.
-//! `columnar-family-check --recording <r.battleplan> --columnar <c.h4col>
-//!   --prepared <prepared store folder> --output <new folder> [--threads N]`
+//! `columnar-family-check --family stability|supply --recording <r.battleplan>
+//!   --columnar <c.h4col> --prepared <prepared store folder> --output <new folder> [--threads N]`
+//! A family reading game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
+//! also reports the CPU each accounting scope charged over both walks.
 
 use dashboard::prepared_stability::StabilityAccumulator;
-use dashboard_stability::products::country_stability::columnar::{Hour, Projector};
+use dashboard_forces::products::supply_health;
+use dashboard_stability::products::country_stability::columnar as stability;
 use replay::{columnar_frames::Recording, container::Replay, segments};
 use serde_json::json;
 use std::{
@@ -86,7 +89,7 @@ fn sections(folder: &Path) -> io::Result<BTreeMap<String, Vec<Vec<u8>>>> {
 fn first_difference(
     (written, written_key): (&store::Store, &store::SourceKey),
     (reference, reference_key): (&store::Store, &store::SourceKey),
-    family: &str,
+    (family, section): (&str, &str),
     branch: u64,
 ) -> io::Result<Option<String>> {
     use dashboard::prepared::series::{self, Catalogue};
@@ -101,9 +104,8 @@ fn first_difference(
     if mine.1 != theirs.1 {
         return Ok(Some("the catalogues' metadata differ".into()));
     }
-    let section = format!("{family}-{branch}");
-    let mut ours = series::Reader::new(written, written_key, section.clone(), &cancelled)?;
-    let mut others = series::Reader::new(reference, reference_key, section, &cancelled)?;
+    let mut ours = series::Reader::new(written, written_key, section.into(), &cancelled)?;
+    let mut others = series::Reader::new(reference, reference_key, section.into(), &cancelled)?;
     for (name, &key) in &theirs.0 {
         let Some(&own) = mine.0.get(name) else {
             return Ok(Some(format!("{name} is missing")));
@@ -128,6 +130,112 @@ fn first_difference(
         .keys()
         .find(|name| !theirs.0.contains_key(*name))
         .map(|name| format!("{name} is not in the reference")))
+}
+
+/// A family as segment operators: one branch's ordered state, which keeps each projected
+/// hour and flushes as the row path does.
+enum Family {
+    Stability(StabilityAccumulator),
+    Supply(Box<supply_health::prepared::Prepared>),
+}
+
+impl Family {
+    /// The family's catalogue name and its series sections of `branch`, whose batches date
+    /// the reference preparation's flushes.
+    fn sections(name: &str, branch: u64) -> (&'static str, Vec<String>) {
+        match name {
+            "supply" => (
+                "supply",
+                std::iter::once(format!("supply-runs-{branch}"))
+                    .chain((0..3).map(|bucket| format!("supply-values-{branch}-{bucket}")))
+                    .collect(),
+            ),
+            _ => ("stability", vec![format!("stability-{branch}")]),
+        }
+    }
+
+    /// The branch whose section `name` is, when it is one of the family's.
+    fn owns(name: &str, section: &str) -> Option<u64> {
+        let digits = |text: &str| {
+            (!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| text.parse().ok())
+                .flatten()
+        };
+        let (catalogue, series) = match name {
+            "supply" => ("supply-", ["supply-runs-", "supply-values-"].as_slice()),
+            _ => ("stability-", ["stability-"].as_slice()),
+        };
+        if let Some(branch) = section
+            .strip_prefix(catalogue)
+            .and_then(|rest| rest.strip_suffix("-catalogue"))
+        {
+            return digits(branch);
+        }
+        series.iter().find_map(|prefix| {
+            let rest = section.strip_prefix(prefix)?;
+            let branch = match name {
+                "supply" if *prefix == "supply-values-" => rest.rsplit_once('-')?.0,
+                _ => rest,
+            };
+            digits(branch)
+        })
+    }
+
+    fn observe(&mut self, hour: Box<dyn std::any::Any + Send>) -> io::Result<(u64, i32)> {
+        match self {
+            Self::Stability(accumulator) => {
+                let hour = *hour
+                    .downcast::<stability::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                accumulator.observe_projected(hour)?;
+                Ok(at)
+            }
+            Self::Supply(prepared) => {
+                let hour = *hour
+                    .downcast::<supply_health::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                prepared.observe_projected(hour)?;
+                Ok(at)
+            }
+        }
+    }
+
+    fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        match self {
+            Self::Stability(accumulator) => accumulator.flush_measures(writer, branch, cancelled),
+            Self::Supply(prepared) => prepared.flush(writer, branch, cancelled),
+        }
+    }
+}
+
+/// Splits one segment's projected hours, so each reaches its branch's state alone.
+fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::any::Any + Send>>> {
+    let result = match result.downcast::<Vec<stability::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
+    match result.downcast::<Vec<supply_health::columnar::Hour>>() {
+        Ok(hours) => Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(_) => Err(invalid("A projection returned another result")),
+    }
+}
+
+/// The branch an hour from [`hours`] belongs to.
+fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
+    hour.downcast_ref::<stability::Hour>()
+        .map(|hour| hour.branch)
+        .or_else(|| {
+            hour.downcast_ref::<supply_health::columnar::Hour>()
+                .map(|hour| hour.branch)
+        })
+        .ok_or_else(|| invalid("A projection returned another hour"))
 }
 
 /// Visits every hour and keeps nothing: the walk's own cost.
@@ -171,19 +279,26 @@ fn flush_hours(folder: &Path, section: &str) -> io::Result<Vec<i32>> {
 fn run() -> io::Result<()> {
     let usage = || {
         invalid(
-            "columnar-family-check --recording R --columnar C --prepared FOLDER --output NEW [--threads N]",
+            "columnar-family-check --family F --recording R --columnar C --prepared FOLDER --output NEW [--threads N]",
         )
     };
     let (mut recording, mut columnar, mut prepared, mut output) = (None, None, None, None);
+    let mut family = "stability".to_owned();
+    let mut scopes = false;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
+        if flag == "--scopes" {
+            scopes = true;
+            continue;
+        }
         let value = args.next().ok_or_else(usage)?;
         match flag.to_str() {
             Some("--recording") => recording = Some(PathBuf::from(value)),
             Some("--columnar") => columnar = Some(PathBuf::from(value)),
             Some("--prepared") => prepared = Some(PathBuf::from(value)),
             Some("--output") => output = Some(PathBuf::from(value)),
+            Some("--family") => family = value.to_string_lossy().into_owned(),
             Some("--threads") => {
                 threads = value
                     .to_str()
@@ -200,13 +315,53 @@ fn run() -> io::Result<()> {
         return Err(usage());
     };
     std::fs::create_dir(&output)?;
+    if scopes {
+        replay_frame::cpu::enable();
+    }
     let local = output.join("local");
     std::fs::create_dir_all(&local)?;
     // Set before any other thread starts: the scratch store lives under it.
     unsafe { std::env::set_var("LOCALAPPDATA", &local) };
 
+    if !["stability", "supply"].contains(&family.as_str()) {
+        return Err(usage());
+    }
     let replay = Replay::open_path(&recording)?;
     let format = replay.format.version();
+    // A family's prototype, configured with the recording's content where it reads some.
+    let prototype = match family.as_str() {
+        "supply" => {
+            let game = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
+                .map(PathBuf::from)
+                .ok_or_else(|| invalid("Set BATTLE_PLAN_GAME_DIR to the installed game"))?;
+            let user = std::env::var_os("BATTLE_PLAN_USER_DIR").or_else(|| std::env::var_os("HOI4_USER_DIR"))
+                .map(PathBuf::from)
+                .ok_or_else(|| invalid("Set BATTLE_PLAN_USER_DIR to the game's user folder"))?;
+            engine_executable::executable_tables::initialize(&game)?;
+            let content = dashboard::config::ContentOptions {
+                options: installed_content_core::ResolveOptions {
+                    game_dir: game,
+                    user_dir: user,
+                    cache_dir: output.join("content"),
+                },
+                allow_unverified: false,
+                presentation: Default::default(),
+            };
+            std::fs::create_dir_all(&content.options.cache_dir)?;
+            let source = dashboard::Source::open(
+                dashboard::SourceKey {
+                    source_id: "columnar-family-check".into(),
+                    revision: dashboard::protocol::replay_revision(&recording)?,
+                },
+                recording.clone(),
+                &AtomicBool::new(false),
+            )?;
+            let mut prepared = supply_health::prepared::Prepared::default();
+            prepared.configure(&source, Some(&content))?;
+            Some(prepared)
+        }
+        _ => None,
+    };
     let file = Recording::open(std::fs::read(&columnar)?)?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(format!("The columnar file is damaged: {damage}")));
@@ -227,29 +382,37 @@ fn run() -> io::Result<()> {
 
     let wall = Instant::now();
     let (process_before, thread_before) = cpu();
-    let mut accumulators: BTreeMap<u64, StabilityAccumulator> = BTreeMap::new();
+    let mut accumulators: BTreeMap<u64, Family> = BTreeMap::new();
     let mut emit_ns = 0_u64;
     let make = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
-        Ok(vec![Box::new(Projector::new(format)?)])
+        Ok(match &prototype {
+            Some(prepared) => vec![Box::new(prepared.projector(replay.format)?)],
+            None => vec![Box::new(stability::Projector::new(format)?)],
+        })
     };
     segments::run(&file, threads, 2 * threads, &make, &mut |_, results| {
         let started = cpu().1;
         for result in results {
-            let hours = result
-                .downcast::<Vec<Hour>>()
-                .map_err(|_| invalid("A projection returned another result"))?;
-            for hour in *hours {
-                let (branch, at) = (hour.branch, hour.hour);
+            for hour in hours(result)? {
+                let branch = branch(&*hour)?;
                 if !flushes.contains_key(&branch) {
-                    flushes.insert(
-                        branch,
-                        flush_hours(&prepared, &format!("stability-{branch}"))?,
-                    );
+                    let mut hours = Vec::new();
+                    for section in Family::sections(&family, branch).1 {
+                        hours.extend(flush_hours(&prepared, &section)?);
+                    }
+                    hours.sort_unstable();
+                    hours.dedup();
+                    flushes.insert(branch, hours);
                 }
-                let accumulator = accumulators.entry(branch).or_default();
-                accumulator.observe_projected(hour)?;
+                let state = accumulators
+                    .entry(branch)
+                    .or_insert_with(|| match &prototype {
+                        Some(prepared) => Family::Supply(Box::new(prepared.fresh())),
+                        None => Family::Stability(StabilityAccumulator::default()),
+                    });
+                let (_, at) = state.observe(hour)?;
                 if flushes[&branch].binary_search(&at).is_ok() {
-                    accumulator.flush_measures(&mut writer, branch, &cancelled)?;
+                    state.flush(&mut writer, branch, &cancelled)?;
                 }
             }
         }
@@ -261,7 +424,7 @@ fn run() -> io::Result<()> {
 
     for (branch, accumulator) in &mut accumulators {
         if flushes.get(branch).is_none_or(Vec::is_empty) {
-            accumulator.flush_measures(&mut writer, *branch, &cancelled)?;
+            accumulator.flush(&mut writer, *branch, &cancelled)?;
         }
     }
     writer.commit()?;
@@ -274,13 +437,7 @@ fn run() -> io::Result<()> {
     let reference = sections(&prepared)?;
     // Every section either store holds of the family, so a branch or section the walk
     // missed is compared too.
-    let owns = |name: &str| {
-        name.strip_prefix("stability-")
-            .map(|rest| rest.strip_suffix("-catalogue").unwrap_or(rest))
-            .is_some_and(|branch| {
-                !branch.is_empty() && branch.bytes().all(|byte| byte.is_ascii_digit())
-            })
-    };
+    let owns = |name: &str| Family::owns(&family, name).is_some();
     let names: std::collections::BTreeSet<&String> = written
         .keys()
         .chain(reference.keys().filter(|name| owns(name)))
@@ -316,22 +473,26 @@ fn run() -> io::Result<()> {
         .chain(
             reference
                 .keys()
-                .filter_map(|name| name.strip_prefix("stability-")?.parse().ok()),
+                .filter_map(|name| Family::owns(&family, name)),
         )
         .collect();
     for branch in &branches {
-        semantic.insert(
-            branch.to_string(),
-            first_difference(
-                (&store, &written_key),
-                (&reference_store, &reference_key),
-                "stability",
-                *branch,
-            )?,
-        );
+        let (catalogue, sections) = Family::sections(&family, *branch);
+        for section in sections {
+            semantic.insert(
+                section.clone(),
+                first_difference(
+                    (&store, &written_key),
+                    (&reference_store, &reference_key),
+                    (catalogue, &section),
+                    *branch,
+                )?,
+            );
+        }
     }
     let hours = file.hours().max(1) as f64;
     let report = json!({
+        "family": family,
         "recording": recording,
         "columnar": columnar,
         "threads": threads,
@@ -349,6 +510,7 @@ fn run() -> io::Result<()> {
         "sections_differing": differing,
         "first_series_difference": semantic,
         "sections": compared,
+        "scopes": scopes.then(replay_frame::cpu::snapshot),
     });
     std::fs::write(
         output.join("report.json"),

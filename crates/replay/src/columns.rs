@@ -34,6 +34,14 @@ pub fn complete(state: &State, table: TableId) -> bool {
     state.status(table.index()) == Some(Status::Complete)
 }
 
+/// Whether `table` is unavailable this hour, for a recorded reason.
+pub fn unavailable(state: &State, table: TableId) -> bool {
+    matches!(
+        state.status(table.index()),
+        Some(Status::Unavailable { .. })
+    )
+}
+
 /// The slots a truncated `table` read this hour, ascending; None when it is not truncated.
 pub fn truncated(state: &State, table: TableId) -> Option<&[u32]> {
     matches!(state.status(table.index()), Some(Status::Truncated { .. }))

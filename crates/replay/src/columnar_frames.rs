@@ -34,6 +34,8 @@ use std::{io, sync::Arc};
 
 #[cfg(test)]
 pub(crate) mod fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub mod synthetic;
 #[cfg(test)]
 mod tests;
 
@@ -108,6 +110,27 @@ fn rows_at(
     id.rows_from_wire(keys, &mut |row, column| {
         wire(table, dictionary, slots[row].1, column, format)
     })
+}
+
+/// An hour's metrics as its manifest keeps them: a read table's time is
+/// [`READ_TIME_NOT_RECORDED`].
+pub fn metrics(manifest: &Manifest<'_>) -> Metrics {
+    let mut table_ns = [0; TABLE_COUNT];
+    for (index, time) in table_ns.iter_mut().enumerate() {
+        if manifest
+            .read
+            .get(index / 64)
+            .is_some_and(|word| word >> (index % 64) & 1 != 0)
+        {
+            *time = READ_TIME_NOT_RECORDED;
+        }
+    }
+    Metrics {
+        total_ns: manifest.total_ns,
+        table_ns,
+        pool_bytes: manifest.pool_bytes,
+        dropped_frames: manifest.dropped_frames,
+    }
 }
 
 /// The selected tables' views, carried from hour to hour as the walker advances.
@@ -248,26 +271,11 @@ impl Views {
             tables[index] = view.clone();
             self.views[index] = Some(view);
         }
-        let mut table_ns = [0; TABLE_COUNT];
-        for (index, time) in table_ns.iter_mut().enumerate() {
-            if manifest
-                .read
-                .get(index / 64)
-                .is_some_and(|word| word >> (index % 64) & 1 != 0)
-            {
-                *time = READ_TIME_NOT_RECORDED;
-            }
-        }
         Ok(DecodedFrame {
             branch: manifest.branch,
             hour: manifest.hour,
             tables,
-            metrics: Metrics {
-                total_ns: manifest.total_ns,
-                table_ns,
-                pool_bytes: manifest.pool_bytes,
-                dropped_frames: manifest.dropped_frames,
-            },
+            metrics: metrics(manifest),
         })
     }
 

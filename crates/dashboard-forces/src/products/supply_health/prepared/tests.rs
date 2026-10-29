@@ -714,3 +714,367 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
 fn supply_bucket_deltas_match_full_recounts_through_snapshots_resume_gaps_and_refusals() {
     assert_supply_counts_follow_changed_divisions(64);
 }
+
+/// Supply health's columnar path ([`crate::products::supply_health::columnar`]) against its row path on the same
+/// hours, written as the native recorder writes them: every prepared section equal.
+mod columnar_parity {
+    use super::*;
+    use crate::products::supply_health::{columnar::Hour, tests::frame};
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    use replay::{
+        columnar_frames::synthetic::{Input as TableInput, Sample, Synthetic},
+        segments::{self, Operator},
+    };
+    use replay_data::{
+        format::FormatVersion,
+        rows::{
+            CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+            RowCodec,
+        },
+    };
+
+    /// One table's input for an hour.
+    #[derive(Clone)]
+    enum Input<R> {
+        Complete(Vec<R>),
+        /// A partial walk that read these rows and missed one.
+        Partial(Vec<R>),
+        Unavailable,
+    }
+
+    fn write<R: RowCodec>(walk: &mut Synthetic, table: TableId, input: &Input<R>) {
+        let (read, sample) = (true, Sample::FromReadBit);
+        let input = match input {
+            Input::Complete(rows) => TableInput::Snapshot {
+                rows,
+                partial: None,
+                read,
+                sample,
+            },
+            Input::Partial(rows) => TableInput::Snapshot {
+                rows,
+                partial: Some(1),
+                read,
+                sample,
+            },
+            Input::Unavailable => TableInput::Unavailable {
+                reason: "synthetic refusal",
+                read,
+                sample,
+            },
+        };
+        walk.table(table, input).unwrap();
+    }
+
+    /// The five tables of one hour.
+    #[derive(Clone)]
+    struct Scripted {
+        countries: Input<CountryRow>,
+        links: Input<CountryLinkRow>,
+        divisions: Input<DivisionRow>,
+        land: Input<DivisionLandInputsRow>,
+        status: Input<DivisionStatusRow>,
+    }
+
+    struct Rows {
+        countries: Vec<CountryRow>,
+        links: Vec<CountryLinkRow>,
+        divisions: Vec<DivisionRow>,
+        land: Vec<DivisionLandInputsRow>,
+        status: Vec<DivisionStatusRow>,
+    }
+
+    /// A country `tag` with id and canonical slot `id`, and its link.
+    fn country(tag: &str, id: u32) -> (CountryRow, CountryLinkRow) {
+        (
+            CountryRow {
+                id,
+                canonical_slot: id,
+                tag: tag.as_bytes().to_vec(),
+                ..Default::default()
+            },
+            CountryLinkRow {
+                id,
+                canonical_slot: id,
+            },
+        )
+    }
+
+    /// GER owning four divisions, and ZZZ keyed before it with none.
+    fn base() -> Rows {
+        let frame = frame(100);
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+        let (extra, link) = country("ZZZ", 5);
+        countries.push(extra);
+        links.push(link);
+        Rows {
+            countries,
+            links,
+            divisions: frame.complete::<tables::Divisions>().unwrap().to_vec(),
+            land: frame
+                .complete::<tables::DivisionLandInputs>()
+                .unwrap()
+                .to_vec(),
+            status: frame.complete::<tables::DivisionStatus>().unwrap().to_vec(),
+        }
+    }
+
+    fn complete() -> Scripted {
+        let rows = base();
+        Scripted {
+            countries: Input::Complete(rows.countries),
+            links: Input::Complete(rows.links),
+            divisions: Input::Complete(rows.divisions),
+            land: Input::Complete(rows.land),
+            status: Input::Complete(rows.status),
+        }
+    }
+
+    /// Prepares `hours` both ways and requires every supply section equal; each projected
+    /// hour's (`all`, counts handed).
+    fn parity(label: &str, hours: &[Scripted]) -> Vec<(bool, usize)> {
+        let defines = Defines {
+            grace: 10,
+            low: 60_000,
+            very_low_icon: 15_000,
+            low_icon: 40_000,
+        };
+        let tables = [
+            TableId::Countries,
+            TableId::CountryLinks,
+            TableId::Divisions,
+            TableId::DivisionLandInputs,
+            TableId::DivisionStatus,
+        ];
+        let mut walk = Synthetic::new(&tables, 1, 100).unwrap();
+        let mut row = Prepared {
+            defines: Some(defines),
+            ..Default::default()
+        };
+        let mut columnar = Prepared {
+            defines: Some(defines),
+            ..Default::default()
+        };
+        let mut projector: Box<dyn Operator> =
+            Box::new(columnar.projector(FormatVersion::CURRENT).unwrap());
+        let mut tracker = FrameChangeTracker::new();
+        for (ordinal, hour) in (0..).zip(hours) {
+            write(&mut walk, TableId::Countries, &hour.countries);
+            write(&mut walk, TableId::CountryLinks, &hour.links);
+            write(&mut walk, TableId::Divisions, &hour.divisions);
+            write(&mut walk, TableId::DivisionLandInputs, &hour.land);
+            write(&mut walk, TableId::DivisionStatus, &hour.status);
+            walk.end(|state, manifest, frame, starts| {
+                row.observe(frame, &tracker.observe(frame, FormatVersion::CURRENT))
+                    .unwrap();
+                projector
+                    .hour(&segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal,
+                        starts,
+                        state,
+                        manifest,
+                    })
+                    .unwrap();
+            })
+            .unwrap();
+        }
+        let projected = projector.finish().unwrap().downcast::<Vec<Hour>>().unwrap();
+        let handed = projected
+            .iter()
+            .map(|hour| (hour.all, hour.counts.len()))
+            .collect();
+        for hour in *projected {
+            columnar.observe_projected(hour).unwrap();
+        }
+        let fixtures = [Fixture::new(), Fixture::new()];
+        for (prepared, fixture) in [&mut row, &mut columnar].into_iter().zip(&fixtures) {
+            let mut writer = fixture.writer();
+            prepared
+                .flush(&mut writer, 1, &AtomicBool::new(false))
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        let expected = fixtures[0].payloads();
+        let names: std::collections::BTreeSet<_> =
+            expected.keys().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "supply-1-catalogue",
+                "supply-runs-1",
+                "supply-values-1-0",
+                "supply-values-1-1",
+                "supply-values-1-2",
+            ]
+            .into(),
+            "{label}"
+        );
+        assert_payloads_equal(&fixtures[1].payloads(), &expected, label);
+        handed
+    }
+
+    /// Each division input truncated or unavailable, then restored with the cells the walker
+    /// kept and every other table unchanged.
+    #[test]
+    fn restored_division_inputs_count_as_the_row_path_does() {
+        let rows = base();
+        let truncated_land = rows
+            .land
+            .iter()
+            .filter(|row| row.division != 2)
+            .cloned()
+            .collect();
+        let truncated_status = rows.status[1..].to_vec();
+        let broken = [
+            (
+                "truncated land",
+                Scripted {
+                    land: Input::Partial(truncated_land),
+                    ..complete()
+                },
+            ),
+            (
+                "unavailable land",
+                Scripted {
+                    land: Input::Unavailable,
+                    ..complete()
+                },
+            ),
+            (
+                "truncated status",
+                Scripted {
+                    status: Input::Partial(truncated_status),
+                    ..complete()
+                },
+            ),
+            (
+                "unavailable status",
+                Scripted {
+                    status: Input::Unavailable,
+                    ..complete()
+                },
+            ),
+        ];
+        for (label, broken) in broken {
+            parity(
+                label,
+                &[complete(), broken.clone(), broken, complete(), complete()],
+            );
+        }
+    }
+
+    /// Tags added while CountryLinks is partial or unavailable join the catalogue in
+    /// Countries' key order, not their tags' order, and the links' recovery joins them.
+    #[test]
+    fn tags_added_while_links_are_incomplete_join_as_the_row_path_does() {
+        let rows = base();
+        let (added, link) = country("MMM", 6);
+        let mut grown = rows.countries.clone();
+        grown.push(added);
+        let mut linked = rows.links.clone();
+        linked.push(link);
+        let partial = rows
+            .links
+            .iter()
+            .filter(|link| link.id != 5)
+            .cloned()
+            .collect();
+        let mut supplied = rows.status.clone();
+        supplied[0].supply_ratio = 50_000;
+        for (label, incomplete) in [
+            ("partial links", Input::Partial(partial)),
+            ("unavailable links", Input::Unavailable),
+        ] {
+            let hours = [
+                complete(),
+                Scripted {
+                    links: incomplete.clone(),
+                    ..complete()
+                },
+                Scripted {
+                    countries: Input::Complete(grown.clone()),
+                    links: incomplete.clone(),
+                    ..complete()
+                },
+                Scripted {
+                    countries: Input::Complete(grown.clone()),
+                    links: incomplete,
+                    status: Input::Complete(supplied.clone()),
+                    ..complete()
+                },
+                Scripted {
+                    countries: Input::Complete(grown.clone()),
+                    links: Input::Complete(linked.clone()),
+                    status: Input::Complete(supplied.clone()),
+                    ..complete()
+                },
+                Scripted {
+                    countries: Input::Complete(grown.clone()),
+                    links: Input::Complete(linked.clone()),
+                    ..complete()
+                },
+            ];
+            parity(label, &hours);
+        }
+    }
+
+    /// A division whose owner names no link hands no counts through supply-only changes;
+    /// correcting its owner or deleting it counts again.
+    #[test]
+    fn unresolved_owners_resolve_as_the_row_path_does() {
+        let rows = base();
+        let supplied = |ratio: i64| {
+            let mut status = rows.status.clone();
+            status[0].supply_ratio = ratio;
+            status
+        };
+        let mut unresolved = rows.divisions.clone();
+        unresolved[3].roster_owner = 99;
+        let hours: Vec<Scripted> = [0, 20_000, 50_000]
+            .into_iter()
+            .map(|ratio| Scripted {
+                divisions: Input::Complete(unresolved.clone()),
+                status: Input::Complete(supplied(ratio)),
+                ..complete()
+            })
+            .collect();
+        let deleted = Scripted {
+            divisions: Input::Complete(rows.divisions[..3].to_vec()),
+            land: Input::Complete(rows.land[..3].to_vec()),
+            status: Input::Complete(supplied(50_000)[..3].to_vec()),
+            ..complete()
+        };
+        let corrected = Scripted {
+            status: Input::Complete(supplied(50_000)),
+            ..complete()
+        };
+        let after = |recovered: &Scripted| Scripted {
+            status: match &recovered.status {
+                Input::Complete(status) => {
+                    let mut status = status.clone();
+                    status[0].supply_ratio = 0;
+                    Input::Complete(status)
+                }
+                _ => unreachable!(),
+            },
+            ..recovered.clone()
+        };
+        for (label, recovered) in [
+            ("corrected owner", corrected),
+            ("deleted division", deleted),
+        ] {
+            let mut script = hours.clone();
+            let next = after(&recovered);
+            script.extend([recovered, next]);
+            let handed = parity(label, &script);
+            assert_eq!(handed[1..3], [(false, 0), (false, 0)], "{label}");
+        }
+    }
+}

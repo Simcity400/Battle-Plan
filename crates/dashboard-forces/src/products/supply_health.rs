@@ -419,14 +419,37 @@ impl Scan {
             self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
             return Ok(false);
         }
+        let tagged = tagged_countries(countries, links);
+        let slots = self.join(tagged.iter().map(|(tag, lookup)| {
+            (
+                *tag,
+                lookup.found().map(|(country, slot)| (slot, country.id)),
+            )
+        }));
+        self.owners = links
+            .iter()
+            .map(|link| (link.id, slots.get(&link.canonical_slot).copied()))
+            .collect();
+        self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
+        self.country_rows = Some(countries.len());
+        self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
+        Ok(true)
+    }
+
+    /// Joins the hour's countries, each tag with its holder (canonical slot and country id)
+    /// when it resolves, in tag order: the current countries, those that departed, and
+    /// each holder's slot's country.
+    fn join<'t>(
+        &mut self,
+        tagged: impl IntoIterator<Item = (&'t [u8], Option<(u32, u32)>)>,
+    ) -> HashMap<u32, usize> {
         self.identities.resize(self.series.len(), None);
         self.counts.resize(self.series.len(), None);
-        let tagged = tagged_countries(countries, links);
         self.seal();
         let previous = std::mem::take(&mut self.current);
         let mut present = std::collections::HashSet::new();
         let mut slots = HashMap::new();
-        for (tag, lookup) in tagged {
+        for (tag, identity) in tagged {
             #[cfg(test)]
             {
                 self.work.row_visits += 1;
@@ -439,9 +462,8 @@ impl Scan {
             };
             present.insert(index);
             self.current.push(index);
-            self.identities[index] = None;
-            if let Some((country, slot)) = lookup.found() {
-                self.identities[index] = Some((slot, country.id));
+            self.identities[index] = identity;
+            if let Some((slot, _)) = identity {
                 slots.insert(slot, index);
             }
         }
@@ -453,14 +475,7 @@ impl Scan {
             self.identities[index] = None;
             self.counts[index] = None;
         }
-        self.owners = links
-            .iter()
-            .map(|link| (link.id, slots.get(&link.canonical_slot).copied()))
-            .collect();
-        self.country_keys = Some(dashboard_text::metadata::CountryKeys::read(countries));
-        self.country_rows = Some(countries.len());
-        self.countries_from = Some(ids.map(|id| frame.tables[id.index()].identity()));
-        Ok(true)
+        slots
     }
 
     /// The real hourly builder, also exercised by the nine-year scale fixture.
@@ -784,6 +799,82 @@ impl Scan {
             drop(cpu);
         }
         let _cpu = ::replay_frame::cpu::scope_phase("supply:projection_series");
+        self.advance(hour, continuous, (valid, full, partial), next);
+        Ok(true)
+    }
+
+    /// The hour of `projected` a columnar walk projected ([`columnar::Projector`]), kept as
+    /// [`Self::observe_changes`] keeps the hour it reads: whether it observed the hour.
+    fn observe_projected(&mut self, projected: &columnar::Hour) -> bool {
+        let hour = projected.hour;
+        self.identities.resize(self.series.len(), None);
+        self.counts.resize(self.series.len(), None);
+        self.departed.clear();
+        self.observed.clear();
+        self.rejoined = true;
+        let continuous = self
+            .frontier
+            .is_some_and(|last| last.checked_add(1) == Some(hour));
+        self.available |= projected.land_present;
+        if !continuous {
+            self.seal();
+        }
+        let countries = match &projected.roster {
+            None => Ok(false),
+            Some(Ok(roster)) => {
+                self.join(
+                    roster
+                        .tagged
+                        .iter()
+                        .map(|(tag, identity)| (tag.as_bytes(), *identity)),
+                );
+                Ok(true)
+            }
+            Some(Err(())) => Err(()),
+        };
+        let relevant = projected.relevant || countries != Ok(false);
+        if countries.is_err() {
+            self.seal();
+            self.departed = std::mem::take(&mut self.current);
+            for &index in &self.departed {
+                self.identities[index] = None;
+                self.counts[index] = None;
+            }
+            self.countries_from = None;
+        }
+        let valid = projected.valid;
+        if !relevant && continuous && self.valid == Some(valid) {
+            self.frontier = Some(hour);
+            self.departed.clear();
+            return false;
+        }
+        let mut full = !continuous || countries != Ok(false) || self.valid != Some(valid);
+        self.valid = Some(valid);
+        let mut next = CountryCounts::new();
+        if valid {
+            let before = self.owners_known;
+            self.owners_known = projected.owners_known;
+            full |= before != self.owners_known;
+            for (tag, counts) in &projected.counts {
+                if let Some(&index) = self.selected.get(&**tag) {
+                    next.insert(index, *counts);
+                }
+            }
+        }
+        self.buckets_ready = valid && self.owners_known;
+        self.advance(hour, continuous, (valid, full, valid && !full), next);
+        true
+    }
+
+    /// The hour's counts kept: each candidate country whose counts changed (every current
+    /// country when `full`) extends or starts its run, and departed countries close theirs.
+    fn advance(
+        &mut self,
+        hour: i32,
+        continuous: bool,
+        (valid, full, partial): (bool, bool, bool),
+        mut next: CountryCounts,
+    ) {
         let candidates: Vec<_> = if partial {
             next.keys().copied().collect()
         } else {
@@ -849,7 +940,6 @@ impl Scan {
             self.seen[index].open = false;
         }
         self.frontier = Some(hour);
-        Ok(true)
     }
 }
 
@@ -1221,6 +1311,7 @@ impl Product for SupplyHealth {
     }
 }
 
+pub mod columnar;
 pub mod prepared;
 #[cfg(test)]
 pub mod tests;
