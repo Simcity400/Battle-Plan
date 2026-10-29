@@ -756,6 +756,9 @@ pub struct ResolvedLayers {
     /// The content names every trigger body is read against, built once per
     /// layer roster and shared by every content reader.
     key_names: Memo<crate::key_names::KeyNames>,
+    /// The content names one traced reader of this stack computed, with the reads that traced,
+    /// shared by every traced reader of the stack ([`Self::key_names`]).
+    traced_key_names: std::sync::Arc<std::sync::Mutex<Option<TracedKeyNames>>>,
     /// Faction definitions and read failures shared by every naming consumer. A
     /// transient I/O failure also stays cached until the layer roster changes.
     faction_templates: Memo<Result<std::sync::Arc<crate::faction_templates::Catalog>, String>>,
@@ -782,6 +785,14 @@ impl std::fmt::Debug for Derived {
 }
 
 type Memo<T> = std::sync::Arc<std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>)>>>;
+
+/// Content names read under a read trace, for a layer roster, with every read that traced.
+#[derive(Debug)]
+struct TracedKeyNames {
+    roster: Vec<String>,
+    names: std::sync::Arc<crate::key_names::KeyNames>,
+    reads: Vec<(LayerPath, Option<usize>, ReadOutcome)>,
+}
 
 /// Memoized uncovered resolutions with the roster they were resolved against.
 #[derive(Debug, Default)]
@@ -2429,7 +2440,68 @@ impl ResolvedLayers {
     /// The content names trigger bodies are read against
     /// ([`crate::key_names::KeyNames::read`]).
     pub fn key_names(&self) -> io::Result<std::sync::Arc<crate::key_names::KeyNames>> {
-        self.memoized(&self.key_names, crate::key_names::KeyNames::read)
+        let Some(trace) = &self.read_trace else {
+            return self.memoized(&self.key_names, crate::key_names::KeyNames::read);
+        };
+        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        let mut own = self
+            .key_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached, names)) = own.as_ref()
+            && *cached == roster
+        {
+            return Ok(std::sync::Arc::clone(names));
+        }
+        // Every traced reader of the stack shares one read of the names; each traces its reads
+        // under its own purpose, as reading them again would.
+        let mut shared = self
+            .traced_key_names
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let names = match shared.as_ref().filter(|held| held.roster == roster) {
+            Some(held) => {
+                for (path, layer, outcome) in &held.reads {
+                    self.trace_read(path, *layer, outcome.clone());
+                }
+                std::sync::Arc::clone(&held.names)
+            }
+            None => {
+                let reads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let kept = std::sync::Arc::clone(&reads);
+                let callback = trace.callback.clone();
+                let mut reader =
+                    self.with_read_trace(std::sync::Arc::new(move |read: ContentRead| {
+                        kept.lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .push((read.path.clone(), read.layer, read.outcome.clone()));
+                        callback(read);
+                    }));
+                reader.read_trace.as_mut().expect("traced clone").purpose = trace.purpose.clone();
+                let names = std::sync::Arc::new(crate::key_names::KeyNames::read(&reader)?);
+                drop(reader);
+                let reads = std::mem::take(
+                    &mut *reads
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                // A read that met a failure stays this reader's: a later one may read it whole.
+                let failed = names.template_columns.as_ref().is_some_and(Result::is_err)
+                    || reads
+                        .iter()
+                        .any(|(_, _, outcome)| matches!(outcome, ReadOutcome::Error { .. }));
+                if !failed {
+                    *shared = Some(TracedKeyNames {
+                        roster: roster.clone(),
+                        names: std::sync::Arc::clone(&names),
+                        reads,
+                    });
+                }
+                names
+            }
+        };
+        *own = Some((roster, std::sync::Arc::clone(&names)));
+        Ok(names)
     }
 
     /// Faction templates read once per layer roster, including an unreadable result.
@@ -4130,6 +4202,7 @@ fn gather_selected(
             descriptor_roster: Default::default(),
             recorded_descriptor_roster: Default::default(),
             key_names: Default::default(),
+            traced_key_names: Default::default(),
             faction_templates: Default::default(),
             derived: Default::default(),
             read_trace: None,

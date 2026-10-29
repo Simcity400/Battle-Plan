@@ -492,6 +492,95 @@ mod tests {
         let _ = std::fs::remove_dir_all(&overlay);
     }
 
+    /// Traced readers of one stack share one read of the names, each tracing, under its own
+    /// purpose, exactly what reading them itself traces.
+    #[test]
+    fn traced_readers_of_a_stack_share_one_read_and_trace_what_it_read() {
+        use std::sync::{Arc, Mutex};
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
+        let open = || ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
+        type Log = Arc<Mutex<Vec<crate::content::ContentRead>>>;
+        let traced = |layers: &ResolvedLayers, purpose: &str| {
+            let log = Log::default();
+            let kept = Arc::clone(&log);
+            let layers = layers
+                .with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)))
+                .with_read_purpose(purpose);
+            (layers, log)
+        };
+        let reads = |log: &Log, purpose: &str| {
+            let log = log.lock().unwrap();
+            assert!(log.iter().all(|read| read.purpose == purpose));
+            log.iter()
+                .map(|read| (read.path.clone(), read.layer, format!("{:?}", read.outcome)))
+                .collect::<BTreeSet<_>>()
+        };
+        let stack = open();
+        let (a, a_log) = traced(&stack, "a");
+        let (b, b_log) = traced(&stack, "b");
+        let names = a.key_names().unwrap();
+        let traced_once = a_log.lock().unwrap().len();
+        assert!(Arc::ptr_eq(&names, &b.key_names().unwrap()));
+        assert!(Arc::ptr_eq(&names, &a.key_names().unwrap()));
+        let holder = a_log.lock().unwrap().len();
+        assert_eq!(holder, traced_once, "a holder traces nothing again");
+        // Another stack reads the names itself.
+        let (alone, alone_log) = traced(&open(), "alone");
+        assert!(!Arc::ptr_eq(&names, &alone.key_names().unwrap()));
+        let expected = reads(&alone_log, "alone");
+        assert!(!expected.is_empty());
+        assert_eq!(reads(&a_log, "a"), expected);
+        assert_eq!(reads(&b_log, "b"), expected);
+    }
+
+    /// A traced read that met a failure is not shared: a later traced reader reads the names
+    /// itself, and gets them whole once the failure is gone.
+    #[test]
+    fn a_traced_read_that_met_a_failure_is_not_shared() {
+        use std::sync::{Arc, Mutex};
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
+        let overlay =
+            std::env::temp_dir().join(format!("key_names_failure_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&overlay);
+        let defines = overlay.join("common/defines/zz_synthetic.lua");
+        std::fs::create_dir_all(defines.parent().unwrap()).unwrap();
+        std::fs::write(&defines, "NDefines.NMilitary.SYNTHETIC = 1").unwrap();
+        let stack = ResolvedLayers::from_folders(&[
+            (game.as_path(), &[][..]),
+            (overlay.as_path(), &[][..]),
+        ])
+        .unwrap();
+        let traced = |purpose: &str| {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let kept = Arc::clone(&log);
+            let layers = stack
+                .with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)))
+                .with_read_purpose(purpose);
+            (layers, log)
+        };
+        // The verified script is away while the first reader reads the names.
+        let hidden = defines.with_extension("hidden");
+        std::fs::rename(&defines, &hidden).unwrap();
+        let failed = traced("a").0.key_names().unwrap();
+        assert!(matches!(failed.template_columns, Some(Err(_))));
+        std::fs::rename(&hidden, &defines).unwrap();
+        let (b, log) = traced("b");
+        let whole = b.key_names().unwrap();
+        assert!(!Arc::ptr_eq(&failed, &whole));
+        assert!(matches!(whole.template_columns, Some(Ok(_))));
+        assert!(log.lock().unwrap().iter().any(|read| {
+            read.path == b"common/defines/zz_synthetic.lua"
+                && matches!(read.outcome, crate::content::ReadOutcome::Bytes { .. })
+        }));
+        // The whole read is shared.
+        assert!(Arc::ptr_eq(&whole, &traced("c").0.key_names().unwrap()));
+        let _ = std::fs::remove_dir_all(&overlay);
+    }
+
     /// Dispatch checks `else`, the registry, scope text only with `{`, counts by token,
     /// and scripted triggers by text before refusing. Tags compare exactly; aliases and
     /// characters fold case.
