@@ -160,6 +160,42 @@ fn kept(source: &Source, catalogue: Arc<Catalogue>) -> io::Result<Arc<PoliticsCo
     result.get_or_init(|| PoliticsContent::load(catalogue))
 }
 
+/// `catalogue`'s politics content loaded ahead of a request, as [`kept`] keeps it, unless a
+/// request kept another catalogue's in its place: work done ahead never replaces what a request
+/// bound. `None` when it loads nothing.
+pub(crate) fn warm(
+    source: &Source,
+    catalogue: Arc<Catalogue>,
+) -> Option<io::Result<Arc<PoliticsContent>>> {
+    let result = {
+        let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = state.of(&catalogue);
+        if let Some((bound, result)) = slot.as_ref() {
+            if !Arc::ptr_eq(bound, &catalogue) {
+                return None;
+            }
+            Arc::clone(result)
+        } else {
+            let result = Arc::new(catalogue::CachedResult::default());
+            *slot = Some((Arc::clone(&catalogue), Arc::clone(&result)));
+            result
+        }
+    };
+    Some(result.get_or_init(|| PoliticsContent::load(catalogue)))
+}
+
+/// The politics content kept for `catalogue`, loading nothing.
+#[cfg(test)]
+pub(crate) fn held(source: &Source, catalogue: &Arc<Catalogue>) -> Option<Arc<PoliticsContent>> {
+    let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let (bound, result) = state.of(catalogue).as_ref()?;
+    Arc::ptr_eq(bound, catalogue)
+        .then(|| result.get()?.ok())
+        .flatten()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn content_loads(source: &Source) -> usize {
     let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();

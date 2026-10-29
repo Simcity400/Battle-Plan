@@ -30,6 +30,7 @@ pub mod industrial_organisations;
 pub mod military_factory_spending;
 pub mod place_names;
 pub mod politics_content;
+pub mod read_ahead;
 pub mod production_lines;
 pub mod production_spending;
 pub mod purpose_split;

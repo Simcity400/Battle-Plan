@@ -587,6 +587,12 @@ impl crate::scripted_text::ScriptedContent {
             .as_ref()
             .map_err(Clone::clone)
     }
+
+    /// Whether [`Self::effects`] has read its content, successfully or not.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn effects_read(&self) -> bool {
+        self.effects.get().is_some()
+    }
 }
 
 /// One hour's immutable inputs; the mutable event graph belongs to its caller.

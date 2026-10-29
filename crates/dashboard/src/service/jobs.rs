@@ -1916,6 +1916,7 @@ impl Inner {
         drop(pending);
         self.signal.notify();
         if let Some((source, content)) = ahead {
+            products::read_ahead::warm_in_background(&source, content.clone());
             products::game_window::warm_in_background(&source, content);
         }
     }
