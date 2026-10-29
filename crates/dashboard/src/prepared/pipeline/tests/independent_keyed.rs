@@ -79,6 +79,9 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     let flag = AtomicBool::new(false);
     let params = serde_json::json!({"branchId":"1","tag":"GER","view":"history"});
     let computed = || super::super::super::query::COMPUTED.with(std::cell::Cell::get);
+    // What a session reads ahead once it opens, which a kept answer waits for.
+    let read_ahead =
+        |source: &Source| crate::catalogue::catalogue(source, &content).unwrap().read_readers();
     let kept = || crate::reply_cache::size(&crate::reply_cache::folder(&content.options));
     let first = fixture.source("disk-first");
     let before = computed();
@@ -91,39 +94,80 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     assert_eq!(prepared["coverage"]["complete"], true, "{prepared}");
     assert_eq!(computed() - before, 2);
     assert!(kept() > 0, "the complete answer is kept");
+    // A session whose catalogue has not read all it reads lazily computes the answer: serving it
+    // would leave that unread, and other replies' warnings without it.
+    let unread = fixture.source("disk-unread");
+    assert_eq!(
+        query_with(&unread, &content, "air-missions", params.clone()),
+        prepared
+    );
+    assert_eq!(computed() - before, 3, "computed before the session reads ahead");
     // Another source of the recording, as a later session opens it, answers from disk.
     let later = fixture.source("disk-later");
+    read_ahead(&later);
     assert_eq!(
         query_with(&later, &content, "air-missions", params.clone()),
         prepared
     );
-    assert_eq!(computed() - before, 2, "answered from disk");
-    // A session holding a diagnostic a reply carries (a shader warning drawn earlier) neither
-    // serves a kept answer nor keeps one, as a fresh answer there carries it.
+    assert_eq!(computed() - before, 3, "answered from disk");
+    // A kept answer is served whatever the session holds: a diagnostic drawn earlier there joins
+    // the reply as it is served, as it would a fresh one. An answer computed while the content
+    // holds a drawing diagnostic is not kept, as memoised art it took may have drawn it.
     let other = serde_json::json!({"branchId":"1","tag":"ITA","view":"history"});
     let noisy = fixture.source("disk-noisy");
+    read_ahead(&noisy);
     noisy
         .content(&content.options)
         .unwrap()
         .layers
         .note_shader_warning("drawn earlier".into());
-    query_with(&noisy, &content, "air-missions", params.clone());
-    assert_eq!(computed() - before, 3, "not served from disk there");
+    let served = query_with(&noisy, &content, "air-missions", params.clone());
+    assert_eq!(computed() - before, 3, "served from disk there");
+    assert!(served.to_string().contains("drawn earlier"), "{served}");
     let size = kept();
     query_with(&noisy, &content, "air-missions", other.clone());
-    assert_eq!(
-        computed() - before,
-        4,
-        "computed in a session holding a diagnostic"
-    );
-    assert_eq!(kept(), size, "and not kept");
-    query_with(
-        &fixture.source("disk-quiet"),
-        &content,
-        "air-missions",
-        other,
-    );
-    assert_eq!(computed() - before, 5, "never kept, so computed again");
+    assert_eq!(computed() - before, 4);
+    assert_eq!(kept(), size, "not kept beside a drawing diagnostic");
+    let quiet = fixture.source("disk-quiet");
+    query_with(&quiet, &content, "air-missions", other.clone());
+    assert_eq!(computed() - before, 5, "computed where none was kept");
+    assert!(kept() > size, "and kept, as nothing was drawn");
+    let disk_other = fixture.source("disk-other");
+    read_ahead(&disk_other);
+    query_with(&disk_other, &content, "air-missions", other);
+    assert_eq!(computed() - before, 5, "answered from disk");
+    // An answer whose computing noted a text refusal or a fallback is not kept: served from disk,
+    // it would leave them out of the session's shared tallies that later replies report.
+    let third = serde_json::json!({"branchId":"1","tag":"GER","view":"history","firstHour":12,"lastHour":18});
+    let notes: [(&str, fn(&Source, &ContentOptions)); 2] = [
+        ("disk-refused", |source: &Source, content: &ContentOptions| {
+            crate::catalogue::catalogue(source, content)
+                .unwrap()
+                .refuse("synthetic reason", "SYNTHETIC")
+        }),
+        ("disk-fallback", |source: &Source, content: &ContentOptions| {
+            source
+                .content(&content.options)
+                .unwrap()
+                .layers
+                .note_overlay_refusal("synthetic fallback".into())
+        }),
+    ];
+    let computing = |note: Option<fn(&Source, &ContentOptions)>| {
+        super::super::super::query::COMPUTING.with(|hook| hook.set(note))
+    };
+    for (count, (name, note)) in (6..).zip(notes) {
+        let size = kept();
+        computing(Some(note));
+        query_with(&fixture.source(name), &content, "air-missions", third.clone());
+        computing(None);
+        assert_eq!(computed() - before, count, "{name}");
+        assert_eq!(kept(), size, "{name}: not kept");
+    }
+    let size = kept();
+    query_with(&fixture.source("disk-plain"), &content, "air-missions", third);
+    assert_eq!(computed() - before, 8);
+    assert!(kept() > size, "kept where computing noted neither");
     // Preparing again after a Clear publishes new pages: the kept answer is not served.
     super::super::super::files(&later, Some(&content))
         .unwrap()
@@ -136,7 +180,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&again, &content, "air-missions", params),
         prepared
     );
-    assert_eq!(computed() - before, 6, "computed for the new publication");
+    assert_eq!(computed() - before, 9, "computed for the new publication");
     super::super::super::files(&again, Some(&content))
         .unwrap()
         .0

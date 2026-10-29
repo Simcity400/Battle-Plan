@@ -562,6 +562,12 @@ impl OwnRefusals {
     pub fn fallbacks(&self) -> &BTreeSet<String> {
         &self.fallbacks
     }
+
+    /// Whether the consumer noted a text refusal, or was credited one a memo noted: either way
+    /// one its catalogue's shared tally holds once first noted.
+    pub fn refuses_texts(&self) -> bool {
+        !self.texts.is_empty()
+    }
 }
 
 /// One consumer scope on this thread. A capture ([`capture`]) collects
@@ -576,6 +582,19 @@ struct Active {
 thread_local! {
     /// The consumer scopes active on this thread, innermost last.
     static SCOPES: std::cell::RefCell<Vec<Active>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// This thread's reads of a catalogue's shared tally ([`shared_reads`]).
+    static SHARED_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread has read a catalogue's shared refusals or reader warnings outside
+/// every reporting scope ([`own_refusals`]): what such a read gives depends on every consumer of
+/// the source so far, not on the reader's own work.
+pub fn shared_reads() -> u64 {
+    SHARED_READS.with(std::cell::Cell::get)
+}
+
+fn read_shared() {
+    SHARED_READS.with(|reads| reads.set(reads.get() + 1));
 }
 
 fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T {
@@ -1156,6 +1175,29 @@ impl Catalogue {
         })
     }
 
+    /// Whether everything [`Self::reader_warning_lines`] reports once read has been read: the
+    /// scripted content with its environment, the states and the faction templates. No
+    /// consumer's read can add to those warnings any more.
+    pub fn readers_read(&self) -> bool {
+        let scripted = match self.scripted.get() {
+            None => false,
+            Some(Ok(scripted)) => scripted.environment.get().is_some(),
+            Some(Err(_)) => true,
+        };
+        scripted
+            && self.state_content.get().is_some()
+            && self.content.layers.faction_templates_read()
+    }
+
+    /// Reads what [`Self::readers_read`] waits for, as a consumer of each would.
+    pub fn read_readers(&self) {
+        if let Ok(scripted) = self.scripted_content() {
+            drop(scripted.environment());
+        }
+        drop(self.cached_states());
+        drop(self.content.layers.faction_templates());
+    }
+
     pub fn cached_states(&self) -> Result<&crate::scripted_text::StateContent, String> {
         used(Reader::States);
         self.state_content
@@ -1220,6 +1262,7 @@ impl Catalogue {
                 .collect()
         };
         let mut lines = reporting(|own| texts(&own.texts)).unwrap_or_else(|| {
+            read_shared();
             texts(
                 &self
                     .refused
@@ -1243,6 +1286,7 @@ impl Catalogue {
         if let Some(readers) = reporting(|own| own.readers.clone()) {
             return self.used_reader_warning_lines(&readers);
         }
+        read_shared();
         let mut lines = Vec::new();
         let environment_warnings = if let Some(Ok(scripted)) = self.scripted.get() {
             lines.extend(
@@ -2709,6 +2753,30 @@ pub mod tests {
             );
         }
         assert_eq!(catalogue.refusal_lines(), shared);
+    }
+
+    /// A read of the shared tally is counted on its thread; a consumer's own read is not.
+    #[test]
+    fn shared_reads_count_only_reads_outside_every_reporting_scope() {
+        let (catalogue, _folder) = folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n GAP:0 \"a¤b\"\n",
+        )]);
+        let before = shared_reads();
+        own_refusals(&mut OwnRefusals::default(), || {
+            catalogue.localised("GAP", View::Plain);
+            catalogue.refusal_lines();
+            catalogue.reader_warning_lines();
+        });
+        assert_eq!(shared_reads(), before);
+        capture(|| catalogue.refusal_entries());
+        assert!(
+            shared_reads() > before,
+            "a capture reports the shared tally"
+        );
+        let after = shared_reads();
+        catalogue.reader_warning_lines();
+        assert!(shared_reads() > after);
     }
 
     /// A cached result's read refused once, for whichever consumer read first;

@@ -90,12 +90,27 @@ struct CachedQuery {
     /// What computing `data` drew in the recording's style because the source's visual mods
     /// could not supply it, named on every reply served from it.
     fallbacks: std::collections::BTreeSet<String>,
+    /// Whether computing `data` may have read or added to state of the whole session, which no
+    /// key captures: a catalogue's shared refusals or reader warnings, the content's fallbacks,
+    /// or drawing diagnostics.
+    session: bool,
+}
+
+/// Whether the content bound for `content` holds a drawing diagnostic. Memoised artwork replays
+/// none of its own, so only an empty set shows an answer drew none.
+fn drawn(source: &Source, content: Option<&ContentOptions>) -> bool {
+    content
+        .and_then(|content| source.bound_content(&content.options))
+        .is_some_and(|content| !content.layers.shader_warning_lines().is_empty())
 }
 
 #[cfg(test)]
 thread_local! {
     /// Prepared answers this thread computed rather than took from a cache.
     pub(crate) static COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Run as each answer is computed under content, standing in for what its product notes.
+    pub(crate) static COMPUTING: std::cell::Cell<Option<fn(&Source, &ContentOptions)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// A complete answer as it is kept on disk between sessions ([`stored_answer`]).
@@ -120,6 +135,11 @@ fn stored_answer(
     let Some(content) = content else {
         return Ok(None);
     };
+    // Art drawn from a visual mod joins the files every reply names as shown from mods, which an
+    // answer served from disk would leave out: only the recording's own presentation keeps any.
+    if !dashboard_base::catalogue::reads_recorded(content) {
+        return Ok(None);
+    }
     let pages = super::pipeline::published_pages(store, key, branch)?;
     let identity = serde_json::to_string(&(publication, pages, key))?;
     let dependent =
@@ -2940,13 +2960,26 @@ pub fn query(
         COMPUTED.with(|count| count.set(count.get() + 1));
         let scope = cache_product(&request.product)
             .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
-        let ((data, short), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        // A tally read or refusal noted on another thread goes unseen: products do both here.
+        let shared = dashboard_text::catalogue::shared_reads();
+        let ((data, short), noted) = dashboard_text::catalogue::capture(|| {
+            #[cfg(test)]
+            if let (Some(note), Some(content)) = (COMPUTING.with(std::cell::Cell::get), content) {
+                note(source, content);
+            }
             super::coverage::waiting(|| query_data(source, request, content, cancelled))
         });
+        let fallbacks = noted.fallbacks().clone();
         Ok(CachedQuery {
             data: data?,
             short,
             summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
+            // A text refusal or fallback joins the session's shared tallies when first noted:
+            // an answer that noted one, served from disk, would leave it out of later replies.
+            session: dashboard_text::catalogue::shared_reads() != shared
+                || noted.refuses_texts()
+                || !fallbacks.is_empty()
+                || drawn(source, content),
             fallbacks,
         })
     };
@@ -3000,14 +3033,17 @@ pub fn query(
                         + reply.summaries.bytes()
                 },
                 |previous| {
-                    // An answer carries the session's refusals and drawing diagnostics, and content
-                    // read outside the recorded coverage is reported on every reply: none is served
-                    // from or kept on disk while the session holds any.
-                    let quiet = || {
-                        !source.reply_reads_uncovered(content)
-                            && content.is_none_or(|content| {
-                                dashboard_base::catalogue::session_quiet(source, content)
+                    // Content read outside the recorded coverage is reported on every reply, so no
+                    // answer is served from or kept on disk while the read set holds any.
+                    let covered = || !source.reply_reads_uncovered(content);
+                    // Computing reads what the catalogue has not read yet, whose warnings other
+                    // replies then report: a kept answer is served once nothing is left unread.
+                    let ready = || {
+                        content
+                            .and_then(|content| {
+                                dashboard_base::catalogue::catalogue(source, content).ok()
                             })
+                            .is_some_and(|catalogue| catalogue.readers_read())
                     };
                     let stored = stored_answer(
                         source,
@@ -3018,7 +3054,8 @@ pub fn query(
                         branch,
                         &publication,
                     )?;
-                    if quiet()
+                    if covered()
+                        && ready()
                         && let Some(kept) = stored
                             .as_ref()
                             .and_then(crate::reply_cache::Entry::get)
@@ -3029,15 +3066,18 @@ pub fn query(
                             short: Default::default(),
                             summaries: Default::default(),
                             fallbacks: kept.fallbacks,
+                            session: false,
                         });
                     }
                     let answer = read(previous)?;
                     // Only a complete answer under the binding the source still shows, whose
-                    // computing left the session quiet, is kept.
+                    // computing neither read nor added to the session's, is kept: any session's
+                    // computing gives it and leaves the session as serving it does.
                     if let Some(entry) = stored
                         && answer.short.is_empty()
                         && !waits(&answer.data)
-                        && quiet()
+                        && !answer.session
+                        && covered()
                         && content.is_none_or(|content| source.still_admitted(content))
                     {
                         let kept = StoredQuery {

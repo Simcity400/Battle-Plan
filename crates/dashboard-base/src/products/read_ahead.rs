@@ -30,8 +30,10 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
 
 /// Reads the politics content (the event feed, politics and special projects), then the effect
 /// description content (doctrine mastery, special projects and politics), each through the cache
-/// its products read, over the catalogue already bound for `options`: a product asking meanwhile
-/// waits for the same read, and a cache a request kept for another catalogue is left as it is.
+/// its products read, then the rest the catalogue reads lazily, which prepared answers kept on
+/// disk wait for ([`Catalogue::read_readers`]), over the catalogue already bound for `options`: a
+/// product asking meanwhile waits for the same read, and a cache a request kept for another
+/// catalogue is left as it is.
 /// It holds the source only while a step runs, and no step starts once the source is dropped or
 /// `options`' binding is retired or replaced. A failure is left for the products to report.
 fn read(source: &Weak<Source>, mut options: ContentOptions) {
@@ -42,13 +44,14 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     if let Some(source) = source.upgrade() {
         source.resolve_bound(&mut options);
     }
-    let steps: [fn(&Source, Arc<Catalogue>); 2] = [
+    let steps: [fn(&Source, Arc<Catalogue>); 3] = [
         |source, catalogue| drop(politics_content::warm(source, catalogue)),
         |_, catalogue| {
             if let Ok(content) = catalogue.scripted_content() {
                 drop(content.effects());
             }
         },
+        |_, catalogue| catalogue.read_readers(),
     ];
     for step in steps {
         let Some(source) = source.upgrade() else {
@@ -110,6 +113,7 @@ mod tests {
         assert!(Arc::ptr_eq(&warmed, &read));
         assert_eq!(politics_content::content_loads(&source), 1);
         assert!(catalogue.scripted_content().unwrap().effects_read());
+        assert!(catalogue.readers_read());
     }
 
     #[test]

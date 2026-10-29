@@ -53,7 +53,7 @@ impl Slot for Recorded {
 
 /// Whether `options` read the recording's own catalogue: recorded-only work, or work showing
 /// no visual mod, which share it ([`recorded_slot`]).
-fn reads_recorded(options: &ContentOptions) -> bool {
+pub fn reads_recorded(options: &ContentOptions) -> bool {
     options.presentation.is_recorded() || options.presentation.identity().is_empty()
 }
 
@@ -563,34 +563,6 @@ impl<T> ByCatalogue<T> {
     pub fn both(&self) -> [&T; 2] {
         [&self.recorded, &self.shown]
     }
-}
-
-/// Whether this source holds nothing a reply can carry beyond its own reads: no shader
-/// diagnostic on the content bound for `options`, and no refusal in a catalogue already
-/// loaded. It loads nothing.
-pub fn session_quiet(source: &Source, options: &ContentOptions) -> bool {
-    let refused = |slot: &Cached| {
-        slot.as_ref()
-            .and_then(|(_, result)| result.get())
-            .and_then(Result::ok)
-            .is_some_and(|catalogue| !catalogue.refusal_entries().is_empty())
-    };
-    source
-        .bound_content(&options.options)
-        .is_none_or(|content| content.layers.shader_warning_lines().is_empty())
-        && !refused(
-            &*source
-                .state::<Cached>()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        )
-        && !refused(
-            (*source
-                .state::<Recorded>()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()))
-            .slot(),
-        )
 }
 
 /// The catalogue for these options only when reading it binds nothing a request did not: the

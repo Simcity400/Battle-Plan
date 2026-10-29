@@ -2518,6 +2518,17 @@ impl ResolvedLayers {
         .clone()
     }
 
+    /// Whether these layers' faction templates have been read, so their diagnostics are reported
+    /// ([`Self::faction_template_diagnostics`]).
+    pub fn faction_templates_read(&self) -> bool {
+        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
+        self.faction_templates
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached == roster)
+    }
+
     /// Diagnostics from an already-used template reader; this never loads content.
     pub fn faction_template_diagnostics(&self) -> Vec<String> {
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
