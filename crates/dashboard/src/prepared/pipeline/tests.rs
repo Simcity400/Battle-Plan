@@ -19,6 +19,7 @@ type PrepareReloadMode<'a> = (&'a str, &'a dyn Fn(&Source), bool);
 mod casualty_pending;
 mod catalogue_refusals;
 mod cold_defaults;
+mod columnar_fuel;
 mod commit_points;
 mod equipment_loss_pending;
 mod family_lanes;

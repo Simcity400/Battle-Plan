@@ -94,6 +94,7 @@ pub mod oracle;
 use oracle::scanned;
 #[cfg(test)]
 use oracle::{Cache, scan, scan_branch};
+pub mod columnar;
 mod detail;
 pub mod prepared;
 pub use detail::{CountryFuelAwardHistory, FuelAwardHistoryReply};
@@ -848,6 +849,8 @@ struct Scan {
     owner_slots: Option<(BTreeSet<u32>, bool)>,
     #[serde(skip)]
     updated: BTreeSet<String>,
+    #[serde(skip)]
+    projected_frontier: Option<i32>,
     // Newly observed tags inherit exactly the preceding absent/unknown evidence.
     prior: VecDeque<(i32, Holding)>,
     reasons: Reasons,
@@ -861,6 +864,14 @@ struct Scan {
     work: dashboard_base::prepared::observer_tests::Work,
 }
 impl Scan {
+    fn forget_runtime(&mut self) {
+        self.country_keys = None;
+        self.country_count = None;
+        self.slots = None;
+        self.state_owners = None;
+        self.owner_slots = None;
+    }
+
     fn observe_changes(
         &mut self,
         decoded: &replay_frame::frame::DecodedFrame,
@@ -880,15 +891,18 @@ impl Scan {
     ) -> io::Result<bool> {
         dashboard_text::metadata::check_cancel(cancelled)?;
         self.updated.clear();
+        if self.prior.back().and_then(|(hour, _)| hour.checked_add(1)) != Some(decoded.hour) {
+            self.forget_runtime();
+        }
         #[cfg(test)]
         {
             self.decoded_frames += 1;
         }
         let hour = decoded.hour;
         let countries = decoded.complete::<tables::Countries>().ok();
-        if self.slots.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()])
-        {
+        let links_changed = self.slots.is_none()
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()]);
+        if links_changed {
             self.slots = decoded.complete::<tables::CountryLinks>().ok().map(|rows| {
                 #[cfg(any(test, feature = "test-support"))]
                 {
@@ -940,10 +954,10 @@ impl Scan {
                 dashboard_text::metadata::CountryKeys::read(countries)
             });
         }
-        let identities_changed = countries_changed
-            || self.country_keys.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()]);
+        let identities_changed = countries_changed || self.country_keys.is_none() || links_changed;
         let ownership_changed = identities_changed
+            || self.owner_slots.is_none()
+            || self.state_owners.is_none()
             || changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
         let tagged = identities_changed
             .then(|| {
@@ -953,8 +967,8 @@ impl Scan {
                     .map(|(countries, slots)| tagged_identities(countries.iter(), slots))
             })
             .flatten();
-        let states_changed =
-            changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
+        let states_changed = self.state_owners.is_none()
+            || changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
         if states_changed {
             self.state_owners = decoded.complete::<tables::States>().ok().map(|states| {
                 #[cfg(test)]
@@ -968,9 +982,7 @@ impl Scan {
                 states.iter().map(|state| state.owner).collect()
             });
         }
-        if states_changed
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()])
-        {
+        if states_changed || links_changed || self.owner_slots.is_none() {
             self.owner_slots =
                 self.state_owners
                     .as_ref()
@@ -1106,84 +1118,18 @@ impl Scan {
             {
                 self.work.interpreter_calls += 1;
             }
-            let was_open = (country.open, country.demand_open);
-            let continuous =
-                if !identities_changed && last.and_then(|last| last.checked_add(1)) == Some(hour) {
-                    country.track.advance(hour);
-                    identity.is_some()
-                } else {
-                    country.track.step(identity, hour)
-                };
-            country.open &= continuous;
-            country.demand_open &= continuous;
-            let Some(identity) = identity.filter(|_| fuel.is_some()) else {
-                country.open = false;
-                country.demand_open = false;
-                if was_open != (false, false) {
-                    self.updated.insert(tag.clone());
-                }
-                continue;
-            };
-            if !read {
-                if country.open
-                    && let Some(read) = country.result.reads.last_mut()
-                {
-                    read.last_hour = hour;
-                }
-                if country.demand_open
-                    && let Some(read) = country.result.consumption.last_mut()
-                {
-                    read.last_hour = hour;
-                }
-                if was_open != (country.open, country.demand_open) {
-                    self.updated.insert(tag.clone());
-                }
-                continue;
+            let supplied = identity
+                .filter(|_| fuel.is_some() && read)
+                .and_then(|identity| by_slot.get(&identity.0))
+                .map(|row| {
+                    (
+                        read_of(row, hour, false, None, &mut self.reasons),
+                        demand::summary_of(row, hour, hour, false, &mut self.reasons),
+                    )
+                });
+            if accept_country(country, hour, fuel.is_some(), read, supplied) {
+                self.updated.insert(tag.clone());
             }
-            let Some(row) = by_slot.get(&identity.0) else {
-                country.open = false;
-                country.demand_open = false;
-                if was_open != (false, false) {
-                    self.updated.insert(tag.clone());
-                }
-                continue;
-            };
-            let continuity = match &row.award_day {
-                replay_data::rows::Recorded::Value(day) => day.continuity_start_hour,
-                _ => None,
-            };
-            if country.continuity != continuity {
-                country.open = false;
-            }
-            country.continuity = continuity;
-            let left_out = day_left_out(&country.recent, hour, identity);
-            country.result.reads.push(read_of(
-                row,
-                hour,
-                !country.open,
-                left_out,
-                &mut self.reasons,
-            ));
-            let segment = if country.demand_open {
-                country
-                    .result
-                    .consumption
-                    .last()
-                    .map(|read| read.segment_start_hour)
-                    .unwrap_or(hour)
-            } else {
-                hour
-            };
-            country.result.consumption.push(demand::summary_of(
-                row,
-                hour,
-                segment,
-                !country.demand_open,
-                &mut self.reasons,
-            ));
-            country.demand_open = true;
-            country.open = true;
-            self.updated.insert(tag.clone());
         }
         let prior = if ownership_changed {
             owners.map(|_| (None, false))
@@ -1251,6 +1197,68 @@ impl Scan {
             }
         }
     }
+}
+
+fn accept_country(
+    country: &mut CountryScan,
+    hour: i32,
+    available: bool,
+    read: bool,
+    supplied: Option<(RawRead, demand::RawConsumption)>,
+) -> bool {
+    let was_open = (country.open, country.demand_open);
+    let continuous = country.track.step(country.identity, hour);
+    country.open &= continuous;
+    country.demand_open &= continuous;
+    let Some(identity) = country.identity.filter(|_| available) else {
+        country.open = false;
+        country.demand_open = false;
+        return was_open != (false, false);
+    };
+    if !read {
+        if country.open
+            && let Some(read) = country.result.reads.last_mut()
+        {
+            read.last_hour = hour;
+        }
+        if country.demand_open
+            && let Some(read) = country.result.consumption.last_mut()
+        {
+            read.last_hour = hour;
+        }
+        return was_open != (country.open, country.demand_open);
+    }
+    let Some((mut fuel, mut consumption)) = supplied else {
+        country.open = false;
+        country.demand_open = false;
+        return was_open != (false, false);
+    };
+    if country.continuity != fuel.continuity_start_hour {
+        country.open = false;
+    }
+    country.continuity = fuel.continuity_start_hour;
+    fuel.starts_segment = !country.open;
+    if fuel.awards_reason.is_some() {
+        fuel.left_out = day_left_out(&country.recent, hour, identity);
+        if fuel.left_out.is_some() {
+            fuel.day = None;
+        }
+    }
+    consumption.segment_start_hour = if country.demand_open {
+        country
+            .result
+            .consumption
+            .last()
+            .map_or(hour, |read| read.segment_start_hour)
+    } else {
+        hour
+    };
+    consumption.starts_segment = !country.demand_open;
+    country.result.reads.push(fuel);
+    country.result.consumption.push(consumption);
+    country.open = true;
+    country.demand_open = true;
+    true
 }
 
 /// Leaves out the day of every read that overlaps a day kept. Reads in the fuel

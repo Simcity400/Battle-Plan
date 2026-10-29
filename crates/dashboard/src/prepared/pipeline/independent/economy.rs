@@ -1343,6 +1343,88 @@ impl Branch for FuelBranch {
     }
 }
 
+pub struct FuelReference {
+    branch: FuelBranch,
+}
+
+impl FuelReference {
+    pub fn new(format: FormatVersion) -> Self {
+        Self {
+            branch: FuelBranch {
+                prepared: None,
+                format,
+            },
+        }
+    }
+
+    pub fn block(
+        &mut self,
+        source: &crate::Source,
+        replay: &Replay,
+        index: &replay::container::BlockIndex,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let context = crate::products::LoadContext { content: None };
+        let block = Block {
+            replay,
+            index,
+            source,
+            context: &context,
+            cancelled,
+            shared: None,
+            #[cfg(test)]
+            read_hook_family: None,
+        };
+        let mut extracted = prepass::extract_block_measured(
+            replay,
+            index,
+            &[&FUEL_FAMILY],
+            cancelled,
+            &prepass::Knobs::current(),
+        );
+        let outcome = extracted
+            .outcomes
+            .pop()
+            .ok_or_else(|| io::Error::other("Fuel reference lacks a block outcome"))?
+            .0;
+        let mut observed = |_: i32, result: io::Result<()>| result.map(|()| true);
+        let mut check = || crate::metadata::check_cancel(cancelled);
+        self.branch.begin_block();
+        match outcome {
+            prepass::Outcome::Facts(facts) => {
+                self.branch.fold(facts, &block, &mut observed, &mut check)?;
+            }
+            prepass::Outcome::Sequential | prepass::Outcome::Declined(_) => {
+                self.branch
+                    .observe_block(&block, &mut observed, &mut check)?;
+            }
+            prepass::Outcome::Failed(error) => return Err(error),
+        }
+        self.branch.end_block(replay, index.branch);
+        Ok(())
+    }
+
+    pub fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        replay: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.branch.flush(writer, replay, branch, cancelled)
+    }
+
+    pub fn reload(&mut self) -> io::Result<()> {
+        self.branch.prepared = self
+            .branch
+            .prepared
+            .as_ref()
+            .map(|prepared| serde_json::from_slice(&serde_json::to_vec(prepared)?))
+            .transpose()?;
+        Ok(())
+    }
+}
+
 // --- Test counts -------------------------------------------------------------
 
 /// What one family's folds did, including work carried from its worker.

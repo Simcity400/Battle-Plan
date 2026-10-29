@@ -1545,7 +1545,7 @@ pub(crate) struct Measured {
 }
 
 /// [`extract_bound`] of families as they declare their reads.
-fn extract_block_measured(
+pub(crate) fn extract_block_measured(
     replay: &Replay,
     index: &BlockIndex,
     families: &[&'static Family],

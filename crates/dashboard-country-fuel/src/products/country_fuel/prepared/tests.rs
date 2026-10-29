@@ -1719,3 +1719,95 @@ fn deferred_fuel_uses_hourly_publication_budget_after_flush() {
         serde_json::to_vec(&states[1]).unwrap()
     );
 }
+
+#[test]
+fn skipped_observation_hours_reacquire_the_recordings_current_amounts_and_owners() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    let first = fuel_frame(fuel_slot(100) + 1, true, 9001, (10, 1000, 3, 4));
+    let mut skipped = first.clone();
+    skipped.hour += 1;
+    if let TableView::Complete(TableRows::CountryFuel(rows)) =
+        &mut *skipped.tables[TableId::CountryFuel.index()]
+    {
+        rows[0].current_raw = 900;
+    }
+    if let TableView::Complete(TableRows::States(rows)) =
+        &mut *skipped.tables[TableId::States.index()]
+    {
+        rows.iter_mut()
+            .filter(|row| row.owner == 11)
+            .for_each(|row| row.owner = 21);
+    }
+    let mut recovered = skipped.clone();
+    recovered.hour += 1;
+    let mut prepared = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    prepared
+        .observe_changes(&first, format, &tracker.observe(&first, format), &flag)
+        .unwrap();
+    tracker.observe(&skipped, format);
+    let changes = tracker.observe(&recovered, format);
+    assert!(!changes.rows_changed[TableId::CountryFuel.index()]);
+    assert!(!changes.rows_changed[TableId::States.index()]);
+    prepared
+        .observe_changes(&recovered, format, &changes, &flag)
+        .unwrap();
+    let recorded = recovered.complete::<tables::CountryFuel>().unwrap()[0].current_raw;
+    assert_eq!(recorded, 900);
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    prepared.flush(&mut writer, 1, format, &flag).unwrap();
+    writer.commit().unwrap();
+    let key = prepared.keys[&series::field_key("GER", "fuel")];
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "fuel-1".into(), &flag).unwrap();
+    assert_eq!(
+        reader.value_at(key, recovered.hour).unwrap().unwrap().value,
+        i128::from(recorded)
+    );
+    let owners = &prepared.scan.owner_slots.as_ref().unwrap().0;
+    assert!(!owners.contains(&7));
+    assert!(owners.contains(&8));
+}
+
+#[test]
+fn fuel_changes_during_refused_joins_publish_the_recordings_current_value_after_recovery() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let flag = AtomicBool::new(false);
+    for refused in [TableId::Countries, TableId::CountryLinks] {
+        let first = fuel_frame(fuel_slot(100) + 1, true, 9001, (10, 1000, 3, 4));
+        let mut middle = first.clone();
+        middle.hour += 1;
+        if let TableView::Complete(TableRows::CountryFuel(rows)) =
+            &mut *middle.tables[TableId::CountryFuel.index()]
+        {
+            rows[0].current_raw = 901;
+        }
+        let mut recovered = middle.clone();
+        recovered.hour += 1;
+        *middle.tables[refused.index()] = TableView::Unavailable {
+            reason: "synthetic refused join".into(),
+        };
+        let mut prepared = Prepared::default();
+        let mut tracker = FrameChangeTracker::new();
+        for input in [&first, &middle, &recovered] {
+            prepared
+                .observe_changes(input, format, &tracker.observe(input, format), &flag)
+                .unwrap();
+        }
+        let recorded = recovered.complete::<tables::CountryFuel>().unwrap()[0].current_raw;
+        assert_eq!(recorded, 901);
+        let fixture = Fixture::new();
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, format, &flag).unwrap();
+        writer.commit().unwrap();
+        let key = prepared.keys[&series::field_key("GER", "fuel")];
+        let mut reader = Reader::new(&fixture.store, &fixture.key, "fuel-1".into(), &flag).unwrap();
+        assert_eq!(
+            reader.value_at(key, recovered.hour).unwrap().unwrap().value,
+            i128::from(recorded)
+        );
+    }
+}

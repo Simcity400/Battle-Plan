@@ -141,6 +141,12 @@ pub struct Prepared {
     settlement_visits: usize,
     #[serde(skip)]
     amounts: Vec<(u32, i64, i64)>,
+    #[serde(skip)]
+    amounts_ready: bool,
+    #[serde(skip)]
+    projected_levels: BTreeSet<String>,
+    #[serde(skip)]
+    projected_ready: bool,
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     test_changes: Option<dashboard_base::prepared::frame_changes::FrameChangeTracker>,
@@ -154,6 +160,12 @@ fn key(keys: &mut BTreeMap<String, u64>, tag: &str, measure: &str) -> u64 {
 }
 
 impl Prepared {
+    fn forget_runtime(&mut self) {
+        self.scan.forget_runtime();
+        self.amounts.clear();
+        self.amounts_ready = false;
+    }
+
     pub fn buffered_bytes(&self) -> usize {
         self.current.bytes() + self.days.bytes()
     }
@@ -193,6 +205,9 @@ impl Prepared {
         let _cpu = ::replay_frame::cpu::scope_phase("fuel:observe");
         dashboard_text::metadata::check_cancel(cancelled)?;
         let previous_hour = self.metadata.last;
+        if previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour) {
+            self.forget_runtime();
+        }
         self.current.advance(frame.hour)?;
         let previous_levels = if self.scan.country_keys.is_some()
             && (changes.rows_changed[TableId::CountryFuel.index()]
@@ -222,6 +237,7 @@ impl Prepared {
         } else {
             None
         };
+        let amounts_cold = !self.amounts_ready;
         let identities_changed = match demand {
             Some(demand) => {
                 self.scan
@@ -231,7 +247,8 @@ impl Prepared {
                 .scan
                 .observe_changes(frame, format, changes, cancelled)?,
         };
-        if changes.rows_changed[TableId::CountryFuel.index()] {
+        if !self.amounts_ready || changes.rows_changed[TableId::CountryFuel.index()] {
+            self.amounts_ready = true;
             self.amounts = frame.complete::<tables::CountryFuel>().map_or_else(
                 |_| Vec::new(),
                 |rows| {
@@ -245,6 +262,7 @@ impl Prepared {
         }
         let samples = if !self.scan.active.is_empty()
             && (identities_changed
+                || amounts_cold
                 || changes.rows_changed[TableId::CountryFuel.index()]
                 || (changes.slot_read[TableId::CountryFuel.index()]
                     && frame.complete::<tables::CountryFuel>().is_ok()))
@@ -267,8 +285,152 @@ impl Prepared {
         } else {
             None
         };
-        self.metadata.first.get_or_insert(frame.hour);
-        self.metadata.last = Some(frame.hour);
+        self.publish_observation(
+            frame.hour,
+            format,
+            previous_hour,
+            samples,
+            previous_levels,
+            cancelled,
+        )
+    }
+
+    pub fn observe_projected(&mut self, mut projected: super::columnar::Hour) -> io::Result<()> {
+        let cancelled = AtomicBool::new(false);
+        let hour = projected.hour;
+        let previous_hour = self.metadata.last;
+        if projected.identities {
+            let removed: Vec<_> = {
+                let present: BTreeSet<_> = projected
+                    .countries
+                    .iter()
+                    .filter(|country| country.present)
+                    .map(|country| country.tag.as_str())
+                    .collect();
+                let handed: BTreeSet<_> = projected
+                    .countries
+                    .iter()
+                    .map(|country| country.tag.as_str())
+                    .collect();
+                self.scan
+                    .active
+                    .iter()
+                    .filter(|tag| !present.contains(tag.as_str()) && !handed.contains(tag.as_str()))
+                    .cloned()
+                    .collect()
+            };
+            for tag in removed {
+                projected.countries.push(super::columnar::Country {
+                    tag,
+                    identity: None,
+                    present: false,
+                    seen: projected.prior,
+                    sample: false,
+                    amount: None,
+                    supplied: None,
+                });
+            }
+        }
+        self.current.advance(hour)?;
+        let continuous = previous_hour.and_then(|hour| hour.checked_add(1)) == Some(hour);
+        let previous_levels = (continuous && self.projected_ready && projected.refresh_levels)
+            .then(|| {
+                projected
+                    .countries
+                    .iter()
+                    .filter(|country| self.projected_levels.contains(&country.tag))
+                    .map(|country| country.tag.clone())
+                    .collect()
+            });
+        self.scan.updated.clear();
+        self.scan.unnamed.extend(projected.unnamed);
+        let mut samples = BTreeMap::new();
+        for input in projected.countries {
+            if self.scan.countries.contains_key(&input.tag) {
+                self.scan.catch_up_projected(&input.tag);
+            }
+            let new = !self.scan.countries.contains_key(&input.tag);
+            let country = self
+                .scan
+                .countries
+                .entry(input.tag.clone())
+                .or_insert_with(|| CountryScan {
+                    recent: self.scan.prior.clone(),
+                    ..Default::default()
+                });
+            country.identity = input.identity;
+            if input.present {
+                self.scan.active.insert(input.tag.clone());
+            } else {
+                self.scan.active.remove(&input.tag);
+            }
+            while country
+                .recent
+                .front()
+                .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
+            {
+                country.recent.pop_front();
+            }
+            country.recent.push_back((hour, input.seen));
+            let updated = accept_country(
+                country,
+                hour,
+                projected.available,
+                projected.read,
+                input.supplied,
+            );
+            if new || updated {
+                self.scan.updated.insert(input.tag.clone());
+            }
+            if input.sample {
+                for (field, value) in [
+                    ("fuel", input.amount.map(|amount| i128::from(amount.0))),
+                    ("capacity", input.amount.map(|amount| i128::from(amount.1))),
+                ] {
+                    samples.insert(
+                        (input.tag.clone(), field.to_owned()),
+                        (input.identity, value),
+                    );
+                }
+            }
+            if input.present && input.amount.is_some() {
+                self.projected_levels.insert(input.tag);
+            } else {
+                self.projected_levels.remove(&input.tag);
+            }
+        }
+        while self
+            .scan
+            .prior
+            .front()
+            .is_some_and(|(seen, _)| hour.saturating_sub(*seen) > DAY_HOURS)
+        {
+            self.scan.prior.pop_front();
+        }
+        self.scan.prior.push_back((hour, projected.prior));
+        self.scan.projected_frontier = Some(hour);
+        self.projected_ready = projected.countries_complete;
+        self.publish_observation(
+            hour,
+            projected.format,
+            previous_hour,
+            Some(samples),
+            previous_levels,
+            &cancelled,
+        )
+    }
+
+    fn publish_observation(
+        &mut self,
+        hour: i32,
+        format: replay_data::format::FormatVersion,
+        previous_hour: Option<i32>,
+        samples: Option<BTreeMap<(String, String), (Option<Identity>, Option<i128>)>>,
+        previous_levels: Option<BTreeSet<String>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.metadata.first.get_or_insert(hour);
+        self.metadata.last = Some(hour);
         let mut affected = self.scan.updated.clone();
         if let Some(samples) = &samples {
             affected.extend(samples.keys().map(|(tag, _)| tag.clone()));
@@ -289,10 +451,10 @@ impl Prepared {
                 .result
                 .reads
                 .last()
-                .filter(|read| read.last_hour == frame.hour)
+                .filter(|read| read.last_hour == hour)
             {
                 metadata.has_reads = true;
-                let starts = read.starts_segment && read.first_hour == frame.hour;
+                let starts = read.starts_segment && read.first_hour == hour;
                 for (measure, value) in [
                     ("read", Some(i128::from(read.first_hour))),
                     (
@@ -313,7 +475,7 @@ impl Prepared {
                     observe_value(
                         &mut self.current,
                         key(&mut self.keys, &tag, measure),
-                        frame.hour,
+                        hour,
                         value,
                         starts,
                         if measure == "read" {
@@ -325,13 +487,13 @@ impl Prepared {
                         &mut self.work,
                     );
                 }
-                if read.first_hour == frame.hour {
+                if read.first_hour == hour {
                     self.settling.insert(tag.clone());
                 }
             } else if self.scan.updated.contains(&tag) {
                 for measure in ["read", "fuel", "capacity"] {
                     if let Some(&key) = self.keys.get(&series::field_key(&tag, measure)) {
-                        self.current.observe(key, frame.hour, None, false);
+                        self.current.observe(key, hour, None, false);
                         #[cfg(any(test, feature = "test-support"))]
                         {
                             self.work.emitted += 1;
@@ -344,7 +506,7 @@ impl Prepared {
                     .result
                     .consumption
                     .last()
-                    .filter(|read| read.last_hour == frame.hour)
+                    .filter(|read| read.last_hour == hour)
             {
                 let read = demand::FuelConsumptionRead::from(read);
                 let previous = country
@@ -354,20 +516,20 @@ impl Prepared {
                     .rev()
                     .nth(1)
                     .map(demand::FuelConsumptionRead::from);
-                let starts = read.starts_segment && read.first_hour == frame.hour;
+                let starts = read.starts_segment && read.first_hour == hour;
                 let read_key = key(&mut self.keys, &tag, "consumptionRead");
                 observe_value(
                     &mut self.current,
                     read_key,
-                    frame.hour,
+                    hour,
                     Some(i128::from(read.first_hour)),
                     starts,
                     Some(true),
                     #[cfg(any(test, feature = "test-support"))]
                     &mut self.work,
                 );
-                if read.first_hour == frame.hour {
-                    self.current.event(read_key, frame.hour, &read)?;
+                if read.first_hour == hour {
+                    self.current.event(read_key, hour, &read)?;
                     #[cfg(any(test, feature = "test-support"))]
                     {
                         self.work.emitted += 1;
@@ -377,7 +539,7 @@ impl Prepared {
                     observe_value(
                         &mut self.current,
                         key(&mut self.keys, &tag, &format!("consumption-{kind}")),
-                        frame.hour,
+                        hour,
                         read.reasons[kind]
                             .is_none()
                             .then(|| read.positive_daily_raw[kind].parse::<i128>())
@@ -401,7 +563,7 @@ impl Prepared {
                     "consumption-2",
                 ] {
                     if let Some(&key) = self.keys.get(&series::field_key(&tag, measure)) {
-                        self.current.observe(key, frame.hour, None, false);
+                        self.current.observe(key, hour, None, false);
                         #[cfg(any(test, feature = "test-support"))]
                         {
                             self.work.emitted += 1;
@@ -428,7 +590,7 @@ impl Prepared {
                     .result
                     .consumption
                     .last()
-                    .filter(|read| read.last_hour == frame.hour)
+                    .filter(|read| read.last_hour == hour)
                 {
                     let read = demand::FuelConsumptionRead::from(read);
                     actors
@@ -450,21 +612,20 @@ impl Prepared {
                         .as_ref()
                         .is_some_and(|(previous_tag, _, _)| {
                             self.active_actors.contains(&actor)
-                                && previous_hour.and_then(|hour| hour.checked_add(1))
-                                    == Some(frame.hour)
+                                && previous_hour.and_then(|hour| hour.checked_add(1)) == Some(hour)
                                 && (previous_tag != tag
                                     || !read.starts_segment
-                                    || read.first_hour != frame.hour)
+                                    || read.first_hour != hour)
                         });
                     let first = if joined {
                         metadata.latest.as_ref().unwrap().2
                     } else {
-                        frame.hour
+                        hour
                     };
                     observe_value(
                         &mut self.current,
                         key(&mut self.keys, &actor, "actorSegment"),
-                        frame.hour,
+                        hour,
                         Some(i128::from(first)),
                         !joined,
                         Some(true),
@@ -472,7 +633,7 @@ impl Prepared {
                         &mut self.work,
                     );
                     active_actors.insert(actor.clone());
-                    metadata.latest = Some((tag.clone(), frame.hour, first));
+                    metadata.latest = Some((tag.clone(), hour, first));
                 } else {
                     metadata.latest = None;
                 }
@@ -480,7 +641,7 @@ impl Prepared {
             for actor in self.active_actors.difference(&active_actors) {
                 self.current.observe(
                     key(&mut self.keys, actor, "actorSegment"),
-                    frame.hour,
+                    hour,
                     None,
                     false,
                 );
@@ -491,13 +652,13 @@ impl Prepared {
             }
             self.active_actors = active_actors;
         }
-        if let Some(cutoff) = frame.hour.checked_sub(UNSETTLED_HOURS) {
+        if let Some(cutoff) = hour.checked_sub(UNSETTLED_HOURS) {
             self.settle_due(
                 cutoff,
                 format,
                 cancelled,
                 !self.scan.updated.is_empty()
-                    || previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour),
+                    || previous_hour.and_then(|hour| hour.checked_add(1)) != Some(hour),
             )?;
         }
         Ok(())
@@ -619,6 +780,7 @@ impl Prepared {
             {
                 self.settlement_visits += 1;
             }
+            self.scan.catch_up_projected(tag);
             let country = self.scan.countries.get_mut(tag).unwrap();
             dashboard_text::metadata::check_cancel(cancelled)?;
             let mut decided: Vec<_> = self
@@ -773,6 +935,7 @@ impl Prepared {
                 + self.metadata.actors.len();
         }
         metadata.unnamed = self.scan.unnamed.clone();
+        self.scan.finish_projected();
         for (tag, country) in &self.scan.countries {
             let mut reads: Vec<_> = self
                 .anchors

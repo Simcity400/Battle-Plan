@@ -4,16 +4,16 @@
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
 //! same walk with no operator, which the family's own cost is measured above. Without
-//! `--prepared` it only measures, flushing once at the end; with `--row` instead, army is
-//! held to its row path prepared here block by block as preparation folds it, both flushing
-//! at each row block's end.
-//! `columnar-family-check --family stability|supply|division-log|army --recording <r.battleplan>
+//! `--prepared` it only measures, flushing once at the end; `--row` folds army and fuel through
+//! their production block paths, both flushing at each row block's end.
+//! `columnar-family-check --family stability|supply|division-log|army|fuel --recording <r.battleplan>
 //!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
 //! Both walks read only the family's tables; `--all-tables` walks every one. A family reading
 //! game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
 //! also reports the CPU each accounting scope charged over both walks.
 
 use dashboard::prepared_stability::StabilityAccumulator;
+use dashboard_country_fuel::products::country_fuel;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_land_battles::products::division_log;
 use dashboard_stability::products::country_stability::columnar as stability;
@@ -144,6 +144,10 @@ enum Family {
     Supply(Box<supply_health::prepared::Prepared>),
     DivisionLog(Box<division_log::Scan>),
     Army(Box<army_size::prepared::Prepared>),
+    Fuel(
+        Box<country_fuel::prepared::Prepared>,
+        replay_data::format::FormatVersion,
+    ),
 }
 
 impl Family {
@@ -151,6 +155,10 @@ impl Family {
     /// the reference preparation's flushes.
     fn sections(name: &str, branch: u64) -> (&'static str, Vec<String>) {
         match name {
+            "fuel" => (
+                "fuel",
+                vec![format!("fuel-{branch}"), format!("fuel-days-{branch}")],
+            ),
             "army" => (
                 "army",
                 (0..8)
@@ -217,6 +225,7 @@ impl Family {
             });
         }
         let (catalogue, series) = match name {
+            "fuel" => ("fuel-", ["fuel-", "fuel-days-"].as_slice()),
             "supply" => ("supply-", ["supply-runs-", "supply-values-"].as_slice()),
             "division-log" => (
                 "division-log-count-keys-",
@@ -247,6 +256,14 @@ impl Family {
 
     fn observe(&mut self, hour: Box<dyn std::any::Any + Send>) -> io::Result<(u64, i32)> {
         match self {
+            Self::Fuel(prepared, _) => {
+                let hour = *hour
+                    .downcast::<country_fuel::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                prepared.observe_projected(hour)?;
+                Ok(at)
+            }
             Self::Army(prepared) => {
                 let hour = *hour
                     .downcast::<army_size::columnar::Hour>()
@@ -292,6 +309,7 @@ impl Family {
             Self::Stability(accumulator) => accumulator.flush_measures(writer, branch, cancelled),
             Self::Supply(prepared) => prepared.flush(writer, branch, cancelled),
             Self::Army(prepared) => prepared.flush(writer, branch, cancelled),
+            Self::Fuel(prepared, format) => prepared.flush(writer, branch, *format, cancelled),
             // Its pages are published at each block's end.
             Self::DivisionLog(_) => Ok(()),
         }
@@ -300,6 +318,10 @@ impl Family {
 
 /// Splits one segment's projected hours, so each reaches its branch's state alone.
 fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::any::Any + Send>>> {
+    let result = match result.downcast::<Vec<country_fuel::columnar::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
     let result = match result.downcast::<Vec<army_size::columnar::Hour>>() {
         Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(result) => result,
@@ -320,8 +342,12 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
 
 /// The branch an hour from [`hours`] belongs to.
 fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
-    hour.downcast_ref::<stability::Hour>()
+    hour.downcast_ref::<country_fuel::columnar::Hour>()
         .map(|hour| hour.branch)
+        .or_else(|| {
+            hour.downcast_ref::<stability::Hour>()
+                .map(|hour| hour.branch)
+        })
         .or_else(|| {
             hour.downcast_ref::<army_size::columnar::Hour>()
                 .map(|hour| hour.branch)
@@ -421,8 +447,8 @@ fn run() -> io::Result<()> {
     let (Some(recording), Some(columnar), Some(output)) = (recording, columnar, output) else {
         return Err(usage());
     };
-    // Only army's row path reads no game content, so only it is prepared again here.
-    if row && (prepared.is_some() || family != "army") {
+    // These row paths read recording data alone.
+    if row && (prepared.is_some() || !matches!(family.as_str(), "army" | "fuel")) {
         return Err(usage());
     }
     std::fs::create_dir(&output)?;
@@ -434,13 +460,13 @@ fn run() -> io::Result<()> {
     // Set before any other thread starts: the scratch store lives under it.
     unsafe { std::env::set_var("LOCALAPPDATA", &local) };
 
-    if !["stability", "supply", "division-log", "army"].contains(&family.as_str()) {
+    if !["stability", "supply", "division-log", "army", "fuel"].contains(&family.as_str()) {
         return Err(usage());
     }
     let replay = Replay::open_path(&recording)?;
     let format = replay.format.version();
     // The recording's source and content, for a family that reads content.
-    let (source, context) = if matches!(family.as_str(), "stability" | "army") {
+    let (source, context) = if matches!(family.as_str(), "stability" | "army" | "fuel") {
         (None, None)
     } else {
         let game = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
@@ -500,6 +526,7 @@ fn run() -> io::Result<()> {
     if !all_tables {
         file.select(match family.as_str() {
             "army" => army_size::prepared::TABLES,
+            "fuel" => country_fuel::columnar::TABLES,
             "supply" => supply_health::prepared::TABLES,
             "division-log" => division_log::block::FAMILY.tables,
             _ => stability::TABLES,
@@ -526,6 +553,7 @@ fn run() -> io::Result<()> {
     let mut publish_ns = 0_u64;
     let make = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
         Ok(match (family.as_str(), &prototype) {
+            ("fuel", _) => vec![Box::new(country_fuel::columnar::Projector::new(&replay)?)],
             ("army", _) => vec![Box::new(
                 army_size::prepared::Prepared::default().projector(&replay)?,
             )],
@@ -563,6 +591,7 @@ fn run() -> io::Result<()> {
                 let state = accumulators.entry(branch).or_insert_with(|| {
                     match (family.as_str(), &prototype) {
                         ("army", _) => Family::Army(Box::default()),
+                        ("fuel", _) => Family::Fuel(Box::default(), replay.format),
                         ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
                         ("division-log", _) => {
                             Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
@@ -631,7 +660,9 @@ fn run() -> io::Result<()> {
     });
     let reference = match &prepared {
         Some(prepared) => Some(prepared.clone()),
-        None if row => Some(row_reference(&replay, &recording, &output, &local)?),
+        None if row => Some(row_reference(
+            &family, &replay, &recording, &output, &local,
+        )?),
         None => None,
     };
     if let Some(prepared) = &reference {
@@ -655,9 +686,9 @@ fn run() -> io::Result<()> {
     Ok(())
 }
 
-/// Army's row path over the recording as preparation runs it: each row block extracted
-/// alone and folded in block order, flushed at its end. A reference store's folder.
+/// The production block folds, with the checker's flush at each block's end.
 fn row_reference(
+    family: &str,
     replay: &Replay,
     recording: &Path,
     output: &Path,
@@ -672,39 +703,66 @@ fn row_reference(
     let store = store?;
     let mut writer = store.replace(store::SourceKey::capture(recording, &[])?)?;
     let cancelled = AtomicBool::new(false);
-    let mut states: BTreeMap<u64, army_size::prepared::Prepared> = BTreeMap::new();
-    let mut tables = army_size::prepared::FAMILY.tables.to_vec();
-    tables.sort_unstable_by_key(|table| table.index());
-    tables.dedup();
-    for block in &replay.index {
-        let mut extract = (army_size::prepared::FAMILY.start)(replay.format);
-        let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-        let mut hours = 0_usize;
-        replay.read_block_alone(
-            block,
-            &tables,
-            |raw, frame| {
-                hours += 1;
-                let changes =
-                    tracker.observe_updates(frame, std::sync::Arc::new(raw), replay.format);
-                extract.observe(replay, frame, &changes)
+    if family == "fuel" {
+        let source = dashboard::Source::open(
+            dashboard::SourceKey {
+                source_id: "fuel-row-reference".into(),
+                revision: dashboard::protocol::replay_revision(recording)?,
             },
-            || Ok(()),
+            recording.to_owned(),
+            &cancelled,
         )?;
-        if hours == 0 {
-            continue;
+        let mut states: BTreeMap<u64, dashboard::prepared::pipeline::FuelReference> =
+            BTreeMap::new();
+        for (ordinal, block) in replay.index.iter().enumerate() {
+            let state = states.entry(block.branch).or_insert_with(|| {
+                dashboard::prepared::pipeline::FuelReference::new(replay.format)
+            });
+            state.block(&source, replay, block, &cancelled)?;
+            state.flush(&mut writer, replay, block.branch, &cancelled)?;
+            if replay
+                .index
+                .get(ordinal + 1)
+                .is_none_or(|next| next.branch != block.branch)
+            {
+                state.reload()?;
+            }
         }
-        let state = states.entry(block.branch).or_default();
-        state
-            .fold(
-                extract.finish()?,
-                replay,
+    } else {
+        let mut states: BTreeMap<u64, army_size::prepared::Prepared> = BTreeMap::new();
+        let mut tables = army_size::prepared::FAMILY.tables.to_vec();
+        tables.sort_unstable_by_key(|table| table.index());
+        tables.dedup();
+        for block in &replay.index {
+            let mut extract = (army_size::prepared::FAMILY.start)(replay.format);
+            let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+            let mut hours = 0_usize;
+            replay.read_block_alone(
                 block,
-                &|_: i32, result: io::Result<()>| result,
-                &mut || -> io::Result<()> { Ok(()) },
-            )
-            .map_err(|failure| failure.error)?;
-        state.flush(&mut writer, block.branch, &cancelled)?;
+                &tables,
+                |raw, frame| {
+                    hours += 1;
+                    let changes =
+                        tracker.observe_updates(frame, std::sync::Arc::new(raw), replay.format);
+                    extract.observe(replay, frame, &changes)
+                },
+                || Ok(()),
+            )?;
+            if hours == 0 {
+                continue;
+            }
+            let state = states.entry(block.branch).or_default();
+            state
+                .fold(
+                    extract.finish()?,
+                    replay,
+                    block,
+                    &|_: i32, result: io::Result<()>| result,
+                    &mut || -> io::Result<()> { Ok(()) },
+                )
+                .map_err(|failure| failure.error)?;
+            state.flush(&mut writer, block.branch, &cancelled)?;
+        }
     }
     writer.commit()?;
     Ok(std::fs::read_dir(root.join("HOI4Replay/prepared"))?

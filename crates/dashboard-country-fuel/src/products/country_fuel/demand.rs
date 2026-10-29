@@ -27,7 +27,7 @@ pub struct FuelConsumptionRead {
 pub(super) struct RawConsumption {
     pub(super) first_hour: i32,
     pub(super) last_hour: i32,
-    starts_segment: bool,
+    pub(super) starts_segment: bool,
     pub(super) segment_start_hour: i32,
     country: u32,
     country_instance: Option<u32>,

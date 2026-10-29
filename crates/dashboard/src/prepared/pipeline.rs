@@ -27,6 +27,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub use independent::economy::FuelReference;
+
 const CHECKPOINT: &str = "preparation-checkpoint-v1";
 #[cfg(test)]
 pub(crate) use super::coverage::publish_coverage;
