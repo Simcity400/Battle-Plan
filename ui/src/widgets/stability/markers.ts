@@ -173,9 +173,11 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
         seen.add(occurrence);
         const hour = entry.completedByHour;
         push('focus', hour, () => {
-          const read = sources.focusName?.(entry.token, hour);
-          const name = read ?? names.get(entry.token);
-          return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', read === undefined && sources.focusName !== undefined)} (completed by then)`;
+          // A static title is the text every dated read gives, so only scoped titles are read.
+          const known = names.get(entry.token) ?? null;
+          const read = known === null ? sources.focusName?.(entry.token, hour) : undefined;
+          const name = known ?? read;
+          return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', known === null && read === undefined && sources.focusName !== undefined)} (completed by then)`;
         });
       }
     }

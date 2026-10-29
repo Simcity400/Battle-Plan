@@ -59,6 +59,15 @@ test('laws and advisors taken on while recorded are government changes; focuses 
     [700, '⚙', 'Advisor: Albert Speer (appointed by then)'],
   ]);
   assert.ok(badges.every(badge => !badge.approximate), 'exact idea spans give exact markers');
+  // Only a focus without a static title asks for its dated title.
+  const asked: string[] = [];
+  const read = stabilityMarkers({ ...base, focus, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
+  assert.deepEqual(read.map(badge => badge.label), ['Focus: Rhineland (completed by then)']);
+  assert.equal(asked.length, 0);
+  const scoped = { ...focus, staticText: [{ ...focus.staticText![0], name: null }] } as FocusReply;
+  assert.deepEqual(stabilityMarkers({ ...base, focus: scoped, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return undefined; } }, new Set(['focus']))
+    .map(badge => badge.label), ['Focus: Loading name… (completed by then)']);
+  assert.deepEqual(asked, ['GER_rhineland@50']);
   // Lanes sampled beyond prepared coverage date their changes only approximately.
   const sampled = stabilityMarkers({ ...base, ideas: { ...ideas, approximate: [{ firstHour: 650, lastHour: 1000 }] } }, ALL);
   assert.deepEqual(sampled.map(badge => [badge.hour, badge.approximate === true]), [[500, false], [700, true]]);
