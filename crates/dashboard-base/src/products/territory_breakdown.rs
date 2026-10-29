@@ -125,12 +125,12 @@ fn state_parts(
 }
 impl Regions {
     fn read(cat: &Catalogue) -> io::Result<Self> {
-        let content = installed_content_regions::regions::read(&cat.content.layers)?;
+        let content = crate::content::strategic_regions(&cat.content.layers)?;
         let mut result = Self {
-            warnings: content.notes,
+            warnings: content.notes.clone(),
             ..Default::default()
         };
-        for region in content.regions.into_values() {
+        for region in content.regions.values() {
             let name = if !cat.has_presentation_key(&region.name_key) {
                 Err(format!(
                     "localisation {} is missing; region title is unavailable",
@@ -153,7 +153,7 @@ impl Regions {
                 name,
                 missing,
             });
-            for province in region.provinces {
+            for &province in &region.provinces {
                 result
                     .provinces
                     .entry(province)

@@ -1,5 +1,5 @@
 use dashboard_base::{
-    catalogue::{CachedResult, KeyedResults, Refusals},
+    catalogue::{KeyedResults, Refusals},
     content,
 };
 use dashboard_keyed::{
@@ -59,9 +59,7 @@ pub fn labels(q: &Query<'_>) -> Result<Arc<Labels>, String> {
             )?;
             let resolved = q.source.content(&options.options)?;
             let layers = &resolved.layers;
-            let definitions = layers
-                .derived::<CachedResult<installed_content_regions::regions::StrategicRegions>>()
-                .get_or_init(|| installed_content_regions::regions::read(layers))?;
+            let definitions = content::strategic_regions(layers)?;
             warnings.extend(definitions.notes.clone());
             let sea = (|| -> io::Result<BTreeSet<u32>> {
                 let files = installed_content_core::terrain::read_default_map(layers)?;

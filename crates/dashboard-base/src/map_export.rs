@@ -66,8 +66,8 @@ impl Inputs {
         }
         let cells = SnowCells::new(&map, &map_snow::permanent_mask(&definitions, &terrain))?;
         let defines = installed_content_core::defines::read(layers)?;
-        let regions = installed_content_regions::regions::read(layers)?.regions;
-        let winter = Winter::load(layers, &defines, &map, &regions)?;
+        let regions = crate::content::strategic_regions(layers)?;
+        let winter = Winter::load(layers, &defines, &map, &regions.regions)?;
         Ok(Self {
             cells,
             winter,

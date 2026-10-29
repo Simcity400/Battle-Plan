@@ -129,7 +129,7 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
     {
         return names.clone();
     }
-    let names = installed_content_regions::regions::read(&cat.content.layers)
+    let names = crate::content::strategic_regions(&cat.content.layers)
         .map(|regions| {
             let provinces = region_provinces(&regions, |region| {
                 if !cat.has_presentation_key(&region.name_key) {
@@ -146,7 +146,7 @@ fn region_names(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<RegionNames
             });
             Arc::new(RegionNames {
                 provinces,
-                warnings: regions.notes,
+                warnings: regions.notes.clone(),
             })
         })
         .map_err(|error| format!("Strategic-region names unavailable: {error}"));

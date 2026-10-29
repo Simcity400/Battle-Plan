@@ -17,7 +17,6 @@ test-support = ["dashboard-base/test-support"]
 replay.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
-installed-content-regions.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-text.workspace = true

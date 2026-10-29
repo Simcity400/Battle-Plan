@@ -15,7 +15,6 @@ test-support = ["dashboard-base/test-support"]
 
 [dependencies]
 installed-content-core.workspace = true
-installed-content-regions.workspace = true
 engine-resources.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

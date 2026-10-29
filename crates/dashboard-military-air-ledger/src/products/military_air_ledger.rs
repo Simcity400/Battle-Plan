@@ -1032,7 +1032,7 @@ fn names(
     let regions = if regions.is_empty() {
         Vec::new()
     } else {
-        let content = installed_content_regions::regions::read(&cat.content.layers)
+        let content = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map_err(|error| error.to_string());
         if let Ok(content) = &content {
             warnings.extend(content.notes.iter().cloned());
@@ -1100,7 +1100,7 @@ pub fn check_content(
     cat: &catalogue::Catalogue,
 ) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
-    let regions = installed_content_regions::regions::read(&cat.content.layers)?;
+    let regions = dashboard_base::content::strategic_regions(&cat.content.layers)?;
     let buildings = installed_content_core::buildings::read(&cat.content.layers)?;
     let mut findings = Vec::new();
     for id in regions.regions.keys() {

@@ -59,7 +59,7 @@ fn membership(query: &Query<'_>) -> io::Result<Arc<Membership>> {
             )?;
             let resolved = query.source.content(&options.options)?;
             let geometry = ProvinceGeometry::read(&resolved.layers)?;
-            let regions = installed_content_regions::regions::read(&resolved.layers)?;
+            let regions = content::strategic_regions(&resolved.layers)?;
             dashboard_text::metadata::check_cancel(query.cancelled)?;
             warnings.extend(regions.notes.iter().cloned());
             Ok(Membership {

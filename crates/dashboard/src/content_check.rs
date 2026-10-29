@@ -845,7 +845,7 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         crate::products::convoy_health::ConvoyHealth::KEY => {
             findings.push(Finding::new(Kind::Offline, key,
                 "regional convoy efficiency, resource deals and lend-lease convoy clients need recorded rows; unavailable offline"));
-            let regions = installed_content_regions::regions::read(&content.resolved.layers)
+            let regions = dashboard_base::content::strategic_regions(&content.resolved.layers)
                 .map_err(|why| why.to_string())?;
             for note in &regions.notes {
                 findings.push(Finding::new(Kind::Warning, "strategic regions", note.clone()));
@@ -987,7 +987,7 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         }
     }
     // The corpus regions reader owns its native skip/replacement notes.
-    let regions = installed_content_regions::regions::read(&content.resolved.layers)
+    let regions = dashboard_base::content::strategic_regions(&content.resolved.layers)
         .map_err(|error| format!("Strategic-region names unavailable: {error}"))?;
     for region in regions.regions.values() {
         let subject = format!("strategic region {}", region.id);

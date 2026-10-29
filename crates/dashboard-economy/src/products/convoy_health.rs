@@ -377,7 +377,7 @@ pub fn region_names(source: &Source, context: &LoadContext, warnings: &mut Vec<S
             return BTreeMap::new();
         }
     };
-    let regions = match installed_content_regions::regions::read(&catalogue.content.layers) {
+    let regions = match dashboard_base::content::strategic_regions(&catalogue.content.layers) {
         Ok(regions) => regions,
         Err(error) => {
             warnings.push(format!("Sea region names unavailable: {error}"));
@@ -387,7 +387,7 @@ pub fn region_names(source: &Source, context: &LoadContext, warnings: &mut Vec<S
     warnings.extend(regions.notes.iter().cloned());
     let mut names = BTreeMap::new();
     let mut refused = 0_usize;
-    for (id, region) in regions.regions {
+    for (&id, region) in &regions.regions {
         match catalogue.localised(&region.name_key, dashboard_text::catalogue::View::Plain) {
             Some(name) => {
                 names.insert(id, name);

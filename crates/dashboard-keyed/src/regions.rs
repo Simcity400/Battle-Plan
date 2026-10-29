@@ -4,7 +4,7 @@
 //! region whose title does not resolve keeps its named reason.
 
 use crate::query::{Choice, Query};
-use dashboard_base::catalogue::{self, CachedResult, KeyedResults, Refusals};
+use dashboard_base::catalogue::{self, KeyedResults, Refusals};
 use dashboard_base::content;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,9 +40,7 @@ impl RegionNames {
                 )?;
                 let resolved = query.source.content(&options.options)?;
                 let layers = &resolved.layers;
-                let definitions = layers
-                    .derived::<CachedResult<installed_content_regions::regions::StrategicRegions>>()
-                    .get_or_init(|| installed_content_regions::regions::read(layers))?;
+                let definitions = content::strategic_regions(layers)?;
                 let localisation =
                     content::localisation(query.source, options).map_err(|error| error.to_string());
                 let names = definitions

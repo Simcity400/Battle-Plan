@@ -110,6 +110,17 @@ pub fn check_verification(
 }
 
 /// Verifies the recording and every session; used by products that read game assets.
+/// The strategic regions `layers` define ([`installed_content_regions::regions::read`]), read once for
+/// the content stack and shared by every product reading them; each later use credits the
+/// read's refusals as its own read would.
+pub fn strategic_regions(
+    layers: &installed_content_core::ResolvedLayers,
+) -> io::Result<Arc<installed_content_regions::regions::StrategicRegions>> {
+    layers
+        .derived::<crate::catalogue::CachedResult<installed_content_regions::regions::StrategicRegions>>()
+        .get_or_init(|| installed_content_regions::regions::read(layers))
+}
+
 pub fn check_replay(
     replay: &replay::container::Replay,
     allow_unverified: bool,
@@ -130,4 +141,18 @@ pub fn check_replay(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    #[test]
+    fn a_content_stacks_strategic_regions_are_read_once_for_every_product() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let layers = &catalogue.content.layers;
+        let first = super::strategic_regions(layers).unwrap();
+        let again = super::strategic_regions(layers).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+    }
 }

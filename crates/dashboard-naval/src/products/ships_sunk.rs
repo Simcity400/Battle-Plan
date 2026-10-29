@@ -194,7 +194,7 @@ pub fn prepared_content(source: &Source, context: &LoadContext) -> PreparedConte
 
 pub struct NameContent {
     units: Result<installed_content_core::unit_leader::SubUnits, String>,
-    regions: Result<installed_content_regions::regions::StrategicRegions, String>,
+    regions: Result<std::sync::Arc<installed_content_regions::regions::StrategicRegions>, String>,
     pub retention: sinkings::RetentionDefines,
     memberships: BTreeMap<u32, Vec<u32>>,
 }
@@ -208,8 +208,8 @@ impl NameContent {
         });
         let units =
             installed_content_core::unit_leader::sub_units(&cat.content.layers).map_err(|e| e.to_string());
-        let regions =
-            installed_content_regions::regions::read(&cat.content.layers).map_err(|e| e.to_string());
+        let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
+            .map_err(|e| e.to_string());
         let mut memberships = BTreeMap::<u32, Vec<u32>>::new();
         if let Ok(regions) = &regions {
             for (&id, region) in &regions.regions {
@@ -418,7 +418,7 @@ pub fn named_with(
         ));
         let empty_regions = installed_content_regions::regions::StrategicRegions::default();
         let regions = match &content.regions {
-            Ok(regions) => regions,
+            Ok(regions) => &**regions,
             Err(reason) => {
                 out.warnings.push(format!(
                     "Ship sinking places are unavailable: {reason}; no place name is invented."
@@ -504,7 +504,7 @@ pub fn named_with(
 pub fn check_content(cat: &Catalogue) -> io::Result<()> {
     // Corpus readers own their notes; naval-losses owns retention findings.
     installed_content_core::unit_leader::sub_units(&cat.content.layers)?;
-    installed_content_regions::regions::read(&cat.content.layers)?;
+    dashboard_base::content::strategic_regions(&cat.content.layers)?;
     Ok(())
 }
 

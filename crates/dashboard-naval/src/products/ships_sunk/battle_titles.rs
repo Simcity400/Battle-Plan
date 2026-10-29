@@ -69,9 +69,9 @@ struct Geography {
 }
 impl Geography {
     fn read(cat: &Catalogue) -> Result<Self, String> {
-        let regions = installed_content_regions::regions::read(&cat.content.layers)
+        let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map_err(|error| error.to_string());
-        Self::from_regions(cat, regions.as_ref())
+        Self::from_regions(cat, regions.as_deref())
     }
     fn from_regions(
         cat: &Catalogue,
@@ -158,7 +158,7 @@ pub fn configure_geography(source: &Source, cat: &Arc<Catalogue>, content: &supe
     {
         return;
     }
-    let geo = Geography::from_regions(cat, content.regions.as_ref()).map(Arc::new);
+    let geo = Geography::from_regions(cat, content.regions.as_deref()).map(Arc::new);
     cache.content = Some((Arc::clone(cat), geo));
 }
 

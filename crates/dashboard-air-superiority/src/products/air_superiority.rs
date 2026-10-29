@@ -1262,11 +1262,11 @@ fn resolve_names(
         }
         content::check_replay(source.replay_ref(), options.allow_unverified, &mut warnings)?;
         let layers = source.content(&options.options)?;
-        let regions = installed_content_regions::regions::read(&layers.layers)?;
+        let regions = content::strategic_regions(&layers.layers)?;
         let loc = content::localisation(source, options)?;
-        warnings.extend(regions.notes);
+        warnings.extend(regions.notes.iter().cloned());
         let mut names = BTreeMap::new();
-        for (id, definition) in regions.regions {
+        for (&id, definition) in &regions.regions {
             match (definition.name_key.is_empty() || loc.get(&definition.name_key).is_some())
                 .then_some(())
                 .ok_or_else(|| "localized title is absent from the recorded language".to_owned())
