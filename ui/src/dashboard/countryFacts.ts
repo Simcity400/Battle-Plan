@@ -24,14 +24,17 @@ export const MAX_NAME_HOURS = 64;
 /** What each hour's countries were found to be. Every hour currently wanted
  * (`want`) is kept; of the others, at most `capacity`, the least recently used
  * dropped first. So a caller that wants more hours than the capacity is never
- * made to ask again for what it still wants. A country asked about whose reply
- * lacked it is answered with no value, so it is not asked again while its hour is kept. */
+ * made to ask again for what it still wants. The capacity grows to the most hours
+ * ever wanted together, so a chart that goes back over its own hours, as a
+ * timeline does when the playhead moves back, asks for none of them again. A
+ * country asked about whose reply lacked it is answered with no value, so it is
+ * not asked again while its hour is kept. */
 export class HourStore<V> {
   private hours = new Map<number, { answered: Set<string>; values: Map<string, V> }>();
   private wanted = new Set<number>();
   /** Hours held that are not wanted, so recording a wanted hour evicts in constant time. */
   private unwanted = 0;
-  readonly capacity: number;
+  private capacity: number;
   constructor(capacity: number) { this.capacity = Math.max(0, Math.floor(capacity)); }
 
   /** Hours held. */
@@ -40,6 +43,7 @@ export class HourStore<V> {
   /** The hours currently wanted: never dropped until no longer wanted. */
   want(hours: Iterable<number>): void {
     this.wanted = new Set(hours);
+    this.capacity = Math.max(this.capacity, this.wanted.size);
     this.touch(this.wanted);
     this.unwanted = 0;
     for (const hour of this.hours.keys()) if (!this.wanted.has(hour)) this.unwanted++;

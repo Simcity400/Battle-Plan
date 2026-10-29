@@ -37,6 +37,24 @@ test('following playback with a tooltip open holds a bounded number of hours', (
   assert.equal(store.pick(tags.map(tag => ({ hour: 499, tag }))).size, 32);
 });
 
+test('hours once wanted together stay held when fewer are wanted, the oldest dropped past that', () => {
+  const store = new HourStore<string>(2);
+  const hours = Array.from({ length: 10 }, (_, hour) => hour);
+  store.want(hours);
+  for (const hour of hours) store.record(hour, ['GER'], found([['GER', `GER@${hour}`]]));
+  // A timeline whose playhead moves back wants its first hour alone, and keeps the rest.
+  store.want([0]);
+  assert.equal(store.size, 10);
+  assert.deepEqual(planRequests(store, hours.map(hour => ({ hour, tag: 'GER' })), Infinity, 64), []);
+  // Beyond the ten hours wanted together, the least recently used unwanted hour goes.
+  store.record(10, ['GER'], found([['GER', 'GER@10']]));
+  assert.equal(store.size, 11);
+  store.record(11, ['GER'], found([['GER', 'GER@11']]));
+  assert.equal(store.size, 11);
+  assert.equal(store.answered(1, 'GER'), false);
+  assert.equal(store.get(0, 'GER'), 'GER@0');
+});
+
 test('requests skip answered countries, keep the earliest hours and split large hours', () => {
   const store = new HourStore<string>(8);
   store.record(10, ['GER'], found([['GER', 'x']]));
@@ -75,13 +93,14 @@ test('wanting more hours than the cap keeps them all, so requests stop once each
   }
   assert.equal(requests, 100);
   assert.equal(store.pick(wanted).size, 100);
-  // Other hours come and go around the wanted ones without dropping any of them.
+  // Other hours come and go around the wanted ones without dropping any of them; as many are
+  // kept as were once wanted together.
   for (let hour = 1000; hour < 1200; hour++) store.record(hour, ['ITA'], new Map([['ITA', 'x']]));
   assert.equal(planRequests(store, wanted, Infinity, 64).length, 0);
-  assert.equal(store.size, 164);
-  // Once no longer wanted, the extra hours are dropped down to the cap.
+  assert.equal(store.size, 200);
+  // Once no longer wanted, the extra hours are dropped down to the hundred once wanted.
   store.want([]);
-  assert.equal(store.size, 64);
+  assert.equal(store.size, 100);
 });
 
 test('per-hour reads go around the shared product cache, so they never evict widget data', async () => {
