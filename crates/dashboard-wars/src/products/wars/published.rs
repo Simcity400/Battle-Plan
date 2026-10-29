@@ -153,7 +153,7 @@ fn held_hour(compared: &[TableId], decoded: &DecodedFrame, cat: Option<&Catalogu
             .iter()
             .map(|table| decoded.tables[table.index()].identity())
             .collect(),
-        observed: read_hour(decoded, None, None, cat),
+        observed: read_hour(decoded, None, None, cat, true),
     }
 }
 

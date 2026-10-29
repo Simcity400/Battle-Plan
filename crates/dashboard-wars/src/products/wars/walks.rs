@@ -3,7 +3,6 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Reader};
 use replay_data::codec::Decoder;
-use replay_frame::frame::SharedView;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
@@ -139,8 +138,8 @@ struct Point {
 }
 impl Point {
     fn new(resume: &Resume) -> Self {
-        let mut walk = resume.walk.resumable();
-        let held = walk.held.take().is_some();
+        let walk = resume.walk.unheld();
+        let held = resume.walk.held.is_some();
         Self {
             bytes: walk_bytes(&walk) + resume.sources.len() * std::mem::size_of::<u64>(),
             next: resume.next,
@@ -151,6 +150,10 @@ impl Point {
         }
     }
 }
+
+/// Opens, on the thread reading a walk's change input rows, its own reader of them in a scope
+/// of its own.
+type Rows<'a> = dyn Fn() -> io::Result<(store::Scope, Reader<'a>)> + Sync + 'a;
 
 struct Walker<'r, 'a> {
     topology: &'r mut Reader<'a>,
@@ -174,13 +177,17 @@ enum Job {
     Decode(u64, i32, Vec<u8>),
     /// The frame an input leaves the walk holding, whose hour's inputs to read.
     Read(u64, DecodedFrame),
-    /// Table views the walk let go of, to free here rather than on the walking thread.
-    Drop(Vec<SharedView>),
+    /// What the walk let go of (table views, a held hour), to free here rather than on the
+    /// walking thread.
+    Drop(Box<dyn Send>),
 }
 
 /// A worker's finished job, by its input's ordinal.
 enum Done {
-    Decoded(u64, io::Result<(Vec<usize>, DecodedFrame)>),
+    /// An input's hour and its decoded row.
+    Decoded(u64, i32, io::Result<(Vec<usize>, DecodedFrame)>),
+    /// Why an input's row could not be read: the walk stops at it.
+    Unread(u64, io::Error),
     Read(u64, ReadyHour),
     /// The job panicked: the walk panics with it.
     Panicked(Box<dyn std::any::Any + Send>),
@@ -188,17 +195,17 @@ enum Done {
 
 /// An input read ahead of the walk.
 struct Slot {
-    /// Its hour, or why its row could not be read.
-    hour: io::Result<i32>,
+    /// Its hour, or why its row could not be read, once its row is read.
+    hour: Option<io::Result<i32>>,
     decoded: Option<io::Result<(Vec<usize>, DecodedFrame)>>,
     /// Its hour's inputs once asked for, None inside until they are read.
     read: Option<Option<ReadyHour>>,
 }
 
-/// The tail's inputs read here, in order, decoded on other cores and put together here as the
-/// walk puts them together; each frame changing a table the walk compares has its hour's inputs
-/// read on those cores too. Each input's read or decode failure is returned only when the walk
-/// takes that input.
+/// The tail's inputs read in order on a thread of their own, decoded on other cores and put
+/// together here as the walk puts them together; each frame changing a table the walk compares
+/// has its hour's inputs read on those cores too. Each input's read or decode failure is
+/// returned only when the walk takes that input.
 struct Ahead {
     /// The next input the walk takes, the first not yet put together, and the first not yet read.
     next: u64,
@@ -213,22 +220,61 @@ struct Ahead {
     frame: Option<DecodedFrame>,
     /// Whether each table is one the walk compares.
     compared: Vec<bool>,
+    /// The inputs whose rows to read, in order.
+    rows: mpsc::Sender<u64>,
     jobs: mpsc::Sender<Job>,
     done: mpsc::Receiver<Done>,
 }
 
 impl Ahead {
     /// Reads inputs `next..end` ahead of a walk that holds `frame`, on threads of `scope` that
-    /// end once this is dropped or `stopped` is set, an hour's inputs read as `read` reads them.
-    fn start<'s>(
+    /// end once this is dropped or `stopped` is set: their rows through `rows`, an hour's inputs
+    /// as `read` reads them.
+    fn start<'s, 'a: 's>(
         scope: &'s std::thread::Scope<'s, '_>,
         (next, end): (u64, u64),
         frame: Option<DecodedFrame>,
         stopped: &'s AtomicBool,
         read: &'s (dyn Fn(&DecodedFrame) -> ReadyHour + Sync),
+        rows: &'s Rows<'a>,
     ) -> Self {
         let (jobs, work) = mpsc::channel::<Job>();
         let (finished, done) = mpsc::channel();
+        let (wanted, ordinals) = mpsc::channel::<u64>();
+        {
+            let (jobs, finished) = (jobs.clone(), finished.clone());
+            scope.spawn(move || {
+                // A panic reading rows reaches the walk, as a worker's does.
+                let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut reader = rows();
+                    loop {
+                        let ordinal = match ordinals.recv_timeout(Duration::from_millis(50)) {
+                            Ok(ordinal) => ordinal,
+                            Err(mpsc::RecvTimeoutError::Timeout)
+                                if !stopped.load(Ordering::Acquire) =>
+                            {
+                                continue;
+                            }
+                            Err(_) => return,
+                        };
+                        let row = match &mut reader {
+                            Ok((_, reader)) => raw(reader, ordinal),
+                            Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+                        };
+                        let sent = match row {
+                            Ok((hour, row)) => jobs.send(Job::Decode(ordinal, hour, row)).is_ok(),
+                            Err(error) => finished.send(Done::Unread(ordinal, error)).is_ok(),
+                        };
+                        if !sent {
+                            return;
+                        }
+                    }
+                }));
+                if let Err(panic) = read {
+                    let _ = finished.send(Done::Panicked(panic));
+                }
+            });
+        }
         let work = Arc::new(Mutex::new(work));
         let workers = std::thread::available_parallelism()
             .map_or(1, |cores| cores.get().saturating_sub(1))
@@ -261,7 +307,7 @@ impl Ahead {
                     let outcome =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
                             Job::Decode(ordinal, hour, row) => {
-                                Done::Decoded(ordinal, decode(hour, &row))
+                                Done::Decoded(ordinal, hour, decode(hour, &row))
                             }
                             Job::Read(ordinal, frame) => Done::Read(ordinal, read(&frame)),
                             Job::Drop(_) => unreachable!("views are dropped above"),
@@ -290,30 +336,21 @@ impl Ahead {
             slots: VecDeque::new(),
             frame,
             compared,
+            rows: wanted,
             jobs,
             done,
         }
     }
 
-    /// The input at `self.next` and its hour's inputs if they were read, after reading the rows
-    /// up to the window beyond it.
-    fn take(
-        &mut self,
-        topology: &mut Reader<'_>,
-    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
+    /// The input at `self.next` and its hour's inputs if they were read, after asking for the
+    /// rows up to the window beyond it.
+    fn take(&mut self) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
         while self.read < self.end && self.read <= self.next + self.window {
-            let hour = match raw(topology, self.read) {
-                Ok((hour, row)) => self
-                    .jobs
-                    .send(Job::Decode(self.read, hour, row))
-                    .map(|()| hour)
-                    .map_err(|_| io::Error::other("Wars input decoding stopped")),
-                Err(error) => {
-                    // The walk stops at this input: nothing after it is read.
-                    self.end = self.read + 1;
-                    Err(error)
-                }
-            };
+            let hour = self
+                .rows
+                .send(self.read)
+                .is_err()
+                .then(|| Err(io::Error::other("Wars input reading stopped")));
             self.slots.push_back(Slot {
                 hour,
                 decoded: None,
@@ -327,12 +364,21 @@ impl Ahead {
                 .slots
                 .front()
                 .ok_or_else(|| invalid("Wars inputs ran out ahead of the walk"))?;
-            if slot.hour.is_err() || (slot.decoded.is_some() && !matches!(slot.read, Some(None))) {
+            if matches!(slot.hour, Some(Err(_)))
+                || (slot.decoded.is_some() && !matches!(slot.read, Some(None)))
+            {
                 break;
             }
             match self.done.recv() {
-                Ok(Done::Decoded(ordinal, decoded)) => {
-                    self.slots[(ordinal - self.next) as usize].decoded = Some(decoded);
+                Ok(Done::Decoded(ordinal, hour, decoded)) => {
+                    let slot = &mut self.slots[(ordinal - self.next) as usize];
+                    slot.hour = Some(Ok(hour));
+                    slot.decoded = Some(decoded);
+                }
+                Ok(Done::Unread(ordinal, error)) => {
+                    // The walk stops at this input: nothing after it is read.
+                    self.end = self.end.min(ordinal + 1);
+                    self.slots[(ordinal - self.next) as usize].hour = Some(Err(error));
                 }
                 Ok(Done::Read(ordinal, read)) => {
                     self.slots[(ordinal - self.next) as usize].read = Some(Some(read));
@@ -343,7 +389,7 @@ impl Ahead {
         }
         let slot = self.slots.pop_front().expect("the input was read");
         self.next += 1;
-        let hour = slot.hour?;
+        let hour = slot.hour.expect("the input's row was read")?;
         let (changed, packet) = slot.decoded.expect("the input was decoded")?;
         Ok((hour, changed, packet, slot.read.flatten()))
     }
@@ -419,16 +465,16 @@ impl Walker<'_, '_> {
         ordinal: u64,
     ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
         if let Some(ahead) = self.ahead.as_mut().filter(|ahead| ahead.next == ordinal) {
-            return ahead.take(self.topology);
+            return ahead.take();
         }
         let (hour, row) = raw(self.topology, ordinal)?;
         let (changed, packet) = decode(hour, &row)?;
         Ok((hour, changed, packet, None))
     }
-    /// Frees `views` on a worker when the walk reads ahead, else here.
-    fn discard(&self, views: Vec<SharedView>) {
+    /// Frees `released` on a worker when the walk reads ahead, else here.
+    fn discard(&self, released: impl Send + 'static) {
         if let Some(ahead) = &self.ahead {
-            let _ = ahead.jobs.send(Job::Drop(views));
+            let _ = ahead.jobs.send(Job::Drop(Box::new(released)));
         }
     }
     /// The walk `point` copied, with the decoded inputs it walked through and
@@ -529,7 +575,10 @@ impl Resume {
         Self {
             next: base,
             hour: None,
-            walk: Walk::new(branch, first),
+            walk: Walk {
+                losses: false,
+                ..Walk::new(branch, first)
+            },
             decoded: None,
             sources: Vec::new(),
         }
@@ -574,9 +623,10 @@ impl Resume {
             }
         }
         let frame = self.decoded.insert(current);
-        self.walk
+        let released = self
+            .walk
             .observe(frame, walker.view, walker.selected, walker.cat, read);
-        walker.discard(replaced);
+        walker.discard((replaced, released));
         self.next += 1;
         self.hour = Some(hour);
         Ok(span)
@@ -787,7 +837,13 @@ pub(super) fn walk(
     let mut known = None;
     let stopped = AtomicBool::new(false);
     let (view, catalogue) = (walker.view, walker.cat);
-    let read = move |frame: &DecodedFrame| read_ahead(frame, view, selected, catalogue);
+    let read = move |frame: &DecodedFrame| read_ahead(frame, view, selected, catalogue, false);
+    // The rows are read on a thread of their own, through its own scope and reader.
+    let rows = || {
+        let scope = store.scope(key)?;
+        let reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
+        io::Result::Ok((scope, reader))
+    };
     std::thread::scope(|scope| {
         // Ends the workers before the scope joins them, however the walk ends.
         struct Stop<'s>(&'s AtomicBool);
@@ -799,7 +855,7 @@ pub(super) fn walk(
         let _stop = Stop(&stopped);
         walker.ahead = (entry.tail.next < end).then(|| {
             let frame = entry.tail.decoded.clone();
-            Ahead::start(scope, (entry.tail.next, end), frame, &stopped, &read)
+            Ahead::start(scope, (entry.tail.next, end), frame, &stopped, &read, &rows)
         });
         let walked = (|| {
             while entry.tail.next < end {

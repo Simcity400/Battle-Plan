@@ -358,12 +358,14 @@ struct Hour {
 /// The inputs a viewpoint reads at an hour and the groups it observes there, or why it cannot.
 type HourRead = Result<(Hour, Vec<Observed>), String>;
 
-/// What `view`, or the viewpoint among `identities`, reads at `decoded`.
+/// What `view`, or the viewpoint among `identities`, reads at `decoded`, each group's losses
+/// summed when `losses` are kept.
 fn read_hour(
     decoded: &DecodedFrame,
     view: Option<&str>,
     identities: Option<&HashSet<(u32, u32)>>,
     cat: Option<&Catalogue>,
+    losses: bool,
 ) -> HourRead {
     #[cfg(any(test, feature = "test-support"))]
     walks::READ.with(|count| count.set(count.get() + 1));
@@ -374,35 +376,39 @@ fn read_hour(
         )
         .and_then(|view| Hour::read(decoded, view.as_deref()))
         .map(|inputs| {
-            let observations = inputs.observe(decoded, cat);
+            let observations = inputs.observe(decoded, cat, losses);
             (inputs, observations)
         })
 }
 
 /// An hour read ahead of the walk, with the groups its observation opens at its hour
-/// ([`opening`]), which a structural change continues.
+/// ([`opening`]), which a structural change continues, when it keeps losses.
 struct ReadyHour {
     read: HourRead,
     opened: Option<Vec<Observed>>,
 }
 
-/// [`read_hour`] ahead of the walk, the groups it opens at `decoded`'s hour built too.
+/// [`read_hour`] ahead of the walk, the groups it opens at `decoded`'s hour built too when it
+/// keeps `losses`: without them opening only copies the groups.
 fn read_ahead(
     decoded: &DecodedFrame,
     view: Option<&str>,
     identities: Option<&HashSet<(u32, u32)>>,
     cat: Option<&Catalogue>,
+    losses: bool,
 ) -> ReadyHour {
-    let read = read_hour(decoded, view, identities, cat);
+    let read = read_hour(decoded, view, identities, cat, losses);
     let opened = read
         .as_ref()
         .ok()
-        .map(|(inputs, observed)| opening(inputs, observed, decoded.hour));
+        .filter(|_| losses)
+        .map(|(inputs, observed)| opening(inputs, observed, decoded.hour, losses));
     ReadyHour { read, opened }
 }
 
-/// Each group `observed` at `hour`, as a structural change opens it, with its losses there.
-fn opening(inputs: &Hour, observed: &[Observed], hour: i32) -> Vec<Observed> {
+/// Each group `observed` at `hour`, as a structural change opens it, with its losses there when
+/// they are kept.
+fn opening(inputs: &Hour, observed: &[Observed], hour: i32, losses: bool) -> Vec<Observed> {
     observed
         .iter()
         .map(|o| Observed {
@@ -412,11 +418,45 @@ fn opening(inputs: &Hour, observed: &[Observed], hour: i32) -> Vec<Observed> {
                 ..o.data.clone()
             },
             relations: o.relations.clone(),
-            losses: inputs.losses(&o.loss_pairs),
+            losses: if losses {
+                inputs.losses(&o.loss_pairs)
+            } else {
+                Default::default()
+            },
             loss_pairs: o.loss_pairs.clone(),
             representative: o.representative.clone(),
         })
         .collect()
+}
+
+/// Whether `held`, an hour read again, observes exactly the groups `before` held, their losses
+/// aside: continuing each war with them then extends it exactly as its losses alone do.
+fn same_groups(before: &HeldHour, held: &HeldHour) -> bool {
+    let (Ok((_, before)), Ok((_, held))) = (&before.observed, &held.observed) else {
+        return false;
+    };
+    before.len() == held.len()
+        && before.iter().zip(held).all(|(a, b)| {
+            let WarObservation {
+                first_hour: _,
+                last_hour: _,
+                viewpoint_tag,
+                viewpoint_side,
+                opposing_side,
+                attackers_are_viewpoint,
+                representative,
+                name,
+            } = &a.data;
+            a.relations == b.relations
+                && a.loss_pairs == b.loss_pairs
+                && a.representative == b.representative
+                && *viewpoint_tag == b.data.viewpoint_tag
+                && *viewpoint_side == b.data.viewpoint_side
+                && *opposing_side == b.data.opposing_side
+                && *attackers_are_viewpoint == b.data.attackers_are_viewpoint
+                && *representative == b.data.representative
+                && *name == b.data.name
+        })
 }
 
 /// The tables whose change makes a walk read its hour's inputs again.
@@ -678,7 +718,12 @@ impl Hour {
         }
         sums.map(|n| n.to_string())
     }
-    fn observe(&self, frame: &DecodedFrame, cat: Option<&Catalogue>) -> Vec<Observed> {
+    fn observe(
+        &self,
+        frame: &DecodedFrame,
+        cat: Option<&Catalogue>,
+        losses: bool,
+    ) -> Vec<Observed> {
         let naming = naming::Inputs::read(frame);
         self.world
             .blobs(self.view)
@@ -690,7 +735,11 @@ impl Hour {
                     .iter()
                     .map(|&p| (p, first.contains(&self.world.relations[&p].first_country)))
                     .collect::<Vec<_>>();
-                let losses = self.losses(&loss_pairs);
+                let losses = if losses {
+                    self.losses(&loss_pairs)
+                } else {
+                    Default::default()
+                };
                 let relations = inside
                     .into_iter()
                     .map(|p| {
@@ -924,7 +973,7 @@ fn resumable_war(war: &WarTimeline) -> WarTimeline {
 }
 /// One war's native groups at an hour as one observation: the first group's
 /// name and orientation, every member once, and each relation once.
-fn merge_groups(mut groups: Vec<Observed>, losses: &dyn Fn(&[(Pair, bool)]) -> [String; 4]) -> Observed {
+fn merge_groups(mut groups: Vec<Observed>, losses: Option<&Losses<'_>>) -> Observed {
     let mut merged = groups.remove(0);
     if groups.is_empty() {
         return merged;
@@ -948,16 +997,17 @@ fn merge_groups(mut groups: Vec<Observed>, losses: &dyn Fn(&[(Pair, bool)]) -> [
             .loss_pairs
             .extend(group.loss_pairs.into_iter().filter(|(p, _)| pairs.insert(*p)));
     }
-    merged.losses = losses(&merged.loss_pairs);
+    if let Some(losses) = losses {
+        merged.losses = losses(&merged.loss_pairs);
+    }
     merged
 }
-fn continue_wars(
-    wars: &mut Vec<WarTimeline>,
-    open: &[OpenWar],
-    current: Vec<Observed>,
-    previous: Option<i32>,
-    losses: &dyn Fn(&[(Pair, bool)]) -> [String; 4],
-) -> Vec<OpenWar> {
+
+/// A group's losses from its relations, for a walk that keeps them.
+type Losses<'a> = dyn Fn(&[(Pair, bool)]) -> [String; 4] + 'a;
+/// Each of `current`'s groups' war, as [`continue_wars`] assigns them: the open war it continues
+/// or joins, or a new one, numbered from `wars` in group order.
+fn assignment(wars: usize, open: &[OpenWar], current: &[Observed]) -> Vec<usize> {
     // App rule: greedy one-to-one in native blob order. Choose the earlier
     // group's most continuing bilateral relations; tie: lowest app id.
     // A relation continues by its native identities, so a renamed country keeps its war.
@@ -999,6 +1049,7 @@ fn continue_wars(
                 .extend(observation.relations.iter().map(|r| &r.identity));
         }
     }
+    let mut new = wars;
     for (index, observation) in current.iter().enumerate() {
         if continued[index].is_some() {
             continue;
@@ -1018,7 +1069,34 @@ fn continue_wars(
                 .map(|(id, _)| id)
         });
         let id = joined.unwrap_or_else(|| {
-            let id = wars.len();
+            new += 1;
+            new - 1
+        });
+        continued[index] = Some(id);
+        held.entry(id)
+            .or_default()
+            .extend(observation.relations.iter().map(|r| &r.identity));
+    }
+    continued
+        .into_iter()
+        .map(|id| id.expect("every group continues or starts a war"))
+        .collect()
+}
+fn continue_wars(
+    wars: &mut Vec<WarTimeline>,
+    open: &[OpenWar],
+    current: Vec<Observed>,
+    previous: Option<i32>,
+    losses: Option<&Losses<'_>>,
+) -> Vec<OpenWar> {
+    let continued = assignment(wars.len(), open, &current);
+    let used: HashSet<usize> = continued.iter().copied().collect();
+    // Wars in the native order of their first group. New wars are numbered in group order, so
+    // each first appears as the next war.
+    let mut order: Vec<usize> = Vec::new();
+    let mut groups: HashMap<usize, Vec<Observed>> = HashMap::new();
+    for (observation, id) in current.into_iter().zip(continued) {
+        if id == wars.len() {
             wars.push(WarTimeline {
                 id: id.to_string(),
                 first_hour: observation.data.first_hour,
@@ -1033,20 +1111,7 @@ fn continue_wars(
                 open_relations: HashMap::new(),
                 open_participants: HashMap::new(),
             });
-            id
-        });
-        used.insert(id);
-        continued[index] = Some(id);
-        held.entry(id)
-            .or_default()
-            .extend(observation.relations.iter().map(|r| &r.identity));
-    }
-    drop(held);
-    // Wars in the native order of their first group.
-    let mut order: Vec<usize> = Vec::new();
-    let mut groups: HashMap<usize, Vec<Observed>> = HashMap::new();
-    for (observation, id) in current.into_iter().zip(continued) {
-        let id = id.expect("every group continues or starts a war");
+        }
         if !groups.contains_key(&id) {
             order.push(id);
         }
@@ -1059,7 +1124,9 @@ fn continue_wars(
         let observation = merge_groups(held, losses);
         let hour = observation.data.first_hour;
         append_relations(&mut wars[id], hour, &observation.relations);
-        append_losses(&mut wars[id], hour, observation.losses, previous);
+        if losses.is_some() {
+            append_losses(&mut wars[id], hour, observation.losses, previous);
+        }
         add_observation(&mut wars[id], observation.data, previous);
         next.push(OpenWar {
             id,
@@ -1149,6 +1216,7 @@ fn scan_selected(
         .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
     let (first, last) = branch_bounds(replay, start);
     let mut walk = Walk::new(branch, first);
+    walk.regroup_unchanged = true;
     dashboard_core::blocks::scan_blocks(
         replay,
         replay.index.iter().filter(|b| b.branch == branch),
@@ -1237,6 +1305,17 @@ struct Walk {
     /// continues the walk for exact casualty reads and never finishes a reply.
     labels: bool,
     compared: Vec<TableId>,
+    /// Whether an hour read again that observes the very groups held before still continues
+    /// its wars as a structural change does: only the reference walk the tests compare with.
+    regroup_unchanged: bool,
+    /// Whether each war's loss runs are kept: a query reads its casualties from the prepared
+    /// counters at the hours it asks for instead.
+    losses: bool,
+    /// The Countries and CountryLinks views identities and involved countries were last
+    /// refreshed from: an hour holding the same ones refreshes neither again.
+    identified: Option<[ViewIdentity; 2]>,
+    /// Each held group's war as the last structural change assigned it ([`assignment`]).
+    assigned: Vec<usize>,
 }
 impl Walk {
     fn new(branch: u64, first: i32) -> Self {
@@ -1255,9 +1334,14 @@ impl Walk {
             country_labels: Default::default(),
             labels: true,
             compared: compared_tables(),
+            regroup_unchanged: false,
+            losses: true,
+            identified: None,
+            assigned: Vec::new(),
         }
     }
-    /// Observes `decoded`, its hour `ready` when it was read ahead from this frame.
+    /// Observes `decoded`, its hour `ready` when it was read ahead from this frame. The hour it
+    /// held before, when this replaced it, is returned for the caller to free.
     fn observe(
         &mut self,
         decoded: &DecodedFrame,
@@ -1265,7 +1349,7 @@ impl Walk {
         identities: Option<&HashSet<(u32, u32)>>,
         cat: Option<&Catalogue>,
         ready: Option<ReadyHour>,
-    ) {
+    ) -> Option<HeldHour> {
         if self.labels {
             self.country_labels.observe(decoded, cat);
         }
@@ -1315,15 +1399,37 @@ impl Walk {
         });
         // The groups the hour opens, built ahead with its read.
         let mut opened = None;
+        // An hour read again that observes the very groups held before changes only its losses.
+        let mut regrouped = false;
+        let mut released = None;
         if !same {
             let read = ready.map(|ready| {
                 opened = ready.opened;
                 ready.read
             });
+            let before = self.held.take();
             self.hold(decoded, view, identities, cat, read);
+            regrouped = !self.regroup_unchanged
+                && before
+                    .as_ref()
+                    .zip(self.held.as_ref())
+                    .is_some_and(|(before, held)| same_groups(before, held));
+            released = before;
         }
+        let countries =
+            [TableId::Countries, TableId::CountryLinks].map(|table| &decoded.tables[table.index()]);
+        let identified = self
+            .identified
+            .as_ref()
+            .is_some_and(|seen| seen.iter().zip(countries).all(|(seen, view)| seen.is(view)));
         if let Ok((inputs, observed)) = &self.held.as_ref().expect("held hour").observed {
-            if self.labels && (!same || self.previous.is_none()) {
+            let viewpoint = inputs.identities.get(&inputs.view).copied();
+            // The same groups of the same countries, seen by the same viewpoint, involve no
+            // country they did not.
+            if self.labels
+                && (self.previous.is_none()
+                    || (!same && !(identified && regrouped && self.previous_view == viewpoint)))
+            {
                 self.country_labels.include(inputs, observed);
             }
             append_viewpoint(&mut self.reply, inputs, hour);
@@ -1339,7 +1445,11 @@ impl Walk {
                 self.open.clear();
             }
             self.previous_view = view;
-            if same
+            // The very groups held before continue as losses alone only while continuing them
+            // would assign each to the war it holds: overlapping groups can trade wars.
+            if (same
+                || regrouped
+                    && assignment(self.reply.wars.len(), &self.open, observed) == self.assigned)
                 && self.previous.is_some()
                 && self.open.iter().map(|war| war.groups).sum::<usize>() == observed.len()
             {
@@ -1347,7 +1457,9 @@ impl Walk {
                 // side lists, membership sets or relation runs are rebuilt.
                 for open in &self.open {
                     let war = &mut self.reply.wars[open.id];
-                    append_losses(war, hour, inputs.losses(&open.loss_pairs), self.previous);
+                    if self.losses {
+                        append_losses(war, hour, inputs.losses(&open.loss_pairs), self.previous);
+                    }
                     append_relations(war, hour, &open.relations);
                     war.last_hour = hour;
                     war.observations
@@ -1368,17 +1480,21 @@ impl Walk {
                 }
                 let observations = opened
                     .take()
-                    .unwrap_or_else(|| opening(inputs, observed, hour));
+                    .unwrap_or_else(|| opening(inputs, observed, hour, self.losses));
+                let losses = |pairs: &[(Pair, bool)]| inputs.losses(pairs);
+                self.assigned = assignment(self.reply.wars.len(), &self.open, &observations);
                 self.open = continue_wars(
                     &mut self.reply.wars,
                     &self.open,
                     observations,
                     self.previous,
-                    &|pairs| inputs.losses(pairs),
+                    self.losses.then_some(&losses as &Losses<'_>),
                 );
             }
-            // Unchanged inputs after an observed hour leave every identity as it was.
-            if !same || self.previous.is_none() {
+            // Unchanged inputs after an observed hour, or the same countries, leave every
+            // identity as it was.
+            if self.previous.is_none() || (!same && !identified) {
+                self.identified = Some(countries.map(|view| view.identity()));
                 self.identity_since.retain(|raw, _| {
                     inputs
                         .raw_to_slot
@@ -1444,6 +1560,7 @@ impl Walk {
             self.identity_since.clear();
             self.held = None;
         }
+        released
     }
     /// Hold the inputs `view` reads at `decoded` and the groups it observes there, `ready` when
     /// they were read ahead from this frame.
@@ -1461,7 +1578,8 @@ impl Walk {
                 .iter()
                 .map(|table| decoded.tables[table.index()].identity())
                 .collect(),
-            observed: ready.unwrap_or_else(|| read_hour(decoded, view, identities, cat)),
+            observed: ready
+                .unwrap_or_else(|| read_hour(decoded, view, identities, cat, self.losses)),
         });
     }
     /// Extend unchanged inputs across accepted hours without walking those hours.
@@ -1510,6 +1628,13 @@ impl Walk {
     /// are collected for a reply. Its size follows the open wars, not the
     /// hours they lasted.
     fn resumable(&self) -> Self {
+        Self {
+            held: self.held.clone(),
+            ..self.unheld()
+        }
+    }
+    /// [`Self::resumable`] without the held hour, which a resume point reads again.
+    fn unheld(&self) -> Self {
         let open: HashSet<usize> = self.open.iter().map(|war| war.id).collect();
         let wars = self
             .reply
@@ -1562,10 +1687,14 @@ impl Walk {
             identity_since: Default::default(),
             warnings: BTreeSet::new(),
             last_frame: self.last_frame,
-            held: self.held.clone(),
+            held: None,
             country_labels: Default::default(),
             labels: false,
             compared: self.compared.clone(),
+            regroup_unchanged: self.regroup_unchanged,
+            losses: self.losses,
+            identified: None,
+            assigned: self.assigned.clone(),
         }
     }
     fn finish(mut self, last: i32, cat: Option<&Catalogue>) -> io::Result<WarsReply> {

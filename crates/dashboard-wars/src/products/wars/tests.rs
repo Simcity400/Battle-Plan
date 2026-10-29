@@ -372,7 +372,7 @@ fn label_catalogue_resolves_only_changed_naming_inputs_and_their_subjects() {
     labels.observe(&first, Some(&cat));
     assert_eq!(labels.resolutions, 3);
     let inputs = Hour::read(&first, None).unwrap();
-    labels.include(&inputs, &inputs.observe(&first, Some(&cat)));
+    labels.include(&inputs, &inputs.observe(&first, Some(&cat), true));
 
     let mut daily = first.clone();
     for day in 1..=10 {
@@ -977,7 +977,7 @@ fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
         &[],
         vec![group(1, &["1"], &["2", "3"], &[(1, 2, 0), (1, 3, 0)])],
         None,
-        &pairs_losses,
+        Some(&pairs_losses),
     );
     // 1 declares on 4: the game lists 4 in a second group, still named for 1--2,
     // in either order.
@@ -989,7 +989,13 @@ fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
         if order {
             current.reverse();
         }
-        open = continue_wars(&mut wars, &open, current, Some(hour - 1), &pairs_losses);
+        open = continue_wars(
+            &mut wars,
+            &open,
+            current,
+            Some(hour - 1),
+            Some(&pairs_losses),
+        );
         assert_eq!(open.len(), 1);
         assert_eq!((open[0].id, open[0].groups), (0, 2));
         assert_eq!(wars.len(), 1, "no war starts for the listed declaration");
@@ -1009,7 +1015,7 @@ fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
         &[],
         vec![group(1, &["1"], &["2"], &[(1, 2, 0)])],
         None,
-        &pairs_losses,
+        Some(&pairs_losses),
     );
     let next = continue_wars(
         &mut wars,
@@ -1019,9 +1025,31 @@ fn a_declaration_listed_beside_the_war_it_is_named_for_joins_that_war() {
             group(2, &["1"], &["5", "2"], &[(1, 5, 2), (1, 2, 0)]),
         ],
         Some(1),
-        &pairs_losses,
+        Some(&pairs_losses),
     );
     assert_eq!(next.iter().map(|war| war.id).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(wars.len(), 2);
+}
+#[test]
+fn the_same_nested_groups_can_continue_other_wars() {
+    // A within B within C, each named for a relation outside the smaller group.
+    let a = || group(1, &["1"], &["2"], &[(1, 2, 0)]);
+    let b = || group(1, &["1"], &["2", "3"], &[(1, 3, 0), (1, 2, 0)]);
+    let c = || {
+        group(
+            1,
+            &["1"],
+            &["2", "3", "4"],
+            &[(1, 4, 0), (1, 3, 0), (1, 2, 0)],
+        )
+    };
+    let mut wars = Vec::new();
+    let open = continue_wars(&mut wars, &[], vec![a(), b()], None, Some(&unmerged));
+    assert_eq!(assignment(wars.len(), &open, &[b(), c()]), [1, 0]);
+    let open = continue_wars(&mut wars, &open, vec![b(), c()], Some(1), Some(&unmerged));
+    // Both open wars now hold all of B: the tie goes to the lower id, so continuing the very
+    // same groups trades their wars, and a walk takes the structural path rather than losses.
+    assert_eq!(assignment(wars.len(), &open, &[b(), c()]), [0, 1]);
     assert_eq!(wars.len(), 2);
 }
 #[test]
@@ -1032,14 +1060,14 @@ fn a_renamed_opponent_keeps_its_war() {
         &[],
         vec![group(1, &["1"], &["2"], &[(1, 2, 0)])],
         None,
-        &unmerged,
+        Some(&unmerged),
     );
     // The same native relation, its opponent now under another tag.
     let mut renamed = group(2, &["1"], &["RENAMED"], &[(1, 2, 0)]);
     for relation in &mut renamed.relations {
         relation.second = "RENAMED".into();
     }
-    let next = continue_wars(&mut wars, &open, vec![renamed], Some(1), &unmerged);
+    let next = continue_wars(&mut wars, &open, vec![renamed], Some(1), Some(&unmerged));
     assert_eq!(next.iter().map(|war| war.id).collect::<Vec<_>>(), [0]);
     assert_eq!(wars.len(), 1);
     assert!(wars[0].ended_by);
@@ -1058,14 +1086,14 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &[],
         vec![observation(1, &[(1, 2, 0), (1, 3, 0)])],
         None,
-        &unmerged,
+        Some(&unmerged),
     );
     let split = continue_wars(
         &mut wars,
         &open,
         vec![observation(2, &[(1, 2, 0)]), observation(2, &[(1, 3, 0)])],
         Some(1),
-        &unmerged,
+        Some(&unmerged),
     );
     assert_eq!(split.iter().map(|war| war.id).collect::<Vec<_>>(), vec![0, 1]);
     let merge = continue_wars(
@@ -1073,7 +1101,7 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &split,
         vec![observation(3, &[(1, 2, 0), (1, 3, 0)])],
         Some(2),
-        &unmerged,
+        Some(&unmerged),
     );
     assert_eq!(merge[0].id, 0);
     assert!(!wars[1].ended_by);
@@ -1083,7 +1111,7 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &merge,
         vec![observation(4, &[(1, 2, 4)])],
         Some(3),
-        &unmerged,
+        Some(&unmerged),
     );
     assert_eq!(restarted[0].id, 2);
     assert!(!wars[0].ended_by && !wars[2].started_by);
@@ -1092,7 +1120,7 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
         &[],
         vec![observation(6, &[(1, 2, 4)])],
         None,
-        &unmerged,
+        Some(&unmerged),
     );
     assert_eq!(after_gap[0].id, 3);
     assert!(wars[2].ended_by && wars[3].started_by);
@@ -1223,7 +1251,7 @@ fn casualty_only_hours_reuse_groups_and_observations_with_exact_dated_losses() {
     next.tables[TableId::WarRelations.index()] =
         TableView::Complete(TableRows::WarRelations(rows.clone())).into();
     let mut inputs = Hour::read(&first, None).unwrap();
-    let before = inputs.observe(&first, None);
+    let before = inputs.observe(&first, None, true);
     assert!(inputs.refresh_losses(&next));
     assert_eq!(
         inputs.losses(&before[0].loss_pairs)[0],
@@ -1365,7 +1393,13 @@ fn overlapping_groups_keep_casualties_out_of_membership_reply_size() {
                 "-7".into(),
             ];
         }
-        open = continue_wars(&mut wars, &open, current, hour.checked_sub(1), &unmerged);
+        open = continue_wars(
+            &mut wars,
+            &open,
+            current,
+            hour.checked_sub(1),
+            Some(&unmerged),
+        );
     }
     assert_eq!(wars.len(), 4);
     assert!(
