@@ -4,7 +4,7 @@ use crate::{
     Source,
     catalogue::{self, View},
     content, invalid,
-    metadata::check_cancel,
+    metadata::{self, check_cancel},
 };
 use replay::container::SeekResult;
 use replay_data::rows::{TableId, tables};
@@ -35,12 +35,10 @@ pub const TABLES: [TableId; 13] = [
 ];
 
 fn selected_tables() -> Vec<TableId> {
-    // The shared scoped-text/trigger inputs are also used by focus artwork and
-    // event descriptions. Authored effects and generated prose can reach all
-    // of them, including through scripted effects and localisation.
+    // Authored effects and generated prose can reach every effect operand,
+    // including through scripted effects and localisation.
     let mut selected = BTreeSet::from(TABLES);
-    selected.extend(crate::scripted_text::TABLES.iter().copied());
-    selected.insert(TableId::Clock);
+    selected.extend(crate::effect_description::recorded_tables());
     selected.into_iter().collect()
 }
 
@@ -280,6 +278,23 @@ fn text(bytes: &[u8]) -> io::Result<String> {
         .map_err(|_| invalid("1 doctrine text value has unsupported UTF-8 bytes"))
 }
 
+/// The country holding `tag` this hour, as every per-country product resolves it.
+fn doctrine_country<'a>(
+    frame: &'a DecodedFrame,
+    tag: &str,
+) -> io::Result<(&'a replay_data::rows::CountryRow, u32)> {
+    let (countries, links) = metadata::country_tables(frame)?;
+    match metadata::tagged_country(countries, links, tag) {
+        metadata::TaggedCountry::Found(country, slot) => Ok((country, slot)),
+        metadata::TaggedCountry::Absent => Err(invalid(
+            "Selected doctrine country is not recorded at this hour",
+        )),
+        metadata::TaggedCountry::Unresolved => Err(invalid(
+            "Selected doctrine country identity is unresolved at this hour",
+        )),
+    }
+}
+
 fn project(
     frame: &DecodedFrame,
     params: &DoctrineParams,
@@ -287,12 +302,7 @@ fn project(
     localisation: &installed_content_localisation::localisation::Localisation,
     default_reward: Option<i64>,
 ) -> io::Result<DoctrineReply> {
-    let country = frame
-        .complete::<tables::Countries>()?
-        .iter()
-        .find(|row| row.tag == params.tag.as_bytes())
-        .ok_or_else(|| invalid("Selected doctrine country is not recorded at this hour"))?;
-    let slot = country.canonical_slot;
+    let (country, slot) = doctrine_country(frame, &params.tag)?;
     let status = frame
         .complete::<tables::DoctrineCountries>()?
         .iter()
@@ -542,12 +552,7 @@ fn enrich(
         effect_description::{self, Context},
         scripted_text::{EventObject, EventScope, EventScopes, ScriptedText},
     };
-    let country = frame
-        .complete::<tables::Countries>()?
-        .iter()
-        .find(|row| row.tag == reply.tag.as_bytes())
-        .ok_or_else(|| invalid("Doctrine country missing"))?;
-    let slot = country.canonical_slot;
+    let (_, slot) = doctrine_country(frame, &reply.tag)?;
     let content = catalogue.scripted_content().map_err(invalid)?;
     let scripted = ScriptedText::new(frame, &catalogue.localisation, content, slot);
     let context = Context::new(
@@ -826,12 +831,21 @@ mod tests {
             }),
         };
         for rows in [
-            TableRows::Countries(vec![CountryRow {
-                id: 91,
-                canonical_slot: 5_000,
-                tag: b"MOD".to_vec(),
-                ..Default::default()
-            }]),
+            // An earlier holder of the tag the links do not resolve is never the selected country.
+            TableRows::Countries(vec![
+                CountryRow {
+                    id: 5,
+                    canonical_slot: 9,
+                    tag: b"MOD".to_vec(),
+                    ..Default::default()
+                },
+                CountryRow {
+                    id: 91,
+                    canonical_slot: 5_000,
+                    tag: b"MOD".to_vec(),
+                    ..Default::default()
+                },
+            ]),
             TableRows::CountryLinks(vec![CountryLinkRow {
                 id: 91,
                 canonical_slot: 5_000,
@@ -1073,11 +1087,10 @@ mod tests {
     fn doctrine_description_selection_uses_shared_scoped_inputs() {
         let selected = selected_tables();
         assert!(
-            crate::scripted_text::TABLES
-                .iter()
-                .all(|table| selected.contains(table))
+            crate::effect_description::recorded_tables().all(|table| selected.contains(&table))
         );
         assert!(selected.contains(&TableId::Clock));
+        assert!(selected.contains(&TableId::TimedIdeas));
         assert_eq!(
             selected.iter().copied().collect::<BTreeSet<_>>().len(),
             selected.len()
@@ -1109,6 +1122,10 @@ mod tests {
         };
         for rows in [
             TableRows::Countries(vec![country]),
+            TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 91,
+                canonical_slot: 5_000,
+            }]),
             TableRows::LexicalTokens(vec![LexicalTokenRow {
                 token: 1,
                 literal: b"mod_folder".to_vec(),
@@ -1179,10 +1196,16 @@ mod tests {
             .is_err()
         );
         *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
-                id: 92,
-                canonical_slot: 5_000,
-            }]));
+            TableView::Complete(TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 91,
+                    canonical_slot: 5_000,
+                },
+                CountryLinkRow {
+                    id: 92,
+                    canonical_slot: 5_000,
+                },
+            ]));
         assert!(
             project(
                 &frame,
@@ -1193,5 +1216,90 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn doctrine_country_is_the_first_link_resolved_holder_of_the_tag() {
+        let country = |id, canonical_slot| CountryRow {
+            id,
+            canonical_slot,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        };
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 7,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+        };
+        for rows in [
+            TableRows::Countries(vec![country(5, 9), country(9_001, 7)]),
+            TableRows::CountryLinks(vec![CountryLinkRow {
+                id: 9_001,
+                canonical_slot: 7,
+            }]),
+            TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 1,
+                literal: b"slot_seven".to_vec(),
+            }]),
+            // The unlinked row's slot has a status of its own that must not be read.
+            TableRows::DoctrineCountries(vec![
+                DoctrineCountryRow {
+                    slot: 7,
+                    country: 9_001,
+                    ..Default::default()
+                },
+                DoctrineCountryRow {
+                    slot: 9,
+                    country: 5,
+                    ..Default::default()
+                },
+            ]),
+            TableRows::DoctrineFolders(vec![
+                DoctrineFolderRow {
+                    slot: 9,
+                    ordinal: 3,
+                    folder: 1,
+                    ..Default::default()
+                },
+                DoctrineFolderRow {
+                    slot: 7,
+                    ordinal: 1,
+                    folder: 1,
+                    ..Default::default()
+                },
+            ]),
+        ] {
+            let id = rows.table();
+            *frame.tables[id.index()] = TableView::Complete(rows);
+        }
+        let params = DoctrineParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            hour: 7,
+        };
+        let read = |frame: &DecodedFrame| {
+            project(frame, &params, &Default::default(), &Default::default(), None)
+        };
+        let reply = read(&frame).unwrap();
+        assert_eq!(
+            reply
+                .folders
+                .iter()
+                .map(|folder| folder.ordinal)
+                .collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(doctrine_country(&frame, "GER").unwrap().1, 7);
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(Vec::new()));
+        let unresolved = read(&frame).unwrap_err().to_string();
+        assert!(unresolved.contains("unresolved"), "{unresolved}");
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(Vec::new()));
+        let absent = read(&frame).unwrap_err().to_string();
+        assert!(absent.contains("not recorded"), "{absent}");
     }
 }

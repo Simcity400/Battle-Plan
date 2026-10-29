@@ -23,9 +23,11 @@ export const KINDS = [
 export type KindKey = typeof KINDS[number]['key'];
 
 const text = (value: unknown) => value === null || typeof value === 'string';
+const isSpans = (value: unknown) => Array.isArray(value) && value.every(span => object(span) && Number.isSafeInteger(span.firstHour)
+  && Number.isSafeInteger(span.lastHour) && (span.firstHour as number) <= (span.lastHour as number));
 export function validateLedger(value: unknown): MarketLedgerReply {
   return validateEconomyReply<MarketLedgerReply>(value, reply => (reply.total === null || typeof reply.total === 'string' && /^\d+$/.test(reply.total))
-    && text(reply.next) && isEconomyRuns(reply.known) && isHolderMap(reply.holders) && isVariantNames(reply.variants)
+    && text(reply.next) && isEconomyRuns(reply.known) && isHolderMap(reply.holders) && isSpans(reply.identified) && isVariantNames(reply.variants)
     && Array.isArray(reply.rows) && reply.rows.every(row => object(row) && typeof row.id === 'string' && Number.isSafeInteger(row.hour)
       && Number.isSafeInteger(row.kind) && typeof row.contract === 'string' && text(row.seller) && text(row.buyer)
       && typeof row.variant === 'string' && text(row.amountRaw) && typeof row.totalRaw === 'string' && text(row.reason)), 'market ledger');
@@ -92,10 +94,14 @@ export interface LedgerItem {
 }
 
 export function ledgerRows(reply: MarketLedgerReply, page: number): LogRow<LedgerItem>[] {
-  return reply.rows.map(row => ({ key: `${page}:${row.id}`, id: row.id, hour: row.hour, item: {
-    row, seller: row.seller === null ? null : tagAt(reply.holders[row.seller], row.hour),
-    buyer: row.buyer === null ? null : tagAt(reply.holders[row.buyer], row.hour), parties: partiesOf(reply.holders, [row.seller, row.buyer]),
-    equipment: row.variant === '0' ? null : variantNameAt(reply.variants[row.variant], row.hour) } }));
+  return reply.rows.map(row => {
+    // A party's tag at the row's hour is known only where that hour's identities were read.
+    const identified = reply.identified.some(span => span.firstHour <= row.hour && row.hour <= span.lastHour);
+    const party = (holder: string | null) => holder === null || !identified ? null : tagAt(reply.holders[holder], row.hour);
+    return { key: `${page}:${row.id}`, id: row.id, hour: row.hour, item: {
+      row, seller: party(row.seller), buyer: party(row.buyer), parties: partiesOf(reply.holders, [row.seller, row.buyer]),
+      equipment: row.variant === '0' ? null : variantNameAt(reply.variants[row.variant], row.hour) } };
+  });
 }
 
 /** The cursor of each page a ledger can ask for: page 0 has
@@ -139,8 +145,8 @@ export function extendCursors(first: MarketLedgerReply, next: readonly string[],
 }
 
 /** Why an empty ledger is empty through `hour`: still being prepared, no
- * occurrences in hours the market was read at all of them, in only some, or
- * the market's occurrences never read in the branch through that hour. */
+ * occurrences in hours they are known (`known`: read, and for chosen countries
+ * with every party named) at all of them, in only some, or at none. */
 export type LedgerEmpty = 'pending' | 'none' | 'partial' | 'unrecorded';
 
 export function ledgerEmpty(reply: MarketLedgerReply, firstHour: number, hour: number): LedgerEmpty {
@@ -158,8 +164,8 @@ export function ledgerEmpty(reply: MarketLedgerReply, firstHour: number, hour: n
 export const LEDGER_EMPTY: Record<LedgerEmpty, string> = {
   pending: 'Market activity for this time is still being prepared.',
   none: 'No market activity matches these settings.',
-  partial: 'No market activity matches these settings in the hours the market was recorded. Some hours weren’t recorded.',
-  unrecorded: 'Market activity wasn’t recorded up to this time.',
+  partial: 'No market activity matches these settings in the hours it is known. Other hours aren’t known.',
+  unrecorded: 'Market activity up to this time isn’t known.',
 };
 
 /** The kinds a widget's toggles leave on; the unavailable-amount occurrences follow deliveries. */

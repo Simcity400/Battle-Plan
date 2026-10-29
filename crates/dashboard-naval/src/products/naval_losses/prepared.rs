@@ -960,9 +960,31 @@ fn candidates(
     }
     Ok(tags)
 }
-/// Reply construction, identity selection and Top-N clipping stay in the original product.
+/// Whether a holder of this channel with a late correction has an identity within `range`.
+fn corrected_within(
+    actors: &BTreeMap<String, u64>,
+    metadata: &Metadata,
+    index: usize,
+    range: (i32, i32),
+) -> io::Result<bool> {
+    for (identity, &holder) in actors {
+        if !metadata.corrected.contains(&(holder * 12 + index as u64)) {
+            continue;
+        }
+        let identity: Identity = serde_json::from_str(identity)?;
+        if metadata.scan.country_identities.values().flatten().any(|span| {
+            span.identity == identity && span.first_hour <= range.1 && span.last_hour >= range.0
+        }) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Each candidate's exact runs over `range`, every correction applied: what a
+/// windowed reply ranks and clips to the Top N.
 #[allow(clippy::too_many_arguments)]
-fn window_reply(
+fn window_series(
     store: &store::Store,
     key: &store::SourceKey,
     actors: &BTreeMap<String, u64>,
@@ -971,7 +993,7 @@ fn window_reply(
     params: &NavalLossesParams,
     range: Option<(i32, i32)>,
     flag: &AtomicBool,
-) -> io::Result<NavalLossesReply> {
+) -> io::Result<BTreeMap<String, Vec<NavalLossRun>>> {
     let branch: u64 = params.branch_id.parse().expect("validated branch");
     let index = channel(params);
     if let Some(error) = &metadata.errors[index] {
@@ -991,7 +1013,6 @@ fn window_reply(
     )?;
     let mut corrections_reader =
         Reader::new(store, key, format!("naval-loss-corrections-{branch}"), flag)?;
-    let mut scan = metadata.scan.clone();
     let mut series = BTreeMap::new();
     let tags = if let Some(range) = range {
         if params.top.is_some() {
@@ -1043,6 +1064,24 @@ fn window_reply(
         }
         series.insert(tag, runs);
     }
+    Ok(series)
+}
+/// Reply construction, identity selection and Top-N clipping stay in the original product.
+#[allow(clippy::too_many_arguments)]
+fn window_reply(
+    store: &store::Store,
+    key: &store::SourceKey,
+    actors: &BTreeMap<String, u64>,
+    metadata: &Metadata,
+    histories: &RecordedHistories,
+    params: &NavalLossesParams,
+    range: Option<(i32, i32)>,
+    flag: &AtomicBool,
+) -> io::Result<NavalLossesReply> {
+    let branch: u64 = params.branch_id.parse().expect("validated branch");
+    let index = channel(params);
+    let series = window_series(store, key, actors, metadata, histories, params, range, flag)?;
+    let mut scan = metadata.scan.clone();
     if let Some((first, last)) = range {
         let mut reads = Reader::new(store, key, format!("naval-loss-reads-{branch}"), flag)?;
         for (id, out) in [(0, &mut scan.ship_reads), (1, &mut scan.convoy_reads)] {
@@ -1819,12 +1858,33 @@ fn series_query(
     };
     let mut sampled = BTreeMap::<String, Vec<NavalLossRun>>::new();
     let mut lines = Vec::new();
+    // Stored ranks predate late corrections, which can move every country's rank: with a
+    // corrected holder in the view, dense membership comes from one exact ranking of the
+    // view with every correction applied.
+    let range = (from.floor() as i32, to.floor() as i32);
+    let corrected_ranks = match selection.top {
+        Some(top) if reached.is_none() && corrected_within(actors, metadata, index, range)? => {
+            let series = window_series(store, key, actors, metadata, history, selection, Some(range), flag)?;
+            Some(dashboard_base::ranking::top_membership(
+                &series,
+                top as usize,
+                |run| (run.first_hour, run.last_hour),
+                |run| amount(run, selection.kind),
+                flag,
+            )?)
+        }
+        _ => None,
+    };
     for tag in wanted {
         check_cancel(flag)?;
         let Some(&tag_key) = metadata.tags.get(&tag) else {
             continue;
         };
-        if let Some(top) = selection.top {
+        if let Some(membership) = &corrected_ranks {
+            if !membership.contains_key(&tag) {
+                continue;
+            }
+        } else if let Some(top) = selection.top {
             let ranked = ranks.summary(tag_key * 2 + 1, bounds, (from, to, 1), 0)?;
             let corrected = history.countries.get(&tag).is_some_and(|country| {
                 country.identities.iter().any(|identity| {
@@ -1845,7 +1905,37 @@ fn series_query(
                 continue;
             }
         }
-        let spans = holder_spans(&tag, selection, &selected, actors, history, within)?;
+        let mut spans = holder_spans(&tag, selection, &selected, actors, history, within)?;
+        // A dense line holds only the hours its country ranks within the top, ending where it
+        // leaves the selection.
+        if let Some(top) = selection.top
+            && reached.is_none()
+        {
+            let ranked = match &corrected_ranks {
+                Some(membership) => membership.get(&tag).cloned().unwrap_or_default(),
+                None => ranks.top_spans(tag_key * 2 + 1, bounds, view, top as usize, &[])?,
+            };
+            let mut pieces = Vec::new();
+            dashboard_base::ranking::for_each_piece(
+                &spans,
+                &ranked,
+                |span| (span.1, span.2),
+                flag,
+                |&(holder, first, _, starts), first_hour, last_hour| {
+                    pieces.push((
+                        holder,
+                        first_hour,
+                        last_hour,
+                        starts.filter(|_| first_hour == first),
+                    ));
+                    Ok(())
+                },
+            )?;
+            if pieces.is_empty() {
+                continue;
+            }
+            spans = pieces;
+        }
         let mut summary = corrected_summary(
             &mut values,
             &mut correction_reader,
@@ -1857,7 +1947,7 @@ fn series_query(
             selection,
             7,
         )?;
-        if let Some(top) = selection.top {
+        if selection.top.is_some() {
             if let Some(reached) = &reached {
                 let exact = reached.series.iter().find(|series| series.tag == tag);
                 for bucket in &mut summary.buckets {
@@ -1889,16 +1979,6 @@ fn series_query(
                         .collect()
                 });
             } else {
-                let membership = ranks.summary(tag_key * 2 + 1, bounds, view, 0)?;
-                let corrected = spans.iter().any(|&(holder, _, _, _)| {
-                    metadata.corrected.contains(&(holder * 12 + index as u64))
-                });
-                // Approved D-12: the same min-rank bucket mask as army, retaining corrected candidates.
-                for (bucket, rank) in summary.buckets.iter_mut().zip(membership.buckets) {
-                    if !corrected && rank.is_none_or(|rank| rank.min_value > f64::from(top)) {
-                        *bucket = None;
-                    }
-                }
                 summary.runs = None;
             }
         }

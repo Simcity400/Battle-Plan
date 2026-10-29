@@ -60,8 +60,9 @@ export interface SubjectView {
 }
 
 export interface OverlordView {
-  /** Native holders proved on either endpoint of this overlord's relations. */
-  countryIds: ReadonlySet<string>;
+  /** Native holders proved on either endpoint of this overlord's relations, with the
+   * first hour each was. */
+  countryIds: ReadonlyMap<string, number>;
   /** Unique within the reply: its overlord holder. */
   key: string;
   subjects: SubjectView[];
@@ -137,10 +138,10 @@ export function overlordViews(reply: SubjectReply, lineage: Lineage = new Lineag
     firstObserved.set(overlord, [...lanes.values()].reduce((first, runs) => Math.min(first, runs[0].firstHour), Infinity));
   }
   return [...groups].map(([key, subjects]) => ({
-    key, subjects, countryIds: identities?.keysDuring(subjects.flatMap(subject => subject.runs.flatMap(run => [
+    key, subjects, countryIds: identities?.firstHoursDuring(subjects.flatMap(subject => subject.runs.flatMap(run => [
       { tag: run.overlord, firstHour: run.firstHour, lastHour: run.lastHour },
       { tag: run.subject, firstHour: run.firstHour, lastHour: run.lastHour },
-    ]))) ?? new Set(),
+    ]))) ?? new Map(),
     counts: withoutHours(coverCounts(subjects.flatMap(view => view.runs)), unobserved),
     firstSince: subjects.reduce((least, view) => Math.min(least, since(view)), Infinity),
     lineage, identities, identityGaps, unknown: unobserved,
@@ -223,7 +224,8 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
     && (options.ended || runState(view.stretches, hour, unread).kind !== 'ended'));
   const heldCount = (overlord: OverlordView) => overlord.counts.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
-  const involves = (overlord: OverlordView) => { for (const key of overlord.countryIds) if (chosen!.has(key)) return true; return false; };
+  // Only relations begun by the hour involve a country: a later one admits nothing yet.
+  const involves = (overlord: OverlordView) => { for (const [key, since] of overlord.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
   const overlords = views.filter(view => shownSubjects(view).length && (!chosen || involves(view)));
   // Each overlord's tag and subjects at the hour, found once rather than in every comparison.
   const tags = new Map(overlords.map(view => [view, overlordTagAt(view, hour)]));

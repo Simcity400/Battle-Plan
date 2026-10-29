@@ -86,6 +86,10 @@ impl OutputScan {
             let id = project.id.parse().expect("native construction handle");
             self.projects.insert(id, Some(index));
             self.active.insert(id);
+            // A census now owns the line: only its output read before this stays unattributed.
+            if let Some(gap) = self.unattributed.remove(&id) {
+                log.output_unknown[gap].until.get_or_insert(frame.hour);
+            }
         }
         self.indexed = log.projects.len();
         let rows = frame.complete::<tables::ConstructionLineOutput>().ok();

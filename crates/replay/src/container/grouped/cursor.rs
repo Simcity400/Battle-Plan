@@ -45,8 +45,8 @@ impl DiagnosticsCursor {
             u64::try_from(value).map_err(|_| invalid_static("grouped metric outside its range"))
         };
         let total_ns = u64_from(i128::try_from(input.varint()?).unwrap_or(-1))?;
-        self.pool = u64_from(i128::from(self.pool) + unzigzag(input.varint()?))?;
-        self.dropped = u64_from(i128::from(self.dropped) + unzigzag(input.varint()?))?;
+        self.pool = metric_after(self.pool, input.varint()?)?;
+        self.dropped = metric_after(self.dropped, input.varint()?)?;
         for (byte, change) in self
             .reads
             .iter_mut()

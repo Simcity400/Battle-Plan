@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { FAILED_FACT, MAX_NAME_HOURS } from './countryFacts.ts';
+import { FAILED_FACT } from './countryFacts.ts';
 import type { FactSpec, NameAt } from './countryFacts';
 import { nameKey, useCountryFactsAt, useCountryFactsRead, useCountryNamesRead } from './countryNamesAt.ts';
 import type { BoundTrack } from './model';
@@ -104,7 +104,7 @@ export function flagReadMetadata(read: FlagRead | null | undefined | typeof FAIL
  * keyed by `nameKey`, held and released as `useCountryFactsAt` holds names. A flag
  * the recording does not give at its hour is absent: nothing shows in its place. */
 export function useCountryFlagsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  size: CountryFlagSize = 'panel', maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
+  size: CountryFlagSize = 'panel', maxHours = Infinity, attempt = 0): ReadonlyMap<string, string> {
   return useCountryFactsAt(client, track, wanted, active, flagSpec(size), maxHours, attempt);
 }
 
@@ -116,11 +116,11 @@ export type CountryLabel = (tag: string) => { name: string; flag?: string; known
 /** Countries named and flagged as the recording showed them at their hours (such as
  * a trade partner at the read behind a tooltip), never a later identity. Only the
  * countries `wanted` are asked for; until their names arrive the title says it is
- * loading, and where the recording has none it says unavailable. Callers with
- * more distinct drawn hours can pass their own `maxHours`. `revision`
+ * loading, and where the recording has none it says unavailable. Every hour wanted
+ * is read unless the caller bounds them with `maxHours`. `revision`
  * changes as names and flags arrive, for a chart to redraw. */
 export function useCountryLabelsAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = MAX_NAME_HOURS) {
+  maxHours = Infinity) {
   const names = useCountryNamesRead(client, track, wanted, active, maxHours);
   const flags = useCountryFactsRead(client, track, wanted, active, flagReadSpec('panel'), maxHours);
   const labelAt = useCallback((hour: number): CountryLabel => tag => {

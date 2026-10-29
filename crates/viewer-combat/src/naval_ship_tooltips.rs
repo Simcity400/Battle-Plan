@@ -436,7 +436,7 @@ fn member_tooltip(
             ("STATUS", Argument::Text(&status)),
         ],
     )?;
-    let strength = ratio(row.strength, row.maximum_hit_points.max(100));
+    let strength = ratio(row.strength, row.maximum_hit_points.max(100))?;
     let strength_text = builtin(
         icons,
         loc,
@@ -452,7 +452,7 @@ fn member_tooltip(
     };
     text.push_str(&format!("\u{11}{colour}{strength_text}\u{11}!"));
     let maximum = super::naval_details::organisation_maximum(row)?;
-    let organisation = ratio(row.organisation, maximum);
+    let organisation = ratio(row.organisation, maximum)?;
     text.push_str(&builtin(
         icons,
         loc,
@@ -708,11 +708,14 @@ fn evacuation_names(
 
 /// Divide the current amount by its maximum, floored at 100.
 /// The recorded row already contains both operands.
-fn ratio(value: i64, maximum: i64) -> i64 {
+fn ratio(value: i64, maximum: i64) -> Result<i64, String> {
     if maximum == 0 || value == i64::MAX {
-        return 0xffff_ffff;
+        return Ok(0xffff_ffff);
     }
-    value.wrapping_mul(100_000) / maximum
+    value
+        .wrapping_mul(100_000)
+        .checked_div(maximum)
+        .ok_or_else(|| format!("the game's division of {value} by {maximum} traps"))
 }
 
 /// six fixed5 received-damage lanes. Only five have detailed

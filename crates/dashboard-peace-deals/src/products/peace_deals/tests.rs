@@ -1669,6 +1669,71 @@ fn complete_reply_uses_shared_transport_budget_without_shortening_payloads() {
     );
 }
 
+#[test]
+fn named_replies_follow_each_newer_scan_of_their_branch() {
+    let machine = dashboard_base::test_fixtures::visual_mods::Machine::new("peace_named_scans");
+    machine.write(
+        "localisation/english/peace_l_english.yml",
+        "\u{feff}l_english:\n PEACE_TAKE_STATES_DEMAND:0 \"Take State\"\n".as_bytes(),
+    );
+    let (source, options) = machine.open();
+    let context = LoadContext {
+        content: Some(options),
+    };
+    let params = PeaceDealsParams {
+        branch_id: "1".into(),
+    };
+    // A prefix whose conference outcome is still being prepared, then the scan that settles it.
+    let mut earlier = scan(vec![frame(100, 2, false, &[9])]);
+    for deal in &mut earlier.deals {
+        deal.preparing = vec!["outcome".into()];
+    }
+    let later = scan(vec![frame(100, 2, false, &[9]), frame(101, 2, true, &[])]);
+    let items = |reply: &PeaceDealsReply| {
+        reply
+            .deals
+            .iter()
+            .map(|deal| deal.items.len())
+            .collect::<Vec<_>>()
+    };
+    assert_ne!(items(&earlier), items(&later));
+    let cache = source.state::<PeaceCache>();
+    for expected in [earlier, later] {
+        cache
+            .lock()
+            .unwrap()
+            .0
+            .insert(1, Arc::new(expected.clone()));
+        let reply = PeaceDeals::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+        assert_eq!(items(&reply), items(&expected));
+        assert_eq!(
+            reply
+                .deals
+                .iter()
+                .map(|deal| deal.preparing.clone())
+                .collect::<Vec<_>>(),
+            expected
+                .deals
+                .iter()
+                .map(|deal| deal.preparing.clone())
+                .collect::<Vec<_>>()
+        );
+        let transfers = |reply: &PeaceDealsReply| {
+            reply
+                .deals
+                .iter()
+                .flat_map(|deal| &deal.items)
+                .filter(|item| item.action.kind == PeaceActionKind::StateTransfer)
+                .map(|item| item.action.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            transfers(&reply),
+            vec![Some("Take State".to_owned()); transfers(&expected).len()]
+        );
+    }
+}
+
 // regression: 6c6f687d79 Size peace capture from native demand and refuse oversized replies
 #[test]
 fn recording_past_former_card_cap_keeps_every_card_before_budget_refusal() {

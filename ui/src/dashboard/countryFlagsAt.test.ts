@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { MAX_NAME_HOURS, nameKey } from './countryFacts.ts';
+import { nameKey } from './countryFacts.ts';
 import type { DashboardClient } from './client';
 
 const names = new Map<string, string | null | symbol>([[nameKey(10, 'named'), 'Recorded name'],
@@ -58,7 +58,7 @@ test('dated labels forward the hour limit to both reads and distinguish pending,
         assert.equal(call.args[0], client);
         assert.equal(call.args[2], wanted);
         assert.equal(call.args[3], true);
-        assert.equal(call.args[call.kind === 'names' ? 4 : 5], limit ?? MAX_NAME_HOURS);
+        assert.equal(call.args[call.kind === 'names' ? 4 : 5], limit ?? Infinity);
       }
       assert.equal((calls[1].args[4] as { product: string }).product, 'country-flags');
       assert.deepEqual((calls[1].args[4] as { params: (branch: string, hour: number, tags: string[]) => unknown }).params('synthetic-branch', 10, ['named']), { branchId: 'synthetic-branch', hour: 10, tags: ['named'], size: 'panel' });

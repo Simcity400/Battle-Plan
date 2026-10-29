@@ -310,9 +310,10 @@ impl Product for FactionDetails {
                 needs_environment(&frame, faction, cat, definitions, &lexical)
             }) || companions::needs_environment(&frame, faction, cat))
         {
-            // Only reached scripted text needs the wider world. The shared
-            // frame cache reads the missing tables alongside the held ones.
-            selected.extend_from_slice(crate::scripted_text::TABLES);
+            // Only reached scripted text and goal rewards need the wider world, every
+            // effect operand included. The shared frame cache reads the missing tables
+            // alongside the held ones.
+            selected.extend(crate::effect_description::recorded_tables());
             selected.sort_unstable();
             selected.dedup();
             frame = crate::prepared::query::progressive::frame_at(

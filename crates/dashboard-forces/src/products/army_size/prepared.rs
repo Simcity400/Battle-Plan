@@ -1124,16 +1124,29 @@ pub fn summary(
         cancelled,
     )?;
     let dense = to.floor() - from.floor() + 1.0 > f64::from(width);
-    // Exact screens can read bounded rank runs; dense screens keep width summaries.
-    if !dense && let (Some(top), Some(members)) = (selection.top, &mut membership) {
-        let inverse: HashMap<_, _> = actors.iter().map(|(tag, key)| (*key, tag)).collect();
-        for position in 0..top.min(actors.len()) {
-            for run in ranks.runs(position as u64 * 2, from.floor() as i32, to.floor() as i32)? {
-                if let Some(tag) = inverse.get(&(run.value as u64)) {
-                    members.entry((*tag).clone()).or_default().push(HourSpan {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                    });
+    // Exact screens read bounded rank runs; dense screens read each country's rank columns,
+    // exact runs only where a column crosses the cut. Either way a line holds only its
+    // ranked hours, ending where the country leaves the selection.
+    if let (Some(top), Some(members)) = (selection.top, &mut membership) {
+        if dense {
+            for (tag, &actor) in &actors {
+                let spans = ranks.top_spans(actor * 2 + 1, bounds, (from, to, width), top, &[])?;
+                if !spans.is_empty() {
+                    members.entry(tag.clone()).or_default().extend(spans);
+                }
+            }
+        } else {
+            let inverse: HashMap<_, _> = actors.iter().map(|(tag, key)| (*key, tag)).collect();
+            for position in 0..top.min(actors.len()) {
+                for run in
+                    ranks.runs(position as u64 * 2, from.floor() as i32, to.floor() as i32)?
+                {
+                    if let Some(tag) = inverse.get(&(run.value as u64)) {
+                        members.entry((*tag).clone()).or_default().push(HourSpan {
+                            first_hour: run.first_hour,
+                            last_hour: run.last_hour,
+                        });
+                    }
                 }
             }
         }
@@ -1183,17 +1196,17 @@ pub fn summary(
             })
             .collect::<Vec<_>>();
         let within = if selection.top.is_none() {
-            Some(identity_spans.as_slice())
-        } else if !dense {
-            Some(
-                membership
-                    .as_ref()
-                    .and_then(|members| members.get(&tag))
-                    .map_or(&[][..], Vec::as_slice),
-            )
+            identity_spans.as_slice()
         } else {
-            None
+            membership
+                .as_ref()
+                .and_then(|members| members.get(&tag))
+                .map_or(&[][..], Vec::as_slice)
         };
+        if selection.top.is_some() && within.is_empty() {
+            continue;
+        }
+        let within = Some(within);
         let runs = sampled.get(&tag).map_or(&[][..], Vec::as_slice);
         let mut summary = values.summary_with_tail(
             actor,
@@ -1207,40 +1220,10 @@ pub fn summary(
             runs,
             within,
         )?;
-        if dense && let Some(top) = selection.top {
-            let rank_key = actors.get(&tag).map_or(u64::MAX, |actor| actor * 2 + 1);
-            let rank = ranks.summary(rank_key, bounds, (from, to, width), 0)?;
-            let tail_members = membership.as_ref().and_then(|members| members.get(&tag));
-            for (bucket, rank) in summary.buckets.iter_mut().zip(rank.buckets) {
-                if bucket.is_some_and(|bucket| {
-                    rank.is_none_or(|rank| rank.min_value > top as f64)
-                        && !tail_members.is_some_and(|spans| {
-                            spans.iter().any(|span| {
-                                span.first_hour <= bucket.last_hour
-                                    && span.last_hour >= bucket.first_hour
-                            })
-                        })
-                }) {
-                    *bucket = None;
-                }
-            }
-            summary.runs = None;
-        }
         if selection.top.is_some() && summary.buckets.iter().all(Option::is_none) {
             continue;
         }
-        progressive::clip_approximate(
-            &mut summary,
-            &approximate,
-            if selection.top.is_some() {
-                membership
-                    .as_ref()
-                    .and_then(|members| members.get(&tag))
-                    .map(Vec::as_slice)
-            } else {
-                within
-            },
-        );
+        progressive::clip_approximate(&mut summary, &approximate, within);
         series::summary_budget(from, to, width, lines.len() + 1)?;
         lines.push(json!({"tag": tag, "summary": summary, "identities": history.countries.get(&tag).map(|country| &country.identities)}));
     }

@@ -19,19 +19,16 @@ impl Outcome {
         chance: &[Item],
         evaluate: &mut impl FnMut(&[Item]) -> Result<i64, String>,
     ) -> Self {
-        let mut refusal = None;
-        let value = evaluate(chance)
-            .or_else(|why| {
-                refusal = Some(format!("song {name}: {why}"));
-                let base: Vec<_> = chance
-                    .iter()
-                    .filter(|item| !item.keyword_is("modifier"))
-                    .cloned()
-                    .collect();
-                evaluate(&base)
-            })
-            .ok();
-        Self { value, refusal }
+        match evaluate(chance) {
+            Ok(value) => Self {
+                value: Some(value),
+                refusal: None,
+            },
+            Err(why) => Self {
+                value: None,
+                refusal: Some(format!("song {name}: {why}")),
+            },
+        }
     }
 
     fn append(self, into: &mut viewer_audio::Chances) {
@@ -130,7 +127,7 @@ impl Memo {
                 #[cfg(test)]
                 self.evaluations
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                // Primary and fallback reads certify one outcome, including its refusal.
+                // The read certifies one outcome, including its refusal.
                 let (value, inputs) = inputs::capture(frame, || {
                     Outcome::evaluate(
                         &content.music.tracks[song.track].name,

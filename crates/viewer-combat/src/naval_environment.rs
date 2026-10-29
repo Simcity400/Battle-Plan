@@ -111,7 +111,8 @@ pub(super) fn breakdown_scale(
     Some(if possible == 0 {
         0
     } else {
-        (progress / possible).clamp(0, ONE)
+        // `None` where the native division traps.
+        progress.checked_div(possible)?.clamp(0, ONE)
     })
 }
 
@@ -166,7 +167,7 @@ fn modifier_with_leader(
                 let weight = if possible == 0 {
                     0
                 } else {
-                    (progress / possible).clamp(0, ONE)
+                    progress.checked_div(possible)?.clamp(0, ONE)
                 };
                 mul(
                     mul(

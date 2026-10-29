@@ -418,14 +418,21 @@ impl SpoolName {
             .get_or_insert_with(|| (FrameDecoder::for_tables(&country_tables()), 0));
         while *done < self.frames.len() {
             let (segment, placement) = self.frames[*done];
+            let frame = match read(segment, placement) {
+                Ok(frame) => frame,
+                Err(error) if invalid_frame(&error) => {
+                    self.forget_frames();
+                    return None;
+                }
+                // Unread, so the decoder still holds the frame before: read it again next time.
+                Err(_) => return None,
+            };
             *done += 1;
-            match read(segment, placement).and_then(|frame| {
-                decoder.advance(&frame).map(|decoded| {
-                    (*done == self.frames.len()).then(|| {
-                        let country = Country::of(decoded);
-                        let known = Country::known(decoded, country.as_ref());
-                        (country, known)
-                    })
+            match decoder.advance(&frame).map(|decoded| {
+                (*done == self.frames.len()).then(|| {
+                    let country = Country::of(decoded);
+                    let known = Country::known(decoded, country.as_ref());
+                    (country, known)
                 })
             }) {
                 Ok(Some((country, known))) => {
@@ -433,10 +440,13 @@ impl SpoolName {
                     self.country_known = known;
                 }
                 Ok(None) => {}
+                Err(error) if invalid_frame(&error) => {
+                    self.forget_frames();
+                    return None;
+                }
+                // A refused advance may have spent its baseline: decode again from the keyframe.
                 Err(_) => {
-                    self.frames.clear();
                     self.decoded = None;
-                    self.country = None;
                     return None;
                 }
             }
@@ -451,4 +461,20 @@ impl SpoolName {
             country: self.country.clone(),
         })
     }
+
+    /// Drops the latest hour's frames once one of them cannot be decoded.
+    fn forget_frames(&mut self) {
+        self.frames.clear();
+        self.decoded = None;
+        self.country = None;
+        self.country_known = false;
+    }
+}
+
+/// Recorded bytes that cannot be a frame, unlike a read that failed for now.
+fn invalid_frame(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+    )
 }

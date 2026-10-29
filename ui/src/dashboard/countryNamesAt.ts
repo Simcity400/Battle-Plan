@@ -16,7 +16,8 @@ const sameWanted = (a: readonly NameAt[], b: readonly NameAt[]) => a === b
   || a.length === b.length && a.every((item, index) => item.hour === b[index].hour && item.tag === b[index].tag);
 
 /** Facts about countries at the hours `wanted` names, read with `spec` (one request
- * per hour and chunk of countries, at most `maxHours` hours, earliest first). Each
+ * per hour and chunk of countries; every hour wanted unless `maxHours` bounds them,
+ * earliest first). Each
  * hour and country is read once while its hour is kept. Every hour wanted now is
  * kept, however many, so wanting more never makes the hook read again what it
  * still wants; of hours no longer wanted it keeps the [`MAX_NAME_HOURS`] used most
@@ -25,7 +26,7 @@ const sameWanted = (a: readonly NameAt[], b: readonly NameAt[]) => a === b
  * the values `wanted` asks for, keyed by `nameKey`; one the recording does not give
  * at its hour is absent, so the caller shows its fallback. */
 export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: AnyFactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V> {
+  spec: AnyFactSpec<V>, maxHours = Infinity, attempt = 0): ReadonlyMap<string, V> {
   const { held, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // Only what is wanted is handed out, so an update never copies everything read.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -36,7 +37,7 @@ export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundT
  * (`FAILED_FACT`), and completed without a value (null). A new `attempt` retries
  * failures at once; new content discards every dependent answer. */
 export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: AnyFactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null | typeof FAILED_FACT> {
+  spec: AnyFactSpec<V>, maxHours = Infinity, attempt = 0): ReadonlyMap<string, V | null | typeof FAILED_FACT> {
   const { requests, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => requests.pickRead(wanted), [requests, key, version]);
@@ -99,12 +100,12 @@ const NAMES: FactSpec<string> = {
 /** Country names as recorded at the given hours (`country-styles`), for labels
  * dated to an event; see `useCountryFactsAt`. */
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
+  maxHours = Infinity, attempt = 0): ReadonlyMap<string, string> {
   return useCountryFactsAt(client, track, wanted, active, NAMES, maxHours, attempt);
 }
 
 /** Name reads retain pending, failed and completed-missing states for dated labels. */
 export function useCountryNamesRead(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string | null | typeof FAILED_FACT> {
+  maxHours = Infinity, attempt = 0): ReadonlyMap<string, string | null | typeof FAILED_FACT> {
   return useCountryFactsRead(client, track, wanted, active, NAMES, maxHours, attempt);
 }

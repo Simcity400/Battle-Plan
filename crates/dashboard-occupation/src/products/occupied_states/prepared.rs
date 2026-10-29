@@ -967,14 +967,6 @@ pub fn trend_query(
                 };
                 let mut spans = within.get(&tag).cloned();
                 let numeric = first_view::numeric(&tail.history, &tag, column);
-                let mut summary = values.summary_with_tail(
-                    actor,
-                    bounds,
-                    view,
-                    5,
-                    &numeric,
-                    within.get(&tag).map(Vec::as_slice),
-                )?;
                 if let Some(top) = params.family.top {
                     let rank_tail: Vec<Run> = tail_membership
                         .as_ref()
@@ -983,49 +975,37 @@ pub fn trend_query(
                         .flatten()
                         .map(|span| Run::new(span.first_hour, span.last_hour, 1, true))
                         .collect();
-                    let membership = ranks.summary_with_tail(
-                        actor * 2 + 1,
-                        bounds,
-                        view,
-                        0,
-                        &rank_tail,
-                        None,
-                    )?;
-                    if !membership
-                        .buckets
-                        .iter()
-                        .flatten()
-                        .any(|bucket| bucket.min_value <= f64::from(top))
-                    {
+                    // A ranked line holds only the hours its country ranks within the top, of
+                    // those asked for: it ends where the country leaves the selection.
+                    let ranked =
+                        ranks.top_spans(actor * 2 + 1, bounds, view, top as usize, &rank_tail)?;
+                    let ranked = match &spans {
+                        Some(asked) => {
+                            let mut pieces = Vec::new();
+                            dashboard_base::ranking::for_each_piece(
+                                &ranked,
+                                asked,
+                                |span| (span.first_hour, span.last_hour),
+                                cancelled,
+                                |_, first_hour, last_hour| {
+                                    pieces.push(HourSpan {
+                                        first_hour,
+                                        last_hour,
+                                    });
+                                    Ok(())
+                                },
+                            )?;
+                            pieces
+                        }
+                        None => ranked,
+                    };
+                    if ranked.is_empty() {
                         continue;
                     }
-                    if let Some(exact) = membership.runs {
-                        let ranked: Vec<_> = exact
-                            .iter()
-                            .filter(|run| run.value <= f64::from(top))
-                            .map(|run| HourSpan {
-                                first_hour: run.first_hour,
-                                last_hour: run.last_hour,
-                            })
-                            .collect();
-                        spans = Some(ranked);
-                        summary = values.summary_with_tail(
-                            actor,
-                            bounds,
-                            view,
-                            5,
-                            &numeric,
-                            spans.as_deref(),
-                        )?;
-                    } else {
-                        for (bucket, rank) in summary.buckets.iter_mut().zip(membership.buckets) {
-                            if rank.is_none_or(|rank| rank.min_value > f64::from(top)) {
-                                *bucket = None;
-                            }
-                        }
-                        summary.runs = None;
-                    }
+                    spans = Some(ranked);
                 }
+                let mut summary =
+                    values.summary_with_tail(actor, bounds, view, 5, &numeric, spans.as_deref())?;
                 if summary.runs.is_some() && tail.approximate.is_empty() {
                     let mut raw = fact_runs(&mut facts, actor, bounds.0, view.1.floor() as i32)?;
                     for run in &mut raw {

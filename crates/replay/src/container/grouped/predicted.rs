@@ -1154,6 +1154,10 @@ fn take_residual_rows<R: Residuals>(
                 } else {
                     prediction.map_or(Step::Same, Step::Number)
                 };
+                // The row would refuse it too, but only after the motion's arithmetic.
+                if !step_in_range(kind, step) {
+                    return Err(invalid("numeric difference exceeds native field range"));
+                }
                 if step != Step::Same {
                     plain_mask |= 1 << field;
                     put_step(kind, step, &mut values);
@@ -1161,7 +1165,7 @@ fn take_residual_rows<R: Residuals>(
                         spans.push(super::direct::Span {
                             field,
                             end: values.len(),
-                            parsed: step_in_range(kind, step),
+                            parsed: true,
                         });
                     }
                 }
@@ -1698,5 +1702,45 @@ mod tests {
         assert!(entry(0).unwrap_err().contains("changes nothing"));
         // A correction of 2 is a change of 7.
         assert_eq!(entry(zigzag(2) + 1).unwrap(), plain(7));
+    }
+
+    #[test]
+    fn a_stored_change_past_its_field_is_refused_before_its_motion_follows_it() {
+        // Organisation fell 4 then 5, and nothing predicts its next change.
+        let moving = || Predictor {
+            moving: vec![Moving {
+                key: 3,
+                field: FIELD,
+                motion: Motion::SharedRated(Arc::new(Rated {
+                    repeat: Some(Repeat {
+                        delta: -5,
+                        earlier: Some(-4),
+                        prediction: None,
+                    }),
+                    ramp: None,
+                    repeat_hits: 0,
+                    ramp_hits: 0,
+                })),
+            }],
+            ..Default::default()
+        };
+        let entry = |code: u128| {
+            let mut columns = Columns::new(fields());
+            put_varint(&mut columns.0[CONTROL], 0);
+            put_varint(&mut columns.0[CONTROL], 1);
+            put_varint(&mut columns.0[KEYS], 3);
+            columns.0[MASKS]
+                .extend_from_slice(&(1_u64 << FIELD).to_le_bytes()[..fields().div_ceil(8)]);
+            put_varint(&mut columns.0[FIELDS + FIELD], code);
+            take(Some(&columns), &mut moving())
+        };
+        assert_eq!(entry(zigzag(-6) + 1).unwrap(), plain(-6));
+        // Past the i64 field, up to the largest change a code names, which overflows a ramp check.
+        for code in [zigzag(i128::from(u64::MAX) + 1) + 1, u128::MAX] {
+            assert!(
+                entry(code).unwrap_err().contains("native field range"),
+                "code {code}"
+            );
+        }
     }
 }

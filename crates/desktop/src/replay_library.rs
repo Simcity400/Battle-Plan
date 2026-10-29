@@ -128,26 +128,26 @@ pub async fn replay_library() -> Result<ReplayLibrary, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Changes when a recording the library lists is added, removed, renamed or rewritten; opens no file.
+/// Changes when the library's folder changes or a recording it lists is added, removed, renamed
+/// or rewritten; opens no file.
 #[tauri::command]
 pub async fn replay_library_stamp() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        use std::hash::{Hash, Hasher};
-        let mut hash = std::hash::DefaultHasher::new();
-        walk(
-            &configured_folder()?,
-            &mut || Ok(()),
-            |_, _, path, metadata| {
-                path.hash(&mut hash);
-                metadata.len().hash(&mut hash);
-                metadata.modified().ok().hash(&mut hash);
-                Ok(())
-            },
-        )?;
-        Ok(format!("{:016x}", hash.finish()))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(|| stamp(&configured_folder()?))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn stamp(folder: &Path) -> Result<String, String> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::hash::DefaultHasher::new();
+    let root = walk(folder, &mut || Ok(()), |_, _, path, metadata| {
+        path.hash(&mut hash);
+        metadata.len().hash(&mut hash);
+        metadata.modified().ok().hash(&mut hash);
+        Ok(())
+    })?;
+    root.hash(&mut hash);
+    Ok(format!("{:016x}", hash.finish()))
 }
 
 #[tauri::command]
@@ -283,6 +283,25 @@ mod tests {
         );
         assert!(scan(&root.join("missing")).is_err());
         assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_stamp_changes_between_two_empty_folders() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-library-stamp-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("A")).unwrap();
+        std::fs::create_dir_all(root.join("B")).unwrap();
+        let first = stamp(&root.join("A")).unwrap();
+        assert_eq!(stamp(&root.join("A")).unwrap(), first);
+        assert_ne!(stamp(&root.join("B")).unwrap(), first);
         std::fs::remove_dir_all(root).unwrap();
     }
 

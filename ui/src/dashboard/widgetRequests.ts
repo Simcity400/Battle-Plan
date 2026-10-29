@@ -88,11 +88,13 @@ export function intelTouching(widget: WidgetSpec, tags: readonly string[] | unde
   const countries = widget.countries;
   return countries.kind === 'group' ? countries.group.type === 'top' && countries.group.count === 1 : tags?.length === 1;
 }
-/** `tags`: the countries chosen, or a group's members over the branch; none asks for the most active. */
-export function intelCoverageRequest(widget: WidgetSpec, track: Track, tags: readonly string[] | undefined = chosenTags(widget)) {
+/** `chosen`: the countries chosen, or a group's roots; none asks for the most active. `held`: the
+ * tags asked for in their place (every tag they held), while `chosen` alone decides `intelTouching`. */
+export function intelCoverageRequest(widget: WidgetSpec, track: Track, chosen: readonly string[] | undefined = chosenTags(widget),
+  held: readonly string[] | undefined = chosen) {
   const options = resolveOptions(INTEL, widget.options);
   return track && options.show !== 'pair'
-    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, intelShown(widget), tags, intelTouching(widget, tags))) : null;
+    ? request(track, 'intel-network-coverage', requests.intelMatrix(track.branch.id, intelShown(widget), held, intelTouching(widget, chosen))) : null;
 }
 
 /** The yard product each yard widget reads. */

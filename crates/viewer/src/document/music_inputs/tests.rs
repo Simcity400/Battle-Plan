@@ -229,7 +229,7 @@ fn music_inputs_keep_fixed_weights_rng_refusal_order_and_multi_hour_changes() {
             Some(0.38783f64.to_bits()),
             Some(6.0f64.to_bits()),
             Some(14.0f64.to_bits()),
-            Some(4.0f64.to_bits()),
+            None,
             Some(0.0f64.to_bits()),
             Some(0.12345f64.to_bits()),
             None,
@@ -366,11 +366,8 @@ fn music_inputs_missing_country_counts_and_known_null_targets_match_original() {
         TableView::Complete(TableRows::GlobalSavedEventTargets(Vec::new())).into();
     let content = fixture_content();
     let reference = original(&frame, &content, 1);
-    // Missing owned-state counts refuse the tag operand: keep t4's base.
-    assert_eq!(
-        reference.weights[4].map(f64::to_bits),
-        Some(7.0f64.to_bits())
-    );
+    // Missing owned-state counts refuse the tag operand: t4's chance is unknown.
+    assert_eq!(reference.weights[4], None);
     assert!(reference.refusals.iter().any(|why| {
         why.starts_with("song t4:") && why.contains("CountryCounterInputs.owned_state_count")
     }));
@@ -604,7 +601,7 @@ fn music_inputs_recheck_hour_boundaries_and_refused_table_availability() {
     }
     .into();
     let (unknown, evaluated) = run(&memo, &next, &content, 1);
-    assert_eq!(unknown.weights[5].map(f64::to_bits), Some(4.0f64.to_bits()));
+    assert_eq!(unknown.weights[5], None);
     assert!(
         unknown
             .refusals
@@ -623,7 +620,7 @@ fn music_inputs_recheck_hour_boundaries_and_refused_table_availability() {
 }
 
 #[test]
-fn music_outcomes_keep_f64_scaling_fallback_calls_and_primary_refusal_order() {
+fn music_outcomes_keep_f64_scaling_and_leave_refused_songs_unknown_in_order() {
     let mut music = Music::default();
     for (index, (station, body)) in [
         ("on", "base=2 modifier={always=yes factor=3}"),
@@ -657,10 +654,8 @@ fn music_outcomes_keep_f64_scaling_fallback_calls_and_primary_refusal_order() {
     );
     let answers = [
         Err("first condition".to_owned()),
-        Ok(9_007_199_254_740_993_i64),
         Ok(12_345),
         Err("later condition".to_owned()),
-        Err("failed fallback".to_owned()),
         Ok(-12_345),
     ];
     let mut reference_answers = answers.clone().into_iter();
@@ -670,12 +665,11 @@ fn music_outcomes_keep_f64_scaling_fallback_calls_and_primary_refusal_order() {
         reference_answers.next().unwrap()
     });
     assert!(reference_answers.next().is_none());
+    // A refused song is not evaluated again without its modifiers.
     let expected_bodies = [
         "base=2 modifier={always=yes factor=3}",
-        "base=2",
         "base=0.12345",
         "base=3 modifier={always=yes factor=2}",
-        "base=3",
         "base=-0.12345",
     ]
     .map(|body| {
@@ -691,7 +685,7 @@ fn music_outcomes_keep_f64_scaling_fallback_calls_and_primary_refusal_order() {
     assert_eq!(
         bits(&reference),
         [
-            Some((9_007_199_254_740_993_i64 as f64 / 100_000.0).to_bits()),
+            None,
             None,
             Some(0.12345_f64.to_bits()),
             None,

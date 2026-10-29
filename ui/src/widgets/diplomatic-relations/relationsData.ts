@@ -7,14 +7,16 @@ import { preparedScoreboardRows } from '../scoreboard/preparedScoreboard.ts';
 export type OpinionCell = { value: number; readHour: number | null } | { unknown: true } | null;
 
 /** Opinion lookup for the matrix: the row owner's opinion of the column country. A known
- * owner without a listed target holds exact zero; an unknown owner's whole row is unknown.
+ * owner without a listed target holds exact zero, except toward a target its read cannot
+ * prove; an unknown owner's whole row is unknown. Only the reply's own countries are looked up.
  * The diagonal is recorded state like any other pair. */
 export function opinionIndex(reply: DiplomacyOpinionsReply) {
-  const owners = new Map(reply.owners.map(owner => [owner.tag, { owner, values: new Map(owner.opinions.map(item => [item.target, item.value])) }]));
+  const owners = new Map(reply.owners.map(owner => [owner.tag, { owner, values: new Map(owner.opinions.map(item => [item.target, item.value])),
+    unproven: new Set(owner.unknownTargets) }]));
   return (owner: string, target: string): OpinionCell => {
     const entry = owners.get(owner);
-    if (!entry) return null;
-    if (!entry.owner.known) return { unknown: true };
+    if (!entry || !owners.has(target)) return null;
+    if (!entry.owner.known || entry.unproven.has(target)) return { unknown: true };
     return { value: entry.values.get(target) ?? 0, readHour: entry.owner.readHour };
   };
 }

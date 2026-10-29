@@ -1187,6 +1187,89 @@ fn branch_naming_combines_only_admitted_summaries_and_decodes_one_country() {
 }
 
 #[test]
+fn a_spool_frame_unreadable_for_now_is_read_again_but_invalid_bytes_are_forgotten() {
+    use crate::test_support::named_frame;
+    use std::io::{Error, ErrorKind};
+    // The hour after the keyframe keeps its countries, so it decodes only after the keyframe.
+    let mut frames = vec![
+        named_frame(9, hour(1936), "democratic", 1),
+        named_frame(9, hour(1936) + 1, "democratic", 1),
+    ];
+    frames[1].keyframe = false;
+    frames[1].tables[TableId::Countries.index()] = TableUpdate::Unchanged {
+        baseline: hour(1936),
+    };
+    let observed = || {
+        let mut name = SpoolName::default();
+        for (offset, frame) in frames.iter().enumerate() {
+            name.observe(
+                0,
+                Placement {
+                    offset,
+                    ..Placement::default()
+                },
+                frame,
+            );
+        }
+        name
+    };
+    let mut name = observed();
+    let mut read = Vec::new();
+    // A sharing violation while reading the second hour.
+    assert!(
+        name.contents(|_, placement| {
+            read.push(placement.offset);
+            match placement.offset {
+                1 => Err(Error::from(ErrorKind::PermissionDenied)),
+                offset => Ok(frames[offset].clone()),
+            }
+        })
+        .is_none()
+    );
+    let contents = name
+        .contents(|_, placement| {
+            read.push(placement.offset);
+            Ok(frames[placement.offset].clone())
+        })
+        .unwrap();
+    assert_eq!(read, [0, 1, 1]);
+    assert_eq!(
+        contents.predicted(Some(&localisation())).unwrap().stem(),
+        "Republic of Nowhere 1936"
+    );
+    let mut name = observed();
+    assert!(
+        name.contents(|_, placement| match placement.offset {
+            1 => Err(Error::from(ErrorKind::InvalidData)),
+            offset => Ok(frames[offset].clone()),
+        })
+        .is_none()
+    );
+    assert!(
+        name.contents(|_, _| panic!("frames that cannot be decoded are read again"))
+            .is_none()
+    );
+    // The next keyframe names the recording again.
+    let next = named_frame(9, hour(1936) + 2, "fascism", 1);
+    name.observe(
+        0,
+        Placement {
+            offset: 2,
+            ..Placement::default()
+        },
+        &next,
+    );
+    assert_eq!(
+        name.contents(|_, _| Ok(next.clone()))
+            .unwrap()
+            .predicted(Some(&localisation()))
+            .unwrap()
+            .stem(),
+        "Nowhere The Reich 1936"
+    );
+}
+
+#[test]
 fn spool_branch_order_span_and_latest_hour_ties_match_save() {
     use crate::test_support::RELOAD;
     for last in [hour(1938), hour(1942), hour(1944)] {

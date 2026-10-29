@@ -174,9 +174,7 @@ fn air_icon_widget(name: Option<String>, side: u8) -> Widget {
     Widget {
         hidden: name.is_none(),
         sprite: name,
-        // The left side uses frame 2 and the right uses frame 1.
-        // Bound GUI frames are one based.
-        frame: Some(if side == 0 { 2 } else { 1 }),
+        frame: Some(icon_frame(side, false)),
         // The game sets this dynamic hover after constructing the row.
         hover_owned: true,
         ..Widget::default()

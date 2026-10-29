@@ -77,7 +77,7 @@ function serve(prepared: number, params: Record<string, unknown>): MarketLedgerR
       variant: '0', amountRaw: '100000', totalRaw: '0', reason: null };
   });
   return { branchId: '1', lastHour: prepared, rows, total: every ? String(shown) : null, next: start > 0 ? `7:${from}:${start}` : null, known: [[0, prepared, '1']],
-    holders: { '1': [{ hour: 0, tag: 'SEL' }], '2': [{ hour: 0, tag: 'BUY' }] }, variants: {}, warnings: [],
+    holders: { '1': [{ hour: 0, tag: 'SEL' }], '2': [{ hour: 0, tag: 'BUY' }] }, identified: [{ firstHour: 0, lastHour: prepared }], variants: {}, warnings: [],
     coverage: { firstHour: 0, lastHour: prepared, complete: prepared >= 1000 }, pending: prepared >= 1000 ? [] : [{ firstHour: prepared + 1, lastHour: 1000 }],
   } as unknown as MarketLedgerReply;
 }

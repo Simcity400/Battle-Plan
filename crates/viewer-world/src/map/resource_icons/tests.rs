@@ -3,7 +3,7 @@ use crate::map::map_mode::{MapMode, Stock, visibility};
 use replay_data::{rows::ProvinceRow, rows::TableRows};
 use viewer_foundation::{
     map::{
-        camera::{MapDefines, MapSize, Pose},
+        camera::{Free, Lens, MapDefines, MapSize, Pose},
         mode_visibility::PriorityTable,
         test_support::{gui, localisation::loaded},
     },
@@ -118,6 +118,56 @@ fn icons_draw_only_in_the_resources_mode_below_the_unit_icon_cutoff() {
             .iter()
             .all(|icon| !icon.text && icon.rows.is_empty())
     );
+}
+
+/// A free eye shows each icon by its own distance, however low it flies: the icon stands at its
+/// state's anchor below the unit icon cutoff, and its rows show below the text cutoff.
+#[test]
+fn a_free_eye_shows_each_icon_by_its_own_distance() {
+    let content = content();
+    let localisation = texts();
+    let anchors = anchors();
+    let anchor = [3000., 10., 1500.];
+    let prepared = |distance: f32| {
+        // Level with the anchors, `distance` south of them.
+        let eye = [3000., 10., 1500. - distance];
+        prepare(
+            &ResourceIconInputs {
+                content: &content,
+                localisation: &localisation,
+                state_provinces: &(1..=8).map(|state| (state, vec![state * 10])).collect(),
+                centroid: &|province| anchors.get(&province).copied(),
+                camera: Camera {
+                    center: [eye[0], eye[2]],
+                    height: eye[1],
+                    map: MapSize::TEST,
+                    defines: MapDefines::test(),
+                    pose: Pose::Free(Free::looking_at(eye, anchor, Lens::MAP)),
+                },
+                viewport: [2048, 1152],
+                ui_scale: 1.,
+                visibility: visibility::of(&MapMode::Stock(Stock::Resources)),
+            },
+            &frame(),
+        )
+    };
+    assert!(prepared(950.).placed.is_empty());
+    let far = prepared(850.);
+    assert_eq!(far.placed.len(), 6);
+    assert!(
+        far.placed
+            .iter()
+            .all(|icon| !icon.text && icon.rows.is_empty())
+    );
+    let near = prepared(100.);
+    assert_eq!(near.placed.len(), 6);
+    assert!(near.placed.iter().all(|icon| icon.text));
+    let expected = IconAnchor {
+        world: anchor,
+        cutoff: 900.,
+        family: IconFamily::Resources,
+    };
+    assert!(near.placed.iter().all(|icon| icon.anchor == expected));
 }
 
 #[test]
@@ -262,6 +312,11 @@ fn placed(text: bool, rows: usize, flag: Option<u32>) -> PreparedResourceIcons {
             state: MIXED,
             screen: [100., 100.],
             depth: 0.5,
+            anchor: IconAnchor {
+                world: [3000., 10., 1500.],
+                cutoff: 900.,
+                family: IconFamily::Resources,
+            },
             priority: 10,
             text,
             rows: (0..rows)
@@ -308,4 +363,29 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
     // Below it, the window's flag is bound to the holder.
     let report = placed(true, 0, Some(AFG_SLOT)).draw(&context, &mut view, &mut batch);
     assert_eq!(report.icons, 1, "{:?}", report.refused);
+}
+
+/// Every quad of an icon, its rows included, stands at the icon's anchor for a free eye to place.
+#[test]
+fn an_icon_s_quads_stand_at_its_anchor() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let resources = gui::fixture();
+    let windows = gui::windows(GUI);
+    let context = Context {
+        resources: &resources,
+        windows: &windows,
+        viewport: [400, 400],
+        time: Some(0.),
+    };
+    let icons = placed(true, 2, None);
+    let mut batch = Batch::default();
+    let report = icons.draw(&context, &mut ResourceIconView::default(), &mut batch);
+    assert_eq!((report.icons, report.rows), (1, 2), "{:?}", report.refused);
+    assert!(!batch.quads.is_empty());
+    let anchor = Some(icons.placed[0].anchor);
+    assert!(batch.quads.iter().all(|quad| quad.anchor == anchor));
+    // Later pushes are screen interface again.
+    batch.push(batch.quads[0].clone());
+    assert_eq!(batch.quads.last().unwrap().anchor, None);
 }

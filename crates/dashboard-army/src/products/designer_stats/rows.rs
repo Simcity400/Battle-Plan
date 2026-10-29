@@ -127,12 +127,13 @@ pub fn stat_value(localisation: &Localisation, stat: &str, raw: i64) -> Result<S
 
 /// The rows of the three grids from `preview`. `empty` is the designer's empty-template test
 /// (the leading line and support slots hold nothing): every fixed row then shows the no-stat
-/// text. `tag` is the country the designer belongs to, whose own short equipment names the
-/// requirement rows use (`None`: not recorded, which refuses their labels).
+/// text, and refuses its value with why the test could not be made. `tag` is the country the
+/// designer belongs to, whose own short equipment names the requirement rows use (`None`: not
+/// recorded, which refuses their labels).
 pub fn rows(
     localisation: &Localisation,
     preview: &Result<Preview, String>,
-    empty: bool,
+    empty: &Result<bool, String>,
     tag: Option<&str>,
 ) -> Vec<Row> {
     let block = || -> Result<&Block, String> {
@@ -153,10 +154,10 @@ pub fn rows(
                 }
                 (None, _) => Err("the row names no label".into()),
             };
-            let value = if empty {
-                localise(localisation, "DESIGNER_NO_STAT", &[])
-            } else {
-                match operand {
+            let value = match empty {
+                Ok(true) => localise(localisation, "DESIGNER_NO_STAT", &[]),
+                Err(why) => Err(why.clone()),
+                Ok(false) => match operand {
                     Operand::Stat(stat) => block().and_then(|block| {
                         let index = installed_content_core::equipment::stat_index(stat.as_bytes())
                             .ok_or_else(|| format!("the executable's stat metadata has no {stat}"))?;
@@ -308,7 +309,7 @@ mod tests {
                 ("motorized_equipment".into(), 0),
             ],
         });
-        let rows = rows(&localisation, &preview, false, Some("GER"));
+        let rows = rows(&localisation, &preview, &Ok(false), Some("GER"));
         let extra: Vec<_> = rows[ROSTER.len()..]
             .iter()
             .map(|row| (row.label.clone().unwrap(), row.value.clone().unwrap()))
@@ -377,7 +378,7 @@ mod tests {
                 requirements: Vec::new(),
             })
         };
-        let shown = rows(&localisation, &preview(stats), false, None);
+        let shown = rows(&localisation, &preview(stats), &Ok(false), None);
         for ((_, operand, _), row) in ROSTER.iter().zip(&shown) {
             assert!(row.value.is_ok(), "{operand:?}: {:?}", row.value);
         }
@@ -389,13 +390,20 @@ mod tests {
         };
         assert_ne!(shown[at("default_morale")].value, shown[at("recon")].value);
         stats[index("casualty_trickleback")] = None;
-        let lacking = rows(&localisation, &preview(stats), false, None);
+        let lacking = rows(&localisation, &preview(stats), &Ok(false), None);
         assert!(
             lacking[at("casualty_trickleback")]
                 .value
                 .as_ref()
                 .is_err_and(|why| why.contains("casualty_trickleback"))
         );
+        // An unread layout cannot tell an empty template: no fixed row shows a value.
+        let why = "the template's layout was refused at capture".to_owned();
+        let unknown = rows(&localisation, &preview(stats), &Err(why.clone()), None);
+        assert_eq!(unknown.len(), ROSTER.len());
+        for row in &unknown {
+            assert_eq!(row.value, Err(why.clone()));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

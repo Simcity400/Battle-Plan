@@ -209,7 +209,8 @@ fn efficiency_parts(
     let organisation = host.organisation;
     let valid = (organisation as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd;
     let ratio = if maximum != 0 && valid {
-        organisation.wrapping_mul(ONE) / maximum
+        // `None` where the native division traps.
+        organisation.wrapping_mul(ONE).checked_div(maximum)?
     } else {
         0xffff_ffff
     };

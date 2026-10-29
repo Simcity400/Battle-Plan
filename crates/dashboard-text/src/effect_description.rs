@@ -142,6 +142,44 @@ mod tests;
 mod units;
 mod variables;
 
+/// Recorded operands effect descriptions read beyond the trigger kit
+/// ([`crate::triggers::RECORDED_TABLES`]).
+const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
+    replay_data::rows::TableId::AirWings,
+    replay_data::rows::TableId::AvailableAdvisors,
+    replay_data::rows::TableId::AvailableEquipmentVariants,
+    replay_data::rows::TableId::CapturedOperativeReferences,
+    replay_data::rows::TableId::Clock,
+    replay_data::rows::TableId::DecisionRandomItems,
+    replay_data::rows::TableId::Decisions,
+    replay_data::rows::TableId::OccupationSettings,
+    replay_data::rows::TableId::OperativeMemberships,
+    replay_data::rows::TableId::PowerBalanceRanges,
+    replay_data::rows::TableId::ProjectPrograms,
+    replay_data::rows::TableId::ProvinceUnitOrder,
+    replay_data::rows::TableId::RaidFacilities,
+    replay_data::rows::TableId::RaidTargets,
+    replay_data::rows::TableId::RailwayGunCounterInputs,
+    replay_data::rows::TableId::RelationLinks,
+    replay_data::rows::TableId::ScientistSkills,
+    replay_data::rows::TableId::Scientists,
+    replay_data::rows::TableId::TaskForces,
+    replay_data::rows::TableId::TimedIdeas,
+    replay_data::rows::TableId::TrainInventory,
+    replay_data::rows::TableId::VariantDefinitions,
+    replay_data::rows::TableId::VariantUpgrades,
+];
+
+/// Every recorded table an effect description reads at its hour: the trigger
+/// kit and the effects' own operands. Every product describing effects selects
+/// all of them, so an operand the hour recorded is never discarded locally.
+pub fn recorded_tables() -> impl Iterator<Item = replay_data::rows::TableId> {
+    crate::triggers::RECORDED_TABLES
+        .iter()
+        .chain(OPERAND_TABLES)
+        .copied()
+}
+
 /// Modifier list formatting controls shared by raw and scoped descriptions.
 ///
 /// Precision is capped by each definition. Category masks use separate include

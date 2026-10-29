@@ -701,6 +701,20 @@ impl std::fmt::Debug for ReadTrace {
         f.write_str("ReadTrace")
     }
 }
+impl ReadTrace {
+    /// This trace for a stack of the traced stack's `layers` (their indices, in order): its
+    /// reads keep this purpose and name each layer by its index in the traced stack.
+    fn for_layers(&self, layers: Vec<usize>) -> Self {
+        let callback = self.callback.clone();
+        Self {
+            callback: std::sync::Arc::new(move |mut read: ContentRead| {
+                read.layer = read.layer.and_then(|index| layers.get(index).copied());
+                callback(read)
+            }),
+            purpose: self.purpose.clone(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedLayers {
@@ -2911,19 +2925,27 @@ impl ResolvedLayers {
     }
 
     /// The recorded stack below a presentation stack's visual mods, sharing their inventories,
-    /// or `None` when no visual mod is mounted here. Artwork readers fall back to it.
+    /// or `None` when no visual mod is mounted here. Artwork readers fall back to it. A traced
+    /// stack's fallback reports its reads to the same trace and purpose, each at the layer's
+    /// index in this stack.
     pub fn without_overlays(&self) -> Option<ResolvedLayers> {
         if self.layers.iter().all(|layer| layer.overlay.is_none()) {
             return None;
         }
+        let kept: Vec<usize> = self
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| layer.overlay.is_none())
+            .map(|(index, _)| index)
+            .collect();
         let mut recorded = ResolvedLayers {
             coverage: self.coverage,
-            layers: self
-                .layers
+            layers: kept
                 .iter()
-                .filter(|layer| layer.overlay.is_none())
-                .cloned()
+                .map(|&index| self.layers[index].clone())
                 .collect(),
+            read_trace: self.read_trace.as_ref().map(|trace| trace.for_layers(kept)),
             above_mods: self.above_mods,
             overlay_reads: self.overlay_reads.clone(),
             uncovered_reads: self.uncovered_reads.clone(),

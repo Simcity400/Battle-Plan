@@ -77,7 +77,6 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const prefix = preparedPrefix(data);
   return <div className="air-timeline">
     <div className="air-pattern-key" aria-label="Data states">
-      <span><i aria-hidden="true" style={{ background: tokens.surface }} />No naval presence</span>
       <span><i aria-hidden="true" style={{ background: `color-mix(in srgb, ${tokens.error} ${tokens.gapOpacity * 100}%, ${tokens.surface})` }} />Not recorded</span>
       <span><i aria-hidden="true" style={hatchStyle(tokens)} />Unknown</span>
     </div>

@@ -4,7 +4,7 @@
 use dashboard::{
     Config, Service,
     protocol::{MAX_MESSAGE_BYTES, replay_revision},
-    transport::{DataCommand, DataEvent, ReplyChunks},
+    transport::{DataCommand, DataEvent, ReplyChunks, bounded_text},
 };
 use serde::Deserialize;
 use std::{
@@ -160,8 +160,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         };
-        if let DataCommand::Open { path, revision, .. } = &mut command {
-            *revision = replay_revision(path)?;
+        if let DataCommand::Open { id, path, revision } = &mut command {
+            match replay_revision(path) {
+                Ok(current) => *revision = current,
+                Err(error) => {
+                    if !emit(&DataEvent::Error {
+                        id: id.clone(),
+                        message: bounded_text(&error.to_string(), 2048),
+                    }) {
+                        return Err("Browser connection closed".into());
+                    }
+                    continue;
+                }
+            }
         }
         service.dispatch(command);
     }

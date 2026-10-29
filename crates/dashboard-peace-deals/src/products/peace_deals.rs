@@ -294,9 +294,6 @@ pub struct PeaceDealsReply {
 #[derive(Default)]
 struct PeaceCache(HashMap<u64, Arc<PeaceDealsReply>>);
 
-#[derive(Default)]
-struct PeaceLabelCache(HashMap<(u64, content::LocalisationKey), Arc<PeaceDealsReply>>);
-
 impl Product for PeaceDeals {
     const KEY: &'static str = "peace-deals";
     const CONTENT_DEPENDENT: bool = true;
@@ -358,40 +355,30 @@ impl Product for PeaceDeals {
             }
         };
         drop(state);
-        present(source, branch, context, cancelled, scan)
+        present(source, context, cancelled, (*scan).clone())
     }
 }
 
+/// `reply` with its actions named. Only the catalogue is shared between
+/// replies: a prepared prefix grows, so no reply is kept.
 fn present(
     source: &Source,
-    branch: u64,
     context: &LoadContext,
     cancelled: &AtomicBool,
-    scan: Arc<PeaceDealsReply>,
+    mut reply: PeaceDealsReply,
 ) -> io::Result<PeaceDealsReply> {
     let Some(options) = context.content.as_ref() else {
-        let mut reply = (*scan).clone();
         reply.warnings.push(
             "Peace action names are unavailable until the game and user folders are chosen.".into(),
         );
         return admitted(reply);
     };
-    let key = match content::localisation_key(options) {
-        Ok(key) => key,
-        Err(error) => {
-            let mut reply = (*scan).clone();
-            reply
-                .warnings
-                .push(format!("Peace action names are unavailable: {error}"));
-            return admitted(reply);
-        }
-    };
-    let named = source.state::<PeaceLabelCache>();
-    let mut named = named.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(reply) = named.0.get(&(branch, key.clone())) {
-        return admitted((**reply).clone());
+    if let Err(error) = content::localisation_key(options) {
+        reply
+            .warnings
+            .push(format!("Peace action names are unavailable: {error}"));
+        return admitted(reply);
     }
-    let mut reply = (*scan).clone();
     match catalogue::catalogue(source, options) {
         Ok(catalogue) => {
             reply
@@ -412,10 +399,6 @@ fn present(
         }
     }
     check_cancel(cancelled)?;
-    named
-        .0
-        .retain(|(cached_branch, _), _| *cached_branch != branch);
-    named.0.insert((branch, key), Arc::new(reply.clone()));
     admitted(reply)
 }
 

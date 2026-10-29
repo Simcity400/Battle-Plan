@@ -3146,6 +3146,62 @@ impl<'a> Reader<'a> {
         }
         Ok(bucket)
     }
+    /// The hours `key`'s rank runs (1 is first), with their unpublished `tail`,
+    /// place it within `top`, on the summary grid of `view`. A column ranked
+    /// within `top` throughout is taken whole and one never within it is
+    /// skipped; only a column crossing the cut reads its exact runs, so the
+    /// spans stay bounded by the width and the crossings it shows.
+    pub fn top_spans(
+        &mut self,
+        key: u64,
+        bounds: (i32, i32),
+        view: (f64, f64, u32),
+        top: usize,
+        tail: &[Run],
+    ) -> io::Result<Vec<crate::products::country_groups::HourSpan>> {
+        use crate::products::country_groups::mark_unobserved;
+        let (_, bins) = summary_bins(bounds, view)?;
+        let ranks = self.summary_with_tail(key, bounds, view, 0, tail, None)?;
+        let cut = top as f64;
+        let head = tail.first().map_or(i32::MAX, |run| run.first_hour);
+        let mut spans = Vec::new();
+        for (&(first, last), rank) in bins.iter().zip(&ranks.buckets) {
+            check_cancel(self.cancelled)?;
+            let Some(rank) = rank else {
+                continue;
+            };
+            if rank.min_value > cut {
+                continue;
+            }
+            if rank.max_value <= cut
+                && !rank.has_break
+                && (rank.first_hour, rank.last_hour) == (first, last)
+            {
+                mark_unobserved(&mut spans, first, last);
+                continue;
+            }
+            let mut runs = if first < head {
+                self.runs(key, first, last.min(head.saturating_sub(1)))?
+            } else {
+                Vec::new()
+            };
+            runs.extend(tail.iter().filter_map(|run| {
+                let first_hour = run.first_hour.max(first);
+                let last_hour = run.last_hour.min(last);
+                (first_hour <= last_hour).then_some(Run {
+                    first_hour,
+                    last_hour,
+                    ..*run
+                })
+            }));
+            for run in runs {
+                if run.value as f64 <= cut {
+                    mark_unobserved(&mut spans, run.first_hour, run.last_hour);
+                }
+            }
+        }
+        Ok(spans)
+    }
     /// Merge a derived continuation without treating its unpublished hours as gaps.
     pub fn summary_with_tail(
         &mut self,

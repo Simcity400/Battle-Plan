@@ -182,6 +182,17 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
         self.tag_text(slot, tags.slot_tag(slot), hour);
     }
 
+    /// Record every identified holder's tag at `hour` where it changed.
+    pub fn tag_all(&mut self, tags: &Tags<'_>, hour: i32) {
+        for (slot, tag) in tags.tagged() {
+            let runs = self.meta.tags.entry(slot).or_default();
+            if runs.last().is_none_or(|(_, last)| last != tag) {
+                self.changed += tag.len() + 16 + EDIT_MARGIN;
+                runs.push((hour, tag.to_owned()));
+            }
+        }
+    }
+
     pub fn tag_text(&mut self, slot: u32, tag: Option<String>, hour: i32) {
         if let Some(tag) = tag {
             let runs = self.meta.tags.entry(slot).or_default();
@@ -593,6 +604,16 @@ impl<'a> Tags<'a> {
 
     pub fn slot(&self, raw: u32) -> Option<u32> {
         self.links.get(&raw).copied()
+    }
+
+    /// Every slot with a readable tag, and that tag.
+    pub fn tagged(&self) -> impl Iterator<Item = (u32, &'a str)> + '_ {
+        self.slots.iter().filter_map(|(&slot, tag)| {
+            std::str::from_utf8(tag)
+                .ok()
+                .filter(|tag| !tag.is_empty())
+                .map(|tag| (slot, tag))
+        })
     }
 
     pub fn slot_tag(&self, slot: u32) -> Option<String> {

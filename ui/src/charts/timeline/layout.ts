@@ -650,15 +650,16 @@ export function bandHalf(value: number, max: number, least: number, most: number
  * from `left` to `right`: 1 pixel in from each edge, so neighbouring bars keep a gap,
  * while that leaves at least a pixel and a half; a shorter bar (one made and deleted
  * between two daily reads, at campaign zoom) keeps one whole pixel column at its
- * middle, as a band keeps its column, so no recorded bar vanishes. Null when it is
- * outside the plot. */
+ * middle, as a band keeps its column, so no recorded bar vanishes. Null when none of its
+ * hours is inside the plot. */
 export function barExtent(x0: number, x1: number, left: number, right: number): [number, number] | null {
+  if (x1 <= left || x0 >= right) return null;
   const from = Math.max(left, x0 + 1);
   const to = Math.min(right, x1 - 1);
   if (to - from >= 1.5) return [from, to];
   const middle = Math.floor((Math.max(left, x0) + Math.min(right, x1)) / 2);
   const column = Math.min(Math.max(middle, Math.ceil(left)), Math.floor(right) - 1);
-  return x1 < left || x0 > right || column < left ? null : [column, column + 1];
+  return column < left ? null : [column, column + 1];
 }
 
 /** The plain bar drawn under the pointer at `px` (its rectangle as `barExtent` draws

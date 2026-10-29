@@ -589,6 +589,8 @@ impl DashboardMaps {
             return;
         }
         self.config = config.clone();
+        // Every map retries, a source that failed to open too.
+        self.source_bindings.retain(|_, binding| binding.is_ok());
         if let Some(load) = &self.loading {
             load.alive.store(false, Ordering::Release);
         }
@@ -646,6 +648,15 @@ impl DashboardMaps {
                     if !view.target.visible && target.visible {
                         view.error = None;
                         view.viewer.retry_map();
+                        // The retry opens a source that failed to open again.
+                        let requested = RequestedSource::target(&target);
+                        if self
+                            .source_bindings
+                            .get(&requested)
+                            .is_some_and(Result::is_err)
+                        {
+                            self.source_bindings.remove(&requested);
+                        }
                         if let Some(source) = view
                             .source
                             .as_ref()
@@ -1465,6 +1476,89 @@ mod tests {
         drop(source);
         drop(service);
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// A recording that failed to open keeps its map's error until the host hides and shows the
+    /// map again, which opens it afresh.
+    #[test]
+    fn showing_a_map_again_reopens_a_recording_that_failed_to_open() {
+        fn settle(
+            maps: &mut DashboardMaps,
+            ctx: &egui::Context,
+            id: &str,
+            done: impl Fn(&MapView) -> bool,
+        ) {
+            let deadline =
+                std::time::Instant::now() + viewer_foundation::map::test_support::TEST_HANG_GUARD;
+            while !done(&maps.views[id]) {
+                assert!(std::time::Instant::now() < deadline, "the source did not settle");
+                maps.poll_sources(ctx);
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "native-map-retry-{}.battleplan",
+            uuid::Uuid::new_v4()
+        ));
+        let away = path.with_extension("away");
+        let replay = crate::playback::tests::fixture();
+        std::fs::write(&path, replay.bytes()).unwrap();
+        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        // Out of reach for now, as behind a share that dropped; a rename keeps its revision.
+        std::fs::rename(&path, &away).unwrap();
+        let mut maps = DashboardMaps::new(
+            Config::default(),
+            Options::default(),
+            Service::new(Arc::new(|_| true)).unwrap(),
+            None,
+            Resources::new().unwrap(),
+        )
+        .unwrap();
+        // Without a device, admission still follows the widget's size.
+        maps.limits.dimension = u32::MAX;
+        let bounds = ViewBounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let mut target = DashboardMapView {
+            options: Default::default(),
+            id: "retried-widget".into(),
+            source_id: "source".into(),
+            path: path.to_string_lossy().into_owned(),
+            revision,
+            branch_id: "1".into(),
+            playing: false,
+            hour: 105,
+            fraction: 0.0,
+            sequence: 1,
+            seek_sequence: None,
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+        let ctx = egui::Context::default();
+        let frame = eframe::Frame::_new_kittest();
+        maps.set_views(vec![target.clone()], &frame, &ctx);
+        settle(&mut maps, &ctx, &target.id, |view| view.error.is_some());
+        let failed = maps.views[&target.id].error.clone();
+        std::fs::rename(&away, &path).unwrap();
+        maps.poll_sources(&ctx);
+        assert_eq!(maps.views[&target.id].error, failed);
+        for visible in [false, true] {
+            target.visible = visible;
+            target.sequence += 1;
+            maps.set_views(vec![target.clone()], &frame, &ctx);
+        }
+        settle(&mut maps, &ctx, &target.id, |view| {
+            view.source.is_some() || view.error.is_some()
+        });
+        let view = &maps.views[&target.id];
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view.source.is_some());
+        drop(maps);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

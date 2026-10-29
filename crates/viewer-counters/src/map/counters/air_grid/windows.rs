@@ -25,6 +25,31 @@ pub(crate) struct View {
     last: Option<f32>,
     active: bool,
 }
+/// One icon's composed wing grid: its parts, and the hits it takes once the icon draws.
+#[derive(Debug)]
+pub(crate) struct Composed {
+    pub parts: Vec<Vec<native_gui::Part>>,
+    hits: Vec<(
+        viewer_foundation::map::counter_hovers::unit_hits::Blocker,
+        AirGridHover,
+    )>,
+}
+impl Composed {
+    /// No wing grid: the icon's own holders, empty.
+    pub fn empty(holders: usize) -> Self {
+        Self {
+            parts: vec![Vec::new(); holders],
+            hits: Vec::new(),
+        }
+    }
+    /// Publishes the grid's hits; only an icon that drew takes them.
+    pub fn commit(self, report: &mut CounterReport) {
+        for (blocker, hover) in self.hits {
+            report.air_grid_hits.insert(report.base_hits.len(), hover);
+            report.base_hits.push(blocker);
+        }
+    }
+}
 impl View {
     pub fn clear(&mut self) {
         self.entries.clear();
@@ -151,7 +176,7 @@ impl View {
         tick: Tick,
         layer: u64,
         report: &mut CounterReport,
-    ) -> Result<Vec<Vec<native_gui::Part>>, String> {
+    ) -> Result<Composed, String> {
         self.compose_held(
             owner,
             drawn,
@@ -167,7 +192,8 @@ impl View {
         )
     }
     /// Compose in the item's own coordinates; apply the outer holder to hit
-    /// regions only. The caller places the composed drawing through that holder.
+    /// regions only. The caller places the composed drawing through that holder,
+    /// and commits its hits once that drawing succeeds.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_held(
         &mut self,
@@ -182,8 +208,8 @@ impl View {
         outer: Option<(&native_gui::Holder, [i32; 2])>,
         family: IconFamily,
         report: &mut CounterReport,
-    ) -> Result<Vec<Vec<native_gui::Part>>, String> {
-        let mut parts = vec![Vec::new(); drawn.layout.holders.len()];
+    ) -> Result<Composed, String> {
+        let mut composed = Composed::empty(drawn.layout.holders.len());
         if let Some(why) = self.refused.get(&owner) {
             *report
                 .icon_gui_notes
@@ -191,7 +217,7 @@ impl View {
                 .or_default() += 1;
         }
         let Some((_, entries)) = self.entries.get_mut(&owner) else {
-            return Ok(parts);
+            return Ok(composed);
         };
         let item = inputs
             .windows
@@ -202,7 +228,7 @@ impl View {
             .gui_type(root_name.as_bytes())
             .ok_or("Air base counter template is absent")?;
         let Some(grid) = root.find(native::Kind::Grid, grid_name) else {
-            return Ok(parts);
+            return Ok(composed);
         };
         let holder = drawn
             .layout
@@ -231,7 +257,7 @@ impl View {
             let holder = &drawn.layout.holders[at];
             layout.parts = holder.place(entry.instance.position(), &layout);
             layout.regions = holder.place_regions(entry.instance.position(), &layout.regions);
-            parts[at].extend(layout.parts.iter().cloned());
+            composed.parts[at].extend(layout.parts.iter().cloned());
             if let Some((outer, place)) = outer {
                 layout.parts = outer.place(place, &layout);
                 layout.regions = outer.place_regions(place, &layout.regions);
@@ -272,25 +298,21 @@ impl View {
                     resources,
                     &mut report.icon_gui_notes,
                 ) {
-                    let index = report.base_hits.len();
-                    report.base_hits.push(
+                    composed.hits.push((
                         viewer_foundation::map::counter_hovers::unit_hits::Blocker {
                             rect: hit.rect,
                             layer,
                         },
-                    );
-                    report.air_grid_hits.insert(
-                        index,
                         AirGridHover {
                             members,
                             text,
                             family,
                         },
-                    );
+                    ));
                 }
             }
         }
-        Ok(parts)
+        Ok(composed)
     }
 }
 fn visible(
@@ -525,7 +547,7 @@ mod tests {
                     position: None,
                 };
                 let mut report = CounterReport::default();
-                let parts = view
+                let grid = view
                     .compose_held(
                         0,
                         &drawn,
@@ -541,9 +563,12 @@ mod tests {
                     )
                     .unwrap();
                 let mut composed = drawn.layout.clone();
-                composed.parts = drawn.layout.composed_parts(&parts).cloned().collect();
+                composed.parts = drawn.layout.composed_parts(&grid.parts).cloned().collect();
                 let placed = outer.place([3, 4], &composed);
                 assert!(placed.iter().any(|part| part.path.ends_with("count_bg")));
+                // Nothing takes a hit until its icon draws.
+                assert!(report.base_hits.is_empty() && report.air_grid_hits.is_empty());
+                grid.commit(&mut report);
                 assert_eq!(report.air_grid_hits.len(), 1);
                 let hit = &report.base_hits[0];
                 let local = view.entries[&0].1[0].instance.position();
@@ -563,6 +588,33 @@ mod tests {
                 assert_eq!(hover.members.as_deref().unwrap().as_slice(), &[7, 8]);
                 assert_eq!(item.kind, native::Kind::Container);
             },
+        );
+    }
+
+    /// A drawn icon's wing grid takes its hits after those already taken, each hover keyed by
+    /// its own hit.
+    #[test]
+    fn a_committed_wing_grid_follows_the_hits_already_taken() {
+        let blocker = |x| viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+            rect: [x, 0., 1., 1.],
+            layer: 3,
+        };
+        let hover = AirGridHover {
+            family: IconFamily::Bases,
+            members: Some(Arc::new(vec![7])),
+            text: Arc::default(),
+        };
+        let mut report = CounterReport::default();
+        report.base_hits.push(blocker(0.));
+        Composed {
+            parts: Vec::new(),
+            hits: vec![(blocker(1.), hover.clone()), (blocker(2.), hover.clone())],
+        }
+        .commit(&mut report);
+        assert_eq!(report.base_hits, [blocker(0.), blocker(1.), blocker(2.)]);
+        assert_eq!(
+            report.air_grid_hits.into_iter().collect::<Vec<_>>(),
+            [(1, hover.clone()), (2, hover)]
         );
     }
 

@@ -65,7 +65,7 @@ fn designer(regiment: &str, support: &str) -> Designer {
             candidates: vec![(unit_glyph(regiment), glyph_frame(false))],
         }),
         priority: Ok((1, 3)),
-        regiments: true,
+        regiments: Ok(true),
         paradrop: Ok(false),
         equipment_button: Ok(EQUIPMENT_BUTTON),
         experience: Ok("Army experience: 12".to_owned()),
@@ -281,6 +281,40 @@ fn unread_priority_and_equipment_settings_are_not_drawn() {
     }
     assert_eq!(slot(&bound, "priority").state, Slot::Refused);
     assert_eq!(slot(&bound, "equipment settings").state, Slot::Refused);
+}
+
+/// An unread layout cannot tell whether the template holds a regiment: the controls that depend
+/// on it are left undrawn and refused by name, never drawn as for an empty template.
+#[test]
+fn an_unread_layout_refuses_the_regiment_dependent_controls() {
+    tables();
+    let layers = installed(&[]);
+    let mut unread = designer("infantry", "engineer");
+    let why = "the template's layout was refused at capture";
+    unread.regiments = Err(why.to_owned());
+    let bound = draw_on(&layers, &unread);
+    let scene = bound.scene.as_ref().unwrap();
+    for control in [".can_paradrop_icon", ".division_equipment_btn"] {
+        assert!(
+            !scene.parts.iter().any(|part| part.path.ends_with(control)),
+            "{control}"
+        );
+    }
+    for name in ["paradrop", "special forces", "equipment settings"] {
+        let refused = slot(&bound, name);
+        assert_eq!(refused.state, Slot::Refused, "{name}");
+        assert!(
+            refused.detail.as_deref().is_some_and(|detail| detail.contains(why)),
+            "{name}: {refused:?}"
+        );
+    }
+    // A known empty template hides the same controls as the game does, with nothing unknown.
+    let mut empty = designer("infantry", "engineer");
+    empty.regiments = Ok(false);
+    let bound = draw_on(&layers, &empty);
+    assert_eq!(slot(&bound, "paradrop").state, Slot::Bound);
+    assert_eq!(slot(&bound, "special forces").state, Slot::Bound);
+    assert_eq!(slot(&bound, "equipment settings").state, Slot::Bound);
 }
 
 /// A mod's own sub-unit draws its own glyph from the mod's texture, and a mod that replaces
@@ -528,18 +562,41 @@ fn header_frames_and_sprites_follow_the_template() {
         forbidden_equipment: Some(Vec::new()),
         ..TemplateSettings::default()
     };
-    assert_eq!(equipment_button(&settings, &[]), Ok(EQUIPMENT_BUTTON));
+    assert_eq!(equipment_button(&settings, Some(&[][..])), Ok(EQUIPMENT_BUTTON));
     assert_eq!(
-        equipment_button(&settings, &[9]),
+        equipment_button(&settings, Some(&[9][..])),
         Ok(EQUIPMENT_BUTTON_RESTRICTED)
     );
-    settings.allow_foreign_equipment = 0;
+    // Unreadable exclusions do not prove an unrestricted template.
+    assert!(
+        equipment_button(&settings, None)
+            .is_err_and(|why| why.contains("excluded equipment designs"))
+    );
+    settings.forbidden_equipment = Some(vec![4]);
     assert_eq!(
-        equipment_button(&settings, &[]),
+        equipment_button(&settings, None),
         Ok(EQUIPMENT_BUTTON_RESTRICTED)
     );
     settings.forbidden_equipment = None;
-    assert!(equipment_button(&settings, &[]).is_err());
+    assert!(
+        equipment_button(&settings, Some(&[][..]))
+            .is_err_and(|why| why.contains("forbidden equipment types"))
+    );
+    assert_eq!(
+        equipment_button(&settings, Some(&[9][..])),
+        Ok(EQUIPMENT_BUTTON_RESTRICTED)
+    );
+    // A restriction the settings read proves the restricted sprite whatever else is unread.
+    settings.allow_foreign_equipment = 0;
+    assert_eq!(
+        equipment_button(&settings, None),
+        Ok(EQUIPMENT_BUTTON_RESTRICTED)
+    );
+    settings.forbidden_equipment = Some(Vec::new());
+    assert_eq!(
+        equipment_button(&settings, Some(&[][..])),
+        Ok(EQUIPMENT_BUTTON_RESTRICTED)
+    );
     assert_eq!(experience_points(1_234_567), 12);
     assert_eq!(experience_points(-150_000), -1);
 }

@@ -41,7 +41,7 @@ export function useIntelCoverage(widget: WidgetSpec, runtime: WidgetRuntime, act
   [grouped, roots?.ready, selection, groups.data, lastHour, aliases]);
   // Without the identity history (still loading) chosen tags are not asked for yet; if it fails, by their literal tags.
   const waiting = manual && !groups.data && !groups.error;
-  const request = roots && !roots.ready || chosen?.length === 0 || waiting ? null : intelCoverageRequest(widget, track, held ?? chosen);
+  const request = roots && !roots.ready || chosen?.length === 0 || waiting ? null : intelCoverageRequest(widget, track, chosen, held);
   const product = useProduct<IntelCoverageReply>(runtime.client, request, active, validateIntelCoverage, track?.source);
   return { track, options, grouped, groups, roots, chosen, aliases, touching: intelTouching(widget, chosen), ...product };
 }

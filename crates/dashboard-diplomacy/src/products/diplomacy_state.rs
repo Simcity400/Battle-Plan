@@ -79,7 +79,10 @@ pub struct DiplomacyOwner {
     pub tag: String,
     pub identity: Option<DiplomacyCountry>,
     pub read_hour: Option<i32>,
+    /// A complete opinion read made while the owner held this identity is recorded.
     pub known: bool,
+    /// Selected tags a known owner's read cannot prove; any other one it lists no opinion of is zero.
+    pub unknown_targets: Vec<String>,
     pub opinions: Vec<DiplomacyOpinion>,
 }
 #[derive(Clone, Debug, Serialize, TS)]

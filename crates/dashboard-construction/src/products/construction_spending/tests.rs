@@ -207,6 +207,41 @@ fn construction_output_never_joins_a_reset_or_hides_ownerless_final_lines() {
 }
 
 #[test]
+fn ownerless_output_stays_unattributed_only_until_a_census_identifies_its_line() {
+    let frame = |hour, lines| construction_frame(hour, true, lines, vec![], Some(vec![]), vec![]);
+    let mut census_failed = frame(100, vec![]);
+    *census_failed.tables[TableId::BuildingConstruction.index()] = TableView::Unavailable {
+        reason: "fixture: the read failed".into(),
+    };
+    let ended = ConstructionLineOutputRow {
+        ended: true,
+        ..output(1, 90, 0)
+    };
+    let log = scan(vec![
+        with_output(census_failed, vec![output(1, 50, 0)]),
+        with_output(
+            frame(124, vec![spending_line(1, 1, 900, 90)]),
+            vec![output(1, 80, 0), output(99, 7, 0)],
+        ),
+        with_output(frame(148, vec![]), vec![ended, output(99, 9, 0)]),
+    ]);
+    let unowned = |line| {
+        let gap = log
+            .output_unknown
+            .iter()
+            .find(|gap| gap.line == Some(line))
+            .unwrap();
+        (gap.reason, gap.known_at, gap.until)
+    };
+    // The census at 124 owns line 1 from then on; what was read at 100 stays unknown.
+    assert_eq!(unowned(1), (SpendingGap::OwnerUnknown, 100, Some(124)));
+    assert_eq!(unowned(99), (SpendingGap::OwnerUnknown, 124, None));
+    let (leaves, _) = leaves(&log, "GER");
+    let new = leaves.iter().find(|leaf| !leaf.repair).unwrap();
+    assert_eq!(new.spent.last().unwrap().total_raw, "90");
+}
+
+#[test]
 fn construction_output_reads_only_at_cadence_and_accounts_for_every_owner() {
     use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let replay_data::cadence::Cadence::Daily(slot) =

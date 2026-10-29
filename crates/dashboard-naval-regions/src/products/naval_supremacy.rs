@@ -630,17 +630,26 @@ pub(crate) fn project(
                 continue;
             }
         };
-        let own = rows
-            .iter()
-            .find(|r| {
-                (if r.country == 0 {
-                    Some(0)
-                } else {
-                    countries.as_ref().and_then(|c| c.slot(r.country))
-                }) == Some(viewer)
-            })
-            .map_or(0, |r| r.current);
-        result.insert(format!("{region}|own"), i128::from(own));
+        let slot = |r: &replay_data::rows::NavalSupremacyRow| {
+            if r.country == 0 {
+                Some(0)
+            } else {
+                countries.as_ref().and_then(|c| c.slot(r.country))
+            }
+        };
+        match rows.iter().find(|&&r| slot(r) == Some(viewer)) {
+            Some(r) => {
+                result.insert(format!("{region}|own"), i128::from(r.current));
+            }
+            // Zero only once no nonzero current of an unresolved owner could be the viewer's.
+            None if rows.iter().any(|&r| r.current != 0 && slot(r).is_none()) => notes.note(
+                "Naval current owner identity is unresolved; the viewer's own current is unknown",
+                format!("{identity}:own"),
+            ),
+            None => {
+                result.insert(format!("{region}|own"), 0);
+            }
+        }
         let minimum = labels.as_ref().map_err(Clone::clone).and_then(|l| {
             l.minima.get(&region).cloned().unwrap_or_else(|| {
                 Err(format!(

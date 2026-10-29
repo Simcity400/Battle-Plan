@@ -9,7 +9,7 @@ import { partyTagsAt } from '../../dashboard/marketHistory.ts';
 const row = (id: string, kind: number, amountRaw: string | null, reason: string | null = null) => ({ id, occurrence: id, hour: 20, kind, mode: kind === 34 ? 20 : 0,
   contract: '0000000000000009', seller: '1', buyer: '2', variant: 'a1', amountRaw, totalRaw: '0', reason });
 const reply = (extra: Partial<MarketLedgerReply> = {}): MarketLedgerReply => validateLedger({ branchId: '1', lastHour: 40, total: '3', next: null, known: [[0, 40, '1']], warnings: [],
-  holders: { '1': [{ hour: 0, tag: 'SEL' }], '2': [{ hour: 0, tag: 'BUY' }] },
+  holders: { '1': [{ hour: 0, tag: 'SEL' }], '2': [{ hour: 0, tag: 'BUY' }] }, identified: [{ firstHour: 0, lastHour: 40 }],
   variants: { a1: [{ firstHour: 0, name: 'Synthetic rifle', known: true, design: null }] },
   rows: [row('3', 21, '150000'), row('2', 34, null, 'Delivery amount unavailable: cumulative baseline uncertified'), row('1', 20, '-200000')],
   coverage: { firstHour: 0, lastHour: 40, complete: true }, pending: [], ...extra });
@@ -20,6 +20,11 @@ test('ledger rows name both parties at their hour and keep unavailable amounts a
   assert.deepEqual(rows.map(item => ledgerTitle(item.item, names)), ['Payment collected from BUY', 'Delivery amount unavailable', 'Delivery to BUY']);
   assert.deepEqual(rows.map(item => ledgerFigure(item.item)), [{ text: '1.5 CIC', negative: false }, { text: 'Amount unavailable', negative: false }, { text: '-2', negative: true }]);
   assert.equal(rows[2].item.equipment, 'Synthetic rifle');
+  // An hour whose identities went unread names nobody, though the parties are known holders.
+  const unread = ledgerRows(reply({ identified: [{ firstHour: 0, lastHour: 0 }] }), 0);
+  assert.deepEqual(unread.map(item => [item.item.seller, item.item.buyer]), [[null, null], [null, null], [null, null]]);
+  assert.deepEqual(unread[0].item.parties.map(party => party.id), ['1', '2']);
+  assert.throws(() => validateLedger({ ...reply(), identified: [{ firstHour: 5, lastHour: 4 }] }));
 });
 
 test('kind toggles map to recorded kinds; unavailable deliveries follow deliveries', () => {

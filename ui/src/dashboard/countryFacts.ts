@@ -17,8 +17,8 @@ export const nameKey = (hour: number, tag: string) => JSON.stringify([hour, tag]
 /** A failed read is unknown, distinct from an answered fact with no value. */
 export const FAILED_FACT = Symbol('failed fact');
 
-/** Most distinct hours one label set may ask about by default, and how many hours
- * no longer wanted a store keeps. */
+/** How many hours no longer wanted a store keeps; callers that bound the hours they
+ * ask about also use it as their floor. */
 export const MAX_NAME_HOURS = 64;
 
 /** What each hour's countries were found to be. Every hour currently wanted

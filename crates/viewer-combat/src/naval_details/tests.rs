@@ -115,8 +115,9 @@ fn air_count_uses_current_over_max_and_native_side_colour_order() {
 fn air_icon_frames_and_dynamic_hover_are_explicit() {
     let left = air_icon_widget(Some("GFX_test_air".into()), 0);
     let right = air_icon_widget(Some("GFX_test_air".into()), 1);
-    assert_eq!(left.frame, Some(2));
-    assert_eq!(right.frame, Some(1));
+    // Zero based: the renderer draws native frames 2 and 1.
+    assert_eq!(left.frame, Some(1));
+    assert_eq!(right.frame, Some(0));
     assert!(left.hover_owned && right.hover_owned);
     assert!(left.tooltip.is_none() && right.tooltip.is_none());
     let missing = air_icon_widget(None, 0);
@@ -180,8 +181,8 @@ fn air_entries_bind_before_carrier_ships_on_both_grids() {
         out.naval_entries[1].grid,
         "battle_window/top_wnd/right_wnd/grid_carrier"
     );
-    assert_eq!(out.naval_entries[0].values["icon"].frame, Some(2));
-    assert_eq!(out.naval_entries[1].values["icon"].frame, Some(1));
+    assert_eq!(out.naval_entries[0].values["icon"].frame, Some(1));
+    assert_eq!(out.naval_entries[1].values["icon"].frame, Some(0));
     assert_eq!(
         out.naval_entries[0].values["icon"].tooltip.as_deref(),
         Some("Air left")

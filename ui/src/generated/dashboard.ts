@@ -481,7 +481,15 @@ export type DiplomacyParams = { "view": "opinions", branchId: string, hour: numb
 export type DiplomacyReply = DiplomacyOpinionsReply | DiplomacyPairReply | DiplomacyPactsReply | DiplomacyProposalsReply;
 export type DiplomacyCountry = { tag: string, slot: number, countryId: number, };
 export type DiplomacyOpinion = { target: string, value: number, };
-export type DiplomacyOwner = { tag: string, identity: DiplomacyCountry | null, readHour: number | null, known: boolean, opinions: Array<DiplomacyOpinion>, };
+export type DiplomacyOwner = { tag: string, identity: DiplomacyCountry | null, readHour: number | null,
+/**
+ * A complete opinion read made while the owner held this identity is recorded.
+ */
+known: boolean,
+/**
+ * Selected tags a known owner's read cannot prove; any other one it lists no opinion of is zero.
+ */
+unknownTargets: Array<string>, opinions: Array<DiplomacyOpinion>, };
 export type DiplomacyOpinionsReply = { hour: number, owners: Array<DiplomacyOwner>, unresolved: number,
 /**
  * True only for an exact, cadence-bounded recorded snapshot beyond the prepared prefix.
@@ -2866,7 +2874,8 @@ consumerNames: Array<string | null>,
  */
 scale: number,
 /**
- * Hours the consumer table was read complete ("1").
+ * Hours the consumer table was read complete with every consumer's
+ * country identified ("1").
  */
 known: Array<EconomyRun>, countries: Array<FuelBranchCountry>, warnings: Array<string>, };
 export type FuelBranchCountry = { holder: string, tags: Array<HolderTag>,
@@ -2993,9 +3002,15 @@ total: string | null,
 next: string | null,
 /**
  * Hours the market's occurrences were read, as "1" runs: an empty
- * ledger is only "no trades" inside them.
+ * ledger is only "no trades" inside them. For chosen countries, only
+ * hours whose occurrences' parties all had identities.
  */
-known: Array<EconomyRun>, holders: { [key in string]?: Array<HolderTag> }, variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
+known: Array<EconomyRun>, holders: { [key in string]?: Array<HolderTag> },
+/**
+ * The hours across this page's rows whose country identities were read: a
+ * party's tag at a row's hour is known only inside them.
+ */
+identified: Array<HourSpan>, variants: { [key in string]?: Array<StockVariantName> }, warnings: Array<string>, };
 export type MarketLedgerRow = { id: string, occurrence: string, hour: number, kind: number, mode: number,
 /**
  * The contract's native handle, hexadecimal.
@@ -4251,11 +4266,23 @@ export type ProjectRewardOption = { label: ProjectLabel, effects: ProjectEffects
 export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
 export type ProjectVariableValue = { name: string, valueRaw: string, };
 export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, output: ProjectEffects | null, choices: Array<ProjectChoice> | null, };
-export type SpecialProjectDetails = { hour: number, scientists: Array<ScientistDetails>, programs: Array<ProgramDetails>,
+export type SpecialProjectDetails = { hour: number,
+/**
+ * `None` when the hour's scientist roster is unavailable.
+ */
+scientists: Array<ScientistDetails> | null,
+/**
+ * `None` without a continuous supplying read of the country's programs.
+ */
+programs: Array<ProgramDetails> | null,
 /**
  * `None` without a continuous supplying read for the country.
  */
-breakthroughs: Array<SpecializationProgress> | null, projects: Array<ProjectRuntimeDetails>, unavailable: Array<string>, };
+breakthroughs: Array<SpecializationProgress> | null,
+/**
+ * `None` without a continuous supplying read of the country's projects.
+ */
+projects: Array<ProjectRuntimeDetails> | null, unavailable: Array<string>, };
 export type SubjectParams = { branchId: string, };
 export type SubjectLevel = {
 /**

@@ -1709,6 +1709,13 @@ impl Viewer {
         }
     }
 
+    /// Stops what the map sounded while it shows no picture: an error view or a spinner. The
+    /// next presented frame claims the audio again and starts its sounds afresh.
+    fn silence_unshown(&mut self) {
+        self.release_audio();
+        self.audio_reset = true;
+    }
+
     /// Sends this view's volumes and mute to the audio now, so a change
     /// applies even while the map does not draw.
     pub(crate) fn apply_audio_mix(&self) {
@@ -1884,8 +1891,9 @@ impl Viewer {
             )),
             None => Some("The requested branch is not present in this recording".into()),
         };
-        if let Some(error) = &self.error {
+        if let Some(error) = self.error.clone() {
             self.rendered = None;
+            self.silence_unshown();
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
             });
@@ -3354,6 +3362,19 @@ impl Viewer {
     }
 
     fn map_with_state(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &eframe::egui_wgpu::RenderState,
+        document: &mut Document,
+    ) -> Result<(), String> {
+        let result = self.draw_map(ui, state, document);
+        if !self.drew_frame {
+            self.silence_unshown();
+        }
+        result
+    }
+
+    fn draw_map(
         &mut self,
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
@@ -6940,6 +6961,55 @@ pub(crate) mod tests {
         assert!(!viewer.presentation_ready(target, false));
         viewer.shown.as_mut().unwrap().error = Some("unavailable".into());
         assert!(!viewer.picture_ready());
+    }
+
+    /// A map that shows no picture, here for an hour its recording lacks, stops what it sounded,
+    /// and its next presented frame starts its sounds afresh.
+    #[test]
+    fn a_map_without_a_picture_stops_sounding() {
+        // No device opens; the owner still claims the audio.
+        viewer_audio::System::silent();
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options::default(),
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        viewer.dashboard_map = true;
+        let mut owner = viewer_audio::System::shared().owner();
+        owner.claim();
+        viewer.audio = Some(owner);
+        let bounds = dashboard::protocol::ViewBounds {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
+        let target = dashboard::protocol::DashboardMapView {
+            options: Default::default(),
+            id: "widget".into(),
+            source_id: "source".into(),
+            path: "fixture".into(),
+            revision: "revision".into(),
+            branch_id: "1".into(),
+            playing: false,
+            hour: 0,
+            fraction: 0.,
+            sequence: 1,
+            seek_sequence: None,
+            bounds,
+            clip: bounds,
+            visible: true,
+        };
+        let frame = eframe::Frame::_new_kittest();
+        let mut output = egui::Context::default()
+            .run_ui(Default::default(), |ui| viewer.map_ui(ui, &frame, &target));
+        output.textures_delta.clear();
+        assert!(viewer.error.is_some());
+        assert!(!viewer.audio.as_ref().unwrap().owns());
+        assert!(viewer.audio_reset);
     }
 
     /// A capture that waits on the builders for its hour feeds every hour it

@@ -712,6 +712,8 @@ impl Prepared {
                 .copied()
                 .unwrap_or([-1; MISSIONS]);
             let mut parts = vec![Vec::new(); drawn.layout.holders.len()];
+            // Only an icon that draws takes its hits.
+            let mut hits = Vec::new();
             let run = || -> Result<(), String> {
                 let Some(at) = drawn
                     .layout
@@ -755,7 +757,7 @@ impl Prepared {
                             &resources,
                             &mut report.icon_gui_notes,
                         ) {
-                            report.air_mission_hits.push(AirMissionHover {
+                            hits.push(AirMissionHover {
                                 region: drawn.owner,
                                 mission: Some(kind),
                                 rect: hit.rect,
@@ -792,7 +794,7 @@ impl Prepared {
                     &mut report.icon_gui_notes,
                 )
             {
-                report.air_mission_hits.push(AirMissionHover {
+                hits.push(AirMissionHover {
                     region: drawn.owner,
                     mission: None,
                     rect: hit.rect,
@@ -806,10 +808,10 @@ impl Prepared {
                 inputs.content.defines.naval_mission_cutoff,
             ));
             batch.at_layer(draw_layer);
-            if let Err(why) =
-                native_gui::draw_composed(&drawn.layout, &parts, drawn.origin, &resources, batch)
+            match native_gui::draw_composed(&drawn.layout, &parts, drawn.origin, &resources, batch)
             {
-                count_refused(&mut report.icon_gui_notes, WINDOW, &[why]);
+                Ok(()) => report.air_mission_hits.extend(hits),
+                Err(why) => count_refused(&mut report.icon_gui_notes, WINDOW, &[why]),
             }
             note_supply_refusals(counts[AIR_SUPPLY], &mut report.icon_gui_notes);
         }

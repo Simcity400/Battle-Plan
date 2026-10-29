@@ -47,6 +47,10 @@ pub enum IconFamily {
     Occupation,
     /// The Operatives mode's intel containers.
     Intel,
+    /// The resources mode's state resource icons.
+    Resources,
+    /// Strait and canal (adjacency-rule) icons.
+    AdjacencyRules,
 }
 
 /// Where a map icon stands, as its owner tags its quads.

@@ -1,6 +1,7 @@
 use super::*;
 use crate::spool_writer::Writer;
 use replay::spool::{SegmentSink, recover_prefix};
+use replay_frame::branches::Parentage;
 use std::{
     collections::BTreeMap,
     io::Write,
@@ -474,6 +475,117 @@ fn campaign_and_live_branch_transitions_service_frames_without_draining() {
         processor.drain_writer().unwrap();
         assert_eq!(processor.recorded_hours(), 4);
         processor.detach().unwrap();
+    }
+}
+
+fn branch_ids(processor: &mut Processor) -> Vec<BranchId> {
+    let id = std::str::from_utf8(ID).unwrap();
+    let campaign = processor.campaigns.get_mut(id).unwrap();
+    campaign.tracker.branches().map(|start| start.id).collect()
+}
+
+fn parent(processor: &mut Processor, branch: BranchId) -> Parentage {
+    let id = std::str::from_utf8(ID).unwrap();
+    let campaign = processor.campaigns.get_mut(id).unwrap();
+    campaign.tracker.branch_start(branch).unwrap().parent.clone()
+}
+
+fn written_parent(written: &replay::container::Replay, branch: BranchId) -> Parentage {
+    let start = written.branches.iter().find(|start| start.id == branch);
+    start.unwrap().parent.clone()
+}
+
+#[test]
+fn a_load_before_its_hours_write_settles_takes_ancestry_from_that_writes_outcome() {
+    for fail in [false, true] {
+        let (mut processor, store) = processor();
+        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        let release = block(&store, 11, fail);
+        admit(&mut processor, ID, 7, 11);
+        release.0.entered();
+        // The hour-11 save loads; its first callback precedes hour 11's receipt.
+        admit(&mut processor, ID, 8, 11);
+        let branches = branch_ids(&mut processor);
+        let &[first, loaded] = branches.as_slice() else {
+            panic!("expected the original and the loaded branch");
+        };
+        let original = Parentage::Probable {
+            branch: first,
+            hour: 11,
+        };
+        assert_eq!(processor.queued.len(), 2);
+        assert_eq!(parent(&mut processor, loaded), original);
+        release.0.release();
+        processor.drain_writer().unwrap();
+        if fail {
+            assert!(processor.flush().is_err());
+            assert_eq!(parent(&mut processor, loaded), Parentage::Unknown);
+            admit(&mut processor, ID, 8, 12);
+            processor.drain_writer().unwrap();
+        }
+        processor.detach().unwrap();
+        let replay = replay(&store);
+        assert_eq!(
+            written_parent(&replay, loaded),
+            if fail { Parentage::Unknown } else { original }
+        );
+        assert_eq!(
+            replay.recorded_hours(first).unwrap(),
+            if fail { vec![10] } else { vec![10, 11] }
+        );
+        assert_eq!(
+            replay.recorded_hours(loaded).unwrap(),
+            if fail { vec![12] } else { vec![11] }
+        );
+    }
+}
+
+#[test]
+fn a_load_while_another_branch_queues_its_hour_stays_ambiguous_unless_that_write_fails() {
+    for fail in [false, true] {
+        let (mut processor, store) = processor();
+        processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+        processor.frame(&campaign_frame(ID, 7, 11)).unwrap();
+        let release = block(&store, 11, fail);
+        admit(&mut processor, ID, 8, 11);
+        release.0.entered();
+        // Hour 11 is recorded on the first branch and queued on the second.
+        admit(&mut processor, ID, 9, 11);
+        let branches = branch_ids(&mut processor);
+        let &[first, second, third] = branches.as_slice() else {
+            panic!("expected three branches");
+        };
+        let original = Parentage::Probable {
+            branch: first,
+            hour: 11,
+        };
+        assert_eq!(processor.queued.len(), 2);
+        assert_eq!(parent(&mut processor, second), original);
+        assert_eq!(parent(&mut processor, third), Parentage::Unknown);
+        release.0.release();
+        processor.drain_writer().unwrap();
+        if fail {
+            assert!(processor.flush().is_err());
+            assert_eq!(parent(&mut processor, third), original);
+            admit(&mut processor, ID, 9, 12);
+            processor.drain_writer().unwrap();
+        }
+        processor.detach().unwrap();
+        let replay = replay(&store);
+        assert_eq!(written_parent(&replay, second), original);
+        assert_eq!(
+            written_parent(&replay, third),
+            if fail { original } else { Parentage::Unknown }
+        );
+        assert_eq!(replay.recorded_hours(first).unwrap(), [10, 11]);
+        assert_eq!(
+            replay.recorded_hours(second).unwrap(),
+            if fail { vec![] } else { vec![11] }
+        );
+        assert_eq!(
+            replay.recorded_hours(third).unwrap(),
+            if fail { vec![12] } else { vec![11] }
+        );
     }
 }
 

@@ -4,8 +4,9 @@ use dashboard_base::{
     catalogue::{self, View},
     products::{LoadContext, Product, check_reply_budget, validate_tag},
 };
+use dashboard_text::metadata::{TaggedCountry, tagged_country};
 use replay::container::SeekResult;
-use replay_data::rows::{TableId, tables};
+use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -170,12 +171,11 @@ impl Product for Wargoals {
         tables.sort_by_key(|t| t.index());
         tables.dedup();
         let frame = read(&tables)?;
-        let slot = frame
-            .complete::<tables::Countries>()?
-            .iter()
-            .find(|c| c.tag == p.tag.as_bytes())
-            .map(|c| c.canonical_slot)
-            .ok_or_else(|| invalid("War-goal country is absent"))?;
+        let (_, slot) = selected_country(
+            frame.complete::<tables::Countries>()?,
+            frame.complete::<tables::CountryLinks>()?,
+            &p.tag,
+        )?;
         let text = catalogue.as_ref().map_err(Clone::clone).and_then(|cat| {
             cat.scripted_content().map(|scripted| {
                 dashboard_text::scripted_text::ScriptedText::new(
@@ -259,6 +259,20 @@ impl Product for Wargoals {
 fn invalid(why: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why.into())
 }
+/// The country holding `tag` this hour, as every per-country product resolves it.
+fn selected_country<'a>(
+    countries: &'a [rows::CountryRow],
+    links: &[rows::CountryLinkRow],
+    tag: &str,
+) -> io::Result<(&'a rows::CountryRow, u32)> {
+    match tagged_country(countries, links, tag) {
+        TaggedCountry::Found(country, slot) => Ok((country, slot)),
+        TaggedCountry::Absent => Err(invalid("War-goal country is absent at this hour")),
+        TaggedCountry::Unresolved => Err(invalid(
+            "War-goal country identity is unresolved at this hour",
+        )),
+    }
+}
 fn localised_goal_name(
     frame: &DecodedFrame,
     localisation: &installed_content_localisation::localisation::Localisation,
@@ -296,11 +310,9 @@ fn standings(frame: &DecodedFrame, pairs: &BTreeSet<(String, String)>) -> Vec<Wa
     let links = frame.complete::<tables::CountryLinks>().ok();
     let countries = frame.complete::<tables::Countries>().ok();
     let slot = |tag: &str| {
-        countries
-            .as_ref()?
-            .iter()
-            .find(|r| r.tag == tag.as_bytes())
-            .map(|r| r.canonical_slot)
+        tagged_country(countries?, links?, tag)
+            .found()
+            .map(|(_, slot)| slot)
     };
     let canonical = |raw| {
         links
@@ -360,16 +372,13 @@ fn inventory(
 ) -> io::Result<WargoalsReply> {
     let countries = frame.complete::<tables::Countries>()?;
     let links = frame.complete::<tables::CountryLinks>()?;
-    let selected = countries
-        .iter()
-        .find(|c| c.tag == p.tag.as_bytes())
-        .ok_or_else(|| invalid("War-goal country is absent at this hour"))?;
+    let (selected, selected_slot) = selected_country(countries, links, &p.tag)?;
     let slots: BTreeMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
     let tags: BTreeMap<_, _> = countries
         .iter()
         .map(|r| (r.canonical_slot, r.tag.as_slice()))
         .collect();
-    let same = |raw: u32| slots.get(&raw) == Some(&selected.canonical_slot);
+    let same = |raw: u32| slots.get(&raw) == Some(&selected_slot);
     let tag = |raw: u32| -> io::Result<String> {
         let slot = slots
             .get(&raw)
@@ -794,6 +803,56 @@ mod tests {
             ))
             .into();
         frame
+    }
+
+    #[test]
+    fn the_selected_country_is_the_first_link_resolved_holder_of_its_tag() {
+        let mut frame = gate_frame();
+        let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+        countries.insert(
+            0,
+            rows::CountryRow {
+                id: 50,
+                canonical_slot: 50,
+                tag: b"ONE".to_vec(),
+                ..Default::default()
+            },
+        );
+        frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries)).into();
+        frame.tables[TableId::CountryWargoals.index()] =
+            TableView::Complete(TableRows::CountryWargoals(vec![rows::CountryWargoalRow {
+                country: 1,
+                ordinal: 0,
+                handle: 7,
+                actor: 1,
+                recipient: 2,
+                goal_type: 42,
+                name_token: 42,
+                expires: 43820000,
+            }]))
+            .into();
+        let p = WargoalsParams {
+            branch_id: "1".into(),
+            hour: 100,
+            tag: "ONE".into(),
+        };
+        // The earlier row has no country link: the linked slot-1 country is the selection.
+        let reply = inventory(&frame, &p, |_, _, _| Ok("name".into())).unwrap();
+        assert_eq!(reply.goals.len(), 1);
+        assert_eq!(reply.goals[0].actor, "ONE");
+        assert_eq!(reply.standings[0].standing, Some(WargoalStanding::AtWar));
+        let links: Vec<_> = frame
+            .complete::<tables::CountryLinks>()
+            .unwrap()
+            .iter()
+            .filter(|link| link.id != 1)
+            .cloned()
+            .collect();
+        frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(links)).into();
+        let unresolved = inventory(&frame, &p, |_, _, _| Ok("name".into())).unwrap_err();
+        assert!(unresolved.to_string().contains("unresolved"), "{unresolved}");
     }
 
     #[test]

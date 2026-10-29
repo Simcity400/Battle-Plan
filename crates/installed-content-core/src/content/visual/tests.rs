@@ -1360,6 +1360,27 @@ fn revisions_follow_what_the_mods_show() {
     assert_eq!(plan.revision, revision());
 }
 
+/// Renaming a shown file only in case changes the revision, since the defines loader admits
+/// `custom.lua` but not `custom.LUA`; neither its size nor its modification time moves.
+#[test]
+fn a_case_only_rename_moves_the_revision() {
+    let machine = Machine::new("revision-case");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    let lower = machine.write("art/common/defines/custom.lua", b"NDefines.NGraphics.A = 1");
+    let selected = [pick("mod/art.mod", "Art")];
+    let revision = || revision(&machine.options, &selected, &[], &never()).unwrap();
+    let first = revision();
+    let upper = lower.with_file_name("custom.LUA");
+    let between = lower.with_file_name("custom.tmp");
+    fs::rename(&lower, &between).unwrap();
+    fs::rename(&between, &upper).unwrap();
+    let renamed = revision();
+    assert_ne!(first, renamed);
+    fs::rename(&upper, &between).unwrap();
+    fs::rename(&between, &lower).unwrap();
+    assert_eq!(first, revision());
+}
+
 /// A mod that changes while it mounts is mounted again, so the plan's revision and the mounted
 /// files are the updated ones, never a revision taken before the update over older files.
 #[test]

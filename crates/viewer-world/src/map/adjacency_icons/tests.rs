@@ -1,8 +1,9 @@
 use super::*;
 use crate::map::map_mode::{MapMode, Stock, visibility};
 use viewer_foundation::map::{
-    camera::{MapDefines, MapSize, Pose},
+    camera::{Free, Lens, MapDefines, MapSize, Pose},
     mode_visibility::PriorityTable,
+    test_support::gui,
 };
 
 const RULES: &[u8] = b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }
@@ -134,6 +135,94 @@ fn the_icon_stands_at_the_province_position_plus_its_offset() {
         .unwrap()
         .position;
     assert_ne!(expected, unshifted);
+}
+
+/// A free eye shows each icon by its own distance, however low it flies, and the icon stands at
+/// its province position plus its offset.
+#[test]
+fn a_free_eye_shows_each_icon_by_its_own_distance() {
+    let icons = AdjacencyIcons::of(
+        &installed_content_core::adjacency_rules::parse(
+            b"adjacency_rule = { name = A icon = 7 offset = { 1 0 -2 } }",
+        )
+        .unwrap(),
+        Ok(100.),
+    );
+    let world = [3001., 10., 1498.];
+    let prepared = |distance: f32| {
+        // Level with the icon, `distance` south of it.
+        let eye = [world[0], world[1], world[2] - distance];
+        icons.prepare(&Inputs {
+            anchor: &anchor,
+            camera: Camera {
+                center: [eye[0], eye[2]],
+                height: eye[1],
+                map: MapSize::TEST,
+                defines: MapDefines::test(),
+                pose: Pose::Free(Free::looking_at(eye, world, Lens::MAP)),
+            },
+            viewport: [2048, 1152],
+            ui_scale: 1.,
+            visibility: mode(Stock::StrategicNavy),
+        })
+    };
+    assert_eq!(prepared(100.).provinces().count(), 0);
+    let near = prepared(99.);
+    assert_eq!(near.provinces().collect::<Vec<_>>(), [7]);
+    assert_eq!(
+        near.placed[0].anchor,
+        IconAnchor {
+            world,
+            cutoff: 100.,
+            family: IconFamily::AdjacencyRules,
+        }
+    );
+}
+
+/// Every quad of an icon stands at its anchor for a free eye to place; later pushes are screen
+/// interface again.
+#[test]
+fn an_icon_s_quads_stand_at_its_anchor() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let resources = gui::fixture();
+    let windows = gui::windows(
+        br#"guiTypes = {
+        containerWindowType = { name = adjacency_rule_mapicon size = { width = 40 height = 20 }
+            iconType = { name = icon spriteType = GFX_even } }
+    }"#,
+    );
+    let context = Context {
+        resources: &resources,
+        windows: &windows,
+        viewport: [2048, 1152],
+        time: Some(0.),
+    };
+    let prepared = prepare(&fixture(Ok(1700.)), Stock::StrategicNavy, 300.);
+    let mut batch = Batch::default();
+    let mut report = BTreeMap::new();
+    let drawn = prepared.draw(
+        &context,
+        0,
+        &mut PoolView::default(),
+        &mut batch,
+        &mut report,
+    );
+    assert_eq!(drawn, 2, "{report:?}");
+    assert!(!batch.quads.is_empty());
+    let anchors: Vec<_> = prepared
+        .placed
+        .iter()
+        .map(|placed| Some(placed.anchor))
+        .collect();
+    assert!(
+        batch
+            .quads
+            .iter()
+            .all(|quad| anchors.contains(&quad.anchor))
+    );
+    batch.push(batch.quads[0].clone());
+    assert_eq!(batch.quads.last().unwrap().anchor, None);
 }
 
 #[test]

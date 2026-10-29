@@ -899,44 +899,33 @@ pub fn query(
         "series-summary" => {
             let (from, to, width) = series::viewport(params.from, params.to, params.width)?;
             series::summary_budget(from, to, width, wanted.len())?;
+            let bounds = (from.floor() as i32, to.ceil() as i32);
             let mut lines = Vec::new();
             for (tag, key) in wanted {
-                if let Some(top) = &selection.top {
-                    let ranking = ranks.summary(
-                        key * 2 + 1,
-                        (from.floor() as i32, to.ceil() as i32),
-                        (from, to, 1),
-                        0,
-                    )?;
-                    if !ranking
-                        .buckets
-                        .iter()
-                        .flatten()
-                        .any(|bucket| bucket.min_value <= f64::from(top.count))
-                    {
-                        continue;
+                // A line holds only the hours its country ranks within the top.
+                let within = match &selection.top {
+                    Some(top) => {
+                        let spans = ranks.top_spans(
+                            key * 2 + 1,
+                            bounds,
+                            (from, to, width),
+                            top.count as usize,
+                            &[],
+                        )?;
+                        if spans.is_empty() {
+                            continue;
+                        }
+                        Some(spans)
                     }
-                }
-                let mut summary = values[channel].summary(
+                    None => None,
+                };
+                let summary = values[channel].summary_within(
                     key,
-                    (from.floor() as i32, to.ceil() as i32),
+                    bounds,
                     (from, to, width),
                     0,
+                    within.as_deref(),
                 )?;
-                if let Some(top) = &selection.top {
-                    let ranking = ranks.summary(
-                        key * 2 + 1,
-                        (from.floor() as i32, to.ceil() as i32),
-                        (from, to, width),
-                        0,
-                    )?;
-                    for (bucket, rank) in summary.buckets.iter_mut().zip(ranking.buckets) {
-                        if rank.is_none_or(|rank| rank.min_value > f64::from(top.count)) {
-                            *bucket = None;
-                        }
-                    }
-                    summary.runs = None;
-                }
                 lines.push(json!({"tag": tag, "actor": key.to_string(), "summary": summary}));
             }
             Ok(json!({"series": lines, "warnings": catalogue.warnings}))

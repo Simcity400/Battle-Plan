@@ -339,9 +339,8 @@ fn reached(
         ));
         return Ok(None);
     }
-    let mut tables = BTreeSet::from_iter(dashboard_text::scripted_text::TABLES.iter().copied());
+    let mut tables = BTreeSet::from_iter(dashboard_text::effect_description::recorded_tables());
     tables.extend([
-        TableId::Clock,
         TableId::DoctrineLeaderMastery,
         TableId::DoctrineCostReductions,
         TableId::DoctrineMasteryGrants,

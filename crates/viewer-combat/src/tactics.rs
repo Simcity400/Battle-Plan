@@ -915,7 +915,10 @@ impl Context<'_> {
                     if total == 0 {
                         0
                     } else {
-                        artillery.wrapping_mul(100_000) / total
+                        artillery
+                            .wrapping_mul(100_000)
+                            .checked_div(total)
+                            .ok_or_else(|| fail("the game's artillery ratio division traps"))?
                     },
                     true,
                 )

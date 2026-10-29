@@ -189,7 +189,8 @@ pub struct Observation {
 struct BranchHistory {
     start: BranchStart,
     recorded: Vec<Hour>,
-    pending: Vec<Hour>,
+    /// Observed hours not yet recorded, and whether each one's write is queued.
+    pending: Vec<(Hour, bool)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -453,14 +454,15 @@ impl BranchTracker {
         }
         let start = reason
             .map(|reason| {
+                let id = self
+                    .next_branch
+                    .ok_or_else(|| invalid("branch id space exhausted"))?;
                 Ok::<_, io::Error>(BranchStart {
-                    id: self
-                        .next_branch
-                        .ok_or_else(|| invalid("branch id space exhausted"))?,
+                    id,
                     session,
                     loaded_hour,
                     first_hour: recorded_hour,
-                    parent: loaded_hour.map_or(Parentage::Unknown, |hour| self.parent_at(hour)),
+                    parent: loaded_hour.map_or(Parentage::Unknown, |hour| self.parent_at(hour, id)),
                     reason,
                 })
             })
@@ -477,7 +479,7 @@ impl BranchTracker {
         let mut first_pending = Vec::new();
         if start.is_some() {
             engine_allocation::reserve(&mut first_pending, 1)?;
-            first_pending.push(recorded_hour);
+            first_pending.push((recorded_hour, false));
         }
 
         // All fallible validation and growth are above this point.
@@ -486,7 +488,7 @@ impl BranchTracker {
             for gap in known_gaps {
                 history
                     .pending
-                    .retain(|hour| !(gap.first_hour..=gap.last_hour).contains(hour));
+                    .retain(|(hour, _)| !(gap.first_hour..=gap.last_hour).contains(hour));
             }
         }
         let branch = match &start {
@@ -505,7 +507,7 @@ impl BranchTracker {
             self.history_mut(branch)
                 .unwrap()
                 .pending
-                .push(recorded_hour);
+                .push((recorded_hour, false));
         }
         self.last = Some(LastObservation {
             branch,
@@ -522,7 +524,11 @@ impl BranchTracker {
         let history = self
             .history_mut(branch)
             .ok_or_else(|| invalid("unknown branch"))?;
-        let Some(position) = history.pending.iter().position(|pending| *pending == hour) else {
+        let Some(position) = history
+            .pending
+            .iter()
+            .position(|(pending, _)| *pending == hour)
+        else {
             return Err(invalid(
                 "hour was not observed, was already recorded, or was declared missing",
             ));
@@ -536,11 +542,64 @@ impl BranchTracker {
         Ok(())
     }
 
-    fn parent_at(&self, hour: Hour) -> Parentage {
+    /// The observed hour's write is queued. A failure cancels every write queued
+    /// after it, so until [`Self::lose_hour`] this hour is parentage evidence.
+    pub fn admit_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        let history = self
+            .history_mut(branch)
+            .ok_or_else(|| invalid("unknown branch"))?;
+        let Some((_, queued)) = history
+            .pending
+            .iter_mut()
+            .find(|(pending, queued)| *pending == hour && !*queued)
+        else {
+            return Err(invalid(
+                "hour was not observed, was already queued, or was declared missing",
+            ));
+        };
+        *queued = true;
+        Ok(())
+    }
+
+    /// The observed hour will not be recorded: its write failed or was never queued.
+    /// A failed queued write cancelled the writes of every later branch start, so
+    /// those that counted it take the parent left without it.
+    pub fn lose_hour(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
+        let history = self
+            .history_mut(branch)
+            .ok_or_else(|| invalid("unknown branch"))?;
+        let Some(position) = history
+            .pending
+            .iter()
+            .position(|(pending, _)| *pending == hour)
+        else {
+            return Err(invalid(
+                "hour was not observed, was already recorded, or was declared missing",
+            ));
+        };
+        let (_, queued) = history.pending.remove(position);
+        if queued {
+            for index in 0..self.branches.len() {
+                let start = &self.branches[index].start;
+                if start.id > branch && start.loaded_hour == Some(hour) {
+                    let parent = self.parent_at(hour, start.id);
+                    self.branches[index].start.parent = parent;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The one branch before `before` that recorded `hour` or still has its write queued.
+    fn parent_at(&self, hour: Hour, before: BranchId) -> Parentage {
         let mut containing = self
             .branches
             .iter()
-            .filter(|history| history.recorded.binary_search(&hour).is_ok())
+            .filter(|history| {
+                history.start.id < before
+                    && (history.recorded.binary_search(&hour).is_ok()
+                        || history.pending.contains(&(hour, true)))
+            })
             .map(|history| history.start.id);
         match (containing.next(), containing.next()) {
             (Some(branch), None) => Parentage::Probable { branch, hour },
@@ -805,6 +864,93 @@ mod tests {
                 .parent,
             Parentage::Unknown
         );
+    }
+
+    #[test]
+    fn a_queued_hour_is_parentage_evidence_until_its_write_is_lost() {
+        for lost in [false, true] {
+            let mut tracker = BranchTracker::new();
+            tracker.begin_session(1).unwrap();
+            let first = sample(&mut tracker, 9, 10, 1).branch;
+            tracker.observe(Some(10), 11, Some(1), &[]).unwrap();
+            tracker.admit_hour(first, 11).unwrap();
+            assert!(tracker.admit_hour(first, 11).is_err());
+            // The hour-11 save loads before that write's outcome is known.
+            let loaded = tracker
+                .observe(Some(11), 11, Some(2), &[])
+                .unwrap()
+                .start
+                .unwrap();
+            let parent = Parentage::Probable {
+                branch: first,
+                hour: 11,
+            };
+            assert_eq!(loaded.parent, parent);
+            if lost {
+                tracker.lose_hour(first, 11).unwrap();
+                assert!(tracker.record_hour(first, 11).is_err());
+            } else {
+                tracker.record_hour(first, 11).unwrap();
+                assert!(tracker.lose_hour(first, 11).is_err());
+            }
+            assert_eq!(
+                tracker.branch_start(loaded.id).unwrap().parent,
+                if lost { Parentage::Unknown } else { parent }
+            );
+            assert_eq!(
+                tracker.recorded_hours(first).unwrap().to_vec(),
+                if lost { vec![10] } else { vec![10, 11] }
+            );
+        }
+    }
+
+    #[test]
+    fn a_queued_hour_on_another_branch_keeps_a_reload_ambiguous_until_it_is_lost() {
+        for lost in [false, true] {
+            let mut tracker = BranchTracker::new();
+            tracker.begin_session(1).unwrap();
+            let first = sample(&mut tracker, 9, 10, 1).branch;
+            sample(&mut tracker, 10, 11, 1);
+            let second = tracker
+                .observe(Some(11), 11, Some(2), &[])
+                .unwrap()
+                .start
+                .unwrap();
+            let parent = Parentage::Probable {
+                branch: first,
+                hour: 11,
+            };
+            assert_eq!(second.parent, parent);
+            tracker.admit_hour(second.id, 11).unwrap();
+            // Hour 11 is recorded on `first` and queued on `second` when it loads again.
+            let third = tracker
+                .observe(Some(11), 11, Some(3), &[])
+                .unwrap()
+                .start
+                .unwrap();
+            assert_eq!(third.parent, Parentage::Unknown);
+            if lost {
+                tracker.lose_hour(second.id, 11).unwrap();
+            } else {
+                tracker.record_hour(second.id, 11).unwrap();
+            }
+            assert_eq!(
+                tracker.branch_start(third.id).unwrap().parent,
+                if lost {
+                    parent.clone()
+                } else {
+                    Parentage::Unknown
+                }
+            );
+            assert_eq!(tracker.branch_start(second.id).unwrap().parent, parent);
+            // An hour whose write was never queued was no evidence.
+            tracker.lose_hour(third.id, 11).unwrap();
+            assert!(tracker.record_hour(third.id, 11).is_err());
+            assert_eq!(
+                tracker.branch_start(third.id).unwrap().parent,
+                if lost { parent } else { Parentage::Unknown }
+            );
+        }
     }
 
     #[test]

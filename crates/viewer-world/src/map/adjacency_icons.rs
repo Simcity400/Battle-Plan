@@ -8,7 +8,8 @@
 //!
 //! It shows in a map mode with adjacency-rule icons ([`Visibility::adjacency_rules`]: navy,
 //! supply and resources) while the camera is strictly below
-//! `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF`, whatever the rule's open, closed or trade state.
+//! `NGraphics.ADJACENCY_RULE_DISTANCE_CUTOFF` (a free eye: nearer the icon than that), whatever
+//! the rule's open, closed or trade state.
 //! It draws at the mode's `NMapIcons.<table>_PRIORITY_ADJACENCY_RULE`. The navy mode's hover
 //! highlight of the rule's area is not drawn.
 
@@ -17,6 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use installed_content_core::{adjacency_rules::AdjacencyRule, defines::Defines};
 use viewer_foundation::map::{
     camera::Camera,
+    free_icons::{IconAnchor, IconFamily},
     gui_resources::{count_refused, viewport as gui_viewport},
     icon_windows::{Owner, Plan, PoolView},
     mode_visibility::{Priorities, PriorityIcon, Visibility},
@@ -94,9 +96,10 @@ impl AdjacencyIcons {
     }
 }
 
-/// Whether a mode shows the icons at a camera height.
-pub fn shown(visibility: &Visibility, camera_height: f32, cutoff: f32) -> bool {
-    visibility.adjacency_rules && camera_height < cutoff
+/// Whether a mode shows an icon at `distance` from the camera ([`Camera::icon_distance`]: the
+/// game's camera's height).
+pub fn shown(visibility: &Visibility, distance: f32, cutoff: f32) -> bool {
+    visibility.adjacency_rules && distance < cutoff
 }
 
 /// The icons' priority in a mode.
@@ -117,6 +120,7 @@ pub struct Inputs<'a> {
 struct Placed {
     province: u32,
     screen: [f32; 2],
+    anchor: IconAnchor,
 }
 
 /// The icons to present this frame, farthest first.
@@ -157,7 +161,10 @@ impl AdjacencyIcons {
                 return out;
             }
         };
-        if !shown(&inputs.visibility, inputs.camera.height, cutoff) {
+        // The game's camera shows every icon by its height; a free eye, each by its own distance.
+        if inputs.camera.free().is_none()
+            && !shown(&inputs.visibility, inputs.camera.height, cutoff)
+        {
             return out;
         }
         let viewport = gui_viewport(inputs.viewport, inputs.ui_scale);
@@ -172,6 +179,9 @@ impl AdjacencyIcons {
                 continue;
             };
             let world = std::array::from_fn(|axis| anchor[axis] + icon.offset[axis]);
+            if !shown(&inputs.visibility, inputs.camera.icon_distance(world), cutoff) {
+                continue;
+            }
             let Some(projection) = inputs
                 .camera
                 .project_map_icon(world, inputs.viewport, viewport)
@@ -183,6 +193,11 @@ impl AdjacencyIcons {
                 Placed {
                     province: icon.province,
                     screen: projection.position,
+                    anchor: IconAnchor {
+                        world,
+                        cutoff,
+                        family: IconFamily::AdjacencyRules,
+                    },
                 },
             ));
         }
@@ -233,7 +248,9 @@ impl PreparedAdjacencyIcons {
         drawn.sort_by_key(|drawn| order[&drawn.owner]);
         let mut count = 0;
         for drawn in drawn {
-            batch.at_layer(sprites::layer(priority, order[&drawn.owner] as u32, 0));
+            let ordinal = order[&drawn.owner];
+            batch.at_layer(sprites::layer(priority, ordinal as u32, 0));
+            batch.at_anchor(Some(self.placed[ordinal].anchor));
             if let Err(why) =
                 native_gui::draw(&drawn.layout, drawn.origin, context.resources, batch)
             {
@@ -242,6 +259,7 @@ impl PreparedAdjacencyIcons {
             }
             count += 1;
         }
+        batch.at_anchor(None);
         count
     }
 }

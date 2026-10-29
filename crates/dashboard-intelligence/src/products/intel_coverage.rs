@@ -219,7 +219,8 @@ impl KeyedObserver for IntelCoverageObserver {
         for part in &live {
             values.push(format!("member|{part}"), 1);
         }
-        let mut pairs = BTreeSet::new();
+        let mut pairs = BTreeMap::new();
+        let mut resolved = Vec::new();
         for row in rows {
             let pair = bindings
                 .raw
@@ -235,13 +236,19 @@ impl KeyedObserver for IntelCoverageObserver {
                     .or_default() += 1;
                 continue;
             };
-            if owner == target
-                || !live.contains(owner)
-                || !live.contains(target)
-                || !pairs.insert((owner, target))
-            {
+            if owner == target || !live.contains(owner) || !live.contains(target) {
                 certified = false;
-                *self.refusals.entry("Intel network inventory has unauthenticated or repeated endpoints (network observations)".into()).or_default()+=1;
+                *self.refusals.entry("Intel network inventory has unauthenticated endpoints (network observations)".into()).or_default()+=1;
+            }
+            *pairs.entry((owner, target)).or_insert(0_u32) += 1;
+            resolved.push((owner, target, row));
+        }
+        for (owner, target, row) in resolved {
+            // Aliases of one canonical pair: which of their summaries is the pair's is unknown.
+            if pairs[&(owner, target)] > 1 {
+                certified = false;
+                *self.refusals.entry("Intel network summaries repeat one canonical endpoint pair; its values are unknown (network observations)".into()).or_default() += 1;
+                continue;
             }
             // names: OWNER|TARGET|measure; all six independent signed caches survive.
             for (measure, value) in [

@@ -426,6 +426,17 @@ test('a reply answered from its prepared prefix lists what the prefix holds and 
     assert.match(gapWithDetails, /Projects were not recorded at this time/);
     assert.match(gapWithDetails, /Mod support/);
     assert.doesNotMatch(gapWithDetails, /No projects in progress/);
+    // Unavailable rosters withhold their counts and say so; they are never an empty census.
+    const details = shared.__projectPrefix.reply.details!;
+    Object.assign(shared.__projectPrefix.reply, { details: { ...details, scientists: null, programs: null, projects: null,
+      unavailable: ['Scientists is unavailable'] } });
+    const unreadRosters = renderToStaticMarkup(createElement(Widget, props('live')));
+    assert.match(unreadRosters, /Scientist roster unavailable at this hour/);
+    assert.match(unreadRosters, /Facility assignments unavailable at this hour/);
+    assert.match(unreadRosters, /Project details unavailable at this hour/);
+    assert.match(unreadRosters, /1\.2345 breakthrough progress/, 'independently read details stay');
+    assert.doesNotMatch(unreadRosters, /No scientists recorded|No facility assignments recorded/);
+    assert.doesNotMatch(unreadRosters, /(Scientists|Facility assignments|Project rewards and variables) <span class="pill">/);
 
 
   } finally { delete shared.__projectPrefix; await vite.close(); }

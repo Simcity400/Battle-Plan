@@ -26,6 +26,9 @@ test('only the first page is asked for until the listing says how long it is', (
   assert.ok(!pages.wants(1));
   pages.begin(0);
   assert.ok(!pages.wants(0), 'a page in flight is not asked again');
+  pages.cancel(0);
+  assert.ok(pages.wants(0) && !pages.loading(), 'a cancelled request is asked again');
+  pages.begin(0);
   assert.ok(pages.loading());
   assert.ok(pages.accept(0, reply(0, ['a', 'b'], 500_000)));
   assert.equal(pages.matching, 500_000);

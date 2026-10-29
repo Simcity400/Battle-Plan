@@ -47,6 +47,9 @@ export class AircraftPages {
 
   begin(page: number): void { this.pending.add(page); this.failed.delete(page); }
 
+  /** Forgets a cancelled request, so the page is asked again. */
+  cancel(page: number): void { this.pending.delete(page); }
+
   /** Takes an answered page; a reply for other rows than the page's is refused. */
   accept(page: number, reply: AircraftCatalogueReply): boolean {
     this.pending.delete(page);
@@ -119,23 +122,29 @@ export function useAircraftCatalogue(client: DashboardClient, source: DashboardS
   }, [query, asked]);
   const identity = source && active ? JSON.stringify([source.id, source.revision, content, scope, asked.trim()]) : null;
   const [version, setVersion] = useState(0);
-  const current = useRef<{ pages: AircraftPages; controllers: Set<AbortController> } | null>(null);
+  // Each request in flight, with its page.
+  const current = useRef<{ pages: AircraftPages; controllers: Map<AbortController, number> } | null>(null);
   if (identity && current.current?.pages.identity !== identity) {
-    for (const controller of current.current?.controllers ?? []) controller.abort();
-    current.current = { pages: new AircraftPages(identity), controllers: new Set() };
+    for (const controller of current.current?.controllers.keys() ?? []) controller.abort();
+    current.current = { pages: new AircraftPages(identity), controllers: new Map() };
   } else if (!identity && current.current) {
-    for (const controller of current.current.controllers) controller.abort();
+    for (const controller of current.current.controllers.keys()) controller.abort();
     current.current = null;
   }
   const held = current.current;
-  useEffect(() => () => { for (const controller of held?.controllers ?? []) controller.abort(); }, [held]);
+  // A listing kept through an effect's replay (Fast Refresh) asks again for what it cancelled.
+  useEffect(() => () => {
+    if (!held) return;
+    for (const [controller, page] of held.controllers) { controller.abort(); held.pages.cancel(page); }
+    held.controllers.clear();
+  }, [held]);
   const load = useCallback((page: number) => {
     const state = current.current;
     if (!state || !source || !state.pages.wants(page)) return;
     const { pages, controllers } = state;
     pages.begin(page);
     const controller = new AbortController();
-    controllers.add(controller);
+    controllers.set(controller, page);
     const params: AircraftCatalogueParams = { scope, query: asked.trim(), first: page * pages.size, count: pages.size };
     void loadTransientProduct<AircraftCatalogueReply>(client, { sourceId: source.id, revision: source.revision, product: 'aircraft-catalogue', params }, controller.signal, source)
       .then(reply => { if (!controller.signal.aborted) pages.accept(page, reply); },

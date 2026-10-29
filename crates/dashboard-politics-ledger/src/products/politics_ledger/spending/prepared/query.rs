@@ -551,8 +551,10 @@ pub fn query(
     if params.view == LedgerView::Governments
         && params.matches
         && let Some(key) = key(&keys, &params.tag, "governments:supplying")
+        && let Some(end) = spans.last().map(|span| span.last_hour)
     {
-        for event in primary.events(&[key], from, last, 0, u32::MAX)?.rows {
+        // Rows supplied within the viewport `within` names, never past the reached read.
+        for event in primary.events(&[key], from, end, 0, u32::MAX)?.rows {
             if let Event::Government { row } = serde_json::from_value(event.row)?
                 && !reply.governments.iter().any(|old| {
                     (old.country, &old.epoch, &old.sequence)

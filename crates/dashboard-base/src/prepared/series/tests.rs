@@ -3823,3 +3823,64 @@ fn a_blob_reads_its_runs_without_its_summaries_and_a_summary_read_checks_them() 
         Summaries::default()
     );
 }
+
+#[test]
+fn top_spans_keep_only_ranked_hours_and_break_at_each_crossing() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut ranks = Accumulator::default();
+    for hour in 0..64 {
+        let rank = match hour {
+            0..=15 | 20..=23 | 48..=63 => 1,
+            16..=19 => 2,
+            _ => 3,
+        };
+        ranks.through(hour);
+        ranks.observe(1, hour, Some(rank), false);
+    }
+    let mut writer = fixture.writer();
+    ranks.flush(&mut writer, "test", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let spans = |spans: &[(i32, i32)]| -> Vec<crate::products::country_groups::HourSpan> {
+        spans
+            .iter()
+            .map(|&(first_hour, last_hour)| crate::products::country_groups::HourSpan {
+                first_hour,
+                last_hour,
+            })
+            .collect()
+    };
+    let tail = [Run::new(64, 67, 2, false), Run::new(68, 71, 1, false)];
+    // Eight-hour columns: hours 16..=19 ranked second split their column at the cut.
+    assert_eq!(
+        reader
+            .top_spans(1, (0, 71), (0.0, 71.0, 9), 1, &tail)
+            .unwrap(),
+        spans(&[(0, 15), (20, 23), (48, 63), (68, 71)])
+    );
+    assert_eq!(
+        reader.top_spans(1, (0, 71), (0.0, 71.0, 9), 3, &tail).unwrap(),
+        spans(&[(0, 71)])
+    );
+    assert!(
+        reader
+            .top_spans(1, (0, 71), (24.0, 47.0, 3), 2, &[])
+            .unwrap()
+            .is_empty()
+    );
+    // Hourly columns give the same hours.
+    assert_eq!(
+        reader.top_spans(1, (0, 71), (0.0, 23.0, 24), 1, &[]).unwrap(),
+        spans(&[(0, 15), (20, 23)])
+    );
+    // The line summarised within them ends where the country leaves the selection.
+    let within = reader.top_spans(1, (0, 71), (0.0, 63.0, 8), 1, &[]).unwrap();
+    let summary = reader
+        .summary_within(1, (0, 71), (0.0, 63.0, 8), 0, Some(&within))
+        .unwrap();
+    let crossing = summary.buckets[2].unwrap();
+    assert_eq!((crossing.first_hour, crossing.last_hour), (20, 23));
+    assert_eq!((crossing.min_value, crossing.max_value), (1.0, 1.0));
+    assert!(summary.buckets[3..6].iter().all(Option::is_none));
+}

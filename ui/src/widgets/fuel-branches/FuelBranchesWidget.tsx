@@ -92,7 +92,7 @@ function FuelBranchesCountry({ widget, runtime, active, onDiagnostics, within }:
   if (!member) return <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   if (!country || !rows.length) return consumersKnown(data, hour)
     ? <WidgetState kind="empty" icon="droplet" message={`${tag} requested no fuel at this date.`} />
-    : <WidgetState kind="unavailable" message="Fuel consumers were not recorded at this date." />;
+    : <WidgetState kind="unavailable" message="Fuel consumers aren’t known for every country at this date." />;
   // One scale for every branch: the largest amount shown.
   let largest = 0n;
   for (const row of rows) for (const value of [row.requested, row.received]) if (value !== null && value > largest) largest = value;
@@ -173,10 +173,11 @@ function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount
   }], [lines, pending, ends]);
   const keyHours = useMemo(() => country ? changeHours(country).filter(at => memberAt(within, at)) : [], [country, within]);
   if (!country || !lines.length) {
-    const empty = emptyTimeView(data, hour);
+    const empty = emptyTimeView(data, extent[0], hour);
     return empty === 'pending' ? <WidgetState kind="loading" label="This range is still being prepared." />
       : empty === 'none' ? <WidgetState kind="empty" icon="droplet" message={`${tag} requested no fuel so far.`} />
-        : <WidgetState kind="unavailable" message="Fuel consumers were not recorded." />;
+        : empty === 'partial' ? <WidgetState kind="unavailable" message={`${tag} requested no fuel when fuel consumers were known. Other hours aren’t known.`} />
+          : <WidgetState kind="unavailable" message="Fuel consumers aren’t known for every country." />;
   }
   const tooltip = (at: number) => {
     if (!memberAt(within, at)) return fitTooltip([{ title: dayLabel(at), rows: [{ label: 'Not in the group at this date', tone: 'muted' as const }] }], viewport);

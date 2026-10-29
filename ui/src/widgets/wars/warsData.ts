@@ -226,6 +226,16 @@ export function participantHoldingAt(participant: PreparedParticipant, at: numbe
   return runAt(participant.holdings, Math.floor(at));
 }
 
+/** Where the native country holding `tag` at `hour` last joined `war`, continuously
+ * across its tag changes; `joinedBy` when that is only the first hour it was seen in
+ * the war. Null when the holder is unidentified or not in the war then. */
+export function joinedAt(war: WarTimeline, tag: string, hour: number, identities: CountryIdentityIndex): { firstHour: number; joinedBy: boolean } | null {
+  const key = identities.keyAt(tag, Math.floor(hour));
+  const participant = key === null ? undefined : prepareWar(war, 0, new Lineage([]), identities).byCountry.get(key);
+  const holding = participant && participantHoldingAt(participant, hour);
+  return holding ? { firstHour: holding.firstHour, joinedBy: holding.joinedBy } : null;
+}
+
 /** The tag this country had at the hour named, including after its last war. */
 export function countryTagAt(view: PreparedParticipant | PreparedCountry, at: number): string | null {
   return view.identities ? view.identities.aliasesAt(new Set([view.key]), Math.floor(at))[0] ?? null

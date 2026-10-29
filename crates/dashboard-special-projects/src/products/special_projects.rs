@@ -519,11 +519,18 @@ pub fn present_reply(
 ) -> io::Result<()> {
     let mut people: Vec<&mut ProjectPerson> = reply.people.iter_mut().collect();
     if let Some(details) = &mut reply.details {
-        people.extend(details.scientists.iter_mut().map(|scientist| &mut scientist.person));
+        people.extend(
+            details
+                .scientists
+                .iter_mut()
+                .flatten()
+                .map(|scientist| &mut scientist.person),
+        );
         people.extend(
             details
                 .programs
                 .iter_mut()
+                .flatten()
                 .flat_map(|program| program.assignments.iter_mut().flatten())
                 .map(|assignment| &mut assignment.person),
         );

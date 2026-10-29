@@ -269,6 +269,14 @@ fn hour_from(value: i128) -> io::Result<Hour> {
     Hour::try_from(value).map_err(|_| invalid_static("grouped hour outside its range"))
 }
 
+/// A diagnostics metric after its recorded zigzag change.
+fn metric_after(before: u64, change: u128) -> io::Result<u64> {
+    i128::from(before)
+        .checked_add(unzigzag(change))
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or_else(|| invalid_static("grouped metric outside its range"))
+}
+
 /// Advance the patch bases over one plain update; writer and reader both
 /// follow exactly the plain updates, so they agree on every base.
 fn advance_shadow(
@@ -930,7 +938,8 @@ fn take_head(
     plain.push(status);
     let mut anchor = None;
     if let Some(previous) = previous.filter(|_| matches!(entry, DELTA | UNCHANGED)) {
-        let baseline = hour_from(i128::from(previous) - unzigzag(control.varint()?))?;
+        let baseline = i128::from(previous).checked_sub(unzigzag(control.varint()?));
+        let baseline = hour_from(baseline.unwrap_or(i128::MAX))?;
         plain.extend_from_slice(&baseline.to_le_bytes());
     } else if matches!(entry, ANCHOR_DELTA | ANCHOR_UNCHANGED) {
         let offset = control.varint()?;
@@ -3732,7 +3741,8 @@ fn read_header_with(
     for frame in 1..frames {
         check.run()?;
         let gap = i128::try_from(input.varint()?).unwrap_or(i128::MAX);
-        hours.push(hour_from(i128::from(hours[frame - 1]) + 1 + gap)?);
+        let hour = (i128::from(hours[frame - 1]) + 1).checked_add(gap);
+        hours.push(hour_from(hour.unwrap_or(i128::MAX))?);
         let bits = input.take(width)?;
         for byte in 0..width {
             entries[frame * width + byte] = entries[(frame - 1) * width + byte] ^ bits[byte];
@@ -3776,8 +3786,8 @@ fn read_diagnostics_prefix_with(
     for frame in 0..frames {
         check.run()?;
         let total_ns = u64_from(i128::try_from(input.varint()?).unwrap_or(-1))?;
-        pool = u64_from(i128::from(pool) + unzigzag(input.varint()?))?;
-        dropped = u64_from(i128::from(dropped) + unzigzag(input.varint()?))?;
+        pool = metric_after(pool, input.varint()?)?;
+        dropped = metric_after(dropped, input.varint()?)?;
         let bits = input.take(width)?;
         for (byte, change) in reads.iter_mut().zip(bits) {
             *byte ^= change;
@@ -5275,6 +5285,68 @@ mod tests {
         // A residual entry belongs to a predicted block's later entries.
         assert!(head(RESIDUAL, None, Some(9)).unwrap().is_none());
         assert!(head(RESIDUAL, None, None).is_err());
+    }
+
+    #[test]
+    fn recorded_steps_past_any_range_are_invalid_data_never_an_overflow() {
+        let present = Present::new(FormatVersion::CURRENT.version(), CaptureMode::Full);
+        let refused = |error: Option<io::Error>| {
+            error.is_some_and(|error| error.kind() == io::ErrorKind::InvalidData)
+        };
+        // A block of hours 100 and 101: its second frame's gap from the first.
+        let index = BlockIndex {
+            branch: 1,
+            first_hour: 100,
+            last_hour: 101,
+            offset: 0,
+            length: 0,
+            raw_length: 0,
+        };
+        let header = |gap: u128| {
+            let mut header = Vec::new();
+            put_varint(&mut header, gap);
+            header.resize(header.len() + present.width(), 0);
+            read_header(&header, &index, 2, &present).map(|(hours, _)| hours)
+        };
+        assert_eq!(header(0).unwrap(), [100, 101]);
+        for gap in [i128::MAX as u128 - 101, i128::MAX as u128, u128::MAX] {
+            assert!(refused(header(gap).err()), "gap {gap}");
+        }
+        // A later entry's baseline, told back from the frame before at hour 10.
+        let baseline = |code: u128| {
+            let mut columns = Columns::new(1);
+            put_varint(&mut columns.0[CONTROL], u128::from(DELTA));
+            put_varint(&mut columns.0[CONTROL], code);
+            let raw = columns.raw();
+            let mut input = ColumnReader::open(&raw, 1).unwrap();
+            let mut plain = Vec::new();
+            take_head(&mut input, Some(10), 10, &mut plain, Layout::Chosen)
+                .map(|_| plain_baseline(&plain))
+        };
+        assert_eq!(baseline(zigzag(1)).unwrap(), Some(9));
+        for code in [zigzag(i128::MAX), zigzag(i128::MIN)] {
+            assert!(refused(baseline(code).err()), "code {code}");
+        }
+        // Two frames' metrics: the first adds 1 to the pool and the drops, the second `change`.
+        let diagnostics = |change: u128| {
+            let mut raw = Vec::new();
+            for step in [zigzag(1), change] {
+                put_varint(&mut raw, 5);
+                put_varint(&mut raw, step);
+                put_varint(&mut raw, step);
+                raw.resize(raw.len() + present.width(), 0);
+            }
+            raw
+        };
+        let metrics = read_diagnostics_prefix(&diagnostics(zigzag(2)), 2, &present, 2).unwrap();
+        assert_eq!((metrics[1].pool_bytes, metrics[1].dropped_frames), (3, 3));
+        for change in [zigzag(-2), zigzag(i128::MAX)] {
+            let raw = diagnostics(change);
+            let prefix = read_diagnostics_prefix(&raw, 2, &present, 2);
+            let streamed = cursor::DiagnosticsCursor::new(raw, &present, 2, &mut Check::disabled());
+            assert!(refused(prefix.err()), "change {change}");
+            assert!(refused(streamed.err()), "change {change}");
+        }
     }
 
     #[test]

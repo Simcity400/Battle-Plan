@@ -48,7 +48,7 @@ export function chartCountryAt(reply: FuelBranchesReply, tag: string, hour: numb
   return best;
 }
 
-/** Whether the consumer table was read complete at `hour`. */
+/** Whether the consumer table was read complete at `hour`, every consumer's country identified. */
 export const consumersKnown = (reply: FuelBranchesReply, hour: number) => runAt(reply.known, hour) !== null;
 
 /** Each branch the recording names for the country, in native order, at `hour`. */
@@ -96,13 +96,20 @@ export function ratioAxis(lines: readonly { runs: readonly Run[] }[]): { top: nu
   return { top, ticks: Array.from({ length: top / step + 1 }, (_, index) => index * step) };
 }
 
-/** Why a time view through `hour` has no line: its hour is still being prepared
- * ('pending'), the consumer table was read at that hour and the country had none
- * ('none', proven), or it was not read then ('unrecorded'). An earlier read never
- * stands in for a pending or unread hour. */
-export function emptyTimeView(reply: FuelBranchesReply, hour: number): 'none' | 'pending' | 'unrecorded' {
+/** Why a time view from `from` through `hour` has no line: its hour is still being
+ * prepared ('pending'), the consumers were known at every hour and the country had
+ * none ('none', proven), known at only some ('partial'), or at none ('unrecorded').
+ * A known hour never stands in for a pending or unknown one. */
+export function emptyTimeView(reply: FuelBranchesReply, from: number, hour: number): 'none' | 'partial' | 'pending' | 'unrecorded' {
   if (reply.lastHour === null || reply.lastHour < hour || pendingAt(preparedPrefix(reply), hour)) return 'pending';
-  return runAt(reply.known, hour) ? 'none' : 'unrecorded';
+  let covered = 0, next = from;
+  for (const [first, last] of reply.known) {
+    const start = Math.max(first, next), end = Math.min(last, hour);
+    if (start > end) continue;
+    covered += end - start + 1;
+    next = end + 1;
+  }
+  return covered === 0 ? 'unrecorded' : covered === hour - from + 1 ? 'none' : 'partial';
 }
 
 /** A branch's received share inside the group's membership `within` (every hour

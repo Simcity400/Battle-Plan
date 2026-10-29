@@ -4903,9 +4903,8 @@ const DIVISION_CLASS: u32 = 0;
 const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 
 /// Each song's chance from `evaluate`, which reads a mean-time body as fixed
-/// five-decimal value: `None` for songs of disabled stations; a body
-/// `evaluate` refuses is named and keeps its base chance (the body without
-/// its modifiers).
+/// five-decimal value: `None` for songs of disabled stations and, named, for a
+/// body `evaluate` refuses.
 #[cfg(test)]
 fn song_chances(
     content: &viewer_audio::Content,
@@ -4923,16 +4922,7 @@ fn song_chances(
             }
             let name = &content.music.tracks[song.track].name;
             let value = evaluate(&song.chance)
-                .or_else(|why| {
-                    refusals.push(format!("song {name}: {why}"));
-                    let base: Vec<_> = song
-                        .chance
-                        .iter()
-                        .filter(|item| !item.keyword_is("modifier"))
-                        .cloned()
-                        .collect();
-                    evaluate(&base)
-                })
+                .map_err(|why| refusals.push(format!("song {name}: {why}")))
                 .ok()?;
             Some(value as f64 / MUSIC_CHANCE_ONE)
         })
@@ -5361,10 +5351,10 @@ mod tests {
     }
 
     /// Song chances: a disabled station's song is not drawable, an
-    /// unanswerable body keeps its base chance and is named, and the
-    /// evaluator's five-decimal value scales to a weight.
+    /// unanswerable body is unknown and named, and the evaluator's
+    /// five-decimal value scales to a weight.
     #[test]
-    fn song_chances_keep_base_chances_and_skip_disabled_stations() {
+    fn song_chances_leave_refused_songs_unknown_and_skip_disabled_stations() {
         use installed_content_sound::music::{Music, Song, Track};
         let mut music = Music::default();
         for (index, (station, chance)) in [
@@ -5402,9 +5392,10 @@ mod tests {
                 Ok(body.len() as i64 * 150_000)
             }
         });
-        assert_eq!(chances.weights, [Some(1.5), None, Some(3.0)]);
+        // A refused song stays unknown rather than falling back to its base chance.
+        assert_eq!(chances.weights, [None, None, Some(3.0)]);
         assert_eq!(chances.refusals, ["song t0: unanswered"]);
-        assert_eq!(calls, 3, "primary, fallback, next enabled song only");
+        assert_eq!(calls, 2, "each enabled song once");
     }
 
     /// Raid icons replaced in place in a drawn overlay equal the overlay

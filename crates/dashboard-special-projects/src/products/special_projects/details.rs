@@ -137,11 +137,14 @@ pub struct ProjectRuntimeDetails {
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectDetails {
     pub hour: i32,
-    pub scientists: Vec<ScientistDetails>,
-    pub programs: Vec<ProgramDetails>,
+    /// `None` when the hour's scientist roster is unavailable.
+    pub scientists: Option<Vec<ScientistDetails>>,
+    /// `None` without a continuous supplying read of the country's programs.
+    pub programs: Option<Vec<ProgramDetails>>,
     /// `None` without a continuous supplying read for the country.
     pub breakthroughs: Option<Vec<SpecializationProgress>>,
-    pub projects: Vec<ProjectRuntimeDetails>,
+    /// `None` without a continuous supplying read of the country's projects.
+    pub projects: Option<Vec<ProjectRuntimeDetails>>,
     pub unavailable: Vec<String>,
 }
 
@@ -317,10 +320,10 @@ pub fn details_at_hour(
 ) -> io::Result<SpecialProjectDetails> {
     let mut result = SpecialProjectDetails {
         hour,
-        scientists: Vec::new(),
-        programs: Vec::new(),
+        scientists: None,
+        programs: None,
         breakthroughs: None,
-        projects: Vec::new(),
+        projects: None,
         unavailable: Vec::new(),
     };
     let branch = params.country().branch();
@@ -381,13 +384,10 @@ pub fn details_at_hour(
             None
         }
     };
-    // Scoped names and effect descriptions read the trigger kit at the hour.
-    let mut effect_tables = dashboard_text::triggers::RECORDED_TABLES.to_vec();
-    effect_tables.extend([
-        TableId::RaidFacilities,
-        TableId::Provinces,
-        TableId::ProjectPrograms,
-    ]);
+    // Scoped names and effect descriptions read every effect operand at the hour.
+    let mut effect_tables: Vec<_> = dashboard_text::effect_description::recorded_tables()
+        .chain([TableId::RaidFacilities, TableId::Provinces])
+        .collect();
     effect_tables.sort_unstable();
     effect_tables.dedup();
     let effect_frame = if content.is_some() {
@@ -402,6 +402,7 @@ pub fn details_at_hour(
     if let Ok(scientists) = frame.complete::<tables::Scientists>() {
         let skills = frame.complete::<tables::ScientistSkills>().ok();
         let traits = frame.complete::<tables::CharacterRoleTraits>().ok();
+        let roster = result.scientists.insert(Vec::new());
         for scientist in scientists
             .iter()
             .filter(|row| dashboard_text::metadata::link_slot(links, row.country) == Some(slot))
@@ -435,7 +436,7 @@ pub fn details_at_hour(
                         .collect::<Result<Vec<_>, _>>()
                 })
                 .transpose();
-            result.scientists.push(ScientistDetails {
+            roster.push(ScientistDetails {
                 character: scientist.character,
                 person: reference_person(
                     frame,
@@ -466,7 +467,7 @@ pub fn details_at_hour(
     }
     // Injury and visibility are independent observations in the scientist rows.
     // A refused program roster cannot withdraw either successfully read fact.
-    for scientist in &mut result.scientists {
+    for scientist in result.scientists.iter_mut().flatten() {
         let mut expected_hour = hour;
         let mut injury_seen = false;
         let mut visibility_seen = false;
@@ -602,47 +603,53 @@ pub fn details_at_hour(
         .as_ref()
         .filter(|program_frame| identity(program_frame) == Some((country, slot)))
     {
-        if let Ok(programs) = program_frame.complete::<tables::ProjectPrograms>() {
-            let program_links = program_frame
-                .complete::<tables::CountryLinks>()
-                .unwrap_or_default();
-            for program in programs.iter().filter(|row| {
-                dashboard_text::metadata::link_slot(program_links, row.owner) == Some(slot)
-            }) {
-                let assignments = match &program.assignments {
-                    Recorded::Value(Some(values)) => Some(
-                        values
-                            .iter()
-                            .enumerate()
-                            .map(|(ordinal, value)| ScientistAssignment {
-                                ordinal: ordinal as u32,
-                                reference: value.scientist.to_string(),
-                                person: reference_person(
-                                    program_frame,
-                                    value.scientist,
-                                    content.as_deref(),
-                                ),
-                                target: value.target,
-                                current: value.current,
-                                timed: value.timed,
-                            })
-                            .collect(),
-                    ),
-                    _ => None,
-                };
-                result.programs.push(ProgramDetails {
-                    id: program.id,
-                    province: program.province,
-                    read_hour: program_frame.hour,
-                    assignments,
-                    facility: facility::present(
-                        program_frame,
-                        text,
-                        program,
-                        content.as_deref(),
-                        slot,
-                    ),
-                });
+        match program_frame.complete::<tables::ProjectPrograms>() {
+            Err(why) => result
+                .unavailable
+                .push(format!("Program assignments are unavailable: {why}")),
+            Ok(programs) => {
+                let roster = result.programs.insert(Vec::new());
+                let program_links = program_frame
+                    .complete::<tables::CountryLinks>()
+                    .unwrap_or_default();
+                for program in programs.iter().filter(|row| {
+                    dashboard_text::metadata::link_slot(program_links, row.owner) == Some(slot)
+                }) {
+                    let assignments = match &program.assignments {
+                        Recorded::Value(Some(values)) => Some(
+                            values
+                                .iter()
+                                .enumerate()
+                                .map(|(ordinal, value)| ScientistAssignment {
+                                    ordinal: ordinal as u32,
+                                    reference: value.scientist.to_string(),
+                                    person: reference_person(
+                                        program_frame,
+                                        value.scientist,
+                                        content.as_deref(),
+                                    ),
+                                    target: value.target,
+                                    current: value.current,
+                                    timed: value.timed,
+                                })
+                                .collect(),
+                        ),
+                        _ => None,
+                    };
+                    roster.push(ProgramDetails {
+                        id: program.id,
+                        province: program.province,
+                        read_hour: program_frame.hour,
+                        assignments,
+                        facility: facility::present(
+                            program_frame,
+                            text,
+                            program,
+                            content.as_deref(),
+                            slot,
+                        ),
+                    });
+                }
             }
         }
     } else {
@@ -701,19 +708,18 @@ pub fn details_at_hour(
             .push("Projects has no continuous supplying read".into());
         return Ok(result);
     }
+    let roster = result.projects.insert(Vec::new());
     for project in frame
         .complete::<tables::Projects>()
         .unwrap_or_default()
         .iter()
         .filter(|row| dashboard_text::metadata::link_slot(links, row.owner) == Some(slot))
     {
-        let project_token = match token(frame, project.definition_id) {
-            Ok(token) => token,
-            Err(why) => {
-                result.unavailable.push(why);
-                continue;
-            }
-        };
+        // An unnamed definition keeps its project in the roster, its content unresolved.
+        let project_token = token(frame, project.definition_id);
+        if let Err(why) = &project_token {
+            result.unavailable.push(why.clone());
+        }
         let runtime = match &project.runtime {
             Recorded::Value(runtime) => Some(runtime),
             _ => None,
@@ -753,14 +759,17 @@ pub fn details_at_hour(
                 .zip(effect_frame.as_deref())
                 .map(|(content, frame)| effects(content, frame, slot, project, output, program))
         };
-        let definition = content.as_ref().and_then(|content| {
-            content
-                .definitions
-                .projects
-                .iter()
-                .find(|(token, _)| token.eq_ignore_ascii_case(&project_token))
-                .map(|(_, definition)| definition)
-        });
+        let definition = content
+            .as_ref()
+            .zip(project_token.as_ref().ok())
+            .and_then(|(content, project_token)| {
+                content
+                    .definitions
+                    .projects
+                    .iter()
+                    .find(|(token, _)| token.eq_ignore_ascii_case(project_token))
+                    .map(|(_, definition)| definition)
+            });
         let output = definition.and_then(|definition| render(&definition.output));
         let pending = runtime
             .and_then(|runtime| runtime.pending_reward)
@@ -768,13 +777,14 @@ pub fn details_at_hour(
                 let reward_token = token(frame, id);
                 match reward_token.and_then(|reward_token| {
                     let content = content.as_ref().ok_or("Recorded content is unavailable")?;
+                    let project_token = project_token.as_ref().map_err(Clone::clone)?;
                     let ordinal = runtime
                         .and_then(|value| value.pending_ordinal)
                         .ok_or("Pending reward object occurrence is unavailable")?;
                     let reward =
                         content
                             .definitions
-                            .reward_at(&project_token, ordinal, &reward_token)?;
+                            .reward_at(project_token, ordinal, &reward_token)?;
                     Ok(PendingProjectReward {
                         label: ProjectLabel {
                             name: content.name_for(
@@ -822,22 +832,23 @@ pub fn details_at_hour(
                     },
                 }
             });
-        result.projects.push(ProjectRuntimeDetails {
+        roster.push(ProjectRuntimeDetails {
             owner: project.owner,
             id: project.local_id,
             label: ProjectLabel {
                 name: content
                     .as_ref()
                     .zip(definition)
-                    .and_then(|(content, definition)| {
+                    .zip(project_token.as_ref().ok())
+                    .and_then(|((content, definition), project_token)| {
                         let selected = country_key(
                             &content.catalogue,
                             &params.tag,
-                            project_name_key(definition, &project_token),
+                            project_name_key(definition, project_token),
                         );
                         content.name_for(&selected, Some((slot, text)))
                     }),
-                token: project_token,
+                token: project_token.unwrap_or_else(|_| project.definition_id.to_string()),
             },
             read_hour: read_hour.unwrap(),
             pending_known: runtime.is_some_and(|runtime| runtime.pending_known),
@@ -978,20 +989,20 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert!(value.projects.is_empty());
-        assert_eq!(value.scientists.len(), 1);
-        assert_eq!(value.scientists[0].active, Some(1));
-        assert_eq!(value.scientists[0].injury_days, Some(8));
+        // A read empty pool is a known empty roster, not an unavailable one.
+        assert_eq!(value.projects.as_ref().map(Vec::len), Some(0));
+        let scientists = value.scientists.as_ref().unwrap();
+        assert_eq!(scientists.len(), 1);
+        assert_eq!(scientists[0].active, Some(1));
+        assert_eq!(scientists[0].injury_days, Some(8));
         assert_eq!(
-            value.scientists[0].skills.as_ref().unwrap()[0].experience_raw,
+            scientists[0].skills.as_ref().unwrap()[0].experience_raw,
             i64::MAX.to_string()
         );
-        assert_eq!(value.scientists[0].traits.as_ref().unwrap().len(), 2);
-        assert_eq!(
-            value.programs[0].assignments.as_ref().unwrap()[1].current,
-            2
-        );
-        assert_eq!(value.programs[0].read_hour, 24);
+        assert_eq!(scientists[0].traits.as_ref().unwrap().len(), 2);
+        let programs = value.programs.as_ref().unwrap();
+        assert_eq!(programs[0].assignments.as_ref().unwrap()[1].current, 2);
+        assert_eq!(programs[0].read_hour, 24);
         let missing = details_at_hour(
             &source,
             &LoadContext { content: None },
@@ -1000,8 +1011,57 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert!(missing.scientists.is_empty());
+        // An unrecorded hour withholds every roster rather than counting none.
+        assert!(missing.scientists.is_none());
+        assert!(missing.programs.is_none());
+        assert!(missing.projects.is_none());
         assert!(!missing.unavailable.is_empty());
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_project_whose_definition_is_unnamed_stays_in_the_roster() {
+        let mut frame = source(1, 24, None);
+        *frame.tables[TableId::Projects.index()] =
+            TableView::Complete(TableRows::Projects(vec![ProjectRow {
+                owner: 9001,
+                local_id: 3,
+                definition_id: 77,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(vec![SliceReadRow {
+                table: TableId::Projects.index() as u32,
+                owner: 9001,
+                sample_hour: 24,
+            }]));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(Vec::new()));
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let (source, root) = file_source(replay);
+        let params = SpecialProjectsParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            selection_tags: Vec::new(),
+            hour: Some(24),
+        };
+        let value = details_at_hour(
+            &source,
+            &LoadContext { content: None },
+            &params,
+            24,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let projects = value.projects.as_ref().unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].label.token, "77");
+        assert_eq!(projects[0].label.name, None);
+        assert!(
+            value.unavailable.iter().any(|why| why.contains("77")),
+            "{:?}",
+            value.unavailable
+        );
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1082,11 +1142,14 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert!(value.programs.is_empty());
-        assert_eq!(value.scientists[0].injury_days, Some(8));
-        assert_eq!(value.scientists[0].injury_hour, Some(24));
-        assert_eq!(value.scientists[0].visible, Some(true));
-        assert_eq!(value.scientists[0].visibility_hour, Some(24));
+        // Refused program and project rosters are unavailable, not empty.
+        assert!(value.programs.is_none());
+        assert!(value.projects.is_none());
+        let scientists = value.scientists.as_ref().unwrap();
+        assert_eq!(scientists[0].injury_days, Some(8));
+        assert_eq!(scientists[0].injury_hour, Some(24));
+        assert_eq!(scientists[0].visible, Some(true));
+        assert_eq!(scientists[0].visibility_hour, Some(24));
         let breakthroughs = value.breakthroughs.as_ref().unwrap();
         assert_eq!(breakthroughs[0].points, 777);
         assert_eq!(breakthroughs[0].read_hour, 24);
@@ -1100,11 +1163,12 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert_eq!(refused.scientists[0].injury_hour, Some(26));
-        assert_eq!(refused.scientists[0].injury_days, None);
-        assert_eq!(refused.scientists[0].visible, None);
-        assert_eq!(refused.scientists[0].visibility_hour, None);
-        assert!(!refused.scientists[0].state_refusals.is_empty());
+        let scientists = refused.scientists.as_ref().unwrap();
+        assert_eq!(scientists[0].injury_hour, Some(26));
+        assert_eq!(scientists[0].injury_days, None);
+        assert_eq!(scientists[0].visible, None);
+        assert_eq!(scientists[0].visibility_hour, None);
+        assert!(!scientists[0].state_refusals.is_empty());
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }

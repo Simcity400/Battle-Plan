@@ -17,7 +17,9 @@ import { contentKey, resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { currentWarsAt, observationAt, validateWarsReply, warContributions } from '../wars/warsData';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { currentWarsAt, joinedAt, observationAt, validateWarsReply, warContributions } from '../wars/warsData';
 import { OPTIONS, SHOW_CHOICES } from './definition';
 import { SCALE, chosenWar, contributionRows, readHourFor, rowLengths, shareText, sideAmount, sideMagnitude, toNumber, warName } from './warContributionData';
 import type { ContributionRow, SideTotal } from './warContributionData';
@@ -73,6 +75,8 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   // artwork, since the bars draw none.
   const holders = useMemo(() => shownHour == null ? [] : tags.map(tag => ({ key: tag, tag, hour: shownHour })), [tags, shownHour]);
   const looks = useHolderLooks(runtime.client, track, holders, active, tokens);
+  const groups = useCountryGroups(runtime, track, active);
+  const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
   const [width, setWidth] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -131,13 +135,14 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   }, [shownHour, observation, looks, partAt]);
   const menu = useCallback((item: Item) => {
     if (!shownWar || !track || shownHour == null) return [];
-    const runs = shownWar.participants.filter(run => run.firstHour <= shownHour);
-    const joins = [...new Set([...item.row.left.members, ...item.row.right.members].map(member => member.tag))].flatMap(tag => {
-      const run = runs.filter(entry => entry.tag === tag).at(-1);
-      return run && run.firstHour !== shownWar.firstHour ? [{ ...jumpItem(runtime, track.id, run.firstHour), label: `Jump to ${looks.name(tag)} joining ${dayLabel(run.firstHour)}` }] : [];
-    });
+    // A member's joining is its native country's, continuous through its tag changes.
+    const joins = identities ? [...new Set([...item.row.left.members, ...item.row.right.members].map(member => member.tag))].flatMap(tag => {
+      const joined = joinedAt(shownWar, tag, shownHour, identities);
+      return joined && joined.firstHour !== shownWar.firstHour ? [{ ...jumpItem(runtime, track.id, joined.firstHour),
+        label: `Jump to ${looks.name(tag)} ${joined.joinedBy ? 'joined by' : 'joining'} ${dayLabel(joined.firstHour)}` }] : [];
+    }) : [];
     return [{ ...jumpItem(runtime, track.id, shownWar.firstHour), label: `Jump to war start ${dayLabel(shownWar.firstHour)}` }, ...joins];
-  }, [shownWar, track, shownHour, runtime, looks]);
+  }, [shownWar, track, shownHour, runtime, looks, identities]);
   const header = headerSlot && shownWar && createPortal(<span className="pill" title={warName(observation)}>{warName(observation ?? (readHour == null ? null : shownWar.observations.at(-1) ?? null))}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="swords" message="Load a campaign to see war contributions." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;

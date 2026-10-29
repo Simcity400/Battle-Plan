@@ -24,11 +24,15 @@ export function usePreparedGovernments(client: DashboardClient, source: Dashboar
   // One read at a time while the chart's view and the hour shown move (`useViewRead`).
   // Exact and marked replies differ in kind, so crossing between them starts a new lane.
   const content = useContentRevision(client);
-  const asked = { from: view.from, to: view.to, width: view.width, hour: Math.floor(Math.min(view.to, through)) };
-  const geometryRead = useViewRead<typeof asked, PoliticsLedgerReply>(enabled ? JSON.stringify([source.id, source.revision, branchId, tag, exact, content]) : null,
-    asked, JSON.stringify([asked.from, asked.to, asked.width, asked.hour]), active && enabled, (at, signal, publish, restart) => loadProduct(client,
+  // The viewport bounds the native dates; the reached read alone gates supplying reads, so
+  // a fact already supplied stays shown however the view moves.
+  const asked = { from: view.from, to: view.to, width: view.width, hour: Math.floor(through) };
+  const readable = enabled && Math.ceil(asked.from) <= asked.hour;
+  const geometryRead = useViewRead<typeof asked, PoliticsLedgerReply>(readable ? JSON.stringify([source.id, source.revision, branchId, tag, exact, content]) : null,
+    asked, JSON.stringify([asked.from, asked.to, asked.width, asked.hour]), active && readable, (at, signal, publish, restart) => loadProduct(client,
       { sourceId: source!.id, revision: source!.revision, product: 'politics-ledger', params: { branchId, tag, view: 'governments', from: Math.ceil(at.from), hour: at.hour,
-        ...(at.to - at.from + 1 <= at.width ? { matches: true } : { marks: { from: at.from, to: at.to, width: at.width } }) } },
+        ...(at.to - at.from + 1 <= at.width ? { matches: true, within: [{ firstHour: Math.ceil(at.from), lastHour: Math.floor(at.to) }] }
+          : { marks: { from: at.from, to: at.to, width: at.width } }) } },
       signal, value => validateGovernmentLedger(value, { branchId: branchId!, tag: tag! }), source, restart, publish), client);
   const geometry = { ...geometryRead, error: useHeldFailure(geometryRead.error, geometryRead.data !== undefined, geometryRead.retry) };
   const [hover, setHover] = useState<{ owner: typeof owner; hour: number | null }>();

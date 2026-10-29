@@ -119,3 +119,24 @@ fn countries_without_consumers_are_left_out() {
     step(&mut state, &at, true);
     assert_eq!(ask(&mut state, &[], 10).countries.len(), 5);
 }
+
+#[test]
+fn an_unidentified_consumer_keeps_the_others_but_proves_no_country_without_consumers() {
+    let mut state = Prepared::default();
+    for (hour, rows) in [
+        (10, vec![consumer(7, 0, 5, 5)]),
+        // A consumer of raw country 9, which no link resolves.
+        (11, vec![consumer(7, 0, 6, 6), consumer(9, 0, 8, 8)]),
+    ] {
+        let mut at = frame(hour);
+        countries(&mut at, &[(7, 3, "AAA"), (8, 4, "BBB")]);
+        set(&mut at, TableRows::CountryFuelConsumers(rows));
+        step(&mut state, &at, true);
+    }
+    let reply = ask(&mut state, &[], 11);
+    assert_eq!(reply.countries.len(), 1);
+    assert_eq!(reply.countries[0].branches[0].requested, vec![run(10, 10, "5"), run(11, 11, "6")]);
+    // BBB had no consumers at 10; at 11 the unidentified one may be its.
+    assert_eq!(reply.known, vec![run(10, 10, "1")]);
+    assert!(reply.warnings.iter().any(|line| line.contains("a fuel consumer's country has no identity")));
+}

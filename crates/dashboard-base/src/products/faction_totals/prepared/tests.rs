@@ -770,24 +770,39 @@ fn faction_prepared_dense_top_keeps_mid_column_leaders_and_exact_reached_ranks()
         let summaries: BTreeMap<String, ChartSummary> =
             serde_json::from_value(reply["summaries"].clone()).unwrap();
         let leader = summaries["401"].buckets[0].unwrap();
-        assert_eq!(
-            (leader.min_value, leader.max_value, leader.last_value),
-            (0.0, 40.0, 0.0)
-        );
+        if top == 1 {
+            assert_eq!(
+                (leader.first_hour, leader.last_hour),
+                (101, 101),
+                "the brief leader's line is its one ranked hour"
+            );
+            assert_eq!(
+                (leader.min_value, leader.max_value, leader.last_value),
+                (40.0, 40.0, 40.0)
+            );
+            assert!(summaries["401"].buckets[1].is_none());
+            let steady = summaries["402"].buckets[0].unwrap();
+            assert_eq!((steady.first_hour, steady.last_hour), (100, 109));
+            assert!(
+                steady.has_break,
+                "the steady leader's line breaks at the hour it ranked second"
+            );
+        } else {
+            assert_eq!(
+                (leader.min_value, leader.max_value, leader.last_value),
+                (0.0, 40.0, 0.0),
+                "a faction ranked throughout keeps its whole column"
+            );
+        }
         assert!(summaries["402"].buckets.iter().all(Option::is_some));
         assert!(
             !summaries.contains_key("403"),
             "a signed maximum below the cutoff is excluded"
         );
-        if top == 1 {
-            assert!(summaries["401"].buckets[1].is_none());
-            assert!(!summaries.contains_key("404"));
-        } else {
-            assert!(
-                summaries["404"].buckets.iter().all(Option::is_some),
-                "equal cutoff keeps additional dense candidates"
-            );
-        }
+        assert!(
+            !summaries.contains_key("404"),
+            "an equal total ranks after the earlier faction, as the exact ranking ties"
+        );
         let end = summaries["401"]
             .buckets
             .iter()
@@ -813,9 +828,19 @@ fn faction_prepared_dense_top_keeps_mid_column_leaders_and_exact_reached_ranks()
             .unwrap();
         assert_eq!(drawn["runs"][0]["value"], exact_end.series["401"][0].value);
         assert_eq!(drawn["runs"][0]["lastHour"], end);
+        let (since, shown, ranked) = if top == 1 {
+            (101, 101, 40)
+        } else {
+            (100, 119, 0)
+        };
         assert_eq!(
-            drawn["runs"][0]["value"], 0,
-            "end labels cannot show the bucket's peak"
+            (end, drawn["runs"][0]["value"].as_i64()),
+            (shown, Some(ranked)),
+            "the end label is the last ranked hour, never a later unranked one"
+        );
+        assert_eq!(
+            drawn["membership"],
+            serde_json::json!([{"firstHour": since, "lastHour": shown}])
         );
     }
     for (hour, id, value) in [(100, "402", 10), (101, "401", 40), (119, "402", 10)] {
@@ -836,8 +861,117 @@ fn faction_prepared_dense_top_keeps_mid_column_leaders_and_exact_reached_ranks()
     }
 }
 
+fn total(first_hour: i32, last_hour: i32, value: i64) -> FactionTotalRun {
+    FactionTotalRun {
+        first_hour,
+        last_hour,
+        starts_segment: false,
+        value,
+    }
+}
+
 #[test]
-fn faction_dense_top_candidates_keep_ties_negative_values_and_missing_columns() {
+fn faction_dense_top_reads_exact_ranks_only_in_a_crossing_column() {
+    let flag = AtomicBool::new(false);
+    let summary = |buckets: Vec<Option<ChartBucket>>| ChartSummary {
+        approximate: Vec::new(),
+        from: 0.0,
+        to: 7.0,
+        width: 2,
+        buckets,
+        runs: None,
+    };
+    let column = |first: i32, values: &[f64]| {
+        values
+            .iter()
+            .zip(first..)
+            .fold(None, |bucket, (&value, hour)| {
+                let part = Some(ChartBucket::hour(hour, value, false));
+                if bucket.is_some() {
+                    merge(bucket, part)
+                } else {
+                    part
+                }
+            })
+    };
+    // A leads the first column throughout; in the second it leaves Top 1 after two hours.
+    let mut summaries = BTreeMap::from([
+        (
+            "A".to_owned(),
+            summary(vec![
+                column(0, &[10.0, 12.0, 11.0, 10.0]),
+                column(4, &[12.0, 12.0, 2.0, 2.0]),
+            ]),
+        ),
+        (
+            "B".to_owned(),
+            summary(vec![column(0, &[3.0, 5.0, 5.0, 4.0]), column(4, &[5.0; 4])]),
+        ),
+        (
+            "C".to_owned(),
+            summary(vec![column(0, &[-2.0; 4]), column(4, &[-2.0; 4])]),
+        ),
+    ]);
+    let mut windows = Vec::new();
+    let ranked = retain_dense_top(
+        &mut summaries,
+        &BTreeMap::new(),
+        1,
+        (0.0, 7.0, 2),
+        &mut |hours| {
+            windows.push(*hours);
+            Ok(BTreeMap::from([
+                ("A".to_owned(), vec![total(4, 5, 12), total(6, 7, 2)]),
+                ("B".to_owned(), vec![total(4, 7, 5)]),
+                ("C".to_owned(), vec![total(4, 7, -2)]),
+            ]))
+        },
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(
+        windows,
+        [span(4, 7)],
+        "a settled column reads no exact sums"
+    );
+    assert_eq!(
+        summaries.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["A", "B"]
+    );
+    assert_eq!(
+        summaries["A"].buckets[0],
+        column(0, &[10.0, 12.0, 11.0, 10.0]),
+        "a column led throughout keeps its bucket"
+    );
+    let left = summaries["A"].buckets[1].unwrap();
+    assert_eq!((left.first_hour, left.last_hour), (4, 5));
+    assert_eq!(
+        (
+            left.first_value,
+            left.last_value,
+            left.min_value,
+            left.max_value
+        ),
+        (12.0, 12.0, 12.0, 12.0),
+        "hours after A leaves Top 1 supply neither its end nor its extent"
+    );
+    assert!(summaries["B"].buckets[0].is_none());
+    let entered = summaries["B"].buckets[1].unwrap();
+    assert_eq!(
+        (entered.first_hour, entered.last_hour, entered.first_value),
+        (6, 7, 5.0)
+    );
+    assert_eq!(
+        ranked,
+        BTreeMap::from([
+            ("A".to_owned(), vec![span(0, 5)]),
+            ("B".to_owned(), vec![span(6, 7)]),
+        ])
+    );
+}
+
+#[test]
+fn faction_dense_top_ties_in_faction_order_and_never_ranks_a_missing_column() {
     let flag = AtomicBool::new(false);
     let summary = |buckets: Vec<Option<ChartBucket>>| ChartSummary {
         approximate: Vec::new(),
@@ -862,22 +996,63 @@ fn faction_dense_top_candidates_keep_ties_negative_values_and_missing_columns() 
         ("C".into(), summary(vec![column(0, -10.0, -3.0), None])),
         ("unknown".into(), summary(vec![None, None])),
     ]);
+    // Unknown has no bucket in the second column, but holds a total at its last hour.
+    let valued = BTreeMap::from([("unknown".to_owned(), vec![span(3, 3)])]);
+    let mut windows = Vec::new();
     let mut top = original.clone();
-    retain_dense_top_candidates(&mut top, 1, &flag).unwrap();
+    let ranked = retain_dense_top(
+        &mut top,
+        &valued,
+        1,
+        (0.0, 3.0, 2),
+        &mut |hours| {
+            windows.push(*hours);
+            Ok(BTreeMap::from([
+                ("A".to_owned(), Vec::new()),
+                ("B".to_owned(), vec![total(2, 3, 3)]),
+                ("C".to_owned(), Vec::new()),
+                ("unknown".to_owned(), vec![total(3, 3, 9)]),
+            ]))
+        },
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(windows, [span(2, 3)]);
     assert_eq!(
         top.keys().map(String::as_str).collect::<Vec<_>>(),
         ["A", "B"]
     );
     assert_eq!(
-        top["B"], original["B"],
-        "max equal to the largest minimum is retained"
-    );
-    assert!(
-        top["A"].buckets[1].is_none(),
+        top["A"], original["A"],
         "a missing column never becomes zero"
     );
+    assert!(
+        top["B"].buckets[0].is_none(),
+        "B's maximum equals A's minimum, and A ranks first at equal totals"
+    );
+    let second = top["B"].buckets[1].unwrap();
+    assert_eq!(
+        (second.first_hour, second.last_hour),
+        (2, 2),
+        "a total without a column bucket still takes its exact rank"
+    );
+    assert_eq!(
+        ranked,
+        BTreeMap::from([
+            ("A".to_owned(), vec![span(0, 1)]),
+            ("B".to_owned(), vec![span(2, 2)]),
+        ])
+    );
     let mut all = original.clone();
-    retain_dense_top_candidates(&mut all, u64::MAX, &flag).unwrap();
+    retain_dense_top(
+        &mut all,
+        &valued,
+        u64::MAX,
+        (0.0, 3.0, 2),
+        &mut |_| Err(std::io::Error::other("no column needs exact sums")),
+        &flag,
+    )
+    .unwrap();
     assert_eq!(
         all.len(),
         3,

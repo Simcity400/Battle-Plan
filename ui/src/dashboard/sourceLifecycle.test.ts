@@ -58,6 +58,7 @@ test('campaign reconnect releases the old native source before opening its new r
     useRef(initial: any) { const at = ref++; return refs[at] ??= { current: initial }; },
     useCallback(callback: unknown) { return callback; },
     useEffect(run: () => unknown) { run(); },
+    rosters: [] as string[],
   };
   const globals = globalThis as typeof globalThis & { __sourceRolesFixture?: typeof fixture };
   globals.__sourceRolesFixture = fixture;
@@ -66,7 +67,9 @@ test('campaign reconnect releases the old native source before opening its new r
     plugins: [{ name: 'source-roles-fixture', enforce: 'pre', transform(source, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/shell/api.ts')) return 'export const errorMessage = error => error.message ?? String(error);';
-      if (path.endsWith('/dashboard/products.ts')) return 'export const forgetProducts = () => {};';
+      if (path.endsWith('/dashboard/products.ts')) return `export const forgetProducts = () => {};
+        export const loadProduct = async (_client, request) => { globalThis.__sourceRolesFixture.rosters.push(request.sourceId);
+          return { countries: [{ id: 7, tag: 'LATER', name: 'Later country' }], warnings: [] }; };`;
       if (path.endsWith('/dashboard/sources.ts')) return source.replace(
         "import { useCallback, useEffect, useRef, useState } from 'react';", 'const { useCallback, useEffect, useRef, useState } = globalThis.__sourceRolesFixture;');
     } }] });
@@ -76,7 +79,7 @@ test('campaign reconnect releases the old native source before opening its new r
     let allowRelease: (() => void) | undefined;
     let revision = 'old';
     const client = {
-      openSource: async (path: string) => { calls.push(`open:${revision}`); return { id: revision, path, revision, metadata: {} }; },
+      openSource: async (path: string) => { calls.push(`open:${revision}`); return { id: revision, path, revision, metadata: { countries: [] } }; },
       releaseSource: async (id: string) => { calls.push(`release:${id}`); await new Promise<void>(resolve => { allowRelease = resolve; }); },
     };
     const render = () => { slot = 0; ref = 0; return useSourceRoles(client); };
@@ -90,5 +93,9 @@ test('campaign reconnect releases the old native source before opening its new r
     allowRelease!(); await reopening; roles = render();
     assert.deepEqual(calls, ['open:old', 'release:old', 'open:new']);
     assert.equal(roles.bindings['same-slot'].source.revision, 'new');
+    // Each opened campaign's later countries join its source.
+    await tick(); roles = render();
+    assert.deepEqual(fixture.rosters, ['old', 'new']);
+    assert.deepEqual(roles.bindings['same-slot'].source.metadata.countries.map((country: { tag: string }) => country.tag), ['LATER']);
   } finally { delete globals.__sourceRolesFixture; await vite.close(); }
 });

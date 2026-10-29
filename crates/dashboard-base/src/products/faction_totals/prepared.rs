@@ -1075,11 +1075,21 @@ fn dense_reply(
         first_hour: view.0.floor() as i32,
         last_hour: view.1.floor() as i32,
     };
-    let bounded = members.clone().within(&window, cancelled)?;
+    // Exact sums inside the window also read the hour before it, for its segment flags.
+    let nearby = members.clone().within(
+        &HourSpan {
+            first_hour: window.first_hour.saturating_sub(1),
+            last_hour: window.last_hour,
+        },
+        cancelled,
+    )?;
+    let bounded = nearby.clone().within(&window, cancelled)?;
     let mut present = Reader::new(store, key, format!("territory-present-{branch}"), cancelled)?;
     let mut rosters = Reader::new(store, key, format!("territory-rosters-{branch}"), cancelled)?;
+    let ranks = params.faction_id.is_none() && params.inventory != Some(true);
     let mut summaries = BTreeMap::new();
     let mut member_summaries = BTreeMap::new();
+    let mut valued = BTreeMap::new();
     for id in history.factions.keys() {
         check_cancel(cancelled)?;
         if params
@@ -1132,12 +1142,26 @@ fn dense_reply(
                 );
             }
         }
+        if ranks {
+            valued.insert(id.clone(), known);
+        }
     }
 
-    // D-12 permits extra dense lines so a leader inside a column stays visible.
-    if params.faction_id.is_none() && params.inventory != Some(true) {
-        retain_dense_top_candidates(&mut summaries, params.top, cancelled)?;
-    }
+    // D-12 keeps a faction briefly in the Top N inside a column, drawn from its ranked hours.
+    let mut ranked = if ranks {
+        Some(retain_dense_top(
+            &mut summaries,
+            &valued,
+            params.top,
+            view,
+            &mut |hours| {
+                exact(values, keys, history, &nearby, hours, cancelled).map(|(_, sums)| sums.series)
+            },
+            cancelled,
+        )?)
+    } else {
+        None
+    };
     let mut sums = Sums {
         series: history
             .factions
@@ -1164,7 +1188,7 @@ fn dense_reply(
             values,
             keys,
             history,
-            members,
+            &nearby,
             &HourSpan {
                 first_hour: hour,
                 last_hour: hour,
@@ -1218,14 +1242,20 @@ fn dense_reply(
             .next()
             .map(|bucket| bucket.last_hour);
         series.runs.retain(|run| Some(run.last_hour) == end);
-        series.membership.clear();
-        for bucket in summaries[&series.id].buckets.iter().flatten() {
-            country_groups::mark_unobserved(
-                &mut series.membership,
-                bucket.first_hour,
-                bucket.last_hour,
-            );
-        }
+        series.membership = match &mut ranked {
+            Some(ranked) => ranked.remove(&series.id).unwrap_or_default(),
+            None => {
+                let mut membership = Vec::new();
+                for bucket in summaries[&series.id].buckets.iter().flatten() {
+                    country_groups::mark_unobserved(
+                        &mut membership,
+                        bucket.first_hour,
+                        bucket.last_hour,
+                    );
+                }
+                membership
+            }
+        };
     }
     let mut reply = serde_json::to_value(reply)?;
     reply["summaries"] = serde_json::to_value(summaries)?;
@@ -1236,33 +1266,194 @@ fn dense_reply(
     Ok(reply)
 }
 
-/// A column's N-th largest minimum bounds every faction that can enter Top N.
-/// Equality keeps tied candidates; exact ranking stays in the reached-hour sum.
-fn retain_dense_top_candidates(
+/// Exact faction sums through a window's hours, by faction.
+type WindowSums<'a> =
+    dyn FnMut(&HourSpan) -> io::Result<BTreeMap<String, Vec<FactionTotalRun>>> + 'a;
+
+/// Each column's Top N as the exact sums rank them, and each kept faction's ranked hours.
+/// A column the bucket bounds cannot settle is summed exactly and drawn from its ranked hours.
+fn retain_dense_top(
     summaries: &mut BTreeMap<String, ChartSummary>,
+    valued: &BTreeMap<String, Vec<HourSpan>>,
     top: u64,
+    view: (f64, f64, u32),
+    sums: &mut WindowSums<'_>,
     cancelled: &AtomicBool,
-) -> io::Result<()> {
-    let count = summaries
-        .values()
-        .next()
-        .map_or(0, |summary| summary.buckets.len());
-    for column in 0..count {
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    let top = usize::try_from(top).unwrap_or(usize::MAX);
+    let (_, bins) = series::summary_bins((view.0.floor() as i32, view.1.floor() as i32), view)?;
+    let ids: Vec<String> = summaries.keys().cloned().collect();
+    let mut ranked = vec![Vec::new(); ids.len()];
+    // Per column, the factions only its exact sums can rank.
+    let mut open = vec![Vec::new(); bins.len()];
+    let mut cursors = vec![0; ids.len()];
+    let order = |a: &(f64, usize), b: &(f64, usize)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
+    // How many `bounds` rank above faction `index` at `value`, ties in faction order.
+    let above = |bounds: &[(f64, usize)], value: f64, index: usize| {
+        bounds.partition_point(|&(bound, other)| bound > value || (bound == value && other < index))
+    };
+    for (column, &(first, last)) in bins.iter().enumerate() {
         check_cancel(cancelled)?;
-        let mut minimums: Vec<_> = summaries
-            .values()
-            .filter_map(|summary| summary.buckets[column].map(|bucket| bucket.min_value))
+        let mut held = Vec::new();
+        // Factions without a bucket here that may still hold a total in it.
+        let mut unbounded = 0;
+        for (index, (id, summary)) in summaries.iter().enumerate() {
+            if let Some(bucket) = summary.buckets.get(column).copied().flatten() {
+                held.push((index, bucket));
+                continue;
+            }
+            let spans = valued.get(id).map_or(&[][..], Vec::as_slice);
+            let cursor = &mut cursors[index];
+            *cursor += spans[*cursor..].partition_point(|span| span.last_hour < first);
+            let holds = spans
+                .get(*cursor)
+                .is_some_and(|span| span.first_hour <= last);
+            unbounded += usize::from(holds);
+        }
+        if held.len() + unbounded <= top {
+            for (index, bucket) in held {
+                ranked[index].push(HourSpan {
+                    first_hour: bucket.first_hour,
+                    last_hour: bucket.last_hour,
+                });
+            }
+            continue;
+        }
+        let mut highs: Vec<_> = held
+            .iter()
+            .map(|(index, bucket)| (bucket.max_value, *index))
             .collect();
-        minimums.sort_by(|a, b| b.total_cmp(a));
-        let rank = top.min(minimums.len() as u64) as usize;
-        let threshold = rank.checked_sub(1).map(|index| minimums[index]);
-        for summary in summaries.values_mut() {
-            summary.buckets[column] = summary.buckets[column]
-                .filter(|bucket| threshold.is_some_and(|minimum| bucket.max_value >= minimum));
+        // Only a faction holding a total at every hour of the column bounds others out.
+        let mut lows: Vec<_> = held
+            .iter()
+            .filter(|(_, bucket)| {
+                !bucket.has_break && (bucket.first_hour, bucket.last_hour) == (first, last)
+            })
+            .map(|(index, bucket)| (bucket.min_value, *index))
+            .collect();
+        highs.sort_unstable_by(order);
+        lows.sort_unstable_by(order);
+        for (index, bucket) in held {
+            // Others that may outrank it at some hour, less itself.
+            let may = above(&highs, bucket.min_value, index)
+                - usize::from(bucket.max_value > bucket.min_value);
+            if unbounded + may < top {
+                ranked[index].push(HourSpan {
+                    first_hour: bucket.first_hour,
+                    last_hour: bucket.last_hour,
+                });
+            } else if above(&lows, bucket.max_value, index) < top {
+                open[column].push(index);
+            } else {
+                summaries
+                    .get_mut(&ids[index])
+                    .expect("ranked faction summary")
+                    .buckets[column] = None;
+            }
         }
     }
-    summaries.retain(|_, summary| summary.buckets.iter().any(Option::is_some));
-    Ok(())
+    let mut next = 0;
+    while next < bins.len() {
+        if open[next].is_empty() {
+            next += 1;
+            continue;
+        }
+        // Adjacent open columns share one exact read.
+        let start = next;
+        while open.get(next).is_some_and(|factions| !factions.is_empty()) {
+            next += 1;
+        }
+        let totals = sums(&HourSpan {
+            first_hour: bins[start].0,
+            last_hour: bins[next - 1].1,
+        })?;
+        let members = crate::ranking::top_membership(
+            &totals,
+            top.min(totals.len()),
+            |run| (run.first_hour, run.last_hour),
+            |run| Some(run.value),
+            cancelled,
+        )?;
+        for column in start..next {
+            let (first, last) = bins[column];
+            let hours = |first_hour: i32, last_hour: i32| {
+                i64::from(last_hour.min(last)) - i64::from(first_hour.max(first)) + 1
+            };
+            for &index in &open[column] {
+                check_cancel(cancelled)?;
+                let id = &ids[index];
+                let runs = totals.get(id).map_or(&[][..], Vec::as_slice);
+                let runs = &runs[runs.partition_point(|run| run.last_hour < first)
+                    ..runs.partition_point(|run| run.first_hour <= last)];
+                let within = clipped(
+                    members.get(id).map_or(&[][..], Vec::as_slice),
+                    &HourSpan {
+                        first_hour: first,
+                        last_hour: last,
+                    },
+                );
+                let mut bucket = None;
+                crate::ranking::for_each_piece(
+                    runs,
+                    &within,
+                    |run| (run.first_hour, run.last_hour),
+                    cancelled,
+                    |run, first_hour, last_hour| {
+                        let value = run.value as f64;
+                        let part = Some(ChartBucket {
+                            absolute_total: u128::from(run.value.unsigned_abs())
+                                * hours(first_hour, last_hour) as u128,
+                            first_hour,
+                            last_hour,
+                            first_value: value,
+                            last_value: value,
+                            last_value_hour: first_hour,
+                            min_hour: first_hour,
+                            min_value: value,
+                            max_hour: first_hour,
+                            max_value: value,
+                            first_break: run.starts_segment && first_hour == run.first_hour,
+                            has_break: false,
+                        });
+                        bucket = if bucket.is_some() {
+                            merge(bucket, part)
+                        } else {
+                            part
+                        };
+                        ranked[index].push(HourSpan {
+                            first_hour,
+                            last_hour,
+                        });
+                        Ok(())
+                    },
+                )?;
+                let ranked_hours: i64 = within
+                    .iter()
+                    .map(|span| hours(span.first_hour, span.last_hour))
+                    .sum();
+                let valued_hours: i64 = runs
+                    .iter()
+                    .map(|run| hours(run.first_hour, run.last_hour))
+                    .sum();
+                // Ranked at every hour it holds a total, it keeps its whole bucket.
+                if ranked_hours == 0 || ranked_hours < valued_hours {
+                    summaries
+                        .get_mut(id)
+                        .expect("ranked faction summary")
+                        .buckets[column] = bucket;
+                }
+            }
+        }
+    }
+    let mut kept = BTreeMap::new();
+    for (id, spans) in ids.into_iter().zip(ranked) {
+        if summaries[&id].buckets.iter().any(Option::is_some) {
+            kept.insert(id, crate::ranking::joined_spans(spans, i32::MIN, i32::MAX));
+        } else {
+            summaries.remove(&id);
+        }
+    }
+    Ok(kept)
 }
 
 #[cfg(test)]

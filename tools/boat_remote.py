@@ -63,19 +63,23 @@ def prune_incremental():
     note = f'; {len(failed)} paths could not be removed' if failed else ''
     print(f'Pruned incremental caches: disk {usage.used * 100 // usage.total}% -> {after.used * 100 // after.total}%{note}', file=sys.stderr, flush=True)
 
+EMBEDS_UI = {'replay-desktop', 'recorder-app'}
+
 def embeds_ui(args):
-    """Whether a build enables the desktop's `custom-protocol`, which embeds ui/dist."""
+    """Whether a build enables a Tauri package's `custom-protocol`, which embeds ui/dist."""
     if any('custom-protocol' in arg for arg in args):
         return True
     if '--all-features' not in args:
         return False
     pairs = list(zip(args, args[1:]))
-    if 'replay-desktop' in {value for flag, value in pairs if flag == '--exclude'}:
-        return False
+    excluded = {value for flag, value in pairs if flag == '--exclude'}
+    excluded |= {arg.split('=', 1)[1] for arg in args if arg.startswith('--exclude=')}
     packages = {value for flag, value in pairs if flag in ('-p', '--package')}
     packages |= {arg.split('=', 1)[1] for arg in args if arg.startswith('--package=')}
     packages |= {arg[2:] for arg in args if arg.startswith('-p') and len(arg) > 2}
-    return not packages or 'replay-desktop' in packages or '--workspace' in args or '--all' in args
+    if not packages or '--workspace' in args or '--all' in args:
+        return bool(EMBEDS_UI - excluded)
+    return bool(packages & EMBEDS_UI)
 
 def start_cache(token):
     """Starts the compile cache's server outside the job's process group; the environment of its clients, or None and a warning."""

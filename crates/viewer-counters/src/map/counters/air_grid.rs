@@ -4,7 +4,7 @@ use replay_data::rows::AirWingRow;
 mod prepared;
 mod windows;
 pub(super) use prepared::{Census, PreparedItem};
-pub(super) use windows::View;
+pub(super) use windows::{Composed, View};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Wing<'a> {

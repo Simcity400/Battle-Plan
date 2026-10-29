@@ -867,7 +867,8 @@ fn modifier_icon_tooltip(
                 opponent.armour,
                 unit.piercing,
             )
-        };
+        }
+        .ok_or("the game's armour division traps on the recorded armour and piercing")?;
         *counts
             .get_mut(bucket)
             .ok_or_else(|| "a piercing bucket is outside the defines' thresholds".to_owned())? += 1;

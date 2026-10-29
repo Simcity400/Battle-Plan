@@ -6,9 +6,10 @@ import type { ScoreboardPreparedReply, ScoreboardSeries } from '../../generated/
 import type { DiplomacyOpinionsReply } from '../../generated/dashboard';
 
 const reply = { hour: 10, unresolved: 0, warnings: [], owners: [
-  { tag: 'A', readHour: 8, known: true, opinions: [{ target: 'B', value: 40 }, { target: 'A', value: 5 }] },
-  { tag: 'B', readHour: null, known: false, opinions: [] },
-  { tag: 'C', readHour: 10, known: true, opinions: [{ target: 'A', value: -120 }] },
+  { tag: 'A', readHour: 8, known: true, unknownTargets: [], opinions: [{ target: 'B', value: 40 }, { target: 'A', value: 5 }] },
+  { tag: 'B', readHour: null, known: false, unknownTargets: [], opinions: [] },
+  { tag: 'C', readHour: 10, known: true, unknownTargets: ['D'], opinions: [{ target: 'A', value: -120 }] },
+  { tag: 'D', readHour: null, known: false, unknownTargets: [], opinions: [] },
 ] } as unknown as DiplomacyOpinionsReply;
 
 test('a known owner’s unlisted target is exact zero, an unknown owner’s row is unknown, and self-pairs are kept', () => {
@@ -18,8 +19,17 @@ test('a known owner’s unlisted target is exact zero, an unknown owner’s row 
   assert.deepEqual(at('B', 'A'), { unknown: true }, 'an owner without proof is unknown, never zero');
   assert.deepEqual(at('A', 'A'), { value: 5, readHour: 8 }, 'the diagonal is recorded state');
   assert.equal(at('Z', 'A'), null);
+  assert.equal(at('A', 'Z'), null, 'a country the reply was not asked about is not zero');
   assert.deepEqual(opinionDomain(reply), [-120, 40], 'the colour domain is the recorded extremes, not a fixed range');
   assert.equal(opinionText(40), '+40'); assert.equal(opinionText(-3), '-3'); assert.equal(opinionText(0), '0');
+});
+
+test('a target the owner’s read cannot prove is unknown while the owner’s other pairs stay known', () => {
+  const at = opinionIndex(reply);
+  assert.deepEqual(at('C', 'D'), { unknown: true });
+  assert.deepEqual(at('C', 'A'), { value: -120, readHour: 10 });
+  assert.deepEqual(at('C', 'B'), { value: 0, readHour: 10 });
+  assert.deepEqual(at('D', 'C'), { unknown: true });
 });
 
 test('rows order by faction then name, countries outside any faction last; or by name', () => {

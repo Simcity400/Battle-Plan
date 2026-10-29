@@ -323,14 +323,22 @@ impl PreparedBases {
                     placed.id, &drawn, name, grid, inputs, &resources, ticks[at], key, report,
                 )
             } else {
-                Ok(vec![Vec::new(); drawn.layout.holders.len()])
+                Ok(air_grid::Composed::empty(drawn.layout.holders.len()))
             };
-            let result = composed.and_then(|parts| {
-                native_gui::draw_composed(&drawn.layout, &parts, drawn.origin, &resources, batch)
-                    .map_err(|why| why.to_string())
+            let result = composed.and_then(|composed| {
+                native_gui::draw_composed(
+                    &drawn.layout,
+                    &composed.parts,
+                    drawn.origin,
+                    &resources,
+                    batch,
+                )
+                .map(|()| composed)
+                .map_err(|why| why.to_string())
             });
             match result {
-                Ok(()) => {
+                Ok(composed) => {
+                    composed.commit(report);
                     if let Some(root) = inputs.windows.gui_type(name.as_bytes()) {
                         let first = report.base_hits.len();
                         record_hit(root, &drawn.layout, drawn.origin, &resources, key, report);

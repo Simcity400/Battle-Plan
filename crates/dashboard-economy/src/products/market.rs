@@ -13,9 +13,12 @@
 //! lend-lease fuel quantities /32768, fuel shares fixed5).
 //!
 //! Occurrences (`MarketEvents`) are an hourly interval drain: each is kept
-//! once, at its hour, in its kind's occurrence stream, and each party holder
-//! keeps a compact dated index per kind (the occurrence's sequence and stream
-//! position). Streams and indexes are chains of keys of at most [`CHUNK`]
+//! once, at the read that supplied it, in its kind's occurrence stream, and
+//! each party holder keeps a compact dated index per kind (the occurrence's
+//! sequence, hour and stream position). A ledger lists only occurrences whose
+//! supplying read it reached, and dates and matches parties by the
+//! occurrence's own hour. One whose parties have no identity is still kept,
+//! without them. Streams and indexes are chains of keys of at most [`CHUNK`]
 //! entries: the shared series decodes a key's whole blob in each batch a read
 //! touches, so no read decodes more than a chunk however long the campaign. A
 //! ledger merges its segments (a chain over the hours it applies) lazily,
@@ -38,6 +41,7 @@ use dashboard_base::{
     prepared::frame_changes::FrameChanges,
     products::{
         Product,
+        country_groups::HourSpan,
         equipment::{StockVariantName, Texts, VariantCatalogue, VariantVersion},
     },
 };
@@ -111,12 +115,15 @@ pub enum Field {
     Inventory(u32, u32, u64),
     OfferLevel(u32, u64),
     /// Chunk `1` (first hour `2`) of every occurrence of kind `0`, each once,
-    /// in order: `[sequence, row]` entries.
+    /// in order: `[sequence, hour, row]` entries at their supplying read.
     Stream(u8, u32, i32),
     /// Chunk `2` (first hour `3`) of a party holder's index of its
-    /// occurrences of kind `1`: `[sequence, stream position]` entries at each
-    /// occurrence's hour.
+    /// occurrences of kind `1`: `[sequence, hour, stream position]` entries
+    /// at each occurrence's supplying read.
     Party(u32, u8, u32, i32),
+    /// 1 while every party of the hour's new occurrences had an identity:
+    /// without it a chosen country's empty ledger proves nothing.
+    Identified,
 }
 
 /// Entries a stream or index key holds at most. A read decodes a key's whole
@@ -153,6 +160,11 @@ fn append(
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Extra {
     pub variants: BTreeMap<u64, Vec<VariantVersion>>,
+    /// The most hours an occurrence was supplied after its own hour.
+    pub lag: i32,
+    /// The hours whose country identities were read, merged: a holder's tag is
+    /// proved only inside them.
+    pub identified: Vec<(i32, i32)>,
 }
 
 /// One occurrence as the ledger keeps it.
@@ -204,6 +216,8 @@ impl Prepared {
     ) -> io::Result<()> {
         let gap = self.keyed.step(frame.hour)?;
         super::keyed::observe_variants(&mut self.variants, format, frame, Some(changes));
+        // Every admitted hour, unchanged ones included, proves its identities or not.
+        self.note_identities(frame);
         let watched = [TableId::Countries, TableId::CountryLinks]
             .into_iter()
             .chain(STATE)
@@ -219,30 +233,65 @@ impl Prepared {
     pub(crate) fn step(&mut self, frame: &DecodedFrame) {
         self.keyed.step(frame.hour).unwrap();
         super::keyed::observe_variants(&mut self.variants, FormatVersion::CURRENT, frame, None);
+        self.note_identities(frame);
         self.observe(frame);
     }
 
+    /// Extends the hours whose country identities were read by this one, if it read them.
+    fn note_identities(&mut self, frame: &DecodedFrame) {
+        if frame.complete::<tables::Countries>().is_err() || frame.complete::<tables::CountryLinks>().is_err() {
+            return;
+        }
+        let identified = &mut self.keyed.meta.extra.identified;
+        match identified.last_mut() {
+            Some(last) if last.1.checked_add(1) == Some(frame.hour) => last.1 = frame.hour,
+            Some(last) if last.1 >= frame.hour => {}
+            _ => {
+                identified.push((frame.hour, frame.hour));
+                self.keyed.note_change(8);
+            }
+        }
+    }
+
     fn observe(&mut self, frame: &DecodedFrame) {
-        let hour = frame.hour;
         let mut observed = Observed::new();
-        let tags = match Tags::new(frame) {
-            Ok(tags) => tags,
+        let mut named = Vec::new();
+        // No later read repeats a drained occurrence, so it is kept without identities.
+        match Tags::new(frame) {
+            Ok(tags) => {
+                // Every country's tags, not only active traders': an occurrence read
+                // later matches its parties' tags at its own, earlier hour.
+                self.keyed.tag_all(&tags, frame.hour);
+                self.observe_state(frame, &tags, &mut observed, &mut named);
+                self.observe_events(frame, Some(&tags), &mut observed, &mut named);
+            }
             Err(error) => {
                 self.keyed
                     .refuse(format!("country identities unavailable: {error}"));
-                self.keyed.commit(hour, &observed, |_| true);
-                return;
+                self.observe_events(frame, None, &mut observed, &mut named);
             }
-        };
+        }
+        self.named.extend(named.into_iter().filter(|&variant| variant != 0));
+        // Occurrence keys hold no state; state keys end when not shown.
+        self.keyed.commit(frame.hour, &observed, |field| {
+            !matches!(field, Field::Stream(..) | Field::Party(..))
+        });
+    }
+
+    fn observe_state(
+        &mut self,
+        frame: &DecodedFrame,
+        tags: &Tags<'_>,
+        observed: &mut Observed,
+        named: &mut Vec<u64>,
+    ) {
         let slot = |keyed: &mut Keyed<Field, Extra>, raw: u32| {
             let slot = tags.slot(raw);
-            match slot {
-                Some(slot) => keyed.tag(&tags, slot, hour),
-                None => keyed.refuse("a market country has no identity"),
+            if slot.is_none() {
+                keyed.refuse("a market country has no identity");
             }
             slot
         };
-        let mut named = Vec::new();
         let keyed = &mut self.keyed;
         let known = |keyed: &mut Keyed<Field, Extra>, observed: &mut Observed, table: u8| {
             observed.insert(keyed.key(Field::Known(table)), 1);
@@ -253,14 +302,14 @@ impl Prepared {
         };
         match frame.complete::<tables::CountryMarket>() {
             Ok(rows) => {
-                known(keyed, &mut observed, 0);
+                known(keyed, observed, 0);
                 let mut orphaned = false;
                 for row in rows {
                     let Some(seller) = slot(keyed, row.country) else {
                         orphaned = true;
                         continue;
                     };
-                    pool(keyed, &mut observed, &mut named, &row.inventory, &|ordinal, variant| {
+                    pool(keyed, observed, named, &row.inventory, &|ordinal, variant| {
                         Field::Inventory(seller, ordinal, variant)
                     });
                     for level in row.prices.iter() {
@@ -272,14 +321,14 @@ impl Prepared {
                     }
                 }
                 if orphaned {
-                    unknown(keyed, &mut observed, 0);
+                    unknown(keyed, observed, 0);
                 }
             }
             Err(error) => keyed.refuse(format!("market inventory unavailable: {error}")),
         }
         match frame.complete::<tables::MarketContractTerms>() {
             Ok(rows) => {
-                known(keyed, &mut observed, 1);
+                known(keyed, observed, 1);
                 let mut orphaned = false;
                 for row in rows {
                     let Some(seller) = slot(keyed, row.country) else {
@@ -292,7 +341,7 @@ impl Prepared {
                     }
                     observed.insert(keyed.key(Field::ContractSpeed(seller, id, kind)), i128::from(row.speed));
                     for (which, items) in [(0, &row.equipment), (1, &row.prices)] {
-                        pool(keyed, &mut observed, &mut named, items, &|ordinal, variant| {
+                        pool(keyed, observed, named, items, &|ordinal, variant| {
                             Field::ContractPool(seller, id, kind, which, ordinal, variant)
                         });
                     }
@@ -305,14 +354,14 @@ impl Prepared {
                     }
                 }
                 if orphaned {
-                    unknown(keyed, &mut observed, 1);
+                    unknown(keyed, observed, 1);
                 }
             }
             Err(error) => keyed.refuse(format!("market contract terms unavailable: {error}")),
         }
         match frame.complete::<tables::LendLeaseAgreements>() {
             Ok(rows) => {
-                known(keyed, &mut observed, 2);
+                known(keyed, observed, 2);
                 let mut orphaned = false;
                 for row in rows {
                     let Some(giver) = slot(keyed, row.country) else {
@@ -340,20 +389,20 @@ impl Prepared {
                             .into_iter()
                             .enumerate()
                     {
-                        pool(keyed, &mut observed, &mut named, items, &|ordinal, variant| {
+                        pool(keyed, observed, named, items, &|ordinal, variant| {
                             Field::LeasePool(giver, id, which as u8, ordinal, variant)
                         });
                     }
                 }
                 if orphaned {
-                    unknown(keyed, &mut observed, 2);
+                    unknown(keyed, observed, 2);
                 }
             }
             Err(error) => keyed.refuse(format!("lend-lease agreements unavailable: {error}")),
         }
         match frame.complete::<tables::PurchaseContracts>() {
             Ok(rows) => {
-                known(keyed, &mut observed, 3);
+                known(keyed, observed, 3);
                 for row in rows {
                     let (seller, buyer) = (slot(keyed, row.seller), slot(keyed, row.buyer));
                     for (which, value) in [
@@ -372,16 +421,43 @@ impl Prepared {
             }
             Err(error) => keyed.refuse(format!("purchase contracts unavailable: {error}")),
         }
+    }
+
+    /// The hour's new occurrences, each kept once at the read that supplied it;
+    /// without `tags` none has a party.
+    fn observe_events(
+        &mut self,
+        frame: &DecodedFrame,
+        tags: Option<&Tags<'_>>,
+        observed: &mut Observed,
+        named: &mut Vec<u64>,
+    ) {
+        let hour = frame.hour;
+        let party = |keyed: &mut Keyed<Field, Extra>, raw: u32| {
+            let slot = tags.and_then(|tags| tags.slot(raw));
+            if slot.is_none() {
+                keyed.refuse("a market occurrence's party has no identity");
+            }
+            slot
+        };
+        let keyed = &mut self.keyed;
         let mut seen = BTreeSet::new();
         match frame.complete::<tables::MarketEvents>() {
             Ok(rows) => {
-                known(keyed, &mut observed, MARKET_EVENTS);
+                observed.insert(keyed.key(Field::Known(MARKET_EVENTS)), 1);
+                let mut identified = true;
                 for row in rows {
                     seen.insert(row.id);
                     if self.last_events.contains(&row.id) || !ledger_kind(row) {
                         continue;
                     }
-                    let (seller, buyer) = (slot(keyed, row.country), slot(keyed, row.receiver));
+                    let (seller, buyer) = (party(keyed, row.country), party(keyed, row.receiver));
+                    // A chosen country's absence also needs its parties' tags at the occurrence's own hour.
+                    let spans = &keyed.meta.extra.identified;
+                    let proved = spans
+                        .get(spans.partition_point(|span| span.0 <= row.hour).wrapping_sub(1))
+                        .is_some_and(|span| row.hour <= span.1);
+                    identified &= seller.is_some() && buyer.is_some() && proved;
                     if row.variant != 0 {
                         named.push(row.variant);
                     }
@@ -394,7 +470,7 @@ impl Prepared {
                         stream,
                         |chunk, first| Field::Stream(kind, chunk, first),
                         at,
-                        &(sequence, &entry),
+                        &(sequence, row.hour, &entry),
                     ) {
                         Ok(position) => position,
                         Err(error) => {
@@ -403,6 +479,11 @@ impl Prepared {
                         }
                     };
                     self.sequence += 1;
+                    let lag = i32::try_from(i64::from(at) - i64::from(row.hour)).unwrap_or(i32::MAX);
+                    if lag > keyed.meta.extra.lag {
+                        keyed.meta.extra.lag = lag;
+                        keyed.note_change(16);
+                    }
                     let parties = [seller, buyer.filter(|buyer| Some(*buyer) != seller)];
                     for holder in parties.into_iter().flatten() {
                         let index = self.indexes.entry(holder).or_default().entry(kind).or_default();
@@ -411,21 +492,19 @@ impl Prepared {
                             index,
                             |chunk, first| Field::Party(holder, kind, chunk, first),
                             at,
-                            &(sequence, position),
+                            &(sequence, row.hour, position),
                         ) {
                             keyed.refuse(format!("a market occurrence's party index could not be kept: {error}"));
                         }
                     }
                 }
+                if identified {
+                    observed.insert(keyed.key(Field::Identified), 1);
+                }
             }
             Err(error) => keyed.refuse(format!("market occurrences unavailable: {error}")),
         }
         self.last_events = seen;
-        self.named.extend(named.into_iter().filter(|&variant| variant != 0));
-        // Occurrence keys hold no state; state keys end when not shown.
-        self.keyed.commit(hour, &observed, |field| {
-            !matches!(field, Field::Stream(..) | Field::Party(..))
-        });
     }
 
     /// Bytes the next commit publishes and releases.
@@ -979,9 +1058,13 @@ pub struct MarketLedgerReply {
     /// The `before` of the next older page; null on the oldest page.
     pub next: Option<String>,
     /// Hours the market's occurrences were read, as "1" runs: an empty
-    /// ledger is only "no trades" inside them.
+    /// ledger is only "no trades" inside them. For chosen countries, only
+    /// hours whose occurrences' parties all had identities.
     pub known: Vec<EconomyRun>,
     pub holders: BTreeMap<String, Vec<HolderTag>>,
+    /// The hours across this page's rows whose country identities were read: a
+    /// party's tag at a row's hour is known only inside them.
+    pub identified: Vec<HourSpan>,
     pub variants: BTreeMap<String, Vec<StockVariantName>>,
     pub warnings: Vec<String>,
 }
@@ -1041,6 +1124,7 @@ pub fn ledger(
         next: None,
         known: Vec::new(),
         holders: BTreeMap::new(),
+        identified: Vec::new(),
         variants: BTreeMap::new(),
         warnings: Vec::new(),
     };
@@ -1066,10 +1150,11 @@ pub fn ledger(
     // Each chain's keys: a kind's stream, and each holder's index of a kind.
     let mut streams = BTreeMap::<u8, Vec<(u32, i32, u64)>>::new();
     let mut parties = BTreeMap::<u32, BTreeMap<u8, Vec<(u32, i32, u64)>>>::new();
-    let mut known = None;
+    let (mut known, mut identified) = (None, None);
     for (&id, field) in &published.meta.fields {
         match *field {
             Field::Known(MARKET_EVENTS) => known = Some(id),
+            Field::Identified => identified = Some(id),
             Field::Stream(kind, chunk, first) if kinds.contains(&kind) => {
                 streams.entry(kind).or_default().push((chunk, first, id));
             }
@@ -1081,6 +1166,14 @@ pub fn ledger(
     }
     if let Some(id) = known {
         reply.known = published.text(id, &[(i32::MIN, i32::MAX)])?;
+        // An occurrence without its parties' identities may be a chosen country's.
+        if spans.is_some() {
+            let read: Vec<(i32, i32)> = reply.known.iter().map(|run| (run.0, run.1)).collect();
+            reply.known = match identified {
+                Some(id) => published.text(id, &read)?,
+                None => Vec::new(),
+            };
+        }
     }
     let to = params.last_hour.min(through);
     let first = params.first_hour.unwrap_or(i32::MIN);
@@ -1098,7 +1191,7 @@ pub fn ledger(
     }
     // Every occurrence once: each kind's stream through the hour. Chosen
     // countries: each chosen holder's index of each kind over each span it had
-    // a chosen tag.
+    // a chosen tag. Spans are occurrence hours; `to` gates supplying reads.
     let mut segments = Vec::new();
     match &spans {
         None => segments.extend(stream_of.iter().map(|(&kind, &chain)| (chain, kind, first, to))),
@@ -1117,7 +1210,8 @@ pub fn ledger(
             }
         }
     }
-    let mut ledger = Ledger::open(&mut published, chains, segments, params.before.as_deref())?;
+    let lag = published.meta.extra.lag;
+    let mut ledger = Ledger::open(&mut published, chains, segments, to, lag, params.before.as_deref())?;
     let mut taken = Vec::new();
     while taken.len() < params.page_size as usize {
         published.check()?;
@@ -1139,7 +1233,7 @@ pub fn ledger(
             let stream = stream_of
                 .get(&kind)
                 .ok_or_else(|| invalid("A market occurrence index names no stream"))?;
-            ledger.chains[*stream].entry(&mut published, position)?.2
+            ledger.chains[*stream].entry(&mut published, position)?.3
         };
         rows.push(serde_json::from_value(row)?);
     }
@@ -1157,6 +1251,12 @@ pub fn ledger(
                 .flatten()
                 .filter_map(|holder| holder.parse::<u32>().ok()),
         );
+    }
+    if let (Some(first), Some(last)) = (rows.iter().map(|row| row.hour).min(), rows.iter().map(|row| row.hour).max()) {
+        reply.identified = intersect(&published.meta.extra.identified, &[(first, last)])
+            .into_iter()
+            .map(|(first_hour, last_hour)| HourSpan { first_hour, last_hour })
+            .collect();
     }
     reply.rows = rows;
     reply.holders = holders
@@ -1214,8 +1314,8 @@ impl Chain {
         Ok(last as u64 * CHUNK + held)
     }
 
-    /// The entry at `position`: its hour, sequence and payload.
-    fn entry(&self, published: &mut Published<'_, Field, Extra>, position: u64) -> io::Result<(i32, u64, Value)> {
+    /// The entry at `position`: its supplying read, sequence, own hour and payload.
+    fn entry(&self, published: &mut Published<'_, Field, Extra>, position: u64) -> io::Result<(i32, u64, i32, Value)> {
         let key = usize::try_from(position / CHUNK)
             .ok()
             .and_then(|chunk| self.chunks.get(chunk))
@@ -1228,8 +1328,8 @@ impl Chain {
             .into_iter()
             .next()
             .ok_or_else(|| invalid("A market occurrence chain is shorter than its count"))?;
-        let (sequence, payload): (u64, Value) = serde_json::from_value(row.row)?;
-        Ok((row.hour, sequence, payload))
+        let (sequence, hour, payload): (u64, i32, Value) = serde_json::from_value(row.row)?;
+        Ok((row.hour, sequence, hour, payload))
     }
 
     fn read(&self) {
@@ -1241,16 +1341,19 @@ impl Chain {
     }
 }
 
-/// A chain over the hours from `from`: the position its unpaged entries end
-/// at, and the newest of them.
+/// A chain's occurrences of the hours `from..=until`, supplied through
+/// `through`: the position its unpaged entries end at, and the newest of them.
 struct Segment {
     chain: usize,
     kind: u8,
     from: i32,
-    /// The position after its newest unpaged entry; entries from `from` up to
-    /// it remain.
+    until: i32,
+    /// The last supplying read that can hold an occurrence of its hours.
+    through: i32,
+    /// The position after its newest unpaged entry; entries supplied from
+    /// `from` up to it remain.
     position: u64,
-    /// Its entries through the last hour, from the chain's start.
+    /// Its chain's entries supplied through `through`.
     end: u64,
     /// The newest unpaged entry: its sequence and payload.
     head: Option<(u64, Value)>,
@@ -1260,45 +1363,59 @@ struct Segment {
 struct Ledger {
     chains: Vec<Chain>,
     segments: Vec<Segment>,
+    /// The most hours an occurrence was supplied after its own hour.
+    lag: i32,
 }
 
 impl Ledger {
-    /// Each segment `(chain, kind, from, until)` at its position from
-    /// `cursor`, else at its end, with its head. The cursor names each segment
-    /// by its chain and first hour; a segment it doesn't name had no entries
-    /// left then, or gained its first ones after that page was read, so they
-    /// are all newer than it and none remain.
+    /// Each segment `(chain, kind, from, until)`, supplied through `to`, at
+    /// its position from `cursor`, else at its end, with its head. The cursor
+    /// names each segment by its chain and first hour; a segment it doesn't
+    /// name had no entries left then, or gained its first ones after that page
+    /// was read, so they are all newer than it and none remain.
     fn open(
         published: &mut Published<'_, Field, Extra>,
         chains: Vec<Chain>,
         wanted: Vec<(usize, u8, i32, i32)>,
+        to: i32,
+        lag: i32,
         cursor: Option<&str>,
     ) -> io::Result<Self> {
         let positions = cursor.map(parse_cursor).transpose()?;
         let mut segments = Vec::with_capacity(wanted.len());
         for (chain, kind, from, until) in wanted {
-            let end = chains[chain].end(published, until)?;
+            let through = until.saturating_add(lag).min(to);
+            let end = chains[chain].end(published, through)?;
             let position = match &positions {
                 None => end,
                 Some(positions) => positions.get(&(chains[chain].name(), from)).copied().unwrap_or(0).min(end),
             };
-            let mut segment = Segment { chain, kind, from, position, end, head: None };
-            segment.head = Self::head(published, &chains[chain], &segment)?;
+            let mut segment = Segment { chain, kind, from, until, through, position, end, head: None };
+            segment.head = Self::head(published, &chains[chain], &mut segment)?;
             segments.push(segment);
         }
-        Ok(Self { chains, segments })
+        Ok(Self { chains, segments, lag })
     }
 
+    /// The newest entry before `position` that occurred in the segment's
+    /// hours, leaving `position` just after it.
     fn head(
         published: &mut Published<'_, Field, Extra>,
         chain: &Chain,
-        segment: &Segment,
+        segment: &mut Segment,
     ) -> io::Result<Option<(u64, Value)>> {
-        let Some(last) = segment.position.checked_sub(1) else {
-            return Ok(None);
-        };
-        let (hour, sequence, payload) = chain.entry(published, last)?;
-        Ok((hour >= segment.from).then_some((sequence, payload)))
+        while let Some(last) = segment.position.checked_sub(1) {
+            let (supplied, sequence, hour, payload) = chain.entry(published, last)?;
+            // Every earlier entry was supplied, so occurred, before `from` too.
+            if supplied < segment.from {
+                return Ok(None);
+            }
+            if (segment.from..=segment.until).contains(&hour) {
+                return Ok(Some((sequence, payload)));
+            }
+            segment.position = last;
+        }
+        Ok(None)
     }
 
     /// The newest unpaged occurrence's kind and payload, taken from every
@@ -1323,16 +1440,34 @@ impl Ledger {
         Ok(Some((kind, payload)))
     }
 
-    /// Every segment's entries from its first hour through the last: the
-    /// stream ledger's total.
+    /// Every segment's entries that occurred in its hours: the stream
+    /// ledger's total. Only entries supplied within the lag after a bound can
+    /// have occurred outside it, so only those are read.
     fn total(&self, published: &mut Published<'_, Field, Extra>) -> io::Result<u64> {
         let mut total = 0;
         for segment in &self.segments {
-            let before = match segment.from.checked_sub(1) {
-                Some(until) => self.chains[segment.chain].end(published, until)?,
-                None => 0,
+            let chain = &self.chains[segment.chain];
+            let (first, settled) = match segment.from.checked_sub(1) {
+                Some(before) => {
+                    let first = chain.end(published, before)?;
+                    let mixed = before.saturating_add(self.lag).min(segment.until);
+                    (first, if mixed == before { first } else { chain.end(published, mixed)? })
+                }
+                None => (0, 0),
             };
-            total += segment.end.saturating_sub(before);
+            let supplied = if segment.through == segment.until {
+                segment.end
+            } else {
+                chain.end(published, segment.until)?
+            };
+            let mut count = segment.end.saturating_sub(first);
+            for position in (first..settled).chain(supplied..segment.end) {
+                let (_, _, hour, _) = chain.entry(published, position)?;
+                if !(segment.from..=segment.until).contains(&hour) {
+                    count -= 1;
+                }
+            }
+            total += count;
         }
         Ok(total)
     }
@@ -1371,10 +1506,24 @@ fn chosen_spans(published: &Published<'_, Field, Extra>, params: &MarketLedgerPa
                 _ => merged.push((from, until)),
             }
         }
-        *held = merged;
+        // A tag proves membership only at hours whose identities were read.
+        *held = intersect(&merged, &published.meta.extra.identified);
         !held.is_empty()
     });
     spans
+}
+
+/// The hours both sorted, disjoint span lists cover.
+fn intersect(a: &[(i32, i32)], b: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let (mut out, mut i, mut j) = (Vec::new(), 0, 0);
+    while let (Some(&(a_from, a_until)), Some(&(b_from, b_until))) = (a.get(i), b.get(j)) {
+        let (from, until) = (a_from.max(b_from), a_until.min(b_until));
+        if from <= until {
+            out.push((from, until));
+        }
+        if a_until < b_until { i += 1 } else { j += 1 }
+    }
+    out
 }
 
 /// A cursor: each segment's (chain, first hour) and the position its unpaged

@@ -1697,6 +1697,19 @@ impl<B: SegmentBackend> Campaign<B> {
         }
         Ok(())
     }
+
+    /// A lost queued hour can change later branches' parents; pending starts follow.
+    fn lose_hour(&mut self, branch: BranchId, hour: i32) -> io::Result<()> {
+        self.tracker.lose_hour(branch, hour)?;
+        for pending in &mut self.pending {
+            pending.start = self
+                .tracker
+                .branch_start(pending.start.id)
+                .expect("pending branch exists")
+                .clone();
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -3407,14 +3420,12 @@ impl Processor {
             .admission_bytes()?;
         let result = (|| {
             frame.storage = Some(self.receipt_storage(receipt_bytes, epoch, write_bytes)?);
-            self.campaigns
-                .get_mut(&frame.id)
-                .unwrap()
-                .spool
-                .write_frame(
-                    work.staged.take().expect("queued frame was staged"),
-                    receipt_bytes,
-                )
+            let campaign = self.campaigns.get_mut(&frame.id).unwrap();
+            campaign.tracker.admit_hour(frame.branch, frame.clock.hour)?;
+            campaign.spool.write_frame(
+                work.staged.take().expect("queued frame was staged"),
+                receipt_bytes,
+            )
         })();
         if let Err(error) = &result {
             if crate::allocation::failed() {
@@ -3425,6 +3436,7 @@ impl Processor {
             frame.witness.bind(&mut self.stats.order_counters, &result);
             completed?;
             let campaign = self.campaigns.get_mut(&frame.id).unwrap();
+            campaign.lose_hour(frame.branch, frame.clock.hour)?;
             campaign.restore_context(std::mem::take(&mut frame.context))?;
             campaign.reset_after_write_failure();
             campaign.gap(
@@ -3547,6 +3559,7 @@ impl Processor {
                     self.unknown_pending = self.unknown_pending.saturating_add(frame.unknown);
                     self.suppress_origin |= frame.unknown != 0;
                     let campaign = self.campaigns.get_mut(&frame.id).unwrap();
+                    campaign.lose_hour(frame.branch, frame.clock.hour)?;
                     campaign.restore_context(std::mem::take(&mut frame.context))?;
                     campaign.gap(
                         frame.branch,

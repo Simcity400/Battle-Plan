@@ -156,26 +156,29 @@ pub fn priority_frames(priority: i32, stages: i32) -> Vec<i32> {
 }
 
 /// The equipment button's sprite: the plain one only when the template takes new and foreign
-/// equipment and excludes no design or type.
+/// equipment and excludes no design or type. `excluded` is `None` when the template's excluded
+/// designs were not readable: only a restriction read elsewhere then decides the sprite.
 pub fn equipment_button(
     settings: &TemplateSettings,
-    excluded: &[u64],
+    excluded: Option<&[u64]>,
 ) -> Result<&'static [u8], String> {
-    let forbidden = settings
-        .forbidden_equipment
-        .as_ref()
-        .ok_or("the template's forbidden equipment types were not read")?;
-    Ok(
-        if settings.allow_new_equipment != 0
-            && settings.allow_foreign_equipment != 0
-            && excluded.is_empty()
-            && forbidden.is_empty()
-        {
-            EQUIPMENT_BUTTON
-        } else {
-            EQUIPMENT_BUTTON_RESTRICTED
-        },
-    )
+    if settings.allow_new_equipment == 0
+        || settings.allow_foreign_equipment == 0
+        || settings
+            .forbidden_equipment
+            .as_ref()
+            .is_some_and(|forbidden| !forbidden.is_empty())
+        || excluded.is_some_and(|excluded| !excluded.is_empty())
+    {
+        return Ok(EQUIPMENT_BUTTON_RESTRICTED);
+    }
+    if settings.forbidden_equipment.is_none() {
+        return Err("the template's forbidden equipment types were not read".to_owned());
+    }
+    if excluded.is_none() {
+        return Err("the template's excluded equipment designs were not readable".to_owned());
+    }
+    Ok(EQUIPMENT_BUTTON)
 }
 
 /// One composition cell as it is drawn.
@@ -213,8 +216,8 @@ pub struct Designer {
     /// The stored priority and the priority stage count.
     pub priority: Result<(i32, i32), String>,
     /// Whether the regiment grid holds a real definition: the capability icons show, and the
-    /// equipment button acts, only then.
-    pub regiments: bool,
+    /// equipment button acts, only then. Why not, when the layout was not read.
+    pub regiments: Result<bool, String>,
     pub paradrop: Result<bool, String>,
     pub equipment_button: Result<&'static [u8], String>,
     pub experience: Result<String, String>,
@@ -302,7 +305,7 @@ pub fn inputs(
             .clone()
             .ok_or_else(|| "the template's layout was refused at capture".to_owned())
     });
-    let regiments = layout.as_ref().is_ok_and(|layout| {
+    let regiments = layout.as_ref().map_err(Clone::clone).map(|layout| {
         slots::counts(&layout.regiments)
             .iter()
             .any(|&count| count > 0)
@@ -422,7 +425,7 @@ pub fn inputs(
     let symbol = layout.as_ref().map_err(Clone::clone).and_then(|layout| {
         let definition = if icon.priority_unit != 0 {
             Some(icon.priority_unit)
-        } else if regiments {
+        } else if regiments == Ok(true) {
             slots::real(&layout.regiments, 0, 0).map(|(token, _)| token)
         } else {
             None
@@ -451,10 +454,12 @@ pub fn inputs(
             Ok((settings.priority, stages))
         });
     let paradrop = paradrop(catalogue, icon, &spell);
+    // An unreadable model empties its excluded designs: they are unknown, not none.
+    let excluded = (icon.model_unreadable == 0).then_some(icon.excluded_variants.as_slice());
     let equipment_button = settings
         .as_ref()
         .map_err(Clone::clone)
-        .and_then(|settings| equipment_button(settings, &icon.excluded_variants));
+        .and_then(|settings| equipment_button(settings, excluded));
     let experience = frame
         .complete::<tables::CountryExperience>()
         .map_err(|why| why.to_string())
@@ -465,7 +470,7 @@ pub fn inputs(
         })
         .and_then(|row| experience_text(localisation, row.army_raw));
     // The designer's empty-template test: the leading line and support slots hold nothing.
-    let empty = layout.as_ref().is_ok_and(|layout| {
+    let empty = layout.as_ref().map_err(Clone::clone).map(|layout| {
         slots::real(&layout.regiments, 0, 0).is_none()
             && slots::real(&layout.support, 0, 0).is_none()
     });
@@ -478,7 +483,7 @@ pub fn inputs(
     let tag = dashboard_army::products::army_content::Countries::read(frame)
         .ok()
         .and_then(|countries| countries.tag(owner));
-    let stats = rows::rows(localisation, &preview, empty, tag.as_deref());
+    let stats = rows::rows(localisation, &preview, &empty, tag.as_deref());
     // The preview's daily inputs date its stats.
     let basis = [
         (TableId::CountryUnitBonuses, "unit bonuses"),

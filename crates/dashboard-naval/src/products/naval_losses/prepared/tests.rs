@@ -287,6 +287,56 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
                     &actors, &metadata, &oracle.histories, &fixture.store, &fixture.key, &flag,
                 ).unwrap();
                 assert_eq!(bound["hour"].as_f64(), Some(f64::from(before_bridge)));
+                // A dense Top 1 draws each line only where the exact, corrected ranking
+                // puts its country first, the late-resolved alias included.
+                assert!(!metadata.corrected.is_empty(), "the fixture corrects a late alias");
+                let top = NavalLossesParams {
+                    top: Some(1),
+                    ..selection(1, 8)
+                };
+                let dense = series_query(
+                    "series-summary",
+                    &json!({"from":first,"to":frame.hour,"width":1}),
+                    &top,
+                    &actors,
+                    &metadata,
+                    &oracle.histories,
+                    &fixture.store,
+                    &fixture.key,
+                    &flag,
+                )
+                .unwrap();
+                let ranked = reply_with_histories(
+                    &oracle,
+                    &top,
+                    &flag,
+                    (true, true),
+                    (&[], &[]),
+                    vec![],
+                    Some(&oracle.histories),
+                )
+                .unwrap();
+                for line in dense["series"].as_array().unwrap() {
+                    let tag = line["tag"].as_str().unwrap();
+                    let membership = ranked
+                        .series
+                        .iter()
+                        .find(|series| series.tag == tag)
+                        .and_then(|series| series.membership.clone())
+                        .unwrap_or_default();
+                    let summary: dashboard_base::prepared_chart::ChartSummary =
+                        serde_json::from_value(line["summary"].clone()).unwrap();
+                    for bucket in summary.buckets.iter().flatten() {
+                        for hour in [bucket.first_hour, bucket.last_hour] {
+                            assert!(
+                                membership.iter().any(|span| {
+                                    span.first_hour <= hour && hour <= span.last_hour
+                                }),
+                                "{tag} is drawn at hour {hour}, outside its Top 1 hours {membership:?}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }

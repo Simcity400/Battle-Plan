@@ -33,6 +33,7 @@ use replay_frame::frame::DecodedFrame;
 use viewer_foundation::{
     map::{
         camera::Camera,
+        free_icons::{IconAnchor, IconFamily},
         gui_resources::{count_noted, count_refused, viewport as gui_resources_viewport},
         icon_windows::{Owner, Plan, PoolView, Retry},
         mode_visibility::{Priorities, PriorityIcon, Visibility},
@@ -152,6 +153,7 @@ struct Placed {
     state: u32,
     screen: [f32; 2],
     depth: f32,
+    anchor: IconAnchor,
     priority: i8,
     /// Whether the rows and the window's flag show (below the text cutoff).
     text: bool,
@@ -166,10 +168,15 @@ pub struct PreparedResourceIcons {
     pub report: ResourceIconReport,
 }
 
-/// Whether a mode at camera `height` has resource icons, and whether their rows show.
-pub fn shown(visibility: &Visibility, height: f32, defines: &ResourceIconDefines) -> Option<bool> {
-    (visibility.resource_icons && height < defines.icons_cutoff)
-        .then_some(height < defines.text_cutoff)
+/// Whether a mode has a resource icon at `distance` from the camera
+/// ([`Camera::icon_distance`]: the game's camera's height), and whether its rows show.
+pub fn shown(
+    visibility: &Visibility,
+    distance: f32,
+    defines: &ResourceIconDefines,
+) -> Option<bool> {
+    (visibility.resource_icons && distance < defines.icons_cutoff)
+        .then_some(distance < defines.text_cutoff)
 }
 
 /// One row's text, as the game builds it.
@@ -299,9 +306,13 @@ fn normalize_anchor_x(x: f32, width: f32) -> f32 {
 pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> PreparedResourceIcons {
     let mut prepared = PreparedResourceIcons::default();
     let defines = &inputs.content.defines;
-    let Some(text) = shown(&inputs.visibility, inputs.camera.height, defines) else {
+    // The game's camera shows every icon by its height; a free eye, each by its own distance.
+    if !inputs.visibility.resource_icons
+        || (inputs.camera.free().is_none()
+            && shown(&inputs.visibility, inputs.camera.height, defines).is_none())
+    {
         return prepared;
-    };
+    }
     let hour = match Hour::new(frame, &inputs.content.origins) {
         Ok(hour) => hour,
         Err(why) => {
@@ -349,6 +360,13 @@ pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> Prepare
             ));
             continue;
         };
+        let Some(text) = shown(
+            &inputs.visibility,
+            inputs.camera.icon_distance(world),
+            defines,
+        ) else {
+            continue;
+        };
         let Some(projection) = inputs
             .camera
             .project_map_icon(world, inputs.viewport, extent)
@@ -375,6 +393,11 @@ pub fn prepare(inputs: &ResourceIconInputs<'_>, frame: &DecodedFrame) -> Prepare
             state,
             screen: projection.position,
             depth: projection.depth,
+            anchor: IconAnchor {
+                world,
+                cutoff: defines.icons_cutoff,
+                family: IconFamily::Resources,
+            },
             priority,
             text,
             rows,
@@ -655,6 +678,7 @@ impl PreparedResourceIcons {
                 }
             }
             batch.at_layer(sprites::layer(icon.priority, ordinal as u32, 0));
+            batch.at_anchor(Some(icon.anchor));
             match native_gui::draw_composed(
                 &drawn.layout,
                 &parts,
@@ -669,6 +693,7 @@ impl PreparedResourceIcons {
                 Err(why) => count_refused(&mut report.refused, WINDOW, &[why]),
             }
         }
+        batch.at_anchor(None);
         report
     }
 }

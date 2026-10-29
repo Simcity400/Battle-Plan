@@ -327,6 +327,9 @@ test('a plain bar keeps a pixel column however short it is at this zoom', () => 
   assert.deepEqual(barExtent(50, 150, 100, 800), [100, 149]);
   assert.equal(barExtent(10, 20, 100, 800), null);
   assert.equal(barExtent(900, 910, 100, 800), null);
+  // A bar ending where the plot starts, or starting where it ends, has no hour in it.
+  assert.equal(barExtent(90, 100, 100, 800), null);
+  assert.equal(barExtent(800, 810, 100, 800), null);
   // At the plot's right edge a short bar keeps a column inside it.
   assert.deepEqual(barExtent(799.6, 800.4, 100, 800), [799, 800]);
 });

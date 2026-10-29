@@ -34,8 +34,9 @@ export interface MemberView {
 
 export interface FactionView {
   id: string;
-  /** Native holders proved during this faction's membership runs. */
-  countryIds: ReadonlySet<string>;
+  /** Native holders proved during this faction's membership runs, with the first hour
+   * each was. */
+  countryIds: ReadonlyMap<string, number>;
   /** Latest summary, used only when no hour is requested. */
   name: string | null;
   /** Dated name lookups, sharing the prepared history and campaign override. */
@@ -100,7 +101,7 @@ export function factionViews(reply: CountryGroupReply, name: (faction: FactionGr
     }).sort((a, b) => a.runs[0].firstHour - b.runs[0].firstHour);
     const existence = withoutHours([{ firstHour: faction.firstHour, lastHour: faction.lastHour }], allUnobserved);
     return {
-      id: faction.id, countryIds: identities.keysDuring(faction.members), name: name(faction).name, color: colour(faction.id),
+      id: faction.id, countryIds: identities.firstHoursDuring(faction.members), name: name(faction).name, color: colour(faction.id),
       nameAt: hour => name(faction, hour),
       existence, lifetime: bridgeGaps(existence, allUnobserved).map(({ firstHour, lastHour }) => ({ firstHour, lastHour })),
       members, identities, leaders: identities.membershipRuns(faction.leaders).sort((a, b) => a.firstHour - b.firstHour),
@@ -205,7 +206,8 @@ export function factionLanes(views: readonly FactionView[], hour: number, option
   const lanes: TimelineLane[] = [];
   const info = new Map<string, LaneInfo>();
   const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
-  const involves = (view: FactionView) => { for (const key of view.countryIds) if (chosen!.has(key)) return true; return false; };
+  // Only memberships begun by the hour involve a country: a later one admits nothing yet.
+  const involves = (view: FactionView) => { for (const [key, since] of view.countryIds) if (since <= hour && chosen!.has(key)) return true; return false; };
   const shown = views.filter(view => firstHour(view.existence) <= hour
     && (options.ended || runState(view.lifetime, hour, unobserved).kind !== 'ended')
     && (!chosen || involves(view)));

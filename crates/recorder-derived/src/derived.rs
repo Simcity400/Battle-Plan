@@ -30,7 +30,8 @@ use replay::container::Replay;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     day_night, day_night::Clock, day_night::HourOperands, day_night::ProvinceClock,
-    identity::Verification, rows::ClockState, rows::Recorded, rows::TableId, rows::tables,
+    identity::Identity, identity::SessionStart, identity::Verification, rows::ClockState,
+    rows::Recorded, rows::TableId, rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableUpdate, frame::TableView,
@@ -86,29 +87,36 @@ struct Content {
     layers: installed_content_core::ResolvedLayers,
 }
 
-fn content(
-    replay: &Replay,
-    game_dir: Option<PathBuf>,
-    user_dir: Option<PathBuf>,
-) -> io::Result<Content> {
-    let session = replay
-        .sessions
+/// The content stack every session recorded, each session verified to have loaded it.
+fn recorded_stack(sessions: &[SessionStart]) -> io::Result<&Identity> {
+    let first = sessions
         .first()
         .ok_or_else(|| io::Error::other("recording has no session"))?;
-    if replay
-        .sessions
+    if sessions
         .iter()
-        .any(|other| other.identity != session.identity)
+        .any(|session| !session.identity.same_content(&first.identity))
     {
         return Err(io::Error::other(
             "sessions record different content stacks; check them separately",
         ));
     }
-    if !matches!(session.identity.verification, Verification::Verified { .. }) {
-        return Err(io::Error::other(
-            "the session's content is not verified; derivations need the recorded stack",
-        ));
+    if let Some(session) = sessions.iter().find(|session| {
+        !matches!(session.identity.verification, Verification::Verified { .. })
+    }) {
+        return Err(io::Error::other(format!(
+            "session {}'s content is not verified; derivations need the recorded stack",
+            session.id
+        )));
     }
+    Ok(&first.identity)
+}
+
+fn content(
+    replay: &Replay,
+    game_dir: Option<PathBuf>,
+    user_dir: Option<PathBuf>,
+) -> io::Result<Content> {
+    let identity = recorded_stack(&replay.sessions)?;
     let options = ResolveOptions {
         game_dir: match game_dir {
             Some(directory) => directory,
@@ -128,7 +136,7 @@ fn content(
     // The movement speed's modifier keys are checked against the installation's
     // executable metadata, as the save comparison checks them.
     engine_executable::executable_tables::initialize(&options.game_dir)?;
-    let resolved = installed_content_core::resolve(&session.identity, &options)?.exact()?;
+    let resolved = installed_content_core::resolve(identity, &options)?.exact()?;
     let defines = installed_content_core::defines::read(&resolved.layers)?;
     let defines = day_night::Defines::read(
         |section, name| defines.int32(section, name),
@@ -505,5 +513,52 @@ mod tests {
         assert_eq!(user_dir, None);
         assert!(census);
         assert_eq!(arguments(args(&["--census"])).unwrap_err(), USAGE);
+    }
+
+    #[test]
+    fn sessions_continued_by_new_tools_share_the_stack_and_each_must_be_verified() {
+        use replay_data::identity::{CaptureMode, SampleBoundary};
+        let verified = || {
+            let mut identity = replay_identity::test_fixtures::identity();
+            let roster = identity.roster();
+            identity.verification = Verification::Verified {
+                launcher: roster.clone(),
+                memory: roster,
+            };
+            identity
+        };
+        let session = |id, identity| SessionStart {
+            id,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
+            identity,
+        };
+        // The campaign continued with another recorder and collector build.
+        let mut rebuilt = verified();
+        rebuilt.recorder_version = "next recorder".into();
+        rebuilt.collector_hash = [99; 32];
+        let sessions = [session(1, verified()), session(2, rebuilt)];
+        assert_eq!(recorded_stack(&sessions).unwrap(), &sessions[0].identity);
+        for state in [
+            Verification::Unchecked,
+            Verification::Unverified {
+                reason: "rosters differ".into(),
+                launcher: Default::default(),
+                memory: Default::default(),
+            },
+        ] {
+            let mut unverified = sessions.clone();
+            unverified[1].identity.verification = state;
+            let error = recorded_stack(&unverified).unwrap_err().to_string();
+            assert!(error.contains("session 2's content is not verified"), "{error}");
+        }
+        let mut other = sessions.clone();
+        other[1].identity.language = "l_french".into();
+        let error = recorded_stack(&other).unwrap_err().to_string();
+        assert!(error.contains("different content stacks"), "{error}");
+        assert!(recorded_stack(&[]).is_err());
     }
 }

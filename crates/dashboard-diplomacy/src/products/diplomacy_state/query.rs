@@ -77,16 +77,12 @@ fn opinion_reply(
             .map(|tag| tag.len() + std::mem::size_of::<DiplomacyOwner>())
             .sum(),
     )?;
+    // Each selected tag's holder then, with the hour its identity run began.
     let mut targets = BTreeMap::new();
-    let mut target_start = i32::MIN;
-    let mut targets_known = true;
     for tag in tags {
         check_cancel(cancelled)?;
         if let Some((country, run)) = selected_at(countries, tag, hour, &mut at)? {
-            target_start = target_start.max(run.first_hour);
-            targets.insert(country.tag.clone(), country);
-        } else {
-            targets_known = false;
+            targets.insert(country.tag.clone(), (country, run.first_hour));
         }
     }
     let mut unresolved = at("unresolved", hour)?.map_or(0, |run| run.value as usize);
@@ -97,7 +93,8 @@ fn opinion_reply(
         .sum::<usize>();
     for tag in tags {
         check_cancel(cancelled)?;
-        let identity = targets.get(tag).cloned();
+        let selected = targets.get(tag);
+        let identity = selected.map(|(country, _)| country.clone());
         let read = identity
             .as_ref()
             .map(|country| at(&country_key("o", country), hour))
@@ -109,8 +106,17 @@ fn opinion_reply(
             .transpose()?
             .flatten()
             .map(|run| run.value as i32);
-        let known =
-            targets_known && read.is_some_and(|read| read.value >= i128::from(target_start));
+        // The read proves a pair only toward a country whose identity existed at it.
+        let proves = |start: i32| read.is_some_and(|read| read.value >= i128::from(start));
+        let known = selected.is_some_and(|&(_, start)| proves(start));
+        let unknown_targets: BTreeSet<&str> = if known {
+            tags.iter()
+                .map(String::as_str)
+                .filter(|target| !targets.get(*target).is_some_and(|&(_, start)| proves(start)))
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         if identity.is_none() {
             unresolved += 1;
         }
@@ -122,7 +128,10 @@ fn opinion_reply(
                     break;
                 }
                 let target: DiplomacyCountry = serde_json::from_str(&name[start.len()..])?;
-                if targets.get(&target.tag) == Some(&target)
+                if targets
+                    .get(&target.tag)
+                    .is_some_and(|(country, _)| *country == target)
+                    && !unknown_targets.contains(target.tag.as_str())
                     && let Some(run) = at(name, hour)?
                 {
                     reply_bytes = reply_bytes.saturating_add(target.tag.len() + 80);
@@ -135,11 +144,16 @@ fn opinion_reply(
                 }
             }
         }
+        reply_bytes = unknown_targets
+            .iter()
+            .fold(reply_bytes, |bytes, target| bytes.saturating_add(target.len() + 8));
+        preflight(reply_bytes)?;
         owners.push(DiplomacyOwner {
             tag: tag.clone(),
             identity,
             read_hour: supplying,
             known,
+            unknown_targets: unknown_targets.into_iter().map(str::to_owned).collect(),
             opinions,
         });
     }

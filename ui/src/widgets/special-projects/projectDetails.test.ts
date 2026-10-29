@@ -15,6 +15,11 @@ test('project details preserve duplicate traits, supporting assignments, pending
   assert.throws(() => validateProjectDetails({...reply,breakthroughs:[{...reply.breakthroughs[0],readHour:25}]}),/Invalid/);
   const unread = {...reply,breakthroughs:null};
   assert.equal(validateProjectDetails(unread),unread);
+  // An unavailable roster is null, distinct from a read empty one.
+  const unreadRosters = {...reply,scientists:null,programs:null,projects:null};
+  assert.equal(validateProjectDetails(unreadRosters),unreadRosters);
+  for (const roster of ['scientists','programs','projects'])
+    assert.throws(() => validateProjectDetails({...reply,[roster]:undefined}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,scientists:[{...reply.scientists[0],visibilityHour:25}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,programs:[{...reply.programs[0],readHour:25}]}),/Invalid/);
   assert.throws(() => validateProjectDetails({...reply,projects:[{...reply.projects[0],pendingKnown:false}]}),/Invalid/);

@@ -61,23 +61,26 @@ test('a never-readable consumer table is not recorded, not no demand', () => {
   assert.equal(consumersKnown(reply(), 15), true);
 });
 
-test('an empty time view tells pending, unrecorded and proven-empty hours apart', () => {
+test('an empty time view tells pending, unknown, partly known and proven-empty hours apart', () => {
   const base = reply();
-  // The table was read from hour 10: before it nothing is proven.
-  assert.equal(emptyTimeView(base, 15), 'none');
-  assert.equal(emptyTimeView(base, 5), 'unrecorded');
+  // The table was known from hour 10: before it nothing is proven.
+  assert.equal(emptyTimeView(base, 10, 15), 'none');
+  assert.equal(emptyTimeView(base, 0, 15), 'partial');
+  assert.equal(emptyTimeView(base, 0, 5), 'unrecorded');
   // A cold prefix: nothing prepared yet.
-  assert.equal(emptyTimeView({ ...base, lastHour: null, known: [] } as unknown as FuelBranchesReply, 5), 'pending');
+  assert.equal(emptyTimeView({ ...base, lastHour: null, known: [] } as unknown as FuelBranchesReply, 0, 5), 'pending');
   // Hours past the prepared prefix are pending.
-  assert.equal(emptyTimeView({ ...base, known: [], pending: [{ firstHour: 41, lastHour: 60 }] } as unknown as FuelBranchesReply, 50), 'pending');
+  assert.equal(emptyTimeView({ ...base, known: [], pending: [{ firstHour: 41, lastHour: 60 }] } as unknown as FuelBranchesReply, 0, 50), 'pending');
   // Read through 20, then pending 21–50: hour 30 waits, never 'no fuel so far'.
   const pending = validateFuelBranches({ ...base, lastHour: 60, known: [[10, 20, '1']], pending: [{ firstHour: 21, lastHour: 50 }] });
-  assert.equal(emptyTimeView(pending, 30), 'pending');
-  assert.equal(emptyTimeView(pending, 15), 'none');
-  // A later hour the table was not read is unrecorded, whatever came before.
+  assert.equal(emptyTimeView(pending, 10, 30), 'pending');
+  assert.equal(emptyTimeView(pending, 10, 15), 'none');
+  // Hours the consumers weren't known, at or before the hour shown, leave 'no fuel so far' unproven.
   const gap = validateFuelBranches({ ...base, lastHour: 60, known: [[10, 20, '1'], [31, 60, '1']] });
-  assert.equal(emptyTimeView(gap, 25), 'unrecorded');
-  assert.equal(emptyTimeView(gap, 40), 'none');
+  assert.equal(emptyTimeView(gap, 21, 25), 'unrecorded');
+  assert.equal(emptyTimeView(gap, 10, 25), 'partial');
+  assert.equal(emptyTimeView(gap, 10, 40), 'partial');
+  assert.equal(emptyTimeView(gap, 31, 40), 'none');
 });
 
 test('group membership clips the lines, tooltips and stops to the member hours', () => {

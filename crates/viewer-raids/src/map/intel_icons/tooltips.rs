@@ -66,13 +66,13 @@ pub(super) fn shield(
 pub(super) fn operative<'h, 'f>(
     hour: &Hour<'h, 'f>,
     row: &OperativeMissionRow,
-    character: Option<&CharacterOperativeRow>,
+    character: Result<Option<&CharacterOperativeRow>, String>,
     shared: &Shared<'h, 'f>,
 ) -> Tooltip {
     let mut text = Tooltip::default();
     let loc = hour.localisation;
     let header = (|| -> Result<String, String> {
-        let character = character.ok_or("the operative has no linked character")?;
+        let character = character?.ok_or("the operative has no linked character")?;
         let name = character
             .name
             .require("CharacterOperatives.name")?

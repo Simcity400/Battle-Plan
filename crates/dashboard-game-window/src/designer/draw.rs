@@ -395,56 +395,61 @@ pub fn draw(
         }
     }
     slots.push(counted("priority", priorities, None));
-    // Capability icons show only beside a real regiment.
+    // Capability icons show only beside a real regiment; an unread layout cannot tell.
     let mut paradrop = Counted::default();
     let paradrop_icon = find(&format!("{header}/can_paradrop_icon"), &mut controls);
     let special_icon = find(&format!("{header}/special_forces_icon"), &mut controls);
-    match (paradrop_icon, designer.regiments, &designer.paradrop) {
-        (Some(element), true, Ok(every)) => {
+    match (paradrop_icon, &designer.regiments, &designer.paradrop) {
+        (Some(element), Ok(true), Ok(every)) => {
             apply(instance.show(&root, element), &mut controls);
             apply(
                 instance.set_frame(&root, element, 1 + i32::from(*every)),
                 &mut controls,
             );
         }
-        (Some(element), true, Err(why)) => {
+        (Some(element), Ok(true), Err(why)) | (Some(element), Err(why), _) => {
             paradrop.note(why.clone());
             apply(instance.hide(&root, element), &mut controls);
         }
-        (Some(element), false, _) => apply(instance.hide(&root, element), &mut controls),
+        (Some(element), Ok(false), _) => apply(instance.hide(&root, element), &mut controls),
         (None, ..) => {}
     }
     slots.push(counted("paradrop", paradrop, None));
     if let Some(element) = special_icon {
         apply(instance.hide(&root, element), &mut controls);
     }
-    slots.push(if designer.regiments {
-        slot(
+    slots.push(match &designer.regiments {
+        Ok(true) => slot(
             "special forces",
             Slot::Unbound,
             Some("hidden: the country's effective special-forces count is not recorded".into()),
-        )
-    } else {
-        slot("special forces", Slot::Bound, None)
+        ),
+        Ok(false) => slot("special forces", Slot::Bound, None),
+        Err(why) => slot(
+            "special forces",
+            Slot::Refused,
+            Some(format!("hidden: whether the template holds a regiment is unknown: {why}")),
+        ),
     });
     // Equipment settings button and warning.
     let mut equipment = Counted::default();
     if let Some(element) = find(&format!("{header}/division_equipment_btn"), &mut controls) {
-        match designer.equipment_button {
-            Ok(sprite) => {
+        match (&designer.equipment_button, &designer.regiments) {
+            (Ok(sprite), Ok(regiments)) => {
                 apply(
-                    instance.set_sprite(&root, element, sprite, setter(element)),
+                    instance.set_sprite(&root, element, *sprite, setter(element)),
                     &mut controls,
                 );
                 // The game enables it only while the regiment grid holds a real definition.
                 match instance.control(&root, element) {
-                    Ok(control) => control.enabled = Some(designer.regiments),
+                    Ok(control) => control.enabled = Some(*regiments),
                     Err(why) => controls.note(why),
                 }
             }
-            Err(ref why) => {
+            // Its sprite tells whether the template restricts equipment, and its enabled state
+            // whether the template holds a regiment.
+            (Err(why), _) | (_, Err(why)) => {
                 equipment.note(why.clone());
-                // Its sprite tells whether the template restricts equipment.
                 apply(instance.hide(&root, element), &mut controls);
             }
         }

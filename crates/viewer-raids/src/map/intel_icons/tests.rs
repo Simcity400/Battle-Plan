@@ -489,6 +489,85 @@ fn a_shield_needs_its_country_to_control_its_capital_state() {
     assert!(built(&frame).states.is_empty());
 }
 
+/// The operative's own sprite stands only where a complete character table
+/// proves it has no linked character.
+#[test]
+fn an_unavailable_character_table_withholds_the_operative_portrait() {
+    let raids = test_support::assets();
+    let mut frame = test_support::positive_frame();
+    put::<tables::Politics>(
+        &mut frame,
+        vec![PoliticsRow {
+            country: 10,
+            capital: 10,
+            ..Default::default()
+        }],
+    );
+    put::<tables::States>(
+        &mut frame,
+        vec![StateRow {
+            id: 10,
+            owner: 10,
+            controller: 10,
+            ..Default::default()
+        }],
+    );
+    // Counterintelligence stands in its target's capital state.
+    put::<tables::OperativeMissions>(
+        &mut frame,
+        vec![OperativeMissionRow {
+            roster_country: 10,
+            id: 9,
+            owner_country: 10,
+            assignment: 3,
+            variant: Some(3),
+            target_country: Some(10),
+            portrait: b"GFX_synthetic_own_portrait".to_vec(),
+            ..Default::default()
+        }],
+    );
+    let assets = IntelAssets::test(defines(), Vec::new(), Vec::new(), 0);
+    let portrait = |frame: &replay_frame::frame::DecodedFrame| {
+        let icons = icons(
+            &assets,
+            &raids,
+            frame,
+            2,
+            &installed_content_localisation::localisation::Localisation::default(),
+            "english",
+        );
+        icons
+            .states
+            .iter()
+            .flat_map(|state| &state.entries)
+            .find(|entry| entry.kind == EntryKind::Operative)
+            .expect("the operative is drawn")
+            .writes
+            .iter()
+            .find(|write| {
+                matches!(
+                    write,
+                    Write::Portrait("portrait_icn", _) | Write::Withheld("portrait_icn", _)
+                )
+            })
+            .cloned()
+            .unwrap()
+    };
+    *frame.tables[replay_data::rows::TableId::CharacterOperatives.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "synthetic character refusal".into(),
+        };
+    assert!(matches!(
+        portrait(&frame),
+        Write::Withheld("portrait_icn", _)
+    ));
+    put::<tables::CharacterOperatives>(&mut frame, Vec::new());
+    assert_eq!(
+        portrait(&frame),
+        Write::Portrait("portrait_icn", b"GFX_synthetic_own_portrait".to_vec())
+    );
+}
+
 const GUI: &[u8] = br#"guiTypes = {
     containerWindowType = { name = intel_map_mode_map_icon size = { width = 300 height = 64 }
         OverlappingElementsBoxType = { name = entries position = { x = 0 y = 14 }

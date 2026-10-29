@@ -26,6 +26,16 @@ test('control follows the recorded outcome and a refused control is hatched whil
   assert.equal(baltic.friendly, 100000n);
 });
 
+test('a read day with no values for a region is unknown, not an empty sea', () => {
+  // Every day of region 7 was refused, so it has no series at all; the days are still read.
+  const regions = [...reply.regions, { id: '7', name: 'Irish Sea' }];
+  const rows = supremacyRows(reply, regions, keyedDays(reply.window, [0, 47], 24), colours, labels);
+  assert.deepEqual(rows[2].cells.map(cell => cell.unknown), [true, true]);
+  // An unread day stays the recorded gap.
+  const unread = supremacyRows(reply, regions, [{ firstHour: 48, lastHour: 71, at: 71, readHour: null }], colours, labels);
+  assert.equal(unread[2].cells[0].unknown, undefined);
+});
+
 test('the share uses only its own numerator and denominator', () => {
   const day = regionDay(regionSeries(reply.window).get('5'), 10);
   // The share is the recorded native quotient, never recomputed from its parts.

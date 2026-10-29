@@ -936,23 +936,47 @@ pub fn query(
                 let Some(&actor) = tags.get(&tag) else {
                     continue;
                 };
-                let ranked = ranks.summary_with_tail(
-                    actor * 2 + 1,
-                    bounds,
-                    (from, to, width),
-                    0,
-                    rank_tail.get(&tag).map_or(&[][..], Vec::as_slice),
-                    None,
-                )?;
-                if let Some(top) = params.family.top
-                    && !ranked
-                        .buckets
-                        .iter()
-                        .flatten()
-                        .any(|bucket| bucket.min_value <= top as f64)
-                {
-                    continue;
-                }
+                // A ranked line holds only the hours its country ranks within the top, of
+                // those asked for: it ends where the country leaves the selection.
+                let ranked = match params.family.top {
+                    Some(top) => {
+                        let ranked = ranks.top_spans(
+                            actor * 2 + 1,
+                            bounds,
+                            (from, to, width),
+                            top as usize,
+                            rank_tail.get(&tag).map_or(&[][..], Vec::as_slice),
+                        )?;
+                        let ranked = match holders.get(&tag) {
+                            Some(asked) => {
+                                let mut pieces = Vec::new();
+                                crate::ranking::for_each_piece(
+                                    &ranked,
+                                    asked,
+                                    |span| (span.first_hour, span.last_hour),
+                                    cancelled,
+                                    |_, first_hour, last_hour| {
+                                        pieces.push(HourSpan {
+                                            first_hour,
+                                            last_hour,
+                                        });
+                                        Ok(())
+                                    },
+                                )?;
+                                pieces
+                            }
+                            None => ranked,
+                        };
+                        if ranked.is_empty() {
+                            continue;
+                        }
+                        Some(ranked)
+                    }
+                    None => None,
+                };
+                let within = ranked
+                    .as_deref()
+                    .or_else(|| holders.get(&tag).map(Vec::as_slice));
                 let mut summary = values.summary_with_tail(
                     actor,
                     bounds,
@@ -962,44 +986,12 @@ pub fn query(
                         .0
                         .get(&(tag.clone(), field.to_owned()))
                         .map_or(&[][..], Vec::as_slice),
-                    holders.get(&tag).map(Vec::as_slice),
+                    within,
                 )?;
-                if let Some(top) = params.family.top {
-                    let membership = ranked;
-                    for (bucket, rank) in summary.buckets.iter_mut().zip(membership.buckets) {
-                        if rank.is_none_or(|rank| rank.min_value > top as f64) {
-                            *bucket = None;
-                        }
-                    }
-                    // Exact windows get their dated membership from the state reader.
-                    if let Some(exact) = &membership.runs {
-                        let spans: Vec<_> = exact
-                            .iter()
-                            .filter(|run| run.value <= top as f64)
-                            .map(|run| HourSpan {
-                                first_hour: run.first_hour,
-                                last_hour: run.last_hour,
-                            })
-                            .collect();
-                        summary = values.summary_with_tail(
-                            actor,
-                            bounds,
-                            (from, to, width),
-                            0,
-                            sampled
-                                .0
-                                .get(&(tag.clone(), field.to_owned()))
-                                .map_or(&[][..], Vec::as_slice),
-                            Some(&spans),
-                        )?;
-                    } else {
-                        summary.runs = None;
-                    }
-                }
                 crate::prepared::query::progressive::clip_approximate(
                     &mut summary,
                     &sampled.1,
-                    holders.get(&tag).map(Vec::as_slice),
+                    within,
                 );
                 series::summary_budget(from, to, width, lines.len() + 1)?;
                 let end_runs = summary

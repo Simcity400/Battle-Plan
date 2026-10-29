@@ -15,7 +15,10 @@
 //! layout; [`Localisation::localise`] and [`Localisation::localise_with`]
 //! apply the game's argument substitution and formatting behavior.
 
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 use crate::{ResolvedLayers, content::normalize_path};
 
@@ -129,18 +132,16 @@ impl Localisation {
         let mut output = self.output(key, arguments, collect_fallbacks);
         let mut notes = output.fallbacks.take().unwrap_or_default();
         if collect_fallbacks && !output.cuts.is_empty() {
-            notes.push(format!(
+            notes.insert(format!(
                 "localisation {} was cut at the game's output buffer limit",
                 String::from_utf8_lossy(key)
             ));
         }
-        notes.sort();
-        notes.dedup();
         let text = output.finish().map_err(|cause| Unlocalised {
             key: String::from_utf8_lossy(key).into_owned(),
             cause,
         });
-        (text, notes)
+        (text, notes.into_iter().collect())
     }
 
     /// Localise with `$NAME$` arguments as output bytes. Keys end at their
@@ -216,7 +217,7 @@ impl Localisation {
         collect_fallbacks: bool,
     ) -> Output {
         let mut out = Output {
-            fallbacks: collect_fallbacks.then(Vec::new),
+            fallbacks: collect_fallbacks.then(BTreeSet::new),
             ..Output::default()
         };
         self.substitute(key, arguments, 0, &mut out, &[]);
@@ -233,6 +234,9 @@ impl Localisation {
     /// - an unmatched `$` copies the remaining text;
     /// - every copy stops at the buffer's end, and a full buffer prevents any
     ///   level from writing more.
+    ///
+    /// A key that wrote nothing at a depth is not walked there again: with
+    /// room left, the same walk writes, demands and notes nothing new.
     fn substitute(
         &self,
         key: &[u8],
@@ -243,19 +247,42 @@ impl Localisation {
     ) {
         if depth >= SUBSTITUTION_DEPTH {
             if let Some(fallbacks) = &mut out.fallbacks {
-                fallbacks.push(format!(
+                fallbacks.insert(format!(
                     "localisation {} reached the game's substitution depth limit; text was omitted",
                     String::from_utf8_lossy(key)
                 ));
             }
             return;
         }
+        if out
+            .silent
+            .get(key)
+            .is_some_and(|&depths| depths & (1 << depth) != 0)
+        {
+            return;
+        }
+        let written = out.bytes.len();
+        self.expand(key, arguments, depth, out, required_arguments);
+        if out.bytes.len() == written && out.required.is_none() {
+            *out.silent.entry(key.to_vec()).or_default() |= 1 << depth;
+        }
+    }
+
+    /// [`Self::substitute`] of a key below the depth limit.
+    fn expand(
+        &self,
+        key: &[u8],
+        arguments: &[(&str, Argument<'_>)],
+        depth: u32,
+        out: &mut Output,
+        required_arguments: &[&str],
+    ) {
         let Some(text) = std::str::from_utf8(key)
             .ok()
             .and_then(|key| self.entries.get(key))
         else {
             if let Some(fallbacks) = &mut out.fallbacks {
-                fallbacks.push(format!(
+                fallbacks.insert(format!(
                     "localisation {} is missing; {}",
                     String::from_utf8_lossy(key),
                     if depth == 0 {
@@ -383,7 +410,9 @@ struct Output {
     required: Option<usize>,
     /// Other native callers share the formatter with a smaller scratch buffer.
     capacity: Option<usize>,
-    fallbacks: Option<Vec<String>>,
+    fallbacks: Option<BTreeSet<String>>,
+    /// Keys whose walk wrote nothing and demanded no argument, a bit per depth.
+    silent: BTreeMap<Vec<u8>, u32>,
     /// Offsets at which a copy or a formatted value was cut short.
     cuts: Vec<usize>,
     /// A demanded argument whose native result depends on transient state.
@@ -634,7 +663,7 @@ fn formatted(value: Argument<'_>, format: &[u8], out: &mut Output) {
                     precision: read.precision,
                 };
                 if let Some(fallbacks) = &mut out.fallbacks {
-                    fallbacks.push(format!(
+                    fallbacks.insert(format!(
                         "Float32 precision {} selects an uninitialized native format; the operand is refused",
                         read.precision
                     ));
@@ -1422,6 +1451,62 @@ mod tests {
         // A missing top-level key is copied, cut at the buffer's end.
         let key = vec![b'k'; 0x2000];
         assert_eq!(loc.localise(&key).map(|text| text.len()), Ok(0x1800));
+    }
+
+    /// A key naming itself twice reaches 2^32 depth-limit leaves that write
+    /// nothing, so the buffer never stops the walk; each such reference is
+    /// walked once per depth, with the same text and notes.
+    #[test]
+    fn branching_references_that_write_nothing_are_walked_once_per_depth() {
+        let loc = loc(&[
+            ("TWICE", "$TWICE$$TWICE$"),
+            ("WIDE", "$WIDE$$WIDE$$WIDE$$WIDE$"),
+            ("GAPS", "$GAPS$$MISSING$$GAPS$"),
+            ("AROUND", "<$TWICE$|$WIDE$|$ONE$>"),
+            ("ONE", "1"),
+            ("EVERY_DEPTH", "$TWICE$m$EVERY_DEPTH$"),
+            ("FILL", "$TWICE$x$FILL$$FILL$"),
+            ("LATE", "$TWICE$$TARGET$"),
+        ]);
+        for key in ["TWICE", "WIDE", "GAPS"] {
+            assert_eq!(loc.localise(key.as_bytes()).as_deref(), Ok(""), "{key}");
+        }
+        let (text, notes) = loc.localise_with_fallbacks(b"AROUND", &[]);
+        assert_eq!(text.as_deref(), Ok("<||1>"));
+        assert_eq!(
+            notes,
+            [
+                "localisation TWICE reached the game's substitution depth limit; text was omitted",
+                "localisation WIDE reached the game's substitution depth limit; text was omitted",
+            ]
+        );
+        assert_eq!(
+            loc.fallbacks(b"GAPS", &[]),
+            [
+                "localisation GAPS reached the game's substitution depth limit; text was omitted",
+                "localisation MISSING is missing; the reference is omitted",
+                "localisation MISSING reached the game's substitution depth limit; text was omitted",
+            ]
+        );
+        // Text beside silent references is written at every depth, up to the
+        // buffer's end.
+        assert_eq!(loc.localise(b"EVERY_DEPTH"), Ok("m".repeat(32)));
+        assert_eq!(loc.localise(b"FILL"), Ok("x".repeat(SUBSTITUTION_BYTES)));
+        // An argument behind silent references is still reached.
+        let target = [("TARGET", Argument::Text("t"))];
+        assert_eq!(loc.localise_with(b"LATE", &target).as_deref(), Ok("t"));
+        assert!(loc.requires_arguments(b"LATE", &["TARGET"]));
+        assert_eq!(loc.localise_with_deferred(b"LATE", &[], &["TARGET"]), Err(0));
+        // A key that wrote nothing deep down still writes nearer the top.
+        let mut entries: Vec<(String, String)> = (1..30)
+            .map(|depth| (format!("DEEP{depth}"), format!("$DEEP{}$", depth + 1)))
+            .collect();
+        entries.push(("DEEP30".into(), "$NEAR$".into()));
+        entries.push(("NEAR".into(), "$TEXT$".into()));
+        entries.push(("TEXT".into(), "y".into()));
+        entries.push(("BOTH".into(), "$DEEP1$$NEAR$".into()));
+        let deep: Localisation = entries.into_iter().collect();
+        assert_eq!(deep.localise(b"BOTH").as_deref(), Ok("y"));
     }
 
     /// Single authored control characters store their control bytes; doubled

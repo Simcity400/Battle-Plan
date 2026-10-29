@@ -15,11 +15,13 @@ const facility = (value: unknown) => object(value) && (value.speedRaw === null |
     && typeof source.scientistReference === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(source.scientistReference) && BigInt(source.scientistReference) < 1n << 64n && raw(source.valueRaw));
 const option = (value: unknown) => object(value) && label(value.label) && effects(value.effects);
 const reward = (value: unknown) => object(value) && label(value.label) && nullable(value.description) && nullable(value.unavailable) && Array.isArray(value.options) && value.options.every(option);
+/** An unavailable roster is null: it is never read as an empty one. */
+const roster = (value: unknown): value is unknown[] | null => value === null || Array.isArray(value);
 export function validateProjectDetails(value: unknown): SpecialProjectDetails {
   const bad = () => { throw new Error('Invalid special-project details'); };
-  if (!object(value) || !integer(value.hour) || !Array.isArray(value.scientists) || !Array.isArray(value.programs) || !Array.isArray(value.projects) || !(value.breakthroughs === null || Array.isArray(value.breakthroughs))
+  if (!object(value) || !integer(value.hour) || !roster(value.scientists) || !roster(value.programs) || !roster(value.projects) || !roster(value.breakthroughs)
     || !Array.isArray(value.unavailable) || !value.unavailable.every(reason => typeof reason === 'string')) return bad();
-  for (const scientist of value.scientists) if (!object(scientist) || !uint(scientist.character) || !person(scientist.person)
+  for (const scientist of value.scientists ?? []) if (!object(scientist) || !uint(scientist.character) || !person(scientist.person)
     || !(scientist.active === null || byte(scientist.active)) || !(scientist.injuryDays === null || signed(scientist.injuryDays))
     || !(scientist.visible === null || typeof scientist.visible === 'boolean') || !(scientist.visibilityHour === null || integer(scientist.visibilityHour) && scientist.visibilityHour <= value.hour)
     || !object(scientist.stateRefusals) || !Object.values(scientist.stateRefusals).every(count => integer(count) && count > 0)
@@ -27,11 +29,11 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
     || !(scientist.skills === null || Array.isArray(scientist.skills) && scientist.skills.every(skill => object(skill) && label(skill.specialization) && signed(skill.level) && raw(skill.experienceRaw)))
     || !(scientist.traits === null || Array.isArray(scientist.traits) && scientist.traits.every(label))) return bad();
   for (const progress of value.breakthroughs ?? []) if (!object(progress) || !label(progress.specialization) || !signed(progress.points) || !integer(progress.readHour) || progress.readHour > value.hour) return bad();
-  for (const program of value.programs) if (!object(program) || !uint(program.id) || !uint(program.province) || !integer(program.readHour) || program.readHour > value.hour || !(program.facility === null || facility(program.facility))
+  for (const program of value.programs ?? []) if (!object(program) || !uint(program.id) || !uint(program.province) || !integer(program.readHour) || program.readHour > value.hour || !(program.facility === null || facility(program.facility))
     || !(program.assignments === null || Array.isArray(program.assignments) && program.assignments.every((assignment, ordinal) => object(assignment) && assignment.ordinal === ordinal
       && typeof assignment.reference === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(assignment.reference) && BigInt(assignment.reference) < 1n << 64n
       && person(assignment.person) && signed(assignment.target) && signed(assignment.current) && byte(assignment.timed)))) return bad();
-  for (const project of value.projects) if (!object(project) || !uint(project.owner) || !uint(project.id) || !label(project.label) || !integer(project.readHour) || project.readHour > value.hour
+  for (const project of value.projects ?? []) if (!object(project) || !uint(project.owner) || !uint(project.id) || !label(project.label) || !integer(project.readHour) || project.readHour > value.hour
     || typeof project.pendingKnown !== 'boolean' || !(project.pending === null || project.pendingKnown && reward(project.pending)) || !(project.seed === null || uint(project.seed))
     || !(project.variables === null || Array.isArray(project.variables) && project.variables.every(variable => object(variable) && typeof variable.name === 'string' && raw(variable.valueRaw)))
     || !(project.output === null || effects(project.output))

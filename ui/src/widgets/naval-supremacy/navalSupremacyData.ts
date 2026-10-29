@@ -44,7 +44,8 @@ export function regionDay(names: ReadonlyMap<string, readonly KeyedRun[]> | unde
     friendly: value('friendly'), enemy: value('enemy'), share: value('share'), shareNum: value('shareNum'), shareDen: value('shareDen'), own: value('own') };
 }
 
-/** Heat rows: each region's daily control outcome as one colour; refused control is hatched. */
+/** Heat rows: each region's daily control outcome as one colour; a read day without an admitted
+ * control, whether or not the region has values on other days, is hatched. */
 export function supremacyRows(reply: SupremacyReply, regions: readonly Choice[], days: readonly KeyedDay[],
   colours: Record<Control, string>, labels: Record<Control, string>): HeatRow[] {
   const series = regionSeries(reply.window);
@@ -58,7 +59,6 @@ export function supremacyRows(reply: SupremacyReply, regions: readonly Choice[],
     const names = series.get(region.id);
     return { id: region.id, label: region.name, cells: days.map(day => {
       if (day.readHour === null) return blank;
-      if (!names) return blank;
       const control = regionDay(names, day.at).control;
       return control === null ? unknown : cells[control];
     }) };

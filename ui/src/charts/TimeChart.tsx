@@ -327,12 +327,13 @@ export default function TimeChart(props: TimeChartProps) {
       // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
       // one request per interval, the newest view sent when it ends: not one per
       // animation frame. The last summary draws in place until the next arrives
-      // (`summaryFits`); a settled view always gets its own.
+      // (`summaryFits`); a settled view always gets its own. A view wholly past the
+      // playhead has no hour to ask about.
       const summaryRequest = { callback: p.onSummaryView, from: Math.floor(frame.x[0]),
         to: Math.floor(Math.min(frame.x[1], until ?? frame.x[1])), width: Math.ceil(frame.plotWidth) };
       const sameView = (view: SummaryView | null) => !!view && view.callback === summaryRequest.callback && view.from === summaryRequest.from
         && view.to === summaryRequest.to && view.width === summaryRequest.width;
-      if (!sameView(summaryLatest)) {
+      if (summaryRequest.to >= summaryRequest.from && !sameView(summaryLatest)) {
         summaryLatest = summaryRequest;
         if (sameView(summaryView)) { if (summaryTimer) clearTimeout(summaryTimer); summaryTimer = null; }
         else if (!summaryView || summaryView.callback !== summaryRequest.callback || summaryView.width !== summaryRequest.width
@@ -641,6 +642,13 @@ export default function TimeChart(props: TimeChartProps) {
       // The keyboard takes over from the pointer, stepping on from the hour shown.
       // The strip's bars in view are stops too, so the keys reach everything the pointer can.
       const { x, until } = shown.current;
+      // A view wholly past the playhead has no hour to step to, nor to ask about.
+      if (props.onNavigateHour && Math.min(x[1], until ?? x[1]) < x[0]) {
+        pendingNavigation.current = null;
+        keyedStopRef.current = null;
+        send({ type: 'key', hour: null });
+        return;
+      }
       if (props.onNavigateHour) {
         const since = tooltipStore.revision();
         pendingNavigation.current = { hover: hover.current, owner: props.pickOwner, tooltip: since };

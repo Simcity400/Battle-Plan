@@ -1323,6 +1323,60 @@ fn a_visual_mod_entity_keeps_its_recorded_counterpart() {
     assert!(!Arc::ptr_eq(&geometry(shown), &geometry(counterpart)));
 }
 
+/// A traced presentation stack's recorded counterpart reads the recording's mesh through the
+/// same trace and purpose, at the recorded layer's index.
+#[test]
+fn a_recorded_counterparts_mesh_read_reaches_the_presentation_trace() {
+    use installed_content_core::content::{ContentRead, ReadOutcome};
+    let (root, layers) = visual_stack(
+        "counterpart_trace",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/entities/plane.asset", PLANE_ASSET),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(5.)),
+        ],
+    );
+    let traced = |stack: &ResolvedLayers| {
+        let reads = Arc::new(std::sync::Mutex::new(Vec::<ContentRead>::new()));
+        let log = Arc::clone(&reads);
+        let stack = stack
+            .with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)))
+            .with_read_purpose("display/buildings");
+        (stack, reads)
+    };
+    let mesh = |reads: &[ContentRead], layer: usize| -> Vec<ReadOutcome> {
+        reads
+            .iter()
+            .filter(|read| read.path == b"gfx/models/plane.mesh" && read.layer == Some(layer))
+            .inspect(|read| assert_eq!(read.purpose, "display/buildings"))
+            .map(|read| read.outcome.clone())
+            .collect()
+    };
+    // The recording's mesh as its own stack reads it.
+    let (recorded, recorded_reads) = traced(&layers);
+    recorded.read_uncovered("gfx/models/plane.mesh").unwrap();
+    let recorded_mesh = mesh(&recorded_reads.lock().unwrap()[..], 0);
+    assert_eq!(recorded_mesh.len(), 1);
+    let (presentation, reads) = traced(layers.presentation());
+    let library = baked(&presentation, "plane");
+    let _ = std::fs::remove_dir_all(&root);
+    assert!(
+        library
+            .alternatives
+            .contains_key(&library.slot("plane").unwrap())
+    );
+    let reads = reads.lock().unwrap();
+    let counterpart = mesh(&reads[..], 0);
+    assert!(!counterpart.is_empty(), "{reads:?}");
+    assert!(
+        counterpart.iter().all(|read| *read == recorded_mesh[0]),
+        "{reads:?}"
+    );
+    let shown = mesh(&reads[..], 1);
+    assert!(!shown.is_empty() && !shown.contains(&recorded_mesh[0]));
+}
+
 /// A refused draw of a visual mod entity draws its recorded counterpart from the next frame,
 /// named, with the recording's own shaders, and is not recorded as a refusal; one without a
 /// counterpart is. Placements, hidden actors and play positions keyed by the entity's own slot

@@ -837,3 +837,188 @@ fn a_ledger_from_a_first_hour_lists_and_counts_only_from_then() {
     backwards.first_hour = Some(10);
     assert!(MarketLedger::validate(&backwards).is_ok());
 }
+
+#[test]
+fn occurrences_drained_without_country_identities_are_kept_without_their_parties() {
+    let mut state = Prepared::default();
+    for hour in 5..=6 {
+        let mut at = base(hour);
+        if hour == 5 {
+            unavailable(&mut at, TableId::CountryLinks);
+        }
+        set(&mut at, TableRows::MarketEvents(vec![event(u64::from(hour as u32), 21, hour)]));
+        state.step(&at);
+    }
+    let published = publish(&mut state);
+    let every = published.ledger(&[], None, 10);
+    assert_eq!(every.total.as_deref(), Some("2"));
+    let rows: Vec<_> = every
+        .rows
+        .iter()
+        .map(|row| (row.id.as_str(), row.seller.as_deref(), row.buyer.as_deref(), row.amount_raw.as_deref()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("6", Some("10"), Some("20"), Some("100000")), ("5", None, None, Some("100000"))]
+    );
+    assert_eq!(every.known, vec![EconomyRun(5, 6, "1".into())]);
+    assert!(every.warnings.iter().any(|line| line.contains("country identities unavailable")));
+    assert!(every.warnings.iter().any(|line| line.contains("a market occurrence's party has no identity")));
+    // The unidentified hour may hold a chosen country's occurrence: its absence is not known.
+    let chosen = published.ledger(&["SEL"], None, 10);
+    assert_eq!(chosen.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), vec!["6"]);
+    assert_eq!(chosen.known, vec![EconomyRun(6, 6, "1".into())]);
+}
+
+#[test]
+fn a_ledger_dates_and_matches_members_by_the_occurrence_hour_once_its_read_is_reached() {
+    let mut state = Prepared::default();
+    for hour in 5..=8 {
+        let mut at = base(hour);
+        // Both parties hold their tags from hour 5.
+        set(
+            &mut at,
+            TableRows::CountryMarket(
+                [1, 2].into_iter().map(|country| CountryMarketRow { country, ..Default::default() }).collect(),
+            ),
+        );
+        // Each occurrence is first supplied by the read after its hour.
+        let rows = if hour > 5 { vec![event(u64::from(hour as u32), 21, hour - 1)] } else { Vec::new() };
+        set(&mut at, TableRows::MarketEvents(rows));
+        state.step(&at);
+    }
+    let published = publish(&mut state);
+    let ask = |members: Option<Vec<LedgerMember>>, first_hour: Option<i32>, last_hour: i32| {
+        ledger(
+            &published.fixture.store,
+            &published.fixture.key,
+            &MarketLedgerParams {
+                branch_id: "1".into(),
+                tags: Vec::new(),
+                members,
+                kinds: Vec::new(),
+                first_hour,
+                last_hour,
+                before: None,
+                page_size: 10,
+            },
+            Some(100),
+            None,
+            Vec::new(),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let ids = |reply: &MarketLedgerReply| reply.rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let sel = |first_hour, last_hour| Some(vec![LedgerMember { tag: "SEL".into(), first_hour, last_hour }]);
+    // Occurrence 6 happened at hour 5, though read at 6.
+    let from_six = ask(None, Some(6), 100);
+    assert_eq!(ids(&from_six), vec!["8", "7"]);
+    assert_eq!(from_six.total.as_deref(), Some("2"));
+    let from_five = ask(None, Some(5), 100);
+    assert_eq!(ids(&from_five), vec!["8", "7", "6"]);
+    assert_eq!(from_five.total.as_deref(), Some("3"));
+    // Playback at hour 5 has not reached the read that supplied it.
+    let at_five = ask(None, None, 5);
+    assert!(at_five.rows.is_empty());
+    assert_eq!(at_five.total.as_deref(), Some("0"));
+    assert_eq!(ids(&ask(None, None, 6)), vec!["6"]);
+    // A member only at hour 5 took part in occurrence 6; one from hour 6 did not.
+    assert_eq!(ids(&ask(sel(5, 5), None, 100)), vec!["6"]);
+    assert_eq!(ids(&ask(sel(6, 7), None, 100)), vec!["8", "7"]);
+    assert!(ask(sel(5, 5), None, 5).rows.is_empty());
+}
+
+/// A party's tag at its occurrence's hour comes from the country tables, even
+/// when it had no market state then and the occurrence arrives later.
+#[test]
+fn a_party_without_market_state_at_its_occurrence_hour_still_matches_it() {
+    let mut state = Prepared::default();
+    // Hour 5 identifies the countries; none holds market state.
+    state.step(&base(5));
+    let mut at = base(6);
+    set(&mut at, TableRows::MarketEvents(vec![event(6, 21, 5)]));
+    state.step(&at);
+    let published = publish(&mut state);
+    let ask = |tags: Vec<String>, members: Option<Vec<LedgerMember>>| {
+        ledger(
+            &published.fixture.store,
+            &published.fixture.key,
+            &MarketLedgerParams {
+                branch_id: "1".into(),
+                tags,
+                members,
+                kinds: Vec::new(),
+                first_hour: None,
+                last_hour: 100,
+                before: None,
+                page_size: 10,
+            },
+            Some(100),
+            None,
+            Vec::new(),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .rows
+        .iter()
+        .map(|row| row.id.clone())
+        .collect::<Vec<_>>()
+    };
+    let member = vec![LedgerMember {
+        tag: "SEL".into(),
+        first_hour: 5,
+        last_hour: 5,
+    }];
+    assert_eq!(ask(vec!["SEL".into()], None), vec!["6"]);
+    assert_eq!(ask(Vec::new(), Some(member)), vec!["6"]);
+}
+
+/// A tag holds only at hours whose identities were read: an occurrence from an
+/// unread hour between two tags matches neither and names neither.
+#[test]
+fn an_occurrence_at_an_hour_without_identities_matches_no_tag() {
+    let mut state = Prepared::default();
+    let mut at = frame(4);
+    countries(&mut at, &[(1, 10, "OLD"), (2, 20, "BUY")]);
+    state.step(&at);
+    let mut at = frame(5);
+    unavailable(&mut at, TableId::Countries);
+    state.step(&at);
+    let mut at = frame(6);
+    countries(&mut at, &[(1, 10, "NEW"), (2, 20, "BUY")]);
+    set(&mut at, TableRows::MarketEvents(vec![event(6, 21, 5)]));
+    state.step(&at);
+    let published = publish(&mut state);
+    let ask = |tags: &[&str]| {
+        ledger(
+            &published.fixture.store,
+            &published.fixture.key,
+            &MarketLedgerParams {
+                branch_id: "1".into(),
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+                members: None,
+                kinds: Vec::new(),
+                first_hour: None,
+                last_hour: 100,
+                before: None,
+                page_size: 10,
+            },
+            Some(100),
+            None,
+            Vec::new(),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    assert!(ask(&["OLD"]).rows.is_empty());
+    assert!(ask(&["NEW"]).rows.is_empty());
+    let all = ask(&[]);
+    assert_eq!(all.rows.len(), 1);
+    assert!(all.identified.is_empty(), "{:?}", all.identified);
+    // Nor is either tag's absence proved at the read that supplied it.
+    for tag in ["OLD", "NEW"] {
+        let known = ask(&[tag]).known;
+        assert!(!known.iter().any(|run| run.0 <= 6 && 6 <= run.1), "{tag}: {known:?}");
+    }
+}

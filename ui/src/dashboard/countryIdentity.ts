@@ -115,6 +115,16 @@ export class CountryIdentityIndex {
     return keys;
   }
 
+  /** Each native holder proved on these memberships, with the first hour it was. */
+  firstHoursDuring(memberships: readonly MembershipRun[]): ReadonlyMap<string, number> {
+    const first = new Map<string, number>();
+    for (const member of memberships) for (const run of this.runsDuring(member)) {
+      const hour = Math.max(member.firstHour, run.firstHour), known = first.get(run.key);
+      if (known === undefined || hour < known) first.set(run.key, hour);
+    }
+    return first;
+  }
+
   membershipRuns(memberships: readonly MembershipRun[], firstHour = -0x8000_0000, lastHour = 0x7fff_ffff): MembershipRun[] {
     const runs: MembershipRun[] = [];
     for (const member of memberships) for (const run of this.runsDuring(member)) {

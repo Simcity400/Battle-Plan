@@ -38,7 +38,7 @@ enum Change {
 }
 
 /// The prepared schema these wire types mirror: dashboard-base's `prepared::coverage::SCHEMA`.
-const SCHEMA: u32 = 52;
+const SCHEMA: u32 = 54;
 
 // Wire types mirror restoration without importing dashboard dependencies.
 #[derive(Deserialize, Serialize)]

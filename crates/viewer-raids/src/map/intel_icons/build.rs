@@ -562,14 +562,14 @@ impl<'h, 'f> Hour<'h, 'f> {
             Write::Shown("frame_select_hl_icn", false),
             Write::Shown("frame_warn_hl_icn", false),
         ];
-        let character = shared.tables.characters.clone().ok().and_then(|rows| {
+        let character = shared.tables.characters.clone().map(|rows| {
             rows.iter().find(|character| {
                 character.resolved
                     && character.category == OPERATIVE_CATEGORY
                     && character.reference == row.id
             })
         });
-        match self.portrait(row, character, shared) {
+        match self.portrait(row, character.clone(), shared) {
             Ok(sprite) => writes.push(Write::Portrait("portrait_icn", sprite)),
             Err(why) => writes.push(Write::Withheld("portrait_icn", why)),
         }
@@ -624,10 +624,10 @@ impl<'h, 'f> Hour<'h, 'f> {
     fn portrait(
         &self,
         row: &OperativeMissionRow,
-        character: Option<&CharacterOperativeRow>,
+        character: Result<Option<&CharacterOperativeRow>, String>,
         shared: &Shared<'h, 'f>,
     ) -> Result<Vec<u8>, String> {
-        if let Some(character) = character {
+        if let Some(character) = character? {
             let holders = shared.tables.portraits.clone()?;
             if let Some(holder) = holders
                 .iter()

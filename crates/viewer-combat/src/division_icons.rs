@@ -26,27 +26,31 @@ const SCALE: i64 = 100_000;
 const RECORDED_KINDS: [u32; 8] = [2, 7, 10, 13, 27, 8, 17, 16];
 
 /// The native fixed-point division guard: an extreme numerator gives
-/// 0xFFFFFFFF instead of dividing.
-fn guarded(numerator: i64, denominator: i64) -> i64 {
+/// 0xFFFFFFFF instead of dividing. `None` is the one quotient the native
+/// division traps on.
+fn guarded(numerator: i64, denominator: i64) -> Option<i64> {
     if (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd {
-        numerator.wrapping_mul(SCALE) / denominator
+        numerator.wrapping_mul(SCALE).checked_div(denominator)
     } else {
-        0xffff_ffff
+        Some(0xffff_ffff)
     }
 }
 
 /// the piercing bucket of `piercing` against `armour`, the first
-/// threshold not above the ratio (zero armour is ratio 100), else bucket 0.
-pub(super) fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> usize {
+/// threshold not above the ratio (zero armour is ratio 100), else bucket 0;
+/// `None` where the native division traps.
+pub(super) fn pierce_bucket(thresholds: &[i64], armour: i64, piercing: i64) -> Option<usize> {
     let ratio = if armour == 0 {
         10_000_000
     } else {
-        guarded(piercing, armour)
+        guarded(piercing, armour)?
     };
-    thresholds
-        .iter()
-        .position(|threshold| *threshold <= ratio)
-        .unwrap_or(0)
+    Some(
+        thresholds
+            .iter()
+            .position(|threshold| *threshold <= ratio)
+            .unwrap_or(0),
+    )
 }
 
 /// Convert a single-precision define to fixed5, rounding half away from zero.
@@ -54,12 +58,13 @@ fn fixed_limit(define: f32) -> i64 {
     ((if define >= 0.0 { 1.0_f32 } else { 0.0 } + define * 100_000.0_f32) - 0.5_f32) as i64
 }
 
-/// Frames 11/10 and 9/8 from the whole opposing committed array.
+/// Frames 11/10 and 9/8 from the whole opposing committed array; `None`
+/// where the native division traps.
 fn armour_frames(
     content: &LandDefines,
     unit: &LandCombatDivisionRow,
     opponents: &[&LandCombatDivisionRow],
-) -> [Option<u32>; 2] {
+) -> Option<[Option<u32>; 2]> {
     let thresholds = &content.piercing_thresholds;
     let defines = content.armour_icons;
     let mut ours = vec![0_i32; thresholds.len()];
@@ -70,8 +75,8 @@ fn armour_frames(
             armoured += 1;
         }
         if !thresholds.is_empty() {
-            ours[pierce_bucket(thresholds, opponent.armour, unit.piercing)] += 1;
-            theirs[pierce_bucket(thresholds, unit.armour, opponent.piercing)] += 1;
+            ours[pierce_bucket(thresholds, opponent.armour, unit.piercing)?] += 1;
+            theirs[pierce_bucket(thresholds, unit.armour, opponent.piercing)?] += 1;
         }
     }
     let piercing = (armoured > 0)
@@ -106,7 +111,7 @@ fn armour_frames(
     let ratio = if full == 0 {
         SCALE
     } else {
-        guarded(rest, full)
+        guarded(rest, full)?
     };
     let armour = if ratio >= fixed_limit(defines[2]) {
         Some(9)
@@ -115,7 +120,7 @@ fn armour_frames(
     } else {
         None
     };
-    [piercing, armour]
+    Some([piercing, armour])
 }
 
 /// fuel over `capacity * define`, clamped to [0, 1]; full when the
@@ -125,7 +130,8 @@ pub(super) fn fuel_ratio([fuel, capacity, define]: [i64; 3]) -> i64 {
     if capacity <= 0 {
         return SCALE;
     }
-    guarded(fuel, capacity).clamp(0, SCALE)
+    // A positive divisor never traps.
+    guarded(fuel, capacity).map_or(SCALE, |ratio| ratio.clamp(0, SCALE))
 }
 
 /// Why a committed entry's list ends before its last frames: the
@@ -138,6 +144,9 @@ pub(super) enum Omitted {
     /// An opposing committed `LandCombatDivisions` row is missing: the armour
     /// frames read the whole opposing array.
     Opponent,
+    /// The native armour division traps on the recorded armour and piercing
+    /// (the most negative quotient divided by -1).
+    ArmourTrap,
     /// The content's land defines are unavailable: the armour, fuel and
     /// anti-air frames read them.
     Defines,
@@ -166,6 +175,9 @@ impl Omitted {
             ),
             Self::Opponent => format!(
                 "an opposing committed LandCombatDivisions row is missing, so every icon from armour on is omitted: {FROM_ARMOUR}"
+            ),
+            Self::ArmourTrap => format!(
+                "the game's armour division traps on the recorded armour and piercing, so every icon from armour on is omitted: {FROM_ARMOUR}"
             ),
             Self::Defines => format!(
                 "the content's land combat defines are unavailable, so every derived icon after the recorded kinds is omitted: {FROM_ARMOUR}"
@@ -216,11 +228,10 @@ pub(super) fn frames(
     let Some(content) = content else {
         return (out, Some(Omitted::Defines));
     };
-    out.extend(
-        armour_frames(content, unit, opponents)
-            .into_iter()
-            .flatten(),
-    );
+    let Some(armour) = armour_frames(content, unit, opponents) else {
+        return (out, Some(Omitted::ArmourTrap));
+    };
+    out.extend(armour.into_iter().flatten());
     let own = &detail.sides[side];
     if unit.commander != 0 && unit.commander != own.commander {
         out.push(12);
@@ -321,16 +332,36 @@ mod tests {
 
     #[test]
     fn piercing_buckets_take_the_first_threshold_not_above_the_ratio() {
-        assert_eq!(pierce_bucket(&THRESHOLDS, 0, 0), 0);
-        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 1_000_000), 0);
-        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 800_000), 1);
-        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 500_000), 2);
-        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 499_999), 3);
+        assert_eq!(pierce_bucket(&THRESHOLDS, 0, 0), Some(0));
+        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 1_000_000), Some(0));
+        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 800_000), Some(1));
+        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 500_000), Some(2));
+        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, 499_999), Some(3));
         // A negative ratio is below every threshold and falls back to bucket 0.
-        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, -20_000_000), 0);
-        assert_eq!(pierce_bucket(&[], 1, 1), 0);
+        assert_eq!(pierce_bucket(&THRESHOLDS, 1_000_000, -20_000_000), Some(0));
+        assert_eq!(pierce_bucket(&[], 1, 1), Some(0));
         assert_eq!(fixed_limit(0.6), 60_000);
         assert_eq!(fixed_limit(0.25), 25_000);
+    }
+
+    #[test]
+    fn a_trapping_armour_division_ends_the_list_by_name() {
+        // 2^58 in fixed5 wraps to i64::MIN, which the native division by -1 traps on.
+        assert_eq!(pierce_bucket(&THRESHOLDS, -1, 1 << 58), None);
+        let detail = detail();
+        let armoured = unit(-1, 0);
+        let piercer = unit(0, 1 << 58);
+        assert_eq!(
+            icons(
+                &[2],
+                Some(&detail),
+                0,
+                &armoured,
+                Some(&[&piercer]),
+                [Some(false); 2]
+            ),
+            (vec![0], Some(Omitted::ArmourTrap))
+        );
     }
 
     #[test]
@@ -341,42 +372,45 @@ mod tests {
         let enemy = unit(0, 481_327);
         assert_eq!(
             armour_frames(&content, &infantry, &[&enemy, &enemy]),
-            [None, None]
+            Some([None, None])
         );
         // Piercing 0.2 of two tanks' armour: nothing pierced to half.
         let tank = unit(2_000_000, 400_000);
         let piercer = unit(0, 400_000);
         assert_eq!(
             armour_frames(&content, &piercer, &[&tank, &tank]),
-            [None, None]
+            Some([None, None])
         );
         // 0.6 of both tanks, and an unarmoured opponent that counts as pierced
         // without counting as armoured: 3 / 2 >= 0.6.
         let piercer = unit(0, 1_200_000);
         assert_eq!(
-            armour_frames(&content, &piercer, &[&tank, &tank, &enemy])[0],
+            armour_frames(&content, &piercer, &[&tank, &tank, &enemy]).unwrap()[0],
             Some(11)
         );
         let partial = unit(0, 1_000_000);
         let heavy = unit(10_000_000, 0);
         // One of two armoured opponents pierced to at least half: 0.5 >= 0.25.
         assert_eq!(
-            armour_frames(&content, &partial, &[&tank, &heavy])[0],
+            armour_frames(&content, &partial, &[&tank, &heavy]).unwrap()[0],
             Some(10)
         );
         // Our armour against piercing under half: no fully pierced weight, so
         // the ratio defaults to one and the gold shield shows.
         let armoured = unit(5_000_000, 0);
-        assert_eq!(armour_frames(&content, &armoured, &[&enemy])[1], Some(9));
+        assert_eq!(armour_frames(&content, &armoured, &[&enemy]).unwrap()[1], Some(9));
         // The 0.75 bucket: (1 - 0.75) / 0.75 = 0.333, the grey shield.
         let medium = unit(1_000_000, 0);
         let pierce_three_quarters = unit(0, 800_000);
         assert_eq!(
-            armour_frames(&content, &medium, &[&pierce_three_quarters])[1],
+            armour_frames(&content, &medium, &[&pierce_three_quarters]).unwrap()[1],
             Some(8)
         );
         // No opposing committed units: the ratio defaults to one.
-        assert_eq!(armour_frames(&content, &infantry, &[]), [None, Some(9)]);
+        assert_eq!(
+            armour_frames(&content, &infantry, &[]),
+            Some([None, Some(9)])
+        );
     }
 
     #[test]

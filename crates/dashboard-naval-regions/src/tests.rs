@@ -438,6 +438,39 @@ fn country_tag_reuse_is_not_merged() {
 }
 
 #[test]
+fn own_current_is_unknown_while_an_unlinked_current_could_be_the_viewers() {
+    let project = |raws: &[(u32, i64)]| {
+        let mut notes = Refusals::default();
+        let out = naval_supremacy::project(
+            &supremacy(25, Some(24), raws),
+            "GER",
+            &BTreeSet::from([73]),
+            &labels(0, 60_000),
+            &mut notes,
+        );
+        (out, notes.counts("fields"))
+    };
+    // Reference 4242 has no country link, so its current could be GER's.
+    let (out, warnings) = project(&[(4242, 100_000)]);
+    assert!(!out.contains_key("73|own"), "{out:?}");
+    assert!(
+        warnings.iter().any(|why| why.contains("own current is unknown")),
+        "{warnings:?}"
+    );
+    // A zero current is no power whoever holds it.
+    let (out, warnings) = project(&[(4242, 0)]);
+    assert_eq!(out["73|own"], 0);
+    assert!(
+        !warnings.iter().any(|why| why.contains("own current is unknown")),
+        "{warnings:?}"
+    );
+    // The viewer's own current is read whatever else cannot be named.
+    assert_eq!(project(&[(11, 5), (4242, 100_000)]).0["73|own"], 5);
+    // Every nonzero current resolved to another country: GER has none.
+    assert_eq!(project(&[(21, 100_000)]).0["73|own"], 0);
+}
+
+#[test]
 fn query_daily_rule_prefix_and_zero_vs_unknown() {
     let frames = vec![
         supremacy(23, Some(0), &[(11, 0)]),

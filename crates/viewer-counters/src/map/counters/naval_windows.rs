@@ -1016,12 +1016,12 @@ pub(super) fn present(
                         .icon_gui_notes
                         .entry(format!("At-sea carrier wing grid: {why}"))
                         .or_default() += 1;
-                    vec![Vec::new(); layout.holders.len()]
+                    air_grid::Composed::empty(layout.holders.len())
                 })
             } else {
-                vec![Vec::new(); layout.holders.len()]
+                air_grid::Composed::empty(layout.holders.len())
             };
-        let parts = draw_parts::place(&plate.column.holder, place, &layout, &composed);
+        let parts = draw_parts::place(&plate.column.holder, place, &layout, &composed.parts);
         let drawn = gui_windows::draw_held(
             &plate.column.holder,
             parts,
@@ -1035,6 +1035,7 @@ pub(super) fn present(
         }
         match drawn {
             Ok(()) => {
+                composed.commit(report);
                 report.task_force_hovers.extend(naval_hovers::presented(
                     navy,
                     &layout,
@@ -3619,12 +3620,12 @@ fn draw_ports(
                         .icon_gui_notes
                         .entry(format!("Port carrier wing grid: {why}"))
                         .or_default() += 1;
-                    vec![Vec::new(); layout.holders.len()]
+                    air_grid::Composed::empty(layout.holders.len())
                 })
             } else {
-                vec![Vec::new(); layout.holders.len()]
+                air_grid::Composed::empty(layout.holders.len())
             };
-            let parts = draw_parts::place(&holder, place, &layout, &composed);
+            let parts = draw_parts::place(&holder, place, &layout, &composed.parts);
             let first = batch.quads.len();
             let drawn = gui_windows::draw_held(&holder, parts, origin, resources, batch, key)?;
             if !inputs.display.port_item(owner) {
@@ -3632,6 +3633,7 @@ fn draw_ports(
             }
             match drawn {
                 Ok(()) => {
+                    composed.commit(report);
                     report.naval_counters += 1;
                     if let Some((ours, members)) = selectable {
                         let mut bounds = [

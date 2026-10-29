@@ -149,6 +149,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
     : `${sourceKey}:${headerTag}:${headerSize}`;
   const headerKey = `${headerIdentity}:${headerContext?.branchId}:${headerContext?.hour}`;
+  // Whose flag the header shows: another branch is another country history.
+  const flagOwner = `${headerIdentity}:${headerContext?.branchId}`;
   // The top bar names its country at the playback day its flag shows; the shown name
   // stays until the new day's arrives, as the flag does.
   const wantedNameHour = live && choiceReads === undefined && !allowedTags && headerTag ? flagAt!.hour : null;
@@ -166,21 +168,31 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const datedHeaderName = !headerNameAt.length ? undefined
     : headerName?.identity === headerIdentity ? headerName.name ?? 'Country name unavailable' : headerTag;
   // A new playback day keeps the current flag on screen until its own flag arrives.
-  const headerImage = headerFlag.client === client && headerFlag.identity === headerIdentity ? headerFlag.image : undefined;
+  const headerImage = headerFlag.client === client && headerFlag.identity === flagOwner ? headerFlag.image : undefined;
   const flagError = [flagState.context === nameContext ? flagState.error : null, headerFlag.client === client && headerFlag.key === headerKey ? headerFlag.error : null].filter(Boolean).join('\n') || null;
+  // As the name does, a flag read in flight finishes before the newest playback day is
+  // asked, so a slow reply still shows; a change of country, source, branch or size cancels it.
+  const [askedFlag, setAskedFlag] = useState<{ identity: string; client: DashboardClient; context: NonNullable<typeof headerContext> } | null>(null);
+  const flagAsk = askedFlag?.identity === flagOwner && askedFlag.client === client ? askedFlag.context : headerContext;
+  const flagAskKey = `${headerIdentity}:${flagAsk?.branchId}:${flagAsk?.hour}`;
   useEffect(() => {
-    if (!headerContext || !headerTag) return;
+    if (!flagAsk || !headerTag) return;
     const controller = new AbortController();
-    const request = flagsRequest(headerContext, headerSize, [headerTag]);
+    const request = flagsRequest(flagAsk, headerSize, [headerTag]);
     // Per-day requests bypass the shared cache so they cannot evict full-branch products.
     void (live ? loadTransientProduct<CountryFlagReply>(client, request, controller.signal) : loadProduct<CountryFlagReply>(client, request, controller.signal)).then(result => {
-      if (!controller.signal.aborted) setHeaderFlag({ client, identity: headerIdentity, key: headerKey, image: result.flags.find(image => image.tag === headerTag), error: null });
+      if (!controller.signal.aborted) setHeaderFlag({ client, identity: flagOwner, key: flagAskKey, image: result.flags.find(image => image.tag === headerTag), error: null });
     }).catch(error => {
       // An unreadable hour shows no flag rather than carrying one across it.
-      if (!controller.signal.aborted) setHeaderFlag({ client, identity: headerIdentity, key: headerKey, image: undefined, error: String(error) });
+      if (!controller.signal.aborted) setHeaderFlag({ client, identity: flagOwner, key: flagAskKey, image: undefined, error: String(error) });
     });
     return () => controller.abort();
-  }, [headerContext, client, headerTag, headerKey, headerIdentity, headerSize, live, retry]);
+  }, [flagAskKey, client, headerTag, flagOwner, headerSize, live, retry]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const answered = headerFlag.client === client && headerFlag.key === flagAskKey;
+    if (headerContext && (askedFlag?.identity !== flagOwner || askedFlag.client !== client || answered && askedFlag.context !== headerContext))
+      setAskedFlag({ identity: flagOwner, client, context: headerContext });
+  }, [headerFlag, flagAskKey, headerContext, flagOwner, client, askedFlag]);
   useEffect(() => {
     if (!source || allowedTags) return;
     const controller = new AbortController();
@@ -269,7 +281,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             })}
           </div>
           {loading && <p className="country-picker-empty" role="status"><span className="spinner" />Loading countries…</p>}
-          {!allowedTags && !loading && roster.error && <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load countries.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
+          {!allowedTags && !loading && roster.error ? <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load countries.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>
+            : flagError && <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load flags.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
           {!loading && (allowedTags || !roster.error) && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : 'No countries available'}</p>}
         </div>
   </>;

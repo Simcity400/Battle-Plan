@@ -236,6 +236,63 @@ fn intel_coverage_unresolved_inventory_keeps_independent_numbers_but_not_absence
     );
 }
 #[test]
+fn intel_coverage_aliases_of_one_pair_are_unknown_and_other_pairs_stay_exact() {
+    let mut aliased = frame(
+        100,
+        Some(vec![
+            IntelNetworkSummaryRow {
+                covered_controlled_states: 3,
+                ..network(1, 2)
+            },
+            IntelNetworkSummaryRow {
+                covered_controlled_states: 7,
+                ..network(1, 3)
+            },
+            IntelNetworkSummaryRow {
+                covered_controlled_states: 5,
+                ..network(11, 12)
+            },
+        ]),
+        true,
+        3,
+    );
+    // References 11 and 12 link to the same countries as 1 and 2.
+    *aliased.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(1, 1), (2, 2), (3, 3), (11, 1), (12, 2)]
+            .into_iter()
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    ));
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    observe(&mut scan, &aliased);
+    publish(&mut scan, &fixture);
+    let reply = load(&fixture, &pair(), 100, 100, None);
+    assert_eq!(pair_series_count(&reply), 0, "neither summary is the pair's");
+    assert!(reply.window.known.is_empty());
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|w| w.contains("repeat one canonical endpoint pair") && w.contains(": 2.")),
+        "{:?}",
+        reply.warnings
+    );
+    let matrix = load(
+        &fixture,
+        &params(serde_json::json!({"branchId":"1","tags":["Mod 1","Mod 3"]})),
+        100,
+        100,
+        None,
+    );
+    assert_eq!(
+        run(&matrix, "Mod 1@1|Mod 3@3|coveredControlled")
+            .unwrap()
+            .runs,
+        [(100, 100, "7".into(), true)]
+    );
+}
+#[test]
 fn intel_coverage_gap_refresh_and_serialized_continuation() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut scan = Scan::default();

@@ -277,6 +277,17 @@ test('native relation endpoints include all X holders and exclude an unrelated a
   assert.deepEqual(lanes.lanes.filter(lane => lane.heading).map(lane => lane.identity?.label), ['A', 'B']);
 });
 
+test('a country chosen before its relation begins admits no overlord tree yet', () => {
+  const identities = countryIdentityIndex([holder('B', 1), holder('A', 2), holder('C', 3)]);
+  const views = overlordViews({ ...reply, unobserved: [], runs: [
+    { overlord: 'B', subject: 'A', startHour: 0, firstHour: 0, lastHour: 300, steps: [step(0, 300, null)] },
+    { overlord: 'B', subject: 'C', startHour: 200, firstHour: 200, lastHour: 300, steps: [step(200, 300, null)] },
+  ] }, new Lineage([]), identities);
+  const chosen = { ...options, countries: new Set(['C']), countryIds: identities.selected(['C']) };
+  assert.deepEqual(subjectLanes(views, byToken, new Map(), 100, chosen, text, []).lanes, []);
+  assert.deepEqual(subjectLanes(views, byToken, new Map(), 250, chosen, text, []).lanes.filter(lane => lane.heading).map(lane => lane.identity?.label), ['B']);
+});
+
 test('manual OLD never admits a replacement O tree when no tag-change event was recorded', () => {
   const identities = countryIdentityIndex([holder('OLD', 1, 0, 4, 10),
     { tag: 'O', identities: [...holder('O', 1, 5, 9, 10).identities, ...holder('O', 1, 10, 19, 20).identities] }, holder('S', 2, 5, 19, 30)]);

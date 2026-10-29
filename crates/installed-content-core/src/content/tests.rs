@@ -3952,3 +3952,137 @@ fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_pa
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A stack of a recorded folder `base`, a visual mod folder `art` and a recorded folder `above`
+/// mounted over the mod, each holding its `files`.
+fn overlaid_stack(
+    root: &Path,
+    base: &[(&str, &[u8])],
+    art: &[(&str, &[u8])],
+    above: &[(&str, &[u8])],
+) -> ResolvedLayers {
+    let _ = fs::remove_dir_all(root);
+    let layer = |id: &str, files: &[(&str, &[u8])]| {
+        fs::create_dir_all(root.join(id)).unwrap();
+        folder_of(id, &root.join(id), files)
+    };
+    let mut overlay = layer("art", art);
+    overlay.overlay = Some(Overlay {
+        name: "Art".into(),
+        verified: false,
+    });
+    ResolvedLayers::from_test_layers(vec![layer("base", base), overlay, layer("above", above)])
+        .unwrap()
+}
+
+/// The recorded stack below a traced presentation stack's visual mods reports its reads to the
+/// same trace and purpose, each at the layer's index in the presentation stack.
+#[test]
+fn reads_below_the_visual_mods_keep_the_trace_purpose_and_presentation_layers() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_fallback_trace_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let presentation = overlaid_stack(
+        &root,
+        &[("gfx/entities/a.asset", b"base a")],
+        &[("gfx/entities/a.asset", b"art a")],
+        &[("gfx/entities/b.asset", b"above b")],
+    );
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = presentation
+        .with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)))
+        .with_read_purpose("artwork");
+    assert_eq!(
+        traced.read_uncovered("gfx/entities/a.asset").unwrap(),
+        b"art a"
+    );
+    assert_eq!(
+        traced.read_uncovered("gfx/entities/b.asset").unwrap(),
+        b"above b"
+    );
+    let recorded = traced.without_overlays().unwrap();
+    assert_eq!(
+        recorded.read_uncovered("gfx/entities/a.asset").unwrap(),
+        b"base a"
+    );
+    assert_eq!(
+        recorded.read_uncovered("gfx/entities/b.asset").unwrap(),
+        b"above b"
+    );
+    assert!(recorded.read_uncovered("gfx/entities/c.asset").is_err());
+    let bytes = |data: &[u8]| ReadOutcome::Bytes {
+        length: data.len() as u64,
+        digest: Sha256::digest(data).into(),
+    };
+    let reads = reads.lock().unwrap();
+    let observed: Vec<_> = reads
+        .iter()
+        .map(|read| (read.path.as_slice(), read.purpose.as_str(), read.layer))
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            (b"gfx/entities/a.asset".as_slice(), "artwork", Some(1)),
+            (b"gfx/entities/b.asset".as_slice(), "artwork", Some(2)),
+            (b"gfx/entities/a.asset".as_slice(), "artwork", Some(0)),
+            (b"gfx/entities/b.asset".as_slice(), "artwork", Some(2)),
+            (b"gfx/entities/c.asset".as_slice(), "artwork", None),
+        ]
+    );
+    assert_eq!(reads[2].outcome, bytes(b"base a"));
+    assert_eq!(reads[3].outcome, reads[1].outcome);
+    assert!(matches!(&reads[4].outcome, ReadOutcome::Error { kind, .. } if kind == "NotFound"));
+    drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A visual mod's descriptor file that does not parse is read from the recording through the
+/// traced presentation stack's own trace and purpose.
+#[test]
+fn a_recorded_descriptor_read_for_a_mods_unparsed_one_is_traced() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_descriptor_fallback_trace_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let recorded: &[u8] = br#"entity = { name = "plane" pdxmesh = "plane_mesh" }"#;
+    let presentation = overlaid_stack(
+        &root,
+        &[("gfx/entities/a.asset", recorded)],
+        // Does not parse even when its blocks are closed.
+        &[(
+            "gfx/entities/a.asset",
+            br#"entity = { name = "plane" zeppelin } }{ = ="#,
+        )],
+        &[],
+    );
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = presentation
+        .with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)))
+        .with_read_purpose("artwork");
+    let roster = crate::mesh::Roster::read(&traced).unwrap();
+    assert!(roster.descriptors.entities.contains_key("plane"));
+    assert!(roster.unreadable.is_empty(), "{:?}", roster.unreadable);
+    let reads = reads.lock().unwrap();
+    let fallback: Vec<_> = reads
+        .iter()
+        .filter(|read| read.path == b"gfx/entities/a.asset" && read.layer == Some(0))
+        .collect();
+    assert_eq!(fallback.len(), 1, "{reads:?}");
+    assert_eq!(fallback[0].purpose, "artwork");
+    assert_eq!(
+        fallback[0].outcome,
+        ReadOutcome::Bytes {
+            length: recorded.len() as u64,
+            digest: Sha256::digest(recorded).into(),
+        }
+    );
+    drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}

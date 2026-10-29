@@ -10,6 +10,8 @@ function Effects({ value }: { value: ProjectEffects | null }) {
   return <>{value.text && <pre className="project-effect-text">{value.text}</pre>}
     {Object.entries(value.refusals).map(([reason, count]) => <p className="project-detail-missing" key={reason}>{reason} ({count})</p>)}</>;
 }
+/** An unavailable roster shows no count: it is unknown, not empty. */
+const Count = ({ roster }: { roster: readonly unknown[] | null }) => roster === null ? null : <span className="pill">{roster.length}</span>;
 function Facility({ program }: { program: ProgramDetails }) {
   const facility = program.facility;
   if (!facility) return <p>Facility speed and specialization contributions unavailable.</p>;
@@ -25,9 +27,9 @@ function Facility({ program }: { program: ProgramDetails }) {
 export default function ProjectDetails({ details }: { details?: SpecialProjectDetails }) {
   if (!details) return null;
   return <div className="project-details">
-    <details open><summary>Scientists <span className="pill">{details.scientists.length}</span></summary>
-      {details.scientists.length === 0 && <p>No scientists recorded at this hour.</p>}
-      {details.scientists.map(scientist => <details className="project-detail" key={scientist.character}>
+    <details open><summary>Scientists <Count roster={details.scientists} /></summary>
+      {details.scientists === null ? <p>Scientist roster unavailable at this hour.</p> : details.scientists.length === 0 && <p>No scientists recorded at this hour.</p>}
+      {details.scientists?.map(scientist => <details className="project-detail" key={scientist.character}>
         <summary>{scientist.person.name ?? 'Scientist name unavailable'} · {scientist.active === null ? 'State unavailable' : scientist.active === 0 ? 'Unassigned' : 'Assigned'}</summary>
         {scientist.person.portrait && <img className="project-detail-portrait" src={scientist.person.portrait} alt="" />}
         <p>{scientist.injuryDays === null ? 'Injury recovery unavailable.' : scientist.injuryDays > 0 ? `${scientist.injuryDays} injury recovery days` : 'No injury recovery pending'}
@@ -40,9 +42,9 @@ export default function ProjectDetails({ details }: { details?: SpecialProjectDe
       </details>)}
     </details>
     <details><summary>Specialization progress</summary>{details.breakthroughs === null ? <p>Specialization progress unavailable.</p> : details.breakthroughs.length === 0 ? <p>No specialization progress recorded.</p> : <ul>{details.breakthroughs.map((progress, index) => <li key={index}><Name label={progress.specialization} />: {progress.points / 10000} breakthrough progress · read {dayLabel(progress.readHour)}</li>)}</ul>}</details>
-    <details open><summary>Facility assignments <span className="pill">{details.programs.length}</span></summary>
-      {details.programs.length === 0 && <p>No facility assignments recorded.</p>}
-      {details.programs.map(program => <details className="project-detail" key={program.id}>
+    <details open><summary>Facility assignments <Count roster={details.programs} /></summary>
+      {details.programs === null ? <p>Facility assignments unavailable at this hour.</p> : details.programs.length === 0 && <p>No facility assignments recorded.</p>}
+      {details.programs?.map(program => <details className="project-detail" key={program.id}>
         <summary>Facility in province {program.province} · read {dayLabel(program.readHour)}</summary>
         <Facility program={program} />
         {program.assignments === null ? <p>Assignments unavailable.</p> : <ul>{program.assignments.map(assignment => <li key={assignment.ordinal}>
@@ -51,8 +53,9 @@ export default function ProjectDetails({ details }: { details?: SpecialProjectDe
         </li>)}</ul>}
       </details>)}
     </details>
-    <details open><summary>Project rewards and variables <span className="pill">{details.projects.length}</span></summary>
-      {details.projects.map(project => <details className="project-detail" key={`${project.owner}:${project.id}`}>
+    <details open><summary>Project rewards and variables <Count roster={details.projects} /></summary>
+      {details.projects === null && <p>Project details unavailable at this hour.</p>}
+      {details.projects?.map(project => <details className="project-detail" key={`${project.owner}:${project.id}`}>
         <summary><Name label={project.label} /> · read {dayLabel(project.readHour)}</summary>
         {!project.pendingKnown ? <p>Pending reward unavailable.</p> : !project.pending ? <p>No pending reward choice.</p> : <div>
           <h4><Name label={project.pending.label} /></h4>{project.pending.description && <p>{project.pending.description}</p>}

@@ -238,6 +238,16 @@ test('a former member is named by its current alias and manual tags keep every h
     { ...options, countries: new Set([tag]), countryIds: identities.selected([tag]) }, text, [], 0).lanes.length, 3);
 });
 
+test('a country chosen before it joins admits no faction yet', () => {
+  const chosen: CountryGroupReply = { ...reply, countryIdentities: [holder('A', 1, 0), holder('C', 2, 0)], unobserved: { humans: [], factions: [], wars: [] },
+    factions: [{ ...factions[0], id: '1', firstHour: 0, lastHour: 300, members: [run('A', 0, 300), run('C', 200, 300)], leaders: [], incomplete: [] }] };
+  const identities = countryIdentityIndex(chosen.countryIdentities);
+  const views = factionViews(chosen, summaryName, id => id);
+  const selected = { ...options, countries: new Set(['C']), countryIds: identities.selected(['C']) };
+  assert.equal(factionLanes(views, 100, selected, text, [], 0).lanes.length, 0);
+  assert.ok(factionLanes(views, 250, selected, text, [], 0).lanes.some(lane => lane.heading));
+});
+
 test('manual X includes every native holder and its aliases, while unrelated Y and unknown spans stay excluded', () => {
   const countries = [{ tag: 'X', identities: [...holder('X', 1, 0, 9, 10).identities, ...holder('X', 1, 20, 30, 20).identities] },
     { tag: 'Y', identities: [...holder('Y', 1, 10, 19, 10).identities, ...holder('Y', 2, 20, 30, 30).identities] }];

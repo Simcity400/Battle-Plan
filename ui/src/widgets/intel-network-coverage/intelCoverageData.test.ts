@@ -120,6 +120,11 @@ test('the matrix asks for the chosen group\'s members, and a Top countries group
   }
   assert.equal(intelCoverageRequest(widget({ kind: 'tags', tags: ['GER', 'ITA'] }), track)!.params.touching, undefined);
   assert.equal(intelCoverageRequest(humans, track, ['GER'])!.params.touching, undefined, 'a group of one stays its members');
+  // One chosen native holder asked for under every tag it held is still one country with its counterparties.
+  const renamed = widget({ kind: 'tags', tags: ['OLD'] });
+  assert.deepEqual(intelCoverageRequest(renamed, track, ['OLD'], ['NEW', 'OLD'])!.params,
+    { branchId: '1', view: 'matrix', shown: 5, tags: ['NEW', 'OLD'], touching: true });
+  assert.equal(intelCoverageRequest(humans, track, ['GER'], ['GER', 'OLD'])!.params.touching, undefined, 'a group\'s aliases stay among its members');
   // Top 1 asks for exactly one, read as one country; Top 2 stays the most active among themselves.
   const top = (count: number) => widget({ kind: 'group', group: { type: 'top', count }, membership: 'hour', aggregate: false });
   assert.equal(intelShown(top(1)), 1);

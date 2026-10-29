@@ -217,6 +217,81 @@ fn aliases_unresolved_targets_and_unavailable_reads_refuse_not_zero() {
     );
 }
 #[test]
+fn an_unproven_selected_country_leaves_every_other_pair_known() {
+    let mut first = frame(0, 0);
+    opinions(&mut first, &[(A, B, 5)]);
+    // A third country appears after both owners' carried reads, which were made without it.
+    let mut joined = frame(1, 0);
+    opinions(&mut joined, &[(A, B, 5)]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *joined.tables[TableId::Countries.index()]
+    {
+        rows.push(CountryRow {
+            id: 1002,
+            canonical_slot: 3,
+            tag: b"third".to_vec(),
+            ..Default::default()
+        });
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *joined.tables[TableId::CountryLinks.index()]
+    {
+        rows.insert(
+            2,
+            CountryLinkRow {
+                id: 1002,
+                canonical_slot: 3,
+            },
+        );
+    }
+    let frames = vec![first, joined];
+    let source = source(&frames);
+    let fixture = Fixture::new();
+    let mut scan = prepared::Prepared::default();
+    for frame in &frames {
+        observe(&mut scan, frame);
+    }
+    publish(&fixture, &mut scan, &frames);
+    let matrix = |hour: i32, third: &str| {
+        ask(
+            &source,
+            &fixture,
+            serde_json::json!({"view":"opinions","branchId":"1","hour":hour,"tags":["first","second",third]}),
+            1,
+        )
+    };
+    // A country with no holder at the hour is unknown in every pair, and only there.
+    let absent = matrix(0, "absent");
+    for owner in [0_usize, 1] {
+        assert_eq!(absent["owners"][owner]["known"], true);
+        assert_eq!(
+            absent["owners"][owner]["unknownTargets"],
+            serde_json::json!(["absent"])
+        );
+    }
+    assert_eq!(
+        absent["owners"][0]["opinions"],
+        serde_json::json!([{"target":"second","value":5}])
+    );
+    assert_eq!(absent["owners"][1]["opinions"], serde_json::json!([]));
+    assert_eq!(absent["owners"][2]["identity"], serde_json::Value::Null);
+    assert_eq!(absent["owners"][2]["known"], false);
+    // A read made before a country existed proves nothing of it, yet the rest of it holds.
+    let later = matrix(1, "third");
+    for owner in [0_usize, 1] {
+        assert_eq!(later["owners"][owner]["known"], true);
+        assert_eq!(later["owners"][owner]["readHour"], 0);
+        assert_eq!(
+            later["owners"][owner]["unknownTargets"],
+            serde_json::json!(["third"])
+        );
+    }
+    assert_eq!(
+        later["owners"][0]["opinions"],
+        serde_json::json!([{"target":"second","value":5}])
+    );
+}
+#[test]
 fn owner_read_helper_preserves_rowless_scheduled_dirty_and_full_evidence() {
     let slot = replay_data::cadence::slice_of(A) as i32;
     let mut frame = frame(slot, slot);

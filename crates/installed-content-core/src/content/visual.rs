@@ -513,8 +513,8 @@ pub fn plan(
 }
 
 /// A digest of what a selection mounts now: its mods in mount order with their sources, each
-/// descriptor's stamp, and the size and modification time of every file a visual mod shows
-/// (an archive by its own stamp), plus what cannot be shown. A mod installed, updated or
+/// descriptor's stamp, and the spelled path, size and modification time of every file a visual
+/// mod shows (an archive by its own stamp), plus what cannot be shown. A mod installed, updated or
 /// removed since a map loaded changes it, so the map reloads; equal digests need no reload.
 /// It reads metadata only, never file contents.
 pub fn revision(
@@ -594,9 +594,9 @@ pub fn revision(
                     })
                 };
                 let walked = walk_folder(root, root, true, &kind, &mut |relative, entry| {
-                    let lower = relative.to_ascii_lowercase();
-                    if overlay_sees(true, &lower) {
-                        field(lower.as_slice());
+                    // Loaders admit and order files by spelling: a case-only rename counts.
+                    if overlay_sees(true, &relative.to_ascii_lowercase()) {
+                        field(relative.as_slice());
                         field(stamp(&entry.path()).as_bytes());
                     }
                     Ok(())

@@ -333,14 +333,7 @@ pub fn query_through(
         })
         .map_err(Into::into);
     };
-    serde_json::to_value(present(
-        source,
-        branch,
-        context,
-        cancelled,
-        Arc::new(reply),
-    )?)
-    .map_err(Into::into)
+    serde_json::to_value(present(source, context, cancelled, reply)?).map_err(Into::into)
 }
 
 pub mod family;

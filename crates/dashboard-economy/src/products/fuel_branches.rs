@@ -9,7 +9,8 @@
 //! An hour is observed when the table's rows changed, it was read, the
 //! country identities changed, or it follows a gap; between reads every
 //! value holds with its supplying read's hour. A read that is not complete
-//! leaves the consumers unknown, never zero.
+//! leaves the consumers unknown, never zero; one with a consumer whose
+//! country has no identity keeps the others but proves no country has none.
 
 use super::keyed::{
     EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of,
@@ -54,8 +55,9 @@ pub enum Field {
     Priority(u32, u32),
     /// The hour of the read supplying the holder's consumers.
     Read(u32),
-    /// 1 while the consumer table was read complete: a country without
-    /// consumers then requested nothing; outside it nothing is known.
+    /// 1 while the consumer table was read complete with every consumer's
+    /// country identified: a country without consumers then requested
+    /// nothing; outside it nothing is known.
     Known,
 }
 
@@ -105,11 +107,14 @@ impl Prepared {
         };
         match frame.complete::<tables::CountryFuelConsumers>() {
             Ok(rows) => {
-                observed.insert(self.keyed.key(Field::Known), 1);
+                let known = self.keyed.key(Field::Known);
+                // An unidentified consumer may be any country's, so no absence is proven.
+                let mut complete = true;
                 let mut seen = BTreeMap::new();
                 for row in rows {
                     let Some(slot) = tags.slot(row.country) else {
                         self.keyed.refuse("a fuel consumer's country has no identity");
+                        complete = false;
                         continue;
                     };
                     self.keyed.tag(&tags, slot, hour);
@@ -121,6 +126,9 @@ impl Prepared {
                     ] {
                         observed.insert(self.keyed.key(field), value);
                     }
+                }
+                if complete {
+                    observed.insert(known, 1);
                 }
                 self.reads.retain(|slot, _| seen.contains_key(slot));
                 for &slot in seen.keys() {
@@ -191,7 +199,8 @@ pub struct FuelBranchesReply {
     pub consumer_names: Vec<Option<String>>,
     /// Fixed-point denominator of the amounts.
     pub scale: u32,
-    /// Hours the consumer table was read complete ("1").
+    /// Hours the consumer table was read complete with every consumer's
+    /// country identified ("1").
     pub known: Vec<EconomyRun>,
     pub countries: Vec<FuelBranchCountry>,
     pub warnings: Vec<String>,
