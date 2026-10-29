@@ -345,7 +345,12 @@ pub struct Changes {
     pub truncated: bool,
     pub read: Vec<u32>,
     pub changed: Vec<u32>,
+    /// The columns each changed slot's runs wrote, a bit by column (at `changed`'s
+    /// positions): SET, ADD, PATCH, NOOP and unrecorded cells.
+    pub masks: Vec<u64>,
     pub deleted: Vec<u32>,
+    /// The keys the deleted slots held, at `deleted`'s positions.
+    pub deleted_keys: Vec<u128>,
     pub inserted: Vec<u32>,
     pub touched: Vec<u32>,
     /// Columns a FILL set this hour, for every live slot but its exceptions.
@@ -353,6 +358,25 @@ pub struct Changes {
     /// Every slot a FILL set this hour, ascending: rows whose values changed although
     /// `changed` does not name them.
     pub fill_slots: Vec<u32>,
+    /// The columns each fill slot's FILLs set, a bit by column (at `fill_slots`' positions).
+    pub fill_masks: Vec<u64>,
+}
+
+/// `column`'s bit in a change mask; none past the 64 a mask holds.
+fn column_bit(column: usize) -> u64 {
+    u32::try_from(column)
+        .ok()
+        .and_then(|column| 1_u64.checked_shl(column))
+        .unwrap_or(0)
+}
+
+/// Sets `bit` in the masks at `positions`.
+fn mark(masks: &mut [u64], positions: &[u32], bit: u64) {
+    for &position in positions {
+        if let Some(mask) = masks.get_mut(position as usize) {
+            *mask |= bit;
+        }
+    }
 }
 
 macro_rules! read_plain {
@@ -566,9 +590,13 @@ pub fn apply(
     reader.slots(&mut changes.changed)?;
     reader.slots(&mut changes.deleted)?;
     reader.slots(&mut changes.inserted)?;
+    changes.masks.clear();
+    engine_allocation::reserve(&mut changes.masks, changes.changed.len())?;
+    changes.masks.resize(changes.changed.len(), 0);
     changes.touched.clear();
     changes.filled.clear();
     changes.fill_slots.clear();
+    changes.fill_masks.clear();
     if truncated && changes.read.iter().any(|&slot| !table.live().get(slot)) {
         return Err(invalid("A partly read table reads a slot holding no row"));
     }
@@ -579,6 +607,12 @@ pub fn apply(
             "A partly read table changes a slot it did not read",
         ));
     }
+    changes.deleted_keys.clear();
+    engine_allocation::reserve(&mut changes.deleted_keys, changes.deleted.len())?;
+    // A slot holding no row is refused by the delete itself.
+    changes
+        .deleted_keys
+        .extend(changes.deleted.iter().filter_map(|&slot| table.key(slot)));
     table.delete(&changes.deleted)?;
     // The writer fills the lowest free slots first, then extends the table by one slot per
     // new row, so a section grows the table by no more than the rows it inserts.
@@ -606,6 +640,8 @@ pub fn apply(
         }
     }
     let runs = reader.count()?;
+    // Each FILL's column bit and the slots it set, for their masks once every FILL is applied.
+    let mut fills: Vec<(u64, Vec<u32>)> = Vec::new();
     for _ in 0..runs {
         let column = usize::try_from(reader.varint()?)
             .map_err(|_| invalid("Run names a column past the schema"))?;
@@ -639,15 +675,20 @@ pub fn apply(
                     }
                     union(&mut changes.fill_slots, &targets, &mut scratch.positions)
                 });
+                let copied = filled.and_then(|()| engine_allocation::copy_vec(&targets));
                 scratch.slots = targets;
-                filled?;
+                let targets = copied?;
+                engine_allocation::reserve(&mut fills, 1)?;
+                fills.push((column_bit(column), targets));
                 changes.filled.push(column);
             }
             Op::Noop => {
                 reader.positions(changes.changed.len(), &mut scratch.positions)?;
+                mark(&mut changes.masks, &scratch.positions, column_bit(column));
             }
             Op::Patch => {
                 reader.positions(changes.changed.len(), &mut scratch.positions)?;
+                mark(&mut changes.masks, &scratch.positions, column_bit(column));
                 let mut slots = std::mem::take(&mut scratch.slots);
                 let applied = slots_at(&changes.changed, &scratch.positions, &mut slots)
                     .and_then(|()| patch_run(&mut reader, scratch, table, column, kind, &slots));
@@ -656,6 +697,7 @@ pub fn apply(
             }
             op @ (Op::Set | Op::Add) => {
                 reader.positions(changes.changed.len(), &mut scratch.positions)?;
+                mark(&mut changes.masks, &scratch.positions, column_bit(column));
                 let mut slots = std::mem::take(&mut scratch.slots);
                 let applied =
                     slots_at(&changes.changed, &scratch.positions, &mut slots).and_then(|()| {
@@ -686,6 +728,22 @@ pub fn apply(
             ));
         }
         table.unrecord(column, &scratch.slots)?;
+        for slot in &scratch.slots {
+            if let Ok(position) = changes.changed.binary_search(slot) {
+                changes.masks[position] |= column_bit(column);
+            }
+        }
+    }
+    if !fills.is_empty() {
+        engine_allocation::reserve(&mut changes.fill_masks, changes.fill_slots.len())?;
+        changes.fill_masks.resize(changes.fill_slots.len(), 0);
+        for (bit, targets) in &fills {
+            for slot in targets {
+                if let Ok(position) = changes.fill_slots.binary_search(slot) {
+                    changes.fill_masks[position] |= bit;
+                }
+            }
+        }
     }
     reader.slots(&mut changes.touched)?;
     reader.finish()

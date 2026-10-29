@@ -191,6 +191,9 @@ impl State {
             changes.touched.clear();
             changes.filled.clear();
             changes.fill_slots.clear();
+            changes.masks.clear();
+            changes.deleted_keys.clear();
+            changes.fill_masks.clear();
         }
         self.present.clear();
         for append in &manifest.appends {

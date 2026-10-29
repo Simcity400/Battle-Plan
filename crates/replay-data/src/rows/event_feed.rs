@@ -212,6 +212,13 @@ impl RowCodec for EventFeedHistoryRow {
             Ok(())
         })
     }
+    fn from_wire<'a>(
+        key: u128,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self> {
+        // Its events field has a framing of its own, which only its decoding reads.
+        from_wire_encoded(key, Self::SCHEMA.len(), wire)
+    }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
         check_native_key(key, 0)?;
         let mut row = Self {

@@ -117,11 +117,15 @@ fn written_sections_apply_like_the_same_runs_on_the_state() {
         changes,
         Changes {
             changed: vec![0, 2],
+            // Slot 0: SET 0 and ADD 1; slot 2: ADD 1, SET 2 and the NOOP of 3.
+            masks: vec![0b0011, 0b1110],
             deleted: vec![1],
+            deleted_keys: vec![101],
             inserted: vec![1],
             touched: vec![2],
             filled: vec![3],
             fill_slots: vec![0, 1],
+            fill_masks: vec![0b1000, 0b1000],
             ..Changes::default()
         }
     );

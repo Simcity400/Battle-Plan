@@ -110,6 +110,27 @@ impl RowCodec for SharedDivisionHistoryRow {
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
         DivisionHistoryRow::decode_fields(key, input).map(Arc::new)
     }
+    fn from_wire<'a>(
+        key: u128,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self> {
+        DivisionHistoryRow::from_wire(key, wire).map(Arc::new)
+    }
+    fn patch_from_wire<'a>(
+        &mut self,
+        mask: u64,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<bool> {
+        if let Some(row) = Arc::get_mut(self) {
+            return row.patch_from_wire(mask, wire);
+        }
+        let mut row = self.as_ref().try_clone()?;
+        let patched = row.patch_from_wire(mask, wire)?;
+        if patched {
+            *self = Arc::new(row);
+        }
+        Ok(patched)
+    }
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self> {
         let previous = previous
             .map(|row| match Arc::try_unwrap(row) {
@@ -294,6 +315,27 @@ impl RowCodec for SharedDivisionPanelSourceRow {
     }
     fn decode_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self> {
         DivisionPanelSourceRow::decode_fields(key, input).map(Arc::new)
+    }
+    fn from_wire<'a>(
+        key: u128,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self> {
+        DivisionPanelSourceRow::from_wire(key, wire).map(Arc::new)
+    }
+    fn patch_from_wire<'a>(
+        &mut self,
+        mask: u64,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<bool> {
+        if let Some(row) = Arc::get_mut(self) {
+            return row.patch_from_wire(mask, wire);
+        }
+        let mut row = self.as_ref().try_clone()?;
+        let patched = row.patch_from_wire(mask, wire)?;
+        if patched {
+            *self = Arc::new(row);
+        }
+        Ok(patched)
     }
     fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self> {
         let previous = previous

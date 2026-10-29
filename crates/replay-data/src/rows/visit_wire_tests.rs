@@ -67,3 +67,56 @@ fn visited_wire_fields_are_the_fields_the_row_encodes() {
     shared.as_ref().encode_recorded_fields(&mut expected).unwrap();
     assert_eq!(visited(&shared).0, expected);
 }
+
+/// The wire fields of a country, as `CountryRow`'s schema orders them.
+fn country_wire(index: usize) -> io::Result<Field<'static>> {
+    Ok(match index {
+        1 => Field::Bytes(b"GER"),
+        2 | 6 => Field::OptionalI64(None),
+        3..=5 => Field::I64(0),
+        7 => Field::U8(0),
+        8 => Field::I32(0),
+        9 => Field::OptionalI32(None),
+        _ => Field::U32(0),
+    })
+}
+
+/// A row is read from the wire only at a key its table's width holds.
+#[test]
+fn rows_are_read_from_the_wire_only_at_keys_their_table_holds() {
+    assert!(CountryRow::from_wire(1 << 32, &mut country_wire).is_err());
+    assert_eq!(CountryRow::from_wire(7, &mut country_wire).unwrap().id, 7);
+}
+
+/// An unrecorded wire field reads as the field's own absence, which only a field that can
+/// be unrecorded holds.
+#[test]
+fn unrecorded_wire_fields_read_as_unrecorded() {
+    assert_eq!(
+        from_wire_field::<Recorded<Option<i32>>>(Field::NotRecorded, None).unwrap(),
+        Recorded::NotRecorded
+    );
+    assert!(from_wire_field::<i64>(Field::NotRecorded, None).is_err());
+}
+
+/// A patch sets the fields its mask names, from their wire form, and no other.
+#[test]
+fn patches_set_only_the_fields_their_mask_names() {
+    let mut row = CountryRow::from_wire(7, &mut country_wire).unwrap();
+    let mut read = Vec::new();
+    assert!(
+        row.patch_from_wire(1 << 1 | 1 << 4, &mut |index| {
+            read.push(index);
+            Ok(match index {
+                1 => Field::Bytes(b"ITA"),
+                _ => Field::I64(25),
+            })
+        })
+        .unwrap()
+    );
+    assert_eq!(read, [1, 4]);
+    let mut expected = CountryRow::from_wire(7, &mut country_wire).unwrap();
+    expected.tag = b"ITA".to_vec();
+    expected.stability_raw = 25;
+    assert_eq!(row, expected);
+}

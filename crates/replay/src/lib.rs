@@ -1,5 +1,6 @@
 //! Compressed recording containers, spool I/O and durable publication.
 
+pub mod columnar_frames;
 pub mod compression;
 pub mod container;
 pub mod native_columns;

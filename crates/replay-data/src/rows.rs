@@ -605,6 +605,22 @@ pub trait RowCodec: Default + Clone + Eq {
         &self,
         visit: &mut dyn FnMut(usize, Field<'_>) -> io::Result<()>,
     ) -> io::Result<()>;
+    /// The row keyed `key` whose schema fields `wire` hands by index, as [`Self::visit_wire`]
+    /// visits them: step units become native units again, as [`Self::decode_fields`] reads them.
+    fn from_wire<'a>(
+        key: u128,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<Self>;
+    /// Sets the schema fields `mask` names from `wire`, as [`Self::from_wire`] reads them.
+    /// False leaves the row as it was, for its caller to build it whole instead.
+    fn patch_from_wire<'a>(
+        &mut self,
+        mask: u64,
+        wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+    ) -> io::Result<bool> {
+        let _ = (mask, wire);
+        Ok(false)
+    }
     fn recorded_fields_bytes(&self) -> io::Result<usize>;
     fn delta(&self, previous: Option<&Self>) -> io::Result<Option<DeltaRow>>;
     /// Encode one changed row directly, including its key difference and mask.
@@ -756,6 +772,15 @@ macro_rules! define_tables {
             }
             pub fn decode_rows(self, count: usize, input: &mut Decoder<'_>) -> io::Result<TableRows> {
                 Ok(match self { $(Self::$table => TableRows::$table(decode_typed::<$row>(count, input)?)),+ })
+            }
+            /// This table's rows at `keys`, in their order, each field as `wire(row, field)` hands
+            /// it in its wire form ([`RowCodec::from_wire`]).
+            pub fn rows_from_wire<'a>(
+                self,
+                keys: &[u128],
+                wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+            ) -> io::Result<TableRows> {
+                Ok(match self { $(Self::$table => TableRows::$table(rows_from_wire_typed::<$row>(keys, wire)?)),+ })
             }
         }
         impl TableRows {
@@ -927,6 +952,16 @@ macro_rules! define_tables {
                         .map_err(|_| invalid("row changes of another table"))?;
                     Ok(Self::$table(apply_changes_typed(rows, changed, &deleted)?))
                 }),+ }
+            }
+            /// Each row keyed as `patches` names, in key order, with the fields its mask names
+            /// set as `wire(patch, field)` hands them ([`RowCodec::patch_from_wire`]); a row
+            /// that cannot be patched is built whole from every field.
+            pub fn patch_from_wire<'a>(
+                &mut self,
+                patches: &[(u128, u64)],
+                wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+            ) -> io::Result<()> {
+                match self { $(Self::$table(rows) => patch_typed(rows, patches, wire)),+ }
             }
         }
         impl RowRef<'_> {
@@ -1845,6 +1880,35 @@ fn encode_typed<T: RowCodec>(rows: &[T], output: &mut Vec<u8>) -> io::Result<()>
     }
     Ok(())
 }
+fn patch_typed<'a, T: RowCodec>(
+    rows: &mut [T],
+    patches: &[(u128, u64)],
+    wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+) -> io::Result<()> {
+    let mut from = 0;
+    for (at, &(key, mask)) in patches.iter().enumerate() {
+        let position = (from < rows.len())
+            .then(|| locate(rows, from, key).ok())
+            .flatten()
+            .ok_or_else(|| invalid("a patched row is not in its table"))?;
+        let row = &mut rows[position];
+        if !row.patch_from_wire(mask, &mut |field| wire(at, field))? {
+            *row = T::from_wire(key, &mut |field| wire(at, field))?;
+        }
+        from = position + 1;
+    }
+    Ok(())
+}
+fn rows_from_wire_typed<'a, T: RowCodec>(
+    keys: &[u128],
+    wire: &mut dyn FnMut(usize, usize) -> io::Result<Field<'a>>,
+) -> io::Result<Vec<T>> {
+    let mut rows = allocation::vec(keys.len())?;
+    for (at, &key) in keys.iter().enumerate() {
+        rows.push(T::from_wire(key, &mut |field| wire(at, field))?);
+    }
+    Ok(rows)
+}
 fn decode_typed<T: RowCodec>(count: usize, input: &mut Decoder<'_>) -> io::Result<Vec<T>> {
     let mut rows = allocation::vec(count)?;
     let mut previous = 0;
@@ -2251,6 +2315,11 @@ pub struct RowChanges {
 }
 
 impl RowChanges {
+    /// `rows` to set at their keys and `deleted` keys to remove, both in key order.
+    pub fn new(rows: TableRows, deleted: Vec<u128>) -> Self {
+        Self { rows, deleted }
+    }
+
     /// Bytes its rows and deleted keys hold.
     pub fn heap_bytes(&self) -> usize {
         self.rows.heap_bytes() + self.deleted.capacity() * size_of::<u128>()
@@ -2500,6 +2569,33 @@ fn visit_wire_field<T: NativeValue>(
         None => visit(index, native_wire_field(value)),
         Some(step) => visit(index, value.to_units(step)?.field()),
     }
+}
+/// A declared field from the wire form [`visit_wire_field`] hands: step units become native.
+fn from_wire_field<T: NativeValue>(field: Field<'_>, step: Option<Step>) -> io::Result<T> {
+    if matches!(field, Field::NotRecorded) {
+        return T::not_recorded();
+    }
+    let value = T::from_field(field)?;
+    match step {
+        Some(step) => value.from_units(step),
+        None => Ok(value),
+    }
+}
+/// [`RowCodec::from_wire`] through a row's own field decoding: its `fields` wire fields
+/// encoded as the wire holds them, then decoded.
+pub(crate) fn from_wire_encoded<'a, T: RowCodec>(
+    key: u128,
+    fields: usize,
+    wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>,
+) -> io::Result<T> {
+    let mut bytes = Vec::new();
+    for index in 0..fields {
+        wire(index)?.encode(&mut bytes)?;
+    }
+    let mut input = Decoder::new(&bytes);
+    let row = T::decode_fields(key, &mut input)?;
+    input.finish()?;
+    Ok(row)
 }
 /// Encode a declared field, in step units when it has a step.
 fn encode_native_field<T: NativeValue>(
@@ -2822,6 +2918,23 @@ macro_rules! typed_codec {
                 let $key_name = key;
                 let mut row = $initial;
                 $(row.$($field)+ = read_stepped_field($index, Kind::$kind, $crate::value::display_step!($($step)?), input)?;)+
+                Ok(row)
+            }
+            fn patch_from_wire<'a>(&mut self, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<bool> {
+                let key = self.key();
+                $(if mask & (1_u64 << $index) != 0 {
+                    self.$($field)+ = from_wire_field(wire($index)?, $crate::value::display_step!($($step)?)).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", key, stringify!($($field)+))))?;
+                })+
+                self.check_key_fields()?;
+                Ok(true)
+            }
+            #[allow(clippy::field_reassign_with_default)]
+            fn from_wire<'a>(key: u128, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<Self> {
+                check_native_key(key, Self::KEY_BITS)?;
+                let $key_name = key;
+                let mut row = $initial;
+                $(row.$($field)+ = from_wire_field(wire($index)?, $crate::value::display_step!($($step)?)).map_err(|error| crate::codec::error_context(error, format_args!("row {} column {}", key, stringify!($($field)+))))?;)+
+                row.check_key_fields()?;
                 Ok(row)
             }
             fn apply_delta(delta: &DeltaRow, previous: Option<Self>) -> io::Result<Self> {
