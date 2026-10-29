@@ -18,14 +18,79 @@ use engine_native::{
     Memory, carmy::DivisionSeed, carmy_leader, ccountry, modifier_breakdown, read,
 };
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, OnceLock},
-};
+use std::sync::{Arc, OnceLock};
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;
-/// Range-local lookup memos, never iterated. Keys include full handles, whose
-/// low 32 bits are the shared kind, so the hasher must mix high bits down.
+/// Keys include full handles, whose low 32 bits are the shared kind, so the
+/// hasher must mix high bits down. Where order shows, keys are sorted first.
 type Map<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
+/// Bytes of a std hash table at full `capacity`: entries, then a control byte
+/// per bucket and one trailing SSE2 group.
+fn table_bytes<K, V>(capacity: usize) -> usize {
+    const GROUP: usize = 16;
+    if capacity == 0 {
+        return 0;
+    }
+    let buckets = if capacity < 8 {
+        capacity + 1
+    } else {
+        capacity / 7 * 8
+    };
+    let align = std::mem::align_of::<(K, V)>().max(GROUP);
+    (std::mem::size_of::<(K, V)>() * buckets).next_multiple_of(align) + buckets + GROUP
+}
+/// A held map and its table's bytes. Removals keep a table's storage while
+/// lowering `capacity`, so the size is taken when a new key may grow it.
+struct Table<K, V> {
+    map: Map<K, V>,
+    bytes: usize,
+}
+impl<K, V> Default for Table<K, V> {
+    fn default() -> Self {
+        Self {
+            map: Map::default(),
+            bytes: 0,
+        }
+    }
+}
+impl<K: Eq + std::hash::Hash, V> Table<K, V> {
+    /// `insert` reserves before it looks, so a held key could grow a full table.
+    fn put(&mut self, key: K, value: V) {
+        match self.map.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut held) => {
+                held.insert(value);
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(value);
+                self.bytes = self.bytes.max(table_bytes::<K, V>(self.map.capacity()));
+            }
+        }
+    }
+    fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        self.map.get_mut(key)
+    }
+    fn remove(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
+    }
+    fn values_mut(&mut self) -> std::collections::hash_map::ValuesMut<'_, K, V> {
+        self.map.values_mut()
+    }
+    fn clear(&mut self) {
+        self.map.clear();
+    }
+}
+impl<K, V> std::ops::Deref for Table<K, V> {
+    type Target = Map<K, V>;
+    fn deref(&self) -> &Map<K, V> {
+        &self.map
+    }
+}
+impl<'a, K, V> IntoIterator for &'a Table<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = std::collections::hash_map::Iter<'a, K, V>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
+    }
+}
 const VARIANT_WITHDRAWN: &str = "held variant terrain availability capability expired";
 pub struct SourceSnapshot {
     rows: Arc<RowSnapshot>,
@@ -142,10 +207,9 @@ impl Preparation {
     pub fn allocated_bytes(&self) -> usize {
         self.memo.allocated_bytes()
             + self.reads.allocated_bytes()
-            + self.countries.capacity()
-                * std::mem::size_of::<(u32, Result<ccountry::Country, &'static str>)>()
-            + self.commanders.capacity() * std::mem::size_of::<(usize, u64)>()
-            + self.provinces.capacity() * std::mem::size_of::<(usize, Option<(u32, usize)>)>()
+            + table_bytes::<u32, Result<ccountry::Country, &'static str>>(self.countries.capacity())
+            + table_bytes::<usize, u64>(self.commanders.capacity())
+            + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
     }
     /// Optional staging shortage keeps the original ordered reader.
     pub fn begin(&mut self, divisions: usize) -> bool {
@@ -341,19 +405,19 @@ struct Held {
     seen: u64,
 }
 pub struct Store {
-    roots: BTreeMap<(u8, u64), Held>,
-    countries: BTreeMap<u32, (u64, Result<ccountry::Country, &'static str>)>,
-    leaders: BTreeMap<usize, (u64, u64)>,
+    roots: Table<(u8, u64), Held>,
+    countries: Table<u32, (u64, Result<ccountry::Country, &'static str>)>,
+    leaders: Table<usize, (u64, u64)>,
     rows: Rows<SharedDivisionPanelSourceRow>,
     turn: u64,
     world_epoch: u64,
     memo: carmy_leader::LeaderMemo,
     capacity: usize,
-    pools: BTreeMap<u64, Pool>,
-    variants: BTreeMap<u64, Variant>,
-    states: BTreeMap<(u32, u32), State>,
-    variant_handles: BTreeMap<usize, u64>,
-    provinces: BTreeMap<usize, Option<(u32, usize)>>,
+    pools: Table<u64, Pool>,
+    variants: Table<u64, Variant>,
+    states: Table<(u32, u32), State>,
+    variant_handles: Table<usize, u64>,
+    provinces: Table<usize, Option<(u32, usize)>>,
     membership_scratch: Vec<(u32, u64, usize)>,
     membership_changed: bool,
     membership_bytes: usize,
@@ -372,19 +436,19 @@ pub struct Store {
 impl Default for Store {
     fn default() -> Self {
         Self {
-            roots: BTreeMap::new(),
-            countries: BTreeMap::new(),
-            leaders: BTreeMap::new(),
+            roots: Table::default(),
+            countries: Table::default(),
+            leaders: Table::default(),
             rows: Rows::default(),
             turn: 0,
             world_epoch: 0,
             memo: carmy_leader::LeaderMemo::vacant(),
             capacity: 0,
-            pools: BTreeMap::new(),
-            variants: BTreeMap::new(),
-            states: BTreeMap::new(),
-            variant_handles: BTreeMap::new(),
-            provinces: BTreeMap::new(),
+            pools: Table::default(),
+            variants: Table::default(),
+            states: Table::default(),
+            variant_handles: Table::default(),
+            provinces: Table::default(),
             membership_scratch: Vec::new(),
             membership_changed: false,
             membership_bytes: 0,
@@ -436,16 +500,15 @@ impl Store {
             + self.boundary.allocated_bytes()
             + self.retired.capacity() * std::mem::size_of::<usize>()
             + self.memo.allocated_bytes()
-            + self.roots.len() * std::mem::size_of::<((u8, u64), Held)>()
-            + self.countries.len()
-                * std::mem::size_of::<(u32, (u64, Result<ccountry::Country, &'static str>))>()
-            + self.leaders.len() * std::mem::size_of::<(usize, (u64, u64))>()
-            + self.pools.len() * std::mem::size_of::<(u64, Pool)>()
+            + self.roots.bytes
+            + self.countries.bytes
+            + self.leaders.bytes
+            + self.pools.bytes
             + self.membership_bytes
-            + self.variants.len() * std::mem::size_of::<(u64, Variant)>()
-            + self.variant_handles.len() * std::mem::size_of::<(usize, u64)>()
-            + self.states.len() * std::mem::size_of::<((u32, u32), State)>()
-            + self.provinces.len() * std::mem::size_of::<(usize, Option<(u32, usize)>)>()
+            + self.variants.bytes
+            + self.variant_handles.bytes
+            + self.states.bytes
+            + self.provinces.bytes
             + self.membership_scratch.capacity() * std::mem::size_of::<(u32, u64, usize)>()
             + self.dirty.capacity() * std::mem::size_of::<usize>()
     }
@@ -577,7 +640,7 @@ impl Store {
             self.rows
                 .remove_range(key(kind, owner, count)..key(kind, owner, old_count))?;
         }
-        self.roots.insert(
+        self.roots.put(
             (kind, owner),
             Held {
                 slot: reads
@@ -723,7 +786,7 @@ impl Store {
                                     .ok_or("division source owned selection missing")?
                                     .resolve(owner)
                             });
-                        self.countries.insert(owner, (self.turn, country));
+                        self.countries.put(owner, (self.turn, country));
                         country
                     }
                 };
@@ -777,7 +840,7 @@ impl Store {
                                         )
                                         .ok_or("division source commander identity unreadable")
                                     })?;
-                                self.leaders.insert(receiver, (self.turn, handle));
+                                self.leaders.put(receiver, (self.turn, handle));
                                 handle
                             }
                         },
@@ -835,7 +898,7 @@ impl Store {
                                 memory, base, province,
                             )
                         })?;
-                        self.provinces.insert(province, context);
+                        self.provinces.put(province, context);
                         context
                     }
                 };
@@ -867,8 +930,18 @@ impl Store {
             self.dirty.clear();
             engine_allocation::reserve(&mut self.dirty, self.variants.len())
                 .map_err(|_| "variant certificate recovery allocation failed")?;
+            // In handle order, as an ordered variant map refreshed them.
+            let mut handles = Vec::new();
+            engine_allocation::reserve(&mut handles, self.variants.len())
+                .map_err(|_| "variant certificate recovery allocation failed")?;
+            handles.extend(
+                self.variants
+                    .iter()
+                    .map(|(&handle, held)| (handle, held.pointer)),
+            );
+            handles.sort_unstable_by_key(|&(handle, _)| handle);
             self.dirty
-                .extend(self.variants.values().map(|held| held.pointer));
+                .extend(handles.into_iter().map(|(_, pointer)| pointer));
         }
         let variants_begin = qpc();
         for index in 0..self.dirty.len() {
@@ -892,6 +965,7 @@ impl Store {
                 gone.push(identity);
             }
         }
+        gone.sort_unstable();
         for (kind, owner) in gone {
             let held = self.roots.remove(&(kind, owner)).unwrap();
             self.rows
@@ -1169,8 +1243,8 @@ impl Store {
         {
             self.variant_handles.remove(&old.pointer);
         }
-        self.variant_handles.insert(pointer, handle);
-        self.variants.insert(
+        self.variant_handles.put(pointer, handle);
+        self.variants.put(
             handle,
             Variant {
                 refs: self.variants.get(&handle).map_or(0, |held| held.refs),
@@ -1341,7 +1415,7 @@ impl Store {
         let previous = self.pools.get(&seed.division);
         let context = previous.and_then(|held| held.context);
         let context_refusal = previous.and_then(|held| held.context_refusal);
-        self.pools.insert(
+        self.pools.put(
             seed.division,
             Pool {
                 army: seed.pointer,
@@ -1416,7 +1490,7 @@ impl Store {
                 "state attrition refusal allocation failed",
             )?;
         }
-        self.states.insert(
+        self.states.put(
             (id, country),
             State {
                 slot: reads
@@ -1438,6 +1512,7 @@ impl Store {
                 gone.push(division);
             }
         }
+        gone.sort_unstable();
         for division in gone {
             let pool = self.pools.remove(&division).unwrap();
             self.membership_bytes = self.membership_bytes.saturating_sub(
@@ -1461,6 +1536,7 @@ impl Store {
                 gone.push(handle);
             }
         }
+        gone.sort_unstable();
         for handle in gone {
             let held = self.variants.remove(&handle).unwrap();
             if self.variant_handles.get(&held.pointer) == Some(&handle) {
@@ -1477,6 +1553,7 @@ impl Store {
                 gone.push(identity);
             }
         }
+        gone.sort_unstable();
         for (id, country) in gone {
             self.states.remove(&(id, country));
             let owner = ((id as u64) << 32) | country as u64;
@@ -1502,6 +1579,36 @@ mod tests {
         let stamp = if enabled { next | 1 } else { next & !1 };
         PROOF.store(stamp, std::sync::atomic::Ordering::SeqCst);
         operands::variant_availability(stamp, current);
+    }
+    #[test]
+    fn held_keys_replace_in_a_full_table_without_allocating() {
+        assert_eq!(table_bytes::<u64, u64>(0), 0);
+        assert_eq!(table_bytes::<u64, u64>(3), 4 * 16 + 4 + 16);
+        assert_eq!(table_bytes::<u64, u64>(14), 16 * 16 + 16 + 16);
+        let mut table = Table::<u64, u64>::default();
+        table.put(0, 0);
+        let full = table.capacity() as u64;
+        for key in 1..full {
+            table.put(key, 0);
+        }
+        assert_eq!(table.len() as u64, full);
+        assert_eq!(table.bytes, table_bytes::<u64, u64>(full as usize));
+        collector_test_support::with_allocations_denied(|| {
+            for key in 0..full {
+                table.put(key, key + 1);
+            }
+        });
+        assert_eq!(table.capacity() as u64, full);
+        assert!((0..full).all(|key| table[&key] == key + 1));
+        let bytes = table.bytes;
+        table.put(full, 0);
+        assert!(table.bytes > bytes);
+        assert_eq!(table.bytes, table_bytes::<u64, u64>(table.capacity()));
+        for key in 0..=full {
+            table.remove(&key);
+        }
+        table.clear();
+        assert_eq!(table.bytes, table_bytes::<u64, u64>(table.capacity()));
     }
     pub(super) static MEMBERSHIP_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub(super) struct Enabled;
@@ -2120,7 +2227,7 @@ mod tests {
         let mut store = Store::default();
         let pointer = 0x100;
         for (handle, refs) in [(7, 0), (8, 1)] {
-            store.variants.insert(
+            store.variants.put(
                 handle,
                 Variant {
                     lifetime: None,
@@ -2132,7 +2239,7 @@ mod tests {
                 },
             );
         }
-        store.variant_handles.insert(pointer, 8);
+        store.variant_handles.put(pointer, 8);
         store.prune().unwrap();
         assert!(!store.variants.contains_key(&7));
         assert_eq!(store.variants[&8].refs, 1);
