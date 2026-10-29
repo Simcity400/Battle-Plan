@@ -1299,7 +1299,8 @@ type OrganisationPictures = (
 
 #[derive(Default)]
 struct Cache {
-    icons: Option<Arc<IconContent>>,
+    /// The icon content of the catalogue it was read from, with what reading it noted.
+    icons: Option<(Arc<Catalogue>, catalogue::Drawn<Arc<IconContent>>)>,
     /// Organisation pictures of the catalogue they were drawn through: a request for another
     /// catalogue never reads them, and a draw finishing after the content changed is stored
     /// only under its own catalogue, never served to another.
@@ -1473,21 +1474,22 @@ fn scan_content(
         Some(catalogue) => {
             let cached = {
                 let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache.icons.clone().filter(|icons| {
-                    icons
-                        .catalogue
-                        .as_ref()
-                        .is_some_and(|cached| Arc::ptr_eq(cached, catalogue))
-                })
+                cache
+                    .icons
+                    .as_ref()
+                    .filter(|(held, _)| Arc::ptr_eq(held, catalogue))
+                    .map(|(_, icons)| icons.clone())
             };
             match cached {
-                Some(icons) => Some(icons),
-                None => match IconContent::load(Arc::clone(catalogue)) {
+                Some(icons) => Some(Arc::clone(icons.get())),
+                None => match catalogue::Drawn::try_new(|| {
+                    IconContent::load(Arc::clone(catalogue)).map(Arc::new)
+                }) {
                     Ok(icons) => {
-                        let icons = Arc::new(icons);
+                        let shown = Arc::clone(icons.get());
                         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                        cache.icons = Some(Arc::clone(&icons));
-                        Some(icons)
+                        cache.icons = Some((Arc::clone(catalogue), icons));
+                        Some(shown)
                     }
                     Err(error) => {
                         warnings.push(format!("Equipment icons are unavailable: {error}"));
@@ -1648,32 +1650,6 @@ impl Product for ProductionLines {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        Self::reply(source, params, context, cancelled, true)
-    }
-}
-
-/// The catalogue's shared refusals as a production lines reply names them, read where the
-/// reply is served rather than computed ([`ProductionLines::reply`]).
-pub fn shared_refusals(
-    source: &Source,
-    content: Option<&crate::config::ContentOptions>,
-) -> Vec<String> {
-    content
-        .and_then(|content| catalogue::recorded_catalogue(source, content).ok())
-        .map(|catalogue| catalogue.refusal_lines())
-        .unwrap_or_default()
-}
-
-impl ProductionLines {
-    /// The reply, naming the catalogue's shared refusals when `shared_refusals` asks: a reply
-    /// served by the prepared query names them as it is served ([`shared_refusals`]).
-    pub fn reply(
-        source: &Source,
-        params: &ProductionLinesParams,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-        shared_refusals: bool,
-    ) -> io::Result<ProductionLinesReply> {
         let mut warnings = Vec::new();
         let (catalogue, scanned, approximate) = scanned_view(
             source,
@@ -1820,7 +1796,7 @@ impl ProductionLines {
                 params.tag
             ));
         }
-        if shared_refusals && let Some(catalogue) = &catalogue {
+        if let Some(catalogue) = &catalogue {
             warnings.extend(catalogue.refusal_lines());
         }
         bounded(

@@ -164,39 +164,39 @@ impl<K: Ord + Clone, T> KeyedResults<K, T> {
     }
 }
 
-/// A memoised artwork result with what its render drew from the recording because the
-/// visual mods could not supply it, replayed to every consumer that uses it
-/// (`installed_content_core::content::credit_overlay_refusals`), so a widget served from the memo
-/// names the fallback as the widget that first drew it did.
+/// A memoised result with everything its render noted: the texts it refused, the lazy readers
+/// it used and what it drew from the recording because the visual mods could not supply it,
+/// replayed to every consumer that uses it ([`credit`]), so a reply served from the memo names
+/// them as the reply that first rendered it did.
 #[derive(Clone)]
 pub struct Drawn<T> {
     value: T,
-    fallbacks: BTreeSet<String>,
+    noted: OwnRefusals,
 }
 
 impl<T> Drawn<T> {
-    /// `render`'s result, with every fallback noted on this thread while it ran.
+    /// `render`'s result, with everything noted on this thread while it ran.
     pub fn new(render: impl FnOnce() -> T) -> Self {
-        let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
-        Self { value, fallbacks }
+        let (value, noted) = capture(render);
+        Self { value, noted }
     }
 
-    /// [`Drawn::new`] for a render that can fail: a failure is returned rather than kept,
-    /// its fallbacks credited to the consumers active on this thread as a value's are.
+    /// [`Drawn::new`] for a render that can fail: a failure is returned rather than kept, what
+    /// it noted credited to the consumers active on this thread as a value's is.
     pub fn try_new<E>(render: impl FnOnce() -> Result<T, E>) -> Result<Self, E> {
-        let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+        let (value, noted) = capture(render);
         match value {
-            Ok(value) => Ok(Self { value, fallbacks }),
+            Ok(value) => Ok(Self { value, noted }),
             Err(error) => {
-                installed_content_core::content::credit_overlay_refusals(&fallbacks);
+                credit(&noted);
                 Err(error)
             }
         }
     }
 
-    /// The result, crediting its fallbacks to the consumers active on this thread.
+    /// The result, crediting what its render noted to the consumers active on this thread.
     pub fn get(&self) -> &T {
-        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
+        credit(&self.noted);
         &self.value
     }
 }
@@ -2806,6 +2806,35 @@ pub mod tests {
             1,
             "the second consumer used the cached result"
         );
+        assert_eq!(first, second);
+    }
+
+    /// A memo's render refused a text once, for whichever consumer drew it first; every consumer
+    /// that uses the memo reports the refusal.
+    #[test]
+    fn memos_credit_their_render_refusals_to_every_consumer() {
+        let (catalogue, _folder) = folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n GAP:0 \"a¤b\"\n",
+        )]);
+        let memo: std::sync::Mutex<Option<Drawn<Option<String>>>> = std::sync::Mutex::default();
+        let mut renders = 0;
+        let mut read = |consumer: &mut OwnRefusals| {
+            own_refusals(consumer, || {
+                let mut memo = memo.lock().unwrap();
+                let drawn = memo.get_or_insert_with(|| {
+                    renders += 1;
+                    Drawn::new(|| catalogue.localised("GAP", View::Plain))
+                });
+                assert_eq!(*drawn.get(), None);
+                catalogue.refusal_lines()
+            })
+        };
+        let (mut first, mut second) = (OwnRefusals::default(), OwnRefusals::default());
+        let lines = read(&mut first);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(read(&mut second), lines, "the second consumer used the memo");
+        assert_eq!(renders, 1);
         assert_eq!(first, second);
     }
 

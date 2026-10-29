@@ -494,6 +494,7 @@ pub fn query(
         base.types.extend(newest.types);
         base.recording_present |= newest.recording_present;
         base.warnings.extend(newest.warnings);
+        base.noted.merge(&newest.noted);
         exact = Some(span.first_hour);
         prefix.sampled(&[span]);
     }

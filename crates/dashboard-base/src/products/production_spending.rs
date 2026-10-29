@@ -405,9 +405,11 @@ fn rocket_name(
 }
 
 type RocketName = Result<(String, Option<String>), String>;
+/// The rocket source name per catalogue, with what localising it refused, credited to every
+/// reply that names it.
 #[derive(Default)]
 struct RocketNameCache {
-    content: Option<(Arc<crate::catalogue::Catalogue>, RocketName)>,
+    content: Option<(Arc<crate::catalogue::Catalogue>, crate::catalogue::Drawn<RocketName>)>,
 }
 
 fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalogue>) -> RocketName {
@@ -418,9 +420,11 @@ fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalog
         .as_ref()
         .is_some_and(|(cached, _)| Arc::ptr_eq(cached, catalogue))
     {
-        let name = installed_content_core::buildings::read(&catalogue.content.layers)
-            .map_err(|error| error.to_string())
-            .and_then(|buildings| rocket_name(&buildings, Some(&**catalogue)));
+        let name = crate::catalogue::Drawn::new(|| {
+            installed_content_core::buildings::read(&catalogue.content.layers)
+                .map_err(|error| error.to_string())
+                .and_then(|buildings| rocket_name(&buildings, Some(&**catalogue)))
+        });
         cache.content = Some((Arc::clone(catalogue), name));
     }
     cache
@@ -428,6 +432,7 @@ fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalog
         .as_ref()
         .expect("Rocket source name cached")
         .1
+        .get()
         .clone()
 }
 

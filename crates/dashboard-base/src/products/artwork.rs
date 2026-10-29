@@ -80,7 +80,7 @@ struct TechnologyName {
     presentation: Result<installed_content_core::technology::PresentationName, String>,
     /// The research folders it is placed in, in authored order.
     folders: Vec<String>,
-    children: std::sync::OnceLock<Result<Vec<String>, String>>,
+    children: std::sync::OnceLock<catalogue::Drawn<Result<Vec<String>, String>>>,
 }
 
 /// The game compares names with ASCII folding but keeps repeated templates in load order.
@@ -325,7 +325,7 @@ pub struct Context {
     folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
     /// Each folder's tab availability, decided once from content.
-    folder_availability: OnceLock<Vec<Option<bool>>>,
+    folder_availability: OnceLock<catalogue::Drawn<Vec<Option<bool>>>>,
 }
 
 /// The source's artwork context for the configured folders, loaded on first use.
@@ -556,24 +556,30 @@ impl Context {
         Vec<crate::ResearchTechnologyFolder>,
         Vec<String>,
     ) {
-        let availability = self.folder_availability.get_or_init(|| {
-            let world = self
-                .catalogue
-                .scripted_content()
-                .and_then(|content| content.unrecorded_trigger_world());
-            self.folder_definitions
-                .iter()
-                .map(|folder| match &folder.available {
-                    None => Some(true),
-                    Some(trigger) => world.as_ref().ok().and_then(|world| {
-                        world
-                            .evaluate(trigger, crate::triggers::Scopes::empty())
-                            .decided()
-                            .ok()
-                    }),
+        // Every reply using it names what reading the scripted content noted.
+        let availability = self
+            .folder_availability
+            .get_or_init(|| {
+                catalogue::Drawn::new(|| {
+                    let world = self
+                        .catalogue
+                        .scripted_content()
+                        .and_then(|content| content.unrecorded_trigger_world());
+                    self.folder_definitions
+                        .iter()
+                        .map(|folder| match &folder.available {
+                            None => Some(true),
+                            Some(trigger) => world.as_ref().ok().and_then(|world| {
+                                world
+                                    .evaluate(trigger, crate::triggers::Scopes::empty())
+                                    .decided()
+                                    .ok()
+                            }),
+                        })
+                        .collect()
                 })
-                .collect()
-        });
+            })
+            .get();
         let available: Vec<(&str, Option<bool>)> = self
             .folder_definitions
             .iter()
@@ -836,26 +842,31 @@ impl Context {
         &'a self,
         presentation: &'a TechnologyName,
     ) -> Result<&'a [String], String> {
+        // Every reply using them names what reading the scripted content noted.
         presentation
             .children
             .get_or_init(|| {
-                let presentation = presentation.presentation.as_ref().map_err(Clone::clone)?;
-                let registry = self
-                    .catalogue
-                    .content
-                    .layers
-                    .key_names()
-                    .map_err(|error| error.to_string())?;
-                let world = self
-                    .catalogue
-                    .scripted_content()
-                    .and_then(|content| content.unrecorded_trigger_world());
-                technology_children(
-                    presentation,
-                    world.as_ref().map_err(Clone::clone),
-                    registry.equipment_database(),
-                )
+                catalogue::Drawn::new(|| {
+                    let presentation =
+                        presentation.presentation.as_ref().map_err(Clone::clone)?;
+                    let registry = self
+                        .catalogue
+                        .content
+                        .layers
+                        .key_names()
+                        .map_err(|error| error.to_string())?;
+                    let world = self
+                        .catalogue
+                        .scripted_content()
+                        .and_then(|content| content.unrecorded_trigger_world());
+                    technology_children(
+                        presentation,
+                        world.as_ref().map_err(Clone::clone),
+                        registry.equipment_database(),
+                    )
+                })
             })
+            .get()
             .as_ref()
             .map(Vec::as_slice)
             .map_err(Clone::clone)
@@ -1058,7 +1069,7 @@ impl Context {
             .is_some()
             .then(|| self.technology(token, at).ok())
             .flatten()
-            .and_then(|name| name.children.get())
+            .and_then(|name| name.children.get().map(catalogue::Drawn::get))
         {
             findings.push(Finding::grouped(
                 Kind::Refused,

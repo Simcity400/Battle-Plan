@@ -400,7 +400,6 @@ fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
         unnamed.note("name localisation is missing or refused", &kind.token);
     }
     warnings.extend(unnamed.lines("raid type names"));
-    warnings.extend(cat.refusal_lines());
     Ok(Content {
         catalogue: cat,
         raids,
@@ -550,6 +549,9 @@ pub struct ScannedRaids {
     pub types: BTreeSet<String>,
     pub recording_present: bool,
     pub warnings: Vec<String>,
+    /// What localising its labels refused, credited to every reply that shows them.
+    #[serde(default)]
+    pub noted: catalogue::OwnRefusals,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1053,7 +1055,14 @@ impl Scan {
                         .ok_or_else(|| io::Error::other("Raid success count overflow"))?;
                 }
             }
-            let localise = |key| content.and_then(|c| localised_label(&c.catalogue, key));
+            let noted = &mut self.result.noted;
+            let mut localise = |key| {
+                content.and_then(|c| {
+                    let (label, own) = catalogue::capture(|| localised_label(&c.catalogue, key));
+                    noted.merge(&own);
+                    label
+                })
+            };
             if !(0..=native::PHASE_ENDED).contains(&row.phase) {
                 self.refusals
                     .note(format!("unsupported raid phase {}", row.phase), &id);
@@ -1623,6 +1632,7 @@ fn reply(
         warnings,
     };
     if let Some(scanned) = scanned {
+        catalogue::credit(&scanned.noted);
         if scanned.recording_present {
             reply.available = Some(true);
             reply.unavailable = None;

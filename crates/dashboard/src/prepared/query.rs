@@ -99,9 +99,8 @@ struct CachedQuery {
     /// What computing `data` drew in the recording's style because the source's visual mods
     /// could not supply it, named on every reply served from it.
     fallbacks: std::collections::BTreeSet<String>,
-    /// Whether computing `data` may have read or added to state of the whole session, which no
-    /// key captures: a catalogue's shared refusals or reader warnings, the content's fallbacks,
-    /// or drawing diagnostics.
+    /// Whether computing `data` added to state of the whole session, which no key captures:
+    /// the content's fallbacks or drawing diagnostics.
     session: bool,
 }
 
@@ -645,9 +644,8 @@ fn query_data(
                     let params: ProductionLinesParams =
                         serde_json::from_value(request.params.clone())?;
                     ProductionLines::validate(&params).map_err(crate::invalid)?;
-                    // The catalogue's shared refusals are named as the reply is served.
-                    serde_json::to_value(ProductionLines::reply(
-                        source, &params, &context, cancelled, false,
+                    serde_json::to_value(ProductionLines::load(
+                        source, &params, &context, cancelled,
                     )?)?
                 }
                 "production-line-detail" => {
@@ -3075,9 +3073,10 @@ pub fn query(
         COMPUTED.with(|count| count.set(count.get() + 1));
         let scope = cache_product(&request.product)
             .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
-        // A tally read or refusal noted on another thread goes unseen: products do both here.
-        let shared = dashboard_text::catalogue::shared_reads();
-        let ((data, short), noted) = dashboard_text::catalogue::capture(|| {
+        // The answer names its own refusals, with those the shared loads it reused noted, never
+        // the session's: the same whichever answers ran before it.
+        let mut noted = dashboard_text::catalogue::OwnRefusals::default();
+        let (data, short) = dashboard_text::catalogue::own_refusals(&mut noted, || {
             #[cfg(test)]
             if let (Some(note), Some(content)) = (COMPUTING.with(std::cell::Cell::get), content) {
                 note(source, content);
@@ -3089,12 +3088,9 @@ pub fn query(
             data: data?,
             short,
             summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
-            // A text refusal or fallback joins the session's shared tallies when first noted:
-            // an answer that noted one, served from disk, would leave it out of later replies.
-            session: dashboard_text::catalogue::shared_reads() != shared
-                || noted.refuses_texts()
-                || !fallbacks.is_empty()
-                || drawn(source, content),
+            // A fallback joins the stack's read warnings, which every reply names, when first
+            // noted: an answer that noted one, served from disk, would leave it out of them.
+            session: !fallbacks.is_empty() || drawn(source, content),
             fallbacks,
         })
     };

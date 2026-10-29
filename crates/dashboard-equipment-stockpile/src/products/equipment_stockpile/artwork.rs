@@ -179,8 +179,8 @@ fn best_variants(
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
-    content: Option<Arc<IconContent>>,
-    recorded: Option<Arc<IconContent>>,
+    content: Option<catalogue::Drawn<Arc<IconContent>>>,
+    recorded: Option<catalogue::Drawn<Arc<IconContent>>>,
     images: Images,
 }
 
@@ -374,15 +374,20 @@ impl StockpileArtwork {
             let recorded = catalogue
                 .recorded()
                 .map(|recorded| {
-                    IconContent::with_equipment(Arc::clone(recorded), Some(Arc::clone(&database)))
+                    catalogue::Drawn::try_new(|| {
+                        IconContent::with_equipment(
+                            Arc::clone(recorded),
+                            Some(Arc::clone(&database)),
+                        )
                         .map(Arc::new)
+                    })
                 })
                 .transpose()?;
             *cache = Cache {
-                content: Some(Arc::new(IconContent::with_equipment(
-                    Arc::clone(&catalogue),
-                    Some(database),
-                )?)),
+                content: Some(catalogue::Drawn::try_new(|| {
+                    IconContent::with_equipment(Arc::clone(&catalogue), Some(database))
+                        .map(Arc::new)
+                })?),
                 recorded,
                 catalogue: Some(Arc::clone(&catalogue)),
                 images: Images::default(),
@@ -394,7 +399,9 @@ impl StockpileArtwork {
             images,
             ..
         } = &mut *cache;
-        let content = content.as_ref().expect("icon content prepared");
+        // Every reply names what reading both contents noted, as the reply that read them did.
+        let content = content.as_ref().expect("icon content prepared").get();
+        let recorded = recorded.as_ref().map(catalogue::Drawn::get);
         reply.warnings.extend(content.warnings());
         // The hour's operands are recorded facts, read alike from either content.
         let icon_hour = IconHour::read(&frame, content)?;
@@ -425,7 +432,7 @@ impl StockpileArtwork {
                 |cat| {
                     let drawing_recorded = !std::ptr::eq(cat, &*catalogue);
                     let content = if drawing_recorded {
-                        recorded.as_ref().expect("the recording's icon content prepared")
+                        recorded.expect("the recording's icon content prepared")
                     } else {
                         content
                     };

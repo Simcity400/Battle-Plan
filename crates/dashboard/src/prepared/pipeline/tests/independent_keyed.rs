@@ -152,38 +152,39 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         fresh
     );
     assert_eq!(computed() - before, 6, "answered from disk");
-    // An answer whose computing noted a text refusal or a fallback is not kept: served from disk,
-    // it would leave them out of the session's shared tallies that later replies report.
+    // An answer whose computing noted a fallback is not kept: served from disk, it would leave
+    // the fallback out of the stack's read warnings, which every reply names.
     let third = serde_json::json!({"branchId":"1","tag":"GER","view":"history","firstHour":12,"lastHour":18});
-    let notes: [(&str, fn(&Source, &ContentOptions)); 2] = [
-        ("disk-refused", |source: &Source, content: &ContentOptions| {
-            crate::catalogue::catalogue(source, content)
-                .unwrap()
-                .refuse("synthetic reason", "SYNTHETIC")
-        }),
-        ("disk-fallback", |source: &Source, content: &ContentOptions| {
-            source
-                .content(&content.options)
-                .unwrap()
-                .layers
-                .note_overlay_refusal("synthetic fallback".into())
-        }),
-    ];
     let computing = |note: Option<fn(&Source, &ContentOptions)>| {
         super::super::super::query::COMPUTING.with(|hook| hook.set(note))
     };
-    for (count, (name, note)) in (7..).zip(notes) {
-        let size = kept();
-        computing(Some(note));
-        query_with(&fixture.source(name), &content, "air-missions", third.clone());
-        computing(None);
-        assert_eq!(computed() - before, count, "{name}");
-        assert_eq!(kept(), size, "{name}: not kept");
-    }
     let size = kept();
-    query_with(&fixture.source("disk-plain"), &content, "air-missions", third);
-    assert_eq!(computed() - before, 9);
-    assert!(kept() > size, "kept where computing noted neither");
+    computing(Some(|source: &Source, content: &ContentOptions| {
+        source
+            .content(&content.options)
+            .unwrap()
+            .layers
+            .note_overlay_refusal("synthetic fallback".into())
+    }));
+    query_with(&fixture.source("disk-fallback"), &content, "air-missions", third.clone());
+    computing(None);
+    assert_eq!(computed() - before, 7);
+    assert_eq!(kept(), size, "not kept beside a fallback");
+    // A text refusal noted while computing is the answer's own, named wherever it is served,
+    // and every other reply names only its own: the answer is kept.
+    computing(Some(|source: &Source, content: &ContentOptions| {
+        crate::catalogue::catalogue(source, content)
+            .unwrap()
+            .refuse("synthetic reason", "SYNTHETIC")
+    }));
+    query_with(&fixture.source("disk-refused"), &content, "air-missions", third.clone());
+    computing(None);
+    assert_eq!(computed() - before, 8);
+    assert!(kept() > size, "kept beside its own text refusal");
+    let plain = fixture.source("disk-plain");
+    read_ahead(&plain);
+    query_with(&plain, &content, "air-missions", third);
+    assert_eq!(computed() - before, 8, "answered from disk");
     // Preparing again after a Clear publishes new pages: the kept answer is not served.
     super::super::super::files(&later, Some(&content))
         .unwrap()
@@ -196,7 +197,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&again, &content, "air-missions", params),
         prepared
     );
-    assert_eq!(computed() - before, 10, "computed for the new publication");
+    assert_eq!(computed() - before, 9, "computed for the new publication");
     super::super::super::files(&again, Some(&content))
         .unwrap()
         .0

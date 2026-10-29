@@ -208,11 +208,13 @@ fn load_json<P: Product>(
     let data = match stored {
         Some(data) => data,
         None => {
-            // What this reply drew in the recording's style because the selected visual mods
-            // could not supply it, named and counted as the map names its own: the reply's
-            // own fallbacks, with those of shared loads it reused.
-            let (data, own) =
-                crate::catalogue::capture(|| P::load(source, &params, context, cancelled));
+            // The reply names what it refused and drew in the recording's style itself, with
+            // what the shared loads it reused noted, never what other consumers did: the same
+            // whichever replies ran before it.
+            let mut own = crate::catalogue::OwnRefusals::default();
+            let data = crate::catalogue::own_refusals(&mut own, || {
+                P::load(source, &params, context, cancelled)
+            });
             let mut data = data.map_err(|error| error.to_string())?;
             if P::CONTENT_DEPENDENT {
                 source.append_reply_warnings(data.warnings_mut(), context.content.as_ref());
@@ -419,6 +421,8 @@ mod recording_tests;
 
 #[cfg(test)]
 mod casualty_route_tests;
+#[cfg(test)]
+mod own_refusal_tests;
 #[cfg(test)]
 mod presentation_tests;
 #[cfg(test)]
