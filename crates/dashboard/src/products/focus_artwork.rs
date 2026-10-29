@@ -4,9 +4,9 @@ use crate::{
     Artwork, FocusDatabase, Source,
     metadata::{check_cancel, validate_campaign},
 };
-use replay::container::Replay;
+use replay::container::{Replay, SeekResult};
 use replay_data::rows::TableId;
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableView};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -329,7 +329,8 @@ impl FrameCache {
     }
 }
 
-/// Reconstruct one exact hour without holding the shared cache mutex.
+/// Reconstruct one exact hour without holding the shared cache mutex, reading its block only
+/// through that hour, then checking the whole block before the frame is kept.
 fn read_frame(
     replay: &Replay,
     branch: u64,
@@ -349,27 +350,28 @@ fn read_frame(
         selected.insert(TableId::Clock);
     }
     let selected: Vec<_> = selected.into_iter().collect();
-    let mut decoder = FrameDecoder::for_tables(&selected);
-    let mut found = None;
-    replay.visit_block(block, Some(&selected), |frame| {
-        check_cancel(cancelled)?;
-        if frame.hour > hour {
-            return Ok(false);
-        }
-        let decoded = decoder.advance(&frame)?;
-        validate_campaign(decoded, replay)?;
-        if frame.hour == hour {
-            check_cancel(cancelled)?;
-            found = Some(decoded.clone());
-            return Ok(false);
-        }
-        Ok(true)
-    })?;
-    // Only retain a frame after the replay reader has verified its block.
-    let decoded = found.ok_or_else(|| io::Error::other("Focus artwork hour was not recorded"))?;
+    let decoded =
+        match replay.seek_selected_with(branch, hour, Some(&selected), || check_cancel(cancelled))? {
+            SeekResult::Frame(decoded) => decoded,
+            // The seek names a frame of another campaign, or a block it cannot read, as a gap.
+            SeekResult::Gap { reason, .. }
+                if reason == CAMPAIGN_DIFFERS || reason.starts_with("unreadable block") =>
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, reason));
+            }
+            SeekResult::Gap { .. } => {
+                return Err(io::Error::other("Focus artwork hour was not recorded"));
+            }
+        };
+    validate_campaign(&decoded, replay)?;
+    // Only a frame of a verified block is kept.
+    replay.verify_block_with(block, || check_cancel(cancelled))?;
     check_cancel(cancelled)?;
-    Ok(decoded)
+    Ok(*decoded)
 }
+
+/// How a seek names a frame whose campaign is not the recording's.
+const CAMPAIGN_DIFFERS: &str = "frame campaign identity differs from replay header";
 
 impl Product for FocusArtwork {
     const KEY: &'static str = "focus-artwork";
