@@ -563,3 +563,56 @@ fn a_run_start_walks_from_empty_tables() {
         );
     }
 }
+
+/// A walk restores only the tables its recording selects: a damaged restart table it does
+/// not select is never read, and reading the rows, changes or views of a table it skips is
+/// refused. A recording selecting nothing clears what an earlier walk's state skipped.
+#[test]
+fn a_selection_restores_only_its_tables_and_refuses_reads_of_the_rest() {
+    let runs = [(1, 0, 2 * envelope::UNIT_ORDINALS)];
+    let damaged = TableId::Divisions.index() as u32;
+    let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
+        if let Some(restart) = &mut page.restart {
+            for table in restart
+                .tables
+                .iter_mut()
+                .filter(|table| table.table == damaged)
+            {
+                table.extent.digest[0] ^= 1;
+            }
+        }
+    });
+    let whole = Recording::open(bytes.clone()).unwrap();
+    let mut selected = Recording::open(bytes).unwrap();
+    selected.select(&[TableId::Campaign, TableId::Countries]);
+    let restart = whole
+        .segments()
+        .into_iter()
+        .find(|segment| segment.restart.is_some())
+        .unwrap();
+    let mut state = State::new(schema().unwrap()).unwrap();
+    assert!(whole.begin_segment(&restart, &mut state).is_err());
+    let mut state = State::new(schema().unwrap()).unwrap();
+    selected.begin_segment(&restart, &mut state).unwrap();
+    assert!(state.skips(TableId::Divisions.index()) && !state.skips(TableId::Countries.index()));
+    assert!(crate::columns::table(&state, TableId::Divisions).is_err());
+    assert!(crate::columns::changes(&state, TableId::Divisions).is_err());
+    assert!(crate::columns::table(&state, TableId::Countries).is_ok());
+    let views =
+        |tables: &[TableId]| Views::new(tables, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    assert!(views(&[TableId::Countries]).restored(&state, 1, 0).is_ok());
+    let refused = views(&[TableId::Divisions])
+        .restored(&state, 1, 0)
+        .unwrap_err();
+    assert!(refused.to_string().contains("Divisions"), "{refused}");
+    // A restore installs its recording's selection, and one selecting nothing clears it.
+    let mut restored = State::new(schema().unwrap()).unwrap();
+    let page = restart.restart.unwrap();
+    selected.restore(restart.run, page, &mut restored).unwrap();
+    assert!(crate::columns::table(&restored, TableId::Divisions).is_err());
+    let clean = Recording::open(recording(&runs, every(&runs), 1, |_| {}).0).unwrap();
+    clean.restore(restart.run, page, &mut restored).unwrap();
+    assert!((0..TABLE_COUNT).all(|table| !restored.skips(table)));
+    clean.begin_segment(&restart, &mut state).unwrap();
+    assert!((0..TABLE_COUNT).all(|table| !state.skips(table)));
+}

@@ -84,6 +84,8 @@ pub struct State {
     views: Vec<Vec<u32>>,
     /// Tables whose changes the last hour set, to clear before the next.
     present: Vec<usize>,
+    /// Tables whose sections are not applied: no reader of the walk reads them.
+    skipped: Vec<bool>,
     dictionary: Dictionary,
     scratch: Scratch,
 }
@@ -103,6 +105,7 @@ impl State {
             statuses: engine_allocation::filled(count, Status::NotRecorded)?,
             sampled: engine_allocation::filled(count, None)?,
             views: engine_allocation::collect_vec((0..count).map(|_| Vec::new()))?,
+            skipped: engine_allocation::filled(count, false)?,
             kinds: schema,
             present: Vec::new(),
             dictionary: Dictionary::default(),
@@ -113,6 +116,21 @@ impl State {
     /// Each table's column count, as a manifest is read with.
     pub fn columns(&self) -> &[usize] {
         &self.columns
+    }
+
+    /// Leaves the sections of the tables `skipped` marks unapplied from the next hour on:
+    /// they keep their rows and record no changes. Their statuses still follow each hour.
+    pub fn skip(&mut self, skipped: &[bool]) -> io::Result<()> {
+        if skipped.len() != self.skipped.len() {
+            return Err(invalid("A selection disagrees with the schema's tables"));
+        }
+        self.skipped.copy_from_slice(skipped);
+        Ok(())
+    }
+
+    /// Whether `table`'s sections are left unapplied.
+    pub fn skips(&self, table: usize) -> bool {
+        self.skipped.get(table).copied().unwrap_or(false)
     }
 
     pub fn table(&self, table: usize) -> Option<&Table> {
@@ -171,8 +189,8 @@ impl State {
         Ok(())
     }
 
-    /// Applies one hour: its appends, statuses and every present section, whose bytes
-    /// `section(index)` gives for the manifest's `index`th section.
+    /// Applies one hour: its appends, statuses and every present section of a table it does
+    /// not skip, whose bytes `section(index)` gives for the manifest's `index`th section.
     pub fn apply<'s>(
         &mut self,
         manifest: &Manifest<'_>,
@@ -226,11 +244,14 @@ impl State {
             }
         }
         for (index, entry) in manifest.sections.iter().enumerate() {
+            let table = entry.table;
+            if self.skipped[table] {
+                continue;
+            }
             let bytes = section(index)?;
             if bytes.len() as u64 != entry.bytes {
                 return Err(invalid("Section length differs from its manifest's"));
             }
-            let table = entry.table;
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
             section::apply(
                 bytes,

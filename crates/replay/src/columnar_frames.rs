@@ -317,6 +317,9 @@ impl Views {
         baseline: i32,
     ) -> io::Result<SharedView> {
         let index = id.index();
+        if state.skips(index) {
+            return Err(invalid(format!("{id:?} is not read by this walk")));
+        }
         let status = state
             .status(index)
             .ok_or_else(|| invalid("The walker holds no such table"))?;
@@ -516,6 +519,8 @@ pub struct Recording {
     pages: Vec<Vec<Result<IndexPage, String>>>,
     /// Whether walks check every hour against the pages' hour digest chain.
     verify: bool,
+    /// The tables walks restore and apply; every table when None.
+    selected: Option<Vec<bool>>,
 }
 
 /// Hours a walk can take on its own: from its run's start or from a restart, through the
@@ -604,10 +609,33 @@ impl Recording {
             runs,
             pages,
             verify: false,
+            selected: None,
         })
     }
 
     /// Makes every walk check each hour against the hour digest chain the pages hold.
+    /// Walks restore, read and apply only `tables`, the tables their readers read; the others
+    /// keep their statuses and no rows. A walk that verifies still reads every unit.
+    pub fn select(&mut self, tables: &[TableId]) {
+        let mut selected = vec![false; TABLE_COUNT];
+        for table in tables {
+            selected[table.index()] = true;
+        }
+        self.selected = Some(selected);
+    }
+
+    fn selects(&self, table: usize) -> bool {
+        self.selected
+            .as_ref()
+            .is_none_or(|selected| selected.get(table).copied().unwrap_or(false))
+    }
+
+    /// Applies the selection to a walk's `state`, clearing any an earlier walk left.
+    fn select_in(&self, state: &mut State) -> io::Result<()> {
+        let skipped: Vec<bool> = (0..TABLE_COUNT).map(|table| !self.selects(table)).collect();
+        state.skip(&skipped)
+    }
+
     pub fn verify(&mut self, verify: bool) {
         self.verify = verify;
     }
@@ -707,8 +735,12 @@ impl Recording {
             .collect();
         streams.dedup();
         for stream in streams {
+            let table = (stream - 1) as usize;
+            if !self.verify && !self.selects(table) {
+                continue;
+            }
             *tables
-                .get_mut((stream - 1) as usize)
+                .get_mut(table)
                 .ok_or_else(|| invalid("A unit names a stream past the schema"))? =
                 self.stream(page, stream)?;
         }
@@ -803,13 +835,17 @@ impl Recording {
             chunks.push(chunk);
         }
         state.restore_dictionary(chunks.iter().map(Vec::as_slice))?;
-        for table in &restart.tables {
+        for table in restart
+            .tables
+            .iter()
+            .filter(|table| self.selects(table.table as usize))
+        {
             state.restore(
                 table.table as usize,
                 &extent_bytes(&self.bytes, &table.extent)?,
             )?;
         }
-        Ok(())
+        self.select_in(state)
     }
 
     /// Every readable run's hours in order, each run from empty tables: the walker's state
@@ -828,6 +864,7 @@ impl Recording {
             }
             if segment.restart.is_none() {
                 *state = State::new(schema()?)?;
+                self.select_in(state)?;
             }
             self.walk_hours(&segment, state, &mut |state, manifest, starts| {
                 going = visit(state, manifest, starts && segment.restart.is_none())?;
@@ -856,7 +893,7 @@ impl Recording {
             Some(at) => self.restore(segment.run, at, state),
             None => {
                 *state = State::new(schema()?)?;
-                Ok(())
+                self.select_in(state)
             }
         }
     }
@@ -930,6 +967,10 @@ impl Recording {
                 }
                 let mut sections = engine_allocation::vec(manifest.sections.len())?;
                 for section in &manifest.sections {
+                    if !self.verify && state.skips(section.table) {
+                        sections.push(&[][..]);
+                        continue;
+                    }
                     let (reader, unit) = readers
                         .get_mut(section.table)
                         .and_then(Option::as_mut)

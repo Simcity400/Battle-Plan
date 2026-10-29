@@ -404,3 +404,48 @@ fn a_truncated_view_drops_deleted_rows_and_holds_a_reused_slot_once() {
         assert_eq!(restarts(&walked).as_deref(), Some(view));
     }
 }
+
+/// A skipped table's sections are not asked for: it keeps its rows and records no changes,
+/// while its status follows the hour and the tables read apply as before.
+#[test]
+fn a_skipped_table_keeps_its_rows_and_records_no_changes() {
+    let mut state = State::new(schema()).unwrap();
+    state.skip(&[false, true]).unwrap();
+    let first = write(
+        &schema()[0],
+        &TableHour {
+            read: None,
+            changed: &[],
+            deleted: &[],
+            inserted: &[0],
+            keys: &[10],
+            inserts: &[Values::U32(&[1]), Values::Bytes(&[0])],
+            runs: &[],
+            touched: &[],
+            unrecorded: &[],
+        },
+    )
+    .unwrap();
+    let hour = Manifest {
+        appends: vec![&b"GER"[..]],
+        statuses: vec![Status::Complete, Status::Unavailable { reason: 0 }],
+        sections: vec![
+            section_entry(0, &first, 0b11),
+            section_entry(1, b"unread", 1),
+        ],
+        ..quiet(100)
+    };
+    state
+        .apply(&hour, |index| {
+            assert_eq!(index, 0, "a skipped table's section is never read");
+            Ok(first.as_slice())
+        })
+        .unwrap();
+    assert!(state.skips(1) && !state.skips(0));
+    assert_eq!(state.table(0).unwrap().slot(10), Some(0));
+    assert_eq!(state.changes(0).unwrap().inserted, [0]);
+    assert_eq!(state.table(1).unwrap().live().count(), 0);
+    assert!(state.changes(1).unwrap().inserted.is_empty());
+    assert_eq!(state.status(1), Some(Status::Unavailable { reason: 0 }));
+    assert!(state.skip(&[false]).is_err());
+}

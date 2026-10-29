@@ -7,7 +7,8 @@
 //! `--prepared` it only measures, flushing once at the end.
 //! `columnar-family-check --family stability|supply|division-log --recording <r.battleplan>
 //!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
-//! A family reading game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
+//! Both walks read only the family's tables; `--all-tables` walks every one. A family reading
+//! game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
 //! also reports the CPU each accounting scope charged over both walks.
 
 use dashboard::prepared_stability::StabilityAccumulator;
@@ -319,11 +320,16 @@ fn run() -> io::Result<()> {
     let (mut recording, mut columnar, mut prepared, mut output) = (None, None, None, None);
     let mut family = "stability".to_owned();
     let mut scopes = false;
+    let mut all_tables = false;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--scopes" {
             scopes = true;
+            continue;
+        }
+        if flag == "--all-tables" {
+            all_tables = true;
             continue;
         }
         let value = args.next().ok_or_else(usage)?;
@@ -413,9 +419,17 @@ fn run() -> io::Result<()> {
         block_ends.insert((block.branch, block.last_hour), *ordinal);
         *ordinal += 1;
     }
-    let file = Recording::open(std::fs::read(&columnar)?)?;
+    let mut file = Recording::open(std::fs::read(&columnar)?)?;
     if let Some(damage) = file.damage().first() {
         return Err(invalid(format!("The columnar file is damaged: {damage}")));
+    }
+    // Both walks read only the family's tables, unless asked for every one.
+    if !all_tables {
+        file.select(match family.as_str() {
+            "supply" => supply_health::prepared::TABLES,
+            "division-log" => division_log::block::FAMILY.tables,
+            _ => stability::TABLES,
+        });
     }
 
     let store = dashboard::prepared::recording_store(&recording)?;

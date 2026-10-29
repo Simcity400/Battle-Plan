@@ -1,6 +1,8 @@
 //! A walked table's fields as typed slices by slot, for operators that read columns in place
 //! ([`crate::segments`]), and a slot's row built from its columns where an operator needs
-//! the row itself. A table's columns are its schema's fields, in order.
+//! the row itself. A table's columns are its schema's fields, in order. A table the walk does
+//! not read ([`crate::columnar_frames::Recording::select`]) has a status but no rows or
+//! changes: reading them is refused.
 
 use crate::rows::{RowCodec, TableId};
 pub use replay_columnar::manifest::Status;
@@ -22,8 +24,17 @@ pub fn field(table: TableId, name: &str) -> io::Result<usize> {
         .ok_or_else(|| invalid(format!("{table:?} has no field {name}")))
 }
 
+/// Refuses `table` when the walk does not read it.
+fn read(state: &State, table: TableId) -> io::Result<()> {
+    if state.skips(table.index()) {
+        return Err(invalid(format!("{table:?} is not read by this walk")));
+    }
+    Ok(())
+}
+
 /// `table`'s walked state.
 pub fn table(state: &State, table: TableId) -> io::Result<&Table> {
+    read(state, table)?;
     state
         .table(table.index())
         .ok_or_else(|| invalid(format!("The walker holds no {table:?}")))
@@ -48,15 +59,18 @@ pub fn unavailable(state: &State, table: TableId) -> bool {
     )
 }
 
-/// The slots a truncated `table` read this hour, ascending; None when it is not truncated.
+/// The slots a truncated `table` read this hour, ascending; None when it is not truncated or
+/// the walk does not read it.
 pub fn truncated(state: &State, table: TableId) -> Option<&[u32]> {
-    matches!(state.status(table.index()), Some(Status::Truncated { .. }))
-        .then(|| state.truncated_view(table.index()))
-        .flatten()
+    (!state.skips(table.index())
+        && matches!(state.status(table.index()), Some(Status::Truncated { .. })))
+    .then(|| state.truncated_view(table.index()))
+    .flatten()
 }
 
 /// What the hour changed in `table`.
 pub fn changes(state: &State, table: TableId) -> io::Result<&Changes> {
+    read(state, table)?;
     state
         .changes(table.index())
         .ok_or_else(|| invalid(format!("The walker holds no {table:?}")))
