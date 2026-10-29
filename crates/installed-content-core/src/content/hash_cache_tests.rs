@@ -86,19 +86,41 @@ impl Fixture {
     }
 
     fn cache_path(&self) -> PathBuf {
-        self.options.cache_dir.join("content-hashes-v1.json")
+        self.options.cache_dir.join(HASH_CACHE)
     }
 
     fn cache(&self) -> HashCache {
-        serde_json::from_slice(&fs::read(self.cache_path()).unwrap()).unwrap()
+        HashCache::decode(&fs::read(self.cache_path()).unwrap()).unwrap()
     }
 
-    fn mark_cache_bytes(&self) -> Vec<u8> {
-        let mut bytes = fs::read(self.cache_path()).unwrap();
-        bytes.extend_from_slice(b" \r\n\t");
-        fs::write(self.cache_path(), &bytes).unwrap();
-        bytes
+    /// The cache's bytes, its time set far in the past, so that any write of it shows.
+    fn mark_cache(&self) -> Marked {
+        let time = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        fs::File::options()
+            .write(true)
+            .open(self.cache_path())
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+        Marked {
+            bytes: fs::read(self.cache_path()).unwrap(),
+            time,
+        }
     }
+
+    /// That the cache was not written since `marked`.
+    fn assert_unwritten(&self, marked: &Marked) {
+        assert_eq!(fs::read(self.cache_path()).unwrap(), marked.bytes);
+        assert_eq!(
+            fs::metadata(self.cache_path()).unwrap().modified().unwrap(),
+            marked.time
+        );
+    }
+}
+
+struct Marked {
+    bytes: Vec<u8>,
+    time: std::time::SystemTime,
 }
 
 impl Drop for Fixture {
@@ -110,9 +132,9 @@ impl Drop for Fixture {
 #[test]
 fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
     let fixture = Fixture::new("unchanged");
-    let expected = fixture.mark_cache_bytes();
+    let expected = fixture.mark_cache();
     let resolved = resolve(&fixture.identity, &fixture.options).unwrap();
-    assert_eq!(fs::read(fixture.cache_path()).unwrap(), expected);
+    fixture.assert_unwritten(&expected);
     assert_eq!(resolved.stats.files, 3);
     assert_eq!(resolved.stats.files_read, 0);
     assert_eq!(resolved.stats.bytes_read, 0);
@@ -130,7 +152,7 @@ fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
             .to_string()
             .contains("Game vanilla: content hash mismatch")
     );
-    assert_eq!(fs::read(fixture.cache_path()).unwrap(), expected);
+    fixture.assert_unwritten(&expected);
 }
 
 #[test]
@@ -181,33 +203,25 @@ fn missing_or_malformed_hash_cache_is_rebuilt_without_changing_schema() {
         assert_eq!(resolved.stats.files, 3);
         assert_eq!(resolved.stats.cache_hits, 0);
         let bytes = fs::read(fixture.cache_path()).unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(
-            value
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["entries"]
-        );
-        let actual: HashCache = serde_json::from_slice(&bytes).unwrap();
+        assert!(bytes.starts_with(HASH_CACHE_MAGIC));
+        let actual = HashCache::decode(&bytes).unwrap();
+        assert_eq!(actual.encode(), bytes, "written as it decodes");
         assert!(!actual.dirty);
         assert_eq!(actual.entries.len(), expected.entries.len());
         for (key, entry) in expected.entries {
             assert_eq!(actual.get(&key, &entry.stamp), Some(entry.hash));
         }
-        let marked = fixture.mark_cache_bytes();
+        let marked = fixture.mark_cache();
         let warm = resolve(&fixture.identity, &fixture.options).unwrap();
         assert_eq!(warm.stats.files_read, 0);
-        assert_eq!(fs::read(fixture.cache_path()).unwrap(), marked);
+        fixture.assert_unwritten(&marked);
     }
 }
 
 #[test]
 fn changed_hash_entries_persist_even_when_identity_verification_fails() {
     let fixture = Fixture::new("changed");
-    let previous = fixture.mark_cache_bytes();
+    let previous = fixture.mark_cache();
     let file = fixture.options.game_dir.join("common/a.txt");
     let replacement = b"changed content with a different size";
     fs::write(&file, replacement).unwrap();
@@ -229,15 +243,15 @@ fn changed_hash_entries_persist_even_when_identity_verification_fails() {
         ),
         Some(Sha256::digest(replacement).into())
     );
-    assert_ne!(fs::read(fixture.cache_path()).unwrap(), previous);
+    assert_ne!(fs::read(fixture.cache_path()).unwrap(), previous.bytes);
 
-    let marked = fixture.mark_cache_bytes();
+    let marked = fixture.mark_cache();
     let repeated = resolve(&fixture.identity, &fixture.options)
         .unwrap()
         .exact()
         .unwrap_err();
     assert_eq!(repeated.to_string(), error.to_string());
-    assert_eq!(fs::read(fixture.cache_path()).unwrap(), marked);
+    fixture.assert_unwritten(&marked);
 }
 
 #[test]
@@ -258,11 +272,11 @@ fn successful_hash_prefix_persists_before_later_layer_resolution_fails() {
     for (key, entry) in expected.entries {
         assert_eq!(actual.get(&key, &entry.stamp), Some(entry.hash));
     }
-    let marked = fixture.mark_cache_bytes();
+    let marked = fixture.mark_cache();
     let warm = resolve(&fixture.identity, &fixture.options).unwrap();
     assert_eq!(warm.stats.files_read, 0);
     assert_eq!(warm.stats.cache_hits, warm.stats.files);
-    assert_eq!(fs::read(fixture.cache_path()).unwrap(), marked);
+    fixture.assert_unwritten(&marked);
 }
 
 #[test]
@@ -337,4 +351,19 @@ fn warm_resolution_stamps_listed_files_from_the_walk() {
         }
     }
     assert_eq!(members, 22);
+}
+
+/// The cache file is exactly what it encodes: a truncated, extended or foreign file is rebuilt.
+#[test]
+fn hash_cache_files_decode_only_whole() {
+    let fixture = Fixture::with_files("whole", 3);
+    let bytes = fs::read(fixture.cache_path()).unwrap();
+    let cache = HashCache::decode(&bytes).unwrap();
+    assert_eq!(cache.entries.len(), 6);
+    assert_eq!(cache.encode(), bytes);
+    assert!(HashCache::decode(&bytes[..bytes.len() - 1]).is_none());
+    let mut extended = bytes.clone();
+    extended.push(0);
+    assert!(HashCache::decode(&extended).is_none());
+    assert!(HashCache::decode(b"{\"entries\":{}}").is_none());
 }

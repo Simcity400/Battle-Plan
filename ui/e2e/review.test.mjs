@@ -254,10 +254,10 @@ test('adapter preserves source-change timestamps and private native verification
   const { utimes } = await import('node:fs/promises');
   const root = await mkdtemp(path.join(tmpdir(), 'parity-source-time-'));
   const previousLocal = process.env.LOCALAPPDATA;
-  const hashInput = path.join(root, 'input/HOI4Replay/viewer/content-hashes-v1.json');
+  const hashInput = path.join(root, 'input/HOI4Replay/viewer/content-hashes-v2.bin');
   let server;
   try {
-    await mkdir(path.dirname(hashInput), { recursive: true }); await writeFile(hashInput, '{"entries":[]}');
+    await mkdir(path.dirname(hashInput), { recursive: true }); await writeFile(hashInput, 'synthetic hash cache');
     process.env.LOCALAPPDATA = path.join(root, 'input');
     const sourceTime = Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', 'crates/dashboard/src/reply_cache.rs'], { cwd: repository, encoding: 'utf8' }));
     const binary = path.join(root, 'release', 'dashboard-bridge.exe'); await mkdir(path.dirname(binary)); await writeFile(binary, 'synthetic release');
@@ -269,9 +269,9 @@ test('adapter preserves source-change timestamps and private native verification
     assert.ok((await stat(path.join(root, 'runs/capture/bridge/crates/dashboard/src/reply_cache.rs'))).mtimeMs <= (await stat(binary)).mtimeMs);
     assert.equal((await stat(path.join(root, 'runs/capture/bridge/.cargo-target/debug/dashboard-bridge.exe'), { bigint: true })).mtimeNs,
       (await stat(binary, { bigint: true })).mtimeNs, 'release build identity preserves fractional timestamp precision');
-    const hashCopy = path.join(root, 'runs/capture/bridge/localappdata/HOI4Replay/viewer/content-hashes-v1.json');
-    assert.equal(await readFile(hashCopy, 'utf8'), '{"entries":[]}');
-    await writeFile(hashCopy, 'private update'); assert.equal(await readFile(hashInput, 'utf8'), '{"entries":[]}');
+    const hashCopy = path.join(root, 'runs/capture/bridge/localappdata/HOI4Replay/viewer/content-hashes-v2.bin');
+    assert.equal(await readFile(hashCopy, 'utf8'), 'synthetic hash cache');
+    await writeFile(hashCopy, 'private update'); assert.equal(await readFile(hashInput, 'utf8'), 'synthetic hash cache');
     const historyCopy = path.join(root, 'runs/capture/bridge/localappdata/HOI4Replay/viewer/history/recording/reply.zst');
     assert.equal(await readFile(historyCopy, 'utf8'), 'synthetic reply');
     await writeFile(historyCopy, 'private reply'); assert.equal(await readFile(historyInput, 'utf8'), 'synthetic reply');

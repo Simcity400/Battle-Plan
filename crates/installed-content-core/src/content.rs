@@ -974,7 +974,7 @@ fn folder_opens(relative: &[u8]) -> bool {
 }
 
 /// The scheme [`record_digest`] follows, part of every archive record's key in the persistent
-/// hash cache (`content-hashes-v1.json`), so an entry an earlier scheme wrote (a record's content
+/// hash cache ([`HASH_CACHE`]), so an entry an earlier scheme wrote (a record's content
 /// read through the `zip` crate, or an unopened record hashed without its central fields) is
 /// never served for this one: it is a miss, and the record is hashed again.
 const RECORD_DIGEST_SCHEME: &str = "archive-record-digest-2";
@@ -3700,20 +3700,73 @@ impl Stamp {
     }
 }
 
-#[derive(Deserialize, Serialize)]
 struct CachedHash {
     stamp: Stamp,
     hash: [u8; 32],
 }
 
-#[derive(Default, Deserialize, Serialize)]
+/// The persistent hash cache's file in the cache folder ([`HashCache::encode`]).
+const HASH_CACHE: &str = "content-hashes-v2.bin";
+const HASH_CACHE_MAGIC: &[u8; 8] = b"HOI4HC\x00\x02";
+
+#[derive(Default)]
 struct HashCache {
     entries: BTreeMap<String, CachedHash>,
-    #[serde(skip)]
     dirty: bool,
 }
 
+/// The first `count` bytes of `rest`, taken off it; `None` when it holds fewer.
+fn take<'a>(rest: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
+    if rest.len() < count {
+        return None;
+    }
+    let (head, tail) = rest.split_at(count);
+    *rest = tail;
+    Some(head)
+}
+
 impl HashCache {
+    /// [`HASH_CACHE_MAGIC`], the entry count, then each entry in key order: its key's length and
+    /// UTF-8 bytes, its stamp (size, seconds and nanoseconds) and its digest, little-endian.
+    fn encode(&self) -> Vec<u8> {
+        let mut bytes = HASH_CACHE_MAGIC.to_vec();
+        bytes.extend_from_slice(&(self.entries.len() as u64).to_le_bytes());
+        for (key, entry) in &self.entries {
+            bytes.extend_from_slice(&(key.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.extend_from_slice(&entry.stamp.size.to_le_bytes());
+            bytes.extend_from_slice(&entry.stamp.modified_seconds.to_le_bytes());
+            bytes.extend_from_slice(&entry.stamp.modified_nanos.to_le_bytes());
+            bytes.extend_from_slice(&entry.hash);
+        }
+        bytes
+    }
+
+    /// The cache [`Self::encode`] wrote; `None` for any other bytes, which are rebuilt.
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut rest = bytes.strip_prefix(HASH_CACHE_MAGIC)?;
+        let count = u64::from_le_bytes(take(&mut rest, 8)?.try_into().ok()?);
+        let mut entries = BTreeMap::new();
+        for _ in 0..count {
+            let length = u32::from_le_bytes(take(&mut rest, 4)?.try_into().ok()?);
+            let key = std::str::from_utf8(take(&mut rest, length as usize)?).ok()?;
+            let size = u64::from_le_bytes(take(&mut rest, 8)?.try_into().ok()?);
+            let modified_seconds = u64::from_le_bytes(take(&mut rest, 8)?.try_into().ok()?);
+            let modified_nanos = u32::from_le_bytes(take(&mut rest, 4)?.try_into().ok()?);
+            let hash = take(&mut rest, 32)?.try_into().ok()?;
+            let stamp = Stamp {
+                size,
+                modified_seconds,
+                modified_nanos,
+            };
+            entries.insert(key.to_owned(), CachedHash { stamp, hash });
+        }
+        rest.is_empty().then_some(Self {
+            entries,
+            dirty: false,
+        })
+    }
+
     fn get(&self, key: &str, stamp: &Stamp) -> Option<[u8; 32]> {
         self.entries
             .get(key)
@@ -4201,11 +4254,11 @@ fn gather_selected(
         )
     };
     fs::create_dir_all(&options.cache_dir)?;
-    let cache_path = options.cache_dir.join("content-hashes-v1.json");
+    let cache_path = options.cache_dir.join(HASH_CACHE);
     // An incomplete cache is disposable; the installed bytes remain the authority.
     let mut cache: HashCache = fs::read(&cache_path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| HashCache::decode(&bytes))
         .unwrap_or_else(|| HashCache {
             dirty: true,
             ..HashCache::default()
@@ -4531,7 +4584,9 @@ fn gather_selected(
     // A valid, unchanged cache needs no serialization or write. Missing or
     // unreadable caches are rebuilt and remain disposable after interruptions.
     if cache.dirty {
-        fs::write(cache_path, serde_json::to_vec(&cache)?)?;
+        fs::write(cache_path, cache.encode())?;
+        // The JSON cache this file replaced is disposable.
+        let _ = fs::remove_file(options.cache_dir.join("content-hashes-v1.json"));
     }
     result.map(|mut content: GatheredContent| {
         content.stats.elapsed_ms = started.elapsed().as_millis();

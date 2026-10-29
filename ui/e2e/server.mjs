@@ -42,7 +42,7 @@ export async function startUI(ui, config, output) {
     // unchanged installation before every comparison role.
     const seed = config.nativeSeed ?? prior.LOCALAPPDATA;
     if (seed) {
-      const relative = 'HOI4Replay/viewer/content-hashes-v1.json', destination = path.join(root, 'localappdata', relative);
+      const relative = 'HOI4Replay/viewer/content-hashes-v2.bin', destination = path.join(root, 'localappdata', relative);
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(path.join(seed, relative), destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
       await cp(path.join(seed, 'HOI4Replay/viewer/history'), path.join(root, 'localappdata/HOI4Replay/viewer/history'), {
