@@ -181,6 +181,41 @@ fn a_reader_holding_the_frame_before_costs_one_copy() {
     assert_eq!(counted("rebuild-reused") - reused, 4);
 }
 
+/// A table left alone between its changes keeps its spare: a reader holding the frame
+/// before still costs one copy, however many hours pass between the changes.
+#[test]
+fn a_table_left_alone_between_changes_keeps_its_spare() {
+    let pausing = || -> Vec<DecodedFrame> {
+        let views: Vec<SharedView> = (0..4)
+            .map(|step| links(&[(1, 1), (2, 2 + step), (3, 3)]).into())
+            .collect();
+        (0..8)
+            .map(|hour| {
+                let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
+                tables[TableId::CountryLinks.index()] = views[hour / 2].clone();
+                DecodedFrame {
+                    branch: 1,
+                    hour: hour as Hour,
+                    tables,
+                    metrics: Metrics::default(),
+                }
+            })
+            .collect()
+    };
+    let kept = pausing();
+    let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
+    let log = logged(&pausing());
+    let mut previous: Option<DecodedFrame> = None;
+    for (at, frame) in log.into_frames().enumerate() {
+        let frame = frame.unwrap();
+        assert_same(&frame, &kept[at]);
+        previous = Some(frame);
+    }
+    drop(previous);
+    assert_eq!(counted("rebuild-copied") - copied, 1);
+    assert_eq!(counted("rebuild-reused") - reused, 2);
+}
+
 /// A reader holding every frame keeps every version: each changed table read
 /// back is a copy, and each frame its own rows.
 #[test]

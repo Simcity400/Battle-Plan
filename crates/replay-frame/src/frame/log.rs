@@ -223,13 +223,13 @@ impl FrameLog {
     /// The frames kept, in order. A table changed since the frame before is
     /// changed in place once the frame before is no longer held. A reader
     /// holding it makes it a copy, and the view so replaced is kept until the
-    /// next frame, to catch up in place there once the reader lets it go.
+    /// table next changes or is replaced, to catch up in place then once the
+    /// reader lets it go.
     pub fn into_frames(self) -> LoggedFrames {
         LoggedFrames {
             entries: self.entries.into_iter(),
             current: None,
             spares: Vec::new(),
-            spared: Vec::new(),
         }
     }
 }
@@ -238,9 +238,8 @@ impl FrameLog {
 pub struct LoggedFrames {
     entries: std::vec::IntoIter<Entry>,
     current: Option<Box<[SharedView; TABLE_COUNT]>>,
+    /// Each table's spare, kept until the table changes or is replaced again.
     spares: Vec<Option<Spare>>,
-    /// The tables with a spare, which serves the next frame only.
-    spared: Vec<usize>,
 }
 
 /// A view read back that a reader held when the next one was built from it,
@@ -278,23 +277,17 @@ impl LoggedFrames {
         if self.spares.is_empty() {
             self.spares = allocation::vec(TABLE_COUNT)?;
             self.spares.resize_with(TABLE_COUNT, || None);
-            self.spared = allocation::vec(TABLE_COUNT)?;
-        }
-        for index in self.spared.drain(..) {
-            if entry
-                .tables
-                .binary_search_by_key(&index, |(table, _)| *table)
-                .is_err()
-            {
-                self.spares[index] = None;
-            }
         }
         for (index, kept) in entry.tables {
-            let spare = self.spares[index].take();
             current[index] = match kept {
-                Kept::View(view) => view,
+                Kept::View(view) => {
+                    self.spares[index] = None;
+                    view
+                }
+                // The same allocation: a spare made for it still catches up to it.
                 Kept::Same(acquisition) => acquisition.on(current[index].clone()),
                 Kept::Changed(changes, acquisition) => {
+                    let spare = self.spares[index].take();
                     let incomplete = || super::invalid("kept rows changed an incomplete view");
                     let changes = Arc::try_unwrap(changes).or_else(|shared| shared.try_clone())?;
                     let before = std::mem::replace(&mut current[index], not_selected());
@@ -336,7 +329,6 @@ impl LoggedFrames {
                             changes,
                             made: Arc::downgrade(&view.0),
                         });
-                        self.spared.push(index);
                     }
                     acquisition.on(view)
                 }
