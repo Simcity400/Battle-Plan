@@ -3,6 +3,7 @@
 use super::*;
 use dashboard_base::prepared::series::{self, Reader};
 use replay_data::codec::Decoder;
+use replay_frame::frame::SharedView;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{
@@ -173,12 +174,14 @@ enum Job {
     Decode(u64, i32, Vec<u8>),
     /// The frame an input leaves the walk holding, whose hour's inputs to read.
     Read(u64, DecodedFrame),
+    /// Table views the walk let go of, to free here rather than on the walking thread.
+    Drop(Vec<SharedView>),
 }
 
 /// A worker's finished job, by its input's ordinal.
 enum Done {
     Decoded(u64, io::Result<(Vec<usize>, DecodedFrame)>),
-    Read(u64, HourRead),
+    Read(u64, ReadyHour),
     /// The job panicked: the walk panics with it.
     Panicked(Box<dyn std::any::Any + Send>),
 }
@@ -189,7 +192,7 @@ struct Slot {
     hour: io::Result<i32>,
     decoded: Option<io::Result<(Vec<usize>, DecodedFrame)>>,
     /// Its hour's inputs once asked for, None inside until they are read.
-    read: Option<Option<HourRead>>,
+    read: Option<Option<ReadyHour>>,
 }
 
 /// The tail's inputs read here, in order, decoded on other cores and put together here as the
@@ -222,7 +225,7 @@ impl Ahead {
         (next, end): (u64, u64),
         frame: Option<DecodedFrame>,
         stopped: &'s AtomicBool,
-        read: &'s (dyn Fn(&DecodedFrame) -> HourRead + Sync),
+        read: &'s (dyn Fn(&DecodedFrame) -> ReadyHour + Sync),
     ) -> Self {
         let (jobs, work) = mpsc::channel::<Job>();
         let (finished, done) = mpsc::channel();
@@ -248,12 +251,20 @@ impl Ahead {
                         }
                         Err(_) => return,
                     };
+                    let job = match job {
+                        Job::Drop(views) => {
+                            drop(views);
+                            continue;
+                        }
+                        job => job,
+                    };
                     let outcome =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job {
                             Job::Decode(ordinal, hour, row) => {
                                 Done::Decoded(ordinal, decode(hour, &row))
                             }
                             Job::Read(ordinal, frame) => Done::Read(ordinal, read(&frame)),
+                            Job::Drop(_) => unreachable!("views are dropped above"),
                         }));
                     let panicked = outcome.is_err();
                     if finished
@@ -289,7 +300,7 @@ impl Ahead {
     fn take(
         &mut self,
         topology: &mut Reader<'_>,
-    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<HourRead>)> {
+    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
         while self.read < self.end && self.read <= self.next + self.window {
             let hour = match raw(topology, self.read) {
                 Ok((hour, row)) => self
@@ -406,13 +417,19 @@ impl Walker<'_, '_> {
     fn input(
         &mut self,
         ordinal: u64,
-    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<HourRead>)> {
+    ) -> io::Result<(i32, Vec<usize>, DecodedFrame, Option<ReadyHour>)> {
         if let Some(ahead) = self.ahead.as_mut().filter(|ahead| ahead.next == ordinal) {
             return ahead.take(self.topology);
         }
         let (hour, row) = raw(self.topology, ordinal)?;
         let (changed, packet) = decode(hour, &row)?;
         Ok((hour, changed, packet, None))
+    }
+    /// Frees `views` on a worker when the walk reads ahead, else here.
+    fn discard(&self, views: Vec<SharedView>) {
+        if let Some(ahead) = &self.ahead {
+            let _ = ahead.jobs.send(Job::Drop(views));
+        }
     }
     /// The walk `point` copied, with the decoded inputs it walked through and
     /// the hour it held read again.
@@ -545,8 +562,12 @@ impl Resume {
         });
         current.branch = packet.branch;
         current.hour = packet.hour;
+        let mut replaced = Vec::with_capacity(changed.len());
         for index in changed {
-            current.tables[index] = packet.tables[index].clone();
+            replaced.push(std::mem::replace(
+                &mut current.tables[index],
+                packet.tables[index].clone(),
+            ));
             // A published point's walk keeps no points of its own.
             if let Some(source) = self.sources.get_mut(index) {
                 *source = ordinal;
@@ -555,6 +576,7 @@ impl Resume {
         let frame = self.decoded.insert(current);
         self.walk
             .observe(frame, walker.view, walker.selected, walker.cat, read);
+        walker.discard(replaced);
         self.next += 1;
         self.hour = Some(hour);
         Ok(span)
@@ -765,7 +787,7 @@ pub(super) fn walk(
     let mut known = None;
     let stopped = AtomicBool::new(false);
     let (view, catalogue) = (walker.view, walker.cat);
-    let read = move |frame: &DecodedFrame| read_hour(frame, view, selected, catalogue);
+    let read = move |frame: &DecodedFrame| read_ahead(frame, view, selected, catalogue);
     std::thread::scope(|scope| {
         // Ends the workers before the scope joins them, however the walk ends.
         struct Stop<'s>(&'s AtomicBool);

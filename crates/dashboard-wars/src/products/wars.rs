@@ -379,6 +379,46 @@ fn read_hour(
         })
 }
 
+/// An hour read ahead of the walk, with the groups its observation opens at its hour
+/// ([`opening`]), which a structural change continues.
+struct ReadyHour {
+    read: HourRead,
+    opened: Option<Vec<Observed>>,
+}
+
+/// [`read_hour`] ahead of the walk, the groups it opens at `decoded`'s hour built too.
+fn read_ahead(
+    decoded: &DecodedFrame,
+    view: Option<&str>,
+    identities: Option<&HashSet<(u32, u32)>>,
+    cat: Option<&Catalogue>,
+) -> ReadyHour {
+    let read = read_hour(decoded, view, identities, cat);
+    let opened = read
+        .as_ref()
+        .ok()
+        .map(|(inputs, observed)| opening(inputs, observed, decoded.hour));
+    ReadyHour { read, opened }
+}
+
+/// Each group `observed` at `hour`, as a structural change opens it, with its losses there.
+fn opening(inputs: &Hour, observed: &[Observed], hour: i32) -> Vec<Observed> {
+    observed
+        .iter()
+        .map(|o| Observed {
+            data: WarObservation {
+                first_hour: hour,
+                last_hour: hour,
+                ..o.data.clone()
+            },
+            relations: o.relations.clone(),
+            losses: inputs.losses(&o.loss_pairs),
+            loss_pairs: o.loss_pairs.clone(),
+            representative: o.representative.clone(),
+        })
+        .collect()
+}
+
 /// The tables whose change makes a walk read its hour's inputs again.
 fn compared_tables() -> Vec<TableId> {
     TABLES
@@ -616,7 +656,10 @@ impl Hour {
         let mut sums = [0_i128; 4];
         // A country's unknown loss is copied into each of its relations: the game
         // adds its largest counter (at least zero) once per country.
-        let mut unknown = HashMap::<(u32, usize), i64>::new();
+        let mut unknown = foldhash::HashMap::<(u32, usize), i64>::with_capacity_and_hasher(
+            2 * pairs.len(),
+            Default::default(),
+        );
         for &(p, first) in pairs {
             let r = &self.world.relations[&p];
             let (a, b) = if first { (0, 2) } else { (2, 0) };
@@ -1185,7 +1228,7 @@ struct Walk {
     open: Vec<OpenWar>,
     seen_caps: HashSet<(String, i32)>,
     dated_caps: HashMap<String, Vec<i32>>,
-    identity_since: HashMap<u32, (String, i32)>,
+    identity_since: foldhash::HashMap<u32, (String, i32)>,
     warnings: BTreeSet<String>,
     last_frame: Option<i32>,
     held: Option<HeldHour>,
@@ -1205,7 +1248,7 @@ impl Walk {
             open: Vec::new(),
             seen_caps: HashSet::new(),
             dated_caps: HashMap::new(),
-            identity_since: HashMap::new(),
+            identity_since: Default::default(),
             warnings: BTreeSet::new(),
             last_frame: first.checked_sub(1),
             held: None,
@@ -1214,14 +1257,14 @@ impl Walk {
             compared: compared_tables(),
         }
     }
-    /// Observes `decoded`, its hour's inputs `ready` when they were read ahead from this frame.
+    /// Observes `decoded`, its hour `ready` when it was read ahead from this frame.
     fn observe(
         &mut self,
         decoded: &DecodedFrame,
         view: Option<&str>,
         identities: Option<&HashSet<(u32, u32)>>,
         cat: Option<&Catalogue>,
-        ready: Option<HourRead>,
+        ready: Option<ReadyHour>,
     ) {
         if self.labels {
             self.country_labels.observe(decoded, cat);
@@ -1270,8 +1313,14 @@ impl Walk {
                     .as_mut()
                     .is_ok_and(|(inputs, _)| inputs.refresh_losses(decoded))
         });
+        // The groups the hour opens, built ahead with its read.
+        let mut opened = None;
         if !same {
-            self.hold(decoded, view, identities, cat, ready);
+            let read = ready.map(|ready| {
+                opened = ready.opened;
+                ready.read
+            });
+            self.hold(decoded, view, identities, cat, read);
         }
         if let Ok((inputs, observed)) = &self.held.as_ref().expect("held hour").observed {
             if self.labels && (!same || self.previous.is_none()) {
@@ -1317,20 +1366,9 @@ impl Walk {
                         }
                     }
                 }
-                let observations = observed
-                    .iter()
-                    .map(|o| Observed {
-                        data: WarObservation {
-                            first_hour: hour,
-                            last_hour: hour,
-                            ..o.data.clone()
-                        },
-                        relations: o.relations.clone(),
-                        losses: inputs.losses(&o.loss_pairs),
-                        loss_pairs: o.loss_pairs.clone(),
-                        representative: o.representative.clone(),
-                    })
-                    .collect();
+                let observations = opened
+                    .take()
+                    .unwrap_or_else(|| opening(inputs, observed, hour));
                 self.open = continue_wars(
                     &mut self.reply.wars,
                     &self.open,
@@ -1339,22 +1377,25 @@ impl Walk {
                     &|pairs| inputs.losses(pairs),
                 );
             }
-            self.identity_since.retain(|raw, _| {
-                inputs
-                    .raw_to_slot
-                    .get(raw)
-                    .is_some_and(|slot| inputs.tags.contains_key(slot))
-            });
-            for (&raw, &slot) in &inputs.raw_to_slot {
-                let Some(tag) = inputs.tags.get(&slot) else {
-                    continue;
-                };
-                let entry = self
-                    .identity_since
-                    .entry(raw)
-                    .or_insert_with(|| (tag.clone(), hour));
-                if &entry.0 != tag || self.previous.is_none() {
-                    *entry = (tag.clone(), hour);
+            // Unchanged inputs after an observed hour leave every identity as it was.
+            if !same || self.previous.is_none() {
+                self.identity_since.retain(|raw, _| {
+                    inputs
+                        .raw_to_slot
+                        .get(raw)
+                        .is_some_and(|slot| inputs.tags.contains_key(slot))
+                });
+                for (&raw, &slot) in &inputs.raw_to_slot {
+                    let Some(tag) = inputs.tags.get(&slot) else {
+                        continue;
+                    };
+                    let entry = self
+                        .identity_since
+                        .entry(raw)
+                        .or_insert_with(|| (tag.clone(), hour));
+                    if &entry.0 != tag || self.previous.is_none() {
+                        *entry = (tag.clone(), hour);
+                    }
                 }
             }
             match decoded.complete::<tables::Capitulation>() {
@@ -1518,7 +1559,7 @@ impl Walk {
             open: self.open.clone(),
             seen_caps: HashSet::new(),
             dated_caps: HashMap::new(),
-            identity_since: HashMap::new(),
+            identity_since: Default::default(),
             warnings: BTreeSet::new(),
             last_frame: self.last_frame,
             held: self.held.clone(),
