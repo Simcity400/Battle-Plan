@@ -825,3 +825,50 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
     let _ = store.clear();
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// A composition that changes while the totals run on is no break: the parts series breaks
+/// only where the totals do.
+#[test]
+fn a_composition_change_within_a_totals_run_publishes_no_break() {
+    let inputs: Vec<DecodedFrame> = (100..=104)
+        .map(|hour| {
+            let mut input = frame(hour, 2);
+            for row in rows::<tables::Divisions>(&mut input) {
+                row.hit_points = 100_000;
+            }
+            for row in rows::<tables::DivisionLandInputs>(&mut input) {
+                row.manpower[0].amount = 1;
+            }
+            if hour >= 102 {
+                rows::<tables::DivisionTemplateIcons>(&mut input)[0].subunits[0].token = 2;
+            }
+            input
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, inputs.clone())]).unwrap();
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut prepared = Prepared::default();
+    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+    for input in &inputs {
+        prepared
+            .observe(input, &replay, &tracker.observe(input, replay.format))
+            .unwrap();
+    }
+    let mut writer = fixture.writer();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    let flag = AtomicBool::new(false);
+    let mut parts =
+        Reader::new(&fixture.store, &fixture.key, "army-parts-1".into(), &flag).unwrap();
+    for &key in prepared.tags.values() {
+        let runs = parts.runs(key, 100, 104).unwrap();
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.first_hour, run.break_before))
+                .collect::<Vec<_>>(),
+            [(100, true), (102, false)]
+        );
+    }
+}

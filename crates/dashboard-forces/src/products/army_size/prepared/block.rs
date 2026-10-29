@@ -425,7 +425,7 @@ impl Prepared {
 
     /// Drop what the observer rebuilds from its next frame, as a restored
     /// observer has none of it.
-    fn forget_runtime(&mut self) {
+    pub(super) fn forget_runtime(&mut self) {
         self.state = scan_state();
         self.aid_runtime = Default::default();
         self.scan.removed.clear();

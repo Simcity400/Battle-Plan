@@ -370,6 +370,10 @@ impl Prepared {
                         .map(|inventory| inventory.row_updates()[0]),
             );
         }
+        self.publish(hour)
+    }
+
+    fn publish(&mut self, hour: i32) -> io::Result<()> {
         let observed = self.scan.observed.len();
         for position in 0..observed + self.scan.removed.len() {
             let tag = match self.scan.observed.get(position) {
@@ -424,7 +428,8 @@ impl Prepared {
                         key,
                         hour,
                         parts: serde_json::to_vec(&mix.parts)?,
-                        starts: run.is_some_and(|run| run.starts),
+                        // A break only where the totals break at this hour.
+                        starts,
                     };
                     match &mut self.recorded {
                         // A block's extract records the publication for its
@@ -444,6 +449,95 @@ impl Prepared {
         }
         Ok(())
     }
+    pub fn fresh(&self) -> Self {
+        Self::default()
+    }
+
+    pub fn projector(&self, replay: &Replay) -> io::Result<super::columnar::Projector> {
+        super::columnar::Projector::new(replay)
+    }
+
+    pub fn observe_projected(&mut self, projected: super::columnar::Hour) -> io::Result<()> {
+        let hour = projected.hour;
+        self.first.get_or_insert(hour);
+        self.last = hour;
+        for values in &mut self.values {
+            values.advance(hour)?;
+        }
+        self.coverage.advance(hour)?;
+        self.parts.advance(hour)?;
+        self.aid.observe(projected.aid)?;
+        self.scan.divisions |= projected.divisions;
+        self.scan.strength |= projected.strength;
+        self.scan.manpower |= projected.manpower;
+        self.scan.battalions |= projected.battalions;
+        self.scan.inventory_fallback |= projected.inventory_fallback;
+        self.scan.unreadable += projected.unreadable;
+        self.scan.composition_unreadable += projected.composition_unreadable;
+        for (reason, count) in projected.invalid_table_reads {
+            *self.scan.invalid_table_reads.entry(reason).or_default() += count;
+        }
+        self.scan.observed.clear();
+        self.scan.removed.clear();
+        if !projected.changed {
+            self.scan.frontier = Some(hour);
+            return Ok(());
+        }
+        if projected.starts
+            || projected.identities.is_some()
+            || !projected.live
+            || self
+                .scan
+                .frontier
+                .is_none_or(|at| at.checked_add(1) != Some(hour))
+        {
+            self.scan.seal();
+        }
+        if projected.starts {
+            for track in self.scan.tracks.values_mut() {
+                track.mix_version = None;
+            }
+        }
+        if let Some(identities) = projected.identities {
+            self.state.identities = identities;
+        }
+        for country in projected.countries {
+            let (tag, identity) = &self.state.identities[country.index];
+            let track = self.scan.tracks.entry(tag.clone()).or_default();
+            if self.scan.live.contains(tag)
+                && let Some(frontier) = self.scan.frontier
+            {
+                track.advance(frontier);
+            }
+            observe_identity(
+                &mut track.segments,
+                &mut track.last_identity,
+                *identity,
+                hour,
+            );
+            let version = country.mix.as_ref().map(|(version, _)| *version);
+            track.observe_values(*identity, hour, country.totals, version, || {
+                (*country.mix.expect("read composition").1).clone()
+            });
+            self.scan.observed.push(country.index);
+        }
+        if projected.refresh_live || self.scan.live.is_empty() {
+            let live = if projected.live {
+                self.state
+                    .identities
+                    .iter()
+                    .map(|(tag, _)| tag.clone())
+                    .collect()
+            } else {
+                Default::default()
+            };
+            self.scan.removed = self.scan.live.difference(&live).cloned().collect();
+            self.scan.live = live;
+        }
+        self.scan.frontier = Some(hour);
+        self.publish(hour)
+    }
+
     pub fn bytes(&self) -> usize {
         self.values
             .iter()
@@ -1490,9 +1584,11 @@ pub fn next_change(
             }
         }
     } else {
-        value_keys.extend(selected.iter().filter_map(|(tag, spans)| {
-            actors.get(tag).map(|&key| (key, Some(spans.as_slice())))
-        }));
+        value_keys.extend(
+            selected.iter().filter_map(|(tag, spans)| {
+                actors.get(tag).map(|&key| (key, Some(spans.as_slice())))
+            }),
+        );
     }
     let hour = series::navigate(
         &mut [(&mut values, value_keys), (&mut ranks, rank_keys)],
@@ -1588,7 +1684,8 @@ mod window_profile {
         let block = window[0];
         let range = (block.first_hour, block.last_hour);
         let tags: Vec<_> = source
-            .metadata().unwrap()
+            .metadata()
+            .unwrap()
             .countries
             .iter()
             .map(|country| country.tag.clone())
@@ -1785,3 +1882,6 @@ mod carried_tests {
         carried_scans_equal_point_scans(40);
     }
 }
+
+#[cfg(test)]
+mod columnar_parity;

@@ -118,10 +118,31 @@ impl Runtime {
         identity_changed: bool,
         in_gap: bool,
     ) -> Projection {
+        self.step_input(
+            frame,
+            changes,
+            inventory,
+            identities,
+            identity_changed,
+            in_gap,
+            None,
+        )
+    }
+
+    pub(super) fn step_input(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        inventory: &Inventory,
+        identities: &[(String, Identity)],
+        identity_changed: bool,
+        in_gap: bool,
+        columnar: Option<Update<'_>>,
+    ) -> Projection {
         let continuing = self.previous.is_some_and(|(branch, hour)| {
             branch == frame.branch && hour.checked_add(1) == Some(frame.hour)
         });
-        let raw_dirty = self.index_sender_lists(frame, changes, continuing);
+        let raw_dirty = self.index_sender_lists(frame, changes, continuing, columnar);
         let links = frame.complete::<tables::CountryLinks>().ok();
         let valid = !in_gap && links.is_some() && frame.complete::<tables::Countries>().is_ok();
         let actors_changed = !continuing || identity_changed || !valid || self.valid != Some(valid);
@@ -153,8 +174,12 @@ impl Runtime {
         frame: &DecodedFrame,
         changes: &FrameChanges,
         continuing: bool,
+        columnar: Option<Update<'_>>,
     ) -> BTreeSet<u32> {
         let update = |table: TableId| {
+            if let Some(update) = columnar {
+                return update;
+            }
             if continuing && !changes.rows_changed[table.index()] {
                 Update::Unchanged(self.previous.unwrap().1)
             } else {

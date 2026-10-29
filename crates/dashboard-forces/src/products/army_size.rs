@@ -224,6 +224,56 @@ struct Track {
     mix_version: Option<(u64, u64, [bool; 2])>,
 }
 impl Track {
+    fn observe_values(
+        &mut self,
+        identity: Identity,
+        hour: i32,
+        totals: Option<Totals>,
+        version: Option<(u64, u64, [bool; 2])>,
+        parts: impl FnOnce() -> [Option<BTreeMap<String, i64>>; 2],
+    ) {
+        let Some(totals) = totals else { return };
+        let continues = self
+            .last
+            .is_some_and(|(last, at)| last == identity && at.checked_add(1) == Some(hour));
+        match self.runs.last_mut() {
+            Some(run) if continues && run.totals == totals => run.last = hour,
+            _ => self.runs.push(RawRun {
+                first: hour,
+                last: hour,
+                starts: !continues,
+                totals,
+            }),
+        }
+        if let Some(version) = version {
+            if let Some(run) = self.mix.last_mut()
+                && continues
+                && self.mix_version == Some(version)
+                && run.last.checked_add(1) == Some(hour)
+            {
+                run.last = hour;
+            } else {
+                let parts = parts();
+                match self.mix.last_mut() {
+                    Some(run)
+                        if continues
+                            && run.last.checked_add(1) == Some(hour)
+                            && run.parts == parts =>
+                    {
+                        run.last = hour
+                    }
+                    _ => self.mix.push(RawMixRun {
+                        first: hour,
+                        last: hour,
+                        parts,
+                    }),
+                }
+            }
+            self.mix_version = Some(version);
+        }
+        self.last = Some((identity, hour));
+    }
+
     fn advance(&mut self, hour: i32) {
         let Some(segment) = self.segments.last_mut() else {
             return;
@@ -387,6 +437,7 @@ fn scan(replay: &Replay, branch: u64, detailed: bool, cancelled: &AtomicBool) ->
 
 #[derive(Default)]
 struct ScanState {
+    columnar_census: Option<columnar::Census>,
     inventory: Option<Inventory>,
     identities: Vec<(String, Identity)>,
     countries: Option<replay_frame::frame::ViewIdentity>,
@@ -398,6 +449,8 @@ struct ScanState {
     identity_changed: bool,
     applied: Option<i32>,
     reads: Option<[bool; 4]>,
+    /// Whether the hour last applied fell in a recording gap.
+    gap: Option<bool>,
     rates: (usize, usize, BTreeMap<String, usize>),
     slots: HashMap<u32, Vec<usize>>,
     census_counts: HashMap<u32, Option<i64>>,
@@ -452,6 +505,23 @@ impl ScanState {
         replay: &Replay,
         changes: Option<&FrameChanges>,
     ) -> bool {
+        let gap = replay.gaps.iter().any(|gap| {
+            gap.branch == decoded.branch
+                && gap.first_hour <= decoded.hour
+                && decoded.hour <= gap.last_hour
+        });
+        self.step_input(result, updates, decoded, replay.format, gap, changes)
+    }
+
+    fn step_input(
+        &mut self,
+        result: &mut Scan,
+        updates: Updates<'_>,
+        decoded: &DecodedFrame,
+        format: replay_data::format::FormatVersion,
+        gap: bool,
+        changes: Option<&FrameChanges>,
+    ) -> bool {
         result.observed.clear();
         result.removed.clear();
         let continuous = result
@@ -473,11 +543,12 @@ impl ScanState {
             TableId::DivisionTemplateIcons,
             TableId::DivisionLandInputs,
         ]
-        .map(|id| slot_read(replay.format, &decoded.metrics, id, decoded.hour));
+        .map(|id| slot_read(format, &decoded.metrics, id, decoded.hour));
         let unchanged = continuous
             && valid
             && !self.identity_changed
             && self.reads == Some(reads)
+            && self.gap == Some(gap)
             && changes.is_some_and(|changes| {
                 [
                     TableId::DivisionCensus,
@@ -505,7 +576,8 @@ impl ScanState {
             result.frontier = Some(decoded.hour);
             return false;
         }
-        if !continuous || identity_changed {
+        // Leaving coverage (a gap, refused identities) ends each run at the hour before.
+        if !continuous || identity_changed || gap || !valid {
             result.seal();
         }
         let before_inventory = self.inventory.as_ref().map(|inventory| {
@@ -518,12 +590,13 @@ impl ScanState {
         let unreadable = result.unreadable;
         let composition = result.composition_unreadable;
         self.apply_updates(updates, decoded);
-        self.compose(decoded);
-        let gap = replay.gaps.iter().any(|gap| {
-            gap.branch == decoded.branch
-                && gap.first_hour <= decoded.hour
-                && decoded.hour <= gap.last_hour
-        });
+        if updates.is_columnar() {
+            if let Some(inventory) = &mut self.inventory {
+                inventory.compose_parts();
+            }
+        } else {
+            self.compose(decoded);
+        }
         if identity_changed {
             let present: std::collections::BTreeSet<_> = self
                 .identities
@@ -550,9 +623,10 @@ impl ScanState {
                 && continuous
                 && !identity_changed
                 && self.reads == Some(reads)
+                && self.gap == Some(gap)
                 && before_inventory == after_inventory,
         );
-        observe_updates(result, decoded, updates, replay.format, gap, self, changes);
+        observe_updates(result, decoded, updates, format, gap, self, changes);
         // The observer's cached identity reread must not clear this hour's change.
         self.identity_changed = identity_changed;
         self.rates = (
@@ -577,6 +651,7 @@ impl ScanState {
         }
         self.applied = Some(decoded.hour);
         self.reads = Some(reads);
+        self.gap = Some(gap);
         true
     }
     fn new(detailed: bool) -> Self {
@@ -751,9 +826,21 @@ impl ScanState {
         else {
             return false;
         };
+        self.apply_census_edits(read.into_iter(), links, deleted, hour);
+        true
+    }
+
+    fn apply_census_edits<'a>(
+        &mut self,
+        read: impl IntoIterator<Item = &'a DivisionCensusRow>,
+        links: &[CountryLinkRow],
+        deleted: Vec<u32>,
+        hour: i32,
+    ) {
+        let read = read.into_iter();
         #[cfg(test)]
         {
-            self.work.row_visits += read.len() + deleted.len();
+            self.work.row_visits += read.size_hint().0 + deleted.len();
         }
         let mut slots = Vec::new();
         let mut unlinked = self.census_unreadable;
@@ -809,7 +896,6 @@ impl ScanState {
         self.census_invalid = invalid;
         self.census_unreadable = unlinked;
         self.census_hour = Some(hour);
-        true
     }
 }
 
@@ -903,10 +989,13 @@ fn observe_updates(
         result.battalions |= template_read;
     }
     if gap || !state.identities(decoded) {
+        // The census is not kept through this hour, so the next one reads it whole.
+        state.census_ready = None;
         return;
     }
     result.unreadable += state.unreadable_tags;
     let Ok(links) = decoded.complete::<tables::CountryLinks>() else {
+        state.census_ready = None;
         return;
     };
     let census = decoded
@@ -920,7 +1009,21 @@ fn observe_updates(
             changes.rows_changed[TableId::DivisionCensus.index()]
                 || changes.rows_changed[TableId::CountryLinks.index()]
         });
-    if census_changed {
+    if let Some(projected) = state.columnar_census.take() {
+        if census_changed {
+            if projected.whole {
+                state.read_census(census.map(|_| projected.rows.as_slice()), links, hour);
+            } else {
+                state.apply_census_edits(projected.rows.iter(), links, projected.deleted, hour);
+            }
+            state.census_ready = Some(census.is_some());
+        } else if state
+            .census_hour
+            .is_some_and(|at| at.checked_add(1) == Some(hour))
+        {
+            state.census_hour = Some(hour);
+        }
+    } else if census_changed {
         // The previous hour's census, held, changed by recorded rows
         // through the same links.
         let rows = census
@@ -1039,49 +1142,13 @@ fn observe_updates(
         state.composition_rate = state.composition_rate + composition_notes - before_notes;
         result.composition_unreadable =
             result.composition_unreadable + composition_notes - before_notes;
-        if census.is_none() && inventory.is_none() {
-            continue;
-        }
-        let continues = track
-            .last
-            .is_some_and(|(last, at)| last == *identity && at.checked_add(1) == Some(hour));
-        match track.runs.last_mut() {
-            Some(run) if continues && run.totals == total => run.last = hour,
-            _ => track.runs.push(RawRun {
-                first: hour,
-                last: hour,
-                starts: !continues,
-                totals: total,
-            }),
-        }
-        if let Some(inventory) = composition {
-            let version = inventory.parts_version(slot);
-            if let Some(run) = track.mix.last_mut()
-                && continues
-                && track.mix_version == Some(version)
-                && run.last.checked_add(1) == Some(hour)
-            {
-                run.last = hour;
-            } else {
-                let parts = inventory.parts_at(slot);
-                match track.mix.last_mut() {
-                    Some(run)
-                        if continues
-                            && run.last.checked_add(1) == Some(hour)
-                            && run.parts == parts =>
-                    {
-                        run.last = hour
-                    }
-                    _ => track.mix.push(RawMixRun {
-                        first: hour,
-                        last: hour,
-                        parts,
-                    }),
-                }
-            }
-            track.mix_version = Some(version);
-        }
-        track.last = Some((*identity, hour));
+        track.observe_values(
+            *identity,
+            hour,
+            (census.is_some() || inventory.is_some()).then_some(total),
+            composition.map(|inventory| inventory.parts_version(slot)),
+            || composition.expect("read composition").parts_at(slot),
+        );
     }
 }
 
@@ -1735,6 +1802,7 @@ mod template_roster;
 pub use composition::check_content;
 use composition::{RawMixRun, composition_reply};
 pub(crate) mod aid;
+pub mod columnar;
 mod inventory;
 use inventory::{Inventory, Updates};
 

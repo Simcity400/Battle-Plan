@@ -16,6 +16,7 @@ pub(super) enum Applied<R> {
 /// How one inventory table reached this hour.
 #[derive(Clone, Copy)]
 pub(super) enum Update<'a> {
+    Columnar(&'a replay::segments::State, u16, bool),
     /// A recorded table update.
     Recorded(&'a TableUpdate),
     /// The hour's decoded table, unchanged since `baseline`, the hour last
@@ -42,6 +43,19 @@ pub(super) struct Updates<'a> {
 }
 
 impl<'a> Updates<'a> {
+    pub(super) fn columnar(state: &'a replay::segments::State, format: u16, whole: bool) -> Self {
+        let update = Update::Columnar(state, format, whole);
+        Self {
+            divisions: update,
+            templates: update,
+            land: update,
+        }
+    }
+
+    pub(super) fn is_columnar(self) -> bool {
+        matches!(self.divisions, Update::Columnar(..))
+    }
+
     /// A recorded frame's updates.
     pub fn recorded(frame: &'a (impl replay_frame::frame::FrameSource + ?Sized)) -> Self {
         let update = move |table: TableId| Update::Recorded(frame.update(table.index()));
@@ -99,6 +113,7 @@ impl<'a> Updates<'a> {
     /// delta, or unchanged from a read baseline.
     pub fn read(&self, table: TableId, decoded: &DecodedFrame) -> bool {
         match self.get(table) {
+            Update::Columnar(state, ..) => replay::columns::complete(state, table),
             Update::Recorded(update) => matches!(
                 update,
                 TableUpdate::Snapshot(_)
@@ -121,6 +136,7 @@ impl<'a> Updates<'a> {
         ]
         .into_iter()
         .map(|table| match self.get(table) {
+            Update::Columnar(..) => 0,
             Update::Recorded(TableUpdate::Snapshot(rows) | TableUpdate::Truncated { rows, .. }) => {
                 rows.len()
             }
@@ -366,6 +382,12 @@ impl<T: TableSchema> Sparse<T> {
         compare_snapshot: bool,
     ) -> Applied<T::Row> {
         let hour = decoded.hour;
+        if let Update::Columnar(state, format, whole) = update {
+            return match self.apply_columnar(state, format, hour, fields, compare_snapshot, whole) {
+                Ok(applied) => applied,
+                Err(error) => self.refuse(error),
+            };
+        }
         match (update, &*decoded.tables[T::ID.index()]) {
             (Update::Recorded(update), _) => self.update_table(update, hour, compare_snapshot),
             (Update::Unchanged(baseline), TableView::Complete(_)) => {
@@ -402,6 +424,78 @@ impl<T: TableSchema> Sparse<T> {
                 compare_snapshot,
             ),
         }
+    }
+
+    fn apply_columnar(
+        &mut self,
+        state: &replay::segments::State,
+        format: u16,
+        hour: i32,
+        fields: u64,
+        compare_snapshot: bool,
+        whole: bool,
+    ) -> io::Result<Applied<T::Row>> {
+        use replay::columns;
+        if !columns::complete(state, T::ID) {
+            return Ok(self.update_table(
+                &TableUpdate::Unavailable {
+                    reason: String::new(),
+                },
+                hour,
+                compare_snapshot,
+            ));
+        }
+        let table = columns::table(state, T::ID)?;
+        let changes = columns::changes(state, T::ID)?;
+        if whole
+            || self.baseline.is_none_or(|at| at >= hour)
+            || changes
+                .deleted_keys
+                .iter()
+                .any(|key| !self.rows.contains_key(key))
+        {
+            let rows = super::columnar::rows::<T::Row>(state, T::ID, format)?;
+            Self::validate_rows(&rows)?;
+            self.error = None;
+            self.baseline = Some(hour);
+            return Ok(self.snapshot(&rows, compare_snapshot));
+        }
+        let mut slots = std::collections::BTreeSet::new();
+        for (&slot, &mask) in changes
+            .changed
+            .iter()
+            .zip(&changes.masks)
+            .chain(changes.fill_slots.iter().zip(&changes.fill_masks))
+        {
+            if mask & fields != 0
+                || table
+                    .key(slot)
+                    .is_some_and(|key| !self.rows.contains_key(&key))
+            {
+                slots.insert(slot);
+            }
+        }
+        slots.extend(changes.inserted.iter().copied());
+        let mut read = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let row: T::Row = columns::row(state, T::ID, slot, format)?;
+            row.check_key_fields()?;
+            read.push(row);
+        }
+        let mut edits = Vec::with_capacity(read.len() + changes.deleted_keys.len());
+        for key in &changes.deleted_keys {
+            edits.push((self.rows.remove(key), None));
+        }
+        for row in read {
+            edits.push((self.rows.insert(row.key(), row.clone()), Some(row)));
+        }
+        self.error = None;
+        self.baseline = Some(hour);
+        Ok(if edits.is_empty() {
+            Applied::Same
+        } else {
+            Applied::Changes(edits)
+        })
     }
 
     /// Apply the rows that changed the decoded table `rows` from the previous
@@ -834,6 +928,75 @@ impl Inventory {
             self.names = names;
             self.lexical = view.map(|view| view.identity());
         }
+        self.compose_parts();
+    }
+
+    pub(super) fn columnar_names(
+        &mut self,
+        state: &replay::segments::State,
+        format: u16,
+        whole: bool,
+    ) -> io::Result<()> {
+        use replay::columns;
+        let table = TableId::LexicalTokens;
+        let mut edits = Vec::new();
+        if !columns::complete(state, table) {
+            edits.extend(self.names.keys().copied().map(|token| (token, None)));
+        } else if whole {
+            let mut names: HashMap<_, _> =
+                super::columnar::rows::<replay_data::rows::LexicalTokenRow>(state, table, format)?
+                    .into_iter()
+                    .filter_map(|row| {
+                        String::from_utf8(row.literal)
+                            .ok()
+                            .map(|name| (row.token, name))
+                    })
+                    .collect();
+            for token in self.names.keys() {
+                if !names.contains_key(token) {
+                    edits.push((*token, None));
+                }
+            }
+            edits.extend(names.drain().map(|(token, name)| (token, Some(name))));
+        } else {
+            let changes = columns::changes(state, table)?;
+            edits.extend(changes.deleted_keys.iter().map(|&key| (key as u32, None)));
+            let slots: std::collections::BTreeSet<_> = changes
+                .changed
+                .iter()
+                .chain(&changes.fill_slots)
+                .chain(&changes.inserted)
+                .copied()
+                .collect();
+            for slot in slots {
+                let row: replay_data::rows::LexicalTokenRow =
+                    columns::row(state, table, slot, format)?;
+                edits.push((row.token, String::from_utf8(row.literal).ok()));
+            }
+        }
+        for (token, name) in edits {
+            if self.names.get(&token) != name.as_ref() {
+                self.dirty_templates.extend(
+                    self.token_templates
+                        .get(&token)
+                        .into_iter()
+                        .flatten()
+                        .copied(),
+                );
+                match name {
+                    Some(name) => {
+                        self.names.insert(token, name);
+                    }
+                    None => {
+                        self.names.remove(&token);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn compose_parts(&mut self) {
         if self.rebuild_parts {
             self.dirty.extend(self.parts.keys().copied());
             self.parts.clear();
