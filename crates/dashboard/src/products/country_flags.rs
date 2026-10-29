@@ -13,7 +13,7 @@ pub use crate::flag_choices::{FlagChoice, choices, ruling_groups};
 use crate::{Source, catalogue::Catalogue, content, invalid};
 use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
 use installed_content_image::Rgba8Image;
-use replay::{container::Replay, container::SeekResult};
+use replay::container::SeekResult;
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -197,7 +197,7 @@ impl Product for CountryFlags {
                     }
                 };
                 let mut loaded = FlagContext::load(
-                    source.replay(),
+                    source,
                     resolved,
                     cells,
                     content.options.clone(),
@@ -209,7 +209,7 @@ impl Product for CountryFlags {
                 loaded.cell_fallbacks = cell_fallbacks;
                 loaded.files = files;
                 state = shared.lock().unwrap_or_else(|error| error.into_inner());
-                state.contexts.insert(0, loaded);
+                state.contexts.insert(0, Arc::new(loaded));
                 state.contexts.truncate(RECENT_HOURS);
             }
         }
@@ -224,7 +224,10 @@ impl Product for CountryFlags {
             CountryFlagSize::Shield | CountryFlagSize::Panel
         )
         .then(|| load_shield().map_err(|error| error.to_string()));
-        state.contexts[0].reply(
+        // Flag files are read and drawn outside the lock, so other requests run alongside.
+        let context = Arc::clone(&state.contexts[0]);
+        drop(state);
+        context.reply(
             params,
             shield
                 .as_ref()
@@ -268,7 +271,7 @@ fn cached_shield(
 #[derive(Default)]
 struct FlagState {
     /// Most recently used first.
-    contexts: Vec<FlagContext>,
+    contexts: Vec<Arc<FlagContext>>,
     /// The shield read from the catalogue it belongs to; another catalogue rereads it.
     shield: Option<CachedShield>,
 }
@@ -918,7 +921,7 @@ impl FlagContext {
     }
 
     fn load(
-        replay: Arc<Replay>,
+        source: &Source,
         content: Arc<ResolvedContent>,
         cells: [[u32; 2]; 3],
         options: ResolveOptions,
@@ -927,7 +930,7 @@ impl FlagContext {
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         let mut warnings = vec!["Flag artwork is resolved from the recording's game content; visual assets are outside the content hash coverage.".into()];
-        content::check_replay(&replay, allow_unverified, &mut warnings)?;
+        content::check_replay(source.replay_ref(), allow_unverified, &mut warnings)?;
         let branch = request
             .branch_id
             .parse::<u64>()
@@ -935,17 +938,21 @@ impl FlagContext {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Flag request cancelled"));
         }
-        let frame =
-            match replay.seek_selected_with(branch, request.hour, Some(&CHOICE_TABLES), || {
-                crate::metadata::check_cancel(cancelled)
-            })? {
-                SeekResult::Frame(frame) => frame,
-                SeekResult::Gap { reason, .. } => {
-                    return Err(invalid(format!(
-                        "Flag identities unavailable at this hour: {reason}"
-                    )));
-                }
-            };
+        // Through the frames other products read the hour through, so its block decodes once.
+        let frame = match dashboard_base::prepared::query::frames::seek(
+            source,
+            branch,
+            request.hour,
+            &CHOICE_TABLES,
+            cancelled,
+        )? {
+            SeekResult::Frame(frame) => frame,
+            SeekResult::Gap { reason, .. } => {
+                return Err(invalid(format!(
+                    "Flag identities unavailable at this hour: {reason}"
+                )));
+            }
+        };
         let mut by_tag = HashMap::new();
         for choice in choices(&frame)? {
             by_tag.entry(choice.tag.clone()).or_insert(choice);
@@ -1402,6 +1409,38 @@ mod tests {
         let alias_only = super::choices(&frame).unwrap();
         assert_eq!(alias_only[0].candidates, choices[0].candidates);
         assert!(alias_only[0].refusal.is_none());
+    }
+
+    #[test]
+    fn a_flag_read_shares_the_frames_other_products_read_its_hour_through() {
+        use dashboard_base::prepared::query::frames;
+        let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+        let frame = dashboard_base::test_fixtures::source(1, 100, Some(1));
+        let (source, context) =
+            dashboard_base::test_fixtures::source_with_content(vec![frame], &folder.0);
+        let content = context.content().unwrap();
+        let presented = source.presented_for(content).unwrap();
+        let params = CountryFlagParams {
+            branch_id: "1".into(),
+            hour: 100,
+            tags: vec!["GER".into()],
+            size: CountryFlagSize::Full,
+        };
+        let flag = AtomicBool::new(false);
+        let before = frames::reads(&source);
+        let _ = FlagContext::load(
+            &source,
+            Arc::clone(&presented.content),
+            [[1, 1]; 3],
+            content.options.clone(),
+            content.allow_unverified,
+            &params,
+            &flag,
+        );
+        let read = frames::reads(&source);
+        assert_eq!(read.1, before.1 + 1, "one hour sought");
+        frames::seek(&source, 1, 100, &CHOICE_TABLES, &flag).unwrap();
+        assert_eq!(frames::reads(&source), read, "the hour already read");
     }
 
     #[test]
