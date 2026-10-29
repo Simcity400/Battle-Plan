@@ -254,26 +254,18 @@ pub struct CachedContent {
     pub notes: Vec<String>,
 }
 
-/// Runs `read` on a helper thread working for this one: at its priority, with what the
-/// catalogues note there credited to this thread's consumers once [`joined`].
+/// Runs `read` on a helper thread working for this one ([`installed_content_core::parallel::spawn`]),
+/// with what the catalogues note there credited to this thread's consumers once [`joined`].
 fn alongside<'s, T: Send + 's>(
     threads: &'s std::thread::Scope<'s, '_>,
     read: impl FnOnce() -> T + Send + 's,
 ) -> std::thread::ScopedJoinHandle<'s, (T, crate::catalogue::OwnRefusals)> {
-    let caller = job_priority::Caller::current();
-    let cpu = replay_frame::cpu::Context::capture();
-    threads.spawn(move || {
-        let _cpu = cpu.enter("effect description content");
-        caller.enter();
-        crate::catalogue::capture(read)
-    })
+    installed_content_core::parallel::spawn(threads, move || crate::catalogue::capture(read))
 }
 
 /// What [`alongside`] read, its notes credited here as if read on this thread.
 fn joined<T>(read: std::thread::ScopedJoinHandle<'_, (T, crate::catalogue::OwnRefusals)>) -> T {
-    let (value, noted) = read
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let (value, noted) = installed_content_core::parallel::join(read);
     crate::catalogue::credit(&noted);
     value
 }

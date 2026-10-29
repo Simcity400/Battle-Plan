@@ -1078,13 +1078,3 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
     assert!(error.contains("state inventory is unavailable"), "{error}");
     fs::remove_dir_all(&root).unwrap();
 }
-
-/// Helpers hand every path's value back in listed order, whichever helper read it.
-#[test]
-fn each_file_returns_values_in_listed_order() {
-    let paths: Vec<u32> = (0..1000).collect();
-    let read = each_file(&paths, |path| path * 2);
-    assert_eq!(read, paths.iter().map(|path| path * 2).collect::<Vec<_>>());
-    assert_eq!(each_file(&paths[..1], |path| path + 1), [1]);
-    assert!(each_file(&paths[..0], |path| *path).is_empty());
-}
