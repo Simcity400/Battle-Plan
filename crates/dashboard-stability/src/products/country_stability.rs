@@ -1105,6 +1105,31 @@ pub(super) fn apply_reads(
     Some(membership)
 }
 
+/// Each country's tag and mapped slot by id, and each slot's countries, from `countries`
+/// in id order and their `links`.
+pub(super) fn roster(
+    countries: &[replay_data::rows::CountryRow],
+    links: &[replay_data::rows::CountryLinkRow],
+) -> (BTreeMap<u32, (String, u32)>, BTreeMap<u32, Vec<u32>>) {
+    let (mut roster, mut slots) = (BTreeMap::new(), BTreeMap::<u32, Vec<u32>>::new());
+    // A tag's first row wins even if unresolved; later duplicates cannot supply values.
+    let mut tags = BTreeSet::new();
+    for country in countries {
+        if !tags.insert(country.tag.as_slice()) {
+            continue;
+        }
+        let (Ok(tag), Ok(slot)) = (
+            std::str::from_utf8(&country.tag),
+            mapped_slot(country, links),
+        ) else {
+            continue;
+        };
+        roster.insert(country.id, (tag.to_owned(), slot));
+        slots.entry(slot).or_default().push(country.id);
+    }
+    (roster, slots)
+}
+
 fn same_keys<T>(old: &Option<BTreeMap<u32, T>>, new: &Option<BTreeMap<u32, T>>) -> bool {
     match (old, new) {
         (Some(old), Some(new)) => old.keys().eq(new.keys()),
@@ -1176,25 +1201,10 @@ impl Native {
         if roster_changed {
             self.membership_changed = true;
             dirty.extend(self.roster.keys().copied());
-            self.roster.clear();
-            self.slots.clear();
-            if let Some((countries, links)) = self.countries.as_ref().zip(self.links.as_ref()) {
-                // A tag's first row wins even if unresolved; later duplicates cannot supply values.
-                let mut tags = BTreeSet::new();
-                for country in countries {
-                    if !tags.insert(country.tag.as_slice()) {
-                        continue;
-                    }
-                    let (Ok(tag), Ok(slot)) = (
-                        std::str::from_utf8(&country.tag),
-                        mapped_slot(country, links),
-                    ) else {
-                        continue;
-                    };
-                    self.roster.insert(country.id, (tag.to_owned(), slot));
-                    self.slots.entry(slot).or_default().push(country.id);
-                }
-            }
+            (self.roster, self.slots) = match self.countries.as_ref().zip(self.links.as_ref()) {
+                Some((countries, links)) => roster(countries, links),
+                None => Default::default(),
+            };
             dirty.extend(self.roster.keys().copied());
         }
         if reads(TableId::CountryStabilityInputs) {
@@ -1309,6 +1319,78 @@ impl Native {
         dirty
     }
 }
+/// The displayed stability, war support and maximum command power of a country's inputs
+/// row and its command power row.
+pub(crate) fn measures(
+    row: &CountryStabilityInputRow,
+    command: Option<&replay_data::rows::CountryCommandPowerRow>,
+) -> [Option<i64>; 3] {
+    [
+        formula::stability(row).value,
+        formula::war_support(row).value,
+        formula::max_command_power(row, command).value,
+    ]
+}
+
+/// One country's measures at an hour.
+struct Offer<'a> {
+    tag: &'a str,
+    row: &'a CountryStabilityInputRow,
+    /// Its holder's slot and country id.
+    identity: (u32, u32),
+    read: i32,
+    values: [Option<i64>; 3],
+}
+
+/// Hands `offer` to `sink`, calling `handing` first, unless it continues its tag's track
+/// unchanged (`always` hands every offer), then keeps it as the track.
+fn offer(
+    tracks: &mut BTreeMap<String, Track>,
+    offer: Offer<'_>,
+    adjacent: bool,
+    always: bool,
+    handing: &mut dyn FnMut(),
+    sink: &mut impl FnMut(
+        &str,
+        &CountryStabilityInputRow,
+        u32,
+        i32,
+        [Option<i64>; 3],
+        [bool; 3],
+        [bool; 4],
+    ) -> io::Result<()>,
+) -> io::Result<()> {
+    let Offer {
+        tag,
+        row,
+        identity,
+        read,
+        values,
+    } = offer;
+    let track = tracks.entry(tag.to_owned()).or_default();
+    let continues = adjacent && track.identity == Some(identity);
+    if always || !continues || track.values != values || track.read != Some(read) {
+        handing();
+        sink(
+            tag,
+            row,
+            identity.0,
+            read,
+            values,
+            track.values.map(|value| continues && value.is_some()),
+            std::array::from_fn(|index| {
+                !continues
+                    || track.read != Some(read)
+                    || index > 0 && track.values[index - 1] != values[index - 1]
+            }),
+        )?;
+    }
+    track.identity = Some(identity);
+    track.values = values;
+    track.read = Some(read);
+    Ok(())
+}
+
 impl Scan {
     pub(crate) fn step(
         &mut self,
@@ -1325,9 +1407,7 @@ impl Scan {
             [bool; 4],
         ) -> io::Result<()>,
     ) -> io::Result<()> {
-        let adjacent = self.hour.and_then(|hour| hour.checked_add(1)) == Some(decoded.hour);
-        self.hour = Some(decoded.hour);
-        self.removed.clear();
+        let adjacent = self.begin(decoded.hour);
         let mut dirty = self.native.refresh(decoded, changes, true);
         if !adjacent {
             dirty.extend(self.native.roster.keys().copied());
@@ -1354,13 +1434,7 @@ impl Scan {
                 })
                 .map(|(_, (tag, _))| tag.clone())
                 .collect();
-            for tag in self.active.difference(&valid) {
-                self.removed.push(tag.clone());
-                if let Some(track) = self.tracks.get_mut(tag) {
-                    track.identity = None;
-                }
-            }
-            self.active = valid;
+            self.hold(valid);
         }
         for id in dirty {
             let Some((tag, slot)) = self.native.roster.get(&id) else {
@@ -1384,43 +1458,94 @@ impl Scan {
             else {
                 continue;
             };
-            let identity = (*slot, id);
-            let track = self.tracks.entry(tag.to_owned()).or_default();
-            let continues = adjacent && track.identity == Some(identity);
-            let values = [
-                formula::stability(row).value,
-                formula::war_support(row).value,
-                formula::max_command_power(
-                    row,
-                    self.native.command.as_ref().and_then(|rows| rows.get(slot)),
-                )
-                .value,
-            ];
-            if changes.is_none() || !continues || track.values != values || track.read != Some(read)
-            {
-                #[cfg(test)]
-                {
-                    self.native.work.emitted += 1;
-                }
-                sink(
+            let values = measures(
+                row,
+                self.native.command.as_ref().and_then(|rows| rows.get(slot)),
+            );
+            #[cfg(test)]
+            let work = &mut self.native.work;
+            offer(
+                &mut self.tracks,
+                Offer {
                     tag,
                     row,
-                    *slot,
+                    identity: (*slot, id),
                     read,
                     values,
-                    track.values.map(|value| continues && value.is_some()),
-                    std::array::from_fn(|index| {
-                        !continues
-                            || track.read != Some(read)
-                            || index > 0 && track.values[index - 1] != values[index - 1]
-                    }),
-                )?;
-            }
-            track.identity = Some(identity);
-            track.values = values;
-            track.read = Some(read);
+                },
+                adjacent,
+                changes.is_none(),
+                &mut || {
+                    #[cfg(test)]
+                    {
+                        work.emitted += 1;
+                    }
+                },
+                &mut sink,
+            )?;
         }
         Ok(())
+    }
+
+    /// The hour of `countries` a columnar walk projected ([`columnar::Projector`]): `valid`
+    /// the tags with a current holder, when it may have changed, and by id every country
+    /// whose measures may have changed, at least those [`Self::step`] would offer.
+    pub(crate) fn emit(
+        &mut self,
+        hour: i32,
+        valid: Option<BTreeSet<String>>,
+        countries: &[columnar::Projected],
+        mut sink: impl FnMut(
+            &str,
+            &CountryStabilityInputRow,
+            u32,
+            i32,
+            [Option<i64>; 3],
+            [bool; 3],
+            [bool; 4],
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let adjacent = self.begin(hour);
+        if let Some(valid) = valid {
+            self.hold(valid);
+        }
+        for country in countries {
+            offer(
+                &mut self.tracks,
+                Offer {
+                    tag: &country.tag,
+                    row: &country.row,
+                    identity: (country.slot, country.id),
+                    read: country.read,
+                    values: country.values,
+                },
+                adjacent,
+                false,
+                &mut || {},
+                &mut sink,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Starts the hour `hour`: whether it follows the scan's hour before.
+    fn begin(&mut self, hour: i32) -> bool {
+        let adjacent = self.hour.and_then(|before| before.checked_add(1)) == Some(hour);
+        self.hour = Some(hour);
+        self.removed.clear();
+        adjacent
+    }
+
+    /// Makes `valid` the tags with a current holder; a tag leaving them is removed and its
+    /// track loses its identity.
+    fn hold(&mut self, valid: BTreeSet<String>) {
+        for tag in self.active.difference(&valid) {
+            self.removed.push(tag.clone());
+            if let Some(track) = self.tracks.get_mut(tag) {
+                track.identity = None;
+            }
+        }
+        self.active = valid;
     }
     #[cfg(test)]
     pub(crate) fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
@@ -1633,6 +1758,7 @@ mod display_text_tests {
     }
 }
 
+pub mod columnar;
 #[cfg(test)]
 mod tests;
 

@@ -146,56 +146,57 @@ impl StabilityAccumulator {
             None,
             Some(changes),
             |tag, row, slot, read, values, joined, changed| {
-                if changed[0] {
-                    record(
-                        actors,
-                        batch,
-                        tag,
-                        "readHour",
-                        frame.hour,
-                        Some(i128::from(read)),
-                        adjacent,
-                        (slot, row.country, read),
-                        false,
-                        None,
-                    )?;
-                }
-                for (((measure, value), joined), changed) in
-                    ["stability", "warSupport", "maxCommandPower"]
-                        .into_iter()
-                        .zip(values)
-                        .zip(joined)
-                        .zip(changed[1..].iter().copied())
-                {
-                    if !changed {
-                        continue;
-                    }
-                    record(
-                        actors,
-                        batch,
-                        tag,
-                        measure,
-                        frame.hour,
-                        value.map(i128::from),
-                        joined,
-                        (slot, row.country, read),
-                        false,
-                        None,
-                    )?;
-                }
-                Ok(())
+                measured(
+                    actors,
+                    batch,
+                    (frame.hour, adjacent),
+                    (tag, row.country, slot, read),
+                    values,
+                    joined,
+                    changed,
+                )
             },
         )?;
         drop(cpu);
         let _cpu = ::replay_frame::cpu::scope_phase("stability:pruning");
-        for tag in &stability.removed {
-            for measure in ["readHour", "stability", "warSupport", "maxCommandPower"] {
-                if let Some(actor) = actors.get_mut(&series::field_key(tag, measure)) {
-                    batch.observe(actor.key, frame.hour, None, false);
-                    actor.holder = None;
-                }
-            }
-        }
+        prune(&stability.removed, actors, batch, frame.hour);
+        Ok(())
+    }
+
+    /// The measures of an hour a columnar walk projected
+    /// ([`crate::products::country_stability::columnar`]), kept as [`Self::observe_timed`]
+    /// keeps them; stability's parts are not observed.
+    pub fn observe_projected(
+        &mut self,
+        projected: crate::products::country_stability::columnar::Hour,
+    ) -> io::Result<()> {
+        let hour = projected.hour;
+        let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(hour);
+        self.last = Some(hour);
+        self.batch.advance(hour)?;
+        let Self {
+            stability,
+            actors,
+            batch,
+            ..
+        } = self;
+        stability.emit(
+            hour,
+            projected.valid,
+            &projected.countries,
+            |tag, row, slot, read, values, joined, changed| {
+                measured(
+                    actors,
+                    batch,
+                    (hour, adjacent),
+                    (tag, row.country, slot, read),
+                    values,
+                    joined,
+                    changed,
+                )
+            },
+        )?;
+        prune(&stability.removed, actors, batch, hour);
         Ok(())
     }
     pub fn flush(
@@ -216,7 +217,7 @@ impl StabilityAccumulator {
         >,
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("stability:series_flush");
-        if let Some(last) = self.last {
+        if self.last.is_some() {
             let started = dashboard_base::prepared::timing::start_timing(timings);
             let result = self.parts.flush(writer, branch, cancelled);
             dashboard_base::prepared::timing::finish_timing(
@@ -226,15 +227,28 @@ impl StabilityAccumulator {
                 true,
             );
             result?;
-            flush(
-                &self.actors,
-                &mut self.batch,
-                writer,
-                ("stability", branch, last, 5),
-                cancelled,
-            )?;
+            self.flush_measures(writer, branch, cancelled)?;
         }
         Ok(())
+    }
+
+    /// Flushes the measures' series and catalogue, not the parts.
+    pub fn flush_measures(
+        &mut self,
+        writer: &mut store::Writer,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let Some(last) = self.last else {
+            return Ok(());
+        };
+        flush(
+            &self.actors,
+            &mut self.batch,
+            writer,
+            ("stability", branch, last, 5),
+            cancelled,
+        )
     }
 }
 
@@ -393,6 +407,73 @@ impl ExperienceAccumulator {
         Ok(())
     }
 }
+/// Records one country's offered read hour and measures at `hour` (`adjacent` to the hour
+/// before), each that `changed`.
+fn measured(
+    actors: &mut BTreeMap<String, Actor>,
+    batch: &mut Accumulator,
+    (hour, adjacent): (i32, bool),
+    (tag, country, slot, read): (&str, u32, u32, i32),
+    values: [Option<i64>; 3],
+    joined: [bool; 3],
+    changed: [bool; 4],
+) -> io::Result<()> {
+    if changed[0] {
+        record(
+            actors,
+            batch,
+            tag,
+            "readHour",
+            hour,
+            Some(i128::from(read)),
+            adjacent,
+            (slot, country, read),
+            false,
+            None,
+        )?;
+    }
+    for (((measure, value), joined), changed) in MEASURES
+        .into_iter()
+        .zip(values)
+        .zip(joined)
+        .zip(changed[1..].iter().copied())
+    {
+        if !changed {
+            continue;
+        }
+        record(
+            actors,
+            batch,
+            tag,
+            measure,
+            hour,
+            value.map(i128::from),
+            joined,
+            (slot, country, read),
+            false,
+            None,
+        )?;
+    }
+    Ok(())
+}
+
+/// Ends at `hour` every series of the tags that lost their holder.
+fn prune(
+    removed: &[String],
+    actors: &mut BTreeMap<String, Actor>,
+    batch: &mut Accumulator,
+    hour: i32,
+) {
+    for tag in removed {
+        for measure in ["readHour", "stability", "warSupport", "maxCommandPower"] {
+            if let Some(actor) = actors.get_mut(&series::field_key(tag, measure)) {
+                batch.observe(actor.key, hour, None, false);
+                actor.holder = None;
+            }
+        }
+    }
+}
+
 pub(crate) fn flush(
     actors: &BTreeMap<String, Actor>,
     batch: &mut Accumulator,

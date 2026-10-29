@@ -33,6 +33,8 @@ use replay_columnar::{
 use std::{io, sync::Arc};
 
 #[cfg(test)]
+pub(crate) mod fixtures;
+#[cfg(test)]
 mod tests;
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -49,7 +51,7 @@ pub fn schema() -> io::Result<Vec<Vec<Column>>> {
 
 /// `slot`'s cell in `column` in the wire form a row's field codec reads: a text cell's
 /// dictionary bytes, an opaque cell as its payload encoded at `format`.
-fn wire<'a>(
+pub(crate) fn wire<'a>(
     table: &'a Table,
     dictionary: &'a Dictionary,
     slot: u32,
@@ -598,7 +600,8 @@ impl Recording {
         &self.runs
     }
 
-    fn run(&self, run: u32) -> io::Result<&RunDirectory> {
+    /// Run `run`'s directory, or why it cannot be read.
+    pub fn run(&self, run: u32) -> io::Result<&RunDirectory> {
         self.runs
             .get(run as usize)
             .ok_or_else(|| invalid("No such run"))?
