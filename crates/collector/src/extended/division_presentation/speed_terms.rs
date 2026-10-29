@@ -113,7 +113,6 @@ const ALLOCATION: &str = "division speed term allocation failed";
 #[derive(Clone, Copy)]
 struct Mover {
     division: u64,
-    pointer: usize,
     attacking: Result<bool, &'static str>,
     /// Whether any route edge reaches ordinary land speed.
     land: Result<bool, &'static str>,
@@ -187,6 +186,91 @@ impl Held {
     }
 }
 
+/// `carmy::movement_attacking` for the hour's land movers from their route copy
+/// and census owner. Each destination id and each (controller, logical owner)
+/// pair is read once per pass rather than once per mover. Only a successful
+/// read is kept: a failure stays the reading mover's and is read again after.
+#[derive(Default)]
+struct Hostility {
+    provinces: Option<Array>,
+    /// Each destination's controller, or `None` for an empty province slot.
+    destinations: std::collections::HashMap<u32, Option<i32>>,
+    pairs: std::collections::HashMap<(u32, u32), bool>,
+}
+
+impl Hostility {
+    fn clear(&mut self) {
+        self.provinces = None;
+        self.destinations.clear();
+        self.pairs.clear();
+    }
+
+    fn allocated_bytes(&self) -> usize {
+        self.destinations.capacity() * (size_of::<(u32, Option<i32>)>() + 1)
+            + self.pairs.capacity() * (size_of::<((u32, u32), bool)>() + 1)
+    }
+
+    /// The mover whose route ends at `last` and whose logical owner is `logical`.
+    /// A memo that cannot grow only costs its repeated read.
+    fn attacking(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        last: Result<u32, &'static str>,
+        logical: Option<u32>,
+    ) -> Result<bool, &'static str> {
+        let last = last?;
+        let destination = match self.destinations.get(&last) {
+            Some(&destination) => destination,
+            None => {
+                let provinces = match self.provinces {
+                    Some(provinces) => provinces,
+                    None => *self
+                        .provinces
+                        .insert(engine_native::carmy::movement_province_array(memory, game)?),
+                };
+                let destination = match engine_native::carmy::movement_route_destination(
+                    memory, base, provinces, last,
+                )? {
+                    0 => None,
+                    province => Some(engine_native::carmy::movement_destination_controller(
+                        memory, province,
+                    )?),
+                };
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve_map(&mut self.destinations, 1)
+                })
+                .is_ok()
+                {
+                    self.destinations.insert(last, destination);
+                }
+                destination
+            }
+        };
+        let Some(controller) = destination else {
+            return Ok(false);
+        };
+        if controller <= 0 {
+            return Ok(false);
+        }
+        let pair = (
+            controller as u32,
+            logical.ok_or("division presentation field unreadable")?,
+        );
+        if let Some(&hostile) = self.pairs.get(&pair) {
+            return Ok(hostile);
+        }
+        let hostile = ccountry::movement_enemy(memory, base, game, pair.0, pair.1)?;
+        if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.pairs, 1))
+            .is_ok()
+        {
+            self.pairs.insert(pair, hostile);
+        }
+        Ok(hostile)
+    }
+}
+
 pub(super) struct SpeedTerms {
     states: Vec<MovementStateTermRow>,
     access: Vec<CoreSupplyAccessRow>,
@@ -219,6 +303,7 @@ pub(super) struct SpeedTerms {
     /// Each unique combat's movement word and attacking side in `attackers`.
     combats: Vec<Result<CombatOperands, &'static str>>,
     combat_index: std::collections::HashMap<usize, usize>,
+    hostility: Hostility,
     attackers: Vec<usize>,
     regions: Vec<TransportRegion>,
     /// Reused across hours; only qualifying sea/transfer edges append.
@@ -255,6 +340,7 @@ impl Default for SpeedTerms {
             observed_rows: owned::Rows::default(),
             combats: Vec::new(),
             combat_index: std::collections::HashMap::new(),
+            hostility: Hostility::default(),
             attackers: Vec::new(),
             regions: Vec::new(),
             transport_demand: Vec::new(),
@@ -319,6 +405,7 @@ impl SpeedTerms {
             + self.observed_rows.bytes()
             + self.combats.capacity() * size_of::<Result<CombatOperands, &'static str>>()
             + self.combat_index.capacity() * (size_of::<(usize, usize)>() + 1)
+            + self.hostility.allocated_bytes()
             + self.attackers.capacity() * size_of::<usize>()
             + self.regions.capacity() * size_of::<TransportRegion>()
             + self.transport_demand.capacity() * size_of::<(u32, usize)>()
@@ -725,6 +812,7 @@ impl SpeedTerms {
         self.state_facts.clear();
         self.templates.clear();
         self.keys.clear();
+        self.hostility.clear();
         for seed in seeds {
             let route = match seed
                 .ordinary_route
@@ -758,7 +846,6 @@ impl SpeedTerms {
             reserve(&mut self.movers, 1)?;
             self.movers.push(Mover {
                 division: seed.division,
-                pointer: seed.pointer,
                 attacking: Err("movement hostility not demanded"),
                 land: Ok(false),
                 strategic: seed.strategic_redeployment,
@@ -910,8 +997,11 @@ impl SpeedTerms {
                 Ok(true)
             })();
             if mover.land == Ok(true) {
-                mover.attacking =
-                    engine_native::carmy::movement_attacking(memory, base, game, mover.pointer);
+                let last = route(&self.route, mover)
+                    .and_then(|path| path.last().copied().unwrap_or(Err("division route empty")));
+                mover.attacking = self
+                    .hostility
+                    .attacking(memory, base, game, last, mover.logical);
             }
             if mover.land.is_err() {
                 // Charge the failed gate in this existing traversal. River

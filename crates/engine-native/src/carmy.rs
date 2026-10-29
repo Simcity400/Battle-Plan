@@ -1032,7 +1032,21 @@ pub(crate) fn movement_route_province(
             .ok_or("movement route index invalid")?,
     )
     .ok_or("movement route id unreadable")?;
-    let provinces = presentation_array(memory, state, cgame_state::PROVINCES, 8)?;
+    movement_route_destination(memory, base, movement_province_array(memory, state)?, id)
+}
+
+/// The game state's province array, which route ids index.
+pub fn movement_province_array(memory: &impl Memory, state: usize) -> Result<Array, &'static str> {
+    presentation_array(memory, state, cgame_state::PROVINCES, 8)
+}
+
+/// The authenticated province route id `id` names, or 0 for an empty slot.
+pub fn movement_route_destination(
+    memory: &impl Memory,
+    base: usize,
+    provinces: Array,
+    id: u32,
+) -> Result<usize, &'static str> {
     let province = read::<u64>(
         memory,
         provinces
@@ -1047,6 +1061,14 @@ pub(crate) fn movement_route_province(
         }
     }
     Ok(province)
+}
+
+/// A route destination's controller, as `movement_attacking` reads it.
+pub fn movement_destination_controller(
+    memory: &impl Memory,
+    province: usize,
+) -> Result<i32, &'static str> {
+    presentation_field(memory, province, cprovince::CONTROLLER)
 }
 
 /// The arrival calculation uses the actual route's final destination rather than a hypothetical edge.
@@ -1064,7 +1086,7 @@ pub fn movement_attacking(
     if destination == 0 {
         return Ok(false);
     }
-    let controller = presentation_field::<i32>(memory, destination, cprovince::CONTROLLER)?;
+    let controller = movement_destination_controller(memory, destination)?;
     if controller <= 0 {
         return Ok(false);
     }

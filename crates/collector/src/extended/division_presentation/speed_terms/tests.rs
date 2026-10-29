@@ -98,7 +98,6 @@ fn movers(capture: &mut SpeedTerms, countries: usize) {
     capture.movers = (1..=countries)
         .map(|owner| Mover {
             division: owner as u64,
-            pointer: 0,
             attacking: Ok(false),
             land: Ok(true),
             strategic: Some(0),
@@ -1236,4 +1235,206 @@ fn speed_term_projection_keeps_frame_bytes_for_quiet_changes_and_refusals() {
             );
         }
     }
+}
+
+const HOSTILITY_ARRAY: usize = 0x30000;
+const HOSTILITY_PROVINCE: usize = 0x31000;
+const HOSTILITY_ARMY: usize = 0x40000;
+const HOSTILITY_IDS: u32 = 6;
+/// Each army's route and logical owner.
+const HOSTILITY_ARMIES: [(&[u32], u32); 9] = [
+    // Ends where no country controls.
+    (&[1, 3], 2),
+    // Country 2 is at war with 1.
+    (&[4], 1),
+    // An empty province slot.
+    (&[2], 1),
+    // A province whose definition names another.
+    (&[5], 3),
+    // Country 1 is at war with 3.
+    (&[3, 1], 3),
+    // Country 1 is at peace with 2.
+    (&[1], 2),
+    // Past the province array.
+    (&[7], 1),
+    // Its own controller.
+    (&[4], 2),
+    // The pair (2, 1) again.
+    (&[4], 1),
+];
+
+fn hostility_world() -> World {
+    use engine_native::{
+        cdiplomacy_status, crelation, crelation_status, cunit, cwar_relation, province_definition,
+    };
+    let mut world = World::new(3);
+    world.bytes.resize(0x60000, 0);
+    world.header(
+        GAME + cgame_state::PROVINCES,
+        HOSTILITY_ARRAY,
+        HOSTILITY_IDS as usize,
+    );
+    for id in 1..HOSTILITY_IDS {
+        if id == 2 {
+            continue;
+        }
+        let province = HOSTILITY_PROVINCE + id as usize * 0x400;
+        let definition = province + 0x200;
+        world.u64(HOSTILITY_ARRAY + id as usize * 8, province as u64);
+        world.u64(province, cprovince::VTABLE_RVA as u64);
+        world.u32(province + cprovince::ID, if id == 5 { 9 } else { id });
+        world.u64(province + cprovince::DEFINITION, definition as u64);
+        world.u32(definition + province_definition::ID, id);
+        world.u32(
+            province + cprovince::CONTROLLER,
+            [0, 1, 0, 0, 2, 3][id as usize],
+        );
+    }
+    for (index, &(route, logical)) in HOSTILITY_ARMIES.iter().enumerate() {
+        let army = HOSTILITY_ARMY + index * 0x400;
+        world.header(army + cunit::ORDINARY_ROUTE_DATA, army + 0x300, route.len());
+        for (at, &id) in route.iter().enumerate() {
+            world.u32(army + 0x300 + at * 4, id);
+        }
+        world.u32(army + cunit::LOGICAL_OWNER, logical);
+    }
+    for (index, (owner, target, war)) in [(1, 2, false), (1, 3, true), (2, 1, true)]
+        .into_iter()
+        .enumerate()
+    {
+        let country = COUNTRY + owner * BLOCK;
+        let diplomacy = 0x50000 + owner * 0x1000;
+        let relations = diplomacy + 0x800;
+        let tuple = 0x54000 + index * 0x400;
+        world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
+        world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+        world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+        world.header(diplomacy + cdiplomacy_status::RELATIONS, relations, 4);
+        world.u64(relations + target * 8, tuple as u64);
+        world.u64(tuple, crelation_status::VTABLE_RVA as u64);
+        world.u64(tuple + crelation_status::DIPLOMACY_STATUS, diplomacy as u64);
+        world.u32(tuple + crelation_status::TARGET_COUNTRY, target as u32);
+        if war {
+            let relation = 0x58000 + index * 0x100;
+            world.u64(tuple + crelation_status::WAR_RELATION, relation as u64);
+            world.u64(relation, cwar_relation::VTABLE_RVA as u64);
+            world.u32(relation + crelation::TYPE_ID, cwar_relation::TYPE);
+        }
+    }
+    world
+}
+
+/// Each army's shared verdict, from the census's route copy and owner.
+fn shared_hostility(
+    memory: &impl Memory,
+    hostility: &mut Hostility,
+) -> Vec<Result<bool, &'static str>> {
+    (0..HOSTILITY_ARMIES.len())
+        .map(|index| {
+            let army = HOSTILITY_ARMY + index * 0x400;
+            let (mut arena, mut values) = (Vec::new(), Vec::new());
+            let last = Array::read(memory, army + engine_native::cunit::ORDINARY_ROUTE_DATA, 4)
+                .ok_or("division route unreadable")
+                .and_then(|path| copy_route(memory, path, &mut arena, &mut values))
+                .and_then(|(start, len)| arena[start + len - 1]);
+            let logical =
+                engine_native::read::<u32>(memory, army + engine_native::cunit::LOGICAL_OWNER);
+            hostility.attacking(memory, 0, GAME, last, logical)
+        })
+        .collect()
+}
+
+/// The shared hostility verdict is `carmy::movement_attacking`'s for every
+/// mover, and each destination and pair is read once. With a fault at every
+/// byte either reads, the one observable distinction, peaceful or not, matches.
+#[test]
+fn shared_hostility_matches_each_movers_own_attacking_read() {
+    let mut world = hostility_world();
+    let alone = |world: &World| -> Vec<_> {
+        (0..HOSTILITY_ARMIES.len())
+            .map(|index| {
+                engine_native::carmy::movement_attacking(
+                    world,
+                    0,
+                    GAME,
+                    HOSTILITY_ARMY + index * 0x400,
+                )
+            })
+            .collect()
+    };
+    let mut hostility = Hostility::default();
+    let shared = shared_hostility(&world, &mut hostility);
+    assert_eq!(
+        shared,
+        [
+            Ok(false),
+            Ok(true),
+            Ok(false),
+            Err("movement province definition mismatch"),
+            Ok(true),
+            Ok(false),
+            Err("movement route province outside roster"),
+            Ok(false),
+            Ok(true),
+        ]
+    );
+    assert_eq!(shared, alone(&world));
+    // Destinations 1 to 4 and four pairs; failed reads are not kept.
+    assert_eq!((hostility.destinations.len(), hostility.pairs.len()), (4, 4));
+    let touched: std::collections::BTreeSet<usize> = world.reads.take().into_iter().collect();
+    assert!(touched.len() > HOSTILITY_ARMIES.len() * 4);
+    for at in touched {
+        world.fault = Some(at);
+        let shared = shared_hostility(&world, &mut Hostility::default());
+        let alone = alone(&world);
+        for index in 0..HOSTILITY_ARMIES.len() {
+            assert_eq!(
+                shared[index] == Ok(false),
+                alone[index] == Ok(false),
+                "army {index}, fault at {at:#x}"
+            );
+        }
+    }
+}
+
+/// The world with a fault at `fault` that, as a guard page does, fails only
+/// the first read covering it.
+struct OneShot<'a> {
+    world: &'a World,
+    fault: usize,
+    spent: std::cell::Cell<bool>,
+}
+
+impl Memory for OneShot<'_> {
+    fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+        if !self.spent.get() && at <= self.fault && self.fault < at.saturating_add(out.len()) {
+            self.spent.set(true);
+            return false;
+        }
+        self.world.copy(at, out)
+    }
+}
+
+/// A transient failure belongs to the mover whose read met it: movers sharing
+/// its destination or pair read again and keep their own verdicts.
+#[test]
+fn a_one_shot_fault_changes_only_the_mover_that_met_it() {
+    let world = hostility_world();
+    let clean = shared_hostility(&world, &mut Hostility::default());
+    let touched: std::collections::BTreeSet<usize> = world.reads.take().into_iter().collect();
+    let mut met = 0;
+    for at in touched {
+        let memory = OneShot {
+            world: &world,
+            fault: at,
+            spent: Default::default(),
+        };
+        let faulted = shared_hostility(&memory, &mut Hostility::default());
+        let changed = (0..clean.len())
+            .filter(|&index| faulted[index] != clean[index])
+            .count();
+        assert!(changed <= 1, "fault at {at:#x}: {faulted:?}");
+        met += changed;
+    }
+    assert!(met > 0);
 }
