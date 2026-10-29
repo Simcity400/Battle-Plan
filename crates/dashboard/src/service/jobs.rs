@@ -1823,6 +1823,7 @@ impl Inner {
                 &job.request.cancelled,
             )
             .and_then(|source| {
+                read_key_names_ahead(&source, self.content());
                 source.name_countries(self.content().as_ref()).map_err(|error| error.to_string())?;
                 Ok(source)
             });
@@ -1937,6 +1938,19 @@ fn warm_air(source: &Arc<Source>, content: ContentOptions) {
             let cancelled = content.presentation.cancel();
             products::air_superiority::prepared::warm(&source, &content, cancelled);
         });
+}
+
+/// Reads the key names of `content`'s stack on a thread of its own while the open names the
+/// countries: the store check after the naming waits for them (through the icon content), as do
+/// most first replies. The content is resolved here, as the naming next resolves it, so the
+/// thread binds nothing.
+fn read_key_names_ahead(source: &Source, content: Option<ContentOptions>) {
+    let Some(resolved) = content.and_then(|content| source.content(&content.options).ok()) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("key names ahead".into())
+        .spawn(move || drop(resolved.layers.key_names()));
 }
 
 fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
