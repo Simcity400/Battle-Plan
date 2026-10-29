@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
-import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
+import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchReply } from '../../generated/dashboard';
 import { validateResearchReply } from './researchData.ts';
 
-/** The country's research history. Before preparation covers the branch,
- * `publish` receives each reply answered from its prepared prefix as it grows. */
-export async function loadPreparedResearch(client: DashboardClient, source: DashboardSource, branchId: string, tag: string,
-  signal: AbortSignal, restart = false, pending: () => void = () => {}, publish?: (reply: ResearchReply) => void): Promise<ResearchReply> {
-  return validateResearchReply(await preparedSeriesQuery(client, source, 'events-page', {
-    branchId, tag, family: { kind: 'research' },
-  }, signal, restart, pending, undefined, publish && (value => publish(validateResearchReply(value)))));
+/** The country's research history for a mounted widget, its complete reply shared by every
+ * research widget showing the country (`loadProduct`). Before preparation covers the branch,
+ * `pending` is told it waits and `publish` receives each reply answered from its prepared
+ * prefix as it grows. */
+export function loadPreparedResearch(client: DashboardClient, source: DashboardSource, branchId: string, tag: string,
+  signal: AbortSignal, restart: boolean, pending: () => void, publish: (reply: ResearchReply) => void): Promise<ResearchReply> {
+  const request = { sourceId: source.id, revision: source.revision, product: 'events-page', params: { branchId, tag, family: { kind: 'research' } } };
+  return loadProduct(client, request, signal, validateResearchReply, source, restart, publish, pending);
 }
 
 /** Complete selected-country rows keep the established list and column models.

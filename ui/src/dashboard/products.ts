@@ -46,8 +46,10 @@ function usesPrepared(client: DashboardClient, request: ProductRequest, source?:
 }
 
 /** One-shot loads return their first reply. Mounted prepared loads publish each
- * accepted extent; only final replies enter the shared bounded cache. */
-export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void): Promise<T> {
+ * accepted extent; only final replies enter the shared bounded cache. A mounted load owns its
+ * request, so its `pending` is told when it waits for preparation to cover it; a one-shot load
+ * may join another's request and is told nothing. */
+export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void): Promise<T> {
   const prepared = usesPrepared(client, request, source);
   const replies = cache(client), key = productKey(request, contentRevision(client).snapshot(), prepared);
   const validated = (reply: ProductReply<unknown>): ProductReply<unknown> => {
@@ -73,7 +75,7 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
     // cache machinery. It retains no result; the final reply uses the real key.
     const reply = await replies.get(JSON.stringify([request.sourceId, key, newId()]), async shared => {
       const data = await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
-        request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart, undefined, undefined, value => {
+        request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart, pending, undefined, value => {
           latestRaw = value;
           latest = validated({ ...request, data: value });
           if (!signal.aborted) publish(latest.data as T);
