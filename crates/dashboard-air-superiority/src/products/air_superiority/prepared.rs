@@ -1077,6 +1077,8 @@ impl Prepared {
             view.0.map(str::to_owned),
             view.1,
         ));
+        // Work done ahead for the view gives way to this query from now on.
+        let _waiting = kept.waiting();
         let mut days = kept
             .days
             .lock()
@@ -1123,6 +1125,223 @@ impl Prepared {
         )?;
         Ok(samples)
     }
+    /// Classifies the next of `view`'s days after those it keeps, at most `chunk`, for work
+    /// ahead of its queries ([`classify_ahead`]) whose `params` reach the branch's last hour.
+    /// `ahead` carries on from the days it applied, catching up with those queries kept since, and
+    /// keeps each day it classifies. It classifies only for a view kept with room for its days,
+    /// holds the view only to check it and to keep a day, so the view can be let go meanwhile,
+    /// never holds the view's lock while it reads or classifies, and gives way as soon as a query
+    /// waits for the view.
+    #[allow(clippy::too_many_arguments)]
+    fn classify_next(
+        &self,
+        store: &store::Store,
+        key: &store::SourceKey,
+        branch: u64,
+        params: &AirParams,
+        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
+        groups: &dashboard_base::products::country_groups::Scan,
+        anchors: &assignment::SideAnchors,
+        base: &[AirSide],
+        timelines: &days::Timelines,
+        view: &days::View,
+        ahead: &mut days::Ahead,
+        chunk: usize,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Next> {
+        let Some(held) = unlowered(|| timelines.listed(view)) else {
+            return Ok(Next::Done);
+        };
+        if held.wanted() {
+            return Ok(Next::GiveWay);
+        }
+        let kept = Arc::downgrade(&held);
+        drop(held);
+        let mut sampled = self.sampled(store, key, branch, params, fields, cancelled)?;
+        let last_day = sampled.last.div_euclid(DAY_HOURS);
+        let complete = sampled
+            .wanted
+            .partition_point(|hour| hour.div_euclid(DAY_HOURS) < last_day);
+        let Some(held) = kept.upgrade() else {
+            return Ok(Next::Done);
+        };
+        let unapplied = unlowered(|| {
+            ahead.unapplied(
+                &held
+                    .days
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        });
+        drop(held);
+        if !ahead.apply(unapplied, base, &sampled.wanted[..complete]) {
+            return Ok(Next::Done);
+        }
+        let start = ahead.applied();
+        if start >= complete {
+            return Ok(Next::Done);
+        }
+        let end = start.saturating_add(chunk).min(complete);
+        let mut indices = catalogue_indices(ahead.sides());
+        let mut rosters = scan::RosterRead::default();
+        let sample_view = sampled_view(params);
+        // Why the chunk stopped before its end, if it did.
+        let mut stopped = None;
+        let read = values::each_hour(
+            &sampled.wanted[start..end],
+            sampled.fields,
+            &mut sampled.values,
+            &mut sampled.events,
+            cancelled,
+            |hour, projection, auxiliary| {
+                stopped = match kept.upgrade().map(|held| held.wanted()) {
+                    None => Some(Next::Done),
+                    Some(true) => Some(Next::GiveWay),
+                    Some(false) => None,
+                };
+                if stopped.is_some() {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let before = ahead.before(hour);
+                let mut sample = scan::prepared_snapshot(
+                    hour,
+                    projection,
+                    groups,
+                    anchors,
+                    sample_view,
+                    (ahead.sides(), &mut indices),
+                    &mut rosters,
+                )?;
+                scan::apply_auxiliary(&mut sample, auxiliary);
+                let Some(held) = kept.upgrade() else {
+                    stopped = Some(Next::Done);
+                    return Err(io::ErrorKind::Interrupted.into());
+                };
+                let keep = unlowered(|| ahead.keep(timelines, &held, Arc::new(sample), before));
+                drop(held);
+                stopped = match keep {
+                    days::Keep::Kept => return Ok(()),
+                    days::Keep::Moved => Some(Next::GiveWay),
+                    days::Keep::Full => Some(Next::Done),
+                };
+                Err(io::ErrorKind::Interrupted.into())
+            },
+        );
+        match (stopped, read) {
+            (Some(stopped), _) => Ok(stopped),
+            (None, Ok(())) if end < complete => Ok(Next::More),
+            (None, Ok(())) => Ok(Next::Done),
+            (None, Err(error)) => Err(error),
+        }
+    }
+}
+
+/// What classifying a chunk of a view's days ahead of its queries left to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Next {
+    /// More days remain.
+    More,
+    /// A query waits for the view or kept days of its own: the next chunk waits until it ran.
+    GiveWay,
+    /// No more days to keep: all are kept, the view was let go, or its budget is full.
+    Done,
+}
+
+/// Days classified ahead at most before the work lets go of the prepared state and the view.
+const AHEAD_DAYS: usize = 64;
+
+/// Classifies the days of `params`' timeline view after those its queries kept, through
+/// `through`, on a thread of its own below the priority of the work the user waits for, a chunk
+/// at a time ([`Prepared::classify_next`]): a later query, as when the playhead jumps, takes them
+/// kept rather than classifying them while the user waits. One runs per view. It holds the
+/// prepared state only while a chunk runs, takes the locks queries share out of background mode
+/// ([`unlowered`]), gives way to any query for the view, and stops once that state or the view is
+/// let go, no more days fit the budget, or a chunk fails.
+fn classify_ahead(
+    hourless: &Arc<Hourless>,
+    store: &Arc<store::Store>,
+    key: &store::SourceKey,
+    branch: u64,
+    params: &AirParams,
+    through: i32,
+    timelines: &Arc<days::Timelines>,
+) {
+    let (Some(first), Some(last)) = (params.first_hour, params.last_hour) else {
+        return;
+    };
+    let Some(first) = first.div_euclid(DAY_HOURS).checked_mul(DAY_HOURS) else {
+        return;
+    };
+    if last >= through {
+        return;
+    }
+    let (viewpoint, country) = sampled_view(params);
+    let view: days::View = (
+        branch,
+        hourless.serial,
+        first,
+        viewpoint.map(str::to_owned),
+        country,
+    );
+    let Some(claim) = timelines.claim_ahead(&view) else {
+        return;
+    };
+    let hourless = Arc::downgrade(hourless);
+    // Its binding checks, which a store's retried reads make, share no lock with queries.
+    let (store, key, timelines) = (Arc::clone(store), key.unshared(), Arc::clone(timelines));
+    let mut params = params.clone();
+    params.last_hour = Some(through);
+    let _ = std::thread::Builder::new()
+        .name("air timeline days ahead".into())
+        .spawn(move || {
+            job_priority::background_thread();
+            let cancelled = AtomicBool::new(false);
+            let mut ahead = days::Ahead::default();
+            loop {
+                let Some(hourless) = hourless.upgrade() else {
+                    break;
+                };
+                // Each chunk reads one verified publication, as a query does.
+                let Ok(scope) = unlowered(|| store.scope(&key)) else {
+                    break;
+                };
+                let next = hourless.state.classify_next(
+                    &store,
+                    &key,
+                    branch,
+                    &params,
+                    &hourless.fields,
+                    &hourless.groups,
+                    &hourless.cache.anchors,
+                    &hourless.cache.sides,
+                    &timelines,
+                    &view,
+                    &mut ahead,
+                    AHEAD_DAYS,
+                    &cancelled,
+                );
+                drop((scope, hourless));
+                match next {
+                    Ok(Next::More) => {}
+                    Ok(Next::GiveWay) => std::thread::sleep(std::time::Duration::from_millis(5)),
+                    Ok(Next::Done) | Err(_) => break,
+                }
+            }
+            // The claim is let go out of background mode: a query claiming a view takes its lock.
+            unlowered(|| drop(claim));
+        });
+}
+
+/// Runs `work` out of background mode on a thread in it, which then returns to it: `work` takes
+/// a lock the work the user waits for also takes, which background priority must never hold.
+fn unlowered<T>(work: impl FnOnce() -> T) -> T {
+    if !job_priority::is_background_thread() {
+        return work();
+    }
+    job_priority::foreground_thread();
+    let done = work();
+    job_priority::background_thread();
+    done
 }
 
 /// The hours a query samples and the series reading their inputs.
@@ -1424,6 +1643,16 @@ pub fn query(
         }
         cache.segments.push(Arc::new(segment));
         cache.sides = Arc::new(sides);
+        let through = dashboard_text::metadata::branch_bounds(replay, start).1;
+        classify_ahead(
+            &hourless,
+            &store,
+            &key,
+            branch,
+            &params,
+            through,
+            &days::timelines(source),
+        );
         cache_reply(
             source,
             replay,
@@ -1886,6 +2115,60 @@ mod tests {
             serde_json::to_value(timeline(&cache, request).unwrap()).unwrap()
         };
         let hours: Vec<i32> = frames.iter().map(|frame| frame.hour).collect();
+        // Days classified ahead, a day at a time and around a query keeping days of its own,
+        // answer every query as classifying each day in turn does, leaving it its last day.
+        let timelines = days::Timelines::default();
+        let cache = state.catalogue(groups);
+        let fields = std::sync::OnceLock::new();
+        let mut through = request.clone();
+        through.last_hour = hours.last().copied();
+        let (viewpoint, country) = sampled_view(request);
+        let first = request.first_hour.unwrap().div_euclid(DAY_HOURS) * DAY_HOURS;
+        let view: days::View = (1, 0, first, viewpoint.map(str::to_owned), country);
+        let mut ahead = days::Ahead::default();
+        let mut step = || {
+            state
+                .classify_next(
+                    &fixture.store,
+                    &fixture.key,
+                    1,
+                    &through,
+                    &fields,
+                    groups,
+                    &cache.anchors,
+                    &cache.sides,
+                    &timelines,
+                    &view,
+                    &mut ahead,
+                    1,
+                    &flag,
+                )
+                .unwrap()
+        };
+        assert_eq!(step(), Next::Done, "a view no query kept");
+        let asked = |last: i32| {
+            let mut request = request.clone();
+            request.last_hour = Some(last);
+            let before = days::CLASSIFIED.with(std::cell::Cell::get);
+            let kept = reply(&request, Some(&timelines));
+            assert_eq!(kept, reply(&request, None), "{last}");
+            days::CLASSIFIED.with(std::cell::Cell::get) - before
+        };
+        asked(hours[0]);
+        step();
+        asked(hours[hours.len() / 2]);
+        for _ in 0..=hours.len() {
+            match step() {
+                Next::More => {}
+                Next::Done => break,
+                Next::GiveWay => panic!("no query waits for the view"),
+            }
+        }
+        assert_eq!(step(), Next::Done);
+        for &last in &hours {
+            let classified = asked(last);
+            assert!(classified <= 1, "{last}: {classified} days classified");
+        }
         // Earliest first, so kept days are extended; then latest first, so they are cut short.
         let forward: Vec<i32> = hours.iter().chain(hours.last()).copied().collect();
         let backward: Vec<i32> = hours.iter().rev().chain(&hours).copied().collect();

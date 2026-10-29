@@ -316,6 +316,17 @@ impl SourceKey {
         })
     }
 
+    /// A copy whose recording binding is its own: binding checks through it never wait for, or
+    /// hold up, those of this key's clones, as work below their priority must not. A commit's
+    /// rejection of these inputs still refuses it, through the flag every copy shares.
+    pub fn unshared(&self) -> Self {
+        let binding = self.binding.lock().unwrap().clone();
+        Self {
+            binding: Arc::new(Mutex::new(binding)),
+            ..self.clone()
+        }
+    }
+
     fn recording_current(&self) -> io::Result<bool> {
         self.recording.current()
     }
@@ -617,7 +628,9 @@ impl Store {
         if let Some((path, id, accepted)) = binding.as_ref()
             && path == &self.directory
         {
-            return Ok(*id == catalog.header.source && *accepted);
+            return Ok(*id == catalog.header.source
+                && *accepted
+                && !key.rejected.load(Ordering::Acquire));
         }
         let saved = match self.source_key(catalog) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),

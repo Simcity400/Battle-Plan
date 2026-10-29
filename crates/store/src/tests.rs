@@ -3202,6 +3202,28 @@ fn a_repeated_flat_section_name_keeps_selecting_its_first_section() {
 }
 
 #[test]
+fn an_unshared_key_binds_on_its_own_to_the_same_source() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"first");
+    assert!(fixture.store.session(&key).unwrap().is_some());
+    let unshared = key.unshared();
+    assert_eq!(unshared, key);
+    assert!(!Arc::ptr_eq(&unshared.binding, &key.binding));
+    assert_eq!(
+        *unshared.binding.lock().unwrap(),
+        *key.binding.lock().unwrap()
+    );
+    assert!(fixture.store.session(&unshared).unwrap().is_some());
+    // A commit rejecting the inputs refuses the copy too, as it marks only the original's binding.
+    key.rejected.store(true, Ordering::Release);
+    if let Some((_, _, accepted)) = key.binding.lock().unwrap().as_mut() {
+        *accepted = false;
+    }
+    assert!(fixture.store.session(&key).unwrap().is_none());
+    assert!(fixture.store.session(&unshared).unwrap().is_none());
+}
+
+#[test]
 fn saved_source_is_parsed_once_per_open_and_exact_stamp() {
     let fixture = Fixture::new();
     let key = fixture.save(b"first");
