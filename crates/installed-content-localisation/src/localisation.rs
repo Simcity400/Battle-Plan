@@ -1169,40 +1169,21 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
         ..Localisation::default()
     };
     let mut sources = BTreeMap::new();
-    // Verify and parse independent files concurrently, then merge in exactly
-    // the original order. Filename language guesses would miss mod entries.
-    // A fixed worker count bounds parallel buffers and filesystem pressure.
-    let chunks = std::thread::scope(|scope| {
-        let workers: Vec<_> = files
-            .chunks(files.len().div_ceil(4).max(1))
-            .map(|chunk| {
-                let priority = job_priority::JobPriority::current();
-                let cpu = job_priority::accounting::Context::capture();
-                scope.spawn(move || -> io::Result<Vec<_>> {
-                    let _cpu = cpu.enter("content localisation");
-                    priority.enter(job_priority::Level::Normal);
-                    chunk
-                        .iter()
-                        .map(|(replace, _, path)| {
-                            let bytes = layers.read_path(&normalize_path(path)?)?;
-                            Ok((*replace, path, parse_file(&bytes, language)))
-                        })
-                        .collect()
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .map(|worker| {
-                worker
-                    .join()
-                    .map_err(|_| invalid("Localisation reader worker failed"))?
-            })
-            .collect::<io::Result<Vec<_>>>()
-    })?;
-    for (replace, path, parsed) in chunks.into_iter().flatten() {
+    // Verify and parse independent files on the machine's threads, then merge in exactly
+    // the original order, failing at the first file that fails in that order. Filename
+    // language guesses would miss mod entries.
+    let read = installed_content_core::parallel::map(&files, |(_, _, path)| {
+        // A panicking read fails in its file's place, as an error callers can fall back from.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let bytes = layers.read_path(&normalize_path(path)?)?;
+            io::Result::Ok(parse_file(&bytes, language))
+        }))
+        .unwrap_or_else(|_| Err(invalid("Localisation reader worker failed")))
+    });
+    for ((replace, _, path), parsed) in files.iter().zip(read) {
+        let parsed = parsed?;
         let path = String::from_utf8_lossy(path);
-        merge_file(&mut localisation, &mut sources, replace, &path, parsed);
+        merge_file(&mut localisation, &mut sources, *replace, &path, parsed);
     }
     Ok(localisation)
 }
@@ -2231,6 +2212,41 @@ mod tests {
         let layers = ResolvedLayers::from_folders(&[(&archive, &[][..])]).unwrap();
         let localisation = read(&layers, "english").unwrap();
         assert_eq!(localisation.get("RAW"), Some("raw"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Files read by several workers merge as one reader reading them in order.
+    #[test]
+    fn many_files_merge_in_load_order_whichever_worker_reads_them() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_localisation_many_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("localisation/replace")).unwrap();
+        for file in 0..200 {
+            std::fs::write(
+                root.join(format!("localisation/f{file:03}_l_english.yml")),
+                format!("\u{feff}l_english:\n SHARED: \"{file}\"\n OWN_{file}: \"own {file}\"\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            root.join("localisation/replace/r_l_english.yml"),
+            "\u{feff}l_english:\n REPLACED: \"replaced\"\n OWN_7: \"seven\"\n",
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let localisation = read(&layers, "english").unwrap();
+        assert_eq!(localisation.get("SHARED"), Some("0"), "the first file's definition wins");
+        for file in (0..200).filter(|file| *file != 7) {
+            let own = format!("own {file}");
+            assert_eq!(localisation.get(&format!("OWN_{file}")), Some(own.as_str()));
+        }
+        assert_eq!(localisation.get("OWN_7"), Some("seven"), "replace/ overwrites");
+        assert_eq!(localisation.duplicates.len(), 199, "every later SHARED is a duplicate");
+        assert_eq!(localisation.get("REPLACED"), Some("replaced"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

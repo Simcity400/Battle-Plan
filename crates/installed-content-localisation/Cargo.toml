@@ -10,7 +10,6 @@ license.workspace = true
 doctest = false
 
 [dependencies]
-job-priority.workspace = true
 installed-content-core.workspace = true
 
 [dev-dependencies]
