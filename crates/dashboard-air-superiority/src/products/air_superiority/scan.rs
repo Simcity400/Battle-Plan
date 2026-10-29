@@ -77,7 +77,7 @@ pub(super) struct Auxiliary {
     pub wings: BTreeMap<u32, u32>,
     pub wings_known: bool,
     pub theatres: Arc<BTreeMap<String, BTreeSet<u32>>>,
-    pub theatre_names: BTreeMap<String, Vec<u8>>,
+    pub theatre_names: Arc<BTreeMap<String, Vec<u8>>>,
     pub theatres_known: bool,
     pub theatre_read: Option<i32>,
 }
@@ -381,8 +381,8 @@ impl RosterRead {
 pub(super) struct ScoreOperands {
     pub identity_known: bool,
     pub present: Arc<BTreeSet<String>>,
-    pub witnessed: BTreeSet<String>,
-    pub invalid: BTreeSet<String>,
+    pub witnessed: Arc<BTreeSet<String>>,
+    pub invalid: Arc<BTreeSet<String>>,
     pub complete: bool,
     pub unresolved: bool,
     pub available: bool,
@@ -464,9 +464,9 @@ pub(super) fn score_values(
             projection.operands.unresolved = true;
             return;
         };
-        projection.operands.witnessed.insert(tag.to_owned());
+        Arc::make_mut(&mut projection.operands.witnessed).insert(tag.to_owned());
         if row.friendly < 0 || row.enemy < 0 {
-            projection.operands.invalid.insert(tag.to_owned());
+            Arc::make_mut(&mut projection.operands.invalid).insert(tag.to_owned());
             return;
         }
         let value = (row.country, (row.friendly, row.enemy));
@@ -924,7 +924,7 @@ pub(super) fn auxiliary(frame: &DecodedFrame) -> Auxiliary {
             Arc::make_mut(&mut result.theatres)
                 .entry(id.clone())
                 .or_default();
-            result.theatre_names.insert(id, theatre.name.clone());
+            Arc::make_mut(&mut result.theatre_names).insert(id, theatre.name.clone());
         }
         result.theatres_known = true;
         for member in members {
@@ -1148,7 +1148,11 @@ impl DayReads {
         );
         if !Arc::ptr_eq(&previous, &aux) {
             self.regions.extend(aux.wings.keys());
-            self.theatres.extend(aux.theatre_names.clone());
+            self.theatres.extend(
+                aux.theatre_names
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            );
         }
         Some(aux)
     }

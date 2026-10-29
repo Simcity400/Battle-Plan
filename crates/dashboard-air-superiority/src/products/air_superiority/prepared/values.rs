@@ -45,12 +45,13 @@ pub(super) fn samples(
         .filter(|&hour| block_of(hour).is_none())
         .collect();
     let mut sweep = Sweep::new(&direct);
+    let mut held = Operands::default();
     let mut result = Days::new();
     let mut blocks = BTreeMap::new();
     for &hour in wanted {
         check_cancel(cancelled)?;
         let Some(block) = block_of(hour) else {
-            let input = read_at(fields, &keys, values, events, &mut sweep, hour)?;
+            let input = read_at(fields, &keys, values, events, &mut sweep, &mut held, hour)?;
             result.insert(hour, Arc::new(input));
             continue;
         };
@@ -79,10 +80,11 @@ pub(super) fn samples(
                         }
                     }
                     let mut sweep = Sweep::new(&ends);
+                    let mut held = Operands::default();
                     let mut days = Days::new();
                     for &hour in &ends {
                         check_cancel(cancelled)?;
-                        match read_at(fields, &keys, values, events, &mut sweep, hour) {
+                        match read_at(fields, &keys, values, events, &mut sweep, &mut held, hour) {
                             Ok(input) => {
                                 days.insert(hour, Arc::new(input));
                             }
@@ -198,6 +200,86 @@ impl<'h> Sweep<'h> {
     }
 }
 
+/// The operand events last parsed, each with the count of its key's events through the hour it
+/// was read for: later hours with no newer event of a key share its parse.
+#[derive(Default)]
+struct Operands {
+    scores: Option<(u64, scan::ScoreOperands)>,
+    auxiliary: Option<(u64, scan::Auxiliary)>,
+    theatre_read: Option<(u64, Option<i32>)>,
+}
+
+/// A key's latest event through an hour: the one already parsed, or its row to parse.
+enum Latest {
+    Parsed,
+    Row(u64, serde_json::Value),
+}
+
+impl Operands {
+    /// The hour's operands. Each event is taken, then parsed, in the same order as ever, so an
+    /// hour fails with the same error.
+    fn at(&mut self, events: &mut Reader<'_>, hour: i32) -> io::Result<Input> {
+        let scores = latest(
+            &self.scores,
+            events,
+            0,
+            hour,
+            "Prepared air score operands are missing",
+        )?;
+        let auxiliary = latest(
+            &self.auxiliary,
+            events,
+            1,
+            hour,
+            "Prepared air auxiliary operands are missing",
+        )?;
+        if let Latest::Row(count, row) = scores {
+            self.scores = Some((count, serde_json::from_value(row)?));
+        }
+        if let Latest::Row(count, row) = auxiliary {
+            self.auxiliary = Some((count, serde_json::from_value(row)?));
+        }
+        if let Latest::Row(count, row) = latest(
+            &self.theatre_read,
+            events,
+            2,
+            hour,
+            "Prepared air theatre read is missing",
+        )? {
+            self.theatre_read = Some((count, serde_json::from_value(row)?));
+        }
+        let (Some((_, scores)), Some((_, auxiliary)), Some((_, read))) =
+            (&self.scores, &self.auxiliary, &self.theatre_read)
+        else {
+            unreachable!("every operand was parsed above");
+        };
+        let projection = scan::CountryScores {
+            operands: scores.clone(),
+            ..Default::default()
+        };
+        let mut auxiliary = auxiliary.clone();
+        auxiliary.theatre_read = *read;
+        Ok((projection, auxiliary))
+    }
+}
+
+fn latest<T>(
+    parsed: &Option<(u64, T)>,
+    events: &mut Reader<'_>,
+    key: u64,
+    hour: i32,
+    missing: &'static str,
+) -> io::Result<Latest> {
+    let count = events.event_count_through(key, hour)?;
+    if parsed.as_ref().is_some_and(|(parsed, _)| *parsed == count) {
+        return Ok(Latest::Parsed);
+    }
+    let (_, row) = events
+        .latest_event(key, hour)?
+        .ok_or_else(|| invalid(missing))?;
+    Ok(Latest::Row(count, row))
+}
+
 /// One hour's input, its amounts from `sweep` where it answers the hour.
 fn read_at(
     fields: &[(Field, u64)],
@@ -205,10 +287,11 @@ fn read_at(
     values: &mut Reader<'_>,
     events: &mut Reader<'_>,
     sweep: &mut Sweep<'_>,
+    held: &mut Operands,
     hour: i32,
 ) -> io::Result<Input> {
     // The hour's operands fail before any value is read, as in `read`.
-    let (mut projection, mut auxiliary) = operands(events, hour)?;
+    let (mut projection, mut auxiliary) = held.at(events, hour)?;
     match sweep.at(values, keys, hour)? {
         Some(amounts) => apply(fields, amounts, &mut projection, &mut auxiliary)?,
         None => apply(
@@ -228,7 +311,7 @@ fn read(
     events: &mut Reader<'_>,
     hour: i32,
 ) -> io::Result<Input> {
-    let (mut projection, mut auxiliary) = operands(events, hour)?;
+    let (mut projection, mut auxiliary) = Operands::default().at(events, hour)?;
     // Consumers need amounts alone. Reconstructing every run's original
     // start and eventual end searches old and new batches for every field.
     apply(
@@ -237,25 +320,6 @@ fn read(
         &mut projection,
         &mut auxiliary,
     )?;
-    Ok((projection, auxiliary))
-}
-
-fn operands(events: &mut Reader<'_>, hour: i32) -> io::Result<Input> {
-    let (_, operands) = events
-        .latest_event(0, hour)?
-        .ok_or_else(|| invalid("Prepared air score operands are missing"))?;
-    let (_, auxiliary) = events
-        .latest_event(1, hour)?
-        .ok_or_else(|| invalid("Prepared air auxiliary operands are missing"))?;
-    let projection = scan::CountryScores {
-        operands: serde_json::from_value(operands)?,
-        ..Default::default()
-    };
-    let mut auxiliary: scan::Auxiliary = serde_json::from_value(auxiliary)?;
-    let (_, read) = events
-        .latest_event(2, hour)?
-        .ok_or_else(|| invalid("Prepared air theatre read is missing"))?;
-    auxiliary.theatre_read = serde_json::from_value(read)?;
     Ok((projection, auxiliary))
 }
 
@@ -360,6 +424,58 @@ mod tests {
     }
 
     #[test]
+    fn hours_between_operand_events_share_one_read_of_them() {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut operands = Accumulator::default();
+        let scores = |tags: &[&str]| scan::ScoreOperands {
+            identity_known: true,
+            witnessed: Arc::new(tags.iter().map(|tag| (*tag).to_owned()).collect()),
+            ..Default::default()
+        };
+        let named = scan::Auxiliary {
+            theatre_names: Arc::new([("1".to_owned(), b"North".to_vec())].into()),
+            ..Default::default()
+        };
+        let known = scan::Auxiliary {
+            theatres_known: true,
+            ..named.clone()
+        };
+        // Each key's events change at their own hours, as a walk writes them.
+        operands.event(0, 10, &scores(&["AAA"])).unwrap();
+        operands.event(1, 10, &named).unwrap();
+        operands.event(2, 10, &None::<i32>).unwrap();
+        operands.event(1, 25, &known).unwrap();
+        operands.event(0, 30, &scores(&["AAA", "BBB"])).unwrap();
+        operands.event(2, 40, &Some(40)).unwrap();
+        let mut writer = fixture.writer();
+        operands.flush(&mut writer, "events", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        let mut events = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
+        let mut held = Operands::default();
+        let mut first = None;
+        for hour in 5..=45 {
+            let shared = held.at(&mut events, hour);
+            let alone = Operands::default().at(&mut events, hour);
+            let (shared, alone) = match (shared, alone) {
+                (Ok(shared), Ok(alone)) => (shared, alone),
+                (Err(shared), Err(alone)) => {
+                    assert_eq!(shared.to_string(), alone.to_string(), "hour {hour}");
+                    continue;
+                }
+                _ => panic!("hour {hour} read differently"),
+            };
+            assert!(shared.0.operands == alone.0.operands, "hour {hour}");
+            assert!(shared.1 == alone.1, "hour {hour}");
+            let witnessed = Arc::clone(&shared.0.operands.witnessed);
+            let first = first.get_or_insert(witnessed.clone());
+            // Until the score operands change at hour 30, every hour holds the first read.
+            assert_eq!(Arc::ptr_eq(first, &witnessed), hour < 30, "hour {hour}");
+        }
+        assert!(first.is_some());
+    }
+
+    #[test]
     fn an_hours_missing_operands_fail_before_its_values_are_read() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);
@@ -381,9 +497,18 @@ mod tests {
         reading.store(true, std::sync::atomic::Ordering::Relaxed);
         let hours = [10, 11];
         let mut sweep = Sweep::new(&hours);
-        let error = read_at(&[], &[0], &mut values, &mut events, &mut sweep, 10)
-            .err()
-            .unwrap();
+        let mut held = Operands::default();
+        let error = read_at(
+            &[],
+            &[0],
+            &mut values,
+            &mut events,
+            &mut sweep,
+            &mut held,
+            10,
+        )
+        .err()
+        .unwrap();
         assert_ne!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(error.to_string(), "Prepared air score operands are missing");
     }

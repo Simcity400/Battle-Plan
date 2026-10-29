@@ -528,14 +528,19 @@ impl Prepared {
                         .complete::<tables::AirTheatreMembers>()
                         .map_or(0, |rows| rows.len());
             }
-            self.theatres.extend(auxiliary.theatre_names.clone());
+            self.theatres.extend(
+                auxiliary
+                    .theatre_names
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            );
         }
         if auxiliary_changed {
             let operands = scan::Auxiliary {
                 wings: BTreeMap::new(),
                 wings_known: auxiliary.wings_known,
                 theatres: Arc::clone(&auxiliary.theatres),
-                theatre_names: auxiliary.theatre_names.clone(),
+                theatre_names: Arc::clone(&auxiliary.theatre_names),
                 theatres_known: auxiliary.theatres_known,
                 theatre_read: None,
             };

@@ -337,9 +337,13 @@ pub(super) fn query(
                     .chain(snapshot.cells.keys().copied()),
             );
             cache.countries.extend(sample.countries.iter().cloned());
-            cache
-                .theatres
-                .extend(sample.auxiliary.theatre_names.clone());
+            cache.theatres.extend(
+                sample
+                    .auxiliary
+                    .theatre_names
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            );
             let snapshot = Arc::new(snapshot);
             for span in spans {
                 segment.auxiliary.push((
