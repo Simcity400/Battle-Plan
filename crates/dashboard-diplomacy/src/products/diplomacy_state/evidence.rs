@@ -144,3 +144,17 @@ pub(super) fn current_owners(
     }
     current
 }
+
+/// Each owner and the length of its run in rows sorted by owner.
+pub(super) fn owner_runs<'r, R>(
+    rows: &'r [R],
+    owner: impl Fn(&R) -> u32 + 'r,
+) -> impl Iterator<Item = (u32, usize)> + 'r {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let first = owner(rows.get(at)?);
+        let run = rows[at..].partition_point(|row| owner(row) == first);
+        at += run;
+        Some((first, run))
+    })
+}

@@ -332,6 +332,13 @@ fn owner_read_helper_preserves_rowless_scheduled_dirty_and_full_evidence() {
     );
 }
 #[test]
+fn owner_runs_give_each_owner_and_its_row_count_in_order() {
+    let rows = [3u32, 3, 4, 9, 9, 9];
+    let runs: Vec<_> = evidence::owner_runs(&rows, |row| *row).collect();
+    assert_eq!(runs, [(3, 2), (4, 1), (9, 3)]);
+    assert_eq!(evidence::owner_runs(&[] as &[u32], |row| *row).count(), 0);
+}
+#[test]
 fn expired_reads_and_gaps_do_not_interpolate() {
     let mut first = frame(0, 0);
     opinions(&mut first, &[(A, B, 29)]);

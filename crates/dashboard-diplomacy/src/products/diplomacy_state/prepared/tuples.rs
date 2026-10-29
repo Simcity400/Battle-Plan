@@ -88,7 +88,7 @@ impl Prepared {
                 }
             }
             self.tuple_reads.remove(&owner);
-            self.number(country_key("t", &owner), hour, None, false);
+            self.country_number(Series::Tuples, &owner, hour, None, false);
         }
     }
     fn include_baseline_tuple_owners(
@@ -134,12 +134,7 @@ impl Prepared {
                 for &raw in joins.aliases.get(&owner).into_iter().flatten() {
                     owners.insert(raw, read);
                 }
-                self.number(
-                    country_key("t", &owner),
-                    hour,
-                    Some(i128::from(read)),
-                    false,
-                );
+                self.country_number(Series::Tuples, &owner, hour, Some(i128::from(read)), false);
                 self.tuple_reads.insert(owner, read);
             }
         }
@@ -161,10 +156,9 @@ impl Prepared {
             .as_ref()
             .is_none_or(|view| !view.is(&frame.tables[TableId::RelationTuples.index()]))
         {
-            self.orphan_tuple_owners = rows
-                .iter()
-                .filter(|row| !joins.raw.contains_key(&row.owner_country))
-                .map(|row| row.owner_country)
+            self.orphan_tuple_owners = evidence::owner_runs(rows, |row| row.owner_country)
+                .map(|(owner, _)| owner)
+                .filter(|owner| !joins.raw.contains_key(owner))
                 .collect();
             self.tuple_view = Some(frame.tables[TableId::RelationTuples.index()].identity());
         }
@@ -250,7 +244,12 @@ impl Prepared {
             .map(str::to_owned);
         let unresolved_kind = spelling.is_none().then_some(row.type_id);
         let kind = spelling.unwrap_or_else(|| format!("unresolved-token-{}", row.type_id));
-        self.catalogue.kinds.insert(kind.clone(), row.type_id);
+        match self.catalogue.kinds.get_mut(&kind) {
+            Some(type_id) => *type_id = row.type_id,
+            None => {
+                self.catalogue.kinds.insert(kind.clone(), row.type_id);
+            }
+        }
         let signature = tuple_signature(row, &roles, &kind)?;
 
         let key = self.pact_key(

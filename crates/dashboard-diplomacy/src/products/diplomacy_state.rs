@@ -61,7 +61,7 @@ impl DiplomacyParams {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiplomacyCountry {
     pub tag: String,

@@ -63,10 +63,10 @@ impl Prepared {
             .as_ref()
             .is_none_or(|view| !view.is(&frame.tables[TableId::RelationOpinions.index()]))
         {
-            self.orphan_opinions = rows
-                .iter()
-                .filter(|row| !joins.raw.contains_key(&row.owner_country))
-                .count();
+            self.orphan_opinions = evidence::owner_runs(rows, |row| row.owner_country)
+                .filter(|(owner, _)| !joins.raw.contains_key(owner))
+                .map(|(_, rows)| rows)
+                .sum();
             self.opinion_view = Some(frame.tables[TableId::RelationOpinions.index()].identity());
         }
     }
@@ -116,13 +116,13 @@ impl Prepared {
         self.store_opinion_owner(frame.hour, country, read, pairs, unresolved);
         Ok(())
     }
-    fn project_opinion_owner(
+    fn project_opinion_owner<'j>(
         &mut self,
         rows: &[RelationOpinionRow],
-        joins: &Joins,
+        joins: &'j Joins,
         country: &DiplomacyCountry,
         check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(BTreeMap<DiplomacyCountry, i32>, usize)> {
+    ) -> io::Result<(BTreeMap<&'j DiplomacyCountry, i32>, usize)> {
         let mut pairs = BTreeMap::new();
         let mut unresolved = 0;
         for &raw in joins.aliases.get(country).into_iter().flatten() {
@@ -132,7 +132,7 @@ impl Prepared {
                 check()?;
                 self.projected_rows += 1;
                 if let Some(target) = joins.raw.get(&row.target_country) {
-                    if pairs.insert(target.clone(), row.opinion).is_some() || row.opinion == 0 {
+                    if pairs.insert(target, row.opinion).is_some() || row.opinion == 0 {
                         unresolved += 1;
                     }
                 } else {
@@ -147,52 +147,57 @@ impl Prepared {
         hour: i32,
         country: DiplomacyCountry,
         read: Option<i32>,
-        pairs: BTreeMap<DiplomacyCountry, i32>,
+        pairs: BTreeMap<&DiplomacyCountry, i32>,
         unresolved: usize,
     ) {
         let known = read.is_some() && unresolved == 0;
-        let old = self.owners.remove(&country).unwrap_or_default();
-        for target in old
-            .pairs
-            .keys()
-            .filter(|target| !known || !pairs.contains_key(*target))
-        {
-            self.unindex_pair(&country, target);
-            self.number(pair_key(&country, target), hour, None, false);
+        let mut old = self.owners.remove(&country).unwrap_or_default();
+        for (target, pair) in &old.pairs {
+            if !known || !pairs.contains_key(target) {
+                self.unindex_pair(&country, target);
+                self.pair_number(&country, target, pair.key, hour, None, false);
+            }
         }
+        let mut kept = BTreeMap::new();
         if known {
-            for (target, value) in &pairs {
-                self.pair_owners
-                    .entry(target.clone())
-                    .or_default()
-                    .insert(country.clone());
-                self.number(
-                    pair_key(&country, target),
+            for (&target, &value) in &pairs {
+                let (target, held) = match old.pairs.remove_entry(target) {
+                    Some((target, pair)) => (target, pair.key),
+                    None => (target.clone(), None),
+                };
+                self.index_pair(&country, &target);
+                let key = self.pair_number(
+                    &country,
+                    &target,
+                    held,
                     hour,
-                    Some(i128::from(*value)),
+                    Some(i128::from(value)),
                     !old.known,
+                );
+                kept.insert(
+                    target,
+                    Pair {
+                        value,
+                        key: Some(key),
+                    },
                 );
             }
         }
-        self.number(
-            country_key("o", &country),
+        self.country_number(
+            Series::Owner,
+            &country,
             hour,
             known.then(|| i128::from(read.expect("known supplying read"))),
             !old.known,
         );
-        self.number(
-            country_key("r", &country),
-            hour,
-            read.map(i128::from),
-            false,
-        );
+        self.country_number(Series::Read, &country, hour, read.map(i128::from), false);
         self.owners.insert(
             country,
             Owner {
                 read,
                 known,
                 unresolved,
-                pairs: if known { pairs } else { BTreeMap::new() },
+                pairs: kept,
             },
         );
     }

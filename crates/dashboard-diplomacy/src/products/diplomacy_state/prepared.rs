@@ -15,7 +15,7 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::atomic::AtomicBool,
 };
@@ -44,6 +44,15 @@ pub(super) fn pair_key(owner: &DiplomacyCountry, target: &DiplomacyCountry) -> S
         serde_json::to_string(target).expect("target JSON")
     )
 }
+/// A country's series, in the order of `SERIES_PREFIX`.
+#[derive(Clone, Copy)]
+enum Series {
+    Owner,
+    Read,
+    Tuples,
+    Identity,
+}
+const SERIES_PREFIX: [&str; 4] = ["o", "r", "t", "i"];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Entry {
@@ -65,8 +74,14 @@ struct Owner {
     read: Option<i32>,
     known: bool,
     unresolved: usize,
-    #[serde(with = "country_map")]
-    pairs: BTreeMap<DiplomacyCountry, i32>,
+    #[serde(with = "pair_map")]
+    pairs: BTreeMap<DiplomacyCountry, Pair>,
+}
+/// A known pair's opinion and its series key; a restored pair looks its key up again.
+#[derive(Clone, Copy)]
+struct Pair {
+    value: i32,
+    key: Option<u64>,
 }
 #[derive(Deserialize, Serialize)]
 struct PactLive {
@@ -116,6 +131,9 @@ pub struct Prepared {
     country_keys: Option<CountryKeys>,
     #[serde(skip)]
     links: Option<replay_frame::frame::ViewIdentity>,
+    /// Numbered country series; `keys` never loses an entry, so a held key stays right.
+    #[serde(skip)]
+    country_series: HashMap<DiplomacyCountry, [Option<u64>; 4]>,
     #[serde(skip)]
     pub(super) projected_rows: usize,
 }
@@ -129,19 +147,82 @@ impl Prepared {
         self.series
             .observe_if_changed(key, hour, value, starts, false);
     }
+    fn held_country_series(&self, series: Series, country: &DiplomacyCountry) -> Option<u64> {
+        self.country_series.get(country)?[series as usize]
+    }
+    fn hold_country_series(&mut self, series: Series, country: &DiplomacyCountry, key: u64) {
+        match self.country_series.get_mut(country) {
+            Some(keys) => keys[series as usize] = Some(key),
+            None => {
+                let mut keys = [None; 4];
+                keys[series as usize] = Some(key);
+                self.country_series.insert(country.clone(), keys);
+            }
+        }
+    }
+    fn country_number(
+        &mut self,
+        series: Series,
+        country: &DiplomacyCountry,
+        hour: i32,
+        value: Option<i128>,
+        starts: bool,
+    ) {
+        let key = match self.held_country_series(series, country) {
+            Some(key) => key,
+            None => {
+                let key = self.key(country_key(SERIES_PREFIX[series as usize], country));
+                self.hold_country_series(series, country, key);
+                key
+            }
+        };
+        self.series
+            .observe_if_changed(key, hour, value, starts, false);
+    }
+    fn pair_number(
+        &mut self,
+        owner: &DiplomacyCountry,
+        target: &DiplomacyCountry,
+        held: Option<u64>,
+        hour: i32,
+        value: Option<i128>,
+        starts: bool,
+    ) -> u64 {
+        let key = match held {
+            Some(key) => key,
+            None => self.key(pair_key(owner, target)),
+        };
+        self.series
+            .observe_if_changed(key, hour, value, starts, false);
+        key
+    }
     fn close_owner(&mut self, country: &DiplomacyCountry, hour: i32) {
         if let Some(owner) = self.owners.remove(country) {
-            for target in owner.pairs.keys() {
+            for (target, pair) in &owner.pairs {
                 self.unindex_pair(country, target);
-                self.number(pair_key(country, target), hour, None, false);
+                self.pair_number(country, target, pair.key, hour, None, false);
             }
-            self.number(country_key("o", country), hour, None, false);
-            self.number(
-                country_key("r", country),
+            self.country_number(Series::Owner, country, hour, None, false);
+            self.country_number(
+                Series::Read,
+                country,
                 hour,
                 owner.read.map(i128::from),
                 false,
             );
+        }
+    }
+    fn index_pair(&mut self, owner: &DiplomacyCountry, target: &DiplomacyCountry) {
+        match self.pair_owners.get_mut(target) {
+            Some(owners) => {
+                if !owners.contains(owner) {
+                    owners.insert(owner.clone());
+                }
+            }
+            None => {
+                self.pair_owners
+                    .insert(target.clone(), BTreeSet::from([owner.clone()]));
+            }
         }
     }
     fn unindex_pair(&mut self, owner: &DiplomacyCountry, target: &DiplomacyCountry) {
@@ -154,10 +235,12 @@ impl Prepared {
     }
     fn close_target(&mut self, target: &DiplomacyCountry, hour: i32) {
         for owner in self.pair_owners.remove(target).unwrap_or_default() {
-            if let Some(state) = self.owners.get_mut(&owner) {
-                state.pairs.remove(target);
-            }
-            self.number(pair_key(&owner, target), hour, None, false);
+            let held = self
+                .owners
+                .get_mut(&owner)
+                .and_then(|state| state.pairs.remove(target))
+                .and_then(|pair| pair.key);
+            self.pair_number(&owner, target, held, hour, None, false);
         }
     }
     pub fn break_segment(&mut self) {
@@ -170,7 +253,7 @@ impl Prepared {
         self.raw_tuple_reads.clear();
         let owners = std::mem::take(&mut self.tuple_reads);
         for owner in owners.keys() {
-            self.number(country_key("t", owner), hour, None, false);
+            self.country_number(Series::Tuples, owner, hour, None, false);
         }
     }
     fn end_pact(&mut self, key: u64, bounded: bool) {
@@ -226,7 +309,12 @@ impl Prepared {
         self.queue_keys.clear();
         self.queue_read = None;
     }
-    fn update_joins(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> Option<Joins> {
+    /// This hour's joins, and whether they were read again rather than kept.
+    fn update_joins(
+        &mut self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+    ) -> Option<(Joins, bool)> {
         let countries = frame.complete::<tables::Countries>().ok()?;
         let same = self
             .country_keys
@@ -236,14 +324,15 @@ impl Prepared {
                 .links
                 .as_ref()
                 .is_some_and(|view| view.is(&frame.tables[TableId::CountryLinks.index()]));
-        if !same || self.joins.is_none() {
+        let read = !same || self.joins.is_none();
+        if read {
             self.joins = Joins::read(frame);
             self.opinion_view = None;
             self.tuple_view = None;
             self.country_keys = Some(CountryKeys::read(countries));
             self.links = Some(frame.tables[TableId::CountryLinks.index()].identity());
         }
-        self.joins.take()
+        self.joins.take().map(|joins| (joins, read))
     }
     pub fn observe(
         &mut self,
@@ -278,7 +367,7 @@ impl Prepared {
         self.segment_first.get_or_insert(hour);
         self.last_hour = Some(hour);
         self.catalogue.last_hour = Some(hour);
-        let Some(joins) = self.update_joins(frame, changes) else {
+        let Some((joins, read)) = self.update_joins(frame, changes) else {
             let old: Vec<_> = self.owners.keys().cloned().collect();
             for country in old {
                 self.close_owner(&country, hour);
@@ -287,8 +376,8 @@ impl Prepared {
             self.suspend_queue();
             self.close_tuple_reads(hour);
             let old = std::mem::take(&mut self.live_countries);
-            for country in old {
-                self.number(country_key("i", &country), hour, None, false);
+            for country in &old {
+                self.country_number(Series::Identity, country, hour, None, false);
             }
             self.number("opinions:coverage".into(), hour, None, false);
             self.number("tuples:coverage".into(), hour, None, false);
@@ -297,37 +386,16 @@ impl Prepared {
             self.break_segment();
             return Ok(());
         };
-        let now: BTreeSet<_> = joins.countries.values().cloned().collect();
-        let removed: BTreeSet<_> = self.live_countries.difference(&now).cloned().collect();
-        if !removed.is_empty() {
-            self.end_pacts(Some(&removed), true);
-            self.end_queue_identities(&removed);
-        }
-        for country in &removed {
-            self.close_owner(country, hour);
-            self.close_target(country, hour);
-            self.tuple_reads.remove(country);
-            self.number(country_key("t", country), hour, None, false);
-            self.number(country_key("i", country), hour, None, false);
-        }
-        for country in now
-            .difference(&self.live_countries)
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            self.number(country_key("i", &country), hour, Some(1), true);
-            self.catalogue.countries.insert(country);
-        }
-        // A new segment restarts every continuing identity; one that just joined has
-        // already started its run this hour, and a second start would leave a one-hour
-        // run before it that clips the owner's read evidence to the segment's first hour.
-        if !continuous {
-            let continuing: Vec<_> = now.intersection(&self.live_countries).cloned().collect();
-            for country in &continuing {
-                self.number(country_key("i", country), hour, Some(1), true);
+        if read {
+            self.update_live_countries(&joins, hour, continuous);
+        } else if !continuous {
+            // Kept joins hold exactly the live countries, so each one continues.
+            let live = std::mem::take(&mut self.live_countries);
+            for country in &live {
+                self.country_number(Series::Identity, country, hour, Some(1), true);
             }
+            self.live_countries = live;
         }
-        self.live_countries = now;
         self.opinions(frame, format, &joins, check)?;
         self.tuples(frame, format, &joins, check)?;
         self.proposals(frame, format, &joins, check)?;
@@ -342,10 +410,53 @@ impl Prepared {
         self.joins = Some(joins);
         Ok(())
     }
-    fn role_at_read(&self, joins: &Joins, raw: u32, read: i32) -> Option<DiplomacyCountry> {
+    fn update_live_countries(&mut self, joins: &Joins, hour: i32, continuous: bool) {
+        let now: BTreeSet<_> = joins.countries.values().cloned().collect();
+        let removed: BTreeSet<_> = self.live_countries.difference(&now).cloned().collect();
+        if !removed.is_empty() {
+            self.end_pacts(Some(&removed), true);
+            self.end_queue_identities(&removed);
+        }
+        for country in &removed {
+            self.close_owner(country, hour);
+            self.close_target(country, hour);
+            self.tuple_reads.remove(country);
+            self.country_number(Series::Tuples, country, hour, None, false);
+            self.country_number(Series::Identity, country, hour, None, false);
+        }
+        for country in now
+            .difference(&self.live_countries)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.country_number(Series::Identity, &country, hour, Some(1), true);
+            self.catalogue.countries.insert(country);
+        }
+        // A new segment restarts every continuing identity; one that just joined has
+        // already started its run this hour, and a second start would leave a one-hour
+        // run before it that clips the owner's read evidence to the segment's first hour.
+        if !continuous {
+            let continuing: Vec<_> = now.intersection(&self.live_countries).cloned().collect();
+            for country in &continuing {
+                self.country_number(Series::Identity, country, hour, Some(1), true);
+            }
+        }
+        self.live_countries = now;
+    }
+    fn role_at_read(&mut self, joins: &Joins, raw: u32, read: i32) -> Option<DiplomacyCountry> {
         let country = joins.raw.get(&raw)?;
-        let key = self.keys.get(&country_key("i", country))?;
-        let run = self.series.state(*key)?.last?;
+        let key = match self.held_country_series(Series::Identity, country) {
+            Some(key) => key,
+            None => {
+                let key = *self.keys.get(&country_key(
+                    SERIES_PREFIX[Series::Identity as usize],
+                    country,
+                ))?;
+                self.hold_country_series(Series::Identity, country, key);
+                key
+            }
+        };
+        let run = self.series.state(key)?.last?;
         (run.first_hour <= read).then(|| country.clone())
     }
     pub fn buffered_bytes(&self) -> usize {
@@ -433,6 +544,26 @@ fn tuple_signature(
     ))?)
 }
 
+/// Pairs as `[target, opinion]` entries; the series keys are not saved.
+mod pair_map {
+    use super::{DiplomacyCountry, Pair};
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<DiplomacyCountry, Pair>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(map.iter().map(|(target, pair)| (target, pair.value)))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<DiplomacyCountry, Pair>, D::Error> {
+        Ok(Vec::<(DiplomacyCountry, i32)>::deserialize(deserializer)?
+            .into_iter()
+            .map(|(target, value)| (target, Pair { value, key: None }))
+            .collect())
+    }
+}
 mod country_map {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
