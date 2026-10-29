@@ -30,7 +30,10 @@ impl Progress {
             .or_else(crate::container::pack::progress)
     }
 
+    /// Each 64 KiB of compression or reading: a packing thread waits out the game's tick
+    /// here, before a callback that may lock.
     pub fn completed() {
+        crate::container::pack::wait_here();
         if let Some(progress) = Self::current() {
             (progress.0)();
         }

@@ -445,6 +445,15 @@ pub(super) fn refresh() {
     });
 }
 
+/// A packing thread waits for the game between the bounded chunks of a long step.
+pub(crate) fn wait_here() {
+    BUDGET.with_borrow(|budget| {
+        if let Some(budget) = budget {
+            wait_for_game(budget);
+        }
+    });
+}
+
 /// Playing limits apply until promotion, catch-up included, as for the I/O limit.
 fn wait_for_game(budget: &Budget) {
     if budget.background.load(Ordering::Acquire)
@@ -1010,10 +1019,17 @@ mod continuous_tests {
         assert!(gated >= 2, "run and its item boundary both wait");
         packing.wait_for_game();
         assert_eq!(calls.load(Ordering::SeqCst), gated + 1);
+        packing.run(crate::progress::Progress::completed);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            gated + 3,
+            "each compressed or read chunk waits too"
+        );
         packing.promote();
         packing.run(refresh);
+        packing.run(crate::progress::Progress::completed);
         packing.wait_for_game();
-        assert_eq!(calls.load(Ordering::SeqCst), gated + 1, "a promoted packing never waits");
+        assert_eq!(calls.load(Ordering::SeqCst), gated + 3, "a promoted packing never waits");
     }
 
     #[test]
