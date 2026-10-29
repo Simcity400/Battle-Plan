@@ -2276,6 +2276,7 @@ pub mod cost;
 pub mod external;
 mod flush;
 pub(crate) mod independent;
+pub use independent::evaluated::occupation_row_reference;
 mod lanes;
 pub(crate) use lanes::parallelism;
 mod production_scans;

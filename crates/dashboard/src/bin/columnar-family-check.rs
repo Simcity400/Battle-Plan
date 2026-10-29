@@ -4,9 +4,10 @@
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
 //! projection (every worker) and of the ordered emission (the caller's thread), and of the
 //! same walk with no operator, which the family's own cost is measured above. Without
-//! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel, diplomacy
-//! and equipment losses through their production block paths, both flushing at each row block's end.
-//! `columnar-family-check --family stability|supply|division-log|army|fuel|diplomacy_state|equipment_losses --recording <r.battleplan>
+//! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel,
+//! diplomacy, equipment losses and occupation through their production block paths, both
+//! flushing at each row block's end.
+//! `columnar-family-check --family stability|supply|division-log|army|fuel|diplomacy_state|equipment_losses|occupation --recording <r.battleplan>
 //!   --columnar <c.h4col> [--prepared <prepared store folder>] --output <new folder> [--threads N]`
 //! Both walks read only the family's tables; `--all-tables` walks every one. A family reading
 //! game content takes it from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR. `--scopes`
@@ -18,6 +19,7 @@ use dashboard_diplomacy::products::diplomacy_state;
 use dashboard_equipment_losses::products::equipment_losses;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_land_battles::products::division_log;
+use dashboard_occupation::products::occupied_states;
 use dashboard_stability::products::country_stability::columnar as stability;
 use replay::{
     columnar_frames::{Limits, Recording},
@@ -156,6 +158,12 @@ enum Family {
     ),
     Diplomacy(Box<diplomacy_state::prepared::Prepared>),
     EquipmentLosses(Box<equipment_losses::prepared::Prepared>),
+    /// The ordered emit, and the windows it held since its last flush, each
+    /// encoding on its own thread.
+    Occupation(
+        Box<occupied_states::columnar::Emit>,
+        Vec<occupied_states::prepared::EncodingWindow>,
+    ),
 }
 
 impl Family {
@@ -193,6 +201,18 @@ impl Family {
                 "supply",
                 std::iter::once(format!("supply-runs-{branch}"))
                     .chain((0..3).map(|bucket| format!("supply-values-{branch}-{bucket}")))
+                    .collect(),
+            ),
+            "occupation" => (
+                "occupation-trend",
+                (0..2)
+                    .flat_map(|column| {
+                        [
+                            format!("occupation-trend-values-{branch}-{column}"),
+                            format!("occupation-trend-ranks-{branch}-{column}"),
+                        ]
+                    })
+                    .chain(std::iter::once(format!("occupation-trend-facts-{branch}")))
                     .collect(),
             ),
             "division-log" => (
@@ -272,6 +292,17 @@ impl Family {
         let (catalogue, series) = match name {
             "fuel" => ("fuel-", ["fuel-", "fuel-days-"].as_slice()),
             "supply" => ("supply-", ["supply-runs-", "supply-values-"].as_slice()),
+            "occupation" => (
+                "occupation-trend-",
+                [
+                    "occupation-trend-values-",
+                    "occupation-trend-ranks-",
+                    "occupation-trend-facts-",
+                    "occupied-states-manifest-",
+                    "occupied-states-",
+                ]
+                .as_slice(),
+            ),
             "division-log" => (
                 "division-log-count-keys-",
                 [
@@ -293,6 +324,12 @@ impl Family {
             let rest = section.strip_prefix(prefix)?;
             let branch = match name {
                 "supply" if *prefix == "supply-values-" => rest.rsplit_once('-')?.0,
+                "occupation"
+                    if *prefix == "occupation-trend-values-"
+                        || *prefix == "occupation-trend-ranks-" =>
+                {
+                    rest.rsplit_once('-')?.0
+                }
                 _ => rest,
             };
             digits(branch)
@@ -349,6 +386,14 @@ impl Family {
                 prepared.observe_projected(hour)?;
                 Ok(at)
             }
+            Self::Occupation(emit, _) => {
+                let hour = *hour
+                    .downcast::<occupied_states::columnar::Hour>()
+                    .map_err(|_| invalid("A projection returned another hour"))?;
+                let at = (hour.branch, hour.hour);
+                emit.observe(hour)?;
+                Ok(at)
+            }
             Self::DivisionLog(scan) => {
                 let hour = *hour
                     .downcast::<division_log::columnar::Hour>()
@@ -376,9 +421,25 @@ impl Family {
                 prepared.save(writer, branch)
             }
             Self::EquipmentLosses(prepared) => prepared.flush(writer, branch, cancelled),
+            Self::Occupation(emit, held) => {
+                for window in held.drain(..) {
+                    window.write(writer)?;
+                }
+                emit.flush(writer, branch, cancelled)
+            }
             // Its pages are published at each block's end.
             Self::DivisionLog(_) => Ok(()),
         }
+    }
+
+    /// The windows held since the last flush, in block order.
+    fn publish(&mut self, writer: &mut store::Writer) -> io::Result<()> {
+        if let Self::Occupation(_, held) = self {
+            for window in held.drain(..) {
+                window.write(writer)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -408,6 +469,10 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
         Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(result) => result,
     };
+    let result = match result.downcast::<Vec<occupied_states::columnar::Hour>>() {
+        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
+        Err(result) => result,
+    };
     match result.downcast::<Vec<division_log::columnar::Hour>>() {
         Ok(hours) => Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
         Err(_) => Err(invalid("A projection returned another result")),
@@ -416,8 +481,12 @@ fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::a
 
 /// The branch an hour from [`hours`] belongs to.
 fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
-    hour.downcast_ref::<equipment_losses::columnar::Hour>()
+    hour.downcast_ref::<occupied_states::columnar::Hour>()
         .map(|hour| hour.branch)
+        .or_else(|| {
+            hour.downcast_ref::<equipment_losses::columnar::Hour>()
+                .map(|hour| hour.branch)
+        })
         .or_else(|| {
             hour.downcast_ref::<diplomacy_state::columnar::Hour>()
                 .map(|hour| hour.branch)
@@ -529,13 +598,13 @@ fn run() -> io::Result<()> {
     let (Some(recording), Some(columnar), Some(output)) = (recording, columnar, output) else {
         return Err(usage());
     };
-    // These row paths read recording data alone.
-    // These row paths read recording data alone.
+    // These families have a row path here.
     if row
         && (prepared.is_some()
             || !matches!(
                 family.as_str(),
                 "army" | "fuel" | "diplomacy_state" | "equipment_losses"
+                    | "occupation"
             ))
     {
         return Err(usage());
@@ -557,6 +626,7 @@ fn run() -> io::Result<()> {
         "fuel",
         "diplomacy_state",
         "equipment_losses",
+        "occupation",
     ]
     .contains(&family.as_str())
     {
@@ -612,6 +682,23 @@ fn run() -> io::Result<()> {
         }
         _ => None,
     };
+    let occupation = match (family.as_str(), &source, &context) {
+        ("occupation", Some(source), Some(context)) => {
+            let mut prepared = occupied_states::prepared::Prepared::default();
+            prepared.configure(source, context);
+            Some(prepared)
+        }
+        _ => None,
+    };
+    let occupation_tables = occupation
+        .as_ref()
+        .map(|prepared| prepared.tables())
+        .unwrap_or_default();
+    let block_starts: BTreeMap<_, _> = replay
+        .index
+        .iter()
+        .map(|block| ((block.branch, block.last_hour), block.first_hour))
+        .collect();
     // Each branch's row blocks' last hours, by their ordinal in the branch.
     let mut block_ends: BTreeMap<(u64, i32), usize> = BTreeMap::new();
     let mut ordinals: BTreeMap<u64, usize> = BTreeMap::new();
@@ -631,6 +718,7 @@ fn run() -> io::Result<()> {
             "fuel" => country_fuel::columnar::TABLES,
             "diplomacy_state" => diplomacy_state::block::TABLES,
             "equipment_losses" => equipment_losses::columnar::TABLES,
+            "occupation" => &occupation_tables,
             "supply" => supply_health::prepared::TABLES,
             "division-log" => division_log::block::FAMILY.tables,
             _ => stability::TABLES,
@@ -669,6 +757,12 @@ fn run() -> io::Result<()> {
                 army_size::prepared::Prepared::default().projector(&replay)?,
             )],
             ("supply", Some(prepared)) => vec![Box::new(prepared.projector(replay.format)?)],
+            ("occupation", _) => vec![Box::new(
+                occupation
+                    .as_ref()
+                    .expect("configured occupation")
+                    .projector(replay.format, replay.capture_mode)?,
+            )],
             ("division-log", _) => vec![Box::new(division_log::columnar::Projector::new(
                 replay.format,
                 replay.capture_mode,
@@ -713,6 +807,10 @@ fn run() -> io::Result<()> {
                                     .hour,
                             ),
                         )),
+                        ("occupation", _) => Family::Occupation(
+                            Box::new(occupation.as_ref().expect("configured occupation").emit()),
+                            Vec::new(),
+                        ),
                         ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
                         ("division-log", _) => {
                             Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
@@ -726,6 +824,11 @@ fn run() -> io::Result<()> {
                     if block_ends.contains_key(&(branch, at)) {
                         prepared.finish_block(loss_block_last(&replay, branch, at));
                     }
+                }
+                if let Family::Occupation(emit, held) = state
+                    && let Some(&first) = block_starts.get(&(branch, at))
+                {
+                    held.push(emit.hold_block(branch, first, at)?);
                 }
                 if let Family::DivisionLog(scan) = state {
                     // Its window, manifest and counts are published at each block's end.
@@ -754,6 +857,8 @@ fn run() -> io::Result<()> {
     for (branch, accumulator) in &mut accumulators {
         if flushes.get(branch).is_none_or(Vec::is_empty) {
             accumulator.flush(&mut writer, *branch, &cancelled)?;
+        } else {
+            accumulator.publish(&mut writer)?;
         }
     }
     let final_publish = cpu().1 - final_publish;
@@ -790,7 +895,14 @@ fn run() -> io::Result<()> {
     let reference = match &prepared {
         Some(prepared) => Some(prepared.clone()),
         None if row => Some(row_reference(
-            &family, &replay, &recording, &output, &local,
+            &family,
+            &replay,
+            &recording,
+            &output,
+            &local,
+            source.as_ref(),
+            context.as_ref(),
+            occupation.as_ref(),
         )?),
         None => None,
     };
@@ -841,6 +953,9 @@ fn row_reference(
     recording: &Path,
     output: &Path,
     local: &Path,
+    source: Option<&dashboard::Source>,
+    context: Option<&dashboard::config::LoadContext>,
+    occupation: Option<&occupied_states::prepared::Prepared>,
 ) -> io::Result<PathBuf> {
     let root = output.join("row");
     std::fs::create_dir_all(&root)?;
@@ -877,7 +992,15 @@ fn row_reference(
             .ok_or_else(|| invalid("The row reference store holds no folder"))??
             .path());
     }
-    if family == "fuel" {
+    if family == "occupation" {
+        dashboard::prepared::pipeline::occupation_row_reference(
+            source.ok_or_else(|| invalid("Occupation source is missing"))?,
+            context.ok_or_else(|| invalid("Occupation content is missing"))?,
+            occupation.ok_or_else(|| invalid("Occupation prototype is missing"))?,
+            &mut writer,
+            &cancelled,
+        )?;
+    } else if family == "fuel" {
         let source = dashboard::Source::open(
             dashboard::SourceKey {
                 source_id: "fuel-row-reference".into(),
@@ -1030,6 +1153,9 @@ fn compare(
     for branch in &branches {
         let (catalogue, sections) = Family::sections(family, *branch);
         for section in sections {
+            if family == "occupation" && section.starts_with("occupation-trend-ranks-") {
+                continue;
+            }
             if family == "army"
                 && (section.starts_with("army-ranks-") || section.starts_with("army-aid-"))
             {

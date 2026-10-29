@@ -905,7 +905,14 @@ thread_local! {
 #[cfg(any(test, feature = "test-support"))]
 type Declaration = Box<dyn Fn(&Key) -> Option<Option<Vec<TableRead>>>>;
 
-fn missed(key: &Key, frame: &DecodedFrame) {
+/// Reports a reused evaluation that check mode evaluated anyway and found
+/// changed: a declared dependence of one of its inputs missed a read
+/// ([`missed_dependences`]).
+pub fn missed_reuse(evaluation: &dyn std::fmt::Debug, frame: &DecodedFrame) {
+    missed(evaluation, frame);
+}
+
+fn missed(key: &dyn std::fmt::Debug, frame: &DecodedFrame) {
     MISSED.fetch_add(1, Ordering::Relaxed);
     #[cfg(any(test, feature = "test-support"))]
     LOCAL_MISSED.with(|missed| missed.set(missed.get().wrapping_add(1)));
@@ -1099,6 +1106,16 @@ impl Inputs {
             Key::Table(table) => Some(table),
             _ => None,
         })
+    }
+
+    /// Every table read the inputs declare, each once; None when one of
+    /// them declares none, so the evaluation must be read again whenever it
+    /// is reused.
+    pub fn declared(&self) -> Option<&[TableRead]> {
+        self.reads
+            .iter()
+            .all(|read| read.uses.is_some())
+            .then_some(self.footprint.as_slice())
     }
 
     /// The keys read, in first-read order.

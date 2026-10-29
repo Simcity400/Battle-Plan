@@ -25,8 +25,14 @@ pub struct Prepared {
     catalogue: Option<Arc<Catalogue>>,
     #[serde(skip)]
     bound: bool,
+    /// The texts its projections and their ordered emits name by id
+    /// ([`Self::projector`], [`Self::emit`]).
+    #[serde(skip)]
+    texts: Arc<columnar::Texts>,
 }
 
+#[cfg(test)]
+mod columnar_parity;
 mod first_view;
 
 struct WindowObservation {
@@ -39,10 +45,10 @@ struct WindowObservation {
 /// encoded as [`series::write_reply`] writes them, for a writer that commits
 /// them after the block ([`Prepared::hold_block`]).
 pub struct HeldWindow {
-    branch: u64,
-    window: u64,
-    page: Vec<u8>,
-    manifest: Vec<u8>,
+    pub(super) branch: u64,
+    pub(super) window: u64,
+    pub(super) page: Vec<u8>,
+    pub(super) manifest: Vec<u8>,
 }
 
 impl HeldWindow {
@@ -73,16 +79,85 @@ impl HeldWindow {
 }
 
 /// A reply as [`series::write_reply`] stores it.
-fn encoded_reply(value: &impl Serialize) -> io::Result<Vec<u8>> {
+pub(super) fn encoded_reply(value: &impl Serialize) -> io::Result<Vec<u8>> {
     series::compress(serde_json::to_vec(value)?.as_slice(), 3)
 }
 
+/// A block's [`HeldWindow`], which another thread builds and encodes while
+/// the ordered emit goes on ([`columnar::Emit::hold_block`]).
+pub struct EncodingWindow(std::thread::JoinHandle<io::Result<HeldWindow>>);
+
+impl EncodingWindow {
+    pub(super) fn new(
+        encode: impl FnOnce() -> io::Result<HeldWindow> + Send + 'static,
+    ) -> io::Result<Self> {
+        Ok(Self(
+            std::thread::Builder::new()
+                .name("occupation window".into())
+                .spawn(encode)?,
+        ))
+    }
+
+    /// Write the window page, then the manifest, once encoded
+    /// ([`HeldWindow::write`]).
+    pub fn write(self, writer: &mut store::Writer) -> io::Result<()> {
+        self.0
+            .join()
+            .map_err(|_| dashboard_core::invalid("An occupation window's encoder panicked"))??
+            .write(writer)
+    }
+}
+
 impl Prepared {
+    /// A projection of one columnar segment, sharing this prototype's
+    /// content and texts.
+    pub fn projector(
+        &self,
+        format: replay_data::format::FormatVersion,
+        mode: replay_data::scope::CaptureMode,
+    ) -> io::Result<columnar::Projector> {
+        columnar::Projector::new(
+            format,
+            mode,
+            self.catalogue.clone(),
+            self.scan.cold(),
+            Arc::clone(&self.texts),
+        )
+    }
+
+    /// The ordered emit of one branch's projected hours.
+    pub fn emit(&self) -> columnar::Emit {
+        columnar::Emit::new(
+            self.catalogue.clone(),
+            &self.scan,
+            self.refusals.clone(),
+            Arc::clone(&self.texts),
+        )
+    }
+
+    pub fn fresh(&self) -> Self {
+        Self {
+            scan: self.scan.cold(),
+            refusals: self.refusals.clone(),
+            catalogue: self.catalogue.clone(),
+            bound: self.bound,
+            ..Self::default()
+        }
+    }
+
+    pub fn begin_block(&mut self) {
+        self.scan.forget_runtime();
+    }
+
+    pub fn tables(&self) -> Vec<TableId> {
+        observed_tables(self.reads_trigger_world())
+    }
+
     pub fn configure(&mut self, source: &Source, context: &LoadContext) {
         if !self.bound {
-            let catalogue = context.content().and_then(|options| {
-                catalogue::recorded_catalogue(source, options)
-            });
+            let catalogue = context
+                .content()
+                .and_then(|options| catalogue::recorded_catalogue(source, options));
             if let Err(error) = &catalogue {
                 let warning =
                     format!("State names and occupation law artwork unavailable: {error}");
@@ -142,8 +217,12 @@ impl Prepared {
         let observed = scan.push(frame, frame.hour, changes);
         self.scan = scan.bind(None);
         observed?;
-        self.first.get_or_insert(frame.hour);
-        self.last = frame.hour;
+        self.publish_hour(frame.hour)
+    }
+
+    fn publish_hour(&mut self, hour: i32) -> io::Result<()> {
+        self.first.get_or_insert(hour);
+        self.last = hour;
         for tag in &self.scan.trend.changed {
             #[cfg(test)]
             {
@@ -152,7 +231,7 @@ impl Prepared {
             let track = &self.scan.trend.tracks[tag];
             let next = self.tags.len() as u64;
             let actor = *self.tags.entry(tag.clone()).or_insert(next);
-            let current = track.runs.last().filter(|run| run.last_hour == frame.hour);
+            let current = track.runs.last().filter(|run| run.last_hour == hour);
             for (column, values) in self.values.iter_mut().enumerate() {
                 if let Some(run) = current {
                     let raw = if column == 0 {
@@ -163,8 +242,8 @@ impl Prepared {
                     let raw = raw
                         .parse()
                         .map_err(|_| dashboard_core::invalid("Invalid occupation fixed5 value"))?;
-                    let starts = run.first_hour == frame.hour && run.starts_segment;
-                    let boundary = run.read_hour == frame.hour;
+                    let starts = run.first_hour == hour && run.starts_segment;
+                    let boundary = run.read_hour == hour;
                     if starts
                         || boundary
                         || values
@@ -173,19 +252,19 @@ impl Prepared {
                             .map(|run| run.value)
                             != Some(raw)
                     {
-                        values.observe_boundary(actor, frame.hour, Some(raw), starts, boundary);
+                        values.observe_boundary(actor, hour, Some(raw), starts, boundary);
                         #[cfg(test)]
                         {
                             self.scan.work.emitted += 1;
                         }
                     }
                 } else {
-                    values.observe(actor, frame.hour, None, false);
+                    values.observe(actor, hour, None, false);
                 }
             }
             if let Some(run) = current {
-                if run.first_hour == frame.hour {
-                    self.facts.event(actor, frame.hour, run)?;
+                if run.first_hour == hour {
+                    self.facts.event(actor, hour, run)?;
                     #[cfg(test)]
                     {
                         self.scan.work.emitted += 1;
@@ -193,14 +272,14 @@ impl Prepared {
                 }
                 self.facts.observe_if_changed(
                     actor,
-                    frame.hour,
+                    hour,
                     Some(i128::from(run.first_hour)),
-                    run.first_hour == frame.hour && run.starts_segment,
+                    run.first_hour == hour && run.starts_segment,
                     false,
                 );
             } else {
                 self.facts
-                    .observe_if_changed(actor, frame.hour, None, false, false);
+                    .observe_if_changed(actor, hour, None, false, false);
             }
         }
         Ok(())
@@ -270,20 +349,18 @@ impl Prepared {
         self.own(|state| state.hold_own_window(branch, window, interval))
     }
 
-    /// The window of `interval` as the scan holds it now, with the scan's
-    /// states, laws and warnings it is cut from.
+    /// The window of `interval` as the scan holds it now, with the laws and
+    /// warnings of the manifest after it.
     fn current_window(
         &mut self,
         branch: u64,
         window: usize,
         interval: HourSpan,
-    ) -> (OccupiedStatesReply, OccupiedScan) {
-        self.scan.seal();
-        let scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
-        let snapshot = scan.snapshot();
-        let reply = window_reply(&snapshot.states, &branch.to_string(), window, interval);
+    ) -> (OccupiedStatesReply, Vec<OccupationLawInfo>, Vec<String>) {
+        let mut scan = std::mem::take(&mut self.scan).bind(self.catalogue.as_deref());
+        let window = scan.window(branch, window, interval);
         self.scan = scan.bind(None);
-        (reply, snapshot.states)
+        window
     }
 
     fn hold_own_window(
@@ -292,15 +369,15 @@ impl Prepared {
         window: usize,
         interval: HourSpan,
     ) -> io::Result<HeldWindow> {
-        let (reply, states) = self.current_window(branch, window, interval);
+        let (reply, laws, warnings) = self.current_window(branch, window, interval);
         let page = encoded_reply(&reply)?;
         let manifest = encoded_reply(&OccupiedStatesManifestReply {
             branch_id: branch.to_string(),
             decimals: 5,
             windows: Vec::new(),
-            laws: states.laws,
+            laws,
             strength_missing: STRENGTH_MISSING.into(),
-            warnings: states.warnings,
+            warnings,
         })?;
         self.scan.finish_window();
         self.next_window = window + 1;
@@ -331,29 +408,13 @@ impl Prepared {
             return Ok(());
         };
         self.scan.seal();
-        let history = self.scan.trend.history(None);
-        let rows: BTreeMap<_, _> = history
-            .series
-            .iter()
-            .map(|(tag, runs)| {
-                (
-                    tag.clone(),
-                    runs.iter()
-                        .filter(|run| run.last_hour >= first)
-                        .map(|run| OccupationTrendRun {
-                            first_hour: run.first_hour.max(first),
-                            ..run.clone()
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect();
+        let rows = self.scan.trend.ranked(first);
         for column in 0..2 {
             self.ranks[column].through(first);
             dashboard_base::ranking::rank_positions(
                 &rows,
-                |run| (run.first_hour, run.last_hour),
-                |run| {
+                |&(first, last, _)| (first, last),
+                |(_, _, run)| {
                     (if column == 0 {
                         &run.resistance_raw
                     } else {
@@ -396,12 +457,13 @@ impl Prepared {
             0,
             cancelled,
         )?;
+        drop(rows);
         series::write_catalogue(
             writer,
             "occupation-trend",
             branch,
             &self.tags,
-            &(history.warnings, history.collaboration_warnings),
+            &self.scan.trend.warnings(),
         )?;
         for track in self.scan.trend.tracks.values_mut() {
             if track.runs.len() > 1 {
@@ -424,7 +486,7 @@ impl Prepared {
 /// The tables the observation reads: those of
 /// [`scan::scan_history`] and, when a law's eligibility can read the trigger
 /// world, the shared trigger kit.
-fn observed_tables(world: bool) -> Vec<TableId> {
+pub(super) fn observed_tables(world: bool) -> Vec<TableId> {
     let mut tables = vec![
         TableId::Campaign,
         TableId::Countries,
@@ -634,7 +696,7 @@ fn observe_window(
                     first_hour: block.first_hour,
                     last_hour: block.last_hour,
                 };
-                let (mut reply, states) = prepared.current_window(branch, window, interval);
+                let (mut reply, laws, _) = prepared.current_window(branch, window, interval);
                 let held: std::collections::BTreeSet<&str> = reply
                     .states
                     .iter()
@@ -642,8 +704,7 @@ fn observe_window(
                     .filter_map(|&(_, index)| index)
                     .filter_map(|index| reply.texts.get(index).map(String::as_str))
                     .collect();
-                let laws = states
-                    .laws
+                let laws = laws
                     .into_iter()
                     .filter(|law| held.contains(law.token.as_str()))
                     .collect();

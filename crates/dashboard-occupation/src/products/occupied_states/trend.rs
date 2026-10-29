@@ -52,7 +52,7 @@ pub(super) struct TrendScan {
 
 // Keep wrapping and truncation in the summed mean. Non-finite sums
 // have no displayable mean and are refused instead of charted.
-fn mean(sum: i64, count: u32) -> Option<i64> {
+pub(in crate::products::occupied_states) fn mean(sum: i64, count: u32) -> Option<i64> {
     if count == 0 || !dashboard_base::products::finite_fixed64(sum) {
         return None;
     }
@@ -238,7 +238,7 @@ impl TrendScan {
         deferred: bool,
         previous_hour: Option<i32>,
     ) {
-        self.changed.clear();
+        let ended = std::mem::take(&mut self.changed);
         // An old read cannot resume after its occupier disappeared, even if the
         // same native identity later returns without a new resistance read.
         if names_changed {
@@ -251,8 +251,12 @@ impl TrendScan {
         if deferred && !changed {
             return;
         }
-        if deferred && let Some(hour) = previous_hour {
-            self.seal_through(hour);
+        if let Some(hour) = previous_hour {
+            if names_changed {
+                self.seal_through(hour);
+            } else if deferred {
+                self.seal_active_through(hour);
+            }
         }
         if changed {
             for (identity, sample) in &mut self.samples {
@@ -295,21 +299,37 @@ impl TrendScan {
         }
         self.dirty = false;
         let mut active = std::collections::BTreeSet::new();
-        self.open = names.values().cloned().collect();
-        for (identity, tag) in names {
-            if !self.tracks.contains_key(tag) {
-                self.tracks.insert(tag.clone(), Track::default());
+        if names_changed {
+            self.open = names.values().cloned().collect();
+            for (identity, tag) in names {
+                let track = self.tracks.entry(tag.clone()).or_default();
+                observe_identity(
+                    &mut track.segments,
+                    &mut track.last_identity,
+                    *identity,
+                    hour,
+                );
             }
-            let track = self.tracks.get_mut(tag).expect("inserted above");
-            observe_identity(
-                &mut track.segments,
-                &mut track.last_identity,
-                *identity,
-                hour,
-            );
-            let Some(sample) = self.samples.get(identity) else {
+        }
+        for (identity, sample) in &self.samples {
+            let Some(tag) = names.get(identity) else {
                 continue;
             };
+            let track = self.tracks.entry(tag.clone()).or_default();
+            if !names_changed {
+                if let Some(before) = previous_hour {
+                    track.last_identity.advance(before);
+                    if let Some(span) = track.segments.last_mut() {
+                        span.last_hour = before;
+                    }
+                }
+                observe_identity(
+                    &mut track.segments,
+                    &mut track.last_identity,
+                    *identity,
+                    hour,
+                );
+            }
             active.insert(tag.clone());
             let contiguous = track
                 .last
@@ -333,9 +353,24 @@ impl TrendScan {
             track.last = Some((*identity, hour));
             self.changed.insert(tag.clone());
         }
+        self.changed.extend(ended);
         self.changed
             .extend(self.active.difference(&active).cloned());
         self.active = active;
+    }
+
+    fn seal_active_through(&mut self, hour: i32) {
+        for tag in &self.active {
+            let track = self.tracks.get_mut(tag).expect("active occupier");
+            if let Some((identity, before)) = track.last {
+                if let Some(run) = track.runs.last_mut()
+                    && run.last_hour == before
+                {
+                    run.last_hour = hour;
+                }
+                track.last = Some((identity, hour));
+            }
+        }
     }
 
     pub(super) fn seal_through(&mut self, hour: i32) {
@@ -356,6 +391,41 @@ impl TrendScan {
                 track.last = Some((identity, hour));
             }
         }
+    }
+
+    /// The occupiers' runs, by tag, as a flush ranks them: those ending at
+    /// or after `first`, from `first` on.
+    pub(super) fn ranked(
+        &self,
+        first: i32,
+    ) -> BTreeMap<String, Vec<(i32, i32, &OccupationTrendRun)>> {
+        self.tracks
+            .iter()
+            .filter(|(_, track)| !track.runs.is_empty())
+            .map(|(tag, track)| {
+                (
+                    tag.clone(),
+                    track
+                        .runs
+                        .iter()
+                        .filter(|run| run.last_hour >= first)
+                        .map(|run| (run.first_hour.max(first), run.last_hour, run))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// The warnings a flush publishes with the occupiers' series, and those
+    /// it adds when collaboration is shown.
+    pub(super) fn warnings(&self) -> (Vec<String>, Vec<String>) {
+        let mut warnings = self.warnings.clone();
+        warnings.extend(self.refused.lines("recorded occupation trend facts"));
+        (
+            warnings,
+            self.collaboration_refused
+                .lines("recorded occupation trend facts"),
+        )
     }
 
     pub(super) fn history(&self, through: Option<i32>) -> History {

@@ -55,7 +55,7 @@ pub(super) struct Scan<'a> {
     #[serde(skip)]
     cat: Option<&'a Catalogue>,
     #[serde(skip)]
-    names: StateNames,
+    names: Arc<StateNames>,
     #[serde(skip, default = "missing_laws")]
     laws: Result<Arc<installed_content_core::occupation_laws::Laws>, String>,
     #[serde(skip)]
@@ -87,6 +87,8 @@ pub(super) struct Scan<'a> {
     pub(super) trend: trend::TrendScan,
     #[serde(skip)]
     runtime_ready: bool,
+    #[serde(skip)]
+    eligibility: eligibility::Runtime,
     /// How many times an observation dropped the carried state (a gap, an
     /// unreadable hour or one without resistance rows), not counting the
     /// first observation of a scan that carries nothing: after one, this
@@ -132,6 +134,322 @@ fn country_stamp(countries: &[CountryRow], links: &[CountryLinkRow]) -> [u8; 32]
         hash.update(&link.canonical_slot.to_le_bytes());
     }
     *hash.finalize().as_bytes()
+}
+
+pub mod columnar;
+mod eligibility;
+
+/// Why `state`'s `field`, raw country reference `raw`, names no country:
+/// the country's own naming refusal, or a link that does not resolve.
+fn link_refusal(
+    countries: &CountryIndex,
+    field: &str,
+    raw: u32,
+    state: u32,
+    links: &[CountryLinkRow],
+) -> (String, String) {
+    let refused = link_slot(links, raw)
+        .and_then(|slot| countries.identities.get(&slot).map(|&id| (slot, id)))
+        .and_then(|identity| {
+            countries
+                .name_refusals
+                .get(&identity)
+                .map(|reason| (reason.as_str(), identity.1))
+        });
+    match refused {
+        Some((reason, country)) => (
+            reason.to_owned(),
+            format!("state {state}, country {country}"),
+        ),
+        None => (
+            format!("{field} cannot resolve through Countries and CountryLinks"),
+            format!("state {state}, raw link {raw}"),
+        ),
+    }
+}
+
+/// The laws `tokens` name, and a manifest's warnings: the scan's own
+/// `warnings`, those of the laws and the content, then its refused facts and
+/// country identities.
+fn manifest(
+    cat: Option<&Catalogue>,
+    laws: &Result<Arc<installed_content_core::occupation_laws::Laws>, String>,
+    tokens: &BTreeSet<String>,
+    mut warnings: Vec<String>,
+    refused: &Refusals,
+    countries: &Refusals,
+) -> (Vec<OccupationLawInfo>, Vec<String>) {
+    let mut shown = Vec::new();
+    if let Some(cat) = cat {
+        match laws {
+            Ok(laws) => {
+                if !laws.warnings.is_empty() {
+                    warnings.push(format!(
+                        "{} occupation-law files could not be read: {}",
+                        laws.warnings.len(),
+                        laws.warnings.join("; ")
+                    ));
+                }
+                shown = tokens
+                    .iter()
+                    .map(|token| law_content(cat, laws, token))
+                    .collect();
+            }
+            Err(e) => warnings.push(format!("Occupation law content unavailable: {e}")),
+        }
+        warnings.extend(cat.verification.iter().cloned());
+        warnings.extend(cat.warnings.iter().cloned());
+        warnings.extend(cat.refusal_lines());
+    }
+    warnings.extend(refused.lines("recorded occupation facts"));
+    warnings.extend(countries.lines("recorded occupation country identities"));
+    (shown, warnings)
+}
+
+struct ReadContext {
+    garrisons: HashMap<StateKey, usize>,
+    laws: HashMap<StateKey, usize>,
+    defaults: HashMap<u32, usize>,
+    group_laws: HashMap<(u32, u32), (Option<Vec<u8>>, Option<u32>)>,
+    group_failures: HashMap<u32, String>,
+    assigned: HashMap<StateKey, i32>,
+    unresolved_assigned: HashSet<u32>,
+    assigned_complete: bool,
+    laws_complete: bool,
+}
+
+trait ReadInputs {
+    fn garrison<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        key: StateKey,
+    ) -> Option<&'a replay_data::rows::StateGarrisonRow>;
+    fn law<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        key: StateKey,
+    ) -> Option<&'a replay_data::rows::StateOccupationLawRow>;
+    fn settings<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        country: u32,
+    ) -> Option<&'a replay_data::rows::OccupationSettingsRow>;
+    fn group_failure(&self, country: u32) -> Option<&String>;
+    fn group(&self, controller: u32, occupied: u32) -> Option<(Option<&[u8]>, Option<u32>)>;
+    fn assigned(&self, key: StateKey) -> i32;
+    fn assigned_unresolved(&self, state: u32) -> bool;
+    fn assigned_complete(&self) -> bool;
+    fn laws_complete(&self) -> bool;
+}
+
+impl ReadInputs for ReadContext {
+    fn garrison<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        key: StateKey,
+    ) -> Option<&'a replay_data::rows::StateGarrisonRow> {
+        self.garrisons.get(&key).and_then(|&index| {
+            recorded_rows::<tables::StateGarrisons>(frame)
+                .ok()?
+                .get(index)
+        })
+    }
+    fn law<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        key: StateKey,
+    ) -> Option<&'a replay_data::rows::StateOccupationLawRow> {
+        self.laws.get(&key).and_then(|&index| {
+            recorded_rows::<tables::StateOccupationLaws>(frame)
+                .ok()?
+                .get(index)
+        })
+    }
+    fn settings<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+        country: u32,
+    ) -> Option<&'a replay_data::rows::OccupationSettingsRow> {
+        self.defaults.get(&country).and_then(|&index| {
+            recorded_rows::<tables::OccupationSettings>(frame)
+                .ok()?
+                .get(index)
+        })
+    }
+    fn group_failure(&self, country: u32) -> Option<&String> {
+        self.group_failures.get(&country)
+    }
+    fn group(&self, controller: u32, occupied: u32) -> Option<(Option<&[u8]>, Option<u32>)> {
+        self.group_laws
+            .get(&(controller, occupied))
+            .map(|group| (group.0.as_deref(), group.1))
+    }
+    fn assigned(&self, key: StateKey) -> i32 {
+        self.assigned.get(&key).copied().unwrap_or(0)
+    }
+    fn assigned_unresolved(&self, state: u32) -> bool {
+        self.unresolved_assigned.contains(&state)
+    }
+    fn assigned_complete(&self) -> bool {
+        self.assigned_complete
+    }
+    fn laws_complete(&self) -> bool {
+        self.laws_complete
+    }
+}
+
+impl ReadContext {
+    fn new(
+        frame: &DecodedFrame,
+        links: &[CountryLinkRow],
+        refused: &mut Refusals,
+    ) -> io::Result<Self> {
+        let key = |controller, occupied, state| -> Option<StateKey> {
+            Some((
+                link_slot(links, controller)?,
+                link_slot(links, occupied)?,
+                state,
+            ))
+        };
+        let mut garrisons = HashMap::new();
+        for (index, row) in recorded_rows::<tables::StateGarrisons>(frame)?
+            .iter()
+            .enumerate()
+        {
+            if let Some(key) = key(row.controller, row.occupied, row.state) {
+                garrisons.insert(key, index);
+            } else {
+                refused.note(
+                    "StateGarrisons country link is unresolved",
+                    format!(
+                        "state {}, controller {}, occupied {}",
+                        row.state, row.controller, row.occupied
+                    ),
+                );
+            }
+        }
+        let mut laws = HashMap::new();
+        for (index, row) in recorded_rows::<tables::StateOccupationLaws>(frame)?
+            .iter()
+            .enumerate()
+        {
+            if let Some(key) = key(row.controller, row.occupied, row.state) {
+                laws.insert(key, index);
+            } else {
+                refused.note(
+                    "StateOccupationLaws country link is unresolved",
+                    format!(
+                        "state {}, controller {}, occupied {}",
+                        row.state, row.controller, row.occupied
+                    ),
+                );
+            }
+        }
+        let mut defaults = HashMap::new();
+        let mut ambiguous_settings = HashSet::new();
+        let settings = recorded_rows::<tables::OccupationSettings>(frame)?;
+        for (index, row) in settings.iter().enumerate() {
+            if let Some(slot) = link_slot(links, row.country) {
+                if ambiguous_settings.contains(&slot) {
+                    continue;
+                }
+                if defaults.insert(slot, index).is_some() {
+                    defaults.remove(&slot);
+                    ambiguous_settings.insert(slot);
+                    refused.note(
+                        "OccupationSettings canonical country link is ambiguous",
+                        format!("slot {slot}"),
+                    );
+                }
+            } else {
+                refused.note(
+                    "OccupationSettings country link is unresolved",
+                    format!("raw link {}", row.country),
+                );
+            }
+        }
+        // Index the appended group inventory once per read, resolving raw aliases.
+        let mut group_laws = HashMap::new();
+        let mut group_failures: HashMap<_, _> = ambiguous_settings
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    "OccupationSettings canonical country link is ambiguous".to_owned(),
+                )
+            })
+            .collect();
+        for (&controller, &index) in &defaults {
+            let row = &settings[index];
+            let groups = match &row.group_laws {
+                replay_data::rows::Recorded::NotRecorded => {
+                    group_failures.insert(controller, GROUP_LAW_MISSING.to_owned());
+                    continue;
+                }
+                replay_data::rows::Recorded::Value(None) => {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory capture failed".into(),
+                    );
+                    continue;
+                }
+                replay_data::rows::Recorded::Value(Some(groups)) => groups,
+            };
+            for group in groups {
+                let Some(occupied) = link_slot(links, group.occupied) else {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory has an unresolved country link".into(),
+                    );
+                    continue;
+                };
+                if group_laws
+                    .insert(
+                        (controller, occupied),
+                        (group.law.clone(), group.scope_country),
+                    )
+                    .is_some()
+                {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory has duplicate canonical country links"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let mut assigned = HashMap::<StateKey, i32>::new();
+        let mut unresolved_assigned = HashSet::new();
+        for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
+            if let Some(key) = key(row.controller, row.occupied, row.state) {
+                // The manpower total sums the container with i32 wrapping.
+                let total = assigned.entry(key).or_default();
+                *total = total.wrapping_add(row.amount);
+            } else {
+                unresolved_assigned.insert(row.state);
+                refused.note(
+                    "StateAssignedManpower country link is unresolved",
+                    format!(
+                        "state {}, controller {}, occupied {}",
+                        row.state, row.controller, row.occupied
+                    ),
+                );
+            }
+        }
+        let assigned_complete = frame.complete::<tables::StateAssignedManpower>().is_ok();
+        let laws_complete = frame.complete::<tables::StateOccupationLaws>().is_ok();
+        Ok(Self {
+            garrisons,
+            laws,
+            defaults,
+            group_laws,
+            group_failures,
+            assigned,
+            unresolved_assigned,
+            assigned_complete,
+            laws_complete,
+        })
+    }
 }
 
 impl<'a> Scan<'a> {
@@ -227,7 +545,7 @@ impl<'a> Scan<'a> {
         Self {
             format: replay_data::format::FormatVersion::default(),
             cat,
-            names,
+            names: Arc::new(names),
             laws,
             red_threshold,
             strength_powers,
@@ -249,6 +567,7 @@ impl<'a> Scan<'a> {
             country_refused: Refusals::default(),
             trend: trend::TrendScan::default(),
             runtime_ready: true,
+            eligibility: eligibility::Runtime::default(),
             resets: 0,
             #[cfg(test)]
             work: dashboard_base::prepared::observer_tests::Work {
@@ -299,6 +618,7 @@ impl<'a> Scan<'a> {
             country_refused: self.country_refused,
             trend: self.trend,
             runtime_ready: self.runtime_ready,
+            eligibility: self.eligibility,
             resets: self.resets,
             #[cfg(test)]
             work: self.work,
@@ -322,6 +642,25 @@ impl<'a> Scan<'a> {
             scan.runtime_ready = true;
         }
         scan
+    }
+
+    pub(super) fn cold(&self) -> Scan<'static> {
+        let mut scan = Scan::new(None);
+        scan.names = Arc::clone(&self.names);
+        scan.laws = self.laws.clone();
+        scan.red_threshold = self.red_threshold;
+        scan.strength_powers = self.strength_powers.clone();
+        scan.equipment = self.equipment.clone();
+        scan.result.warnings = self.result.warnings.clone();
+        scan.runtime_ready = true;
+        scan
+    }
+
+    pub(super) fn forget_runtime(&mut self) {
+        self.hourly = None;
+        self.state_slots.clear();
+        self.country_inputs = None;
+        self.eligibility.clear();
     }
 
     /// Whether a law's eligibility can read the trigger world
@@ -358,6 +697,8 @@ impl<'a> Scan<'a> {
     pub(super) fn gap(&mut self) {
         self.seal();
         self.active.clear();
+        self.eligibility.clear();
+        self.state_slots.clear();
         self.hourly = None;
         self.country_inputs = None;
         self.country_stamp = None;
@@ -390,23 +731,8 @@ impl<'a> Scan<'a> {
     }
 
     fn note_link(&mut self, field: &str, raw: u32, state: u32, links: &[CountryLinkRow]) {
-        let refused = link_slot(links, raw)
-            .and_then(|slot| self.countries.identities.get(&slot).map(|&id| (slot, id)))
-            .and_then(|identity| {
-                self.countries
-                    .name_refusals
-                    .get(&identity)
-                    .map(|reason| (reason.as_str(), identity.1))
-            });
-        if let Some((reason, country)) = refused {
-            self.refused
-                .note(reason, format!("state {state}, country {country}"));
-        } else {
-            self.refused.note(
-                format!("{field} cannot resolve through Countries and CountryLinks"),
-                format!("state {state}, raw link {raw}"),
-            );
-        }
+        let (reason, identity) = link_refusal(&self.countries, field, raw, state, links);
+        self.refused.note(reason, identity);
     }
 
     fn read(
@@ -415,6 +741,47 @@ impl<'a> Scan<'a> {
         hour: i32,
         states: &[StateRow],
         links: &[CountryLinkRow],
+    ) -> io::Result<()> {
+        let context = ReadContext::new(frame, links, &mut self.refused)?;
+        let garrisons_read = slot_read(self.format, &frame.metrics, TableId::StateGarrisons, hour);
+        self.trend.begin(
+            hour,
+            self.countries.clone(),
+            links,
+            recorded_rows::<tables::StateGarrisons>(frame)?
+                .iter()
+                .filter(|_| garrisons_read),
+            garrisons_read && frame.complete::<tables::StateGarrisons>().is_ok(),
+        );
+        self.read_values(
+            eligibility::Frames {
+                hour: frame,
+                holds: &|_| true,
+                every: &|| Ok(frame),
+                built: &|| true,
+            },
+            hour,
+            states,
+            links,
+            recorded_rows::<tables::StateResistance>(frame)?,
+            &context,
+            true,
+        )?;
+        self.read_hour = Some(hour);
+        self.trend.finish_read();
+        Ok(())
+    }
+
+    /// A law's eligibility reads its trigger world from `frames`.
+    fn read_values<'w>(
+        &mut self,
+        frames: eligibility::Frames<'w>,
+        hour: i32,
+        states: &[StateRow],
+        links: &[CountryLinkRow],
+        resistance: &[StateResistanceRow],
+        context: &impl ReadInputs,
+        observe_trend: bool,
     ) -> io::Result<()> {
         #[cfg(test)]
         {
@@ -439,145 +806,12 @@ impl<'a> Scan<'a> {
             .enumerate()
             .map(|(slot, state)| (state.id, slot))
             .collect();
-        let mut garrisons = HashMap::new();
-        for row in recorded_rows::<tables::StateGarrisons>(frame)? {
-            if let Some(key) = key(row.controller, row.occupied, row.state) {
-                garrisons.insert(key, row);
-            } else {
-                self.refused.note(
-                    "StateGarrisons country link is unresolved",
-                    format!(
-                        "state {}, controller {}, occupied {}",
-                        row.state, row.controller, row.occupied
-                    ),
-                );
-            }
-        }
-        let mut laws = HashMap::new();
-        for row in recorded_rows::<tables::StateOccupationLaws>(frame)? {
-            if let Some(key) = key(row.controller, row.occupied, row.state) {
-                laws.insert(key, row);
-            } else {
-                self.refused.note(
-                    "StateOccupationLaws country link is unresolved",
-                    format!(
-                        "state {}, controller {}, occupied {}",
-                        row.state, row.controller, row.occupied
-                    ),
-                );
-            }
-        }
-        let mut defaults = HashMap::new();
-        let mut ambiguous_settings = HashSet::new();
-        for row in recorded_rows::<tables::OccupationSettings>(frame)? {
-            if let Some(slot) = link_slot(links, row.country) {
-                if ambiguous_settings.contains(&slot) {
-                    continue;
-                }
-                if defaults.insert(slot, row).is_some() {
-                    defaults.remove(&slot);
-                    ambiguous_settings.insert(slot);
-                    self.refused.note(
-                        "OccupationSettings canonical country link is ambiguous",
-                        format!("slot {slot}"),
-                    );
-                }
-            } else {
-                self.refused.note(
-                    "OccupationSettings country link is unresolved",
-                    format!("raw link {}", row.country),
-                );
-            }
-        }
-        // Index the appended group inventory once per read, resolving raw aliases.
-        let mut group_laws = HashMap::new();
-        let mut group_failures: HashMap<_, _> = ambiguous_settings
-            .into_iter()
-            .map(|slot| {
-                (
-                    slot,
-                    "OccupationSettings canonical country link is ambiguous".to_owned(),
-                )
-            })
-            .collect();
-        for (&controller, row) in &defaults {
-            let groups = match &row.group_laws {
-                replay_data::rows::Recorded::NotRecorded => {
-                    group_failures.insert(controller, GROUP_LAW_MISSING.to_owned());
-                    continue;
-                }
-                replay_data::rows::Recorded::Value(None) => {
-                    group_failures.insert(
-                        controller,
-                        "The occupied-country law inventory capture failed".into(),
-                    );
-                    continue;
-                }
-                replay_data::rows::Recorded::Value(Some(groups)) => groups,
-            };
-            for group in groups {
-                let Some(occupied) = link_slot(links, group.occupied) else {
-                    group_failures.insert(
-                        controller,
-                        "The occupied-country law inventory has an unresolved country link".into(),
-                    );
-                    continue;
-                };
-                if group_laws
-                    .insert(
-                        (controller, occupied),
-                        (group.law.as_deref(), group.scope_country),
-                    )
-                    .is_some()
-                {
-                    group_failures.insert(
-                        controller,
-                        "The occupied-country law inventory has duplicate canonical country links"
-                            .into(),
-                    );
-                }
-            }
-        }
-        // Default eligibility shares one lazy world over this supplying read, and
-        // each law's answer for one occupier and occupied country.
-        let law_world = std::sync::OnceLock::new();
-        let mut law_valid = HashMap::<(String, u32, u32), Result<bool, String>>::new();
-        let mut assigned = HashMap::<StateKey, i32>::new();
-        let mut unresolved_assigned = HashSet::new();
-        for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
-            if let Some(key) = key(row.controller, row.occupied, row.state) {
-                // The manpower total sums the container with i32 wrapping.
-                let total = assigned.entry(key).or_default();
-                *total = total.wrapping_add(row.amount);
-            } else {
-                unresolved_assigned.insert(row.state);
-                self.refused.note(
-                    "StateAssignedManpower country link is unresolved",
-                    format!(
-                        "state {}, controller {}, occupied {}",
-                        row.state, row.controller, row.occupied
-                    ),
-                );
-            }
-        }
-        let assigned_complete = frame.complete::<tables::StateAssignedManpower>().is_ok();
-        let laws_complete = frame.complete::<tables::StateOccupationLaws>().is_ok();
-        let garrisons_read = slot_read(self.format, &frame.metrics, TableId::StateGarrisons, hour);
-        self.trend.begin(
-            hour,
-            countries.clone(),
-            links,
-            recorded_rows::<tables::StateGarrisons>(frame)?
-                .iter()
-                .filter(|_| garrisons_read),
-            garrisons_read && frame.complete::<tables::StateGarrisons>().is_ok(),
-        );
+        let frame = frames.hour;
+        let worlds = [std::sync::OnceLock::new(), std::sync::OnceLock::new()];
+        let cat = self.cat;
         self.active.clear();
         self.complete = frame.complete::<tables::StateResistance>().is_ok();
-        for resistance in recorded_rows::<tables::StateResistance>(frame)?
-            .iter()
-            .filter(|row| occupied(row))
-        {
+        for resistance in resistance.iter().filter(|row| occupied(row)) {
             let Some(state) = self
                 .state_slots
                 .get(&resistance.state)
@@ -588,34 +822,40 @@ impl<'a> Scan<'a> {
                     "active resistance names a state absent from States",
                     resistance.state.to_string(),
                 );
-                self.trend.missing_state(resistance.state);
+                if observe_trend {
+                    self.trend.missing_state(resistance.state);
+                }
                 continue;
             };
             // Every occupation key and tag below uses ONLY this read's controller
             // and CountryLinks snapshot. Hourly projection never changes them.
+            self.eligibility.forget_state(state.id);
             let state_key = key(state.controller, resistance.country, state.id);
-            self.trend
-                .state(resistance, state, &countries.identities, links);
-            let garrison = state_key.and_then(|key| garrisons.get(&key));
+            if observe_trend {
+                self.trend
+                    .state(resistance, state, &countries.identities, links);
+            }
+            let garrison = state_key.and_then(|key| context.garrison(frame, key));
             let assigned_manpower = state_key
                 .filter(|_| {
                     garrison.is_some()
-                        && assigned_complete
-                        && !unresolved_assigned.contains(&state.id)
+                        && context.assigned_complete()
+                        && !context.assigned_unresolved(state.id)
                 })
-                .map(|key| assigned.get(&key).copied().unwrap_or(0));
+                .map(|key| context.assigned(key));
             let override_name = state_key
-                .and_then(|key| laws.get(&key))
+                .and_then(|key| context.law(frame, key))
                 .map(|row| row.name.as_slice());
             let default = link_slot(links, state.controller)
-                .and_then(|slot| defaults.get(&slot))
+                .and_then(|slot| context.settings(frame, slot))
                 .map(|row| (row.default_law_present != 0, row.law.as_slice()));
-            let settings = link_slot(links, state.controller).and_then(|slot| defaults.get(&slot));
+            let settings =
+                link_slot(links, state.controller).and_then(|slot| context.settings(frame, slot));
             let group = match state_key {
                 Some((controller, occupied, _)) => {
-                    if let Some(reason) = group_failures.get(&controller) {
+                    if let Some(reason) = context.group_failure(controller) {
                         GroupLaw::Unknown(reason.clone())
-                    } else if let Some(law) = group_laws.get(&(controller, occupied)) {
+                    } else if let Some(law) = context.group(controller, occupied) {
                         GroupLaw::Law(law.0)
                     } else if settings.is_some() {
                         GroupLaw::Missing
@@ -640,7 +880,7 @@ impl<'a> Scan<'a> {
                 LawInputs {
                     state: override_name,
                     key_resolved: state_key.is_some(),
-                    overrides_complete: laws_complete,
+                    overrides_complete: context.laws_complete(),
                     group,
                     default,
                     fallback,
@@ -659,8 +899,8 @@ impl<'a> Scan<'a> {
                     if definition.visible.is_empty() && definition.available.is_empty() {
                         return Ok(true);
                     }
-                    let occupied = group_laws
-                        .get(&(controller, occupied_key))
+                    let occupied = context
+                        .group(controller, occupied_key)
                         .and_then(|group| group.1)
                         .and_then(|raw| link_slot(links, raw))
                         .ok_or_else(|| {
@@ -670,21 +910,29 @@ impl<'a> Scan<'a> {
                     if definition.visible.is_empty() && controller == occupied {
                         return Ok(true);
                     }
-                    let world = law_world
-                        .get_or_init(|| {
-                            let cat = self.cat.ok_or_else(|| {
-                                "Occupation law eligibility needs recorded content".to_owned()
+                    self.eligibility.evaluate(
+                        frames,
+                        state.id,
+                        token,
+                        controller,
+                        occupied,
+                        |frame| {
+                            let built = &worlds[usize::from(!std::ptr::eq(frame, frames.hour))];
+                            let world = dashboard_text::triggers::inputs::unrecorded(|| {
+                                built
+                                    .get_or_init(|| {
+                                        let cat = cat.ok_or_else(|| {
+                                            "Occupation law eligibility needs recorded content"
+                                                .to_owned()
+                                        })?;
+                                        cat.scripted_content()?.recorded_world(frame)
+                                    })
+                                    .as_ref()
+                                    .map_err(Clone::clone)
                             })?;
-                            cat.scripted_content()?.recorded_world(frame)
-                        })
-                        .as_ref()
-                        .map_err(Clone::clone)?;
-                    law_valid
-                        .entry((token.to_owned(), controller, occupied))
-                        .or_insert_with(|| {
                             occupation_law_valid(world, definition, controller, occupied)
-                        })
-                        .clone()
+                        },
+                    )
                 },
             );
             if let Some(reason) = &law_missing {
@@ -791,8 +1039,6 @@ impl<'a> Scan<'a> {
             append(&mut self.result.states[index].runs, hour, value);
             self.active.push(index);
         }
-        self.read_hour = Some(hour);
-        self.trend.finish_read();
         Ok(())
     }
 
@@ -961,6 +1207,11 @@ impl<'a> Scan<'a> {
         // Countries' hourly balances can change without changing any naming
         // operand. Compare those operands without copying their strings, then
         // retain only typed identity/link inputs and the latest view identities.
+        if let Some(changes) = changes {
+            self.eligibility.step(frame, changes);
+        } else {
+            self.eligibility.clear();
+        }
         self.trend
             .collaboration(self.format, frame, hour, &self.countries.identities, links)?;
         if resistance_read(self.format, frame, hour) {
@@ -1042,6 +1293,48 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 
+    /// The law tokens the scan's runs hold, with those of its finished windows.
+    fn tokens(&self) -> BTreeSet<String> {
+        self.result
+            .states
+            .iter()
+            .flat_map(|series| &series.runs)
+            .filter_map(|run| run.value.law.as_ref())
+            .cloned()
+            .chain(self.law_tokens.iter().cloned())
+            .collect()
+    }
+
+    /// The window of `interval`, read from the scan's own runs once sealed,
+    /// and the laws and warnings of the manifest after it.
+    pub(super) fn window(
+        &mut self,
+        branch: u64,
+        window: usize,
+        interval: HourSpan,
+    ) -> (OccupiedStatesReply, Vec<OccupationLawInfo>, Vec<String>) {
+        self.seal();
+        let mut states: Vec<_> = self.result.states.iter().collect();
+        states.sort_unstable_by_key(|series| series.state);
+        let reply = window_reply_of(
+            states,
+            &self.result.observed,
+            &branch.to_string(),
+            window,
+            interval,
+        );
+        let (laws, warnings) = manifest(
+            self.cat,
+            &self.laws,
+            &self.tokens(),
+            self.result.warnings.clone(),
+            &self.refused,
+            &self.country_refused,
+        );
+        (reply, laws, warnings)
+    }
+
+    #[cfg(test)]
     pub(super) fn snapshot(&self) -> OccupationHistory {
         let mut result = self.result.clone();
         if let Some(hour) = self.last_hour {
@@ -1056,47 +1349,20 @@ impl<'a> Scan<'a> {
                 span.last_hour = hour;
             }
         }
-        let tokens: BTreeSet<_> = result
-            .states
-            .iter()
-            .flat_map(|series| &series.runs)
-            .filter_map(|run| run.value.law.as_ref())
-            .cloned()
-            .chain(self.law_tokens.iter().cloned())
-            .collect();
-        if let Some(cat) = self.cat {
-            match &self.laws {
-                Ok(laws) => {
-                    if !laws.warnings.is_empty() {
-                        result.warnings.push(format!(
-                            "{} occupation-law files could not be read: {}",
-                            laws.warnings.len(),
-                            laws.warnings.join("; ")
-                        ));
-                    }
-                    result.laws = tokens
-                        .iter()
-                        .map(|token| law_content(cat, laws, token))
-                        .collect();
-                }
-                Err(e) => result
-                    .warnings
-                    .push(format!("Occupation law content unavailable: {e}")),
-            }
-            result.warnings.extend(cat.verification.iter().cloned());
-            result.warnings.extend(cat.warnings.iter().cloned());
-            result.warnings.extend(cat.refusal_lines());
-        }
+        (result.laws, result.warnings) = manifest(
+            self.cat,
+            &self.laws,
+            &self.tokens(),
+            std::mem::take(&mut result.warnings),
+            &self.refused,
+            &self.country_refused,
+        );
         result.states.sort_unstable_by_key(|series| series.state);
-        result
-            .warnings
-            .extend(self.refused.lines("recorded occupation facts"));
         let mut trend = self.trend.history(self.last_hour);
-        let country_warnings = self
-            .country_refused
-            .lines("recorded occupation country identities");
-        result.warnings.extend(country_warnings.iter().cloned());
-        trend.warnings.extend(country_warnings);
+        trend.warnings.extend(
+            self.country_refused
+                .lines("recorded occupation country identities"),
+        );
         OccupationHistory {
             states: result,
             trend,

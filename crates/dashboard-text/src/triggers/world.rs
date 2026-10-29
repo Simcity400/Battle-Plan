@@ -466,11 +466,15 @@ pub struct World<'a> {
     /// this hour, and why ([`World::read`]); the triggers that read them are
     /// then unknown.
     core_gaps: Vec<(&'static str, Failure)>,
-    /// Raw country reference to canonical slot.
-    links: BTreeMap<u32, u32>,
-    tags: BTreeMap<u32, &'a [u8]>,
-    /// Canonical slot to the country's own raw id, as script flags key it.
-    raw_ids: BTreeMap<u32, u32>,
+    /// The hour's CountryLinks rows, ascending by raw country reference,
+    /// and each reference's canonical slot, built when first read whole.
+    link_rows: &'a [CountryLinkRow],
+    links: OnceLock<BTreeMap<u32, u32>>,
+    /// The hour's Countries rows, and each canonical slot's country (the
+    /// last row of the slot): its own raw id, as script flags key it, and
+    /// its tag, built when first read.
+    country_rows: &'a [CountryRow],
+    countries: OnceLock<BTreeMap<u32, (u32, &'a [u8])>>,
     /// The hour's Provinces and States rows, and each by id, built when
     /// first read.
     province_rows: Provinces<'a>,
@@ -953,7 +957,9 @@ impl World<'_> {
                 &self.industrial_organisation_size_unrecorded(*reference),
             ),
             Query::IndustrialOrganisationUnlocked(reference) => super::inputs::digest_debug(
-                &self.organisation_details(*reference).map(|row| &row.unlocked),
+                &self
+                    .organisation_details(*reference)
+                    .map(|row| &row.unlocked),
             ),
             Query::IndustrialOrganisationPolicies(reference) => {
                 super::inputs::digest_debug(&self.organisation_policies_unrecorded(*reference))
@@ -1300,7 +1306,33 @@ impl<'a> World<'a> {
     /// Every raw country reference's canonical slot, read whole.
     pub fn links(&self) -> &BTreeMap<u32, u32> {
         super::inputs::table(self.frame, replay_data::rows::TableId::CountryLinks);
-        &self.links
+        self.links.get_or_init(|| {
+            self.link_rows
+                .iter()
+                .map(|row| (row.id, row.canonical_slot))
+                .collect()
+        })
+    }
+
+    /// `raw`'s canonical slot by the hour's links.
+    fn linked(&self, raw: u32) -> Option<u32> {
+        self.link_rows
+            .binary_search_by_key(&raw, |row| row.id)
+            .ok()
+            .map(|at| self.link_rows[at].canonical_slot)
+    }
+
+    /// `slot`'s country: its own raw id and its tag.
+    fn country(&self, slot: u32) -> Option<(u32, &'a [u8])> {
+        let rows: &'a [CountryRow] = self.country_rows;
+        self.countries
+            .get_or_init(|| {
+                rows.iter()
+                    .map(|row| (row.canonical_slot, (row.id, row.tag.as_slice())))
+                    .collect()
+            })
+            .get(&slot)
+            .copied()
     }
 
     /// Every recorded province by id, read whole ([`Self::states`]).
@@ -1454,18 +1486,10 @@ impl<'a> World<'a> {
             prepared_content: None,
             hour: frame.hour(),
             core_gaps,
-            links: links
-                .iter()
-                .map(|row| (row.id, row.canonical_slot))
-                .collect(),
-            tags: countries
-                .iter()
-                .map(|row| (row.canonical_slot, row.tag.as_slice()))
-                .collect(),
-            raw_ids: countries
-                .iter()
-                .map(|row| (row.canonical_slot, row.id))
-                .collect(),
+            link_rows: links,
+            links: OnceLock::new(),
+            country_rows: countries,
+            countries: OnceLock::new(),
             province_rows: provinces,
             state_rows: states,
             provinces: OnceLock::new(),
@@ -1787,7 +1811,7 @@ impl<'a> World<'a> {
     }
 
     fn slot_unrecorded(&self, raw: u32) -> Option<u32> {
-        let slot = self.links.get(&raw).copied();
+        let slot = self.linked(raw);
         if slot.is_none() && raw != 0 {
             let failure = self
                 .table_gap("CountryLinks")
@@ -1805,7 +1829,7 @@ impl<'a> World<'a> {
     }
 
     fn tag_unrecorded(&self, slot: u32) -> Option<&'a [u8]> {
-        super::refusal::reference(self.tags.get(&slot).copied(), slot != 0, || {
+        super::refusal::reference(self.country(slot).map(|(_, tag)| tag), slot != 0, || {
             self.table_gap("Countries").unwrap_or_else(|| {
                 super::refusal::missing_reference(tables::Countries::ID, Some(Store::Country(slot)))
             })
@@ -2317,8 +2341,8 @@ impl<'a> World<'a> {
         self.slot_links
             .get_or_init(|| {
                 let mut out: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-                for (&raw, &slot) in &self.links {
-                    out.entry(slot).or_default().push(raw);
+                for row in self.link_rows {
+                    out.entry(row.canonical_slot).or_default().push(row.id);
                 }
                 out
             })
@@ -2335,7 +2359,7 @@ impl<'a> World<'a> {
         country: impl Fn(&R) -> u32,
     ) -> Option<&'s CountryRows> {
         let found = cell
-            .get_or_init(|| CountryRows::new(rows, country, |raw| self.links.contains_key(&raw)))
+            .get_or_init(|| CountryRows::new(rows, country, |raw| self.linked(raw).is_some()))
             .as_ref();
         if let Some((_, raw)) = found.and_then(CountryRows::first_unlinked) {
             self.slot(raw);
@@ -4392,7 +4416,7 @@ impl<'a> World<'a> {
     }
 
     fn raw_country_unrecorded(&self, slot: u32) -> Option<u32> {
-        super::refusal::reference(self.raw_ids.get(&slot).copied(), slot != 0, || {
+        super::refusal::reference(self.country(slot).map(|(raw, _)| raw), slot != 0, || {
             self.table_gap("Countries").unwrap_or_else(|| {
                 super::refusal::missing_reference(tables::Countries::ID, Some(Store::Country(slot)))
             })

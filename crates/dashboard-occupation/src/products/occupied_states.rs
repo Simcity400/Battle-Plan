@@ -488,16 +488,14 @@ fn has_rows(frame: &DecodedFrame, table: TableId) -> bool {
 }
 
 mod scan;
+pub use scan::columnar;
 #[cfg(test)]
 pub(super) use scan::scan_history;
 mod trend;
 
+#[cfg(test)]
 pub(super) struct OccupationHistory {
     pub states: OccupiedScan,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read only by the recording oracle in tests")
-    )]
     pub trend: super::occupation_trend::History,
 }
 
@@ -571,10 +569,23 @@ fn change<T: PartialEq>(changes: &mut Vec<(i32, T)>, hour: i32, starts: bool, va
     }
 }
 
-/// The runs and observations holding any hour of `interval`, clipped to it: a
-/// window states every value it shows, whatever the branch holds around it.
-fn window_reply<'a>(
-    scan: &'a OccupiedScan,
+/// [`window_reply_of`] a scan's states and observations.
+#[cfg(test)]
+fn window_reply(
+    scan: &OccupiedScan,
+    branch_id: &str,
+    window: usize,
+    interval: HourSpan,
+) -> OccupiedStatesReply {
+    window_reply_of(&scan.states, &scan.observed, branch_id, window, interval)
+}
+
+/// The runs of `states`, ascending by state, and the `observed` spans holding
+/// any hour of `interval`, clipped to it: a window states every value it
+/// shows, whatever the branch holds around it.
+fn window_reply_of<'a>(
+    states: impl IntoIterator<Item = &'a StateRuns>,
+    observed: &[OccupiedObservation],
     branch_id: &str,
     window: usize,
     interval: HourSpan,
@@ -591,8 +602,8 @@ fn window_reply<'a>(
             })
         })
     };
-    let mut states = Vec::new();
-    for scanned in &scan.states {
+    let mut series_of = Vec::new();
+    for scanned in states {
         let first = scanned
             .runs
             .partition_point(|run| run.last_hour < interval.first_hour);
@@ -685,15 +696,11 @@ fn window_reply<'a>(
                 text(&value.law_missing),
             );
         }
-        states.push(series);
+        series_of.push(series);
     }
-    let first = scan
-        .observed
-        .partition_point(|span| span.last_hour < interval.first_hour);
-    let last = scan
-        .observed
-        .partition_point(|span| span.first_hour <= interval.last_hour);
-    let observed = scan.observed[first..last]
+    let first = observed.partition_point(|span| span.last_hour < interval.first_hour);
+    let last = observed.partition_point(|span| span.first_hour <= interval.last_hour);
+    let observed = observed[first..last]
         .iter()
         .map(|span| {
             let (first_hour, last_hour) = clip(span.first_hour, span.last_hour);
@@ -710,7 +717,7 @@ fn window_reply<'a>(
         window,
         interval,
         texts,
-        states,
+        states: series_of,
         observed,
         warnings: Vec::new(),
         laws: None,
