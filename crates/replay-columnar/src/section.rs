@@ -478,6 +478,15 @@ fn fill_run(
 
 /// The ascending union of `slots` and `more`, into `slots`.
 fn union(slots: &mut Vec<u32>, more: &[u32], scratch: &mut Vec<u32>) -> io::Result<()> {
+    // An hour's FILLs mostly set the same slots: every live row but a few.
+    if slots.as_slice() == more {
+        return Ok(());
+    }
+    if slots.is_empty() {
+        engine_allocation::reserve(slots, more.len())?;
+        slots.extend_from_slice(more);
+        return Ok(());
+    }
     scratch.clear();
     engine_allocation::reserve(scratch, slots.len() + more.len())?;
     let (mut left, mut right) = (slots.iter().peekable(), more.iter().peekable());
@@ -737,10 +746,16 @@ pub fn apply(
     if !fills.is_empty() {
         engine_allocation::reserve(&mut changes.fill_masks, changes.fill_slots.len())?;
         changes.fill_masks.resize(changes.fill_slots.len(), 0);
+        let (slots, masks) = (&changes.fill_slots, &mut changes.fill_masks);
         for (bit, targets) in &fills {
+            // Both ascend, so one pass finds each target's position.
+            let mut position = 0;
             for slot in targets {
-                if let Ok(position) = changes.fill_slots.binary_search(slot) {
-                    changes.fill_masks[position] |= bit;
+                while slots.get(position).is_some_and(|filled| filled < slot) {
+                    position += 1;
+                }
+                if slots.get(position) == Some(slot) {
+                    masks[position] |= bit;
                 }
             }
         }

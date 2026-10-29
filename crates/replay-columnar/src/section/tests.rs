@@ -504,3 +504,45 @@ fn patch_runs_edit_held_cells_and_refuse_edits_past_them() {
         "bytes for a list column"
     );
 }
+
+/// Each FILL marks the slots it set with its own column, whatever the other FILLs except.
+#[test]
+fn fills_with_different_exceptions_mark_each_slot_with_its_own_columns() {
+    let inserts = [
+        Values::U32(&[5, 6, 7]),
+        Values::OptionalI64 {
+            present: &[0],
+            values: &[],
+        },
+        Values::U64List {
+            ends: &[0, 0, 0],
+            items: &[],
+        },
+        Values::Bytes(&[40, 41, 42]),
+    ];
+    let first = hour(&[], &[], &[0, 1, 2], &[100, 101, 102], &inserts, &[]);
+    let mut table = Table::new(&KINDS).unwrap();
+    applied(&mut table, &write(&KINDS, &first).unwrap());
+    let fills = [
+        Run {
+            column: 0,
+            op: Op::Fill,
+            positions: &[],
+            values: Some(Values::U32(&[9])),
+            except: &[1],
+            patches: None,
+        },
+        Run {
+            column: 3,
+            op: Op::Fill,
+            positions: &[],
+            values: Some(Values::Bytes(&[8])),
+            except: &[0],
+            patches: None,
+        },
+    ];
+    let filled = hour(&[], &[], &[], &[], &[], &fills);
+    let changes = applied(&mut table, &write(&KINDS, &filled).unwrap());
+    assert_eq!(changes.fill_slots, [0, 1, 2]);
+    assert_eq!(changes.fill_masks, [0b1, 0b1000, 0b1001]);
+}
