@@ -585,6 +585,12 @@ pub struct ArmyOrderRow {
     pub paradrop_target: u32,
 }
 
+/// One table's rows by their own type, as [`TableRows::visit`] hands them over.
+pub trait RowsVisit {
+    type Output;
+    fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output;
+}
+
 pub trait RowCodec: Default + Clone + Eq {
     fn try_clone(&self) -> io::Result<Self>;
     /// Copy admitted rows without repeating their key/nested validation.
@@ -792,6 +798,10 @@ macro_rules! define_tables {
             }
             pub(crate) fn apply_range_update(self, previous: &mut TableRows, ranges: &[std::ops::Range<u128>]) -> io::Result<TableRows> {
                 match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::apply(old, fresh, ranges).map(Self::$table)),+, _ => Err(invalid("key range table type mismatch")) }
+            }
+            /// `visit` over this table's rows by their own type.
+            pub fn visit<V: RowsVisit>(&self, visit: V) -> V::Output {
+                match self { $(Self::$table(rows) => visit.rows(rows)),+ }
             }
             pub fn inline_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => rows.len() * std::mem::size_of::<$row>()),+ }

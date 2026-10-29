@@ -4,6 +4,7 @@ pub mod columnar_frames;
 pub mod compression;
 pub mod container;
 pub mod native_columns;
+pub mod native_frame;
 pub mod progress;
 #[cfg(windows)]
 pub mod publication;

@@ -12,7 +12,7 @@
 use super::SlicedRow;
 use crate::{
     codec::{invalid_static as invalid, put_varint},
-    rows::TableRows,
+    rows::{TableId, TableRows},
 };
 use engine_allocation as allocation;
 use std::{io, ops::Range};
@@ -132,6 +132,15 @@ fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<u
 }
 
 impl SliceUpdate {
+    /// Whether this update replaces the held row keyed `key` of `table`: a row of a listed
+    /// owner (the top 32 of the table's key bits), in a listed range, or a listed key.
+    pub fn replaces(&self, table: TableId, key: u128) -> bool {
+        let owner = (key >> table.key_bits().saturating_sub(32)) as u32;
+        self.owners.binary_search(&owner).is_ok()
+            || self.ranges.iter().any(|range| range.contains(&key))
+            || self.keys.binary_search(&key).is_ok()
+    }
+
     /// Replace only the listed complete row keys, including removed holders.
     pub fn keyed(keys: Vec<u128>, rows: TableRows) -> Self {
         Self {
@@ -509,6 +518,49 @@ fn apply_keys<R: crate::rows::RowCodec>(
 mod tests {
     use super::*;
     use crate::rows::{LendLeaseAgreementRow, MarketEquipment, MarketPool, ResearchInputRow};
+
+    /// [`SliceUpdate::replaces`] finds a held row's owner in the top 32 of its key bits, for
+    /// every fixture row of every owner-sliced table.
+    #[test]
+    fn every_sliced_table_keeps_its_owner_in_the_top_32_key_bits() {
+        use crate::rows::RowCodec;
+        let mut sliced = 0;
+        for table in TableId::ALL {
+            let empty = TableRows::empty(table);
+            if !sliced_pair!(&empty, &empty, |_rows, _other, _wrap| true, false) {
+                continue;
+            }
+            sliced += 1;
+            let rows = crate::rows::sample_extended_table(table, 1)
+                .unwrap_or_else(|| panic!("{table:?} has no fixture rows"));
+            let bits = table.key_bits();
+            sliced_pair!(
+                &rows,
+                &rows,
+                |rows, _other, _wrap| {
+                    assert!(!rows.is_empty(), "{table:?} has no fixture rows");
+                    for row in rows.iter() {
+                        let key = row.key();
+                        assert_eq!((key >> bits.saturating_sub(32)) as u32, row.owner(), "{table:?}");
+                        let update = SliceUpdate {
+                            ranges: Vec::new(),
+                            owners: vec![row.owner()],
+                            keys: Vec::new(),
+                            rows: TableRows::empty(table),
+                        };
+                        assert!(update.replaces(table, key), "{table:?}");
+                        let other = SliceUpdate {
+                            owners: vec![row.owner().wrapping_add(1)],
+                            ..update
+                        };
+                        assert!(!other.replaces(table, key), "{table:?}");
+                    }
+                },
+                unreachable!()
+            );
+        }
+        assert_eq!(sliced, 30);
+    }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
         ResearchInputRow {
