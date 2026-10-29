@@ -7,8 +7,8 @@
 //! holds each country's colour, or why it has none, only where that changes.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
-    country_styles::{HourStyles, STYLE_TABLES, seek_styles},
+    ContentOptions, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    country_styles::{HourStyles, STYLE_TABLES, prepared_inputs, seek_styles},
     validate_tag,
 };
 use crate::{Source, invalid, prepared::query::frames};
@@ -95,17 +95,35 @@ impl Product for CountryColours {
     fn load(
         source: &Source,
         params: &Self::Params,
-        _context: &LoadContext,
+        context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        load_within(source, params, cancelled, MAX_PRODUCT_REPLY_BYTES)
+        load_with(
+            source,
+            params,
+            context.content.as_ref(),
+            cancelled,
+            MAX_PRODUCT_REPLY_BYTES,
+        )
     }
 }
 
 /// The reply, refused with [`OVER_BUDGET`] as soon as it would pass `budget` bytes of JSON.
+#[cfg(test)]
 fn load_within(
     source: &Source,
     params: &CountryColourParams,
+    cancelled: &AtomicBool,
+    budget: usize,
+) -> io::Result<CountryColourReply> {
+    load_with(source, params, None, cancelled, budget)
+}
+
+/// [`load_within`], from preparation's runs when they hold every requested hour under `content`.
+fn load_with(
+    source: &Source,
+    params: &CountryColourParams,
+    content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
     budget: usize,
 ) -> io::Result<CountryColourReply> {
@@ -117,6 +135,20 @@ fn load_within(
     hours.sort_unstable();
     hours.dedup();
     let mut reply = Reply::new(params, budget)?;
+    let tags = reply.tags.clone();
+    // Each hour is taken as it is read, so the reply's budget stops the read as the seeks' does.
+    if prepared_inputs(
+        source,
+        content,
+        branch,
+        &hours,
+        &tags,
+        false,
+        cancelled,
+        &mut |hour, inputs| reply.styles(hour, Ok(HourStyles::build(inputs, None)), cancelled),
+    )? {
+        return Ok(reply.reply);
+    }
     // One block's hours at a time, so a block the pass cannot read is sought hour by hour.
     let mut groups: Vec<(Option<&replay::container::BlockIndex>, &[i32])> = Vec::new();
     let mut rest = &hours[..];
@@ -326,7 +358,17 @@ impl Reply {
             Ok(SeekResult::Gap { reason, .. }) => return self.unread(hour, reason),
             Err(error) => return self.unread(hour, error.to_string()),
         };
-        let styles = match HourStyles::read(&frame, None) {
+        self.styles(hour, HourStyles::read(&frame, None), cancelled)
+    }
+
+    /// One hour's styles: their colours, or the hour unread with why.
+    fn styles(
+        &mut self,
+        hour: i32,
+        styles: io::Result<HourStyles>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let styles = match styles {
             Ok(styles) => styles,
             Err(error) if engine_allocation::is_allocation_error(&error) => return Err(error),
             Err(error) => return self.unread(hour, error.to_string()),

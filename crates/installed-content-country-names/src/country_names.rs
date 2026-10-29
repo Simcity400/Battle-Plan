@@ -65,6 +65,44 @@ impl Operands {
         .sum()
     }
 
+    /// The overlord and the six texts, which [`Self::from_parts`] takes back.
+    pub fn parts(&self) -> (Option<u32>, [&str; 6]) {
+        (
+            self.overlord,
+            [
+                &self.tag,
+                &self.cosmetic,
+                &self.overlord_suffix,
+                &self.subtype_suffix,
+                &self.group_suffix,
+                &self.autonomy_suffix,
+            ],
+        )
+    }
+
+    /// Operands from their [`Self::parts`].
+    pub fn from_parts(
+        overlord: Option<u32>,
+        [
+            tag,
+            cosmetic,
+            overlord_suffix,
+            subtype_suffix,
+            group_suffix,
+            autonomy_suffix,
+        ]: [String; 6],
+    ) -> Self {
+        Self {
+            tag,
+            cosmetic,
+            overlord,
+            overlord_suffix,
+            subtype_suffix,
+            group_suffix,
+            autonomy_suffix,
+        }
+    }
+
     /// Static naming operands, without a leader, cosmetic tag or subject.
     pub fn for_tag(tag: &str, group: Option<&str>) -> Self {
         Self {
@@ -209,12 +247,33 @@ impl<'a> CountryNames<'a> {
         frame: &dyn replay_frame::frame::DecodedSource,
         localisation: &'a Localisation,
     ) -> Self {
+        let (operands, reserved_built) = Self::recorded_operands(frame);
+        Self::recorded(localisation, operands, reserved_built)
+    }
+
+    /// Every country's operands at `frame`'s hour, slot zero's among them, and which of slot
+    /// zero's names its reserved row has built, as [`Self::read`] reads them: kept, they name
+    /// later through [`Self::recorded`].
+    pub fn recorded_operands(
+        frame: &dyn replay_frame::frame::DecodedSource,
+    ) -> (BTreeMap<u32, Result<Operands, String>>, Option<u8>) {
         let mut operands = operands(frame);
         operands.insert(0, reserved_zero(frame));
+        (operands, reserved_zero_row(frame).ok().map(|row| row.built))
+    }
+
+    /// Names from operands [`Self::recorded_operands`] read: all of them, or at least those of
+    /// each slot a name is asked for and of every overlord its name reaches, which name it
+    /// exactly as [`Self::read`] does.
+    pub fn recorded(
+        localisation: &'a Localisation,
+        operands: BTreeMap<u32, Result<Operands, String>>,
+        reserved_built: Option<u8>,
+    ) -> Self {
         Self {
             localisation,
             operands,
-            reserved_built: reserved_zero_row(frame).ok().map(|row| row.built),
+            reserved_built,
         }
     }
 

@@ -6,19 +6,19 @@
 //! stored map colour. Neither comes from a tag list, so mods and dynamic
 //! countries work, and a missing value stays missing rather than guessed.
 
-use super::{LoadContext, Product, recorded_rows, validate_tag};
+use super::{ContentOptions, LoadContext, Product, recorded_rows, validate_tag};
 use crate::{Source, catalogue::plain_text, content, invalid};
-use installed_content_country_names::country_names::CountryNames;
+use installed_content_country_names::country_names::{CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
 use replay::container::SeekResult;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -49,6 +49,53 @@ pub(crate) fn seek_styles(
     cancelled: &AtomicBool,
 ) -> io::Result<SeekResult> {
     crate::prepared::query::frames::seek(source, branch, hour, STYLE_TABLES, cancelled)
+}
+
+/// Each hour's style inputs as preparation keeps them, which the dashboard installs once
+/// ([`install_style_runs`]): a request whose hours they all hold answers without a seek.
+pub trait StyleRuns: Sync {
+    /// Visits the inputs of `tags` at each of the ascending, distinct `hours` on `branch` in
+    /// turn, with their naming operands when `names` are read: false, visiting none, unless
+    /// preparation holds every one of those hours.
+    #[allow(clippy::too_many_arguments)]
+    fn inputs(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        hours: &[i32],
+        tags: &[String],
+        names: bool,
+        cancelled: &AtomicBool,
+        visit: &mut dyn FnMut(i32, StyleInputs) -> io::Result<()>,
+    ) -> io::Result<bool>;
+}
+
+static RUNS: OnceLock<&'static dyn StyleRuns> = OnceLock::new();
+
+/// Installs preparation's style inputs; later installs keep the first.
+pub fn install_style_runs(runs: &'static dyn StyleRuns) {
+    let _ = RUNS.set(runs);
+}
+
+/// [`StyleRuns::inputs`] of the installed runs; false without them.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepared_inputs(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    hours: &[i32],
+    tags: &[String],
+    names: bool,
+    cancelled: &AtomicBool,
+    visit: &mut dyn FnMut(i32, StyleInputs) -> io::Result<()>,
+) -> io::Result<bool> {
+    match RUNS.get() {
+        Some(runs) => runs.inputs(
+            source, content, branch, hours, tags, names, cancelled, visit,
+        ),
+        None => Ok(false),
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -142,19 +189,39 @@ impl Product for CountryStyles {
                     .branch_id
                     .parse::<u64>()
                     .map_err(|_| invalid("Invalid country style branch"))?;
-                let frame = match seek_styles(source, branch, params.hour, cancelled)? {
-                    SeekResult::Frame(frame) => frame,
-                    SeekResult::Gap { reason, .. } => {
-                        return Err(invalid(format!(
-                            "Country styles unavailable at this hour: {reason}"
-                        )));
-                    }
-                };
-                let hour = Arc::new(HourStyles::read(&frame, key.localisation.as_deref())?);
-                let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
-                state.recent.insert(0, (key, Arc::clone(&hour)));
-                state.recent.truncate(RECENT_HOURS);
-                hour
+                // Preparation's runs give the requested tags' share of the hour, kept for no
+                // other request.
+                let mut prepared = None;
+                prepared_inputs(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    &[params.hour],
+                    &params.tags,
+                    key.localisation.is_some(),
+                    cancelled,
+                    &mut |_, inputs| {
+                        prepared = Some(inputs);
+                        Ok(())
+                    },
+                )?;
+                if let Some(inputs) = prepared {
+                    Arc::new(HourStyles::build(inputs, key.localisation.as_deref()))
+                } else {
+                    let frame = match seek_styles(source, branch, params.hour, cancelled)? {
+                        SeekResult::Frame(frame) => frame,
+                        SeekResult::Gap { reason, .. } => {
+                            return Err(invalid(format!(
+                                "Country styles unavailable at this hour: {reason}"
+                            )));
+                        }
+                    };
+                    let hour = Arc::new(HourStyles::read(&frame, key.localisation.as_deref())?);
+                    let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
+                    state.recent.insert(0, (key, Arc::clone(&hour)));
+                    state.recent.truncate(RECENT_HOURS);
+                    hour
+                }
             }
         };
         let mut warnings = Vec::new();
@@ -222,6 +289,63 @@ struct StyleState {
     recent: Vec<(HourKey, Arc<HourStyles>)>,
 }
 
+/// What one hour's styles are built from ([`HourStyles::build`]): as a frame records them
+/// ([`Self::read`]), or as preparation's runs give them back for the tags a request names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StyleInputs {
+    /// Each tag's first country row: its raw link id and canonical slot.
+    pub tags: HashMap<String, (u32, u32)>,
+    /// Each raw link id's recorded map colour.
+    pub colors: HashMap<u32, [u8; 3]>,
+    /// Why the appearance table is incomplete this hour, if it is.
+    pub appearance: Option<String>,
+    /// Why the country table is incomplete this hour, if it is.
+    pub incomplete: Option<String>,
+    /// The naming operands ([`CountryNames::recorded_operands`]): every country's, or at least
+    /// those of each tag's slot and of every overlord its name reaches. None are read without
+    /// names.
+    pub operands: BTreeMap<u32, Result<Operands, String>>,
+    pub reserved_built: Option<u8>,
+}
+
+impl StyleInputs {
+    /// The inputs `frame` records, with their naming operands when `names` are read.
+    pub fn read(frame: &DecodedFrame, names: bool) -> io::Result<Self> {
+        let colors = recorded_rows::<tables::CountryAppearance>(frame)?
+            .iter()
+            .map(|row| (row.country, row.map_color()))
+            .collect();
+        let appearance = frame
+            .complete::<tables::CountryAppearance>()
+            .err()
+            .map(|error| error.to_string());
+        // Only a complete country table can say a tag is not a country this hour.
+        let incomplete = frame
+            .complete::<tables::Countries>()
+            .err()
+            .map(|error| error.to_string());
+        let mut tags = HashMap::new();
+        // Countries are keyed by their raw link id, which appearance rows share.
+        for country in recorded_rows::<tables::Countries>(frame)? {
+            tags.entry(String::from_utf8_lossy(&country.tag).into_owned())
+                .or_insert((country.id, country.canonical_slot));
+        }
+        let (operands, reserved_built) = if names {
+            CountryNames::recorded_operands(frame)
+        } else {
+            (BTreeMap::new(), None)
+        };
+        Ok(Self {
+            tags,
+            colors,
+            appearance,
+            incomplete,
+            operands,
+            reserved_built,
+        })
+    }
+}
+
 /// Every country's style at one hour, with why a part of it is missing.
 pub struct HourStyles {
     by_tag: HashMap<String, (CountryStyle, Option<String>)>,
@@ -233,47 +357,60 @@ impl HourStyles {
     /// Reads names and colours from one frame. Without localisation every name
     /// is null and the reply says why.
     pub fn read(frame: &DecodedFrame, localisation: Option<&Localisation>) -> io::Result<Self> {
-        let names = localisation.map(|localisation| CountryNames::read(frame, localisation));
-        let colors: HashMap<u32, [u8; 3]> = recorded_rows::<tables::CountryAppearance>(frame)?
-            .iter()
-            .map(|row| (row.country, row.map_color()))
-            .collect();
+        Ok(Self::build(
+            StyleInputs::read(frame, localisation.is_some())?,
+            localisation,
+        ))
+    }
+
+    /// The styles of the tags `inputs` hold, named with `localisation`.
+    pub fn build(inputs: StyleInputs, localisation: Option<&Localisation>) -> Self {
+        let StyleInputs {
+            tags,
+            colors,
+            appearance,
+            incomplete,
+            operands,
+            reserved_built,
+        } = inputs;
+        let names = localisation
+            .map(|localisation| CountryNames::recorded(localisation, operands, reserved_built));
         // A colour the appearance table may have omitted says so.
-        let no_colour = match frame.complete::<tables::CountryAppearance>() {
-            Ok(_) => "no recorded map colour".to_owned(),
-            Err(error) => format!(
+        let no_colour = match appearance {
+            None => "no recorded map colour".to_owned(),
+            Some(error) => format!(
                 "no recorded map colour (the appearance table is incomplete at this hour: {error})"
             ),
         };
-        let mut by_tag = HashMap::new();
-        // Only a complete country table can say a tag is not a country this hour.
-        let incomplete = frame
-            .complete::<tables::Countries>()
-            .err()
-            .map(|error| error.to_string());
-        // Countries are keyed by their raw link id, which appearance rows share.
-        for country in recorded_rows::<tables::Countries>(frame)? {
-            let tag = String::from_utf8_lossy(&country.tag).into_owned();
-            let (name, name_problem) = match &names {
-                None => (None, None),
-                // Names are plain text for charts: the game's colour codes are removed.
-                Some(names) => match country_name(names, country.canonical_slot) {
-                    Ok(name) => (Some(name), None),
-                    Err(reason) => (None, Some(reason)),
-                },
-            };
-            let color = colors.get(&country.id).copied();
-            let problem = match (name_problem, color) {
-                (Some(reason), None) => Some(format!("{reason}; {no_colour}")),
-                (Some(reason), Some(_)) => Some(reason),
-                (None, None) => Some(no_colour.clone()),
-                (None, Some(_)) => None,
-            };
-            by_tag
-                .entry(tag.clone())
-                .or_insert((CountryStyle { tag, name, color }, problem));
-        }
-        Ok(Self { by_tag, incomplete })
+        let by_tag = tags
+            .into_iter()
+            .map(|(tag, (id, slot))| {
+                let (name, name_problem) = match &names {
+                    None => (None, None),
+                    // Names are plain text for charts: the game's colour codes are removed.
+                    Some(names) => match country_name(names, slot) {
+                        Ok(name) => (Some(name), None),
+                        Err(reason) => (None, Some(reason)),
+                    },
+                };
+                let color = colors.get(&id).copied();
+                let problem = match (name_problem, color) {
+                    (Some(reason), None) => Some(format!("{reason}; {no_colour}")),
+                    (Some(reason), Some(_)) => Some(reason),
+                    (None, None) => Some(no_colour.clone()),
+                    (None, Some(_)) => None,
+                };
+                (tag.clone(), (CountryStyle { tag, name, color }, problem))
+            })
+            .collect();
+        Self { by_tag, incomplete }
+    }
+
+    /// A tag's style this hour and why part of it is missing, if it is a country then.
+    pub fn style(&self, tag: &str) -> Option<(&CountryStyle, Option<&str>)> {
+        self.by_tag
+            .get(tag)
+            .map(|(style, problem)| (style, problem.as_deref()))
     }
 
     /// Why a tag has no style this hour.

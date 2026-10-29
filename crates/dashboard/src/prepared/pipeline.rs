@@ -213,6 +213,7 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("intel-network-coverage", "Intel network coverage"),
         ("naval-repairs", "Naval repairs"),
         ("naval-refits", "Refits"),
+        ("country-styles", "Country names and colours"),
         ("division-equipment", "Division equipment"),
     ]
     .into_iter()
@@ -300,6 +301,13 @@ const FAMILIES: &[Family] = &[
         sections: &["naval-refits"],
         dependents: &[],
         queries: &["naval-refits"],
+    },
+    // Read by interactive products through their coverage, never by a prepared query.
+    Family {
+        name: "country-styles",
+        sections: &["country-styles"],
+        dependents: &[],
+        queries: &[],
     },
     Family {
         name: "division-equipment",
@@ -1495,6 +1503,9 @@ impl super::coverage::Gates for Gates {
 pub fn install_gates() {
     static GATES: Gates = Gates;
     super::coverage::install_gates(&GATES);
+    dashboard_base::products::country_styles::install_style_runs(
+        &crate::products::style_runs::PREPARED_STYLES,
+    );
 }
 /// Every prepared query of a refused family on this branch, and every query
 /// reading one, answers with that family's refusal exactly as its product

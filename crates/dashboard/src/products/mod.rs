@@ -14,6 +14,7 @@ pub use identity::civil_war;
 pub mod land_owners;
 pub mod national_focus;
 pub mod scoreboard;
+pub mod style_runs;
 pub mod technology_artwork;
 
 // The product contract and the shared products, at their old paths.

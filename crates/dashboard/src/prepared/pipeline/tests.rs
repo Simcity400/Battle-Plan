@@ -42,6 +42,7 @@ mod independent_politics;
 mod independent_politics_ledger;
 mod independent_sampled;
 mod independent_shared;
+mod independent_styles;
 mod independent_superiority;
 mod independent_tension;
 mod independent_wars;

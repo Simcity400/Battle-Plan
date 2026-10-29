@@ -435,6 +435,7 @@ static REGISTRY: &[&dyn Own] = &[
     &keyed::INTEL_COVERAGE,
     &keyed::NAVAL_REPAIRS,
     &keyed::NAVAL_REFITS,
+    &keyed::COUNTRY_STYLES,
 ];
 
 /// One read of each block for the families that observe every block hour by
