@@ -332,7 +332,8 @@ impl CachedContent {
             .ok()
         }
         let mut gaps = BTreeMap::new();
-        // The largest reads that need only the layers run alongside the rest.
+        // Every read that needs only the layers starts alongside at once; this thread reads
+        // what needs the defines and then the characters, the longest chain, meanwhile.
         let doctrines = alongside(threads, || installed_content_core::doctrines::read(layers));
         let decisions = alongside(threads, || installed_content_core::decisions::read(layers));
         let division_names = alongside(threads, || {
@@ -342,20 +343,38 @@ impl CachedContent {
             )
         });
         let politics = alongside(threads, || politics::PoliticsContent::read(layers));
+        let dynamic_modifiers =
+            alongside(threads, || installed_content_core::dynamic_modifiers::read(layers));
+        let power_balances = alongside(threads, || {
+            installed_content_core::power_balance::read_descriptions(layers)
+        });
+        let equipment = alongside(threads, || {
+            installed_content_core::equipment::Database::load_complete(layers)
+        });
+        let autonomy_states = alongside(threads, || installed_content_core::autonomy::read(layers));
+        let state_categories = alongside(threads, || {
+            installed_content_state_categories::state_categories::read(layers)
+        });
+        let wargoals = alongside(threads, || installed_content_wargoals::wargoals::read(layers));
+        let name_lists = alongside(threads, || installed_content_core::names::read(layers));
+        let named = alongside(threads, || {
+            let key_names = layers.key_names();
+            let read = key_names.as_ref().ok().map(|names| {
+                (
+                    installed_content_core::scripted_effects::read(layers, names),
+                    installed_content_core::industrial_organisations::read(layers, names),
+                    installed_content_core::collections::read(layers, names),
+                    installed_content_core::country_scorers::read(layers, names),
+                )
+            });
+            (key_names, read)
+        });
+        let buildings = alongside(threads, || installed_content_core::buildings::read(layers));
+        let resources = alongside(threads, || installed_content_core::resources::read(layers));
         let defines = environment.defines();
-        let dynamic_modifiers = keep(
-            installed_content_core::dynamic_modifiers::read(layers),
-            "dynamic modifiers",
-            &mut gaps,
-        );
         let opinion_modifiers = keep(
             installed_content_core::opinion_modifiers::read(layers, defines),
             "opinion modifiers",
-            &mut gaps,
-        );
-        let power_balances = keep(
-            installed_content_core::power_balance::read_descriptions(layers),
-            "power balances",
             &mut gaps,
         );
         let read_ideas = || {
@@ -365,31 +384,34 @@ impl CachedContent {
         let ideas = keep(read_ideas(), "ideas", &mut gaps);
         let maximum = defines.int32("NSupply", "MAX_RAILWAY_LEVEL");
         let max_railway_level = keep(maximum, "MAX_RAILWAY_LEVEL", &mut gaps);
-        let equipment = keep(
-            installed_content_core::equipment::Database::load_complete(layers),
-            "equipment",
-            &mut gaps,
-        );
-        let autonomy_states = keep(
-            installed_content_core::autonomy::read(layers),
-            "autonomy states",
-            &mut gaps,
-        );
-        let state_categories = keep(
-            installed_content_state_categories::state_categories::read(layers),
-            "state categories",
-            &mut gaps,
-        );
-        let wargoals = keep(
-            installed_content_wargoals::wargoals::read(layers),
-            "Wargoal definitions",
-            &mut gaps,
+        // Effect descriptions share these catalogues and their diagnostics.
+        let _ = environment.ideologies();
+        let _ = environment.terrain();
+        let _ = environment.leader_traits();
+        let environment_notes = environment.catalogue_notes();
+        let (ideas, advisor_templates, idea_warnings) = match ideas {
+            Some((ideas, templates, warnings)) => (Some(ideas), Some(templates), warnings),
+            None => (None, None, Vec::new()),
+        };
+        let characters = characters::CharacterContent::read(
+            threads,
+            layers,
+            environment,
+            advisor_templates
+                .as_ref()
+                .ok_or_else(|| gaps["ideas"].clone()),
         );
         let mut doctrines = keep(joined(doctrines), "doctrines", &mut gaps);
         if let Some(doctrines) = &mut doctrines {
             doctrines.tactic_sources.default_reward_mastery =
                 defines.fixed5("NDoctrines", "DEFAULT_REWARD_MASTERY").ok();
         }
+        let dynamic_modifiers = keep(joined(dynamic_modifiers), "dynamic modifiers", &mut gaps);
+        let power_balances = keep(joined(power_balances), "power balances", &mut gaps);
+        let equipment = keep(joined(equipment), "equipment", &mut gaps);
+        let autonomy_states = keep(joined(autonomy_states), "autonomy states", &mut gaps);
+        let state_categories = keep(joined(state_categories), "state categories", &mut gaps);
+        let wargoals = keep(joined(wargoals), "Wargoal definitions", &mut gaps);
         let decisions = keep(joined(decisions), "decisions", &mut gaps);
         let division_names = keep(joined(division_names), "division name groups", &mut gaps);
         let mut notes = doctrines
@@ -405,11 +427,7 @@ impl CachedContent {
         if let Some(database) = &power_balances {
             notes.extend(database.notes.iter().cloned());
         }
-        // Effect descriptions share these catalogues and their diagnostics.
-        let _ = environment.ideologies();
-        let _ = environment.terrain();
-        let _ = environment.leader_traits();
-        notes.extend(environment.catalogue_notes());
+        notes.extend(environment_notes);
         notes.extend(
             decisions
                 .as_ref()
@@ -433,95 +451,56 @@ impl CachedContent {
             notes.extend(warnings.into_iter().map(|(_, message)| message));
             states
         });
-        let (ideas, advisor_templates) = match ideas {
-            Some((ideas, templates, warnings)) => {
-                notes.extend(warnings.into_iter().map(|(_, why)| why));
-                (Some(ideas), Some(templates))
-            }
-            None => (None, None),
+        notes.extend(idea_warnings.into_iter().map(|(_, why)| why));
+        let name_lists = keep(joined(name_lists), "name lists", &mut gaps);
+        let (key_names, named) = joined(named);
+        let key_names = keep(key_names, "effect key names", &mut gaps);
+        let (scripted_effects, industrial_organisations, collections, country_scorers) = match named
+        {
+            Some((scripted, industrial, collections, scorers)) => (
+                keep(scripted, "scripted effects", &mut gaps),
+                keep(industrial, "industrial organisation visibility", &mut gaps),
+                keep(collections, "collections", &mut gaps),
+                keep(scorers, "country scorers", &mut gaps),
+            ),
+            None => (None, None, None, None),
         };
-        let name_lists = keep(installed_content_core::names::read(layers), "name lists", &mut gaps);
-        let key_names = keep(layers.key_names(), "effect key names", &mut gaps);
-        let scripted_effects = key_names.as_ref().and_then(|names| {
-            keep(
-                installed_content_core::scripted_effects::read(layers, names),
-                "scripted effects",
-                &mut gaps,
-            )
-        });
-        let industrial_organisations = key_names.as_ref().and_then(|names| {
-            keep(
-                installed_content_core::industrial_organisations::read(layers, names),
-                "industrial organisation visibility",
-                &mut gaps,
-            )
-        });
         if let Some(database) = &industrial_organisations {
             notes.extend(database.notes.clone());
         }
-        let collections = key_names.as_ref().and_then(|names| {
-            keep(
-                installed_content_core::collections::read(layers, names),
-                "collections",
-                &mut gaps,
-            )
-        });
         if let Some(database) = &collections {
             notes.extend(database.notes.clone());
         }
-        let country_scorers = key_names.as_ref().and_then(|names| {
-            keep(
-                installed_content_core::country_scorers::read(layers, names),
-                "country scorers",
-                &mut gaps,
-            )
-        });
         if let Some(database) = &country_scorers {
             notes.extend(database.notes.clone());
         }
-        let buildings = keep(
-            installed_content_core::buildings::read(layers),
-            "buildings",
-            &mut gaps,
-        );
-        let resources = keep(
-            installed_content_core::resources::read(layers),
-            "resources",
-            &mut gaps,
-        )
-        .and_then(|(resources, warnings)| {
-            let refused = warnings.iter().any(|(kind, _)| {
-                matches!(
-                    kind,
-                    installed_content_core::DiagnosticKind::ParseFailure
-                        | installed_content_core::DiagnosticKind::Unsettled
-                        | installed_content_core::DiagnosticKind::Unsupported
-                        | installed_content_core::DiagnosticKind::Refused
-                )
+        let buildings = keep(joined(buildings), "buildings", &mut gaps);
+        let resources =
+            keep(joined(resources), "resources", &mut gaps).and_then(|(resources, warnings)| {
+                let refused = warnings.iter().any(|(kind, _)| {
+                    matches!(
+                        kind,
+                        installed_content_core::DiagnosticKind::ParseFailure
+                            | installed_content_core::DiagnosticKind::Unsettled
+                            | installed_content_core::DiagnosticKind::Unsupported
+                            | installed_content_core::DiagnosticKind::Refused
+                    )
+                });
+                if refused {
+                    gaps.insert(
+                        "resources",
+                        warnings
+                            .iter()
+                            .map(|(_, why)| why.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                }
+                notes.extend(warnings.into_iter().map(|(_, why)| why));
+                (!refused).then_some(resources)
             });
-            if refused {
-                gaps.insert(
-                    "resources",
-                    warnings
-                        .iter()
-                        .map(|(_, why)| why.as_str())
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                );
-            }
-            notes.extend(warnings.into_iter().map(|(_, why)| why));
-            (!refused).then_some(resources)
-        });
         let politics = joined(politics);
         notes.extend(politics.notes.iter().cloned());
-        let characters = characters::CharacterContent::read(
-            threads,
-            layers,
-            environment,
-            advisor_templates
-                .as_ref()
-                .ok_or_else(|| gaps["ideas"].clone()),
-        );
         notes.extend(characters.notes.iter().cloned());
         Ok(Self {
             characters,

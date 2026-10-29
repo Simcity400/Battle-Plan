@@ -27,6 +27,15 @@ impl CharacterContent {
         let name_groups = crate::effect_description::alongside(threads, || {
             installed_content_raids::raids::names::Groups::read(layers)
         });
+        let special_projects = crate::effect_description::alongside(threads, || {
+            installed_content_core::special_projects::Catalog::read(layers)
+        });
+        let scientist_traits = crate::effect_description::alongside(threads, || {
+            installed_content_core::scientist_traits::read(layers)
+        });
+        let factions = crate::effect_description::alongside(threads, || {
+            installed_content_core::faction_templates::read(layers)
+        });
         let mut notes = Vec::new();
         let catalogue = (|| {
             let templates = advisor_templates?.clone();
@@ -48,16 +57,16 @@ impl CharacterContent {
         })
         .inspect(|db| notes.extend(db.misreads.iter().cloned()))
         .map_err(|why| why.to_string());
-        let special_projects = installed_content_core::special_projects::Catalog::read(layers)
+        let special_projects = crate::effect_description::joined(special_projects)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
-        let scientist_traits = installed_content_core::scientist_traits::read(layers)
+        let scientist_traits = crate::effect_description::joined(scientist_traits)
             .map(|(db, warnings)| {
                 notes.extend(warnings.into_iter().map(|(_, why)| why));
                 db
             })
             .map_err(|why| why.to_string());
-        let factions = installed_content_core::faction_templates::read(layers)
+        let factions = crate::effect_description::joined(factions)
             .inspect(|db| notes.extend(db.warnings.iter().cloned()))
             .map_err(|why| why.to_string());
         let mio_traits = crate::effect_description::joined(mio_traits)
