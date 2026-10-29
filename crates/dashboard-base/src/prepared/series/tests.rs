@@ -1855,6 +1855,63 @@ fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps() {
 }
 
 #[test]
+fn changes_at_matches_values_at_for_every_window_across_batches_and_gaps() {
+    let mut fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for (batch, (first, last)) in [(100, 299), (300, 499)].into_iter().enumerate() {
+        for hour in first..=last {
+            for key in 0..6_u64 {
+                // Runs of differing lengths, with gaps, so most runs lie outside a window.
+                let step = i32::try_from(key).unwrap() + 2;
+                let amount = (hour % 37 != key as i32).then_some(i128::from(hour / step) % 5);
+                values.observe(key, hour, amount, false);
+            }
+        }
+        let mut writer = if batch == 1 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        values.flush(&mut writer, "values", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    }
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let keys: Vec<u64> = (0..7).collect();
+    let windows: [Vec<i32>; 6] = [
+        (150..214).collect(),
+        (95..110).collect(),
+        (290..320).step_by(3).collect(),
+        (480..520).collect(),
+        vec![123, 250, 251, 377, 499, 500],
+        (90..510).step_by(7).collect(),
+    ];
+    for hours in windows {
+        let expected: Vec<Vec<(usize, Option<i128>)>> = keys
+            .iter()
+            .map(|&key| {
+                let mut changes = Vec::new();
+                let mut current = None;
+                for (at, &hour) in hours.iter().enumerate() {
+                    let value = reader.values_at(&[key], hour).unwrap()[0];
+                    if value != current {
+                        changes.push((at, value));
+                        current = value;
+                    }
+                }
+                changes
+            })
+            .collect();
+        assert_eq!(
+            reader.changes_at(&keys, &hours).unwrap(),
+            expected,
+            "{hours:?}"
+        );
+    }
+}
+
+#[test]
 fn late_index_keeps_only_late_facts_ordered_and_bounded_by_read() {
     let mut late = LateIndex::default();
     late.insert(10, 10, 1, 0);

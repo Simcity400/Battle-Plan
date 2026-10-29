@@ -2842,9 +2842,17 @@ impl<'a> Reader<'a> {
                 let from_hour = |hour: i32| range.start + span.partition_point(|&h| h < hour);
                 let after_hour = |hour: i32| range.start + span.partition_point(|&h| h <= hour);
                 let rows = &self.data(*batch, key)?.runs;
-                // An hour takes the last run starting by then while that run lasts.
+                // An hour takes the last run starting by then while that run lasts: only the
+                // last run starting by the span's first hour, and those starting within it, do.
+                let first = rows
+                    .partition_point(|run| run.first_hour <= span[0])
+                    .saturating_sub(1);
+                let last = span[span.len() - 1];
                 let mut from = range.start;
-                for (index, run) in rows.iter().enumerate() {
+                for (index, run) in rows.iter().enumerate().skip(first) {
+                    if run.first_hour > last {
+                        break;
+                    }
                     let start = from_hour(run.first_hour);
                     segment(from, start, None);
                     let until = rows
