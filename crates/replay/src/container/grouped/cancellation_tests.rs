@@ -305,9 +305,12 @@ fn cancelled_verification(route: Route, before_publication: bool) {
     assert!(!probe.is_verified(index));
     let mut sections = Vec::new();
     let mut checked_publication = false;
+    // A section's inflation checks again within its step; each section is counted once.
     read_request(&probe, index, route, || {
         if let Some(Step::Verify(id)) = check::step() {
-            sections.push(id);
+            if sections.last() != Some(&id) {
+                sections.push(id);
+            }
         } else if sections.len() == SECTIONS && !checked_publication {
             assert!(
                 !probe.is_verified(index),
@@ -333,7 +336,9 @@ fn cancelled_verification(route: Route, before_publication: bool) {
             calls_after_stop += 1;
         }
         if let Some(Step::Verify(id)) = check::step() {
-            sections.push(id);
+            if sections.last() != Some(&id) {
+                sections.push(id);
+            }
             if id == 1 && !before_publication {
                 at_cancel = Some(check::started());
                 flag.store(true, Ordering::Release);

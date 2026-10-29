@@ -103,11 +103,19 @@ impl<'a> Chunks<'a> {
 
     /// The next chunk holding bytes; None after the last.
     pub(super) fn next(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.next_checked(&mut Check::disabled())
+    }
+
+    /// [`Self::next`], running `check` as the chunk inflates.
+    pub(super) fn next_checked(&mut self, check: &mut Check<'_>) -> io::Result<Option<Vec<u8>>> {
         for &(offset, length, raw) in &mut self.chunks {
             if length == 0 {
                 continue;
             }
-            let raw = Directory::inflate(&self.block[offset..offset + length], raw)?;
+            let mut bytes = Vec::new();
+            let compressed = &self.block[offset..offset + length];
+            Directory::inflate_checked(compressed, raw, &mut bytes, true, check)?;
+            let raw = bytes;
             if raw.is_empty() {
                 continue;
             }
@@ -125,7 +133,12 @@ impl<'a> Chunks<'a> {
 
     /// [`join`]'s refusal of a section whose chunks all hold nothing.
     pub(super) fn first(&mut self) -> io::Result<Vec<u8>> {
-        self.next()?
+        self.first_checked(&mut Check::disabled())
+    }
+
+    /// [`Self::first`], running `check` as the chunk inflates.
+    pub(super) fn first_checked(&mut self, check: &mut Check<'_>) -> io::Result<Vec<u8>> {
+        self.next_checked(check)?
             .ok_or_else(|| invalid_static("later section contains only empty chunks"))
     }
 

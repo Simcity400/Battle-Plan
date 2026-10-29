@@ -2776,17 +2776,24 @@ impl Directory {
 
     /// [`Self::raw`]'s inflation and checks of section `id`, holding one
     /// chunk of a chunked section at a time.
-    fn verify_raw(&self, block: &[u8], id: usize) -> io::Result<()> {
+    fn verify_raw(&self, block: &[u8], id: usize, check: &mut Check<'_>) -> io::Result<()> {
         let Some((offset, length, raw)) = self.sections[id] else {
             return Ok(());
         };
         if !self.chunks[id].is_empty() {
             let mut chunks = self.chunks(block, id);
-            chunks.first()?;
-            while chunks.next()?.is_some() {}
+            chunks.first_checked(check)?;
+            while chunks.next_checked(check)?.is_some() {}
             return Ok(());
         }
-        Self::inflate(&block[offset..offset + length], raw).map(drop)
+        // Checked through the scratch buffer alone: the inflated bytes are not kept.
+        Self::inflate_checked(
+            &block[offset..offset + length],
+            raw,
+            &mut Vec::new(),
+            false,
+            check,
+        )
     }
 
     fn raw(&self, block: &[u8], id: usize) -> io::Result<Option<Vec<u8>>> {
@@ -2943,7 +2950,7 @@ pub(super) fn verify_with(
         #[cfg(test)]
         let _step = super::check::Scope::enter(super::check::Step::Verify(id));
         check.run()?;
-        directory.verify_raw(block, id)?;
+        directory.verify_raw(block, id, check)?;
     }
     Ok(())
 }

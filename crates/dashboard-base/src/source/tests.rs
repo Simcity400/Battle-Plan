@@ -2,7 +2,10 @@ use crate::test_fixtures::{CAMPAIGN, records, source};
 use replay::container::Replay;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[test]
 fn air_superiority_inherited_state_is_independent_between_revisions() {
@@ -222,4 +225,110 @@ fn failed_diagnostic_initialization_never_caches_an_incomplete_naming_result() {
     assert_eq!(source.metadata().unwrap(), before);
     source.name_countries(None).unwrap();
     assert!(source.named.lock().unwrap().is_some());
+}
+
+fn two_block_source() -> (Arc<Replay>, impl Fn(&Arc<Replay>) -> Arc<crate::Source>) {
+    let next_hour = 100 + replay_frame::KEYFRAME_INTERVAL as i32;
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
+            )],
+        )
+        .unwrap(),
+    );
+    assert_eq!(replay.index.len(), 2);
+    let open = |replay: &Arc<Replay>| {
+        Arc::new(
+            crate::Source::from_replay(
+                crate::SourceKey {
+                    source_id: "1".into(),
+                    revision: "1".into(),
+                },
+                "memory.battleplan".into(),
+                Arc::clone(replay),
+                &AtomicBool::new(false),
+            )
+            .unwrap(),
+        )
+    };
+    (replay, open)
+}
+
+fn ahead(source: &Arc<crate::Source>) -> (super::Ahead, Arc<AtomicBool>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let ahead = super::Ahead {
+        source: Arc::downgrade(source),
+        next: 0,
+        stop: Arc::clone(&stop),
+    };
+    (ahead, stop)
+}
+
+/// Each block handed out, by its source's recording and position.
+fn handed(queue: &super::Queue) -> Vec<(usize, usize)> {
+    std::iter::from_fn(|| super::next_block(queue))
+        .map(|(replay, position, _)| (Arc::as_ptr(&replay) as usize, position))
+        .collect()
+}
+
+#[test]
+fn verifying_ahead_hands_out_the_newest_sources_blocks_first_and_never_the_source() {
+    let (older_replay, open) = two_block_source();
+    let newer_replay = Arc::new(Replay::open(older_replay.bytes().to_vec()).unwrap());
+    let (older, newer) = (open(&older_replay), open(&newer_replay));
+    let queue = Mutex::new((vec![ahead(&older).0, ahead(&newer).0], true));
+    let (first, _, _) = super::next_block(&queue).unwrap();
+    assert!(Arc::ptr_eq(&first, &newer_replay));
+    assert_eq!(Arc::strong_count(&newer), 1, "the source is not held");
+    let (older_at, newer_at) = (
+        Arc::as_ptr(&older_replay) as usize,
+        Arc::as_ptr(&newer_replay) as usize,
+    );
+    let rest = [(newer_at, 1), (older_at, 0), (older_at, 1)];
+    assert_eq!(handed(&queue), rest);
+    let queue = queue.into_inner().unwrap();
+    assert!(queue.0.is_empty());
+    assert!(!queue.1, "the thread is marked gone");
+    // Started once per source, however often it opens.
+    let state = older.state::<super::VerifyAhead>();
+    assert!(super::claim(&state));
+    assert!(!super::claim(&state));
+}
+
+#[test]
+fn verifying_ahead_skips_stopped_and_released_sources() {
+    let (replay, open) = two_block_source();
+    let released_replay = Arc::new(Replay::open(replay.bytes().to_vec()).unwrap());
+    let stopped_replay = Arc::new(Replay::open(replay.bytes().to_vec()).unwrap());
+    let kept = open(&replay);
+    let released = open(&released_replay);
+    let stopped = open(&stopped_replay);
+    let (released_ahead, _) = ahead(&released);
+    let (stopped_ahead, stop) = ahead(&stopped);
+    drop(released);
+    stop.store(true, Ordering::Release);
+    let queue = Mutex::new((vec![ahead(&kept).0, released_ahead, stopped_ahead], true));
+    let at = Arc::as_ptr(&replay) as usize;
+    assert_eq!(handed(&queue), [(at, 0), (at, 1)]);
+    assert!(queue.lock().unwrap().0.is_empty());
+}
+
+#[test]
+fn verifying_ahead_starts_one_thread_and_keeps_queued_sources_when_it_cannot() {
+    let (replay, open) = two_block_source();
+    let (first, second) = (open(&replay), open(&replay));
+    let queue = Mutex::new((Vec::new(), false));
+    assert!(super::schedule(&queue, Some(ahead(&first).0)));
+    let started = super::schedule(&queue, Some(ahead(&second).0));
+    assert!(!started, "one thread checks");
+    // The thread could not start: the sources stay queued for the next open to start it.
+    queue.lock().unwrap().1 = false;
+    assert_eq!(queue.lock().unwrap().0.len(), 2);
+    assert!(super::schedule(&queue, None));
+    assert!(!super::schedule(&queue, None));
+    // Nothing queued: nothing to start.
+    assert!(!super::schedule(&Mutex::new((Vec::new(), false)), None));
 }

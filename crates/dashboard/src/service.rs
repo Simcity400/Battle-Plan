@@ -182,7 +182,7 @@ struct Inner {
     pending: Mutex<Pending>,
     loader: Mutex<Option<Lanes>>,
     signal: Arc<Signal>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     preparation: crate::prepared::runner::Runner,
     preparation_actions: Mutex<()>,
     /// The user folder and the `settings.txt` stamp preparations were last bound to, so a
@@ -251,7 +251,7 @@ impl Service {
                 deferred: std::collections::BTreeMap::new(),
             })),
             signal: Arc::new(Signal::default()),
-            closed: AtomicBool::new(false),
+            closed: Arc::new(AtomicBool::new(false)),
             preparation: crate::prepared::runner::Runner::new()?,
             preparation_actions: Mutex::new(()),
             game_settings: Mutex::new(None),

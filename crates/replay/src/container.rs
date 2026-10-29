@@ -1531,9 +1531,28 @@ impl Replay {
             .filter(|&position| self.index[position] == *index)
     }
 
-    fn is_verified(&self, index: &BlockIndex) -> bool {
+    /// Whether every stored section of this block has been checked, so selected reads trust it.
+    pub fn is_verified(&self, index: &BlockIndex) -> bool {
         self.block_position(index)
             .is_some_and(|position| self.verified[position].load(Ordering::Acquire))
+    }
+
+    /// Checks every stored section of a block as its first selected read would, without
+    /// decoding any table, so selected reads trust it from then on. A block once checked is
+    /// not checked again; a damaged one stays unchecked, for the reads that use it to refuse.
+    pub fn verify_block_with(
+        &self,
+        index: &BlockIndex,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.is_verified(index) {
+            return Ok(());
+        }
+        check()?;
+        let block = self.grouped_block(index)?;
+        grouped::verify_with(&block, index, &mut Check::new(&mut check))?;
+        self.mark_verified(index);
+        Ok(())
     }
 
     /// Publish a synced sibling atomically. On Windows, delete-sharing readers

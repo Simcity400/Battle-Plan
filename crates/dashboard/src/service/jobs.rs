@@ -1827,6 +1827,7 @@ impl Inner {
                 Ok(source)
             });
         if let Ok(source) = &result {
+            crate::source::verify_ahead(source, Arc::clone(&self.closed));
             // Read the store before the admission lock.
             let checked = self.check_store(source, true);
             let confirmation = checked.confirmation();

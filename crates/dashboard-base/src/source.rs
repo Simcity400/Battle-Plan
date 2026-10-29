@@ -5,7 +5,10 @@ use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use installed_content_core::{ResolveOptions, content::ResolvedContent, content::UncoveredReads};
@@ -868,6 +871,103 @@ impl Source {
     ) {
         self.content.lock().unwrap().bind(&options, &content);
     }
+}
+
+/// Whether a source's blocks are checked ahead: once per source, however often it opens.
+#[derive(Default)]
+struct VerifyAhead(bool);
+
+/// Marks the check ahead started; false when it already was.
+fn claim(state: &Mutex<VerifyAhead>) -> bool {
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    !std::mem::replace(&mut state.0, true)
+}
+
+/// A source whose blocks are checked ahead: the next block to check, and when to stop.
+struct Ahead {
+    source: Weak<Source>,
+    next: usize,
+    stop: Arc<AtomicBool>,
+}
+
+/// The sources whose blocks are checked ahead, newest last, and whether a thread checks them.
+type Queue = Mutex<(Vec<Ahead>, bool)>;
+
+/// Every source's blocks checked ahead, by one thread at a time for the whole process.
+static AHEAD: Queue = Mutex::new((Vec::new(), false));
+
+/// Checks every block of the source's recording ahead of the selected reads that would each
+/// check it on first use ([`Replay::verify_block_with`]), so a jump finds its blocks checked.
+/// One thread in background mode ([`job_priority::background_thread`]) checks one block at a
+/// time for every source, the newest first, holding only the recording while it checks; it
+/// stops checking a source once `stop` is set or the source is dropped. A damaged block stays
+/// unchecked, for the reads that use it to refuse.
+pub fn verify_ahead(source: &Arc<Source>, stop: Arc<AtomicBool>) {
+    let claimed = claim(&source.state::<VerifyAhead>()).then(|| Ahead {
+        source: Arc::downgrade(source),
+        next: 0,
+        stop,
+    });
+    if !schedule(&AHEAD, claimed) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("block verify-ahead".into())
+        .spawn(|| {
+            job_priority::background_thread();
+            while let Some((replay, position, stop)) = next_block(&AHEAD) {
+                let _cpu = ::replay_frame::cpu::scope("block verify-ahead", None);
+                let _ = replay.verify_block_with(&replay.index[position], || {
+                    if stop.load(Ordering::Acquire) {
+                        Err(io::ErrorKind::Interrupted.into())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+        });
+    if spawned.is_err() {
+        // Reads check their blocks themselves; the next source opened starts the thread again.
+        AHEAD.lock().unwrap_or_else(|error| error.into_inner()).1 = false;
+    }
+}
+
+/// Queues `ahead`, if any; true when the caller is to start the thread: sources wait and none
+/// is checking them.
+fn schedule(queue: &Queue, ahead: Option<Ahead>) -> bool {
+    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
+    queue.0.extend(ahead);
+    !queue.0.is_empty() && !std::mem::replace(&mut queue.1, true)
+}
+
+/// The newest live source's next block to check, dropping sources finished, stopped or
+/// released; `None`, marking the thread gone, once none is left.
+fn next_block(queue: &Queue) -> Option<(Arc<Replay>, usize, Arc<AtomicBool>)> {
+    // A source let go here, perhaps its last handle, is dropped once the queue is unlocked.
+    let mut held = Vec::new();
+    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
+    while let Some(ahead) = queue.0.last_mut() {
+        let source = if ahead.stop.load(Ordering::Acquire) {
+            None
+        } else {
+            ahead.source.upgrade()
+        };
+        match source {
+            Some(source) if ahead.next < source.replay_ref().index.len() => {
+                let position = ahead.next;
+                ahead.next += 1;
+                let next = (source.replay(), position, Arc::clone(&ahead.stop));
+                held.push(source);
+                return Some(next);
+            }
+            source => {
+                held.extend(source);
+                queue.0.pop();
+            }
+        }
+    }
+    queue.1 = false;
+    None
 }
 
 #[cfg(test)]

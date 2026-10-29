@@ -1857,3 +1857,83 @@ fn grouped_combat_log_observer_stable_keys_keep_exact_ordered_hours_and_seeks() 
         }
     }
 }
+
+#[test]
+fn a_block_verified_ahead_is_trusted_by_selected_reads_and_a_damaged_one_is_not() {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
+    let block = &replay.index[0];
+    let table = |section: &grouped::SectionSize| match section.section {
+        grouped::Section::Keyframe(table) | grouped::Section::Later(table) => Some(table),
+        _ => None,
+    };
+    let sections = replay.block_sections(block).unwrap().unwrap();
+    let selected = sections.iter().find_map(table).unwrap();
+    assert_ne!(table(sections.last().unwrap()), Some(selected));
+    // Each check within a section's step, inflation's included.
+    let verifying = |checked: &mut Vec<usize>| {
+        if let Some(super::check::Step::Verify(id)) = super::check::step() {
+            checked.push(id);
+        }
+        Ok(())
+    };
+    assert!(!replay.is_verified(block));
+    let mut checked = Vec::new();
+    replay
+        .verify_block_with(block, || verifying(&mut checked))
+        .unwrap();
+    let mut ordered = checked.clone();
+    ordered.dedup();
+    // Every section in order, the present ones among them.
+    assert_eq!(ordered, (0..ordered.len()).collect::<Vec<_>>());
+    assert!(ordered.len() >= sections.len());
+    assert!(replay.is_verified(block));
+    // A present section checks again as it inflates; a stop there leaves the block unchecked.
+    let inflating = *checked
+        .iter()
+        .find(|&&id| checked.iter().filter(|&&other| other == id).count() > 1)
+        .expect("a present section checks as it inflates");
+    let fresh = Replay::open(replay.bytes().to_vec()).unwrap();
+    let mut seen = 0;
+    let error = fresh
+        .verify_block_with(&fresh.index[0], || {
+            if super::check::step() == Some(super::check::Step::Verify(inflating)) {
+                seen += 1;
+                if seen == 2 {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(!fresh.is_verified(&fresh.index[0]));
+    // Neither a selected read nor another check inflates a section to check it again.
+    let mut checked = Vec::new();
+    replay
+        .read_block_recorded_selected_with(block, &[selected], || verifying(&mut checked))
+        .unwrap();
+    replay
+        .verify_block_with(block, || verifying(&mut checked))
+        .unwrap();
+    assert!(checked.is_empty());
+    // Damage in a section the selected table never inflates is refused and stays unchecked,
+    // so the selected read still checks the block and refuses it.
+    let mut bytes = replay.bytes().to_vec();
+    bytes[(block.offset + block.length - 1) as usize] ^= 1;
+    let damaged = Replay::open(bytes).unwrap();
+    let index = &damaged.index[0];
+    assert!(damaged.verify_block_with(index, || Ok(())).is_err());
+    assert!(!damaged.is_verified(index));
+    assert!(
+        damaged
+            .read_block_recorded_selected(index, &[selected])
+            .is_err()
+    );
+    // A cancelled check leaves the block unchecked.
+    let fresh = Replay::open(replay.bytes().to_vec()).unwrap();
+    let error = fresh
+        .verify_block_with(&fresh.index[0], || Err(io::ErrorKind::Interrupted.into()))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(!fresh.is_verified(&fresh.index[0]));
+}
