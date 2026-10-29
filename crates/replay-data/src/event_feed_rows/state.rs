@@ -20,6 +20,20 @@ pub struct PendingEvent {
     pub scopes: Vec<EventFeedScope>,
 }
 
+/// The parts of the retained state the last observed row may have changed, so an observer
+/// of changes visits those alone.
+#[derive(Debug, Default)]
+pub struct Touched {
+    /// Any part may have changed: a new generation, a gap, a loss or a refusal.
+    pub all: bool,
+    pub pending: bool,
+    pub fired: bool,
+    /// Delayed-event owners, by [`ScriptEventState::delayed_owner`] key.
+    pub delayed: std::collections::BTreeSet<(u32, u32)>,
+    /// Decision owners, by [`ScriptEventState::decision_owner`] key.
+    pub decisions: std::collections::BTreeSet<(u32, u32)>,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScriptEventState {
     #[serde(with = "owner_pairs")]
@@ -37,8 +51,33 @@ pub struct ScriptEventState {
     fired_fault: bool,
     pending_building: bool,
     fired_building: bool,
+    #[serde(skip)]
+    touched: Touched,
 }
 impl ScriptEventState {
+    /// What the last observed row may have changed.
+    pub fn touched(&self) -> &Touched {
+        &self.touched
+    }
+    /// Each decision owner's key, in order.
+    pub fn decision_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.decisions.keys().copied()
+    }
+    pub fn decision_owner(&self, key: (u32, u32)) -> Option<&super::decisions::DecisionState> {
+        self.decisions.get(&key)
+    }
+    /// Each delayed-event owner's key, in order.
+    pub fn delayed_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.delayed.keys().copied()
+    }
+    pub fn delayed_owner(
+        &self,
+        key: (u32, u32),
+    ) -> Option<(EventFeedCountry, Result<&[DelayedEvent], &'static str>)> {
+        self.delayed
+            .get(&key)
+            .map(|owner| (owner.country, owner.rows()))
+    }
     pub fn decisions(
         &self,
         country: EventFeedCountry,
@@ -94,16 +133,19 @@ impl ScriptEventState {
         mut visit: impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
     ) -> io::Result<()> {
         row.validate()?;
+        self.touched = Touched::default();
         if self.generation != Some(row.generation) {
             *self = Self {
                 generation: Some(row.generation),
                 ..Self::default()
             };
+            self.touched.all = true;
         }
         if self
             .hour
             .is_some_and(|hour| hour.checked_add(1) != Some(row.read_hour))
         {
+            self.touched.all = true;
             for owner in self.decisions.values_mut() {
                 owner.gap();
             }
@@ -116,6 +158,7 @@ impl ScriptEventState {
         // A loss known on this row already makes the retained queues stale;
         // its deltas must not meet them before the row's own baselines.
         if row.coverage != EventFeedCoverage::Complete || row.failure.is_some() {
+            self.touched.all = true;
             for owner in self.delayed.values_mut() {
                 owner.gap();
             }
@@ -135,10 +178,30 @@ impl ScriptEventState {
             };
             use EventFeedScriptChange::*;
             match change {
+                PendingBaseline | PendingStored { .. } | PendingReady | PendingRemoved => {
+                    self.touched.pending = true;
+                }
+                FiredBaseline | FiredMember | FiredRemoved | FiredReady => {
+                    self.touched.fired = true;
+                }
+                _ => {}
+            }
+            match change {
                 Decision(change) => {
                     let key = owner_key(&self.decisions, event.actor);
+                    let before = self
+                        .decisions
+                        .get(&key)
+                        .map(|owner| (owner.country, owner.complete()));
                     let owner = self.decisions.entry(key).or_default();
                     owner.observe(row, event, script, change)?;
+                    // A rebuild's roster is its own occurrence: it changes the retained state
+                    // only when it makes, renames or loses its owner.
+                    if change.operation != super::decisions::Operation::Rebuild
+                        || before != Some((owner.country, owner.complete()))
+                    {
+                        self.touched.decisions.insert(key);
+                    }
                     visit(owner, event)?;
                 }
                 PendingBaseline => {
@@ -235,12 +298,20 @@ impl ScriptEventState {
                 | DelayedRemoved { .. }
                 | DelayedRefused => {
                     let key = owner_key(&self.delayed, event.target);
+                    self.touched.delayed.insert(key);
                     self.delayed
                         .entry(key)
                         .or_default()
                         .observe(row, event, script, change)?;
                 }
             }
+        }
+        if row.coverage == EventFeedCoverage::Unavailable
+            || row.failure.is_some()
+            || row.script_refusals != 0
+            || row.coverage == EventFeedCoverage::Partial
+        {
+            self.touched.all = true;
         }
         if row.coverage == EventFeedCoverage::Unavailable || row.failure.is_some() {
             for owner in self.decisions.values_mut() {
@@ -1449,6 +1520,98 @@ mod tests {
                 [owner(refused + 1)]
             );
         }
+    }
+    /// Each row names the parts it may have changed: the delayed owner whose timers it
+    /// passed and no other, and every part after a gap or a new generation.
+    #[test]
+    fn rows_name_the_parts_they_may_have_changed() {
+        let mut state = ScriptEventState::default();
+        state
+            .observe(&row(
+                10,
+                0,
+                &[(DelayedBaseline, None, None), (DelayedReady, None, None)],
+            ))
+            .unwrap();
+        assert!(state.touched().all);
+        state
+            .observe(&row(
+                11,
+                2,
+                &[(
+                    DelayedAdvance {
+                        count: 0,
+                        finished: true,
+                    },
+                    None,
+                    None,
+                )],
+            ))
+            .unwrap();
+        let touched = state.touched();
+        assert!(!touched.all && !touched.pending && !touched.fired);
+        assert_eq!(
+            touched.delayed.iter().copied().collect::<Vec<_>>(),
+            [(5, 7)]
+        );
+        assert!(touched.decisions.is_empty());
+        assert!(
+            state
+                .delayed_owner((5, 7))
+                .is_some_and(|(_, rows)| rows.is_ok())
+        );
+        state
+            .observe(&row(12, 3, &[(FiredBaseline, None, None)]))
+            .unwrap();
+        let touched = state.touched();
+        assert!(touched.fired && touched.delayed.is_empty());
+        state.observe(&row(14, 4, &[])).unwrap();
+        assert!(state.touched().all);
+    }
+    /// A rebuild touches its owner only when it makes, renames or loses it.
+    #[test]
+    fn rebuilds_touch_only_the_owners_they_make_rename_or_lose() {
+        let mut state = ScriptEventState::default();
+        let change = |operation| {
+            (
+                Decision(DecisionChange {
+                    operation,
+                    container: 3,
+                    flags: 0,
+                    ordinal: 0,
+                    political_power: None,
+                }),
+                None,
+                None,
+            )
+        };
+        state
+            .observe(&row(
+                10,
+                0,
+                &[change(Operation::Baseline), change(Operation::Ready)],
+            ))
+            .unwrap();
+        state
+            .observe(&row(11, 2, &[change(Operation::Rebuild)]))
+            .unwrap();
+        assert!(state.touched().decisions.is_empty());
+        let mut made = row(12, 3, &[change(Operation::Rebuild)]);
+        made.events[0].actor = EventFeedCountry {
+            reference: 24,
+            id: 24,
+            instance: 0,
+        };
+        state.observe(&made).unwrap();
+        assert_eq!(
+            state
+                .touched()
+                .decisions
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [(24, 0)]
+        );
     }
 }
 

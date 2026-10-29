@@ -969,9 +969,20 @@ fn retained_pending_due_after_end_fired_members_and_delayed_scopes_survive_resum
     assert!(notes.contains("no recorded fire or selection time"));
     let mut resumed: Projection =
         serde_json::from_slice(&serde_json::to_vec(&projection).unwrap()).unwrap();
-    let mut tail = pack(vec![event(10, EventFeedSource::ScriptState, 121)]);
+    // A fired member added beside the timer counting down.
+    let mut tail = pack(vec![
+        event(10, EventFeedSource::ScriptState, 121),
+        event(11, EventFeedSource::ScriptState, 121),
+    ]);
     tail.read_hour = 121;
+    tail.script_tokens = b"mod".to_vec();
     tail.events[0].script = Some(EventFeedScript {
+        change: Some(C::FiredMember),
+        native_event: Some(EventFeedEventIdentity { kind: 7, id: 9 }),
+        token_len: 3,
+        ..Default::default()
+    });
+    tail.events[1].script = Some(EventFeedScript {
         change: Some(C::DelayedAdvance {
             count: 1,
             finished: true,
@@ -1000,9 +1011,12 @@ fn retained_pending_due_after_end_fired_members_and_delayed_scopes_survive_resum
         serde_json::to_value(&actual.feed.rows).unwrap(),
         serde_json::to_value(&expected.feed.rows).unwrap()
     );
+    // The fired set is listed again; the timer that only counted down and the
+    // pending instance that did not change are not.
     let notes = actual.feed.rows[0].cause.as_ref().unwrap().notes.join("\n");
-    assert!(notes.contains("remaining 499 hours"));
-    assert!(notes.contains("due hour 999"));
+    assert!(notes.contains("fired_event_names membership: 2"));
+    assert!(!notes.contains("remaining"));
+    assert!(!notes.contains("due hour"));
 }
 
 #[test]
@@ -1107,9 +1121,10 @@ fn preparation_resume_keeps_a_lost_delayed_queue_retired_until_its_baseline() {
             .notes
             .join("\n")
     };
-    // The uncertified store is still reported as an observation.
+    // The uncertified store is still reported as an observation; the queue's loss
+    // was listed at the read that lost it.
     assert!(notes(0).contains("Observation 5 at 122: DelayedStored"));
-    assert!(notes(0).contains("SYN delayed timers unavailable"));
+    assert!(!notes(0).contains("SYN delayed timers unavailable"));
     assert!(notes(1).contains("SYN: 1 delayed event timers."));
     assert!(notes(1).contains("SYN delayed instance 18: mod [9 (type 7)]; remaining 497 hours"));
 }
@@ -1249,51 +1264,103 @@ pub(in crate::products::event_feed) fn retained_packs() -> Vec<EventFeedHistoryR
     .collect()
 }
 
+/// A decision owner whose every change is listed, down to the last candidate it lost.
 #[test]
-fn retained_parts_publish_once_and_with_the_own_notes_make_the_whole_observation() {
+fn a_decision_owner_emptied_of_its_last_candidate_is_listed() {
+    use replay_data::event_feed_rows::{
+        EventFeedScript, EventFeedScriptChange as C,
+        decisions::{DecisionChange, Operation, REMOVE_REQUESTED},
+    };
+    let candidate = |sequence: u64, hour: i32, flags: u8| {
+        let mut value = event(sequence, EventFeedSource::ScriptState, hour);
+        value.script = Some(EventFeedScript {
+            change: Some(C::Decision(DecisionChange {
+                operation: Operation::Candidate,
+                container: 0,
+                flags,
+                ordinal: 4,
+                political_power: None,
+            })),
+            token_len: 3,
+            ..Default::default()
+        });
+        value
+    };
+    let read = |hour: i32, events: Vec<EventFeedEvent>| {
+        let mut row = pack(events);
+        row.read_hour = hour;
+        row.script_tokens = b"mod".to_vec();
+        row
+    };
+    let reads = [
+        read(
+            120,
+            vec![
+                decision_boundary(1, Operation::Baseline, 0),
+                decision_boundary(2, Operation::Ready, 0),
+            ],
+        ),
+        read(121, vec![candidate(3, 121, 0)]),
+        read(122, vec![candidate(4, 122, REMOVE_REQUESTED)]),
+    ];
+    let mut projection = Projection::default();
+    let mut builder = Builder::new(100, 130);
+    for pack in &reads {
+        projection
+            .append_named(
+                &mut builder,
+                pack,
+                |_, _| Some("SYN".into()),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+    }
+    let notes: Vec<String> = builder
+        .feed
+        .rows
+        .iter()
+        .map(|row| row.cause.as_ref().unwrap().notes.join("\n"))
+        .collect();
+    assert_eq!(notes.len(), 3);
+    let counts = |candidates| {
+        format!(
+            "SYN decisions: 0 retained members, 0 description counts, 0 ignored, {candidates} candidates."
+        )
+    };
+    assert!(notes[0].contains(&counts(0)));
+    assert!(notes[1].contains(&counts(1)));
+    assert!(notes[2].contains(&counts(0)));
+}
+
+#[test]
+fn retained_observations_list_only_the_parts_their_read_changed() {
     let flag = AtomicBool::new(false);
-    let mut whole = Projection::default();
-    let mut parts = Projection::default();
-    let mut published: Vec<Vec<String>> = Vec::new();
-    let mut counts = Vec::new();
+    let mut live = Projection::default();
+    let mut rows = Vec::new();
     for (index, pack) in retained_packs().iter().enumerate() {
         if index == 2 {
-            // A resumed projection keeps each part's digest and ordinal only.
-            parts = serde_json::from_slice(&serde_json::to_vec(&parts).unwrap()).unwrap();
+            // A resumed projection keeps each part as last seen.
+            live = serde_json::from_slice(&serde_json::to_vec(&live).unwrap()).unwrap();
         }
-        parts.defer_sections();
-        let mut expected = Builder::new(100, 130);
-        whole
-            .append_named(&mut expected, pack, |_, _| Some("SYN".into()), &flag)
+        let mut builder = Builder::new(100, 130);
+        live.append_named(&mut builder, pack, |_, _| Some("SYN".into()), &flag)
             .unwrap();
-        let mut actual = Builder::new(100, 130);
-        parts
-            .append_named(&mut actual, pack, |_, _| Some("SYN".into()), &flag)
-            .unwrap();
-        let before = published.len();
-        for row in &mut actual.feed.rows {
-            let ordinals = parts
-                .sections(&row.id, |notes| {
-                    published.push(notes.to_vec());
-                    Ok(published.len() as u64 - 1)
-                })
-                .unwrap();
-            let notes = &mut row.cause.as_mut().unwrap().notes;
-            for ordinal in ordinals {
-                notes.extend(published[ordinal as usize].iter().cloned());
-            }
-        }
-        counts.push(published.len() - before);
-        assert_eq!(expected.feed.rows.len(), 1);
-        assert_eq!(
-            serde_json::to_value(&actual.feed.rows).unwrap(),
-            serde_json::to_value(&expected.feed.rows).unwrap()
-        );
+        rows.extend(builder.feed.rows);
     }
-    // Every part at the first read; then the timer, the fired set and the
-    // timer, and the timer: the pending instances and the decision owner once.
-    assert_eq!(counts, [4, 1, 2, 1]);
-    let notes = published.concat().join("\n");
-    assert!(notes.contains("remaining 497 hours"));
-    assert!(notes.contains("fired_event_names membership: 2"));
+    // The first read lists every part; reads where the timer only counted down are
+    // not observed; the member added at 122 lists the fired set alone.
+    assert_eq!(
+        rows.iter().map(|row| row.hour).collect::<Vec<_>>(),
+        [120, 122]
+    );
+    let notes = |row: &EventFeedRow| row.cause.as_ref().unwrap().notes.join("\n");
+    let first = notes(&rows[0]);
+    assert!(first.contains("Pending event instances: 1."));
+    assert!(first.contains("fired_event_names membership: 1"));
+    assert!(first.contains("SYN: 1 delayed event timers."));
+    assert!(first.contains("remaining 500 hours"));
+    let second = notes(&rows[1]);
+    assert!(second.contains("fired_event_names membership: 2"));
+    assert!(!second.contains("delayed"));
+    assert!(!second.contains("Pending event instances"));
 }

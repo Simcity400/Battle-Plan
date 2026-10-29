@@ -670,7 +670,6 @@ fn prepared_feed_pages_reach_late_facts_past_their_read_and_keep_live_cutoffs() 
                     nuke_type: None,
                     script: None,
                     occurrence: None,
-                    sections: Vec::new(),
                     item: None,
                 },
             )
@@ -2044,7 +2043,7 @@ fn mutable_surrender_targets_keep_event_and_decision_edges_and_their_exact_charg
 }
 
 #[test]
-fn retained_observations_publish_each_part_once_and_read_back_whole() {
+fn retained_observations_read_back_as_made() {
     use super::super::native::{Projection, tests::retained_packs};
     let flag = AtomicBool::new(false);
     let frames: Vec<DecodedFrame> = retained_packs()
@@ -2077,7 +2076,7 @@ fn retained_observations_publish_each_part_once_and_read_back_whole() {
         value
     };
     let expected: Vec<_> = builder.feed.rows.iter().map(without_id).collect();
-    assert_eq!(expected.len(), 4);
+    assert_eq!(expected.len(), 2);
     let mut fixture = Fixture::new();
     let mut sources = None;
     let mut seen = Vec::new();
@@ -2127,16 +2126,11 @@ fn retained_observations_publish_each_part_once_and_read_back_whole() {
         served.into_iter().map(without_id).collect::<Vec<_>>(),
         expected
     );
-    // Each part is published once per version: four at the first read, then
-    // the timer, the fired set and the timer, and the timer.
-    let parts: Vec<Vec<String>> = rows(&fixture, "event-feed-facts-1", &[SECTIONS], &flag);
-    assert_eq!(parts.len(), 8);
     let facts: Vec<Fact> = rows(
         &fixture,
         "event-feed-facts-1",
         &[EventFeedKind::ScriptStateObserved as u64],
         &flag,
     );
-    assert_eq!(facts.len(), 4);
-    assert!(facts.iter().all(|fact| fact.sections.len() == 4));
+    assert_eq!(facts.len(), 2);
 }

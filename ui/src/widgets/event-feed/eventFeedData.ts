@@ -184,7 +184,7 @@ function actionSentence(at: FeedEvent, stateName: StateName): SentencePart[] {
     case 'decisionCancellationEffect': return single(` ran cancellation effects for ${named}`);
     case 'decisionCompletionEffect': return single(` ran completion effects for ${named}`);
     case 'decisionTimeoutEffect': return single(` ran deadline effects for ${named}`);
-    case 'scriptStateObserved': return [{ text: 'Retained script state observed' }];
+    case 'scriptStateObserved': return [{ text: 'Retained script state changed' }];
     case 'decisionRosterRebuilt': return single(' rebuilt the decision roster');
     case 'decisionDurationChanged': return single(` updated the duration of ${named}`);
     case 'warDeclared': return words(' declared war on ');

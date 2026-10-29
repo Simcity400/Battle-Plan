@@ -14,9 +14,95 @@ use replay_data::event_feed_rows::{
     },
 };
 use std::{cell::RefCell, rc::Rc};
+
+/// Decision tokens are written as JSON text when they are UTF-8, as their bytes otherwise.
+mod token {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(token: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        match std::str::from_utf8(token) {
+            Ok(text) => serializer.serialize_str(text),
+            Err(_) => serializer.collect_seq(token),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        Ok(match Read::deserialize(deserializer)? {
+            Read::Text(text) => text.into_bytes(),
+            Read::Bytes(bytes) => bytes,
+        })
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Text(String),
+        Bytes(Vec<u8>),
+    }
+
+    /// A token in a list.
+    pub(super) struct Text<'a>(pub &'a [u8]);
+    impl Serialize for Text<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serialize(self.0, serializer)
+        }
+    }
+    pub(super) struct Owned(pub Vec<u8>);
+    impl<'de> Deserialize<'de> for Owned {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserialize(deserializer).map(Self)
+        }
+    }
+
+    /// Ignored decisions' tokens.
+    pub(super) mod list {
+        use super::*;
+        pub(in super::super) fn serialize<S: Serializer>(
+            tokens: &[Vec<u8>],
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(tokens.iter().map(|token| Text(token)))
+        }
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<Vec<u8>>, D::Error> {
+            Ok(Vec::<Owned>::deserialize(deserializer)?
+                .into_iter()
+                .map(|token| token.0)
+                .collect())
+        }
+    }
+
+    /// Description counts: each decision's token, target word and count.
+    pub(super) mod counts {
+        use super::*;
+        pub(in super::super) fn serialize<S: Serializer>(
+            counts: &[(Vec<u8>, i32, i32)],
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(
+                counts
+                    .iter()
+                    .map(|(token, target, count)| (Text(token), target, count)),
+            )
+        }
+        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Vec<(Vec<u8>, i32, i32)>, D::Error> {
+            Ok(Vec::<(Owned, i32, i32)>::deserialize(deserializer)?
+                .into_iter()
+                .map(|(token, target, count)| (token.0, target, count))
+                .collect())
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct Member {
     container: u8,
+    #[serde(with = "token")]
     token: Vec<u8>,
     state: i32,
     days: i32,
@@ -32,8 +118,9 @@ pub(super) struct Inputs {
     political_power: Option<i64>,
     override_admission: Option<bool>,
     members: Vec<Member>,
-    candidates: Vec<(u8, Vec<u8>, u32, u32)>,
+    #[serde(with = "token::list")]
     ignored: Vec<Vec<u8>>,
+    #[serde(with = "token::counts")]
     random: Vec<(Vec<u8>, i32, i32)>,
     countries: Vec<([u32; 3], Option<u32>)>,
 }
@@ -68,7 +155,6 @@ impl Inputs {
                 .and_then(|script| script.lifecycle)
                 .map(|value| value != 0),
             members,
-            candidates: state.candidates.iter().cloned().collect(),
             ignored: state.ignored.iter().cloned().collect(),
             random: state
                 .random_counts
@@ -481,7 +567,6 @@ mod tests {
             political_power: Some(100 * 100_000),
             override_admission: Some(false),
             members: Vec::new(),
-            candidates: Vec::new(),
             ignored: Vec::new(),
             random: Vec::new(),
             countries: Vec::new(),

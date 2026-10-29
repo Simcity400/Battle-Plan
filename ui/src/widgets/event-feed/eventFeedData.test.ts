@@ -358,7 +358,7 @@ test('retained script state is inspectable at read time without native occurrenc
   });
   const data = validateEventFeedReply(reply([observed]));
   const at = filteredEventRows(data, { ...all, allCountries: true })[0].item;
-  assert.equal(eventDescription(at, tag => tag), 'Retained script state observed');
+  assert.equal(eventDescription(at, tag => tag), 'Retained script state changed');
   const tooltip = eventTooltip(at, tag => tag)[0];
   assert.ok(tooltip.rows.some(value => value.label.includes('due hour 999')));
   assert.ok(tooltip.rows.some(value => value.label.includes('no recorded fire time')));

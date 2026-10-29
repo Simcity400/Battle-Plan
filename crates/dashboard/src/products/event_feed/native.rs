@@ -27,37 +27,11 @@ pub(super) struct Projection {
     script_state: replay_data::event_feed_rows::state::ScriptEventState,
     /// The branch's recorded event losses, as the reads each lies between.
     event_losses: Vec<(i32, i32)>,
-    /// The retained state's parts as the last observation listed them.
+    /// The retained state's parts as the last observation saw them.
     #[serde(default)]
     sections: retained::Sections,
-    /// Retained observations whose state parts are published apart, by row.
-    #[serde(skip)]
-    deferred: Option<std::collections::BTreeMap<String, Vec<retained::Slot>>>,
 }
 impl Projection {
-    /// Leave each retained observation's state parts to [`Self::sections`].
-    pub(super) fn defer_sections(&mut self) {
-        self.deferred.get_or_insert_with(Default::default);
-    }
-    /// The ordinals of `row`'s state parts, in order, publishing with
-    /// `publish` each part whose notes were not published as they are.
-    pub(super) fn sections(
-        &mut self,
-        row: &str,
-        mut publish: impl FnMut(&[String]) -> io::Result<u64>,
-    ) -> io::Result<Vec<u64>> {
-        let Some(slots) = self
-            .deferred
-            .as_mut()
-            .and_then(|deferred| deferred.remove(row))
-        else {
-            return Ok(Vec::new());
-        };
-        slots
-            .iter()
-            .map(|slot| self.sections.ordinal(slot, &mut publish))
-            .collect()
-    }
     pub(super) fn losses(&mut self, replay: &Replay, branch: u64) {
         self.event_losses = replay.event_losses(branch).collect();
     }
@@ -378,7 +352,6 @@ impl Projection {
             pack,
             &self.script_state,
             &mut self.sections,
-            self.deferred.as_mut(),
             &mut tag_at,
         )?;
         Ok(())
