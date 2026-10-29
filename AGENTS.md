@@ -17,7 +17,6 @@
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
 - Compile on Boat, not this machine, with `tools/boat.py` from inside your worktree: `python tools/boat.py check --all-targets -p <crate>...` (or `--workspace`), `python tools/boat.py ui`, and `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>` for release binaries. It uploads the worktree's current source, picks, isolates and stops the VM, and passes Cargo's exit code through. Don't drive `boat` by hand or pass `-j`. Check only the affected crates.
 - Exit 75 means Boat itself failed: run it on Boat again, never locally.
-- Compare benchmarks only between binaries built the same way.
 - Only do compile checks once PR is ready to merge, not as you go.
 
 ## Where things are
@@ -57,7 +56,7 @@
 - The only thing that disturbs a benchmark is a local cargo build or check, so never run one outside the daily tests: compile on Boat.
 - If a single test holds up the daily run for more than an hour, stop the run.
 - A fresh checkout can start from the shared build: `python tools/warm_target.py warm --root warm-start\seed`.
-- Otherwise, only stop processes you started. Never touch other sessions' work.
+- Otherwise, only stop processes you started. Never change or delete other sessions' work.
 - Put captures and scratch files in `captures\<name>\`, never in Git.
 - Never use plain `git stash`; the stash is shared.
 
