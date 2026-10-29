@@ -954,6 +954,36 @@ fn variant_span_advance_requires_a_full_country_comparison_at_the_next_read() {
     );
 }
 
+#[test]
+fn a_catalogue_counts_the_operands_its_changed_reads_keep_and_each_view_once() {
+    use crate::prepared::{frame_changes::FrameChanges, prepass::HeldBytes};
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let mut input = named_frame(117, Some(b"mod design"));
+    input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+    let mut whole = VariantCatalogue::default();
+    whole.observe(format, &input);
+    let mut changed = VariantCatalogue::default();
+    changed.observe_changed(format, &input, &FrameChanges::alone(&input, format));
+    let held = |catalogue: &VariantCatalogue| {
+        let mut bytes = HeldBytes::default();
+        bytes.heap(catalogue);
+        bytes.total()
+    };
+    let definitions = changed
+        .reads
+        .definitions
+        .as_ref()
+        .expect("kept definitions");
+    let mut view = HeldBytes::default();
+    view.view(definitions);
+    assert!(held(&changed) >= held(&whole) + view.total());
+    let mut frame = HeldBytes::default();
+    frame.frame(&input);
+    let mut both = HeldBytes::default();
+    both.frame(&input).heap(&changed);
+    assert!(both.total() - frame.total() <= held(&changed) - view.total());
+}
+
 fn pending_variant_operands(count: u32) {
     use crate::prepared::frame_changes::FrameChangeTracker;
     use replay_data::rows::{CountryAppearanceRow, CountryLinkRow};

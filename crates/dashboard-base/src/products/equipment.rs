@@ -7,7 +7,12 @@
 pub mod designs;
 pub mod production;
 
-use crate::{Source, catalogue::Catalogue, metadata::slot_read};
+use crate::{
+    Source,
+    catalogue::Catalogue,
+    metadata::slot_read,
+    prepared::prepass::{Held, HeldBytes},
+};
 use replay_data::{
     rows::LexicalTokenRow, rows::TableId, rows::VariantDefinitionRow, rows::VariantModuleRow,
     rows::VariantUpgradeRow, rows::tables,
@@ -252,6 +257,64 @@ impl VariantInput {
                     .flat_map(|(_, upgrades)| upgrades.iter())
                     .map(|row| row.definition_token as u32),
             )
+    }
+}
+
+impl Held for VariantInput {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.definition).heap(&self.design);
+    }
+}
+
+impl Held for VariantReads {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.keys)
+            .heap(&self.links)
+            .heap(&self.appearance)
+            .heap(&self.definitions)
+            .heap(&self.modules)
+            .heap(&self.upgrades)
+            .heap(&self.inputs)
+            .heap(&self.pending)
+            .heap(&self.token_variants)
+            .heap(&self.country_tags)
+            .heap(&self.original_tags)
+            .heap(&self.tag_links)
+            .heap(&self.tag_slots)
+            .heap(&self.original_slots);
+        if let Some((_, spellings)) = &self.lexical {
+            bytes.heap(spellings);
+        }
+    }
+}
+
+impl Held for RawVariant {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.token)
+            .heap(&self.display_name)
+            .heap(&self.suffix)
+            .heap(&self.name_tag)
+            .heap(&self.type_tag)
+            .heap(&self.design)
+            .heap(&self.refusals);
+    }
+}
+
+impl Held for VariantVersion {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.raw);
+    }
+}
+
+/// Its versions and the operands its changed reads keep, each shared view once.
+impl Held for VariantCatalogue {
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .heap(&self.versions)
+            .heap(&self.known)
+            .heap(&self.reads);
     }
 }
 

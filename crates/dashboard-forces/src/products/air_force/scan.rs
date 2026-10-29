@@ -802,7 +802,7 @@ impl Scan {
                         | replay_frame::frame::TableView::Truncated { rows, .. } => rows.len(), _ => 0 }).sum::<usize>();
             }
         }
-        self.step(frame, decoded, format, cancelled)?;
+        self.step(frame, decoded, format, cancelled, changes)?;
         self.applied = Some(decoded.hour);
         self.rates = [
             self.result.unreadable_owners[0],
@@ -816,12 +816,14 @@ impl Scan {
         }
         Ok(())
     }
+    /// One hour; with its change facts, the variants read only what changed.
     pub(super) fn step(
         &mut self,
         frame: &(impl replay_frame::frame::FrameSource + ?Sized),
         decoded: &DecodedFrame,
         format: replay_data::format::FormatVersion,
         cancelled: &AtomicBool,
+        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
     ) -> io::Result<()> {
         let Self {
             histories,
@@ -876,7 +878,12 @@ impl Scan {
         *names_settled |= gap || read || !complete;
         let check_names = !continuous || complete != *definitions_complete || read;
         *definitions_complete = complete;
-        variants.observe(format, decoded);
+        match changes {
+            Some(changes) => {
+                let _ = variants.observe_changed(format, decoded, changes);
+            }
+            None => variants.observe(format, decoded),
+        }
         let names_changed = if check_names {
             let mut changed = false;
             if complete
@@ -1035,7 +1042,7 @@ pub(super) fn scan_with_decode(
                     if validate_campaign(decoded, replay).is_err() {
                         break;
                     }
-                    observer.step(&frame, decoded, replay.format, cancelled)?;
+                    observer.step(&frame, decoded, replay.format, cancelled, None)?;
                 }
             }
             Ok(())
@@ -1390,14 +1397,11 @@ fn carry_track(carried: &mut Track, extracted: Track, opened: bool, hour: i32) {
 }
 
 /// What a block extract keeps of an air census ([`Held`]): its tracks, runs
-/// and counts (each shared count once), its census, variant names and country
-/// join, and its tail's decision.
+/// and counts (each shared count once), its census, variant catalogue (with the
+/// operands its changed reads keep) and country join, and its tail's decision.
 mod held {
     use super::*;
-    use dashboard_base::{
-        prepared::prepass::{Held, HeldBytes},
-        products::equipment::VariantVersion,
-    };
+    use dashboard_base::prepared::prepass::{Held, HeldBytes};
 
     impl Held for Counts {
         fn held(&self, bytes: &mut HeldBytes) {
@@ -1471,24 +1475,6 @@ mod held {
         }
     }
 
-    /// A variant catalogue's versions and their names.
-    fn variants(variants: &VariantCatalogue, bytes: &mut HeldBytes) {
-        bytes.tree::<u64, Vec<VariantVersion>>(variants.versions.len());
-        for versions in variants.versions.values() {
-            bytes.add(versions.capacity() * size_of::<VariantVersion>());
-            for raw in versions.iter().filter_map(|version| version.raw.as_ref()) {
-                bytes
-                    .heap(&raw.token)
-                    .heap(&raw.display_name)
-                    .heap(&raw.suffix)
-                    .heap(&raw.name_tag)
-                    .heap(&raw.type_tag)
-                    .heap(&raw.design)
-                    .heap(&raw.refusals);
-            }
-        }
-    }
-
     impl Held for Scan {
         fn held(&self, bytes: &mut HeldBytes) {
             bytes
@@ -1497,10 +1483,8 @@ mod held {
                 .heap(&self.variant_tokens)
                 .heap(&self.counts_pool)
                 .heap(&self.countries.tags)
-                .heap(&self.census);
-            if let Some(catalogue) = &self.variants {
-                variants(catalogue, bytes);
-            }
+                .heap(&self.census)
+                .heap(&self.variants);
         }
     }
 

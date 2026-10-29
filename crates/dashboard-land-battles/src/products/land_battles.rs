@@ -809,7 +809,13 @@ impl Census {
         // Expand older accepted reads before setting this batch's first hour.
         // In particular, a restored carry can precede this supplying frame.
         self.available |= frame_available(self.format, frame);
-        self.variants.observe(self.format, frame);
+        // With the hour's change facts the variants read only what changed.
+        match changes {
+            Some(changes) => {
+                let _ = self.variants.observe_changed(self.format, frame, changes);
+            }
+            None => self.variants.observe(self.format, frame),
+        }
         let update = self.links.update(frame);
         let labels = update.is_ok();
         let links_changed = labels != self.labels_known || matches!(update, Ok(true));

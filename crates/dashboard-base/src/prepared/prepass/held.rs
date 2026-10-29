@@ -132,6 +132,10 @@ macro_rules! rows {
 
 rows!(
     replay_data::rows::CountryRow,
+    replay_data::rows::CountryAppearanceRow,
+    replay_data::rows::VariantDefinitionRow,
+    replay_data::rows::VariantModuleRow,
+    replay_data::rows::VariantUpgradeRow,
     replay_data::rows::PoliticsCaptureCoverageRow,
     replay_data::rows::WarRelationRow,
     replay_data::rows::WarOverviewCountryRow,
