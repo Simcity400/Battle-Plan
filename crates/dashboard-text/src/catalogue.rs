@@ -563,6 +563,11 @@ impl OwnRefusals {
         &self.fallbacks
     }
 
+    /// The lazy readers the consumer used, whose warnings its lines carry.
+    pub fn readers(&self) -> &BTreeSet<Reader> {
+        &self.readers
+    }
+
     /// Whether the consumer noted a text refusal, or was credited one a memo noted: either way
     /// one its catalogue's shared tally holds once first noted.
     pub fn refuses_texts(&self) -> bool {
@@ -1178,6 +1183,19 @@ impl Catalogue {
     /// Whether everything [`Self::reader_warning_lines`] reports once read has been read: the
     /// scripted content with its environment, the states and the faction templates. No
     /// consumer's read can add to those warnings any more.
+    /// Whether what a consumer that used `readers` reports of them is settled, the same whenever
+    /// it is asked: a consumer of state templates reports the scripted environment's state
+    /// warnings only once something has prepared that environment ([`Self::read_readers`]);
+    /// scripted localisation and faction templates are read for the consumer that asks.
+    pub fn reports_settled(&self, readers: &BTreeSet<Reader>) -> bool {
+        !readers.contains(&Reader::States)
+            || match self.scripted.get() {
+                None => false,
+                Some(Ok(scripted)) => scripted.environment.get().is_some(),
+                Some(Err(_)) => true,
+            }
+    }
+
     pub fn readers_read(&self) -> bool {
         let scripted = match self.scripted.get() {
             None => false,

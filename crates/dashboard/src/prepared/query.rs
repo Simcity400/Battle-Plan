@@ -102,6 +102,8 @@ struct CachedQuery {
     /// Whether computing `data` added to state of the whole session, which no key captures:
     /// the content's fallbacks or drawing diagnostics.
     session: bool,
+    /// The lazy readers computing `data` used, whose warnings it names.
+    readers: std::collections::BTreeSet<dashboard_text::catalogue::Reader>,
 }
 
 /// Whether the content bound for `content` holds a drawing diagnostic. Memoised artwork replays
@@ -126,6 +128,7 @@ thread_local! {
 struct StoredQuery {
     data: Value,
     fallbacks: std::collections::BTreeSet<String>,
+    readers: std::collections::BTreeSet<dashboard_text::catalogue::Reader>,
 }
 
 /// A digest of `key`, which kept answers are filed under. The key stamps every file of the
@@ -3092,6 +3095,7 @@ pub fn query(
             // noted: an answer that noted one, served from disk, would leave it out of them.
             session: !fallbacks.is_empty() || drawn(source, content),
             fallbacks,
+            readers: noted.readers().clone(),
         })
     };
     // A complete answer kept on disk between sessions, else computed and kept when it can be.
@@ -3101,20 +3105,23 @@ pub fn query(
         // Content read outside the recorded coverage is reported on every reply, so no answer is
         // served from or kept on disk while the read set holds any.
         let covered = || !source.reply_reads_uncovered(content);
-        // Computing reads what the catalogue has not read yet, whose warnings other replies then
-        // report: a kept answer is served once nothing is left unread.
-        let ready = || {
-            content
-                .and_then(|content| dashboard_base::catalogue::catalogue(source, content).ok())
-                .is_some_and(|catalogue| catalogue.readers_read())
+        // What an answer reports of the lazy readers it used, kept and served only once it is
+        // what computing it now would report.
+        let settled = |readers: &std::collections::BTreeSet<dashboard_text::catalogue::Reader>| {
+            readers.is_empty()
+                || content
+                    .and_then(|content| {
+                        dashboard_base::catalogue::catalogue(source, content).ok()
+                    })
+                    .is_some_and(|catalogue| catalogue.reports_settled(readers))
         };
         let stored = stored_answer(source, request, content, &store, &key, &publication)?;
         if covered()
-            && ready()
             && let Some(kept) = stored
                 .as_ref()
                 .and_then(crate::reply_cache::Entry::get)
                 .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
+            && settled(&kept.readers)
         {
             return Ok(CachedQuery {
                 data: kept.data,
@@ -3122,6 +3129,7 @@ pub fn query(
                 summaries: Default::default(),
                 fallbacks: kept.fallbacks,
                 session: false,
+                readers: kept.readers,
             });
         }
         let answer = read(previous)?;
@@ -3132,12 +3140,14 @@ pub fn query(
             && answer.short.is_empty()
             && !waits(&answer.data)
             && !answer.session
+            && settled(&answer.readers)
             && covered()
             && content.is_none_or(|content| source.still_admitted(content))
         {
             let kept = StoredQuery {
                 data: answer.data.clone(),
                 fallbacks: answer.fallbacks.clone(),
+                readers: answer.readers.clone(),
             };
             let bytes = dashboard_base::prepared::query::observations::json_bytes(&kept.data);
             entry.put_later(bytes, move || serde_json::to_string(&kept).ok());
