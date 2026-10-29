@@ -33,6 +33,13 @@ struct FocusPoint {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FocusCompletions {
+    branch_id: String,
+    tag: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FocusUnavailable {
     branch_id: String,
     hour: i32,
@@ -2006,6 +2013,39 @@ fn query_data(
             )?
             .mark(&mut data)?;
             data
+        }
+        "focus-completions" => {
+            let params: FocusCompletions = serde_json::from_value(request.params.clone())?;
+            crate::products::validate_tag(&params.tag).map_err(crate::invalid)?;
+            let branch = branch(source, &params.branch_id)?;
+            // The whole branch's completions, as the national focus history holds them: only
+            // once the family has prepared all of it.
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
+                return Ok(Value::Null);
+            }
+            serde_json::json!({
+                "completions": crate::prepared_focus::completions(
+                    &store,
+                    &key,
+                    branch,
+                    &params.tag,
+                    cancelled,
+                )?,
+                // The history's own, which serving joins the content's diagnostics.
+                "warnings": crate::prepared_focus::art::standing_warnings(
+                    source,
+                    content,
+                    cancelled,
+                )?,
+            })
         }
         "focus-unavailable" => {
             let params: FocusUnavailable = serde_json::from_value(request.params.clone())?;

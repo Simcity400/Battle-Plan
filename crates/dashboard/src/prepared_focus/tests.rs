@@ -410,6 +410,47 @@ fn chain_dates_order_segments_and_gain_match_focus_history() {
     }));
 }
 
+/// A country's prepared completions are the dated completions of every order its whole-branch
+/// history holds, each once, through completions, a reset and an identity replacement.
+#[test]
+fn completions_are_the_dated_completions_of_every_order_the_history_holds() {
+    let replay = scenario();
+    let prepared = prepared(replay);
+    let cancelled = AtomicBool::new(false);
+    let replay = prepared.source.replay();
+    let tags: std::collections::BTreeSet<_> = prepared
+        .frames
+        .iter()
+        .flat_map(|frame| {
+            frame
+                .complete::<replay_data::rows::tables::Countries>()
+                .unwrap()
+        })
+        .map(|country| String::from_utf8(country.tag.clone()).unwrap())
+        .collect();
+    let key = |entry: &FocusEntry| (entry.completed_by_hour, entry.ordinal, entry.token.clone());
+    let mut dated = 0;
+    for tag in &tags {
+        let history =
+            crate::products::national_focus::focus_history(&replay, 1, tag, &cancelled).unwrap();
+        let expected: Vec<FocusEntry> = history
+            .segments
+            .iter()
+            .flat_map(|segment| &segment.order.completed)
+            .filter(|entry| entry.completed_by_hour.is_some())
+            .map(|entry| (key(entry), entry.clone()))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
+        let mut actual =
+            completions(&prepared.store, &prepared.key, 1, tag, &cancelled).unwrap();
+        actual.sort_by_key(key);
+        assert_eq!(actual, expected, "{tag}");
+        dated += actual.len();
+    }
+    assert!(dated >= 8, "{dated} dated completions checked");
+}
+
 #[test]
 fn sampled_focus_has_the_prepared_order_and_values_without_invented_dates() {
     let prepared = prepared(scenario());

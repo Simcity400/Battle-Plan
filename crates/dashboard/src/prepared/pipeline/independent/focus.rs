@@ -33,7 +33,12 @@ impl Own for Focus {
     }
 
     fn gates(&self) -> &'static [&'static str] {
-        &["focus-hour", "focus-unavailable", "focus-order-page"]
+        &[
+            "focus-hour",
+            "focus-unavailable",
+            "focus-order-page",
+            "focus-completions",
+        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

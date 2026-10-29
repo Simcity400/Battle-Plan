@@ -1447,7 +1447,9 @@ pub mod art;
 pub(crate) mod family;
 mod query;
 pub use art::{FocusArt, FocusArtFailure, FocusArtMode, FocusArtParams, FocusArtReply};
-pub use query::{order_page, query_hour, query_unavailable, sampled_hour, sampled_page};
+pub use query::{
+    completions, order_page, query_hour, query_unavailable, sampled_hour, sampled_page,
+};
 
 /// The runner unions these inputs with scripted-text inputs and Clock before decoding.
 pub const TABLES: &[TableId] = crate::products::national_focus::FOCUS_COMPLETION_TABLES;

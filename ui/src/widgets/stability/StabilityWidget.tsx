@@ -53,14 +53,15 @@ import { stabilityMarkers } from './markers';
 import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { MarkerKind } from './markers';
-import type { FocusReply, PartyHistoryReply } from '../../generated/dashboard';
+import type { PartyHistoryReply } from '../../generated/dashboard';
 import { usePreparedIdeaHistory } from '../../dashboard/ideaHistory';
 import { validatePartyHistoryReply, partyBadges } from '../ruling-party/partyData';
 import { contentTitle } from '../../dashboard/contentTitles';
 import PartyEventList from '../ruling-party/PartyEventList';
 import { partyMarkSummaries, usePreparedParty } from '../ruling-party/preparedParty';
 import { usePartyParity } from '../ruling-party/partyParity';
-import { validateFocusReply } from '../national-focus/focusData';
+import type { FocusPreparedClient } from '../national-focus/preparedFocusData';
+import { useFocusMarks } from './focusMarks';
 import { breakdownRows, formatPercent, linesPerMeasure, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
 import { chooseStabilityActor, pickStabilityLine, pinStabilityDrill, stabilityNumbers, stabilityPartsNumbers, stabilityPickAction, stabilityPlotSeries, stabilityLookSegments, stabilityCountryParts } from './stabilityDrillData';
@@ -218,7 +219,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const partyEvents = (reply:PartyHistoryReply | undefined) => reply ? partyBadges(reply,token=>contentTitle(reply.ideologies.find(item=>item.token===token)?.name,token,'Ideology name unavailable')).filter(badge=>badge.glyph!=='\u2713' && partyMember(badge.hour)) : [];
   const partyPageBadges = partyEvents(preparedParties.events?.reply).map(badge=>({...badge,glyph:'\u2699'}));
   const partyReachedBadges = partyEvents(preparedParties.reached?.reply).map(badge=>({...badge,glyph:'\u2699'}));
-  const markerFocus = useProduct<FocusReply>(runtime.client, kinds.has('focus') ? markerRequest('national-focus') : null, active, validateFocusReply);
+  const markerFocus = useFocusMarks(runtime.client as FocusPreparedClient, track, kinds.has('focus') ? markerTag ?? undefined : undefined, active);
   // The idea history of the marker country itself (a group may resolve to another country).
   const markerIdeas = usePreparedIdeaHistory(runtime.client, track, kinds.has('government') ? markerTag ?? undefined : undefined, track?.branch.lastHour, false, active);
   const factionOverrides = campaignSettings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;

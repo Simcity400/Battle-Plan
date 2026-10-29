@@ -1,6 +1,6 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 import type { EventBadge } from '../../charts/badges';
-import type { Artwork, CountryGroupReply, FactionGroup, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
+import type { Artwork, CountryGroupReply, FactionGroup, FocusEntry, FocusReply, HourSpan, IdeaHistoryReply, PartyHistoryReply } from '../../generated/dashboard';
 import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import type { FactionName } from '../../dashboard/factionNames';
 import { provisionalGroupEvent } from '../../dashboard/countryCapitulations.ts';
@@ -33,10 +33,18 @@ export interface MarkerSources {
   factionName?: (faction: FactionGroup, hour: number) => FactionName;
   ideas?: IdeaHistoryFirstView;
   parties?: PartyHistoryReply;
-  focus?: FocusReply;
+  focus?: FocusMarks;
   /** Scoped titles at each completion's observation hour: null when none, undefined while reading. */
   focusName?: (token: string, hour: number) => string | null | undefined;
 }
+
+/** A country's completed focuses, each as an order listed it, and their static text: the focus
+ * history's (`historyMarks`) or preparation's (`useFocusMarks`). */
+export interface FocusMarks { completed: readonly FocusEntry[]; staticText?: readonly Artwork[] }
+
+/** Every order the focus history holds, as its completions. */
+export const historyMarks = (reply: FocusReply): FocusMarks =>
+  ({ completed: reply.history.segments.flatMap(segment => segment.order.completed), staticText: reply.staticText });
 
 const inSpans = (spans: readonly HourSpan[], hour: number) => spans.some(span => span.firstHour <= hour && hour <= span.lastHour);
 
@@ -166,20 +174,18 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
     // seen at the same hour, is two events). The hour is the first read that saw it
     // completed, and reads are not hourly, so it is always a bound, never exact.
     const seen = new Set<string>();
-    for (const segment of focus.history.segments) {
-      for (const entry of segment.order.completed) {
-        const occurrence = `${entry.token}#${entry.ordinal}#${entry.completedByHour}`;
-        if (entry.completedByHour == null || seen.has(occurrence)) continue;
-        seen.add(occurrence);
-        const hour = entry.completedByHour;
-        push('focus', hour, () => {
-          // A static title is the text every dated read gives, so only scoped titles are read.
-          const known = names.get(entry.token) ?? null;
-          const read = known === null ? sources.focusName?.(entry.token, hour) : undefined;
-          const name = known ?? read;
-          return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', known === null && read === undefined && sources.focusName !== undefined)} (completed by then)`;
-        });
-      }
+    for (const entry of focus.completed) {
+      const occurrence = `${entry.token}#${entry.ordinal}#${entry.completedByHour}`;
+      if (entry.completedByHour == null || seen.has(occurrence)) continue;
+      seen.add(occurrence);
+      const hour = entry.completedByHour;
+      push('focus', hour, () => {
+        // A static title is the text every dated read gives, so only scoped titles are read.
+        const known = names.get(entry.token) ?? null;
+        const read = known === null ? sources.focusName?.(entry.token, hour) : undefined;
+        const name = known ?? read;
+        return `Focus: ${contentTitle(name, entry.token, 'Focus name unavailable', known === null && read === undefined && sources.focusName !== undefined)} (completed by then)`;
+      });
     }
   }
   return badges.sort((a, b) => a.hour - b.hour || a.label.localeCompare(b.label));

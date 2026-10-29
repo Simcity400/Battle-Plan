@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, FocusReply, IdeaHistoryReply } from '../../generated/dashboard';
-import { stabilityMarkers } from './markers.ts';
+import { historyMarks, stabilityMarkers } from './markers.ts';
 import type { MarkerKind } from './markers.ts';
 
 const ALL = new Set<MarkerKind>(['wars', 'factions', 'government', 'focus']);
@@ -51,7 +51,7 @@ test('laws and advisors taken on while recorded are government changes; focuses 
   } as unknown as IdeaHistoryReply;
   const focus = { warnings: [], artwork: [], staticText: [{ token: 'GER_rhineland', name: 'Rhineland', description: null, baseDurationDays: null, icon: null }],
     history: { progress: [], segments: [{ firstHour: 0, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'GER_rhineland', completedByHour: 50 }, { ordinal: 1, token: 'GER_old', completedByHour: null }], current: null, continuous: null, paused: false } }] } } as unknown as FocusReply;
-  const badges = stabilityMarkers({ ...base, ideas, focus }, ALL);
+  const badges = stabilityMarkers({ ...base, ideas, focus: historyMarks(focus) }, ALL);
   // The branch-start law and the one after an unrecorded hour are not changes.
   assert.deepEqual(badges.map(badge => [badge.hour, badge.glyph, badge.label]), [
     [50, '★', 'Focus: Rhineland (completed by then)'],
@@ -61,11 +61,11 @@ test('laws and advisors taken on while recorded are government changes; focuses 
   assert.ok(badges.every(badge => !badge.approximate), 'exact idea spans give exact markers');
   // Only a focus without a static title asks for its dated title.
   const asked: string[] = [];
-  const read = stabilityMarkers({ ...base, focus, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
+  const read = stabilityMarkers({ ...base, focus: historyMarks(focus), focusName: (token, hour) => { asked.push(`${token}@${hour}`); return 'Dated'; } }, new Set(['focus']));
   assert.deepEqual(read.map(badge => badge.label), ['Focus: Rhineland (completed by then)']);
   assert.equal(asked.length, 0);
   const scoped = { ...focus, staticText: [{ ...focus.staticText![0], name: null }] } as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, focus: scoped, focusName: (token, hour) => { asked.push(`${token}@${hour}`); return undefined; } }, new Set(['focus']))
+  assert.deepEqual(stabilityMarkers({ ...base, focus: historyMarks(scoped), focusName: (token, hour) => { asked.push(`${token}@${hour}`); return undefined; } }, new Set(['focus']))
     .map(badge => badge.label), ['Focus: Loading name… (completed by then)']);
   assert.deepEqual(asked, ['GER_rhineland@50']);
   // Lanes sampled beyond prepared coverage date their changes only approximately.
@@ -116,13 +116,16 @@ test('a continuing advisor, a shared founding and a repeated focus are read hone
     { firstHour: 0, lastHour: 150, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }], current: null, continuous: null, paused: false } },
     { firstHour: 151, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }], current: null, continuous: null, paused: false } },
   ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
+  assert.deepEqual(stabilityMarkers({ ...base, extent: [150, 1000], focus: historyMarks(focus) }, ALL).map(badge => [badge.hour, badge.label]), [[200, 'Focus: Focus name unavailable (completed by then)']]);
+  // Preparation lists each dated completion once; the history repeats it in every later order.
+  const completions = { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 100 }, { ordinal: 1, token: 'repeatable', completedByHour: 200 }] };
+  assert.deepEqual(stabilityMarkers({ ...base, focus: completions }, ALL), stabilityMarkers({ ...base, focus: historyMarks(focus) }, ALL));
   // Two completions seen at one hour after a gap: both kept, each marked as a bound.
   const twice = { warnings: [], artwork: [], history: { progress: [], segments: [
     { firstHour: 0, lastHour: 99, order: { completed: [], current: null, continuous: null, paused: false } },
     { firstHour: 300, lastHour: 1000, order: { completed: [{ ordinal: 0, token: 'repeatable', completedByHour: 300 }, { ordinal: 1, token: 'repeatable', completedByHour: 300 }], current: null, continuous: null, paused: false } },
   ] } } as unknown as FocusReply;
-  assert.deepEqual(stabilityMarkers({ ...base, focus: twice }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
+  assert.deepEqual(stabilityMarkers({ ...base, focus: historyMarks(twice) }, ALL).map(badge => badge.label), ['Focus: Focus name unavailable (completed by then)', 'Focus: Focus name unavailable (completed by then)']);
   // A law continuing across a change of country identity is no new law.
   const kept = { ...ideas, holders: [], spans: [
     { token: 'law', firstHour: 0, lastHour: 149, slot: 'economy', character: null }, { token: 'law', firstHour: 150, lastHour: 300, slot: 'economy', character: null }],

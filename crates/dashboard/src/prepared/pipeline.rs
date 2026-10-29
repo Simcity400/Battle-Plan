@@ -335,6 +335,7 @@ const FAMILIES: &[Family] = &[
             "focus-hour",
             "focus-unavailable",
             "focus-order-page",
+            "focus-completions",
             "event-feed",
         ],
     },

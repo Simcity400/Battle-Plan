@@ -323,6 +323,32 @@ pub fn query_unavailable(
     }))
 }
 
+/// Every completion `tag`'s order gained while it was observed, each dated by the hour that saw
+/// it, by date and ordinal: its completion chain without the undated rows a reset or a first
+/// read publishes. These are the dated completions of every order the national focus history
+/// holds; a country never observed has none.
+pub fn completions(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    tag: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<FocusEntry>> {
+    let Some((actor, mut reader)) = country_reader(store, key, branch, tag, cancelled)? else {
+        return Ok(Vec::new());
+    };
+    let mut entries = Vec::new();
+    reader.each_event(actor + 1, i32::MIN, i32::MAX, &mut |_, row| {
+        let entry: FocusEntry = serde_json::from_slice(row)?;
+        if entry.completed_by_hour.is_some() {
+            entries.push(entry);
+        }
+        Ok(())
+    })?;
+    entries.sort_by_key(|entry| (entry.completed_by_hour, entry.ordinal));
+    Ok(entries)
+}
+
 /// One page of `tag`'s completed focuses at `hour`, read from its completion
 /// chain; `requested` must be the pages `focus-hour` gave for that hour.
 #[allow(clippy::too_many_arguments)]

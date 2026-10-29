@@ -461,6 +461,24 @@ pub fn static_text(
         .collect()
 }
 
+/// The focus content's standing warnings, as the national focus history's reply names them.
+pub fn standing_warnings(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<String>> {
+    check_cancel(cancelled)?;
+    let content = content.ok_or_else(|| {
+        io::Error::other(
+            "Choose the game and user folders for focus titles, icons and descriptions",
+        )
+    })?;
+    let state = source.state::<ArtState>();
+    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    state.0.configure(source, content)?;
+    Ok(state.0.warnings.clone())
+}
+
 /// The event feed's completion art context, which names a definition's icon
 /// and full text as an event shows them.
 #[derive(Default)]
