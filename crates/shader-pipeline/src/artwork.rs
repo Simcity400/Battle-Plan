@@ -150,6 +150,14 @@ pub fn flag_rectangle_mapped(
 /// The byte offset of a masked flag pass's atlas rectangle in b0, after its matrix.
 const FLAG_RECTANGLE: u32 = 64;
 
+/// Creates the renderer on a thread of its own, so the first artwork drawn does not wait while
+/// the graphics driver creates its device, which takes it about a second.
+pub fn warm() {
+    let _ = std::thread::Builder::new()
+        .name("artwork renderer".into())
+        .spawn(|| drop(renderer()));
+}
+
 fn renderer() -> Result<&'static Mutex<Renderer>, String> {
     RENDERER
         .get_or_init(|| Renderer::new().map(Mutex::new))

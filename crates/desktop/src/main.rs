@@ -169,6 +169,7 @@ fn main() {
         );
         return;
     }
+    shader_pipeline::artwork::warm();
     let app = tauri::Builder::default()
         .manage(video::VideoState::default())
         .manage(preparation::PreparationMonitor::default())
