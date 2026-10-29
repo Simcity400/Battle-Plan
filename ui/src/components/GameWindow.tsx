@@ -4,7 +4,7 @@ import { validateProductReply } from '../dashboard/client';
 import type { DashboardClient, ProductRequest } from '../dashboard/client';
 import { useContentRevision } from '../dashboard/contentRevision';
 import WidgetState from './WidgetState';
-import { WHEEL_LINE_PIXELS, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene';
+import { WHEEL_LINE_PIXELS, acknowledgeScroll, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, settledScroll, wheelPixels } from './gameWindowScene';
 import type { ScrolledList } from './gameWindowScene';
 import type { GameWindowParams, GameWindowReply, GameWindowTarget, ListScroll, Scene, SceneHover } from '../generated/dashboard';
 import './GameWindow.css';
@@ -56,6 +56,9 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   const [attempt, retry] = useReducer((count: number) => count + 1, 0);
   const shownKey = useRef<string | null>(null);
   shownKey.current = shown?.key ?? null;
+  // The offsets the wheel has reached that no drawn scene shows yet.
+  const pending = useRef<{ identity: string; offsets: Map<string, ListScroll> }>({ identity, offsets: new Map() });
+  if (pending.current.identity !== identity) pending.current = { identity, offsets: new Map() };
 
   useEffect(() => {
     // Reopened on the window already drawn: nothing to ask.
@@ -72,6 +75,7 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
       if (controller.signal.aborted) return;
       setShown({ identity, key, reply: data });
       setFailure(null);
+      if (pending.current.identity === identity) acknowledgeScroll(pending.current.offsets, lists);
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setFailure({ key, detail: message(error) });
     });
@@ -97,16 +101,15 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   }, [onDiagnostics, active, reply, scene]);
   useEffect(() => () => onDiagnostics?.(NO_LINES), [onDiagnostics]);
 
-  // The offsets the wheel has reached, ahead of the scene drawn at the last settled ones.
-  const pending = useRef<{ identity: string; offsets: Map<string, ListScroll> }>({ identity, offsets: new Map() });
-  if (pending.current.identity !== identity) pending.current = { identity, offsets: new Map() };
   const settle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(settle.current), [identity, active]);
+  // Hidden before the wheel settled, the window keeps the offsets it shows.
+  useEffect(() => () => { clearTimeout(settle.current); pending.current.offsets.clear(); }, [identity, active]);
   const onScroll = useCallback((list: ScrolledList, offset: number) => {
     const owner = pending.current;
     owner.offsets.set(listKey(list), { path: list.path, horizontal: list.horizontal, offset });
     clearTimeout(settle.current);
-    settle.current = setTimeout(() => setScroll({ identity: owner.identity, lists: [...owner.offsets.values()] }), SCROLL_SETTLE_MS);
+    settle.current = setTimeout(() => setScroll(previous => ({ identity: owner.identity,
+      lists: settledScroll(previous.identity === owner.identity ? previous.lists : NO_SCROLL, owner.offsets) })), SCROLL_SETTLE_MS);
   }, []);
   const offsetOf = useCallback((list: ScrolledList, drawn: number) => pending.current.offsets.get(listKey(list))?.offset ?? drawn, []);
 

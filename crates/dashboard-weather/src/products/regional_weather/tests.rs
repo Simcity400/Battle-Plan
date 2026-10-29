@@ -431,6 +431,18 @@ fn show_selects_only_requested_names_and_counts_only_the_selected_witness() {
             .any(|warning| warning
                 == "1 weather modifier histories not shown: regional modifier witness unavailable")
     );
+    // Without a chosen modifier the view shows the catalogue's first, as the widget's default says.
+    let automatic = answer(
+        &fixture,
+        &source,
+        &json!({"branchId":"1","show":"modifier"}),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(automatic["modifiers"][0]["id"], "air_detection");
+    assert_eq!(automatic["window"], refused["window"]);
+    assert_eq!(automatic["warnings"], refused["warnings"]);
     let selected = answer(
         &fixture,
         &source,
@@ -472,7 +484,6 @@ fn show_selects_only_requested_names_and_counts_only_the_selected_witness() {
     assert_eq!(selected["flags"], all["flags"]);
     assert_eq!(selected["modifiers"], all["modifiers"]);
     for bad in [
-        json!({"branchId":"1","show":"modifier"}),
         json!({"branchId":"1","show":"modifier","modifier":"no_such_field"}),
         json!({"branchId":"1","show":"unknown"}),
         json!({"branchId":"1","daily":"true"}),
@@ -912,7 +923,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
     write(
         &overlay,
         "map/strategicregions/mod.txt",
-        "strategic_region={id=7001 name=MOD_TITLE provinces={1 2}} strategic_region={id=7002 name=EMPTY provinces={3}} strategic_region={id=7003 name=MISSING provinces={4}}",
+        "strategic_region={id=7001 name=MOD_TITLE provinces={1 2}} strategic_region={id=7002 name=EMPTY provinces={3}} strategic_region={id=7003 name=MISSING provinces={4}} strategic_region={id=7004 name=EMPTY provinces={}}",
     );
     write(
         &base,
@@ -960,10 +971,11 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
     );
     let params = json!({"branchId":"1", "regions":["73"]});
     let reply = answer(&fixture, &source, &params, None, Some(&options)).unwrap();
+    // Recorded 73 is not a region of the mod's map and 7004 has no provinces: neither is a choice.
     assert_eq!(
         reply["regions"],
         json!([
-            {"id":"73", "name":"Region name unavailable"}, {"id":"7001", "name":"Overlay region"},
+            {"id":"7001", "name":"Overlay region"},
             {"id":"7002", "name":""}, {"id":"7003", "name":"Region name unavailable"},
         ])
     );

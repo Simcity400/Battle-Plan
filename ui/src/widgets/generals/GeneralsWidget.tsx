@@ -35,6 +35,10 @@ const lostValue = (row: LeaderRow) => row.lost;
 const unresolvedValue = (row: LeaderRow) => row.unresolved;
 const winRateValue = (row: LeaderRow) => row.winRate;
 
+/** A battle count from an incomplete history: what was recorded, a lower bound. */
+const partialCount = (row: LeaderRow, count: number) => row.foughtPartial
+  ? <span data-tooltip="Battle counts are incomplete: some battles were not recorded.">≥{count}</span> : count;
+
 export default function GeneralsWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
@@ -50,8 +54,13 @@ export default function GeneralsWidget(props: WidgetProps) {
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const selection = useLeaderCountries(widget, runtime, hour, active);
   const options = resolveOptions(OPTIONS, widget.options);
-  const { data, error, retry } = useLeaders(runtime, widget.trackIds[0], selection.requestSelection, 'leaderboard', active, 'all', hour);
-  const rows = useMemo(() => data && selection.countries !== undefined ? leadersAt(data, hour, selection.countries, String(options.leaders)) : EMPTY, [data, hour, selection.countries, options.leaders]);
+  const { data, error, retry, answered } = useLeaders(runtime, widget.trackIds[0], selection.requestSelection, 'leaderboard', active, 'all', hour);
+  // Rows are the shown reply's own hour while the newest hour is read, with the
+  // countries chosen as they were then; the request follows the newest hour.
+  const shown = answered ?? hour;
+  const atShown = useLeaderCountries(widget, runtime, shown, active);
+  const display = shown === hour ? selection : atShown;
+  const rows = useMemo(() => data && display.countries !== undefined ? leadersAt(data, shown, display.countries, String(options.leaders)) : EMPTY, [data, shown, display.countries, options.leaders]);
   const [visible, setVisible] = useState<readonly LeaderRow[]>(EMPTY);
   const portraits = useLeaderPortraits(runtime, track, visible, 86, active && drill.breakdown == null);
   const attributeMaxima = useMemo(() => [0, 1, 2, 3].map(i => rows.reduce((max, row) => Math.max(max, row.value.components[i] ?? 0), 0)), [rows]);
@@ -86,15 +95,17 @@ export default function GeneralsWidget(props: WidgetProps) {
           return trait?.icon ? <img key={token} src={trait.icon} alt={name} /> : <span className="leader-trait-chip" key={token}>{name}</span>;
         })}</span> },
       { key: 'won', header: 'Won', label: 'Battles won', numeric: true, width: '64px', value: wonValue, renderMissing: true,
-        render: r => r.won ?? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
+        render: r => r.won != null ? partialCount(r, r.won) : <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
       { key: 'lost', header: 'Lost', label: 'Battles lost', numeric: true, width: '64px', priority: 1, inTooltip: true, value: lostValue, renderMissing: true,
-        render: r => r.lost ?? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
+        render: r => r.lost != null ? partialCount(r, r.lost) : <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : "Result not recorded"}>—</span> },
       { key: 'unresolved', header: 'Unresolved', label: 'Unresolved battles', numeric: true, width: '88px', priority: 3, inTooltip: true, value: unresolvedValue, renderMissing: true,
-        render: r => <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : "Battles with no known result."}>{r.unresolved ?? "\u2014"}</span> },
+        render: r => r.unresolved != null && r.foughtPartial ? partialCount(r, r.unresolved)
+          : <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : "Battles with no known result."}>{r.unresolved ?? "\u2014"}</span> },
       { key: 'fought', header: 'Fought', label: 'Fought', sortable: false, numeric: true, width: '64px', priority: 2, inTooltip: true, value: r => r.fought, renderMissing: true,
-        render: r => <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : recordedSince(r.career, data!.firstHour)}>{r.fought ?? "\u2014"}</span> },
+        render: r => r.fought != null && r.foughtPartial ? partialCount(r, r.fought)
+          : <span className={r.preparing ? "leader-missing" : undefined} data-tooltip={r.preparing ? "Still being prepared" : recordedSince(r.career, data!.firstHour)}>{r.fought ?? "\u2014"}</span> },
       { key: 'winRate', header: 'Win %', label: 'Win rate among decided battles', numeric: true, width: '56px', value: winRateValue, renderMissing: true,
-        render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip="Win rate among decided battles">{Math.round(r.winRate)}%</span> },
+        render: r => r.winRate == null ? <span className="leader-missing" data-tooltip={r.preparing ? "Still being prepared" : r.won == null ? "Result not recorded" : "No battles with known results."}>—</span> : <span data-tooltip={r.foughtPartial ? "Win rate among the decided battles recorded; some battles were not recorded." : "Win rate among decided battles"}>{Math.round(r.winRate)}%</span> },
     ];
   }, [data, labelAt, portraits, attributeMaxima, options.cellBars, rows]);
   const tooltip = useCallback((row: LeaderRow) => fitTooltip([leaderTooltip(row, row.value.owner ? labelAt(row.hour)(row.value.owner) : { name: 'Owner not recorded' })], viewportHeight), [labelAt, viewportHeight]);
@@ -102,15 +113,15 @@ export default function GeneralsWidget(props: WidgetProps) {
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (selection.group.error) return <WidgetState kind="error" detail={selection.group.error} onRetry={selection.group.retry} />;
-  if (selection.selectionReason) return <WidgetState kind="unavailable" message={selection.selectionReason} />;
+  if (display.selectionReason) return <WidgetState kind="unavailable" message={display.selectionReason} />;
   if (!data) return <WidgetState kind="loading" label="Loading leaders…" />;
-  const observed = data.observed.find(r => r.firstHour <= hour && hour <= r.lastHour);
+  const observed = data.observed.find(r => r.firstHour <= shown && shown <= r.lastHour);
   const preparing = data.preparing?.includes('battles') === true;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const countsSort = ['won', 'lost', 'unresolved', 'fought', 'winRate'].includes(sort.column);
-  const main = preparing && countsSort ? <WidgetState kind="loading" label="This range is still being prepared." /> : selection.countries === undefined ? <WidgetState kind="unavailable" message="Country group membership was not recorded at this hour." />
+  const main = preparing && countsSort ? <WidgetState kind="loading" label="This range is still being prepared." /> : display.countries === undefined ? <WidgetState kind="unavailable" message="Country group membership was not recorded at this hour." />
     : !rows.length && !observed?.leaders ? <WidgetState kind="unavailable" message="Leaders weren’t recorded at this time." />
-    : !rows.length ? selection.known ? <WidgetState kind="empty" message="No leaders for these countries at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
+    : !rows.length ? display.known ? <WidgetState kind="empty" message="No leaders for these countries at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />
     : <div className="leader-table">{preparing && <p className="chart-line-key" role="status">Battle counts and earlier leaders are still being prepared.</p>}<Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Generals leaderboard" rows={rows} columns={columns} rowKey={rowKey} rowHeight={48} rank
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}

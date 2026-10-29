@@ -1,5 +1,7 @@
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import type { BoundTrack } from '../../dashboard/model';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { resolveWindow } from '../../dashboard/model';
+import { setToken } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
 import { oneDay } from '../../dashboard/batch5Requests';
 import type { AirMissionsParams, AirStatisticsParams } from '../../dashboard/batch5Params';
@@ -30,4 +32,18 @@ export function useAirTheatres(runtime: WidgetRuntime, track: BoundTrack | undef
   const read = useFollowedProduct<readonly AirTheatre[] | null>(runtime.client, request, ['firstHour', 'lastHour'], active, validate, track?.source);
   const answered = read.data === undefined || read.moment === undefined ? undefined : (JSON.parse(read.moment) as [number, number])[0];
   return { theatres: read.data, hour: answered, error: read.error, retry: read.retry };
+}
+
+/** The hour a widget's theatre choices are read at: the hour it shows (its pin, its range's
+ * end, or playback while it follows), as its rows are read. */
+export function choiceHour(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined): number | null {
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  return window ? Math.floor(window.lastHour) : track?.branch.lastHour ?? null;
+}
+
+/** Theatre choices at that hour, keeping a chosen theatre absent then selectable under its id. */
+export function theatreChoices(theatres: readonly { id: string; name: string }[] | undefined, chosen: readonly string[]) {
+  const listed = theatres ?? [];
+  return [...listed.map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
+    ...chosen.filter(id => !listed.some(theatre => theatre.id === id)).map(id => ({ value: setToken(id), label: `${id} · not at this date` }))];
 }

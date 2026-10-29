@@ -11,8 +11,7 @@
 //! that keeps its edge across two consecutive hours also compares playback's
 //! movement speed with the game's own, the next hour's progress numerator step
 //! ([`movement`]); these cross-hour categories are diagnostic because operands
-//! change inside the hourly update. Same-boundary native speed samples are the
-//! strict, exact movement gate. Every recorded value is compared; every mismatch
+//! change inside the hourly update. Every recorded value is compared; every mismatch
 //! is counted and the first ones are listed with their province or record and hour.
 //!
 //! `--census` counts, for every table, how many rows and which fields each
@@ -43,70 +42,35 @@ mod naval_trees;
 mod power_balance;
 mod temperature;
 
-pub const USAGE: &str = "recorder derived <campaign.battleplan> [--game-dir <directory>] [--user-dir <directory>] [--census | --movement-witness]";
+pub const USAGE: &str = "recorder derived <campaign.battleplan> [--game-dir <directory>] [--user-dir <directory>] [--census]";
 
 /// Mismatches listed by name; all of them are counted.
 const LISTED: usize = 40;
 
 pub fn command(args: Vec<OsString>) -> Result<(), String> {
+    let (path, game_dir, user_dir, census) = arguments(args)?;
+    run(&path, game_dir, user_dir, census).map_err(|error| error.to_string())
+}
+
+type Arguments = (PathBuf, Option<PathBuf>, Option<PathBuf>, bool);
+
+fn arguments(args: Vec<OsString>) -> Result<Arguments, String> {
     let mut path = None;
     let mut game_dir = None;
     let mut user_dir = None;
     let mut census = false;
-    let mut movement_witness = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--game-dir") => game_dir = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             Some("--user-dir") => user_dir = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             Some("--census") => census = true,
-            Some("--movement-witness") => movement_witness = true,
+            Some(flag) if flag.starts_with("--") => return Err(USAGE.into()),
             _ if path.is_none() => path = Some(PathBuf::from(arg)),
             _ => return Err(USAGE.into()),
         }
     }
-    let path = path.ok_or(USAGE)?;
-    if movement_witness {
-        if census {
-            return Err(USAGE.into());
-        }
-        return run_movement_witness(&path, game_dir, user_dir).map_err(|error| error.to_string());
-    }
-    run(&path, game_dir, user_dir, census).map_err(|error| error.to_string())
-}
-
-/// A selected comparison of diagnostic native samples with playback at their
-/// supplying boundary. The default command retains every cross-hour progress
-/// comparison as report-only diagnostics.
-fn run_movement_witness(
-    path: &Path,
-    game_dir: Option<PathBuf>,
-    user_dir: Option<PathBuf>,
-) -> io::Result<()> {
-    let replay = Replay::open(fs::read(path)?)?;
-    let content = content(&replay, game_dir, user_dir)?;
-    let selected: Vec<_> = movement::tables().collect();
-    let mut speeds = movement::Checker::new(
-        movement::Content::read(&content.layers).map_err(|error| error.to_string()),
-    );
-    let mut hours = 0_u64;
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in &replay.read_block_selected(block, &selected)? {
-            hours += 1;
-            speeds.observe_samples_only(decoder.advance(frame)?);
-        }
-    }
-    println!("hours: {hours}");
-    speeds.print_samples();
-    let [differences, incomplete] = speeds.native.required_failures();
-    if differences == 0 && incomplete == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "native movement comparison failed: {differences} mismatches; {incomplete} incomplete comparisons"
-        )))
-    }
+    Ok((path.ok_or(USAGE)?, game_dir, user_dir, census))
 }
 
 /// The recording's content facts the derivations read.
@@ -510,5 +474,36 @@ fn run(
         Err(io::Error::other(format!(
             "derivation comparison failed: {mismatches} mismatches; {incomplete} incomplete comparisons"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_retired_movement_witness_flag_is_refused_and_not_read_as_a_path() {
+        for list in [
+            &["campaign.battleplan", "--movement-witness"][..],
+            &["--movement-witness", "campaign.battleplan"],
+        ] {
+            assert_eq!(arguments(args(list)).unwrap_err(), USAGE);
+        }
+        let (path, game_dir, user_dir, census) = arguments(args(&[
+            "campaign.battleplan",
+            "--census",
+            "--game-dir",
+            "game",
+        ]))
+        .unwrap();
+        assert_eq!(path, PathBuf::from("campaign.battleplan"));
+        assert_eq!(game_dir, Some(PathBuf::from("game")));
+        assert_eq!(user_dir, None);
+        assert!(census);
+        assert_eq!(arguments(args(&["--census"])).unwrap_err(), USAGE);
     }
 }

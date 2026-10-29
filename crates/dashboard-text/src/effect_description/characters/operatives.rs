@@ -339,12 +339,12 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     ) -> Result<String, String> {
         let evaluator = self.evaluator()?;
         let selected = evaluator.event_scopes(at).map_err(|why| why.to_string())?;
-        match event
-            .deterministic_title_key(|triggers| evaluator.evaluate(triggers, selected).decided())?
-        {
-            Some(key) => self.localised(key, &[], selected, true),
-            None => Ok(String::new()),
-        }
+        self.event_title(
+            event.deterministic_title_key(|triggers| {
+                evaluator.evaluate(triggers, selected).decided()
+            })?,
+            selected,
+        )
     }
 
     // Use a fresh default empty scope seeded from the caller.

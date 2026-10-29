@@ -203,10 +203,12 @@ impl RawVariant {
 pub struct Tags<'a> {
     links: &'a [CountryLinkRow],
     tags: BTreeMap<u32, Result<String, String>>,
-    original: BTreeMap<u32, Result<String, String>>,
+    /// Original tags by slot, empty when not dynamic; `None` when CountryAppearance is unread.
+    original: Option<BTreeMap<u32, Result<String, String>>>,
 }
 
 impl<'a> Tags<'a> {
+    /// `appearance` is `CountryAppearance`'s complete rows, `None` when they are not.
     pub fn new(
         countries: &[CountryRow],
         links: &'a [CountryLinkRow],
@@ -221,17 +223,16 @@ impl<'a> Tags<'a> {
                 )
             })
             .collect();
-        let original = appearance
-            .unwrap_or_default()
-            .iter()
-            .filter(|row| !row.name_tag.is_empty())
-            .filter_map(|row| {
-                Some((
-                    link_slot(links, row.country)?,
-                    text(&row.name_tag, "equipment original country tag"),
-                ))
-            })
-            .collect();
+        let original = appearance.map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    Some((
+                        link_slot(links, row.country)?,
+                        text(&row.name_tag, "equipment original country tag"),
+                    ))
+                })
+                .collect()
+        });
         Self {
             links,
             tags,
@@ -257,17 +258,34 @@ impl<'a> Tags<'a> {
         )
     }
 
-    /// Its original tag when it is a dynamic country, else its tag.
+    /// Its original tag when its appearance row makes it dynamic, else its tag; unknown without the row.
+    /// A named country the recording can't place is unknown, never no country.
     fn naming_tag(&self, raw: u32, original: bool) -> Result<Option<String>, String> {
         let Some(slot) = link_slot(self.links, raw) else {
-            return Ok(None);
-        };
-        crate::triggers::refusal::reference(
-            if original {
-                self.original.get(&slot).or_else(|| self.tags.get(&slot))
+            return if raw == 0 {
+                Ok(None)
             } else {
-                self.tags.get(&slot)
-            },
+                Err(format!("CountryLinks lacks the equipment's naming country {raw}"))
+            };
+        };
+        if original {
+            let rows = self.original.as_ref().ok_or_else(|| {
+                "CountryAppearance is unavailable, so the equipment creator's original tag is unknown"
+                    .to_owned()
+            })?;
+            match rows.get(&slot) {
+                Some(Ok(tag)) if !tag.is_empty() => return Ok(Some(tag.clone())),
+                Some(Ok(_)) => {}
+                Some(Err(why)) => return Err(why.clone()),
+                None => {
+                    return Err(format!(
+                        "CountryAppearance lacks the equipment creator's row (country slot {slot})"
+                    ));
+                }
+            }
+        }
+        match crate::triggers::refusal::reference(
+            self.tags.get(&slot),
             raw != 0,
             || {
                 crate::triggers::refusal::missing_reference(
@@ -275,9 +293,11 @@ impl<'a> Tags<'a> {
                     Some(crate::triggers::Store::Country(slot)),
                 )
             },
-        )
-        .cloned()
-        .transpose()
+        ) {
+            Some(tag) => tag.clone().map(Some),
+            None if raw == 0 => Ok(None),
+            None => Err(format!("Countries lacks the equipment's naming country (country slot {slot})")),
+        }
     }
 }
 
@@ -340,7 +360,10 @@ pub fn raw_variant<'a>(
     let name_tag = match name_tag {
         Ok(tag) => tag,
         Err(why) => {
-            refusals.push(("name tag".into(), why));
+            // A stored own name is localised for no tag, so it does not need one.
+            if definition.display_name.is_empty() {
+                refusals.push(("name tag".into(), why));
+            }
             None
         }
     };
@@ -484,4 +507,148 @@ pub fn variant_names(
             texts.and_then(|texts| localise_for(texts, raw.type_tag.as_deref(), &raw.token))
         });
     (name, type_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Keys(&'static [(&'static str, &'static str)]);
+    impl Texts for Keys {
+        fn has(&self, key: &str) -> bool {
+            self.0.iter().any(|(held, _)| *held == key)
+        }
+        fn text(&self, key: &str) -> Option<String> {
+            self.0
+                .iter()
+                .find(|(held, _)| *held == key)
+                .map(|(_, text)| (*text).to_owned())
+        }
+    }
+
+    const TEXTS: Keys = Keys(&[
+        ("mod_rifle", "Generic rifle"),
+        ("SYN_mod_rifle", "Original rifle"),
+        ("DYN_mod_rifle", "Dynamic rifle"),
+    ]);
+
+    /// A dynamic country DYN (raw 5, slot 2) named after SYN, and SYN itself (raw 4, slot 1).
+    fn countries() -> (Vec<CountryRow>, Vec<CountryLinkRow>) {
+        let countries = [(4, 1, "SYN"), (5, 2, "DYN")]
+            .map(|(id, canonical_slot, tag)| CountryRow {
+                id,
+                canonical_slot,
+                tag: tag.as_bytes().to_vec(),
+                ..Default::default()
+            })
+            .to_vec();
+        let links = [(4, 1), (5, 2)]
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .to_vec();
+        (countries, links)
+    }
+
+    fn appearance(country: u32, name_tag: &str) -> CountryAppearanceRow {
+        CountryAppearanceRow {
+            country,
+            name_tag: name_tag.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn design(creator_link: u32, origin_link: u32, display_name: &str) -> VariantDefinitionRow {
+        VariantDefinitionRow {
+            id: 70,
+            equipment_token: 9,
+            creator_link,
+            origin_link,
+            display_name: display_name.as_bytes().to_vec(),
+            ..Default::default()
+        }
+    }
+
+    const LEXICAL: &[LexicalTokenRow] = &[];
+
+    fn lexical() -> Vec<LexicalTokenRow> {
+        vec![LexicalTokenRow {
+            token: 9,
+            literal: b"mod_rifle".to_vec(),
+        }]
+    }
+
+    /// An unread appearance table or an absent creator row refuses the name, never using the own tag.
+    #[test]
+    fn a_creator_named_design_needs_its_original_tag_observation() {
+        let (countries, links) = countries();
+        let lexical = lexical();
+        let rows = [appearance(4, ""), appearance(5, "SYN")];
+        let name = |appearance: Option<&[CountryAppearanceRow]>, creator| {
+            let tags = Tags::new(&countries, &links, appearance);
+            let raw = raw_variant(&design(creator, 0, ""), 1, &tags, &lexical[..]);
+            (raw.name_tag.clone(), variant_name(&raw, Some(&TEXTS)), raw)
+        };
+        // The dynamic creator is named for its original tag, the other for its own.
+        let (tag, named, _) = name(Some(&rows[..]), 5);
+        assert_eq!(tag.as_deref(), Some("SYN"));
+        assert_eq!(named, Ok(Some("Original rifle".into())));
+        let (tag, _, _) = name(Some(&rows[..]), 4);
+        assert_eq!(tag.as_deref(), Some("SYN"));
+        // Unread appearance, or a complete table without the creator's row.
+        for (appearance, reason) in [
+            (None, "CountryAppearance is unavailable"),
+            (Some(&rows[..1]), "CountryAppearance lacks the equipment creator's row"),
+        ] {
+            let (tag, named, raw) = name(appearance, 5);
+            assert_eq!(tag, None);
+            assert!(raw.check("name tag").unwrap_err().contains(reason), "{reason}");
+            assert!(named.unwrap_err().contains(reason), "{reason}");
+        }
+        // No creator at all names no tag.
+        let (tag, named, raw) = name(None, 0);
+        assert_eq!(tag, None);
+        assert!(raw.refusals.is_empty(), "{:?}", raw.refusals);
+        assert_eq!(named, Ok(Some("Generic rifle".into())));
+    }
+
+    /// A positive origin and a stored own name do not need the creator's original tag.
+    #[test]
+    fn origin_and_own_names_do_not_need_the_creators_appearance() {
+        let (countries, links) = countries();
+        let lexical = lexical();
+        let tags = Tags::new(&countries, &links, None);
+        let origin = raw_variant(&design(5, 5, ""), 1, &tags, &lexical[..]);
+        assert!(origin.refusals.is_empty(), "{:?}", origin.refusals);
+        assert_eq!(origin.name_tag.as_deref(), Some("DYN"));
+        assert_eq!(
+            variant_name(&origin, Some(&TEXTS)),
+            Ok(Some("Dynamic rifle".into()))
+        );
+        let own = raw_variant(&design(5, 0, "Stored design"), 1, &tags, LEXICAL);
+        assert_eq!(own.name_tag, None);
+        assert!(own.check("name tag").is_ok());
+        assert_eq!(own.display_name, "Stored design");
+    }
+
+    /// A creator or origin the recording can't place refuses the name instead of the generic one.
+    #[test]
+    fn an_unplaced_naming_country_refuses_the_name() {
+        let (countries, links) = countries();
+        let lexical = lexical();
+        let rows = [appearance(4, ""), appearance(5, "SYN")];
+        let tags = Tags::new(&countries, &links, Some(&rows[..]));
+        // Raw 9 has no link; raw 6 links to slot 3, which has no Countries row.
+        let mut linked = links.clone();
+        linked.push(CountryLinkRow { id: 6, canonical_slot: 3 });
+        let unrowed = Tags::new(&countries, &linked, Some(&rows[..]));
+        for (tags, creator, origin, reason) in [
+            (&tags, 9, 0, "CountryLinks lacks"),
+            (&tags, 4, 9, "CountryLinks lacks"),
+            (&unrowed, 4, 6, "Countries lacks"),
+        ] {
+            let raw = raw_variant(&design(creator, origin, ""), 1, tags, &lexical[..]);
+            assert_eq!(raw.name_tag, None);
+            assert!(raw.check("name tag").unwrap_err().contains(reason), "{reason}");
+            assert!(variant_name(&raw, Some(&TEXTS)).is_err(), "never the generic name");
+        }
+    }
 }

@@ -707,23 +707,46 @@ impl<'a, M: Memory> Reader<'a, M> {
         Ok(())
     }
 
-    /// Whether a relation sits at the overlord's subject-relation slot toward its subject. Any
-    /// unreadable or unresolvable step answers no.
-    fn installed(&self, pointer: usize, overlord: u32, subject: u32, pass: &mut Pass<'_>) -> bool {
-        (|| {
-            let first = pass.resolver.resolve(&self.countries, overlord)?;
-            let second = pass.resolver.resolve(&self.countries, subject)?;
-            let diplomacy = pass.resolver.diplomacy(first, || self.diplomacy(first))?;
-            let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
-            let status = self.element(matrix, second.canonical_slot)?;
-            if status == 0 {
-                return Ok(false);
-            }
-            Ok::<_, &'static str>(
-                self.pointer(status, crelation_status::SUBJECT_RELATION)? == pointer,
-            )
-        })()
-        .unwrap_or(false)
+    /// Whether the overlord's slot toward the subject holds this relation; failed reads are errors.
+    fn installed(
+        &self,
+        pointer: usize,
+        overlord: u32,
+        subject: u32,
+        pass: &mut Pass<'_>,
+    ) -> Result<bool, &'static str> {
+        let Some(first) = self.endpoint(overlord, pass)? else {
+            return Ok(false);
+        };
+        let Some(second) = self.endpoint(subject, pass)? else {
+            return Ok(false);
+        };
+        let diplomacy = pass.resolver.diplomacy(first, || self.diplomacy(first))?;
+        let matrix = self.array(diplomacy, cdiplomacy_status::RELATIONS)?;
+        let status = self.element(matrix, second.canonical_slot)?;
+        if status == 0 {
+            return Ok(false);
+        }
+        self.status(status, diplomacy)?;
+        Ok(self.pointer(status, crelation_status::SUBJECT_RELATION)? == pointer)
+    }
+
+    /// An endpoint's country; none for a zero or unlinked id or an empty slot, which no matrix has.
+    fn endpoint(
+        &self,
+        raw: u32,
+        pass: &mut Pass<'_>,
+    ) -> Result<Option<ccountry::Country>, &'static str> {
+        if raw == 0 {
+            return Ok(None);
+        }
+        let Some(slot) = self.countries.link(raw)? else {
+            return Ok(None);
+        };
+        if self.countries.read_at(slot)?.is_none() {
+            return Ok(None);
+        }
+        pass.resolver.resolve(&self.countries, raw).map(Some)
     }
 
     fn pair_status(
@@ -822,7 +845,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         // type, never the retired byte, and link clearing is what uninstalls a subject. So a
         // retired relation counts exactly while it is still installed; one left only in an owned
         // vector is skipped.
-        if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass) {
+        if retired && matrix_index.is_none() && !self.installed(pointer, overlord, subject, pass)? {
             return Ok(None);
         }
         let first = pass.resolver.resolve(&self.countries, overlord)?;

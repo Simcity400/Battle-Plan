@@ -1101,6 +1101,59 @@ impl Hourless {
     }
 }
 
+/// The prepared theatre membership of the hours from `first` to `last`, each
+/// read's operands until the next.
+fn theatre_membership(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    first: i32,
+    last: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<scan::DaySegment> {
+    let mut hours = Reader::new(
+        store,
+        key,
+        format!("air-superiority-{branch}-hours"),
+        cancelled,
+    )?;
+    let mut events = Reader::new(
+        store,
+        key,
+        format!("air-superiority-{branch}-operands"),
+        cancelled,
+    )?;
+    let mut segment = scan::DaySegment::default();
+    for run in hours.runs(0, first, last)? {
+        let (_, value) = events
+            .latest_event(1, run.first_hour)?
+            .ok_or_else(|| invalid("Prepared theatre operands are missing"))?;
+        let mut auxiliary: scan::Auxiliary = serde_json::from_value(value)?;
+        let mut at = run.first_hour;
+        let mut cursor = 0;
+        loop {
+            let page = events.events(&[1], run.first_hour, run.last_hour, cursor, 1024)?;
+            for row in page.rows {
+                if row.hour > at {
+                    segment
+                        .auxiliary
+                        .push((at, row.hour - 1, Arc::new(auxiliary)));
+                }
+                at = row.hour;
+                auxiliary = serde_json::from_value(row.row)?;
+            }
+            let Some(next) = page.cursor else {
+                break;
+            };
+            cursor = next;
+        }
+        segment
+            .auxiliary
+            .push((at, run.last_hour, Arc::new(auxiliary)));
+    }
+    Ok(segment)
+}
+
 /// [`Hourless`], kept for the source while the pages it reads are unchanged.
 fn hourless(
     source: &Source,
@@ -1195,49 +1248,14 @@ pub fn query(
             .as_ref()
             .is_some_and(|theatres| !theatres.is_empty())
         {
-            let first = params.first_hour.unwrap_or(i32::MIN);
-            let last = params.last_hour.unwrap_or(i32::MAX);
-            let mut hours = Reader::new(
+            cache.segments.push(Arc::new(theatre_membership(
                 &store,
                 &key,
-                format!("air-superiority-{branch}-hours"),
+                branch,
+                params.first_hour.unwrap_or(i32::MIN),
+                params.last_hour.unwrap_or(i32::MAX),
                 cancelled,
-            )?;
-            let mut events = Reader::new(
-                &store,
-                &key,
-                format!("air-superiority-{branch}-operands"),
-                cancelled,
-            )?;
-            let mut segment = scan::DaySegment::default();
-            for run in hours.runs(0, first, last)? {
-                let (_, value) = events
-                    .latest_event(1, run.first_hour)?
-                    .ok_or_else(|| invalid("Prepared theatre operands are missing"))?;
-                let mut auxiliary: scan::Auxiliary = serde_json::from_value(value)?;
-                let mut at = run.first_hour;
-                let mut cursor = 0;
-                loop {
-                    let page = events.events(&[1], run.first_hour, run.last_hour, cursor, 1024)?;
-                    for row in page.rows {
-                        if row.hour > at {
-                            segment
-                                .auxiliary
-                                .push((at, row.hour - 1, Arc::new(auxiliary)));
-                        }
-                        at = row.hour;
-                        auxiliary = serde_json::from_value(row.row)?;
-                    }
-                    let Some(next) = page.cursor else {
-                        break;
-                    };
-                    cursor = next;
-                }
-                segment
-                    .auxiliary
-                    .push((at, run.last_hour, Arc::new(auxiliary)));
-            }
-            cache.segments.push(Arc::new(segment));
+            )?));
         }
         return serde_json::to_value(cache_reply(
             source,

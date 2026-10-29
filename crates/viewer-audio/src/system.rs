@@ -726,6 +726,11 @@ impl Control {
                     .is_none_or(|known| !Arc::ptr_eq(known, &source))
                 {
                     self.engine.set_content(Some(Arc::clone(&source.content)));
+                    self.status
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .notes
+                        .clear();
                     self.source = Some(source);
                     self.generation += 1;
                 }

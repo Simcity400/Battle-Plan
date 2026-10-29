@@ -86,7 +86,8 @@ mod tests {
     fn allocations_preserve_duplicates_and_signed_extrema_and_authenticate_archetypes() {
         let mut bytes = vec![0_u8; 0x600];
         bytes[0x100..0x108].copy_from_slice(&(cequipment_type::VTABLE_RVA as u64).to_le_bytes());
-        bytes[0x518..0x51c].copy_from_slice(&u32::MAX.to_le_bytes());
+        let id = 0x100 + cequipment_type::ARCHETYPE_ID;
+        bytes[id..id + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         for (ordinal, amount) in [i64::MIN, 0, i64::MAX].into_iter().enumerate() {
             let offset = ordinal * STRIDE;
             bytes[offset..offset + 8].copy_from_slice(&0x1100_u64.to_le_bytes());

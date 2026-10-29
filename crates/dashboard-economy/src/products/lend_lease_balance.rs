@@ -4,10 +4,12 @@
 //! fuel), sent and received.
 //!
 //! `WarLendLeaseHistories` holds every nonzero history of the countries the
-//! recorded war rosters name, each the owner's own record of a partner. A
-//! country's totals are the sums of its own records only, so a pair is never
-//! counted from both sides. A country the table does not list has no value:
-//! outside the war rosters its history is not recorded, so it stays unknown
+//! recorded war rosters (`WarOwnedRelations`: each owner and both sides) name,
+//! each the owner's own record of a partner. A country's totals are the sums of
+//! its own records only, so a pair is never counted from both sides. A roster
+//! country the complete table does not list has exact zero totals, and a record
+//! it no longer lists is zero. A country outside the rosters, or while they are
+//! not read, has no value: its history is not recorded, so it stays unknown
 //! rather than zero. Histories can predate the recording; a decrease or reset
 //! is kept as recorded. Amounts are fixed5 and stay exact.
 
@@ -16,7 +18,11 @@ use dashboard_base::{prepared::frame_changes::FrameChanges, products::Product};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::atomic::AtomicBool,
+};
 use ts_rs::TS;
 
 pub const FAMILY: &str = "lend_lease_balance";
@@ -25,11 +31,13 @@ pub const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
+    TableId::WarOwnedRelations,
     TableId::WarLendLeaseHistories,
 ];
-const WATCHED: [TableId; 3] = [
+const WATCHED: [TableId; 4] = [
     TableId::Countries,
     TableId::CountryLinks,
+    TableId::WarOwnedRelations,
     TableId::WarLendLeaseHistories,
 ];
 
@@ -68,10 +76,13 @@ impl Prepared {
             (Ok(tags), Ok(rows)) => {
                 observed.insert(self.keyed.key(Field::Known), 1);
                 let mut totals = BTreeMap::<u32, [i128; MEASURES]>::new();
+                // Whether a record's owner, or which owners' partners, have no identity.
+                let (mut orphaned, mut partial) = (false, BTreeSet::new());
                 for row in rows {
                     let Some(owner) = tags.slot(row.country) else {
                         self.keyed
                             .refuse("a lend-lease history names a country with no identity");
+                        orphaned = true;
                         continue;
                     };
                     self.keyed.tag(&tags, owner, hour);
@@ -89,6 +100,7 @@ impl Prepared {
                     let Some(target) = tags.slot(row.target) else {
                         self.keyed
                             .refuse("a lend-lease history names a partner with no identity");
+                        partial.insert(owner);
                         continue;
                     };
                     self.keyed.tag(&tags, target, hour);
@@ -99,9 +111,37 @@ impl Prepared {
                         );
                     }
                 }
+                // The table keeps only nonzero histories: a roster owner it does not list has
+                // none, unless a record it might hold has no owner identity.
+                let roster = if orphaned { None } else { self.roster(frame, &tags) };
+                for &owner in roster.iter().flatten() {
+                    if !totals.contains_key(&owner) {
+                        self.keyed.tag(&tags, owner, hour);
+                        totals.insert(owner, [0; MEASURES]);
+                    }
+                }
                 for (owner, total) in totals {
                     for (measure, value) in total.into_iter().enumerate() {
                         observed.insert(self.keyed.key(Field::Total(owner, measure as u8)), value);
+                    }
+                }
+                // And a record a roster owner no longer lists is zero, not ended.
+                if let Some(roster) = &roster {
+                    let zeroed: Vec<u64> = self
+                        .keyed
+                        .values
+                        .active()
+                        .filter(|key| !observed.contains_key(key))
+                        .filter(|key| {
+                            matches!(
+                                self.keyed.meta.fields.get(key),
+                                Some(Field::Pair(owner, ..))
+                                    if roster.contains(owner) && !partial.contains(owner)
+                            )
+                        })
+                        .collect();
+                    for key in zeroed {
+                        observed.insert(key, 0);
                     }
                 }
             }
@@ -113,6 +153,33 @@ impl Prepared {
                 .refuse(format!("lend-lease histories unavailable: {error}")),
         }
         self.keyed.commit(hour, &observed, |_| true);
+    }
+
+    /// The holders the hour's recorded war rosters name, whose histories the
+    /// table keeps; `None` while the rosters are not read.
+    fn roster(&mut self, frame: &DecodedFrame, tags: &Tags<'_>) -> Option<BTreeSet<u32>> {
+        let rows = match frame.complete::<tables::WarOwnedRelations>() {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.keyed
+                    .refuse(format!("war rosters unavailable, so unlisted totals are unknown: {error}"));
+                return None;
+            }
+        };
+        let mut roster = BTreeSet::new();
+        for row in rows {
+            for country in [row.owner, row.first_country, row.second_country] {
+                match tags.slot(country) {
+                    Some(slot) => {
+                        roster.insert(slot);
+                    }
+                    None => self
+                        .keyed
+                        .refuse("a war roster names a country with no identity"),
+                }
+            }
+        }
+        Some(roster)
     }
 
     /// Bytes the next commit publishes and releases.

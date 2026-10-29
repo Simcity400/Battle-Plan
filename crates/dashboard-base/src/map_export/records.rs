@@ -7,7 +7,7 @@ pub const TABLE_SECTION: u32 = 1 << 16;
 pub const CONTRACT: &[u8] = b"map-export/endpoints40/multilayer/u64-counts/v2";
 pub const CURSOR_CONTRACT: &[u8] = b"map-export/cursor/key-branch-frontier/sha256/v1";
 pub const SNOW_CONTRACT: &[u8] =
-    b"snow-mud/cells4/retained-edges/raw-winter-f32-bits/no-perspective-dependence/v1";
+    b"snow-mud/cells4/unknown-cells/retained-edges/raw-winter-f32-bits/no-perspective-dependence/v2";
 
 product_codec::product! {
     #[derive(Clone, Debug, PartialEq, Eq)]

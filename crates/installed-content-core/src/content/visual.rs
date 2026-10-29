@@ -292,10 +292,7 @@ fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Can
     for entry in entries(&options.user_dir.join("mod"), &mut problems) {
         cancelled(cancel)?;
         let path = entry.path();
-        if !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("mod"))
-        {
+        if !listed_mod_descriptor(&entry.file_name().to_string_lossy()) {
             continue;
         }
         match entry.file_type() {
@@ -312,10 +309,15 @@ fn discover(options: &ResolveOptions, cancel: &AtomicBool) -> io::Result<Vec<Can
         }
     }
     let root = workshop_root(&options.game_dir);
-    // A local descriptor of a Workshop item is that item.
+    // A local descriptor of a Workshop item, its folder or an archive in it, is that item.
     if let Some(root) = &root {
         for candidate in &mut candidates {
-            if let Some(LayerSource::Folder(folder)) = &candidate.source
+            let folder = match &candidate.source {
+                Some(LayerSource::Folder(folder)) => Some(folder.as_path()),
+                Some(LayerSource::Archive(archive)) => archive.parent(),
+                None => None,
+            };
+            if let Some(folder) = folder
                 && folder.parent() == Some(root.as_path())
                 && let Some(item) = folder.file_name().and_then(|name| name.to_str())
             {
@@ -554,46 +556,54 @@ pub fn revision(
         match &candidate.source {
             Some(LayerSource::Archive(path)) => field(stamp(path).as_bytes()),
             Some(LayerSource::Folder(root)) => {
-                let mut pending = vec![root.clone()];
-                while let Some(directory) = pending.pop() {
-                    cancelled(cancel)?;
-                    let entries = match directory_entries(&directory) {
-                        Ok(entries) => entries,
-                        Err(error) => {
-                            field(
-                                format!("unreadable {}: {error}", directory.display()).as_bytes(),
-                            );
-                            continue;
-                        }
-                    };
-                    for entry in entries {
-                        let path = entry.path();
-                        let Ok(relative) = path.strip_prefix(root) else {
-                            continue;
-                        };
-                        let lower = relative
-                            .to_string_lossy()
-                            .replace('\\', "/")
-                            .to_ascii_lowercase();
-                        let kind = entry.file_type();
-                        if kind.as_ref().is_ok_and(|kind| kind.is_dir()) {
-                            // Only the folders a visual mod shows anything from.
-                            let shown = |root: &str| {
-                                below(lower.as_bytes(), root.as_bytes())
-                                    || below(root.as_bytes(), lower.as_bytes())
-                            };
-                            if PRESENTATION_ROOTS.iter().any(|root| shown(root))
-                                || shown(DEFINES_ROOT)
-                            {
-                                pending.push(path);
-                            }
-                        } else if kind.as_ref().is_ok_and(|kind| kind.is_file())
-                            && overlay_sees(true, lower.as_bytes())
-                        {
-                            field(lower.as_bytes());
-                            field(stamp(&path).as_bytes());
-                        }
+                // The mod's files as its mount lists them, through its links too.
+                let root = match fs::canonicalize(root) {
+                    Ok(root) => root,
+                    Err(error) => {
+                        field(format!("unreadable {}: {error}", root.display()).as_bytes());
+                        continue;
                     }
+                };
+                let root = root.as_path();
+                let kind = |entry: &fs::DirEntry| -> io::Result<Listed> {
+                    cancelled(cancel)?;
+                    let listed = entry_kind(entry)?;
+                    let lower = entry
+                        .path()
+                        .strip_prefix(root)
+                        .map(|relative| {
+                            relative
+                                .to_string_lossy()
+                                .replace('\\', "/")
+                                .to_ascii_lowercase()
+                        })
+                        .unwrap_or_default();
+                    // Only the folders a visual mod shows anything from.
+                    let shown = |root: &str| {
+                        below(lower.as_bytes(), root.as_bytes())
+                            || below(root.as_bytes(), lower.as_bytes())
+                    };
+                    Ok(match listed {
+                        Listed::Directory | Listed::LinkedDirectory
+                            if !(PRESENTATION_ROOTS.iter().any(|root| shown(root))
+                                || shown(DEFINES_ROOT)) =>
+                        {
+                            Listed::Other
+                        }
+                        listed => listed,
+                    })
+                };
+                let walked = walk_folder(root, root, true, &kind, &mut |relative, entry| {
+                    let lower = relative.to_ascii_lowercase();
+                    if overlay_sees(true, &lower) {
+                        field(lower.as_slice());
+                        field(stamp(&entry.path()).as_bytes());
+                    }
+                    Ok(())
+                });
+                if let Err(error) = walked {
+                    cancelled(cancel)?;
+                    field(format!("unreadable {}: {error}", root.display()).as_bytes());
                 }
             }
             None => {}

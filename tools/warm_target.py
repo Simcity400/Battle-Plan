@@ -87,7 +87,7 @@ MSF_MAGIC = b"Microsoft C/C++ MSF 7.00\r\n\x1aDS\x00\x00\x00"
 UNIT_HASH = re.compile(r"-([0-9a-f]{16})(?:\.|$)")
 PATH_SEPARATORS = ("\\", "/", "\\\\")
 PATH_CASES = ("exact", "lower", "drive")
-PATH_ENCODINGS = ("ascii", "utf-16-le")
+PATH_ENCODINGS = ("utf-8", "utf-16-le")
 STYLES = [(sep, case, enc) for enc in PATH_ENCODINGS for case in PATH_CASES for sep in PATH_SEPARATORS]
 
 
@@ -409,7 +409,7 @@ def split_paths(data, covered, root):
     if block not in (512, 1024, 2048, 4096, 8192, 16384, 32768):
         raise WarmError("unsupported PDB page size")
     found = 0
-    for style in (("\\", "exact", "ascii"), ("\\", "lower", "ascii"), ("/", "exact", "ascii")):
+    for style in (("\\", "exact", "utf-8"), ("\\", "lower", "utf-8"), ("/", "exact", "utf-8")):
         form = render(root, style)
         ends, begins = set(), set()
         for boundary in range(block, len(data), block):
@@ -1328,12 +1328,13 @@ def warm_into(root, seed, worktree, target, external, copy, threads):
             os.remove(record)
             if external and not installed:
                 shutil.rmtree(external, ignore_errors=True)
+        # Backdating still reads the seed checkout: a refresh may replace it once this reader goes.
+        start = time.time()
+        same, differ = backdate(inputs, worktree, checkout, started)
+        timings["backdate"] = time.time() - start
     finally:
         os.remove(reader)
 
-    start = time.time()
-    same, differ = backdate(inputs, worktree, checkout, started)
-    timings["backdate"] = time.time() - start
     counts["sources unchanged"], counts["changed"] = same, differ
     return seed["stamp"]["bytes"], timings, counts
 

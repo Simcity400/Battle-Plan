@@ -4,11 +4,12 @@
 //! agency's differently transformed cache. Mission changes and modifier
 //! recalculation can occur between daily ticks. Each country's modifier
 //! accumulator is copied once, when its first key is needed, and both keys are
-//! searched in the copy ([`Accumulator`]). A caller may carry both keys' raw
-//! answers between hours in place of that copy while it certifies the country's
-//! accumulator unchanged ([`Carry`]); the header read before it and the
-//! effective values (from the current modifier definitions) are read as without
-//! a carry.
+//! searched in the copy ([`Accumulator`]). A copy that cannot be taken or
+//! validated refuses nothing: each key is then read as the game's getter reads
+//! it. A caller may carry both keys' raw answers between hours in place of that
+//! copy while it certifies the country's accumulator unchanged ([`Carry`]); the
+//! header read before it and the effective values (from the current modifier
+//! definitions) are read as without a carry.
 
 use crate::{
     Memory, ccountry, ccryptology, cgame_state, cintelligence_agency as agency,
@@ -84,13 +85,14 @@ fn authenticate(
     }
     Ok(())
 }
+/// The getter's own reads: reached search keys, then eligibility before the selected value.
 fn modifier(
     memory: &impl Memory,
     base: usize,
     accumulator: usize,
     key: u32,
 ) -> Result<i64, &'static str> {
-    modifier_accumulator::lookup_effective_at(memory, base, accumulator, key).map(|v| v.effective)
+    modifier_accumulator::requested_effective_at(memory, base, accumulator, key)
 }
 
 /// The country keys a walk looks up, by [`Carry`] answer index.
@@ -136,10 +138,8 @@ const STRIDE: usize = crate::modifier_entry::STRIDE;
 /// What a country's first lookup found; every later lookup reuses it.
 #[derive(Clone, Copy)]
 enum Loaded {
-    /// The header or entries refused; every lookup returns the refusal.
-    Refused(&'static str),
-    /// Longer than the buffer: each key is searched in place.
-    Oversize,
+    /// Longer than the buffer, or the copy refused: [`modifier`] searches each key in place.
+    InPlace,
     /// The [`Carry`] answers.
     Held([RawAnswer; 2]),
     /// The entries' byte length, copied into the buffer, and both keys'
@@ -149,8 +149,8 @@ enum Loaded {
 }
 
 /// One country's modifier accumulator (`CCountry+MODIFIER_ACCUMULATOR`), copied
-/// whole on its first lookup and searched locally after, with the value,
-/// failure and failure order of `modifier_accumulator::lookup_effective_at`.
+/// whole on its first lookup and searched locally after, with the getter's
+/// values; failures come only from the getter's own reads.
 struct Accumulator<'b> {
     country: ccountry::Country,
     entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
@@ -185,7 +185,7 @@ impl<'b> Accumulator<'b> {
         let array = Array::from_header(header, STRIDE).ok_or(HEADER)?;
         let len = array.count as usize * STRIDE;
         if len > self.entries.len() {
-            return Ok(Loaded::Oversize);
+            return Ok(Loaded::InPlace);
         }
         if let Some(answers) = carry.held(&self.country, &header) {
             return Ok(Loaded::Held(answers));
@@ -221,14 +221,13 @@ impl<'b> Accumulator<'b> {
         let loaded = match self.loaded {
             Some(loaded) => loaded,
             None => {
-                let loaded = self.load(memory, carry).unwrap_or_else(Loaded::Refused);
+                let loaded = self.load(memory, carry).unwrap_or(Loaded::InPlace);
                 self.loaded = Some(loaded);
                 loaded
             }
         };
         let raw = match loaded {
-            Loaded::Refused(reason) => return Err(reason),
-            Loaded::Oversize => return modifier(memory, base, self.address()?, KEYS[key]),
+            Loaded::InPlace => return modifier(memory, base, self.address()?, KEYS[key]),
             Loaded::Held(answers) | Loaded::Copied(_, Some(answers)) => answers[key],
             Loaded::Copied(len, None) => {
                 let value = modifier_accumulator::lookup_snapshot(&self.entries[..len], KEYS[key])?;
@@ -759,8 +758,8 @@ mod tests {
     }
 
     /// Both country keys come from one copy of the country's accumulator,
-    /// with the getter's values; entries out of key order still fail as the
-    /// getter's own read does.
+    /// with the getter's values; entries out of key order get the getter's
+    /// own lower-bound answer, where both probes miss.
     #[test]
     fn both_country_keys_share_one_accumulator_copy() {
         struct Counted<'a>(&'a Fixture, std::cell::Cell<usize>, usize);
@@ -789,9 +788,51 @@ mod tests {
         );
         assert_eq!(
             f.run(&mut rows, &mut [Operative::default(); 2]).outcome,
-            Outcome::Unavailable {
-                reason: "modifier accumulator keys not positive and increasing"
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!((rows[0].country_defense, rows[0].crypto_strength), (0, Some(0)));
+    }
+
+    /// Reads only the copy makes (capacity, an unprobed entry, an ineligible value) refuse nothing.
+    #[test]
+    fn country_keys_need_only_the_getters_own_reads() {
+        struct Holes<'a>(&'a Fixture, Vec<std::ops::Range<usize>>);
+        impl Memory for Holes<'_> {
+            fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+                let end = at.saturating_add(out.len());
+                !self.1.iter().any(|hole| at < hole.end && hole.start < end)
+                    && self.0.copy(at, out)
             }
+        }
+        let mut f = Fixture::new(1);
+        let header = f.country + ccountry::MODIFIER_ACCUMULATOR;
+        let data = header + 0x20;
+        f.accumulator(header, &[(DEFENSE, -125000), (CRYPTO, 249999), (CRYPTO + 1, 5)]);
+        let run = |f: &Fixture, holes: Vec<std::ops::Range<usize>>| {
+            let mut rows = [Row::default()];
+            let mut operatives = [Operative::default(); 2];
+            let outcome = walk(&Holes(f, holes), 0, GAME, &mut rows, &mut operatives).outcome;
+            (outcome, rows[0].country_defense, rows[0].crypto_strength)
+        };
+        let rows = (Outcome::Rows { len: 1 }, -125000, Some(249999));
+        assert_eq!(run(&f, vec![header + 8..header + 12]), rows);
+        assert_eq!(run(&f, vec![data + 2 * 16..data + 3 * 16]), rows);
+        // The getter's selected value is still required.
+        assert_eq!(
+            run(&f, vec![data + 8..data + 16]).0,
+            Outcome::Unavailable {
+                reason: "strategic action modifier value unreadable"
+            }
+        );
+        // An ineligible key is zero without its value being read.
+        f.u32(
+            0x0800_0000 + DEFENSE as usize * definition::STRIDE + definition::FEATURE_SELECTOR,
+            1,
+        );
+        f.block(definition::ELIGIBILITY_CALLBACK_RVA, 8);
+        assert_eq!(
+            run(&f, vec![data + 8..data + 16]),
+            (Outcome::Rows { len: 1 }, 0, Some(249999))
         );
     }
 

@@ -1,4 +1,4 @@
-import { contentKey, contentSet, setLimit, storableToken, toggleContentSet, UNSTORABLE } from './options.ts';
+import { contentKey, contentSet, setLimit, setToken, storableToken, toggleContentSet, UNSTORABLE } from './options.ts';
 
 /** Choosing content with in-widget chips (a content-set option shown as chips above
  * a chart, such as resources or equipment types): which tokens are shown, the
@@ -23,6 +23,17 @@ export interface ChoiceSource {
  * it is kept, as other campaigns' tokens are. Storable wherever the token is and the
  * key is (hex). */
 export const campaignToken = (campaignKey: string, token: string) => `${campaignKey}:${token}`;
+
+/** A saved subject (a general, a division) as a widget option stores it: its native
+ * handle under its campaign (`campaignToken`), so another campaign's unit reusing the
+ * handle is never shown as the saved one. */
+export const subjectToken = (campaignKey: string, handle: string) => setToken(campaignToken(campaignKey, handle));
+
+/** The handle a saved subject names in this campaign; null for one saved in another. */
+export function subjectHandle(campaignKey: string, value: string): string | null {
+  const key = contentKey(value), prefix = campaignToken(campaignKey, '');
+  return key.startsWith(prefix) ? key.slice(prefix.length) : null;
+}
 
 /** A choice source over content keys, as one over the tokens a setting stores
  * (`setToken`): each token is read back with `contentKey`. Chips offer

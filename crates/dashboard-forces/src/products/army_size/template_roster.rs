@@ -74,14 +74,19 @@ pub(super) fn query(
         Err(error) => append("Template roster", Err(error.to_string())),
         Ok(rows) => {
             let mut selected = Vec::new();
+            let mut unresolved = false;
             for row in rows {
                 match canonical(row.owner) {
                     Ok(owner) if owner == slot => selected.push(row.template),
                     Ok(_) => (),
-                    Err(reason) => append("Template roster owner", Err(reason)),
+                    Err(reason) => {
+                        unresolved = true;
+                        append("Template roster owner", Err(reason));
+                    }
                 }
             }
-            if selected.is_empty() {
+            // A template whose owner is unresolved may be this country's.
+            if selected.is_empty() && !unresolved {
                 append(
                     "Template roster",
                     Ok(template_facts::Rendered::text("No division templates.")),
@@ -129,6 +134,7 @@ pub(super) fn query(
         interval: None,
         available: true,
         measures: Vec::new(),
+        unknown_measures: Vec::new(),
         types: Vec::new(),
         series: Vec::new(),
         warnings,
@@ -305,11 +311,20 @@ mod tests {
         }
         *refused_settings.tables[TableId::DivisionTemplateIcons.index()] =
             TableView::Complete(TableRows::DivisionTemplateIcons(icons));
+        let mut unresolved = empty.clone();
+        unresolved.hour = 104;
+        *unresolved.tables[TableId::DivisionTemplates.index()] =
+            TableView::Complete(TableRows::DivisionTemplates(vec![DivisionTemplateRow {
+                template: 60,
+                owner: 999,
+                name: b"Unattributed".to_vec(),
+                ..Default::default()
+            }]));
         let root =
             std::env::temp_dir().join(format!("replay-template-roster-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let (source, context) = dashboard_base::test_fixtures::source_with_content(
-            vec![frame, empty, partial, refused_settings],
+            vec![frame, empty, partial, refused_settings, unresolved],
             &root,
         );
         let mut params = ArmySizeParams {
@@ -423,6 +438,23 @@ mod tests {
         ] {
             assert!(text.contains(fact), "missing {fact}: {text}");
         }
+        // An owner absent from CountryLinks leaves this country's roster unknown, never empty.
+        params.template_at = Some(("empty".into(), 104));
+        let reply = prepared::query(&source, &params, &context, &cancel)
+            .unwrap()
+            .unwrap();
+        assert!(
+            reply
+                .warnings
+                .iter()
+                .any(|warning| warning == "Template roster owner: CountryLinks country 999 is absent"),
+            "{:?}",
+            reply.warnings
+        );
+        let text = reply.template_sections.unwrap().join("\n");
+        assert!(text.contains("Template roster owner\nUnavailable"), "{text}");
+        assert!(!text.contains("No division templates."), "{text}");
+        assert!(!text.contains("Unattributed"), "{text}");
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }

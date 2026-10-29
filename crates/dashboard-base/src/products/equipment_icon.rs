@@ -425,7 +425,12 @@ impl IconContent {
                         // A scripted-enabler Err is already named by preparation_warnings.
                         if let Ok(Some(enabler)) = self.enablers.single(name) {
                             bases.push(&enabler.id);
-                            bases.extend(enabler.parent.as_deref());
+                            match &enabler.parent {
+                                Ok(parent) => bases.extend(parent.as_deref()),
+                                Err(reason) => {
+                                    refusals.insert(reason.clone());
+                                }
+                            }
                         }
                     }
                     for base in bases {
@@ -644,7 +649,7 @@ fn rule(
                 let ideology = model
                     .ruling_ideology
                     .clone()
-                    .ok_or("the creator's ruling party is not recorded at this hour")?;
+                    .ok_or("the creator's ruling party is unknown at this hour: not recorded, or its token is not text")?;
                 let culture = model
                     .graphical_culture
                     .clone()
@@ -830,10 +835,14 @@ fn fallback(
             continue;
         };
         for suffix in suffixes {
-            for technology in [Some(enabler.id.as_str()), enabler.parent.as_deref()]
-                .into_iter()
-                .flatten()
-            {
+            // A parent whose text cannot be held is unknown once the id has missed.
+            for technology in [
+                Ok(Some(enabler.id.as_str())),
+                enabler.parent.as_ref().map(Option::as_deref),
+            ] {
+                let Some(technology) = technology.map_err(Clone::clone)? else {
+                    continue;
+                };
                 // L's (original) tag first, then its 2D culture: each unknown leaves
                 // the icon unknown rather than skipping to the next name.
                 if let Some(tag) = names.technology_tag.clone()?

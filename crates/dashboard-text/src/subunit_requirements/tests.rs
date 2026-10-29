@@ -181,7 +181,7 @@ fn equipment_types_resolve_their_token_under_the_lexers_fold() {
 fn an_authored_need_past_five_decimals_truncates_like_the_engine() {
     let document = parser::parse(b"x = { need = { rifles = 0.1234567 } }").unwrap();
     let fields = document.items[0].value.items().unwrap();
-    let subunit = read_subunit("x", fields).unwrap();
+    let subunit = read_subunit("x", None, fields).unwrap();
     assert_eq!(subunit.requirements, [("rifles".to_owned(), 12_345)]);
 }
 
@@ -296,11 +296,9 @@ fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
             ("tanks".to_owned(), 900_000)
         ]
     );
-    assert!(
-        Content::default()
-            .read_subunits(&parser::parse(b"sub_units = { bad = { type = 4 } }").unwrap())
-            .is_err()
-    );
+    // An unknown category is reported and sets no flag, as the game reads it.
+    let unknown = content_with(b"sub_units = { bad = { type = 4 } }");
+    assert_eq!(unknown.subunit("bad").unwrap().category, 0);
 }
 
 #[test]
@@ -459,6 +457,28 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
         "common/units/infantry.txt",
         "sub_units = { infantry = { } Railway_Gun = { } }",
     );
+    // The sub-unit database's other directories, one with its root key in another case.
+    write(
+        "mod",
+        "common/units/unit_modifiers/modifiers.txt",
+        "SUB_UNITS = { modified = { } }",
+    );
+    write(
+        "mod",
+        "common/unit_tags/tags.txt",
+        "sub_unit_categories = { category_synthetic } sub_units = { tagged = { } }",
+    );
+    write(
+        "mod",
+        "common/units/critical_parts/parts.txt",
+        "sub_units = { parted = { } }",
+    );
+    // A quoted root key names no keyword.
+    write(
+        "mod",
+        "common/units/quoted.txt",
+        "\"sub_units\" = { quoted_root = { } }",
+    );
     let layers = ResolvedLayers::from_folders(&[
         (&root.join("base"), &[][..]),
         (&root.join("mod"), &[][..]),
@@ -466,7 +486,10 @@ fn sub_unit_keys_come_from_the_effective_direct_unit_files() {
     .unwrap();
     assert_eq!(
         subunit_keys(&layers).unwrap(),
-        BTreeSet::from(["Railway_Gun", "armor", "infantry"].map(str::to_owned))
+        BTreeSet::from(
+            ["Railway_Gun", "armor", "infantry", "modified", "parted", "tagged"]
+                .map(str::to_owned)
+        )
     );
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -539,4 +562,141 @@ fn a_mod_sub_unit_reads_its_stat_sheet() {
     );
     // A key the lexer folds names the same sub-unit.
     assert!(content.subunit_named("SYNTHETIC_RANGER").is_some());
+}
+
+/// A quoted category is no token and sets no flag; a bare one in any case does.
+#[test]
+fn a_quoted_type_sets_no_category() {
+    let content = content_with(
+        br#"sub_units = {
+            quoted = { type = "support" }
+            quoted_list = { type = { "support" infantry } }
+            bare = { type = SUPPORT }
+        }"#,
+    );
+    let support = installed_content_core::equipment::category_mask("support").unwrap();
+    let infantry = installed_content_core::equipment::category_mask("infantry").unwrap();
+    assert_eq!(content.subunit("quoted").unwrap().category, 0);
+    assert_eq!(content.subunit("quoted_list").unwrap().category, infantry);
+    assert_eq!(content.subunit("bare").unwrap().category, support);
+}
+
+/// A redefinition keeps what the game's reset leaves and starts the type mask, needs and stat words again.
+#[test]
+fn a_redefinition_keeps_what_the_reset_leaves() {
+    let content = content_with(
+        br#"sub_units = {
+            ranger = {
+                type = { infantry support }
+                group = support
+                division_3d_model_priority = 7
+                categories = { category_line }
+                essential = { rifles }
+                soft_attack = 0.5
+                need = { rifles = 10 }
+            }
+        }
+        sub_units = {
+            ranger = {
+                categories = { category_extra CATEGORY_LINE "category_quoted" }
+                essential = { Rifles tanks }
+                need = { tanks = 5 }
+            }
+        }"#,
+    );
+    let ranger = content.subunit("ranger").unwrap();
+    assert_eq!(ranger.sheet.group.as_deref(), Some("support"));
+    assert_eq!(ranger.model_priority, Some(7));
+    assert_eq!(ranger.sheet.categories, ["category_line", "category_extra"]);
+    assert_eq!(ranger.sheet.essential, ["rifles", "tanks"]);
+    assert_eq!(ranger.category, 0);
+    assert!(ranger.sheet.words.is_empty());
+    assert_eq!(ranger.requirements, [("tanks".to_owned(), 500_000)]);
+    // A later explicit group replaces it.
+    let regrouped = content_with(
+        b"sub_units = { ranger = { group = support } } sub_units = { ranger = { group = mobile } }",
+    );
+    assert_eq!(
+        regrouped.subunit("ranger").unwrap().sheet.group.as_deref(),
+        Some("mobile")
+    );
+}
+
+/// A bare key in another ASCII case is the field; a quoted one is no keyword and reads nothing.
+#[test]
+fn sub_unit_fields_dispatch_by_keyword() {
+    let content = content_with(
+        br#"Sub_Units = {
+            cased = { NEED = { rifles = 100 } Combat_Width = 2 SOFT_ATTACK = 0.5 }
+            quoted = { "need" = { rifles = 100 } "combat_width" = 2 }
+        }"#,
+    );
+    let cased = content.subunit("cased").unwrap();
+    assert_eq!(cased.requirements, [("rifles".to_owned(), 10_000_000)]);
+    assert_eq!(cased.sheet.combat_width, 200_000);
+    assert_eq!(
+        cased.sheet.words,
+        [("soft_attack".to_owned(), "0.5".to_owned())]
+    );
+    let quoted = content.subunit("quoted").unwrap();
+    assert!(quoted.requirements.is_empty());
+    assert_eq!(quoted.sheet.combat_width, 0);
+    assert!(quoted.sheet.words.is_empty());
+}
+
+/// Content reads every sub-unit database directory in its order, as the database does.
+#[test]
+fn content_reads_every_sub_unit_database_directory_in_order() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_subunit_directories_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    for (path, text) in [
+        (
+            "common/units/equipment/rifles.txt",
+            "equipments = { rifles = { is_archetype = yes type = infantry } }",
+        ),
+        (
+            "common/units/a_line.txt",
+            "sub_units = { early = { need = { rifles = 1 } } line = { need = { rifles = 2 } } }",
+        ),
+        (
+            "common/units/unit_modifiers/modifiers.txt",
+            "sub_units = { early = { group = support need = { rifles = 9 } } }",
+        ),
+        (
+            "common/unit_tags/tags.txt",
+            "sub_unit_categories = { category_synthetic } sub_units = { tagged = { need = { rifles = 3 } } }",
+        ),
+        (
+            "common/units/critical_parts/parts.txt",
+            "sub_units = { parted = { need = { rifles = 4 } } }",
+        ),
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let content = Content::load(&layers);
+    std::fs::remove_dir_all(&root).unwrap();
+    let content = content.unwrap();
+    let keys: Vec<_> = content
+        .archetype_subunits("rifles")
+        .unwrap()
+        .iter()
+        .map(|unit| unit.key.clone())
+        .collect();
+    assert_eq!(keys, ["early", "tagged", "parted", "line"]);
+    let early = content.subunit("early").unwrap();
+    assert_eq!(early.sheet.group.as_deref(), Some("support"));
+    assert_eq!(early.requirements, [("rifles".to_owned(), 100_000)]);
+    assert_eq!(
+        content.subunit("tagged").unwrap().requirements,
+        [("rifles".to_owned(), 300_000)]
+    );
 }

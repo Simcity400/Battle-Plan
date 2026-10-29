@@ -16,7 +16,7 @@ const identities = [
   { tag: 'X', identities: [identity(0, 9, 1, 10), identity(10, 14, 2, 20), identity(15, 20, 3, 30)] },
   { tag: 'Y', identities: [identity(15, 20, 2, 20)] },
 ];
-const army: ArmySizeReply = { branchId: '1', available: true, measures: ['divisions'], types: [], warnings: [],
+const army: ArmySizeReply = { branchId: '1', available: true, measures: ['divisions'], unknownMeasures: [], types: [], warnings: [],
   windows: [], window: 0, interval: span(0, 20), series: identities.map(history => ({ ...history, membership: null,
     segments: [span(0, 20)], runs: history.identities.map<ArmyRun>(run => [run.firstHour, run.slot === 3 ? 99 : run.slot * 11, run.lastHour]) })) };
 const manifest: ArmySizeReply = { ...army, windows: [span(0, 20)], window: null, interval: null, series: [] };

@@ -6,7 +6,7 @@ pub mod sprites;
 
 use super::ContentOptions;
 use crate::{
-    Artwork, Source,
+    Artwork, FocusDatabase, Source,
     catalogue::{self, CachedResult, Catalogue},
     invalid,
 };
@@ -27,9 +27,10 @@ pub const ICON_EDGE: u32 = 96;
 
 pub use crate::catalogue::MAX_RETAINED_ARTWORK_BYTES;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    Focus,
+    /// The focuses of one database, every lookup by id made in it alone.
+    Focus(FocusDatabase),
     Technology,
 }
 
@@ -37,9 +38,18 @@ impl Kind {
     /// What a fallback note calls one of this kind's items.
     fn noun(self) -> &'static str {
         match self {
-            Self::Focus => "focus",
+            Self::Focus(FocusDatabase::National) => "focus",
+            Self::Focus(FocusDatabase::Continuous) => "continuous focus",
             Self::Technology => "technology",
         }
+    }
+}
+
+/// The content database `database` names.
+fn focus_database(database: FocusDatabase) -> installed_content_focus::focus::Database {
+    match database {
+        FocusDatabase::National => installed_content_focus::focus::Database::National,
+        FocusDatabase::Continuous => installed_content_focus::focus::Database::Continuous,
     }
 }
 
@@ -226,19 +236,19 @@ impl Preparation {
         let mut folder_warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
             match kind {
-                Kind::Focus => {
+                Kind::Focus(_) => {
                     let (definitions, definition_warnings) = installed_content_focus::focus::read(layers)?;
                     warnings.extend(
                         definition_warnings
                             .iter()
                             .map(|(_, message)| message.clone()),
                     );
-                    let inventory = definitions.ids().map(str::to_owned).collect();
+                    // Both databases share this reading; each context lists its own ids.
                     (
                         definitions,
                         installed_content_focus::focus::point_days(layers)?,
                         TechnologyNames::default(),
-                        inventory,
+                        Vec::new(),
                         definition_warnings,
                     )
                 }
@@ -328,7 +338,7 @@ pub fn ensure<'a>(
     let catalogue = catalogue::catalogue(source, content)?;
     if !slot
         .as_ref()
-        .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, &catalogue))
+        .is_some_and(|cached| cached.kind == kind && Arc::ptr_eq(&cached.catalogue, &catalogue))
     {
         *slot = Some(Context::load(catalogue, kind)?);
     }
@@ -479,7 +489,7 @@ impl Context {
         let layers = &catalogue.content.layers;
         let prepared = layers.derived::<PreparedContent>();
         let slot = match kind {
-            Kind::Focus => &prepared.focus,
+            Kind::Focus(_) => &prepared.focus,
             Kind::Technology => &prepared.technology,
         };
         let prepared = slot
@@ -494,7 +504,13 @@ impl Context {
         let definitions = Arc::clone(&prepared.definitions);
         let technology_names = Arc::clone(&prepared.technology_names);
         let point_days = prepared.point_days;
-        let inventory = prepared.inventory.clone();
+        let inventory = match kind {
+            Kind::Focus(database) => definitions
+                .ids_in(focus_database(database))
+                .map(str::to_owned)
+                .collect(),
+            Kind::Technology => prepared.inventory.clone(),
+        };
         let preparation_warnings = prepared.preparation_warnings.clone();
         let folder_definitions = Arc::clone(&prepared.folder_definitions);
         let folder_warnings = prepared.folder_warnings.clone();
@@ -651,8 +667,22 @@ impl Context {
     /// are plain.
     fn view(&self) -> catalogue::View {
         match self.kind {
-            Kind::Focus => catalogue::View::Scripted,
+            Kind::Focus(_) => catalogue::View::Scripted,
             Kind::Technology => catalogue::View::Plain,
+        }
+    }
+
+    /// `token`'s definition in this context's focus database alone: `None`
+    /// when it defines none, `Err` with a refused file of that database that
+    /// could define it. A technology context has no focuses.
+    fn focus(
+        &self,
+        token: &str,
+    ) -> Result<Option<&installed_content_focus::focus::FocusDefinition>, &installed_content_core::coverage::Gap>
+    {
+        match self.kind {
+            Kind::Focus(database) => self.definitions.get_in(focus_database(database), token),
+            Kind::Technology => Ok(None),
         }
     }
 
@@ -683,10 +713,9 @@ impl Context {
         tag: Option<&str>,
         at: Option<u32>,
     ) -> Result<String, String> {
-        if self.kind == Kind::Focus {
+        if matches!(self.kind, Kind::Focus(_)) {
             return Ok(self
-                .definitions
-                .get(token)
+                .focus(token)
                 .map_err(|gap| format!("focus {token}: {gap}"))?
                 .map(|d| d.description.clone())
                 .unwrap_or_else(|| format!("{token}_desc")));
@@ -754,7 +783,7 @@ impl Context {
     }
 
     fn base_duration_days(&self, token: &str) -> Option<f64> {
-        let days = self.definitions.get(token).ok()??.cost? * self.point_days?;
+        let days = self.focus(token).ok()??.cost? * self.point_days?;
         days.is_finite().then_some(days)
     }
 
@@ -863,7 +892,7 @@ impl Context {
             let key = self.technology_root_at(token, at).ok()?;
             return self.localise(&key);
         }
-        let definition = self.definitions.get(token).ok()?;
+        let definition = self.focus(token).ok()?;
         let key = definition.map(|d| d.localisation.as_str()).unwrap_or(token);
         self.localise(key)
     }
@@ -880,7 +909,7 @@ impl Context {
         match self.kind {
             // Technology badges use the _medium suffix.
             Kind::Technology => Ok(Some(format!("GFX_{token}_medium"))),
-            Kind::Focus => match self.definitions.get(token) {
+            Kind::Focus(_) => match self.focus(token) {
                 Err(gap) => Err(Finding::grouped(
                     FindingKind::Refused,
                     token,
@@ -1038,7 +1067,7 @@ impl Context {
                 reason.clone(),
             ));
         }
-        if let Err(gap) = self.definitions.get(token) {
+        if let Err(gap) = self.focus(token) {
             findings.push(Finding::grouped(
                 Kind::Refused,
                 token,
@@ -1088,7 +1117,7 @@ impl Context {
     pub fn requested_focus_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token).ok().flatten())
+            .filter_map(|token| self.focus(token).ok().flatten())
             .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
     }
 
@@ -1097,7 +1126,7 @@ impl Context {
     /// Asked of every catalogue a tree icon can be drawn through: this context's and, while it
     /// shows visual mods, the recording's own its draw falls back to ([`Self::drawing_catalogues`]).
     pub fn focus_country_icon_override(&self, token: &str, tag: &str) -> bool {
-        self.definitions.get(token).ok().flatten().is_some_and(|definition| {
+        self.focus(token).ok().flatten().is_some_and(|definition| {
             let country = &definition.sprite_overrides(token, Some(tag))[0];
             self.drawing_catalogues()
                 .any(|catalogue| !matches!(catalogue.sprites.find(country), Ok(None)))
@@ -1115,7 +1144,7 @@ impl Context {
     pub fn requested_focus_display_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token).ok().flatten())
+            .filter_map(|token| self.focus(token).ok().flatten())
             .any(|definition| focus_needs_frame(&self.catalogue, definition, false))
     }
 
@@ -1123,14 +1152,14 @@ impl Context {
     pub fn requested_focus_icons_need_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token).ok().flatten())
+            .filter_map(|token| self.focus(token).ok().flatten())
             .any(focus_icons_need_frame)
     }
 
     pub fn requested_focus_title_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token).ok().flatten())
+            .filter_map(|token| self.focus(token).ok().flatten())
             .any(|definition| {
                 self.catalogue
                     .localisation
@@ -1142,7 +1171,7 @@ impl Context {
     pub fn requested_focus_text_needs_frame(&self, tokens: &[String]) -> bool {
         tokens
             .iter()
-            .filter_map(|token| self.definitions.get(token).ok().flatten())
+            .filter_map(|token| self.focus(token).ok().flatten())
             .any(|definition| {
                 [&definition.localisation, &definition.description]
                     .into_iter()
@@ -1167,7 +1196,7 @@ impl Context {
         // The definition's conditional icon is evaluated where a drawing catalogue declares no
         // override: this context's, or the recording's own its draw can fall back to.
         let icons = projection.icons()
-            && self.definitions.get(token).ok().flatten().is_some_and(|definition| {
+            && self.focus(token).ok().flatten().is_some_and(|definition| {
                 let overrides = definition.sprite_overrides(token, Some(tag));
                 focus_icons_need_frame(definition)
                     && self.drawing_catalogues().any(|catalogue| {
@@ -1192,8 +1221,11 @@ impl Context {
     /// Dollar references have already expanded through the content localiser.
     pub fn focus_text_needs_frame(&self) -> bool {
         *self.focus_text_needs_frame.get_or_init(|| {
+            let Kind::Focus(database) = self.kind else {
+                return false;
+            };
             self.definitions
-                .known()
+                .known_in(focus_database(database))
                 .any(|definition| focus_needs_frame(&self.catalogue, definition, true))
         })
     }
@@ -1285,7 +1317,7 @@ impl Context {
             let sprites = requests
                 .iter()
                 .filter_map(|&(token, tag)| {
-                    let definition = self.definitions.get(token).ok()??;
+                    let definition = self.focus(token).ok()??;
                     let selected = if tree {
                         let mut selected = None;
                         for name in definition.sprite_overrides(token, Some(tag)) {
@@ -1340,7 +1372,7 @@ impl Context {
             let (icon, mut refusal) = if !projection.icons() {
                 (None, None)
             } else {
-                match self.definitions.get(token) {
+                match self.focus(token) {
                     Err(gap) => (None, Some(format!("focus {token}: {gap}"))),
                     Ok(None) => (
                         None,
@@ -1482,7 +1514,7 @@ impl Context {
                 }?;
                 catalogue::plain_text(&expanded)
             };
-            let definition = self.definitions.get(token);
+            let definition = self.focus(token);
             if let Ok(Some(definition)) = definition {
                 let description = projection.descriptions()
                     .then_some((&definition.description, &mut art.description));
@@ -1626,8 +1658,8 @@ impl Context {
         let mut items = Vec::with_capacity(tokens.len());
         for (token, at) in tokens {
             crate::metadata::check_cancel(cancelled)?;
-            let (name, description) = if self.kind == Kind::Focus {
-                match self.definitions.get(token) {
+            let (name, description) = if matches!(self.kind, Kind::Focus(_)) {
+                match self.focus(token) {
                     // A refused file leaves the focus's text unknown.
                     Err(_) => (None, None),
                     Ok(definition) => {
@@ -1867,8 +1899,9 @@ mod tests {
             &[],
         );
         let catalogue = Arc::new(catalogue);
-        let mut text = Context::load(Arc::clone(&catalogue), Kind::Focus).unwrap();
-        let images = Context::load(catalogue, Kind::Focus).unwrap();
+        let national = Kind::Focus(FocusDatabase::National);
+        let mut text = Context::load(Arc::clone(&catalogue), national).unwrap();
+        let images = Context::load(catalogue, national).unwrap();
         assert!(Arc::ptr_eq(&text.definitions, &images.definitions));
         assert!(!text.requested_focus_text_needs_frame(&["mod_focus".into()]));
         assert!(text.requested_focus_needs_frame(&["mod_focus".into()]));
@@ -1923,6 +1956,156 @@ mod tests {
         );
     }
 
+    /// One id names a focus in each database. A context looks ids up in its
+    /// own database alone, so neither answers for the other, and a file one
+    /// database refuses leaves only that database's focuses unknown.
+    #[test]
+    fn each_focus_database_answers_only_for_its_own_focuses() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::{frame::DecodedFrame, frame::TableView};
+        let frame = DecodedFrame {
+            branch: 1,
+            hour: 10,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Default::default(),
+        };
+        let files = |refused: bool| {
+            let mut files = vec![
+                (
+                    "common/national_focus/mod.txt",
+                    "focus_tree={focus={id=shared text=national_title cost=2} focus={id=national_only text=national_title cost=2}}",
+                ),
+                (
+                    "common/continuous_focus/mod.txt",
+                    "continuous_focus_palette={focus={id=shared text=continuous_title} focus={id=continuous_only text=continuous_title}}",
+                ),
+                (
+                    "common/defines/mod.lua",
+                    "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n national_title:0 \"National title\"\n continuous_title:0 \"Continuous title\"\n",
+                ),
+            ];
+            if refused {
+                // A later continuous file the reader refuses could redefine any continuous focus.
+                files.push((
+                    "common/continuous_focus/zz_refused.txt",
+                    "continuous_focus_palette={focus={text=continuous_title}}",
+                ));
+            }
+            files
+        };
+        let contexts = |refused: bool| {
+            let (catalogue, folders) = texture_catalogue(&files(refused), &[]);
+            let catalogue = Arc::new(catalogue);
+            let national =
+                Context::load(Arc::clone(&catalogue), Kind::Focus(FocusDatabase::National))
+                    .unwrap();
+            let continuous =
+                Context::load(catalogue, Kind::Focus(FocusDatabase::Continuous)).unwrap();
+            assert!(Arc::ptr_eq(&national.definitions, &continuous.definitions));
+            (national, continuous, folders)
+        };
+        let texts = |context: &Context| {
+            let tokens = BTreeSet::from(["continuous_only", "national_only", "shared"]);
+            let (items, _) = context
+                .text_catalogue(tokens, &AtomicBool::new(false))
+                .unwrap();
+            items
+                .into_iter()
+                .map(|item| (item.token, item.name, item.base_duration_days))
+                .collect::<Vec<_>>()
+        };
+        let titles = |context: &mut Context, token: &str| {
+            context
+                .focus_titles_at(&[(token, "TAG")], &frame, |items| items.collect::<Vec<_>>())
+                .remove(0)
+        };
+        let national_title = Some("National title".to_owned());
+        let continuous_title = Some("Continuous title".to_owned());
+
+        let (mut national, mut continuous, _folders) = contexts(false);
+        assert_eq!(national.tokens().0, ["national_only", "shared"]);
+        assert_eq!(continuous.tokens().0, ["continuous_only", "shared"]);
+        assert_eq!(
+            texts(&national),
+            [
+                ("continuous_only".to_owned(), None, None),
+                ("national_only".to_owned(), national_title.clone(), Some(14.0)),
+                ("shared".to_owned(), national_title.clone(), Some(14.0)),
+            ]
+        );
+        // The national focus of the same id lends the continuous focus neither its title nor its cost.
+        assert_eq!(
+            texts(&continuous),
+            [
+                ("continuous_only".to_owned(), continuous_title.clone(), None),
+                ("national_only".to_owned(), None, None),
+                ("shared".to_owned(), continuous_title.clone(), None),
+            ]
+        );
+        let (art, reason) = titles(&mut national, "shared");
+        assert_eq!((art.name, reason), (national_title.clone(), None));
+        let (art, reason) = titles(&mut continuous, "shared");
+        assert_eq!((art.name, reason), (continuous_title.clone(), None));
+        let (art, reason) = titles(&mut continuous, "national_only");
+        assert_eq!(art.name, None);
+        assert_eq!(
+            reason.as_deref(),
+            Some("focus national_only: definition absent from recorded content")
+        );
+
+        let (mut national, mut continuous, _folders) = contexts(true);
+        // A refused continuous file leaves every national focus as it was.
+        assert_eq!(
+            texts(&national),
+            [
+                ("continuous_only".to_owned(), None, None),
+                ("national_only".to_owned(), national_title.clone(), Some(14.0)),
+                ("shared".to_owned(), national_title.clone(), Some(14.0)),
+            ]
+        );
+        let (art, reason) = titles(&mut national, "shared");
+        assert_eq!((art.name, reason), (national_title, None));
+        assert!(
+            national
+                .prepare("shared")
+                .1
+                .iter()
+                .all(|finding| !finding.message.contains("continuous_focus"))
+        );
+        // Its own focuses are unknown, never the national definition of the same id.
+        assert_eq!(
+            texts(&continuous),
+            [
+                ("continuous_only".to_owned(), None, None),
+                ("national_only".to_owned(), None, None),
+                ("shared".to_owned(), None, None),
+            ]
+        );
+        for token in ["shared", "national_only"] {
+            let (art, reason) = titles(&mut continuous, token);
+            assert_eq!(art.name, None);
+            let reason = reason.unwrap();
+            assert!(
+                reason.contains("common/continuous_focus/zz_refused.txt"),
+                "{reason}"
+            );
+            assert!(
+                continuous.prepare(token).1.iter().any(|finding| finding
+                    .message
+                    .contains("common/continuous_focus/zz_refused.txt")),
+                "{token}"
+            );
+        }
+    }
+
     #[test]
     fn focus_display_projections_do_not_reach_unrequested_scoped_descriptions() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -1965,7 +2148,8 @@ mod tests {
                 }),
             )],
         );
-        let mut context = Context::load(Arc::new(catalogue), Kind::Focus).unwrap();
+        let mut context =
+            Context::load(Arc::new(catalogue), Kind::Focus(FocusDatabase::National)).unwrap();
         let plain = ["plain".into(), "empty".into(), "equal".into()];
         assert!(!context.requested_focus_title_needs_frame(&plain));
         assert!(!context.requested_focus_display_needs_frame(&plain));
@@ -2059,7 +2243,8 @@ mod tests {
                 ("gfx/mod/other.png", png_bytes(&icon(22))),
             ],
         );
-        let mut context = Context::load(Arc::new(catalogue), Kind::Focus).unwrap();
+        let mut context =
+            Context::load(Arc::new(catalogue), Kind::Focus(FocusDatabase::National)).unwrap();
         assert!(context.focus_text_needs_frame());
         let mut frame = DecodedFrame {
             branch: 1,
@@ -2159,7 +2344,8 @@ mod tests {
             ],
             &[],
         );
-        let mut context = Context::load(Arc::new(catalogue), Kind::Focus).unwrap();
+        let mut context =
+            Context::load(Arc::new(catalogue), Kind::Focus(FocusDatabase::National)).unwrap();
         assert!(context.focus_text_needs_frame());
         let (static_text, _) = context
             .text_catalogue(
@@ -2927,7 +3113,11 @@ mod catalogue_reads {
         // A reached GUI read will fail, but constructing a text catalogue must not read it.
         let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
         assert!(!catalogue.guis_loaded());
-        let focus = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+        let focus = artwork::Context::load(
+            Arc::clone(&catalogue),
+            artwork::Kind::Focus(crate::FocusDatabase::National),
+        )
+        .unwrap();
         let (titles, _) = focus
             .text_catalogue(BTreeSet::from(["synthetic_focus"]), &AtomicBool::new(false))
             .unwrap();
@@ -3008,7 +3198,9 @@ mod interface_refusals {
         ]);
         let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
         let catalogue = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
-        let context = artwork::Context::load(catalogue, artwork::Kind::Focus).unwrap();
+        let context =
+            artwork::Context::load(catalogue, artwork::Kind::Focus(crate::FocusDatabase::National))
+                .unwrap();
         let (items, warnings) = context
             .text_catalogue(BTreeSet::from(["synthetic"]), &AtomicBool::new(false))
             .unwrap();
@@ -3083,9 +3275,11 @@ mod presentation {
         let (source, mut options) = machine.open();
         let frame = empty_frame();
         let shown = |options: &crate::products::ContentOptions| {
-            let mut context =
-                Context::load(catalogue::catalogue(&source, options).unwrap(), Kind::Focus)
-                    .unwrap();
+            let mut context = Context::load(
+                catalogue::catalogue(&source, options).unwrap(),
+                Kind::Focus(crate::FocusDatabase::National),
+            )
+            .unwrap();
             (0..2)
                 .map(|_| {
                     let (items, line) = fallback_line(|| {
@@ -3135,9 +3329,11 @@ mod presentation {
         machine.write_mod("broken", "gfx/broken.png", b"not a png");
         let (source, mut options) = machine.open();
         let reply = |options: &crate::products::ContentOptions| {
-            let mut context =
-                Context::load(catalogue::catalogue(&source, options).unwrap(), Kind::Focus)
-                    .unwrap();
+            let mut context = Context::load(
+                catalogue::catalogue(&source, options).unwrap(),
+                Kind::Focus(crate::FocusDatabase::National),
+            )
+            .unwrap();
             (0..2)
                 .map(|_| {
                     let ((art, _), line) = fallback_line(|| {
@@ -3189,7 +3385,7 @@ mod presentation {
         select(&source, &mut options, &["override"]);
         let shown = catalogue::catalogue(&source, &options).unwrap();
         assert!(shown.sprites.find("GFX_GER_f_one").unwrap().is_none());
-        let context = Context::load(shown, Kind::Focus).unwrap();
+        let context = Context::load(shown, Kind::Focus(crate::FocusDatabase::National)).unwrap();
         // The selection declares an override; the recording, for a country without one, the
         // conditional icon.
         assert!(context.requested_tree_focus_needs_frame("f_one", "ITA", super::FocusProjection::Icons));

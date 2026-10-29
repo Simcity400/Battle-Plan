@@ -649,10 +649,11 @@ fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
             &captured.law_bytes.first[..captured.law_bytes.len],
             b"civiliancivilian"
         );
-        // The existing raw census includes the country's alias. Both
-        // default and override occurrences contribute for each entry.
-        assert_eq!(job.settings_required, 2);
-        assert_eq!(job.law_bytes_required, 32);
+        // The raw census holds the country once, not again for its alias.
+        // Its default and override occurrences both contribute.
+        assert_eq!(job.census.len(), 1);
+        assert_eq!(job.settings_required, 1);
+        assert_eq!(job.law_bytes_required, 16);
         assert!(!job.law_demand_overflowed);
         assert_eq!(captured.settings.rows.len(), job.settings_required);
         assert_eq!(captured.law_bytes.first.len(), job.law_bytes_required);

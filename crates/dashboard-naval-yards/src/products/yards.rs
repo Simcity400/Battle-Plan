@@ -746,6 +746,49 @@ mod tests {
     }
 
     #[test]
+    fn port_names_refuse_an_unknown_or_unshowable_primary_name_instead_of_the_state_name() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
+            "localisation/ports_l_english.yml",
+            "\u{feff}l_english:\n spaced_port:0 \"Spaced ¤ port\"\n empty_port:0 \"\"\n VICTORY_POINTS_9:0 \"Victory port\"\n VICTORY_POINTS_10:0 \"Spaced ¤ victory\"\n",
+        )]);
+        let cat = Arc::new(cat);
+        let name = |province: u32, override_name: Result<&str, &str>, owner_tag: Result<&str, &str>| {
+            let port = Operand::Port(PortName {
+                province,
+                override_name: override_name
+                    .map(|name| name.as_bytes().to_vec())
+                    .map_err(str::to_owned),
+                owner_tag: owner_tag.map(str::to_owned).map_err(str::to_owned),
+                state: Ok(StateName {
+                    id: 3,
+                    custom: b"Harbour state".to_vec(),
+                    owner: Vec::new(),
+                }),
+            });
+            resolve(&port, Some(&cat)).map(|choice| choice.name)
+        };
+        // Only a genuinely absent primary name falls back to the state's.
+        assert_eq!(name(11, Ok(""), Ok("SYN")).unwrap(), "Harbour state");
+        assert_eq!(name(9, Ok("empty_port"), Ok("SYN")).unwrap(), "Victory port");
+        assert_eq!(name(9, Ok("Literal port"), Ok("SYN")).unwrap(), "Literal port");
+        for spaced in [
+            name(9, Ok("spaced_port"), Ok("SYN")),
+            name(10, Ok(""), Ok("SYN")),
+        ] {
+            assert!(spaced.unwrap_err().contains("plain text cannot show"));
+        }
+        assert_eq!(
+            name(9, Err("Province names unavailable"), Ok("SYN")).unwrap_err(),
+            "Province names unavailable"
+        );
+        assert_eq!(
+            name(9, Ok(""), Err("Owner unrecorded")).unwrap_err(),
+            "Owner unrecorded"
+        );
+    }
+
+    #[test]
     fn counted_refusals_accumulate_and_interning_survives_restore_without_per_hour_names() {
         let mut state = State::default();
         let mut values = Values::default();

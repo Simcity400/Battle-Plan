@@ -119,9 +119,10 @@ impl MemoryBudget {
         if error.kind() != io::ErrorKind::WouldBlock {
             return error;
         }
-        let before = self.used();
+        // Count releases, not net use: a concurrent admission may take what eviction freed.
+        let before = self.generation();
         evict();
-        if self.used() < before {
+        if self.generation() != before {
             error
         } else {
             io::Error::new(
@@ -507,5 +508,25 @@ mod item_admission_tests {
         );
         drop(held);
         assert!(budget.admit_item(4).is_ok());
+    }
+
+    #[test]
+    fn eviction_stays_retryable_when_another_admission_takes_the_freed_credit() {
+        let budget = MemoryBudget::new(100);
+        let held = budget.admit(70).unwrap();
+        let mut cached = Some(budget.admit(20).unwrap());
+        let mut other = None;
+        let error = budget.reclaim_failure(budget.admit_item(20).unwrap_err(), || {
+            cached.take();
+            // Another builder admits before this reclaim looks again.
+            other = Some(budget.admit(20).unwrap());
+        });
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(budget.used(), 90);
+        // Nothing released: the working set is pinned.
+        let error = budget.reclaim_failure(budget.admit_item(20).unwrap_err(), || {});
+        assert_eq!(error.kind(), io::ErrorKind::OutOfMemory);
+        drop((held, other));
+        assert_eq!(budget.used(), 0);
     }
 }

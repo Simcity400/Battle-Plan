@@ -7,15 +7,16 @@ import { CountryFlag } from './CountryFlag';
 import { forgetSettledProducts, loadProduct, loadTransientProduct } from '../dashboard/products';
 import { FlagStore, flagStore, loadListFlags } from '../dashboard/flagCache';
 import { useContentRevision } from '../dashboard/contentRevision';
-import { nameKey, useCountryNamesAt } from '../dashboard/countryNamesAt';
+import { nameKey, useCountryNamesAt, useCountryNamesRead } from '../dashboard/countryNamesAt';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply, CountryFlagSize, LandOwners } from '../generated/dashboard';
-import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
+import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList';
 import type { CountryOption } from './countryList';
 
 /** `.country-picker-list` max-height, used until the list is measured. */
 const LIST_HEIGHT = 340;
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
+const NO_NAME_READS: readonly { tag: string; hour: number }[] = [];
 /** An unchanged list viewport keeps its state, so measuring and scrolling never re-render for nothing. */
 const listView = (scrollTop: number, height: number) => (before: { scrollTop: number; height: number }) =>
   before.scrollTop === scrollTop && before.height === height ? before : { scrollTop, height };
@@ -148,6 +149,22 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
     : `${sourceKey}:${headerTag}:${headerSize}`;
   const headerKey = `${headerIdentity}:${headerContext?.branchId}:${headerContext?.hour}`;
+  // The top bar names its country at the playback day its flag shows; the shown name
+  // stays until the new day's arrives, as the flag does.
+  const wantedNameHour = live && choiceReads === undefined && !allowedTags && headerTag ? flagAt!.hour : null;
+  const [askedName, setAskedName] = useState<{ identity: string; hour: number } | null>(null);
+  const askedHour = wantedNameHour === null ? null : askedName?.identity === headerIdentity ? askedName.hour : wantedNameHour;
+  const headerNameAt = useMemo(() => askedHour !== null && headerTag ? [{ tag: headerTag, hour: askedHour }] : NO_NAME_READS, [askedHour, headerTag]);
+  const headerNameReads = useCountryNamesRead(client, choiceTrack, headerNameAt, headerNameAt.length > 0);
+  const headerNameRead = headerNameAt.length ? headerNameReads.get(nameKey(headerNameAt[0].hour, headerNameAt[0].tag)) : undefined;
+  const [headerName, setHeaderName] = useState<{ identity: string; name: string | null } | null>(null);
+  useEffect(() => {
+    if (headerNameRead !== undefined) setHeaderName({ identity: headerIdentity, name: typeof headerNameRead === 'string' ? headerNameRead : null });
+    const next = nameAskHour(askedName?.identity === headerIdentity ? askedName.hour : null, wantedNameHour, headerNameRead !== undefined);
+    if (next !== null && (askedName?.identity !== headerIdentity || askedName.hour !== next)) setAskedName({ identity: headerIdentity, hour: next });
+  }, [headerNameRead, headerIdentity, wantedNameHour, askedName]);
+  const datedHeaderName = !headerNameAt.length ? undefined
+    : headerName?.identity === headerIdentity ? headerName.name ?? 'Country name unavailable' : headerTag;
   // A new playback day keeps the current flag on screen until its own flag arrives.
   const headerImage = headerFlag.client === client && headerFlag.identity === headerIdentity ? headerFlag.image : undefined;
   const flagError = [flagState.context === nameContext ? flagState.error : null, headerFlag.client === client && headerFlag.key === headerKey ? headerFlag.error : null].filter(Boolean).join('\n') || null;
@@ -263,7 +280,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}>
       {addLabel ? <Icon name="plus" /> : <CountryFlag image={headerImage} />}
       {addLabel ? <span>{addLabel}</span> : field ? <span>{(selected ? countryName(selected) : selectedTag) ?? 'Choose country'}</span>
-        : <span className="header-country-text"><strong>{(selected ? countryName(selected) : selectedTag) ?? (source ? 'Choose country' : 'No campaign')}</strong></span>}
+        : <span className="header-country-text"><strong>{datedHeaderName ?? (selected ? countryName(selected) : selectedTag) ?? (source ? 'Choose country' : 'No campaign')}</strong></span>}
       <Icon name="chevron-down" />
     </button>
     <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"

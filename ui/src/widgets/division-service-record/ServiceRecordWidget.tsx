@@ -9,6 +9,7 @@ import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
+import { subjectHandle } from '../../dashboard/chosen';
 import { useCountryNameAt, useReachedProduct } from '../../dashboard/reachedProduct';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { topDivision, validateDivisionCareers } from './careersData';
@@ -25,7 +26,9 @@ export default function ServiceRecordWidget({ widget, runtime, active, onDiagnos
   const record = { runtime, trackId: track.id, hour: Math.floor(window.lastHour), show: String(options.show), log: logSettings(options),
     live: widget.time.mode === 'follow', active, onDiagnostics };
   if (!options.division) return <TopDivisionRecord {...record} widget={widget} />;
-  return <RecordView {...record} division={String(options.division)} />;
+  const division = subjectHandle(track.source.metadata.campaignKey, String(options.division));
+  if (division === null) return <WidgetState kind="unavailable" message="The saved division is from another campaign. Choose one in widget settings." />;
+  return <RecordView {...record} division={division} />;
 }
 
 /** The first division of the widget's countries on Most decorated divisions at its default sort. */

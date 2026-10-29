@@ -124,6 +124,16 @@ pub struct CountryMetadata {
     pub observed_hour: i32,
 }
 
+/// The focus database a focus id is looked up in: national focuses (trees,
+/// completions and the current focus) or continuous focuses. One id can name
+/// a different focus in each.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum FocusDatabase {
+    National,
+    Continuous,
+}
+
 /// Localised name, description and thumbnail for one game token (a focus or a
 /// technology). Missing pieces stay null rather than guessed.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]

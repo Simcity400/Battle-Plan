@@ -1,11 +1,12 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
+import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
 import { dayLabel, drawLine } from '../../charts/draw';
-import { drawLineSummary } from '../../charts/chartSummary';
+import { drawLineSummary, extentOfSummary } from '../../charts/chartSummary';
 import { exactPartShare } from '../../charts/race/countryPartsDrillData';
-import { runAt } from '../../charts/series';
+import { extentOf, runAt } from '../../charts/series';
 import { fixedNumber, formatAmount, formatRate, formatSigned } from '../../charts/valueAxis';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
@@ -84,7 +85,12 @@ export default function StockpileDrill({ data, group, hour, client, track, alias
   // members. Their stack still shows those members, as the legacy chart does.
   const summaries = incoming.prepared ? { parts: series.map(part => incoming.summaries.get(part.id) ?? { from: hour, to: hour, width: 1, buckets: [], runs: [] }),
     total: totalSummary?.runs || totalSummary?.buckets.every(bucket => bucket !== null && !bucket.hasBreak) ? totalSummary : undefined } : undefined;
+  // The dashed needed line widens the value axis: a shortage beyond the stock stays in view.
+  const neededExtent = useCallback((x: readonly [number, number]) => incoming.prepared
+    ? incoming.needed ? extentOfSummary(incoming.needed, x[0], x[1]) : null
+    : needRuns.length ? extentOf(needRuns, x[0], x[1]) : null, [incoming.prepared, incoming.needed, needRuns]);
   return <div className="stockpile-models">
+    {incoming.error && <WidgetState kind="error" what="the stock history" detail={incoming.error} onRetry={incoming.retry} />}
     {logistics && <p className="stockpile-facts">Available <b>{logistics.available == null ? 'not known' : amount(logistics.available)}</b>
       {' − '}needed <b>{logistics.need == null ? 'not known' : amount(logistics.need)}</b>
       {' = '}<b className={logistics.balance < 0n ? 'is-negative' : logistics.balance > 0n ? 'is-positive' : undefined}>{logistics.balance < 0n ? 'shortage ' : 'surplus '}{formatSigned(logistics.balance, data.decimals, 0)}</b>
@@ -105,7 +111,7 @@ export default function StockpileDrill({ data, group, hour, client, track, alias
     <BreakdownChart {...chart} {...{ summaries }} series={series} selectedHour={hour} tooltipHeight={viewport}
       onSummaryView={incoming.onSummaryView} onHover={incoming.onHover} onNavigateHour={incoming.onNavigateHour}
       keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
-      label={`${group.label} in stock over time, by model`} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
+      label={`${group.label} in stock over time, by model`} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} overlayExtent={player ? neededExtent : undefined}
       overlay={(ctx, frame, chartTokens) => {
         chart.overlay?.(ctx, frame, chartTokens);
         if (incoming.prepared) { if (incoming.needed) drawLineSummary(ctx, frame, chartTokens, incoming.needed, chartTokens.text, true, null, { dash: NEED_DASH }); }

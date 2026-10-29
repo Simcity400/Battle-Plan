@@ -104,6 +104,7 @@ fn kept_frame_hour(
             land.iter()
                 .map(|(id, attackers, _, _)| LandCombatRow {
                     id: *id,
+                    attacker_classes: vec![0; attackers.len()],
                     attackers: attackers.clone(),
                     defenders: vec![*id + 1000],
                     ..Default::default()

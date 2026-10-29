@@ -217,6 +217,7 @@ mod tests {
         *frame.tables[TableId::LandCombats.index()] =
             TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
                 id: 62,
+                attacker_classes: vec![0; 2],
                 attackers: vec![1, 2],
                 defenders: vec![3],
                 ..Default::default()

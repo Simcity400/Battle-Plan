@@ -714,11 +714,19 @@ fn infrastructure_is_the_first_flagged_type_and_reads_its_level_cap_forms() {
     let roads = &buildings.types["roads"];
     assert!(roads.infrastructure && roads.shares_slots);
     assert_eq!(roads.naval_fort, 2);
-    assert_eq!(roads.group_by.as_deref(), Some("paths"));
-    assert_eq!(roads.exclusive_with, ["canal", "ferry"]);
-    assert_eq!(buildings.types["rails"].exclusive_with, ["canal"]);
+    assert_eq!(roads.group_by.as_deref(), Some(b"paths".as_slice()));
+    assert_eq!(roads.exclusive_with, [b"canal".to_vec(), b"ferry".to_vec()]);
+    assert_eq!(buildings.types["rails"].exclusive_with, [b"canal".to_vec()]);
     let plain = &buildings.types["plain"];
     assert!(!plain.infrastructure && !plain.shares_slots && plain.group_by.is_none());
+    // A group key or excluded name that is not text is kept as stored, never dropped.
+    let unheld = parse(
+        b"buildings={roads={infrastructure=yes level_cap={group_by=pa\xe9ths exclusive_with={\xe9}}}}",
+    )
+    .unwrap();
+    let roads = &unheld.types["roads"];
+    assert_eq!(roads.group_by.as_deref(), Some(b"pa\xe9ths".as_slice()));
+    assert_eq!(roads.exclusive_with, [b"\xe9".to_vec()]);
     assert_eq!(
         buildings.infrastructure().unwrap().map(|b| b.name.as_str()),
         Some("roads")

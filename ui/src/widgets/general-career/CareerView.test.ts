@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { TimelineProps } from '../../charts/timeline/Timeline';
 import type { UnitLeadersData } from '../generals/generalsData';
+import { subjectToken } from '../../dashboard/chosen.ts';
 
 const data: UnitLeadersData = { branchId: '1', firstHour: 100,
   people: [{ characterId: 9, token: 'mod_character', name: 'Commander', portraitHour: 100, portraitReference: '21474841193' }],
@@ -37,8 +38,8 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     const { default: Career } = await vite.ssrLoadModule('/ui/src/widgets/general-career/CareerView.tsx') as typeof import('./CareerView.tsx');
     let hour = 300;
     const props = { widget: { id: 'career', kind: 'general-career', trackIds: ['main'], countries: { kind: 'all' },
-      time: { mode: 'follow' }, options: { leader: '21474841193' } },
-      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'synthetic', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 500 } }],
+      time: { mode: 'follow' }, options: { leader: subjectToken('campaign', '21474841193') } },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'campaign' } }, branch: { id: '1', firstHour: 100, lastHour: 500 } }],
         clock: { getHour: () => hour, getSpeed: () => 24, subscribe: () => () => {} }, client: {} },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     host.__careerTimelines = [];
@@ -47,7 +48,7 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     assert.deepEqual(full.extent, [100, 501]);
     assert.equal(full.preserveZoomOnExtentChange, false);
     assert.equal(full.labelHour, 300); assert.equal(full.playhead, 301);
-    props.widget.options = { leader: '21474841193', growWithPlayback: true };
+    props.widget.options = { leader: subjectToken('campaign', '21474841193'), growWithPlayback: true };
     for (hour of [300, 324]) {
       renderToStaticMarkup(createElement(Widget, props));
       const growing: TimelineProps = host.__careerTimelines.at(-1)!;

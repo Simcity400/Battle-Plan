@@ -99,22 +99,23 @@ pub struct Snapshot {
 pub struct Live {
     pub campaign: Option<String>,
     pub hour: Option<i32>,
-    /// Hours processed since attachment, across campaigns.
-    pub hours: u64,
-    /// This session's spool bytes, across campaigns.
-    pub spool_bytes: u64,
+    /// Hours processed since attachment, across campaigns; `None` when the status does not say.
+    pub hours: Option<u64>,
+    /// This session's spool bytes, across campaigns; `None` when the status does not say.
+    pub spool_bytes: Option<u64>,
     pub problem: Option<Problem>,
     /// The flag file keys the game tries for the viewed country, in order.
     pub flag_keys: Option<Vec<String>>,
 }
 
 pub fn read_live(status: &Value) -> Live {
-    let hours = status["hours"].as_u64().unwrap_or(0);
+    let hours = status["hours"].as_u64();
     let campaign = status["campaign"]
         .as_str()
         .filter(|id| replay_data::identity::is_campaign_uuid(id.as_bytes()))
         .map(str::to_owned);
-    let hour = (hours > 0)
+    let hour = hours
+        .is_some_and(|hours| hours > 0)
         .then(|| status["last_hour"].as_i64())
         .flatten()
         .and_then(|hour| i32::try_from(hour).ok());
@@ -145,7 +146,7 @@ pub fn read_live(status: &Value) -> Live {
         campaign,
         hour,
         hours,
-        spool_bytes: status["spool_bytes"].as_u64().unwrap_or(0),
+        spool_bytes: status["spool_bytes"].as_u64(),
         problem,
         flag_keys: flag_keys(&status["player"]),
     }
@@ -211,7 +212,7 @@ mod tests {
         }));
         assert_eq!(live.campaign.as_deref(), Some(CAMPAIGN));
         assert_eq!(live.hour, Some(59_000_000));
-        assert_eq!((live.hours, live.spool_bytes), (12, 4096));
+        assert_eq!((live.hours, live.spool_bytes), (Some(12), Some(4096)));
         assert_eq!(
             live.problem,
             Some(Problem {
@@ -231,8 +232,23 @@ mod tests {
         let live = read_live(
             &json!({"state": "preparing campaign history", "campaign": "save name", "hours": 0, "last_hour": 7}),
         );
-        assert_eq!(live, Live::default());
-        assert_eq!(read_live(&json!(null)), Live::default());
+        assert_eq!(
+            live,
+            Live {
+                hours: Some(0),
+                ..Live::default()
+            }
+        );
+        // An unreadable status, or one without its sizes, says nothing of them: never zero.
+        let unknown = read_live(&json!(null));
+        assert_eq!(unknown, Live::default());
+        assert_eq!((unknown.hours, unknown.spool_bytes), (None, None));
+        let unread = read_live(&json!({"campaign": CAMPAIGN, "state": "starting"}));
+        assert_eq!((unread.hours, unread.spool_bytes), (None, None));
+        assert_eq!(
+            read_live(&json!({"hours": 0, "spool_bytes": 0})).spool_bytes,
+            Some(0)
+        );
     }
 
     #[test]

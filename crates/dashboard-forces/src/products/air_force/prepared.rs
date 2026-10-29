@@ -58,6 +58,8 @@ impl shared::Family for Air {
         TableId::CountryAppearance,
         TableId::VariantModules,
         TableId::VariantUpgrades,
+        // Its accepted edits name designs made between daily variant reads.
+        TableId::VariantChanges,
     ];
     #[cfg(test)]
     fn work(scan: &Self::Scan) -> dashboard_base::prepared::observer_tests::Work {

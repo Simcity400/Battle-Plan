@@ -51,13 +51,15 @@ test('visible completion page and active tail read art at their own hours and in
   } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'opaque/mod/tag', 101, row, 0n, new AbortController().signal);
   assert.equal(result.order.length, 128);
-  assert.equal(result.art.get(preparedArtKey(101, 'current'))?.artwork.name, 'current');
+  assert.equal(result.art.get(preparedArtKey('national', 101, 'current'))?.artwork.name, 'current');
   assert.equal(requests.filter(item => item.product === 'focus-static-text').length, 2, '129 unique tokens use two static-text pages');
-  assert.equal(result.art.get(preparedArtKey(100, 'focus_0'))?.artwork.description, 'Static focus_0');
-  assert.equal(result.art.get(preparedArtKey(101, 'current'))?.artwork.description, 'Static current');
+  assert.equal(result.art.get(preparedArtKey('national', 100, 'focus_0'))?.artwork.description, 'Static focus_0');
+  assert.equal(result.art.get(preparedArtKey('national', 101, 'current'))?.artwork.description, 'Static current');
   assert.equal(result.staticText.length, 129);
   const arts = requests.filter(item => item.product === 'focus-art');
-  assert.deepEqual(arts.map(item => [item.params.hour, item.params.tokens.length, item.params.mode]), [[100, 128, 'display'], [101, 1, 'display']]);
+  assert.deepEqual(arts.map(item => [item.params.hour, item.params.database, item.params.tokens.length, item.params.mode]),
+    [[100, 'national', 128, 'display'], [101, 'national', 1, 'display']]);
+  assert.ok(requests.filter(item => item.product === 'focus-static-text').every(item => item.params.database === 'national'));
   assert.deepEqual(arts[0].params.tokens, [...arts[0].params.tokens].sort(focusTokenOrder));
   assert.deepEqual(result.warnings, ['Standing content notice', 'Static text content notice']);
   assert.equal(requests[0].params.pages.first, '9007199254740993');
@@ -71,7 +73,7 @@ test('cancelled pages and omitted artwork never publish successful empty data', 
   const one = { ...row, completed: { first: '0', count: '1', rows: '1' } };
   await assert.rejects(loadPreparedFocusPage(client, source, '1', 'tag', 101, one, 0n, controller.signal), /cancelled/);
   const omitting = artClient([], token => art(token), () => ({ art: [], warnings: [], failures: [] }));
-  await assert.rejects(loadFocusArt(omitting as unknown as FocusPreparedClient, source, '1', 'tag', 101, ['a'], 'display', new AbortController().signal), /omitted/);
+  await assert.rejects(loadFocusArt(omitting as unknown as FocusPreparedClient, source, '1', 'tag', 101, 'national', ['a'], 'display', new AbortController().signal), /omitted/);
 });
 
 test('completion and active instances of one token use their own recorded hours', async () => {
@@ -84,9 +86,36 @@ test('completion and active instances of one token use their own recorded hours'
       throw new Error(product);
     } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(client, source, '1', 'tag', 120, requested, 0n, new AbortController().signal);
-  assert.equal(result.art.get(preparedArtKey(100, 'current'))?.artwork.name, 'At 100');
-  assert.equal(result.art.get(preparedArtKey(120, 'current'))?.artwork.name, 'At 120');
+  assert.equal(result.art.get(preparedArtKey('national', 100, 'current'))?.artwork.name, 'At 100');
+  assert.equal(result.art.get(preparedArtKey('national', 120, 'current'))?.artwork.name, 'At 120');
   assert.deepEqual(dates.sort(), [100, 120]);
+});
+
+test('an active continuous focus is read from its own database apart from a national completion of the same id', async () => {
+  // At hour 120 the country completed national `shared` and works on continuous `shared`.
+  const requested = { ...row, hour: 120, lastHour: 120, at: 120, current: null, continuous: 'shared', completed: { first: '0', count: '1', rows: '1' } };
+  const requests: { product: string; params: any }[] = [];
+  const named = (database: string) => database === 'national' ? 'National title' : 'Continuous title';
+  const client = { ...artClient(requests, (token, params) => ({ ...art(token), artwork: { ...art(token).artwork, name: named(params.database) } })),
+    preparedQuery: async (_source: DashboardSource, product: string, params: any) => {
+      requests.push({ product, params });
+      if (product === 'focus-order-page') return [{ ordinal: 0, token: 'shared', completedByHour: 120 }];
+      if (product === 'focus-static-text') return { texts: params.tokens.map((token: string) => ({ ...art(token).artwork,
+        description: params.database === 'national' ? 'National details' : 'Continuous details' })), warnings: [] };
+      throw new Error(product);
+    } } as unknown as FocusPreparedClient;
+  const result = await loadPreparedFocusPage(client, source, '1', 'tag', 120, requested, 0n, new AbortController().signal);
+  assert.deepEqual(requests.filter(item => item.product === 'focus-art').map(item => [item.params.database, item.params.hour, item.params.tokens]).sort(),
+    [['continuous', 120, ['shared']], ['national', 120, ['shared']]]);
+  assert.deepEqual(requests.filter(item => item.product === 'focus-static-text').map(item => [item.params.database, item.params.tokens]).sort(),
+    [['continuous', ['shared']], ['national', ['shared']]]);
+  const national = result.art.get(preparedArtKey('national', 120, 'shared')), continuous = result.art.get(preparedArtKey('continuous', 120, 'shared'));
+  assert.equal(national?.artwork.name, 'National title');
+  assert.equal(national?.artwork.description, 'National details');
+  assert.equal(continuous?.artwork.name, 'Continuous title');
+  assert.equal(continuous?.artwork.description, 'Continuous details');
+  assert.deepEqual(result.staticText.map(item => item.description), ['National details']);
+  assert.deepEqual(result.continuousStaticText.map(item => item.description), ['Continuous details']);
 });
 
 test('a refused or failed dated art request retains independent recorded order and names its reason', async () => {
@@ -100,14 +129,14 @@ test('a refused or failed dated art request retains independent recorded order a
   const refused = { ...query, product: async () => { throw new Error('named content refusal'); } } as unknown as FocusPreparedClient;
   const result = await loadPreparedFocusPage(refused, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
   assert.equal(result.order[0].token, 'mod');
-  assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.artwork.name, null);
-  assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.reason, 'named content refusal');
+  assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.artwork.name, null);
+  assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.reason, 'named content refusal');
   // With every art request refused, the static description still names its content's warnings.
-  assert.equal(result.art.get(preparedArtKey(100, 'mod'))?.artwork.description, 'Static mod');
+  assert.equal(result.art.get(preparedArtKey('national', 100, 'mod'))?.artwork.description, 'Static mod');
   assert.deepEqual(result.warnings, ['Static text content notice']);
   const failed = { ...query, ...artClient([], token => art(token), () => ({ art: [], warnings: [], failures: [{ reason: 'Content stack refused', tokens: 1 }] })) } as unknown as FocusPreparedClient;
   const named = await loadPreparedFocusPage(failed, source, '1', 'tag', 101, one, 0n, new AbortController().signal);
-  assert.equal(named.art.get(preparedArtKey(100, 'mod'))?.reason, 'Content stack refused');
+  assert.equal(named.art.get(preparedArtKey('national', 100, 'mod'))?.reason, 'Content stack refused');
 });
 
 test('explicit retry starts idle once and polls only queued/preparing states', async () => {
@@ -164,7 +193,8 @@ test('prepared descriptions are text art at the confirming hour', async () => {
     preparedQuery: async (_source: DashboardSource, product: string) => { throw new Error(product); } } as unknown as FocusPreparedClient;
   const value = await loadPreparedFocusDetail(client, source, '1', 'opaque/tag', displayed, { ordinal: 0, token: 'current', completedByHour: 100 }, new AbortController().signal);
   assert.equal(value?.artwork.description, 'Description at 100');
-  assert.deepEqual(requests.map(item => [item.product, item.params.hour, item.params.mode, item.params.tokens]), [['focus-art', 100, 'text', ['current']]]);
+  assert.deepEqual(requests.map(item => [item.product, item.params.hour, item.params.database, item.params.mode, item.params.tokens]),
+    [['focus-art', 100, 'national', 'text', ['current']]]);
 });
 test('unavailable focus diagnostics preserve producer reasons and exact missing counts', () => {
   const value = { schema: 6, firstHour: 100, lastHour: 102, reasons: [

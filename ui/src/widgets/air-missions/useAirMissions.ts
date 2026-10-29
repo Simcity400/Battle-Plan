@@ -1,6 +1,6 @@
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
-import { resolveOptions, setToken } from '../../dashboard/options';
+import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import * as requests from '../../dashboard/batch5Requests';
 import { selectedTags } from '../../dashboard/countrySelection';
@@ -8,7 +8,7 @@ import { tableSortChoices } from '../../charts/table/options';
 import { validateAirMissions } from './airMissionsData';
 import type { AirMissionsReply } from './airMissionsData';
 import { OPTIONS } from './definition';
-import { useAirTheatres } from './useAirTheatres';
+import { choiceHour, theatreChoices, useAirTheatres } from './useAirTheatres';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { airMissionsRequest } from '../../dashboard/widgetRequests';
 
@@ -24,14 +24,14 @@ export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, activ
 
 /** Missions, regions and theatres as the recording names them, and the sortable columns. */
 export function useAirMissionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  const { data, track, tag } = useAirMissions(widget, runtime, true);
-  const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, track?.branch.lastHour ?? null, true);
+  const { data, track, tag, options } = useAirMissions(widget, runtime, true);
+  const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, choiceHour(widget, runtime, track), true);
   const missions = data?.missions ?? [];
   const icon = useSpriteArtwork(runtime, track, missions.map(mission => mission.icon), true);
   return {
     missions: missions.map(mission => ({ value: setToken(mission.id), label: mission.name, icon: icon(mission.icon) })),
     regions: (data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
-    theatres: (theatres.theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
+    theatres: theatreChoices(theatres.theatres ?? undefined, contentSet(options.theatres).map(contentKey)),
     tableSort: tableSortChoices([{ key: 'region', label: 'Region' }, ...missions.map(mission => ({ key: `m${mission.id}`, label: mission.name })),
       { key: 'wings', label: 'Wings' }]),
   };

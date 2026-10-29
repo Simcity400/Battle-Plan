@@ -1038,6 +1038,57 @@ fn state_resource_block_gate_keeps_negative_siblings_but_omits_negative_only_poo
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
 
+/// A pool whose resource token has no recorded spelling is a lexical limitation: its
+/// state's saved pools are counted, never reported missing by name.
+#[test]
+fn an_unnamed_state_resource_is_counted_not_reported_missing() {
+    use replay_data::rows::StateResourceRow;
+    let saved = saved_pack(
+        b"countries={} provinces={} states={2={resources={ore=8 coolant=-2}} 3={resources={coolant=5}}}",
+    );
+    // Token 7 has no recorded spelling.
+    let names = BTreeMap::from([(8, b"coolant".as_slice())]);
+    let pool = |state, resource, pool| StateResourceRow {
+        state,
+        resource,
+        pool,
+        ..Default::default()
+    };
+    let run = |rows: &[StateResourceRow]| {
+        let mut report = Report::default();
+        state_pools(rows, &saved.state_resources, &names, &|_| true, &mut report).unwrap();
+        report
+    };
+    let report = run(&[
+        pool(2, 7, 800_000),
+        pool(2, 8, -200_000),
+        pool(3, 8, 500_000),
+    ]);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StateResources.pool"], 2);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("its pool cannot be matched by name"))
+    );
+    // A pool the hour lacks still fails: by count at the unnamed state, by name elsewhere.
+    let report = run(&[pool(2, 7, 800_000)]);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("state resources.2.row_count"))
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("state resources.(3,"))
+    );
+}
+
 #[test]
 fn state_pools_and_modifiers_compare_names_order_and_scopes() {
     let saved = saved_pack(
@@ -2989,9 +3040,12 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         owner: 5,
         sample_hour: 10,
     }];
+    // AFG imports from GER.
     let import = ConvoyClientRow {
         handle: 0x33,
         category: engine_resources::resource_map::IMPORT,
+        owner: 9,
+        other: 5,
         bad: false,
         ..Default::default()
     };
@@ -3040,11 +3094,14 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         )]),
         ..Default::default()
     };
+    // GER lends to AFG.
     let lend = ConvoyClientRow {
         owner_ordinal: Some(0),
         other_ordinal: Some(0),
         handle: 0x34,
         category: engine_resources::resource_map::LEND_LEASE,
+        owner: 5,
+        other: 9,
         bad: true,
         convoys_assigned: 2,
         convoys_required: 3,
@@ -3222,6 +3279,43 @@ fn resource_map_compares_origins_rights_routes_and_import_colours_with_the_save(
         10,
     );
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    // An import or lend-lease attributed to another valid country fails against the
+    // saved exporter, giver and receiver.
+    let mut swapped_import = import.clone();
+    (swapped_import.owner, swapped_import.other) = (5, 9);
+    let mut redirected_lend = lend.clone();
+    redirected_lend.other = 5;
+    let report = run_with(
+        std::slice::from_ref(&origin),
+        std::slice::from_ref(&route),
+        &[swapped_import, redirected_lend],
+        &[RegionalConvoyEfficiencyRow {
+            country: 5,
+            region: 43,
+            efficiency: 100_000,
+        }],
+        10,
+    );
+    let mut endpoints: Vec<_> = report
+        .differences
+        .iter()
+        .filter_map(|difference| {
+            ["ConvoyClients.51.owner", "ConvoyClients.51.other", "ConvoyClients.52.other"]
+                .into_iter()
+                .find(|subject| difference.contains(subject))
+        })
+        .collect();
+    endpoints.sort_unstable();
+    assert_eq!(
+        endpoints,
+        [
+            "ConvoyClients.51.other",
+            "ConvoyClients.51.owner",
+            "ConvoyClients.52.other"
+        ],
+        "{:?}",
+        report.differences
+    );
     // A route read at an earlier hour fails rather than passing a stale comparison.
     let report = run(&[origin], &[moved], &[import], 11);
     assert!(

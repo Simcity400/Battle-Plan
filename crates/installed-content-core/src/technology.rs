@@ -35,6 +35,8 @@ pub struct Template {
     /// One-based load-order index; unread preceding files make it unknown.
     pub database_index: Option<u32>,
     pub presentation: Result<PresentationName, String>,
+    /// The last `parent` value, or why it cannot be held.
+    pub parent: Result<Option<String>, String>,
     pub equipment: Option<String>,
     /// Folders retain authored order; a folder block's last `name` wins.
     pub folders: Vec<String>,
@@ -236,7 +238,7 @@ fn parse_with_tokens(
             let fields = technology.value.items().unwrap_or_default();
             // A failed boolean value keeps the preceding assignment.
             let force_small = parser::read_bool_field(fields, "force_use_small_tech_layout", false);
-            let presentation = parent.map(|parent| {
+            let presentation = parent.clone().map(|parent| {
                 let template_key = parent.unwrap_or_else(|| token.into());
                 let template_key = if template_key.is_empty() {
                     token.to_owned()
@@ -254,6 +256,7 @@ fn parse_with_tokens(
                 token: token.to_owned(),
                 database_index: None,
                 presentation,
+                parent,
                 equipment,
                 folders: placed,
             });
@@ -904,21 +907,22 @@ fn read_templates_with_tokens(
 
 /// A technology that enables equipment: its id and its `parent`, the
 /// alternate name read from the scalar `parent` and used instead of the
-/// id for names and equipment icons.
+/// id for names and equipment icons. An `Err` parent is one whose text
+/// cannot be held, unknown only to a lookup that reaches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enabler {
     pub id: String,
-    pub parent: Option<String>,
+    pub parent: Result<Option<String>, String>,
 }
 
 /// A technology's `enable_equipments` and `parent` as one definition declares them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enables {
     /// The id as written.
     pub id: String,
     /// The types its plain entries name.
     pub equipment: Vec<String>,
-    pub parent: Option<String>,
+    pub parent: Result<Option<String>, String>,
     /// Scripted or unresolved entries leave the equipment they may enable unknown.
     pub scripted: Option<Scripted>,
     /// The game checks preceding limits at content load before admitting these entries.
@@ -926,11 +930,15 @@ pub struct Enables {
 }
 
 impl Enables {
-    fn read_natively(&mut self, native: &PresentationName) {
+    fn read_natively(&mut self, native: &Template) {
+        self.parent.clone_from(&native.parent);
+        let Ok(presentation) = &native.presentation else {
+            return;
+        };
         self.equipment.clear();
         self.scripted = None;
         self.limited.clear();
-        for candidate in &native.equipment {
+        for candidate in &presentation.equipment {
             if candidate.limits.is_empty() {
                 self.equipment.push(candidate.name.clone());
             } else {
@@ -978,9 +986,13 @@ fn mentioned(item: &parser::Item, scripted: &mut Scripted) {
 pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
     let document = parser::parse(input)?;
     let mut result = Vec::new();
-    // Keywords are lexer tokens, matched in any ASCII case (`parser::is_keyword`).
-    for root in document.get_all_keyword("technologies") {
-        for technology in root.items().unwrap_or_default() {
+    // Keywords are lexer tokens: bare keys in any ASCII case, never quoted ones.
+    for root in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("technologies"))
+    {
+        for technology in root.value.items().unwrap_or_default() {
             let (Some(key), Some(fields)) = (&technology.key, technology.value.items()) else {
                 continue;
             };
@@ -989,33 +1001,35 @@ pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
             };
             let mut enables = Enables {
                 id: token.to_owned(),
-                ..Enables::default()
+                equipment: Vec::new(),
+                parent: Ok(None),
+                scripted: None,
+                limited: Vec::new(),
             };
             for field in fields {
-                let keyword = |name: &str| parser::is_keyword(field, name);
-                match () {
-                    () if keyword("enable_equipments") => {
-                        let mut limited = false;
-                        for item in field.value.items().unwrap_or_default() {
-                            if parser::is_keyword(item, "limit") {
-                                limited = true;
-                                continue;
+                if field.keyword_is("enable_equipments") {
+                    let mut limited = false;
+                    for item in field.value.items().unwrap_or_default() {
+                        if item.keyword_is("limit") {
+                            limited = true;
+                            continue;
+                        }
+                        match (item.key.is_none(), item.value.scalar_str()) {
+                            (true, Some(name)) if !name.starts_with('@') && !limited => {
+                                enables.equipment.push(name.to_owned())
                             }
-                            match (item.key.is_none(), item.value.scalar_str()) {
-                                (true, Some(name)) if !name.starts_with('@') && !limited => {
-                                    enables.equipment.push(name.to_owned())
-                                }
-                                _ => mentioned(
-                                    item,
-                                    enables.scripted.get_or_insert_with(Scripted::default),
-                                ),
-                            }
+                            _ => mentioned(
+                                item,
+                                enables.scripted.get_or_insert_with(Scripted::default),
+                            ),
                         }
                     }
-                    () if keyword("parent") => {
-                        enables.parent = field.value.scalar_str().map(str::to_owned)
-                    }
-                    () => {}
+                } else if field.keyword_is("parent") {
+                    enables.parent = field
+                        .value
+                        .c_str()
+                        .map(|parent| Some(parent.to_owned()))
+                        .map_err(|error| format!("technology {token} parent: {error}"));
                 }
             }
             result.push(enables);
@@ -1152,9 +1166,7 @@ pub fn read_enablers(
                 .all(|(native, enables)| native.token == enables.id)
         {
             for (native, enables) in read.iter().zip(&mut parsed) {
-                if let Ok(presentation) = &native.presentation {
-                    enables.read_natively(presentation);
-                }
+                enables.read_natively(native);
             }
         }
         technologies.extend(parsed.into_iter().map(|enables| (path.to_string(), enables)));
@@ -1958,7 +1970,7 @@ mod tests {
         let plain = |id: &str, equipment: &[&str], parent: Option<&str>| Enables {
             id: id.to_owned(),
             equipment: equipment.iter().map(|name| (*name).to_owned()).collect(),
-            parent: parent.map(str::to_owned),
+            parent: Ok(parent.map(str::to_owned)),
             scripted: None,
             limited: Vec::new(),
         };
@@ -1992,6 +2004,45 @@ mod tests {
             )
             .unwrap()["tank_tech"],
             Some("tank_1".to_owned())
+        );
+    }
+
+    /// `parent` and `technologies` dispatch as keywords: a quoted key is neither,
+    /// and a parent whose text cannot be held is unknown rather than absent.
+    #[test]
+    fn a_quoted_parent_key_does_not_rename_the_enabler() {
+        let parsed = parse_enablers(
+            b"technologies = { t = { PARENT = right \"parent\" = wrong enable_equipments = { tank_1 } } \
+              u = { parent = \xff enable_equipments = { gun_1 } } } \
+              \"technologies\" = { quoted = { enable_equipments = { tank_2 } } }",
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].parent, Ok(Some("right".to_owned())));
+        let unknown = parsed[1].parent.as_ref().unwrap_err();
+        assert!(unknown.contains("technology u parent"), "{unknown}");
+    }
+
+    #[test]
+    fn native_enablers_keep_the_keyword_parent() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let stack = crate::test_support::Stack::new("technology_enabler_parent");
+        stack.write(
+            &stack.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/a.txt",
+            "technologies = { t = { parent = right enable_equipments = { tank_1 } \"parent\" = 1 } }",
+        );
+        let enablers =
+            read_enablers(&stack.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert_eq!(
+            enablers.single("tank_1").unwrap().unwrap().parent,
+            Ok(Some("right".to_owned()))
         );
     }
 
@@ -2117,7 +2168,7 @@ mod tests {
             enablers.plain[&fold_token("mod_tank_1")],
             [Enabler {
                 id: "Tank_Tech".to_owned(),
-                parent: Some("tanks".to_owned())
+                parent: Ok(Some("tanks".to_owned()))
             }]
         );
     }
@@ -2158,11 +2209,11 @@ mod tests {
             [
                 Enabler {
                     id: "tank_tech".to_owned(),
-                    parent: None
+                    parent: Ok(None)
                 },
                 Enabler {
                     id: "TANK_TECH".to_owned(),
-                    parent: None
+                    parent: Ok(None)
                 }
             ]
         );

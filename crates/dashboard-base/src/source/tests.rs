@@ -43,6 +43,46 @@ fn air_superiority_inherited_state_is_independent_between_revisions() {
     assert!(other.state::<Vec<String>>().lock().unwrap().is_empty());
 }
 
+/// A request under folders the user has just left finishing while one under the new folders
+/// runs: each reply reports, and is kept by, its own folders' read set, and the old one's
+/// diagnostics never rebind what the new one reads.
+#[test]
+fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root =
+        std::env::temp_dir().join(format!("hoi4-source-own-content-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (source, context) =
+        crate::test_fixtures::source_with_content(vec![source(1, 100, Some(1))], &root);
+    let old = context.content.unwrap();
+    let mut new = old.clone();
+    new.options.cache_dir = root.join("other-cache");
+    std::fs::create_dir_all(root.join("gfx/custom")).unwrap();
+    std::fs::write(root.join("gfx/custom/icon.dds"), "synthetic").unwrap();
+    let uncovered = |lines: &[String]| lines.iter().any(|line| line.contains("gfx/custom/icon.dds"));
+    // Each request holds its folders' content while it runs.
+    let held_old = source.content(&old.options).unwrap();
+    let held_new = source.content(&new.options).unwrap();
+    let _ = held_new.layers.read_uncovered_path(b"gfx/custom/icon.dds");
+    let mut old_lines = Vec::new();
+    source.append_reply_warnings(&mut old_lines, Some(&old));
+    assert!(!uncovered(&old_lines));
+    assert!(!source.reply_reads_uncovered(Some(&old)));
+    assert!(Arc::ptr_eq(&source.bound_content(&new.options).unwrap(), &held_new));
+    // A read under the old folders meanwhile reuses their held content, and the new request's
+    // reads still share its own.
+    assert!(Arc::ptr_eq(&source.content(&old.options).unwrap(), &held_old));
+    assert!(Arc::ptr_eq(&source.content(&new.options).unwrap(), &held_new));
+    source.content(&old.options).unwrap();
+    let mut new_lines = Vec::new();
+    source.append_reply_warnings(&mut new_lines, Some(&new));
+    assert!(uncovered(&new_lines));
+    assert!(source.reply_reads_uncovered(Some(&new)));
+    drop((held_old, held_new));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise() {
     let mut frame = source(1, 100, Some(1));

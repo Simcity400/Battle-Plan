@@ -32,8 +32,8 @@ import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { ArmyAttribution, ArmySizeReply, CountryGroupReply } from '../../generated/dashboard';
-import { armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWindows,
-  formatArmyValue, formatArmyRaw, formatArmyPart, measureName, mergeArmyWindows, typeName, validateArmySizeReply,
+import { armyAbsent, armyMeasure, armyMetadataRequest, armySizeRequest, armyTooltips, armyWindows,
+  formatArmyValue, formatArmyRaw, formatArmyPart, measureName, mergeArmyWindows, offersMeasure, typeName, validateArmySizeReply,
   validateArmyWindow } from './armySizeData';
 import { normaliseArmyOptions, OPTIONS } from './definition';
 import { armyCountrySelection } from './ArmyCountryChip';
@@ -81,7 +81,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const incomingMetadata = useProduct<ArmySizeReply>(runtime.client, metadataRequest, active, validateArmySizeReply, track?.source);
   const manifest = stores.manifest.update(sourceScope, incomingMetadata.data, reply => reply);
   const metadata = { ...incomingMetadata, data: manifest };
-  const measure = !pinned && view === 'mix' ? 'battalions' : armyMeasure(options.measure, metadata.data?.measures);
+  const measure = !pinned && view === 'mix' ? 'battalions'
+    : armyMeasure(options.measure, metadata.data?.measures, metadata.data?.unknownMeasures);
   const byType = measure === 'battalions' && (pinned || view === 'mix' || (view === 'race' && options.byType === true));
   const content = useContentRevision(runtime.client);
   const identity = track && metadata.data && (resolved.top || resolved.tags.length)
@@ -119,7 +120,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const history = useProductWindows<ArmySizeReply>(runtime.client, identity, window => ({
     sourceId: track!.source.id, revision: track!.source.revision, product: 'army-size',
     params: armySizeRequest(track!.branch.id, resolved, measure, countFor, byType, window),
-  }), wantedWindows, active && metadata.data?.measures.includes(measure) === true,
+  }), wantedWindows, active && offersMeasure(metadata.data, measure),
   value => validateArmyWindow(value, metadata.data!), track?.source);
   const incomingData = useMemo(() => {
     if (!metadata.data) return undefined;
@@ -250,8 +251,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="shield" message={resolved.reason} />;
-    if (metadata.data && !metadata.data.measures.length) return <WidgetState kind="unavailable" message="Not in this recording" />;
-    if (metadata.data && !metadata.data.measures.includes(measure)) {
+    if (metadata.data && !offersMeasure(metadata.data, measure)) {
       return <WidgetState kind="unavailable" message="Not in this recording" />;
     }
     // A group with no member found yet asks for nothing, so no reply will come.
@@ -260,7 +260,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (pending && view === 'race' && !numbers?.available) {
       return <WidgetState kind="loading" label="Loading army data…" />;
     }
-    if (!metadata.data?.available) return <WidgetState kind="unavailable" message="Not in this recording" />;
+    if (!metadata.data || armyAbsent(metadata.data)) return <WidgetState kind="unavailable" message="Not in this recording" />;
     // A group's members at hours still being prepared are not known yet: no series is not proof of none.
     if (!model.tags.length && view === 'race') return resolved.known(track.branch.firstHour, track.branch.lastHour)
       ? <WidgetState kind="unavailable" message="No known army sizes for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;

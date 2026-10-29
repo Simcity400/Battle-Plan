@@ -71,3 +71,11 @@ export function revealRow(index: number, scrollTop: number, viewportHeight: numb
   if (top + rowHeight > scrollTop + viewportHeight) return top + rowHeight - viewportHeight;
   return scrollTop;
 }
+
+/** The day a dated header name is asked for: the day in flight until its read answers,
+ * then the newest wanted day, so a slow read during playback finishes instead of being
+ * replaced at every step. Null when no name is wanted. */
+export function nameAskHour(asked: number | null, wanted: number | null, answered: boolean): number | null {
+  if (wanted === null) return null;
+  return asked === null || answered ? wanted : asked;
+}

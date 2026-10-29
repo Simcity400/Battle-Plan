@@ -49,7 +49,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
       setVisible(_task: FrameTask, value: boolean) { visible = value; } },
   };
   const context = { setTransform() {}, clearRect() {}, save() {}, restore() {}, beginPath() {}, moveTo() {}, lineTo() {},
-    closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {} };
+    closePath() {}, fill() {}, stroke() {}, arc() {}, fillText() {}, setLineDash() {}, drawImage() {} };
   let layoutReads = 0;
   const element = { get clientWidth() { layoutReads++; return 500; }, clientHeight: 240, width: 500, height: 240, style: {}, focus() {}, setPointerCapture() {},
     getContext: () => context, getBoundingClientRect: () => ({ left: 0, top: 0, width: 500, height: 240 }),
@@ -57,7 +57,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     removeEventListener: (type: string) => listeners.delete(type) };
   const host = globalThis as typeof globalThis & { __timeChartObserver?: typeof fixture };
   host.__timeChartObserver = fixture;
-  const globals = new Map(['window', 'ResizeObserver'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const globals = new Map(['window', 'ResizeObserver', 'document'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   // Replace the hook dispatcher, frame scheduler and drawing surface only. The
   // component's real event handlers, frame resolution and lifecycle effects run.
   const replacements: Record<string, string> = {
@@ -87,6 +87,8 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/TimeChart.tsx') as typeof import('./TimeChart.tsx');
     Object.defineProperty(globalThis, 'window', { configurable: true, value: { devicePixelRatio: 1 } });
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } });
+    // The chart keeps a copy of its drawing to repaint the pointer over, on a canvas of its own.
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => ({ width: 0, height: 0, getContext: () => context }) } });
     const seen: [string, number | null][] = [], described: number[] = [];
     const observe = (name: string) => (hour: number | null) => { seen.push([name, hour]); };
     const props: TimeChartProps = { label: 'Synthetic shares', extent: [0, 100], branchStart: 0,

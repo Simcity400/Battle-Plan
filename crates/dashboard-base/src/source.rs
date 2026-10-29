@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, Mutex, Weak, atomic::AtomicBool},
 };
 
 use installed_content_core::{ResolveOptions, content::ResolvedContent, content::UncoveredReads};
@@ -37,7 +37,43 @@ struct StateEntry {
     append: Option<fn(&SharedState) -> SharedState>,
 }
 
-type ContentCache = Option<(ResolveOptions, Arc<ResolvedContent>, UncoveredReads)>;
+/// The content resolved for the folders last asked for, with its read set, and the content of
+/// earlier folders while work still holds it: asked for again, that is reused, so all work on
+/// one folders reads, and reports, one read set.
+#[derive(Default)]
+struct ContentCache {
+    bound: Option<(ResolveOptions, Arc<ResolvedContent>, UncoveredReads)>,
+    held: Vec<(ResolveOptions, Weak<ResolvedContent>)>,
+}
+
+impl ContentCache {
+    /// The content of these folders work reads now, bound or held, if any.
+    fn find(&self, options: &ResolveOptions) -> Option<Arc<ResolvedContent>> {
+        match &self.bound {
+            Some((old, content, _)) if same_folders(old, options) => Some(Arc::clone(content)),
+            _ => self
+                .held
+                .iter()
+                .filter(|(old, _)| same_folders(old, options))
+                .find_map(|(_, content)| content.upgrade()),
+        }
+    }
+
+    /// Binds `content`, holding what was bound while work still holds it.
+    fn bind(&mut self, options: &ResolveOptions, content: &Arc<ResolvedContent>) {
+        let reads = content.layers.report_uncovered_reads();
+        self.held
+            .retain(|(old, held)| held.strong_count() > 0 && !same_folders(old, options));
+        let previous = self
+            .bound
+            .replace((options.clone(), Arc::clone(content), reads));
+        if let Some((old, previous, _)) = previous
+            && !Arc::ptr_eq(&previous, content)
+        {
+            self.held.push((old, Arc::downgrade(&previous)));
+        }
+    }
+}
 
 fn block_windows(replay: &Replay) -> HashMap<u64, Vec<crate::products::country_groups::HourSpan>> {
     let mut windows: HashMap<_, Vec<_>> = HashMap::new();
@@ -111,7 +147,7 @@ impl Source {
                 cached_named: restored.named,
                 cached_inputs: Some(restored.inputs),
                 named: Mutex::new(None),
-                content: Mutex::new(None),
+                content: Mutex::default(),
                 binding: Mutex::new(None),
                 state: Mutex::new(HashMap::new()),
             });
@@ -136,7 +172,7 @@ impl Source {
             cached_named: None,
             cached_inputs: None,
             named: Mutex::new(None),
-            content: Mutex::new(None),
+            content: Mutex::default(),
             binding: Mutex::new(None),
             state: Mutex::new(HashMap::new()),
         })
@@ -191,11 +227,11 @@ impl Source {
     /// Report the live read set and the changed content layers even for cached metadata and
     /// product replies.
     pub fn append_content_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, content, reads)) = self
+        if let Some((_, content, reads)) = &self
             .content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
+            .bound
         {
             reads.append_to(warnings);
             content.append_changed_to(warnings);
@@ -205,37 +241,71 @@ impl Source {
     /// Report the live read set only: a reply that reads no game content is the same whatever
     /// layers changed, and is kept on disk without them.
     pub fn append_read_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, _, reads)) = self
+        if let Some((_, _, reads)) = &self
             .content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
+            .bound
         {
             reads.append_to(warnings);
         }
     }
 
+    /// The content of the folders work admitted under `options` reads: the bound content, or
+    /// content of these folders work still holds ([`ContentCache`]). Resolved again when there
+    /// is neither, but never bound, so a reply's diagnostics never rebind what other work reads.
+    fn own_content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
+        let found = self
+            .content
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .find(options);
+        match found {
+            Some(content) => Ok(content),
+            None => Ok(Arc::new(installed_content_core::resolve(
+                &self.replay.identity,
+                options,
+            )?)),
+        }
+    }
+
     /// Name the layers that changed since the recording in the content a reply was admitted
-    /// under: its own folders' content, resolved again if the source has bound others since, so
-    /// a reply never names another content's changes nor loses its own.
+    /// under: its own folders' content, whatever the source has bound since, so a reply never
+    /// names another content's changes nor loses its own.
     pub fn append_changed_warnings(
         &self,
         warnings: &mut Vec<String>,
         content: Option<&ContentOptions>,
     ) {
-        if let Some(own) = content.and_then(|content| self.content(&content.options).ok()) {
+        if let Some(own) = content.and_then(|content| self.own_content(&content.options).ok()) {
             own.append_changed_to(warnings);
         }
     }
 
-    /// A content reply's live diagnostics: the read set and its own content's changed layers.
+    /// A content reply's live diagnostics: the read set and changed layers of its own folders'
+    /// content, whatever the source has bound since; the bound read set without content.
     pub fn append_reply_warnings(
         &self,
         warnings: &mut Vec<String>,
         content: Option<&ContentOptions>,
     ) {
-        self.append_read_warnings(warnings);
-        self.append_changed_warnings(warnings, content);
+        match content.and_then(|content| self.own_content(&content.options).ok()) {
+            Some(own) => {
+                own.layers.read_warnings().append_to(warnings);
+                own.append_changed_to(warnings);
+            }
+            None => self.append_read_warnings(warnings),
+        }
+    }
+
+    /// Whether a content reply admitted under `content` read outside the recorded coverage: its
+    /// own folders' content did, whatever the source has bound since ([`Self::reads_uncovered`]
+    /// without content).
+    pub fn reply_reads_uncovered(&self, content: Option<&ContentOptions>) -> bool {
+        match content.and_then(|content| self.own_content(&content.options).ok()) {
+            Some(own) => own.layers.read_warnings().warning().is_some(),
+            None => self.reads_uncovered(),
+        }
     }
 
     /// What the binding a content reply was admitted under cannot show
@@ -261,11 +331,11 @@ impl Source {
     /// published payloads ([`crate::catalogue::own_refusals`]), so a prepared
     /// reply reports the current ones, as a product reply reports the read set.
     pub fn append_stack_warnings(&self, warnings: &mut Vec<String>) {
-        if let Some((_, content, reads)) = self
+        if let Some((_, content, reads)) = &self
             .content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
+            .bound
         {
             for line in content.layers.shader_warning_lines() {
                 if !warnings.contains(&line) {
@@ -281,6 +351,7 @@ impl Source {
         self.content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .bound
             .as_ref()
             .is_some_and(|(_, _, reads)| reads.warning().is_some())
     }
@@ -441,21 +512,24 @@ impl Source {
     }
 
     /// The recording's verified game content for the configured folders,
-    /// resolved once and reused until the folders change.
+    /// resolved once and reused until the folders change, and while work holds it after.
     pub fn content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
         let mut cache = self
             .content
             .lock()
             .map_err(|error| io::Error::other(error.to_string()))?;
+        let content = match cache.find(options) {
+            Some(content) => content,
+            None => Arc::new(installed_content_core::resolve(&self.replay.identity, options)?),
+        };
         if !cache
+            .bound
             .as_ref()
-            .is_some_and(|(old, _, _)| same_folders(old, options))
+            .is_some_and(|(_, bound, _)| Arc::ptr_eq(bound, &content))
         {
-            let content = Arc::new(installed_content_core::resolve(&self.replay.identity, options)?);
-            let reads = content.layers.report_uncovered_reads();
-            *cache = Some((options.clone(), content, reads));
+            cache.bind(options, &content);
         }
-        Ok(Arc::clone(&cache.as_ref().expect("content cached").1))
+        Ok(content)
     }
 
     /// The content already resolved for these folders, without resolving it or replacing what
@@ -466,6 +540,7 @@ impl Source {
         self.content
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .bound
             .as_ref()
             .filter(|(old, _, _)| same_folders(old, options))
             .map(|(_, content, _)| Arc::clone(content))
@@ -791,8 +866,7 @@ impl Source {
         options: installed_content_core::ResolveOptions,
         content: Arc<installed_content_core::content::ResolvedContent>,
     ) {
-        let reads = content.layers.report_uncovered_reads();
-        *self.content.lock().unwrap() = Some((options, content, reads));
+        self.content.lock().unwrap().bind(&options, &content);
     }
 }
 

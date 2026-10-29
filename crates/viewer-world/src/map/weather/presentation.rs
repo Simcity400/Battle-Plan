@@ -9,6 +9,14 @@ use viewer_foundation::map::presentation::Continuity;
 pub struct Presentation {
     pub size: [u32; 2],
     pub texels: Vec<u8>,
+    /// One byte per cell, 255 where the hatch overlay draws: the cell is unknown in the pending
+    /// hour, in the snapshot the texels show, or in the one they still fade from.
+    pub unknown: Vec<u8>,
+    /// Cells [`Self::unknown`] hatches.
+    hatched: usize,
+    unknown_changed: bool,
+    shown_unknown: Paged<u8>,
+    faded_unknown: Option<Paged<u8>>,
     shared_pending: Option<Arc<SnowMud>>,
     target: Paged<u8>,
     mismatched: Vec<usize>,
@@ -61,6 +69,8 @@ impl Presentation {
         let allocation = self.allocation.as_mut().unwrap();
         let additional = snow.texels.len().saturating_sub(self.texels.len());
         allocation.reserve(&mut self.texels, additional)?;
+        let additional = (snow.texels.len() / 4).saturating_sub(self.unknown.len());
+        allocation.reserve(&mut self.unknown, additional)?;
         let pages = snow.texels.pages().len();
         let additional = pages.saturating_sub(self.mismatched.len());
         allocation.reserve(&mut self.mismatched, additional)?;
@@ -97,7 +107,9 @@ impl Presentation {
                 || self
                     .shared_pending
                     .as_ref()
-                    .is_some_and(|had| had.texels == snow.texels));
+                    .is_some_and(|had| {
+                        had.texels == snow.texels && had.unknown == snow.unknown
+                    }));
         if !reset && !changed {
             return Ok(false);
         }
@@ -143,6 +155,9 @@ impl Presentation {
                 }
             }
             self.target = snow.texels.clone();
+            self.shown_unknown = snow.unknown.clone();
+            self.faded_unknown = None;
+            self.refresh_unknown();
             self.dirty = false;
             self.fade = 0.0;
             if reset {
@@ -152,7 +167,40 @@ impl Presentation {
             return Ok(true);
         }
         self.dirty = true;
+        self.refresh_unknown();
         Ok(false)
+    }
+
+    /// Recomputes the drawn hatch flags from the pending, shown and faded-from masks.
+    fn refresh_unknown(&mut self) {
+        let count = self.size[0] as usize * self.size[1] as usize;
+        let flagged = |mask: Option<&Paged<u8>>, cell: usize| {
+            mask.and_then(|mask| mask.get(cell)).is_some_and(|&flag| flag != 0)
+        };
+        let pending = self.shared_pending.as_ref().map(|snow| &snow.unknown);
+        let mut changed = self.unknown.len() != count;
+        self.unknown.resize(count, 0);
+        self.hatched = 0;
+        for cell in 0..count {
+            let hatched = flagged(pending, cell)
+                || flagged(Some(&self.shown_unknown), cell)
+                || flagged(self.faded_unknown.as_ref(), cell);
+            self.hatched += usize::from(hatched);
+            let value = if hatched { u8::MAX } else { 0 };
+            changed |= self.unknown[cell] != value;
+            self.unknown[cell] = value;
+        }
+        self.unknown_changed |= changed;
+    }
+
+    /// Whether [`Self::unknown`] changed since the last call, so the hatched cells need it.
+    pub fn take_unknown_upload(&mut self) -> bool {
+        std::mem::take(&mut self.unknown_changed)
+    }
+
+    /// Cells the hatch overlay draws over; none skips the pass.
+    pub fn hatched(&self) -> usize {
+        self.hatched
     }
 
     #[cfg(test)]
@@ -222,10 +270,21 @@ impl Presentation {
                 }
             }
             self.target = pending;
+            let shown = self
+                .shared_pending
+                .as_ref()
+                .expect("pending snow")
+                .unknown
+                .clone();
+            self.faded_unknown = Some(std::mem::replace(&mut self.shown_unknown, shown));
             self.dirty = false;
             self.fade = 0.0;
         }
         self.fade = (self.fade + dt).clamp(0.0, 1.0);
+        let faded = self.fade >= 1.0 && self.faded_unknown.take().is_some();
+        if refreshed || faded {
+            self.refresh_unknown();
+        }
         Ok(refreshed)
     }
 
@@ -272,6 +331,7 @@ mod tests {
             width: 1,
             height: 1,
             texels: vec![mud, snow, snow, mud].into(),
+            unknown: vec![0].into(),
             province_snow: vec![].into(),
             post_factors: None,
             build: Default::default(),
@@ -311,6 +371,50 @@ mod tests {
             );
             assert!(presentation.take_uploads().is_empty());
         }
+    }
+
+    #[test]
+    fn the_hatch_mask_covers_pending_shown_and_fading_unknown_cells_only() {
+        let snapshot = |unknown: [u8; 3], identity: u64| {
+            Arc::new(SnowMud {
+                width: 3,
+                height: 1,
+                texels: vec![0; 12].into(),
+                unknown: unknown.to_vec().into(),
+                province_snow: vec![].into(),
+                post_factors: None,
+                build: Default::default(),
+                summary: Default::default(),
+                refresh: Some(Refresh {
+                    interval: 25_000,
+                    identity,
+                }),
+            })
+        };
+        let mut player = Presentation::default();
+        player.set_shared(&snapshot([0, 1, 0], 1), Reset).unwrap();
+        assert_eq!(player.unknown, [0, 255, 0]);
+        assert_eq!(player.hatched(), 1);
+        assert!(player.take_unknown_upload());
+        assert!(!player.take_unknown_upload(), "one upload per change");
+        player.advance(0.0, 0.0).unwrap();
+        // Equal bytes with another mask are a change; the texels still show the old cells.
+        player.set_shared(&snapshot([1, 0, 0], 2), Continue).unwrap();
+        assert_eq!(player.unknown, [255, 255, 0]);
+        assert!(player.take_unknown_upload());
+        // The refresh shows the new hour while its planes still fade from the old one.
+        assert!(player.advance(0.5, 0.5).unwrap());
+        assert_eq!(player.unknown, [255, 255, 0]);
+        assert!(!player.take_unknown_upload());
+        player.advance(1.0, 0.5).unwrap();
+        assert_eq!(player.fade(), 1.0);
+        assert_eq!(player.unknown, [255, 0, 0]);
+        assert!(player.take_unknown_upload());
+        assert_eq!(player.hatched(), 1);
+        // A whole hour clears the hatch once nothing shown or pending is unknown.
+        player.set_shared(&snapshot([0, 0, 0], 3), Reset).unwrap();
+        assert_eq!(player.unknown, [0, 0, 0]);
+        assert_eq!(player.hatched(), 0);
     }
 
     #[test]
@@ -534,6 +638,7 @@ mod tests {
                 width,
                 height: 1,
                 texels: texels.into(),
+                unknown: vec![0; width as usize].into(),
                 province_snow: vec![].into(),
                 post_factors: None,
                 build: std::time::Duration::from_micros(u64::from(hour)),

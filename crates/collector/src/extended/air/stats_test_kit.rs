@@ -141,6 +141,31 @@ pub(crate) fn fixture() -> Vec<u8> {
     bytes
 }
 
+/// The owner's country moves to slot three, behind slot one holding the reserved country object
+/// (id zero, also at slot zero) and a null slot two, as the game's country table may.
+pub(crate) fn add_reserved_alias_and_null_slot(bytes: &mut [u8]) {
+    use engine_native::{ccountry, cgame_state, cstrategic_air_manager};
+    const RESERVED: usize = 0x20100;
+    header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
+    p64(bytes, CTAB, RESERVED as u64);
+    p64(bytes, CTAB + 8, RESERVED as u64);
+    p64(bytes, CTAB + 16, 0);
+    p64(bytes, CTAB + 24, COUNTRY as u64);
+    p64(bytes, RESERVED, (BASE + ccountry::VTABLE_RVA) as u64);
+    p32(bytes, RESERVED + ccountry::ID, 0);
+    p32(bytes, LTAB + 4, 0);
+    p32(bytes, LTAB + 8, 3);
+    p32(bytes, LTAB + 12, 3);
+    header(
+        bytes,
+        MANAGER + cstrategic_air_manager::COUNTRY_AIR,
+        OWNER_TAB,
+        4,
+    );
+    p64(bytes, OWNER_TAB + 8, 0);
+    p64(bytes, OWNER_TAB + 24, AIR as u64);
+}
+
 pub(crate) fn set_first_value(bytes: &mut [u8], value: i64) {
     p64(bytes, VALUES1, value as u64);
 }

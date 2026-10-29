@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import type { ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { dayLabel } from '../../charts/draw.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { CountryGroupReply, TradeFlowsReply } from '../../generated/dashboard';
 import { BRANCH, humansBy, KNOWN_HOUR, mountModule, PENDING_HOUR, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
@@ -161,4 +162,48 @@ test('trade of a group with no member found yet says what the moment was once re
     assert.match(later, /aria-label="This range is still being prepared\."/);
     assert.doesNotMatch(later, /unavailable|no members/);
   } finally { delete host.__tradeGap; await close(); }
+});
+
+test('while playback reads its newest hour, the hour last read stays drawn with its date', async () => {
+  const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
+  const data: TradeFlowsReply = { branchId: BRANCH.id, decimals: 0, resources: [{ id: 1, token: 'steel', ordinal: 1, name: null, icon: null }],
+    countries: ['GER', 'ENG'], reads: [0], known: [span], partial: [], warnings: [], flows: [{ seller: 0, buyer: 1, resource: 1,
+      sellerIdentity: '[1,101]', buyerIdentity: '[2,102]', sellerTags: [0], buyerTags: [1], firstHours: [span.firstHour], lastHours: [span.lastHour],
+      deliveredRaw: ['10'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] }],
+    countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, runs: [{ ...span, slot: index + 1, countryId: index + 101 }] })) };
+  const held = BRANCH.lastHour - 10;
+  const state: { reachedHour?: number } = {};
+  const host = globalThis as typeof globalThis & { __tradeHeld?: typeof state }; host.__tradeHeld = state;
+  const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/trade-flows/TradeFlowsWidget.tsx', {
+    '/widgets/trade-flows/useTradeFlows.ts': `import { decodeTrade, tradeScope } from './tradeData.ts';
+      export const useTradeFlows = (widget, runtime) => {
+        const track = runtime.tracks[0], data = ${JSON.stringify(data)};
+        return { track, all: true, resolved: null, groups: {}, data, scaleData: data, retryScale() {}, retry() {},
+          hasExactHour: hour => hour === ${held}, reachedHour: globalThis.__tradeHeld.reachedHour,
+          scope: tradeScope(decodeTrade(data), widget.countries, null, undefined, track.branch.lastHour, false) };
+      };`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+      export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
+      export const useViewportHeight = () => 1000;`,
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
+    '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
+    '/widgets/trade-flows/TradeDrillView.tsx': 'export default () => null;',
+    '/charts/flow/FlowDiagram.tsx': 'export default props => `Diagram at ${props.hour}`;',
+  });
+  try {
+    const render = () => renderToStaticMarkup(createElement(module.default, { widget: { id: 'trade', kind: 'trade-flows',
+      trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: { scale: 'moment' } },
+      runtime: { client: {}, tracks: [{ id: 'main', axisOffset: 0, branch: { ...BRANCH, gaps: [] }, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'campaign', countries: [] } } }],
+        clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ position: BRANCH.lastHour, playing: true, hoursPerSecond: 24 }) } },
+      active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    assert.match(render(), /aria-label="Loading trade amounts…"/, 'nothing read yet loads');
+    state.reachedHour = held;
+    const lagging = render();
+    assert.match(lagging, new RegExp(`Diagram at ${held}\\b`));
+    assert.ok(lagging.includes(`Per day · As of ${dayLabel(held)}`), 'the held hour is dated, never shown as the playhead’s');
+  } finally { delete host.__tradeHeld; await close(); }
 });

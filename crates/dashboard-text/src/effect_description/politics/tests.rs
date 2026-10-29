@@ -6,8 +6,13 @@ use replay_data::rows::*;
 use replay_frame::frame::TableView;
 
 pub(super) fn fixture() -> (Fixture, Folder) {
+    fixture_with(&[])
+}
+
+/// [`fixture`] with `extra` content files.
+pub(super) fn fixture_with(extra: &[(&str, &str)]) -> (Fixture, Folder) {
     let mut fixture = Fixture::new();
-    let (catalogue, folder) = folder_catalogue(&[
+    let mut files = vec![
         ("common/country_tags/synthetic.txt", "AAA=a BBB=b CCC=c"),
         (
             "common/national_focus/synthetic.txt",
@@ -84,7 +89,9 @@ pub(super) fn fixture() -> (Fixture, Folder) {
                 " REDUCE_FOCUS_DAYS_MULTIPLE_FOCUS:0 \" $FOCUS$\"\n"
             ),
         ),
-    ]);
+    ];
+    files.extend_from_slice(extra);
+    let (catalogue, folder) = folder_catalogue(&files);
     catalogue
         .scripted_content()
         .unwrap()

@@ -116,6 +116,39 @@ fn content_description_cases() {
     }
 }
 
+/// The national focus effects read the national database alone: a refused
+/// continuous-focus file that could define the same id neither refuses nor
+/// replaces the national focus.
+#[test]
+fn national_focus_effects_ignore_a_refused_continuous_file() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (fixture, _folder) = crate::effect_description::politics::tests::fixture_with(&[(
+        "common/continuous_focus/zz_refused.txt",
+        "continuous_focus_palette={focus={text=SYN_WRONG_NAME}}",
+    )]);
+    let content = fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .effects()
+        .unwrap();
+    for (body, expected) in [
+        (
+            "complete_national_focus=SYN_FOCUS",
+            "Complete Alpha:Focus AAA/AAA/AAA/AAA",
+        ),
+        (
+            "unlock_national_focus=SYN_FOCUS",
+            "Unlock Alpha:Focus AAA/AAA/AAA/AAA",
+        ),
+    ] {
+        let output = fixture.render(body, &mut caller(), content.view(None));
+        assert_eq!(output.text, expected, "{body}: {:?}", output.refusals);
+        assert!(output.refusals.is_empty(), "{body}: {:?}", output.refusals);
+    }
+}
+
 #[test]
 fn sharing_bonus_keeps_empty_gates() {
     engine_executable::executable_tables::initialize_for_tests()

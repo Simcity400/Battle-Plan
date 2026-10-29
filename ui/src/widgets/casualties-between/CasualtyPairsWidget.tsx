@@ -111,7 +111,6 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = defaultCountryTag(track);
   const selection = worldRequestTags(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? hour);
-  const filter = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, hour, track?.branch.lastHour ?? hour);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'casualty-pairs',
     params: { branchId: track.branch.id, tags: [], between: false, window: null } } : null;
   const manifest = useProduct<CasualtyPairsReply>(runtime.client, request, active, validateCasualtyPairs, track?.source);
@@ -129,6 +128,8 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   // A window preparation has not reached answers from the prepared prefix's
   // newest window: the flows at the prefix's last hour.
   const through = data ? preparedThrough([data], hour) : hour;
+  // Membership at the moment the flows show, not the hour asked for.
+  const filter = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, through, track?.branch.lastHour ?? hour);
   const error = currentWindows.length ? histories.errors.get(currentWindows[0]) : undefined;
   const detailData = detailWindows.length ? histories.data.get(detailWindows[0]) : undefined;
   const detailError = detailWindows.length ? histories.errors.get(detailWindows[0]) : undefined;
@@ -169,7 +170,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
       // A prefix reply's flows hold at its last hour.
       const read = reply ? preparedThrough([reply], shown) : shown;
       const span = reply?.observed.find(span => span.firstHour <= read && read <= span.lastHour);
-      const selected = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, shown, track?.branch.lastHour ?? shown);
+      const selected = worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, read, track?.branch.lastHour ?? shown);
       const at = reply && span && (!grouped || groups.data && !selected.reason)
         ? casualtyPairsAt(reply, read, tag => !grouped || selected.tags === null || selected.tags.has(tag), between) : null;
       const exact = at ? casualtyChord(at, Number(options.mostCountries), read, labelAt(read),

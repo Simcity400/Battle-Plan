@@ -375,6 +375,31 @@ impl Event {
     }
 }
 
+/// A name one holder in this Windows session has at a time: the named mutex exists while held.
+pub struct Claim {
+    _held: Handle,
+}
+
+impl Claim {
+    /// `None` while another holder has `name`.
+    pub fn take(name: &str) -> Result<Option<Self>, String> {
+        let name = wide(OsStr::new(name));
+        unsafe { SetLastError(0) };
+        let raw = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };
+        let error = unsafe { GetLastError() };
+        if raw.is_null() {
+            // A more privileged holder's mutex cannot be opened.
+            return if error == ERROR_ACCESS_DENIED {
+                Ok(None)
+            } else {
+                Err(io::Error::from_raw_os_error(error as i32).to_string())
+            };
+        }
+        let handle = Handle(raw);
+        Ok((error != ERROR_ALREADY_EXISTS).then_some(Self { _held: handle }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +474,24 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn a_claimed_name_is_refused_until_its_holder_lets_it_go() {
+        let name = format!(
+            "Local\\HOI4Replay.ClaimTest.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let first = Claim::take(&name).unwrap().expect("a fresh name");
+        assert!(Claim::take(&name).unwrap().is_none());
+        // A refused claim keeps no handle that would hold the name after the holder.
+        drop(first);
+        let again = Claim::take(&name).unwrap();
+        assert!(again.is_some());
     }
 
     #[test]

@@ -37,7 +37,10 @@ enum Change {
     CheckpointBytes,
 }
 
-// Schema-40 wire types mirror restoration without importing dashboard dependencies.
+/// The prepared schema these wire types mirror: dashboard-base's `prepared::coverage::SCHEMA`.
+const SCHEMA: u32 = 52;
+
+// Wire types mirror restoration without importing dashboard dependencies.
 #[derive(Deserialize, Serialize)]
 struct Checkpoint {
     schema: u32,
@@ -218,9 +221,9 @@ impl Input {
             .open(&self.directory)?
             .read_to_end(&mut packet)?;
         let state: Checkpoint = serde_json::from_slice(&packet)?;
-        if state.schema != 40 {
+        if state.schema != SCHEMA {
             return Err(invalid(format!(
-                "Unsupported completion schema {}; expected 40",
+                "Unsupported completion schema {}; expected {SCHEMA}",
                 state.schema
             )));
         }
@@ -294,7 +297,7 @@ impl Input {
             let coverage = production
                 .get(&branch.to_string())
                 .ok_or_else(|| invalid(format!("Missing production coverage: {branch}")))?;
-            if coverage["schema"] != 40
+            if coverage["schema"] != SCHEMA
                 || coverage["complete"] != true
                 || coverage["lastHour"] != block["last"]
             {
@@ -663,11 +666,12 @@ mod tests {
     use std::fs::OpenOptions;
 
     const SIDE: &[u8] = br#"{"pending":[]}"#;
-    const PRODUCTION_COVERAGE: &[u8] =
-        br#"{"schema":40,"firstHour":1,"lastHour":2,"complete":true}"#;
+    fn production_coverage() -> Vec<u8> {
+        format!(r#"{{"schema":{SCHEMA},"firstHour":1,"lastHour":2,"complete":true}}"#).into_bytes()
+    }
     fn production_document() -> Value {
         json!({"branch":1,
-            "coverage":serde_json::from_slice::<Value>(PRODUCTION_COVERAGE).unwrap(),
+            "coverage":serde_json::from_slice::<Value>(&production_coverage()).unwrap(),
             "last_block":[1,2,0]})
     }
     fn compressed(document: &Value) -> Vec<u8> {
@@ -677,7 +681,7 @@ mod tests {
         compressed(&production_document())
     }
     fn base_bytes() -> u64 {
-        (SIDE.len() + PRODUCTION_COVERAGE.len() + production_directory().len()) as u64
+        (SIDE.len() + production_coverage().len() + production_directory().len()) as u64
     }
 
     struct Fixture {
@@ -722,7 +726,7 @@ mod tests {
                 ),
                 (
                     "preparation-family-production-lines-1",
-                    vec![PRODUCTION_COVERAGE.to_vec()],
+                    vec![production_coverage()],
                 ),
             ] {
                 if !products.iter().any(|(name, _)| *name == section) {
@@ -734,10 +738,10 @@ mod tests {
                 .flat_map(|(_, ranges)| ranges)
                 .map(Vec::len)
                 .sum();
-            let checkpoint = serde_json::to_vec(&json!({"schema":40,
+            let checkpoint = serde_json::to_vec(&json!({"schema":SCHEMA,
                 "index":[{"branch":1,"first":1,"last":2,"offset":0,"length":8,"raw_length":16}],
                 "cursor":{"next_block":if complete {1}else{0},"previous":null},
-                "independent":{"synthetic":{"next_block":1,"refused":{}}},"production":{"1":{"schema":40,"firstHour":1,"lastHour":2,"complete":true}},"selected":[1,2],
+                "independent":{"synthetic":{"next_block":1,"refused":{}}},"production":{"1":{"schema":SCHEMA,"firstHour":1,"lastHour":2,"complete":true}},"selected":[1,2],
                 "header":[1,2,3],"content":false,"sessions":[],"branches":[],"gaps":[],
                 "map":{"stride":720,"selected":[1,2],"branches":{},"resume_range":null,"gaps":{},"ranges":{}},
                 "display_error":null,"display_failures":0,"refused":{},"bytes":bytes})).unwrap();
@@ -861,11 +865,11 @@ mod tests {
         let fixture = Fixture::new();
         for (index, production) in [
             json!({}),
-            json!({"2":{"schema":40,"firstHour":1,"lastHour":2,"complete":true}}),
-            json!({"1":{"schema":40,"firstHour":1,"lastHour":1,"complete":true}}),
-            json!({"1":{"schema":40,"firstHour":1,"lastHour":2,"complete":false}}),
-            json!({"1":{"schema":40,"firstHour":0,"lastHour":2,"complete":true}}),
-            json!({"1":{"schema":41,"firstHour":1,"lastHour":2,"complete":true}}),
+            json!({"2":{"schema":SCHEMA,"firstHour":1,"lastHour":2,"complete":true}}),
+            json!({"1":{"schema":SCHEMA,"firstHour":1,"lastHour":1,"complete":true}}),
+            json!({"1":{"schema":SCHEMA,"firstHour":1,"lastHour":2,"complete":false}}),
+            json!({"1":{"schema":SCHEMA,"firstHour":0,"lastHour":2,"complete":true}}),
+            json!({"1":{"schema":SCHEMA + 1,"firstHour":1,"lastHour":2,"complete":true}}),
         ]
         .into_iter()
         .enumerate()
@@ -926,7 +930,10 @@ mod tests {
             "invalid-published-production-coverage",
             vec![(
                 "preparation-family-production-lines-1",
-                vec![br#"{"schema":40,"firstHour":1,"lastHour":2,"complete":false}"#.to_vec()],
+                vec![
+                    format!(r#"{{"schema":{SCHEMA},"firstHour":1,"lastHour":2,"complete":false}}"#)
+                        .into_bytes(),
+                ],
             )],
             1,
             true,
@@ -977,7 +984,7 @@ mod tests {
     #[test]
     fn completion_rejects_obsolete_or_unknown_schema() {
         let fixture = Fixture::new();
-        for schema in [37, 38, 39, 41] {
+        for schema in [37, 40, SCHEMA - 1, SCHEMA + 1] {
             let input = fixture.store_with_checkpoint(
                 &format!("unsupported-schema-{schema}"),
                 vec![],
@@ -993,6 +1000,20 @@ mod tests {
                     .contains(&schema.to_string())
             );
         }
+    }
+
+    #[test]
+    fn the_compared_schema_is_the_one_preparation_writes() {
+        let coverage = include_str!("../../../dashboard-base/src/prepared/coverage.rs");
+        let declared = format!("pub const SCHEMA: u32 = {SCHEMA};");
+        assert!(
+            coverage.lines().any(|line| line.trim() == declared),
+            "the prepared schema changed: check these wire types against it, then raise SCHEMA"
+        );
+        let fixture = Fixture::new();
+        let current = fixture.store("current-schema", vec![], 1, true);
+        assert_eq!(current.checkpoint().unwrap()["schema"], SCHEMA);
+        current.completion().unwrap();
     }
 
     #[test]
@@ -1202,8 +1223,8 @@ mod tests {
         let bytes = base_bytes();
         for (index, (field, replacement)) in [
             (
-                "\"schema\":40".to_owned(),
-                "\"schema\":0,\"schema\":40".to_owned(),
+                format!("\"schema\":{SCHEMA}"),
+                format!("\"schema\":0,\"schema\":{SCHEMA}"),
             ),
             (
                 format!("\"bytes\":{bytes}"),
@@ -1279,7 +1300,7 @@ mod tests {
             ("/independent/synthetic/refused", json!({"not a branch":{}})),
             (
                 "/production",
-                json!({"1":{"schema":40,"firstHour":1,"lastHour":"not an hour","complete":true}}),
+                json!({"1":{"schema":SCHEMA,"firstHour":1,"lastHour":"not an hour","complete":true}}),
             ),
         ]
         .into_iter()
@@ -1357,7 +1378,7 @@ mod tests {
                     "hour":2,"error":"Synthetic recorded refusal","from":null
                 }}});
                 document["production"] = json!({"1":{
-                    "schema":40,"firstHour":1,"lastHour":2,"complete":true
+                    "schema":SCHEMA,"firstHour":1,"lastHour":2,"complete":true
                 }});
             })
         };

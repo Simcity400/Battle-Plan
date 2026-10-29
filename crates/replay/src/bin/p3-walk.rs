@@ -111,8 +111,8 @@ fn restart_record(bytes: &[u8], record_at: &Record) -> io::Result<Vec<u8>> {
     record(bytes, record_at.offset, record_at.raw, record_at.stored)
 }
 
-/// The recording's format, which opaque cells are encoded in.
-const FORMAT: u16 = 125;
+/// The format `p3-convert` encodes rows and opaque cells in: this build's.
+const FORMAT: u16 = replay_data::FORMAT_VERSION;
 
 fn field<'a>(cell: Cell<'a>, dictionary: &'a Dictionary) -> io::Result<Field<'a>> {
     Ok(match cell {
@@ -183,20 +183,51 @@ fn rows(
     Ok(keyed.len())
 }
 
+#[derive(Debug, PartialEq)]
+struct Options {
+    path: String,
+    repetitions: usize,
+    materialize: bool,
+    table: Option<String>,
+}
+
+/// The file, then the optional repetition count and options in any order.
+fn options(mut args: impl Iterator<Item = String>) -> io::Result<Options> {
+    let usage = || invalid("p3-walk <file.h4col> [repetitions] [--rows] [--table=<Name>]");
+    let path = args.next().ok_or_else(usage)?;
+    let (mut repetitions, mut materialize, mut table) = (None, false, None);
+    for arg in args {
+        if arg == "--rows" {
+            materialize = true;
+        } else if let Some(name) = arg.strip_prefix("--table=") {
+            if table.replace(name.to_owned()).is_some() {
+                return Err(usage());
+            }
+        } else if arg.starts_with("--") || repetitions.is_some() {
+            return Err(usage());
+        } else {
+            repetitions = Some(
+                arg.parse()
+                    .map_err(|_| invalid("Repetitions is not a count"))?,
+            );
+        }
+    }
+    Ok(Options {
+        path,
+        repetitions: repetitions.unwrap_or(3),
+        materialize,
+        table,
+    })
+}
+
 fn main() -> io::Result<()> {
-    let mut args = std::env::args().skip(1);
-    let path = args
-        .next()
-        .ok_or_else(|| invalid("p3-walk <file.h4col> [repetitions]"))?;
-    let repetitions: usize = args.next().map_or(Ok(3), |text| {
-        text.parse()
-            .map_err(|_| invalid("Repetitions is not a count"))
-    })?;
-    let options: Vec<String> = args.collect();
-    let materialize = options.iter().any(|option| option == "--rows");
-    let watched = options
-        .iter()
-        .find_map(|option| option.strip_prefix("--table="))
+    let Options {
+        path,
+        repetitions,
+        materialize,
+        table,
+    } = options(std::env::args().skip(1))?;
+    let watched = table
         .map(|name| {
             TableId::ALL
                 .iter()
@@ -413,4 +444,50 @@ fn main() -> io::Result<()> {
         }))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> io::Result<Options> {
+        options(args.iter().map(|arg| arg.to_string()))
+    }
+
+    fn walk(repetitions: usize, materialize: bool, table: Option<&str>) -> Options {
+        Options {
+            path: "walk.h4col".into(),
+            repetitions,
+            materialize,
+            table: table.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_repetition_count_is_optional_before_or_among_the_options() {
+        assert_eq!(parsed(&["walk.h4col"]).unwrap(), walk(3, false, None));
+        assert_eq!(parsed(&["walk.h4col", "--rows"]).unwrap(), walk(3, true, None));
+        assert_eq!(
+            parsed(&["walk.h4col", "--table=Countries"]).unwrap(),
+            walk(3, false, Some("Countries"))
+        );
+        assert_eq!(
+            parsed(&["walk.h4col", "5", "--rows", "--table=Countries"]).unwrap(),
+            walk(5, true, Some("Countries"))
+        );
+        assert_eq!(
+            parsed(&["walk.h4col", "--rows", "1"]).unwrap(),
+            walk(1, true, None)
+        );
+        let refused: [&[&str]; 5] = [
+            &[],
+            &["walk.h4col", "many"],
+            &["walk.h4col", "1", "2"],
+            &["walk.h4col", "--row"],
+            &["walk.h4col", "--table=Countries", "--table=Provinces"],
+        ];
+        for args in refused {
+            assert!(parsed(args).is_err(), "{args:?}");
+        }
+    }
 }

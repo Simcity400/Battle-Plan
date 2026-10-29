@@ -43,6 +43,10 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     const stopped = visible({ ...metadata, partial: { sessionId: 's1', reason: 'The game closed.', failedHour: branch.lastHour } });
     assert.match(stopped, /Stopped early/);
     assert.match(stopped, /was saved: The game closed\./);
+    const damaged = visible({ ...metadata, damaged: { parts: 0, firstHour: null, lastHour: null, reasons: ['Checksum mismatch'] } });
+    assert.match(damaged, /Damaged/, 'a recording that failed its checksum is not called complete');
+    assert.doesNotMatch(damaged, /Complete|Recorded throughout/);
+    assert.match(damaged, /Damaged or modified recording · Checksum mismatch/);
     const markup = (value: ReplayMetadata, shown: { id: string; choose: (id: string) => void } | null) =>
       renderToStaticMarkup(createElement(Diagnostics, { native: null, metadata: value, branch: shown }));
     assert.doesNotMatch(markup(metadata, { id: 'b1', choose() {} }), /Showing|>Show</, 'one branch has nothing to switch to');

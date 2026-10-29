@@ -42,6 +42,8 @@ call:Instant::now
 call:LiveMemory::new
 call:Ok
 call:OnceLock::new
+# The game's one-collector claim: a named mutex only; no hook construction or game read.
+call:Owner::claim
 call:PreparedCampaigns::load
 call:Processor::new
 call:QueryPerformanceFrequency
@@ -74,6 +76,7 @@ call:crate::building_bombing::buildings
 call:crate::building_bombing::capacity
 call:crate::building_bombing::prepare
 call:crate::building_bombing::restore_sequence
+call:crate::combat_log_prune::release_storage
 call:crate::country_input_changes::presize_countries
 call:crate::country_scale::Sizing::for_slots
 call:crate::country_scale::note_air_wing_name_bytes

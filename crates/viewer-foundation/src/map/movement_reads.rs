@@ -98,8 +98,12 @@ struct Wars {
     /// The read enemy vector, when the collector read it.
     enemies: Option<Vec<u32>>,
 }
-/// Each division's land combats, and the provinces holding one.
-type Combats = (BTreeMap<u64, Vec<ArmyCombat>>, BTreeSet<u32>);
+/// Each division's land combats, with where their attacking units stand or why that is
+/// unknown, and the provinces holding one.
+type Combats = (
+    BTreeMap<u64, Vec<(ArmyCombat, Arc<Fact<Vec<u32>>>)>>,
+    BTreeSet<u32>,
+);
 
 fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<&T, String> {
     cell.get_or_init(build).as_ref().map_err(Clone::clone)
@@ -366,36 +370,73 @@ impl<'w, 'a> Moves<'w, 'a> {
     fn combats(&self) -> Result<&Combats, String> {
         get(&self.cells.combats, || {
             let minimum = self.assets.combat_minimum_time;
-            let mut by_division: BTreeMap<u64, Vec<ArmyCombat>> = BTreeMap::new();
+            let mut by_division: BTreeMap<u64, Vec<(ArmyCombat, Arc<Fact<Vec<u32>>>)>> =
+                BTreeMap::new();
             let mut provinces = BTreeSet::new();
             for row in self.table::<tables::LandCombats>()? {
                 provinces.insert(row.province);
-                let attacker_locations = row
-                    .attackers
-                    .iter()
-                    .map(|&id| {
-                        self.division(id)?
-                            .map(|division| division.province)
-                            .ok_or_else(|| {
-                                format!("land combat attacker {id:#x} is not a division")
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                // Only its defenders' movement reads these, so an unknown one stays theirs.
+                let attackers: Arc<Fact<Vec<u32>>> = Arc::new(
+                    self.attacker_locations(row)
+                        .and_then(|locations| locations.into_iter().collect()),
+                );
                 for (side, attacking) in [(&row.attackers, true), (&row.defenders, false)] {
                     for &division in side {
-                        let entry = by_division.entry(division).or_default();
-                        entry.push(ArmyCombat {
+                        let combat = ArmyCombat {
                             province: row.province,
                             land: true,
                             attacking,
                             defending: !attacking,
-                            attacker_locations: attacker_locations.clone(),
+                            attacker_locations: Vec::new(),
                             minimum_duration: minimum <= row.duration,
-                        });
+                        };
+                        let entry = by_division.entry(division).or_default();
+                        entry.push((combat, Arc::clone(&attackers)));
                     }
                 }
             }
             Ok((by_division, provinces))
+        })
+    }
+
+    /// Where each attacking unit of a land combat stands, in order, read from the rows of
+    /// its recorded class: the game compares every attacker's own location.
+    fn attacker_locations(&self, row: &replay_data::rows::LandCombatRow) -> Fact<Vec<Fact<u32>>> {
+        if row.attacker_classes.len() != row.attackers.len() {
+            return Err(format!(
+                "land combat {:#x} records {} classes for {} attackers",
+                row.id,
+                row.attacker_classes.len(),
+                row.attackers.len()
+            ));
+        }
+        Ok(row
+            .attackers
+            .iter()
+            .zip(&row.attacker_classes)
+            .map(|(&unit, &class)| self.combatant_location(unit, class))
+            .collect())
+    }
+
+    fn combatant_location(&self, unit: u64, class: u32) -> Fact<u32> {
+        use engine_native::cland_combat::{DIVISION_CLASS, RAILWAY_GUN_CLASS, TASK_FORCE_CLASS};
+        let location = match class {
+            DIVISION_CLASS => self.division(unit)?.map(|row| row.province),
+            TASK_FORCE_CLASS => self.task_force(unit)?.map(|row| row.province),
+            RAILWAY_GUN_CLASS => {
+                let rows = self.table::<tables::RailwayGunCounterInputs>()?;
+                rows.binary_search_by_key(&unit, |row| row.gun)
+                    .ok()
+                    .map(|at| rows[at].province)
+            }
+            _ => {
+                return Err(format!(
+                    "land combat unit {unit:#x} has native class {class}, whose location is not recorded"
+                ));
+            }
+        };
+        location.ok_or_else(|| {
+            format!("land combat unit {unit:#x} of native class {class} has no row of its class")
         })
     }
 
@@ -406,12 +447,19 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("division {division:#x} is not recorded"))?;
         let movement = self.movement(division)?;
         let flags = self.move_flags(division)?;
-        let combats = self
-            .combats()?
-            .0
-            .get(&division)
-            .cloned()
-            .unwrap_or_default();
+        let combats = match self.combats()?.0.get(&division) {
+            None => Vec::new(),
+            Some(engaged) => engaged
+                .iter()
+                .map(|(combat, attackers)| -> Fact<ArmyCombat> {
+                    let mut combat = combat.clone();
+                    if combat.defending {
+                        combat.attacker_locations = (**attackers).clone()?;
+                    }
+                    Ok(combat)
+                })
+                .collect::<Fact<Vec<_>>>()?,
+        };
         if combats.len() != movement.combat_count as usize {
             return Err(format!(
                 "division {division:#x} records {} combats but {} land combats name it",
@@ -1091,6 +1139,168 @@ impl<'a> Moves<'_, 'a> {
 #[cfg(any(test, feature = "test-support"))]
 #[path = "movement_reads/test_support.rs"]
 pub mod test_support;
+
+#[cfg(test)]
+mod combat_location_tests {
+    use super::test_support::{frame, put, unnamed_assets};
+    use super::*;
+    use installed_content_unit_path::unit_path::{CommonCombat, CommonMoveWorld};
+    use replay_data::rows::{
+        LandCombatDetailsRow, LandCombatRow, RailwayGunCounterInputRow, Recorded,
+    };
+
+    const TASK_FORCE: u64 = 0x400;
+    const GUN: u64 = 0x500;
+    const UNKNOWN_CLASS: u64 = 0x600;
+
+    /// Combat 7 in province 1: a division, a task force and a railway gun attack division
+    /// 0x100. Combat 8 in province 2: a class-5 unit and division 0x300 attack 0x800.
+    fn mixed_frame() -> replay_frame::frame::DecodedFrame {
+        let mut frame = frame();
+        let divisions = [
+            (0x100, 1, 10, 1),
+            (0x200, 3, 11, 1),
+            (0x300, 4, 11, 1),
+            (0x800, 2, 10, 1),
+            (0x900, 3, 11, 0),
+        ];
+        put::<tables::Divisions>(
+            &mut frame,
+            divisions
+                .map(|(id, province, owner, _)| DivisionRow {
+                    id,
+                    province,
+                    roster_owner: owner,
+                    logical_owner: owner,
+                    ..Default::default()
+                })
+                .into(),
+        );
+        put::<tables::DivisionMovement>(
+            &mut frame,
+            divisions
+                .map(|(division, _, _, combat_count)| DivisionMovementRow {
+                    division,
+                    combat_count,
+                    ..Default::default()
+                })
+                .into(),
+        );
+        put::<tables::DivisionStatus>(
+            &mut frame,
+            divisions
+                .map(|(division, ..)| DivisionStatusRow {
+                    division,
+                    ..Default::default()
+                })
+                .into(),
+        );
+        put::<tables::TaskForces>(
+            &mut frame,
+            vec![TaskForceRow {
+                id: TASK_FORCE,
+                province: 2,
+                ..Default::default()
+            }],
+        );
+        put::<tables::RailwayGunCounterInputs>(
+            &mut frame,
+            vec![RailwayGunCounterInputRow {
+                gun: GUN,
+                province: 4,
+                ..Default::default()
+            }],
+        );
+        put::<tables::LandCombats>(
+            &mut frame,
+            vec![
+                LandCombatRow {
+                    id: 7,
+                    province: 1,
+                    duration: 5,
+                    attackers: vec![0x200, TASK_FORCE, GUN],
+                    attacker_classes: vec![0, 1, 13],
+                    defenders: vec![0x100],
+                    defender_classes: vec![0],
+                    ..Default::default()
+                },
+                LandCombatRow {
+                    id: 8,
+                    province: 2,
+                    duration: 5,
+                    attackers: vec![UNKNOWN_CLASS, 0x300],
+                    attacker_classes: vec![5, 0],
+                    defenders: vec![0x800],
+                    defender_classes: vec![0],
+                    ..Default::default()
+                },
+            ],
+        );
+        put::<tables::LandCombatDetails>(
+            &mut frame,
+            [7, 8]
+                .map(|combat| LandCombatDetailsRow {
+                    combat,
+                    border_war: Recorded::Value(None),
+                    ..Default::default()
+                })
+                .into(),
+        );
+        frame
+    }
+
+    #[test]
+    fn mixed_attackers_stand_where_their_own_class_records_them() {
+        let assets = unnamed_assets();
+        let frame = mixed_frame();
+        let world = World::read(&frame, assets.trigger_content.facts());
+        let cells = Cells::default();
+        let moves = Moves::new(&world, assets.movement_reads(), &cells);
+        // A defender sees every attacking unit's own location.
+        assert_eq!(
+            moves.army(0x100).unwrap().combats,
+            [ArmyCombat {
+                province: 1,
+                land: true,
+                attacking: false,
+                defending: true,
+                attacker_locations: vec![3, 2, 4],
+                minimum_duration: true,
+            }]
+        );
+        // An attacker never reads its own side's locations, known or not.
+        for division in [0x200, 0x300] {
+            let combats = moves.army(division).unwrap().combats;
+            assert_eq!(combats.len(), 1);
+            assert!(combats[0].attacking && combats[0].attacker_locations.is_empty());
+        }
+        // Only the defender facing the unlocated unit is unknown, and says why.
+        let unknown = moves.army(0x800).unwrap_err();
+        assert!(unknown.contains("native class 5"), "{unknown}");
+        assert!(moves.army(0x900).unwrap().combats.is_empty());
+        assert_eq!(moves.land_combat(2), Ok(true));
+        assert_eq!(moves.land_combat(3), Ok(false));
+    }
+
+    #[test]
+    fn selected_counterattack_finds_any_attacker_class_and_names_an_unlocated_one() {
+        let assets = unnamed_assets();
+        let frame = mixed_frame();
+        let world = World::read(&frame, assets.trigger_content.facts());
+        let cells = Cells::default();
+        let common = CommonCells::new(&frame);
+        let moves = Moves::for_common(&world, assets.movement_reads(), &cells, &common).unwrap();
+        let land = |combat| CommonCombat { combat, kind: 0 };
+        assert_eq!(moves.combat_attacker_at(land(7), 3), Ok(true));
+        assert_eq!(moves.combat_attacker_at(land(7), 2), Ok(true));
+        assert_eq!(moves.combat_attacker_at(land(7), 4), Ok(true));
+        assert_eq!(moves.combat_attacker_at(land(7), 1), Ok(false));
+        // A located attacker there decides; elsewhere the unlocated one leaves it unknown.
+        assert_eq!(moves.combat_attacker_at(land(8), 4), Ok(true));
+        let unknown = moves.combat_attacker_at(land(8), 1).unwrap_err();
+        assert!(unknown.contains("native class 5"), "{unknown}");
+    }
+}
 
 #[cfg(test)]
 mod recorded_source_tests {

@@ -41,6 +41,8 @@ struct FocusUnavailable {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FocusStaticText {
+    /// The database every token is looked up in.
+    database: crate::FocusDatabase,
     tokens: Vec<String>,
 }
 
@@ -1849,6 +1851,7 @@ fn query_data(
                 "texts": crate::prepared_focus::art::static_text(
                     source,
                     content,
+                    params.database,
                     &params.tokens,
                     cancelled,
                 )?,

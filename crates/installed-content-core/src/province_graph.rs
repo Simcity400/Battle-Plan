@@ -72,7 +72,8 @@ impl ProvinceGraph {
         let terrain = TerrainCosts::read(layers, &files)?;
         let rules = crate::adjacency_rules::read_map(layers, &files)?;
         let mut graph = derive(&map, &geometry, &rows, &terrain)?;
-        graph.crossings = authored_crossings(&rows, &rules);
+        graph.crossings = authored_crossings(&rows, &rules)
+            .map_err(|error| invalid(format!("{path}: {error}")))?;
         graph.rules = rules;
         Ok((graph, geometry))
     }
@@ -701,27 +702,42 @@ fn edge_distance(
 }
 
 /// The authored kind, through and rule of each row, both directions, in
-/// file order so a later row replaces an earlier one. The rule is looked up
-/// by name among the loaded rules; an unknown name leaves none.
+/// file order so a later row replaces an earlier one. The rule is the first
+/// loaded rule whose stored name has the row's bytes; a name no rule has
+/// leaves none, as the game reports it. Consumers find the rule again by its
+/// text name, so a rule that text cannot single out refuses the graph.
 fn authored_crossings(
     rows: &[Adjacency],
     rules: &[AdjacencyRule],
-) -> BTreeMap<(u32, u32), Crossing> {
+) -> io::Result<BTreeMap<(u32, u32), Crossing>> {
     let mut out = BTreeMap::new();
     for row in rows.iter().filter(|row| row.to > 0) {
+        let rule = match &row.rule {
+            None => None,
+            Some(bytes) => match rules.iter().position(|rule| rule.identity == *bytes) {
+                None => None,
+                Some(at) => {
+                    let name = &rules[at].name;
+                    if rules.iter().position(|rule| rule.name == *name) != Some(at) {
+                        return Err(invalid(format!(
+                            "adjacency {};{} names rule {name}, which an earlier rule's name text cannot be told apart from",
+                            row.from, row.to
+                        )));
+                    }
+                    Some(name.clone())
+                }
+            },
+        };
         let crossing = Crossing {
             kind: row.kind,
             through: row.through,
-            rule: row
-                .rule
-                .clone()
-                .filter(|name| crate::adjacency_rules::find(rules, name).is_some()),
+            rule,
         };
         let (source, target) = (row.from, row.to);
         out.insert((source, target), crossing.clone());
         out.insert((target, source), crossing);
     }
-    out
+    Ok(out)
 }
 
 fn derive(
@@ -1027,7 +1043,7 @@ mod tests {
                     2;3;;-1;-1;-1;-1;-1;MISSING;z
                     -1;-1;;-1;-1;-1;-1;-1;;
 ";
-        let crossings = authored_crossings(&adjacencies::parse(csv).unwrap(), &rules);
+        let crossings = authored_crossings(&adjacencies::parse(csv).unwrap(), &rules).unwrap();
         let strait = Crossing {
             kind: SEA_CROSSING,
             through: 9,
@@ -1043,5 +1059,31 @@ mod tests {
                 rule: None
             }
         );
+    }
+
+    /// Rows match a rule by its stored bytes, as the game compares them: a name
+    /// that is not UTF-8 still reaches its rule, which is refused, not absent.
+    #[test]
+    fn authored_crossings_match_rule_names_by_their_bytes() {
+        let rules = crate::adjacency_rules::parse(
+            b"adjacency_rule = { name = OPEN } adjacency_rule = { name = \"\xc9TROIT\" enemy = { army = no } }",
+        )
+        .unwrap();
+        let csv = b"h\n1;5;sea;9;-1;-1;-1;-1;\xc9TROIT;x\n2;3;sea;9;-1;-1;-1;-1;\xc9troit;y\n";
+        let crossings = authored_crossings(&adjacencies::parse(csv).unwrap(), &rules).unwrap();
+        let name = crossings[&(5, 1)].rule.as_deref().unwrap();
+        let rule = crate::adjacency_rules::find(&rules, name).unwrap();
+        let refused = rule.unsupported.as_deref().unwrap();
+        assert!(refused.contains("not UTF-8"), "{refused}");
+        assert_eq!(crossings[&(2, 3)].rule, None);
+        // A text name an earlier rule already holds cannot single the rule out.
+        let clash = crate::adjacency_rules::parse(
+            b"adjacency_rule = { name = \\xc9X } adjacency_rule = { name = \"\xc9X\" }",
+        )
+        .unwrap();
+        assert_eq!(clash[0].name, clash[1].name);
+        let csv = b"h\n1;5;sea;9;-1;-1;-1;-1;\xc9X;x\n";
+        let error = authored_crossings(&adjacencies::parse(csv).unwrap(), &clash).unwrap_err();
+        assert!(error.to_string().contains("cannot be told apart"), "{error}");
     }
 }

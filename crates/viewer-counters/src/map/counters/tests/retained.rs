@@ -450,6 +450,7 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                 TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
                     id: 61,
                     province: 1,
+                    attacker_classes: vec![0],
                     attackers: vec![10],
                     defenders: vec![10],
                     ..Default::default()

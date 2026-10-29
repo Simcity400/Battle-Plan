@@ -1634,9 +1634,27 @@ mod tests {
         let fresh = fixture.source();
         ordinary(&fresh, Some(&options));
         assert_eq!(air(&payloads(&fresh, Some(&options))), prepared);
+        let recorded = BoundSource::open(&fresh, Some(&options)).unwrap().key;
         std::fs::write(&mod_input, "NDefines.NGame.SYNTHETIC=200").unwrap();
+        // Installed bytes that differ from the recording's are bound as the changed layer
+        // they are, never under the recorded content's key or its checkpoint.
         let mismatched = fixture.source();
-        assert!(BoundSource::open(&mismatched, Some(&options)).is_err());
+        let changed = BoundSource::open(&mismatched, Some(&options)).unwrap();
+        assert!(
+            !mismatched
+                .content(&options.options)
+                .unwrap()
+                .changed
+                .is_empty()
+        );
+        assert_ne!(changed.key, recorded);
+        assert!(
+            changed
+                .checkpoint(changed.saved().unwrap().as_ref())
+                .unwrap()
+                .is_none()
+        );
+        drop(changed);
         let (_, identity) = crate::test_fixtures::content_identity(&game);
         let mut input = records(1, blocks[0].clone());
         let Record::SessionStart(session) = &mut input[0] else {

@@ -537,3 +537,56 @@ fn unavailable_parts_count_their_catalogue_without_numeric_runs() {
         );
     }
 }
+
+#[test]
+fn an_exile_or_schedule_naming_a_country_with_no_identity_leaves_its_hour_unknown() {
+    let fixture = Fixture::new();
+    let mut state = Prepared::default();
+    // EXA (1) is exiled to HSA (2); raw 9 is a country no link names.
+    let observe = |state: &mut Prepared, hour: i32, exiles: Vec<(u32, Recorded<Option<i32>>)>, schedules: &[u32]| {
+        let mut at = frame(hour);
+        countries(&mut at, &[(1, 1, "EXA"), (2, 2, "HSA")], &[]);
+        owned_states(&mut at, &[(1, 3), (2, 3)]);
+        set(
+            &mut at,
+            TableId::CountryStabilityInputs,
+            TableRows::CountryStabilityInputs(
+                exiles
+                    .into_iter()
+                    .map(|(country, exile_host)| CountryStabilityInputRow { country, exile_host, ..Default::default() })
+                    .collect(),
+            ),
+        );
+        politics(
+            &mut at,
+            schedules
+                .iter()
+                .map(|&country| PoliticsRow {
+                    country,
+                    last_election: engine_native::cdate::HOUR_EPOCH + 1936 * 365 * 24,
+                    has_elections: true.into(),
+                    election_interval: 0.into(),
+                    ..Default::default()
+                })
+                .collect(),
+        );
+        state.step(&at);
+    };
+    observe(&mut state, 100, vec![(1, Some(2).into())], &[1]);
+    // The host can't be named.
+    observe(&mut state, 101, vec![(1, Some(9).into())], &[1, 9]);
+    // The government in exile can't be named.
+    observe(&mut state, 102, vec![(1, Some(2).into()), (9, Some(2).into())], &[1]);
+    // The host was not recorded.
+    observe(&mut state, 103, vec![(1, Recorded::NotRecorded)], &[1]);
+    observe(&mut state, 104, vec![(1, Some(2).into())], &[1]);
+    publish(&mut state, &fixture);
+    let exiles = ask(&fixture, window(100, 104), 104);
+    assert_eq!(exiles.known, vec![span(100, 100), span(104, 104)]);
+    for reason in ["an exile's host has no identity", "a government in exile has no identity", "an exile host is not recorded"] {
+        assert!(exiles.warnings.iter().any(|warning| warning.contains(reason)), "{reason}");
+    }
+    let elections = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 104);
+    assert_eq!(elections.known, vec![span(100, 100), span(102, 104)]);
+    assert!(elections.warnings.iter().any(|warning| warning.contains("election schedule's country has no identity")));
+}

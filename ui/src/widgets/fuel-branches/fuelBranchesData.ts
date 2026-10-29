@@ -85,6 +85,17 @@ export function ratioRuns(branch: FuelBranch): Run[] {
   return runs;
 }
 
+/** The ratio axis: at least 0-100%, high enough for every recorded ratio, with at most
+ * eight round steps (25, 50, 100, 250, 500, 1,000% ...). */
+export function ratioAxis(lines: readonly { runs: readonly Run[] }[]): { top: number; ticks: number[] } {
+  let most = 100;
+  for (const line of lines) for (const run of line.runs) if (run.value > most) most = run.value;
+  let step = 25;
+  for (let scale = 1; Math.ceil(most / step) > 8; scale *= 10) step = [25, 50, 100].map(base => base * scale).find(size => Math.ceil(most / size) <= 8) ?? 100 * scale;
+  const top = Math.ceil(most / step) * step;
+  return { top, ticks: Array.from({ length: top / step + 1 }, (_, index) => index * step) };
+}
+
 /** Why a time view through `hour` has no line: its hour is still being prepared
  * ('pending'), the consumer table was read at that hour and the country had none
  * ('none', proven), or it was not read then ('unrecorded'). An earlier read never

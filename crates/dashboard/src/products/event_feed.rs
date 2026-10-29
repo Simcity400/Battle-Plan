@@ -1161,8 +1161,9 @@ fn script_presentation(
             builder.unavailable("scriptEventOptionAdmission","Offered event option",
                 format!("Event {token} option {ordinal}: trigger {} needs exact presentation-time inputs",trigger.key.as_deref().map(String::from_utf8_lossy).unwrap_or_default()),Some(1));
         }
-        if event.original_recipient_only[ordinal] {
-            builder.unavailable("scriptEventOptionAdmission","Offered event option",format!("Event {token} option {ordinal}: original_recipient_only requires exact presentation ownership"),Some(1));
+        if let Some(original) = event.original_recipient_only[ordinal] {
+            let only = if original { "the original recipient" } else { "a recipient other than the original" };
+            builder.unavailable("scriptEventOptionAdmission","Offered event option",format!("Event {token} option {ordinal}: original_recipient_only offers it only to {only}, which requires exact presentation ownership"),Some(1));
         }
     }
     if let Some((texts, _)) = texts {
@@ -1886,7 +1887,12 @@ fn focus_completion_rows(
     let replay = source.replay_ref();
     let mut focus_art = None;
     if let Ok(content) = context.content()
-        && let Err(reason) = artwork::ensure(&mut focus_art, source, content, artwork::Kind::Focus)
+        && let Err(reason) = artwork::ensure(
+            &mut focus_art,
+            source,
+            content,
+            artwork::Kind::Focus(crate::FocusDatabase::National),
+        )
     {
         builder.unavailable(
             "focusPresentation",

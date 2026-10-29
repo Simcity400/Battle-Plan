@@ -77,7 +77,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     let detailsWanted: readonly NameAt[] = [];
     const params = (call: typeof calls[number]) => call.input.params as FocusArtworkParams;
     const answer = (call: typeof calls[number], details = false) => call.answer({
-      branchId: params(call).branchId, hour: params(call).hour, tag: params(call).tag,
+      branchId: params(call).branchId, hour: params(call).hour, tag: params(call).tag, database: params(call).database,
       items: params(call).tokens.map(token => ({ artwork: { token,
         name: params(call).iconsOnly ? null : details ? 'Detail title' : token === 'empty' ? '' : token === 'equal' ? 'equal' : 'Authored literal title',
         description: details ? '' : null, baseDurationDays: 10, icon: params(call).textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
@@ -89,6 +89,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     hooks.commit(); await settle();
     assert.equal(calls.length, 2, 'closed rows never schedule description expansion');
     assert.deepEqual(calls.map(call => [params(call).textOnly, params(call).includeDescriptions]), [[true, false], [false, false]]);
+    assert.ok(calls.every(call => params(call).database === 'national'), 'tree and completion focuses are national');
     assert.equal(params(calls[0]).iconsOnly, undefined, 'dated titles retain their text request');
     assert.equal(params(calls[1]).iconsOnly, true, 'image work never repeats scoped title evaluation');
     answer(calls[1]); await settle();
@@ -202,7 +203,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     const client = { product: (input: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
       const params = input.params as FocusArtworkParams;
       calls.push({ params, answer: (name, description) => resolve({ ...input, data: {
-        branchId: params.branchId, hour: params.hour, tag: params.tag, warnings: [],
+        branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name, description: description ?? null,
           baseDurationDays: 10, icon: params.textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
       } }) });
@@ -259,6 +260,70 @@ test('known static focus titles omit dated title work, retaining empty and key-e
   }
 });
 
+test('a continuous focus is read from its own database, never from a national focus of the same id', async () => {
+  const hooks = focusHooks(), host = globalThis as typeof globalThis & { __focusArtworkHooks?: typeof hooks };
+  host.__focusArtworkHooks = hooks;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-databases-fixture', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/national-focus/useFocusArtwork.ts') || path.endsWith('/dashboard/countryNamesAt.ts'))
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusArtworkHooks;');
+        if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
+          'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
+      },
+    }] });
+  try {
+    const { useContinuousFocusArtwork, useFocusArtwork } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/useFocusArtwork.ts') as typeof import('./useFocusArtwork');
+    const { nameKey } = await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('../../dashboard/countryFacts');
+    const calls: { params: FocusArtworkParams; answer: () => void }[] = [];
+    const client = { product: (input: ProductRequest) => new Promise<ProductReply<unknown>>(resolve => {
+      const params = input.params as FocusArtworkParams;
+      const name = params.database === 'national' ? 'National title' : 'Continuous title';
+      calls.push({ params, answer: () => resolve({ ...input, data: {
+        branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
+        items: params.tokens.map(token => ({ artwork: { token, name: params.iconsOnly ? null : name, description: null,
+          baseDurationDays: null, icon: params.textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
+      } }) });
+    }) } as unknown as DashboardClient;
+    const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
+    // One id names a completed national focus and the active continuous focus at the same hour.
+    const wanted = [{ tag: 'shared', hour: 10 }];
+    const staticText: readonly Artwork[] = [{ token: 'shared', name: 'Static national title', description: null, baseDurationDays: 10, icon: null }];
+    const noDetails: readonly NameAt[] = [];
+    const render = () => {
+      hooks.begin();
+      return { national: useFocusArtwork(client, track, 'M0', wanted, true, noDetails, staticText),
+        continuous: useContinuousFocusArtwork(client, track, 'M0', wanted, true) };
+    };
+    const shown = (read: ReturnType<typeof render>['national']['read']) => {
+      const item = read.get(nameKey(10, 'shared'));
+      return item && typeof item !== 'symbol' ? item.artwork : undefined;
+    };
+    let result = render();
+    assert.equal(shown(result.national.read)?.name, 'Static national title');
+    assert.equal(result.continuous.read.get(nameKey(10, 'shared')), undefined, 'national static text never names a continuous focus');
+    hooks.commit(); await settle();
+    const asked = (database: string) => calls.filter(call => call.params.database === database);
+    assert.deepEqual(asked('national').map(call => call.params.iconsOnly), [true], 'the static national title needs no dated title');
+    assert.deepEqual(asked('continuous').map(call => call.params.textOnly), [true, false], 'the continuous focus asks for its own title and icon');
+    for (const call of asked('national')) call.answer();
+    await settle();
+    result = render();
+    assert.equal(shown(result.national.read)?.icon, 'data:image/png;base64,AA==');
+    assert.equal(result.continuous.read.get(nameKey(10, 'shared')), undefined, 'a national reply never answers the continuous read');
+    for (const call of asked('continuous')) call.answer();
+    await settle();
+    result = render();
+    const continuous = result.continuous.read.get(nameKey(10, 'shared'));
+    assert.ok(continuous && typeof continuous !== 'symbol');
+    assert.equal(continuous.artwork.name, 'Continuous title');
+    assert.equal(shown(result.national.read)?.name, 'Static national title');
+  } finally {
+    hooks.unmount(); await vite.close(); delete host.__focusArtworkHooks;
+  }
+});
+
 test('native focus details request only opened dated rows and preserve static descriptions and titles after refusal', async () => {
   const base = focusHooks(), hooks = { ...base, useLayoutEffect: base.useEffect };
   const fixture = { hooks, wanted: [] as readonly NameAt[], detailsWanted: [] as readonly NameAt[], content: 0, titlePending: false, titleReason: undefined as string | undefined,
@@ -271,7 +336,7 @@ test('native focus details request only opened dated rows and preserve static de
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }, { ordinal: 1, token: 'plain', completedByHour: 102 }] } }], progress: [] },
       artwork: ['scoped', 'plain'].map(token => ({ token, baseDurationDays: 10 })),
-      staticText: [{ token: 'plain', name: '', description: 'Static recorded description' }], warnings: [],
+      staticText: [{ token: 'plain', name: '', description: 'Static recorded description' }], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -282,7 +347,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       const fixture = globalThis.__focusDetails; fixture.wanted = wanted; fixture.detailsWanted = detailsWanted; fixture.staticText = staticText;
       return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
         artwork: { token: tag, name: tag === 'plain' ? '' : fixture.titlePending || fixture.titleReason ? null : 'Localized focus', description: null, baseDurationDays: 10, icon: 'data:image/png;base64,AA==' }, reason: null, titlePending: tag === 'scoped' && fixture.titlePending, titleReason: tag === 'scoped' ? fixture.titleReason : undefined,
-      }])) }; };`,
+      }])) }; };
+      export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-details-renderer-fixture', enforce: 'pre',
@@ -366,7 +432,7 @@ test('a closing row keeps the description it showed while its demand is released
     '/dashboard/products.ts': `export const useProduct = () => ({ data: {
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'scoped', completedByHour: 101 }] } }], progress: [] },
-      artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], warnings: [],
+      artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -380,7 +446,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
         const key = JSON.stringify([hour, tag]), detail = fixture.details.get(key);
         return [key, { artwork: { token: tag, name: 'Localized focus', baseDurationDays: 10, icon: null,
           description: detail && typeof detail === 'object' ? detail.artwork.description : null }, reason: null }];
-      })) }; };`,
+      })) }; };
+      export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-shown-description-fixture', enforce: 'pre',
@@ -450,7 +517,7 @@ test('repeated completions of one focus read at one hour open and close independ
     '/dashboard/products.ts': `export const useProduct = () => ({ data: {
       history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
         completed: [{ ordinal: 0, token: 'repeatable', completedByHour: null }, { ordinal: 1, token: 'repeatable', completedByHour: null }] } }], progress: [] },
-      artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], warnings: [],
+      artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
@@ -460,7 +527,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
       globalThis.__focusRepeated.detailsWanted = detailsWanted;
       return { warnings: [], details: new Map(), read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]),
-        { artwork: { token: tag, name: 'Repeatable focus', description: null, baseDurationDays: 10, icon: null }, reason: null }])) }; };`,
+        { artwork: { token: tag, name: 'Repeatable focus', description: null, baseDurationDays: 10, icon: null }, reason: null }])) }; };
+      export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-repeated-fixture', enforce: 'pre',

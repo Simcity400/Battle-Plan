@@ -601,6 +601,123 @@ fn forward_variant_reads_keep_changed_operands_and_refusals() {
 }
 
 #[test]
+fn loss_reads_name_designs_renamed_or_created_between_variant_reads() {
+    use dashboard_base::products::equipment::VariantCatalogue;
+    use replay_data::rows::VariantChangeRow;
+    assert!(
+        VariantCatalogue::TABLES
+            .iter()
+            .all(|table| CENSUS_TABLES.contains(table)),
+        "the census selects every table its variant catalogue reads"
+    );
+    // Variants are read at hour 118; at 120 the writer renames design 7 and creates design 8.
+    let frames: Vec<DecodedFrame> = (118..=123)
+        .map(|hour| {
+            let mut sample = hour_frame(
+                1,
+                hour,
+                vec![Combat {
+                    lost: Some(hour - 99),
+                    ..Combat::new(1, 118)
+                }],
+            );
+            let changed = hour >= 120;
+            let definitions = [(7, if changed { "Renamed" } else { "First" })]
+                .into_iter()
+                .chain(changed.then_some((8, "Created")))
+                .map(|(id, name)| VariantDefinitionRow {
+                    id,
+                    equipment_token: 5,
+                    creator_link: 1,
+                    display_name: name.as_bytes().to_vec(),
+                    ..Default::default()
+                })
+                .collect();
+            *sample.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(definitions));
+            *sample.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                    token: 5,
+                    literal: b"mod_rifle_1".to_vec(),
+                }]));
+            let events = if hour == 120 { vec![7, 8] } else { Vec::new() };
+            *sample.tables[TableId::VariantChanges.index()] =
+                TableView::Complete(TableRows::VariantChanges(
+                    (1..)
+                        .zip(events)
+                        .map(|(sequence, variant)| VariantChangeRow {
+                            sequence,
+                            hour,
+                            variant,
+                            flags: Some([0; 3]),
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            if changed
+                && let TableView::Complete(TableRows::LandCombatProgress(rows)) =
+                    &mut *sample.tables[TableId::LandCombatProgress.index()]
+            {
+                rows[0].defender_equipment_losses = vec![LandEquipmentLoss {
+                    variant: 8,
+                    amount_raw: -1_000 * i64::from(hour),
+                }]
+                .into();
+            }
+            sample
+        })
+        .collect();
+    let source = recording(vec![frames]);
+    let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[]);
+    let catalogue = Arc::new(catalogue);
+    let expected = json!([
+        { "name": "First", "variant": "7" },
+        { "name": "Renamed", "variant": "7" },
+        { "name": "Created", "variant": "8" },
+    ]);
+    let flag = AtomicBool::new(false);
+    let oracle = scan(source.replay_ref(), 1, &flag, Some(catalogue.clone())).unwrap();
+    assert_eq!(
+        serde_json::to_value(oracle.course("1:1:118").unwrap().designs).unwrap(),
+        expected
+    );
+    let replay = source.replay_ref();
+    let mut census = Census::new(replay.format);
+    census.configure(&source, &LoadContext { content: None });
+    census.catalogue = Some(catalogue);
+    let fixture = Fixture::new();
+    let mut tracker = FrameChangeTracker::new();
+    for (ordinal, index) in replay.index.iter().enumerate() {
+        replay
+            .read_block_alone(
+                index,
+                &CENSUS_TABLES,
+                |_, frame| {
+                    let changes = tracker.observe(frame, replay.format);
+                    census.observe_prepared(frame, &changes)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        let mut writer = fixture.writer();
+        census
+            .publish_block(&mut writer, replay, 1, ordinal, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    let course = forward_query::query(
+        &source,
+        "land-battle-course",
+        json!({ "branchId": "1", "id": "1:1:118" }),
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(course["designs"], expected);
+}
+
+#[test]
 fn forward_pages_survive_an_unused_refusing_variant_name() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");

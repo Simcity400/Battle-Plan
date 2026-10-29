@@ -10,7 +10,7 @@ import type { ChartLayer } from '../../charts/TimeChart';
 import Timeline from '../../charts/timeline/Timeline';
 import type { TimelineLane } from '../../charts/timeline/Timeline';
 import { AXIS_HEIGHT, inSpans, ROW_HEIGHT } from '../../charts/timeline/layout';
-import { describeRun } from '../../charts/timeline/runState';
+import { describeRun, runState, startUnseen } from '../../charts/timeline/runState';
 import type { TooltipRow } from '../../charts/tooltip';
 import { fitTooltip } from '../../charts/tooltip';
 import { useViewportHeight } from '../../charts/useChartTokens';
@@ -101,8 +101,13 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     const held = span ?? lanes.find(entry => entry.token === lane.id)?.spans.filter(entry => entry.firstHour <= at).at(-1) ?? null;
     const rows: TooltipRow[] = [];
     if (held) {
-      const open = held.lastHour >= limit;
-      rows.push({ label: 'Active', value: open ? `since ${dayLabel(held.firstHour)}` : `${dayLabel(held.firstHour)} – ${dayLabel(held.lastHour + 1)}` });
+      // Bounds as the lane says them: a start or end next to unrecorded or pending hours is not a date.
+      const gaps = [...unknown, ...pending];
+      const start = startUnseen(held.firstHour, track.branch.firstHour, gaps) ? `held before ${dayLabel(held.firstHour)}` : `since ${dayLabel(held.firstHour)}`;
+      const state = held.lastHour >= limit ? null : runState([held], Math.max(at, held.lastHour + 1), gaps);
+      const end = !state || state.kind === 'held' || state.kind === 'none' ? null : state.kind === 'unknown' ? `last recorded ${dayLabel(state.lastSeen)}`
+        : state.lastSeen == null ? `ended ${dayLabel(state.at)}` : `ended by ${dayLabel(state.at)}`;
+      rows.push({ label: 'Active', value: end ? `${start}; ${end}` : start });
     }
     const members = membersOf(lane.id);
     if (members?.length) rows.push({ label: 'Members', value: members.join(', ') });

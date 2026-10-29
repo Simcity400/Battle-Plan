@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { holderBands, holderSourceBands, reservesAt, sourceParts, sourceWitnesses, validateOccupationReserve } from './occupationReserveData.ts';
+import { holderBands, holderKeyAt, holderSourceBands, reservesAt, sourceParts, sourceWitnesses, validateOccupationReserve } from './occupationReserveData.ts';
 
 const reply = validateOccupationReserve({
   window: { firstHour: 0, lastHour: 100, known: [{ firstHour: 0, lastHour: 60 }], reads: [[0, 23, 0], [24, 60, 24]], series: [
@@ -87,4 +87,23 @@ test('an admitted holder\'s bands are zero before its first entry, never a gap, 
   assert.deepEqual(drill.sources, ['POL@20']);
   assert.deepEqual(drill.bands[0].map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 0], [10, 30, 400]]);
   assert.deepEqual(holderSourceBands(admitted, 'ITA@8'), { sources: ['POL@20'], bands: [[{ firstHour: 0, lastHour: 30, value: 0, breakBefore: true }]] });
+});
+
+test('a renamed holder keeps the history it had under its earlier tag', () => {
+  // Slot 4 is OLD through hour 9 and NEW from 10; OLD@4's entries stop where NEW@4's begin.
+  const renamed = validateOccupationReserve({ window: { firstHour: 0, lastHour: 30, known: [{ firstHour: 0, lastHour: 30 }], reads: [[0, 30, 0]], series: [
+    { name: 'OLD@4|holder', runs: [[0, 9, '1', true]] }, { name: 'NEW@4|holder', runs: [[10, 30, '1', true]] },
+    { name: 'OLD@4|0|amount', runs: [[0, 9, '100', true]] }, { name: 'OLD@4|0|source', runs: [[0, 9, '1', true]] },
+    { name: 'NEW@4|0|amount', runs: [[10, 30, '250', true]] }, { name: 'NEW@4|0|source', runs: [[10, 30, '1', true]] },
+  ] }, holders: [{ tag: 'OLD', slot: 4 }, { tag: 'NEW', slot: 4 }], sources: { 1: 'POL@20' }, warnings: [] });
+  const aliases = [{ key: 'OLD@4', firstHour: 0, lastHour: 9 }, { key: 'NEW@4', firstHour: 10, lastHour: 30 }];
+  assert.equal(holderKeyAt(aliases, 5), 'OLD@4');
+  assert.equal(holderKeyAt(aliases, 15), 'NEW@4');
+  const drill = holderSourceBands(renamed, aliases);
+  assert.deepEqual(drill.sources, ['POL@20']);
+  assert.deepEqual(drill.bands[0].map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 100], [10, 30, 250]]);
+  // One tag's key alone loses the other alias's hours.
+  assert.deepEqual(holderSourceBands(renamed, 'NEW@4').bands[0].map(run => [run.firstHour, run.lastHour]), [[10, 30]]);
+  // POL is named where either alias's entries prove it, each only within its own hours.
+  assert.deepEqual(sourceWitnesses(renamed, aliases, 5, 5).map(witness => [witness.key, witness.hour]), [['POL@20', 5]]);
 });

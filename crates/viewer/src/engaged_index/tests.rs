@@ -226,6 +226,7 @@ fn naval_frame(
     set(TableRows::LandCombats(vec![
         replay_data::rows::LandCombatRow {
             id: 100,
+            attacker_classes: vec![0],
             attackers: vec![300],
             defenders: vec![301],
             ..Default::default()
@@ -978,6 +979,7 @@ fn roster_frame(hour: Hour, players: Option<&[(i32, u32)]>, allied: bool) -> Dec
         TableId::LandCombats,
         TableRows::LandCombats(vec![LandCombatRow {
             id: 62,
+            attacker_classes: vec![0],
             attackers: vec![7],
             defenders: vec![9],
             ..Default::default()

@@ -10,7 +10,7 @@ const start = 43_800_000 + 1938 * 8760;
 function assignment(index: number, from: number, to: number, speed: bigint, saved: bigint, initial: bigint, outcome: ResearchEntry['outcome']): ResearchSlotHistory {
   const firstHour = start + from * 24, endHour = start + to * 24;
   const entry: ResearchEntry = {
-    token: 'radio', technologyHandle: 7, continuityStartHour: start, level: 0,
+    token: 'radio', technologyHandle: 7, databaseIndex: 7, continuityStartHour: start, level: 0,
     firstObservedHour: firstHour, startedAfterHour: firstHour - 1,
     lastObservedHour: outcome === 'active' ? endHour : endHour - 1,
     endedByHour: outcome === 'active' ? null : endHour, outcome,
@@ -89,7 +89,8 @@ test('rewind shows the new assignment credit immediately and hides future refund
 
 test('a new continuity run, technology level, or native handle prevents a false transfer link', () => {
   const first = assignment(0, 0, 10, 100000n, 0n, 0n, 'switched');
-  for (const change of [{ continuityStartHour: start + 10 * 24 }, { level: 1 }, { technologyHandle: 8 }]) {
+  // A repeated definition (same token and handle, another template) is another technology.
+  for (const change of [{ continuityStartHour: start + 10 * 24 }, { level: 1 }, { technologyHandle: 8 }, { databaseIndex: 8 }, { databaseIndex: null }]) {
     const second = assignment(1, 10, 20, 100000n, 0n, 1000000n, 'active');
     Object.assign(second.entries[0], change);
     assert.equal(researchJourney([first, second], second, second.entries[0]).parts.length, 1);

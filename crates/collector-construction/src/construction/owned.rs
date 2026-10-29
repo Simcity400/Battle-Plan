@@ -1,4 +1,5 @@
 use super::*;
+use crate::raw::CountrySlots;
 
 impl Captured {
     /// Decode-worker interpretation of a scheduled raw construction-rest
@@ -475,74 +476,12 @@ fn copy_construction_roots(
         engine_allocation::reserve_exact(census, countries.count.saturating_sub(1) as usize)
             .ok()?;
     }
-    let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
-    let mut reserved = None;
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let pointer_start = cspan(log, memory, pointer_addr, 8, M_C_ALL)?;
-        let pointer = match usize::try_from(c_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&p| p != 0)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        if reserved == Some(pointer) {
+    let mut slots = CountrySlots::new(countries, links, base)?;
+    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
+    for slot in 1..slots.count() {
+        let Some(pointer) = slots.take(log, memory, slot, M_C_ALL)? else {
             continue;
-        }
-        let vtable_start = cspan(log, memory, Some(pointer), 8, M_C_ALL)?;
-        let id_start = cspan(log, memory, pointer.checked_add(ccountry::ID), 4, M_C_ALL)?;
-        if c_pool_u64(log, vtable_start) != vtable {
-            return None;
-        }
-        let id = c_pool_u32(log, id_start);
-        if id == 0 {
-            // Physical aliases of the authenticated reserved object are not countries to walk.
-            let root_start = cspan(log, memory, countries.element(0, 8), 8, M_C_ALL)?;
-            let root = usize::try_from(c_pool_u64(log, root_start))
-                .ok()
-                .filter(|&p| p != 0)?;
-            let identity = cspan(log, memory, Some(root), 8, M_C_ALL)?;
-            if c_pool_u64(log, identity) != vtable {
-                return None;
-            }
-            let identity = cspan(log, memory, root.checked_add(ccountry::ID), 4, M_C_ALL)?;
-            if c_pool_u32(log, identity) != 0 || root != pointer {
-                return None;
-            }
-            reserved = Some(root);
-            continue;
-        }
-        // Full canonical validation mirrors `ccountry::Reader`: id, slot and
-        // canonical link reads plus the canonical pointer round-trip.
-        let canonical = match copy_construction_link(log, memory, &links, countries.count, id) {
-            Some(Some(canonical)) => canonical,
-            _ => return None,
         };
-        let canonical_slot =
-            match copy_construction_link(log, memory, &links, countries.count, slot) {
-                Some(Some(canonical_slot)) => canonical_slot,
-                _ => return None,
-            };
-        if canonical_slot != canonical {
-            return None;
-        }
-        let check = match copy_construction_link(log, memory, &links, countries.count, canonical) {
-            Some(Some(check)) => check,
-            _ => return None,
-        };
-        if check != canonical {
-            return None;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let canonical_start = cspan(log, memory, canonical_addr, 8, M_C_ALL)?;
-        if c_pool_u64(log, canonical_start) != pointer as u64 {
-            return None;
-        }
         if census.len() == census.capacity() {
             log.overflowed = true;
             return None;
@@ -550,29 +489,6 @@ fn copy_construction_roots(
         census.push(ConstructionRestCountry { pointer });
     }
     Some(states)
-}
-
-/// Mirror of a link-table read with local bounds checks.
-fn copy_construction_link(
-    log: &mut RawLog<10>,
-    memory: &impl Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = cspan(log, memory, links.data.checked_add(offset), 4, M_C_ALL)?;
-    let slot = c_pool_u32(log, start);
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
 }
 
 /// Mirror of `state_resource_entry::walk` over one

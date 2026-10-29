@@ -140,6 +140,14 @@ export class CountryIdentityIndex {
     return [...tags].sort((a, b) => this.order.get(a)! - this.order.get(b)!);
   }
 
+  /** Every tag the native country recorded as `tag` in `slot` held, with when; null when
+   * that tag and slot were held by more than one native country (or by none). */
+  holderAliases(tag: string, slot: number): MembershipRun[] | null {
+    const keys = new Set((this.byTag.get(tag) ?? []).map(run => run.key)
+      .filter(key => (JSON.parse(key) as [number, number])[0] === slot));
+    return keys.size === 1 ? this.aliasRuns(keys, -0x8000_0000, 0x7fff_ffff) : null;
+  }
+
   aliasRuns(keys: ReadonlySet<string>, firstHour: number, lastHour: number): MembershipRun[] {
     const aliases: MembershipRun[] = [];
     for (const key of keys) for (const [tag, runs] of this.byKey.get(key) ?? []) for (const run of runs) {

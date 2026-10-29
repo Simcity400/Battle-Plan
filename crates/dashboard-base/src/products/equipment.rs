@@ -215,7 +215,8 @@ pub(crate) struct VariantReads {
     token_variants: BTreeMap<u32, BTreeSet<u64>>,
     appearance_dirty: bool,
     country_tags: BTreeMap<u32, replay_data::rows::CountryRow>,
-    original_tags: BTreeMap<u32, replay_data::rows::CountryAppearanceRow>,
+    /// Each slot's appearance row (country, original tag); `None` where the table was incomplete.
+    original_tags: Option<BTreeMap<u32, replay_data::rows::CountryAppearanceRow>>,
     tag_links: BTreeMap<u32, BTreeSet<u64>>,
     tag_slots: BTreeMap<u32, BTreeSet<u64>>,
     original_slots: BTreeMap<u32, BTreeSet<u64>>,
@@ -285,6 +286,25 @@ fn complete_rows<T: replay_data::rows::TableSchema>(view: &SharedView) -> Option
         replay_frame::frame::TableView::Complete(rows) => rows.rows::<T>(),
         _ => None,
     }
+}
+
+/// Each appearance row's country and original tag by slot, as [`Tags::new`] reads them.
+fn original_rows(
+    rows: &[replay_data::rows::CountryAppearanceRow],
+    links: &[replay_data::rows::CountryLinkRow],
+) -> BTreeMap<u32, replay_data::rows::CountryAppearanceRow> {
+    rows.iter()
+        .filter_map(|row| {
+            Some((
+                crate::metadata::link_slot(links, row.country)?,
+                replay_data::rows::CountryAppearanceRow {
+                    country: row.country,
+                    name_tag: row.name_tag.clone(),
+                    ..Default::default()
+                },
+            ))
+        })
+        .collect()
 }
 
 /// A design's modules and upgrades at a read, in recorded order.
@@ -482,12 +502,8 @@ impl VariantReads {
                     before.zip(now).is_some_and(|(before, now)| {
                         before
                             .iter()
-                            .filter(|row| !row.name_tag.is_empty())
                             .map(|row| (row.country, &row.name_tag))
-                            .eq(now
-                                .iter()
-                                .filter(|row| !row.name_tag.is_empty())
-                                .map(|row| (row.country, &row.name_tag)))
+                            .eq(now.iter().map(|row| (row.country, &row.name_tag)))
                     })
                 }));
         let designs = same_design_view(self.modules.as_ref(), view(TableId::VariantModules))
@@ -529,14 +545,7 @@ impl VariantReads {
                     )
                 })
                 .collect();
-            let next_original: BTreeMap<_, _> = appearance
-                .into_iter()
-                .flatten()
-                .filter(|row| !row.name_tag.is_empty())
-                .filter_map(|row| {
-                    Some((crate::metadata::link_slot(links, row.country)?, row.clone()))
-                })
-                .collect();
+            let next_original = appearance.map(|rows| original_rows(rows, links));
             let changed_slots: BTreeSet<_> = self
                 .country_tags
                 .keys()
@@ -551,13 +560,21 @@ impl VariantReads {
                     context_ids.extend(self.tag_slots.get(&slot).into_iter().flatten().copied());
                 }
             }
-            for slot in self.original_tags.keys().chain(next_original.keys()) {
-                if self.original_tags.get(slot).map(|row| &row.name_tag)
-                    != next_original.get(slot).map(|row| &row.name_tag)
-                {
-                    context_ids
-                        .extend(self.original_slots.get(slot).into_iter().flatten().copied());
+            match (&self.original_tags, &next_original) {
+                (Some(before), Some(now)) => {
+                    for slot in before.keys().chain(now.keys()) {
+                        if before.get(slot).map(|row| &row.name_tag)
+                            != now.get(slot).map(|row| &row.name_tag)
+                        {
+                            context_ids.extend(
+                                self.original_slots.get(slot).into_iter().flatten().copied(),
+                            );
+                        }
+                    }
                 }
+                (None, None) => {}
+                // Whether creators' original tags are known at all changed.
+                _ => context_ids.extend(self.original_slots.values().flatten().copied()),
             }
             if let Some(before) = self
                 .links
@@ -667,15 +684,18 @@ impl VariantReads {
                 .iter()
                 .filter_map(|slot| self.country_tags.get(slot).cloned())
                 .collect();
-            let appearances: Vec<_> = slots
-                .iter()
-                .filter_map(|slot| self.original_tags.get(slot).cloned())
-                .collect();
+            let appearances: Option<Vec<_>> = self.original_tags.as_ref().map(|rows| {
+                slots
+                    .iter()
+                    .filter_map(|slot| rows.get(slot).cloned())
+                    .collect()
+            });
             #[cfg(any(test, feature = "test-support"))]
             {
-                self.work.row_visits += countries.len() + appearances.len();
+                self.work.row_visits +=
+                    countries.len() + appearances.as_ref().map_or(0, Vec::len);
             }
-            Some(Tags::new(&countries, links, Some(&appearances)))
+            Some(Tags::new(&countries, links, appearances.as_deref()))
         } else {
             None
         };
@@ -775,14 +795,7 @@ impl VariantReads {
                     )
                 })
                 .collect();
-            self.original_tags = appearance
-                .into_iter()
-                .flatten()
-                .filter(|row| !row.name_tag.is_empty())
-                .filter_map(|row| {
-                    Some((crate::metadata::link_slot(links, row.country)?, row.clone()))
-                })
-                .collect();
+            self.original_tags = appearance.map(|rows| original_rows(rows, links));
         }
         self.countries = Some(view(TableId::Countries).identity());
         self.country_at = Some((frame.branch, frame.hour));

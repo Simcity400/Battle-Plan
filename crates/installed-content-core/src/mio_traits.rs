@@ -13,6 +13,7 @@ use crate::{
     tokens::Token,
 };
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::io;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -373,17 +374,14 @@ impl Catalog {
             }))
     }
 
-    // A repeated template resets in place without appending its pointer
-    // twice: retain first creation order.
+    // A repeated template is a duplicate database id: the first definition stays.
     fn insert(&mut self, row: Organisation) {
         let token = Token::c_str(row.token.as_bytes());
-        if let Some(old) = self
+        if !self
             .organisations
-            .iter_mut()
-            .find(|old| Token::c_str(old.token.as_bytes()) == token)
+            .iter()
+            .any(|old| Token::c_str(old.token.as_bytes()) == token)
         {
-            *old = row;
-        } else {
             self.organisations.push(row);
         }
     }
@@ -678,9 +676,17 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
     Ok(result)
 }
 
-fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<String>)> {
+/// One organisations file. `seen` holds every token defined by earlier files:
+/// startup keeps a token's first definition and error-skips later bodies.
+fn parse(
+    input: &[u8],
+    names: &KeyNames,
+    seen: &mut BTreeSet<Token>,
+) -> io::Result<(Vec<Organisation>, Vec<String>)> {
     let registry = |key: &[u8]| modifiers::registered(key, Some(names));
     let mut undecided = Vec::new();
+    let earlier = seen.clone();
+    let mut duplicates = Vec::new();
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -688,7 +694,18 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
         native::Top::Persistent(Node::File),
         Some(names),
         &mut |node, field| match node {
-            Node::File => Shape::Object(Node::Organisation),
+            Node::File => {
+                if seen.insert(Token::c_str(field.key.c_str())) {
+                    Shape::Object(Node::Organisation)
+                } else {
+                    duplicates.push(format!(
+                        "MIO {} at line {}: duplicate definition skipped (count: 1)",
+                        String::from_utf8_lossy(field.key.c_str()),
+                        field.key.line
+                    ));
+                    Shape::Skip
+                }
+            }
             // Consumed organisation and trait fields that do not affect names
             // still use their field readers, including variable references.
             Node::Organisation => match field.keyword().as_deref() {
@@ -774,7 +791,12 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
         return Err(invalid(format!("MIO definitions: {cause} (count: 1)")));
     }
     let mut rows = Vec::new();
+    let mut kept = BTreeSet::new();
     for item in read.items {
+        let token = Token::c_str(item.key.as_deref().unwrap_or_default());
+        if earlier.contains(&token) || !kept.insert(token) {
+            continue;
+        }
         let mut row = Organisation {
             token: String::from_utf8(
                 crate::parser::c_string(item.key.as_deref().unwrap_or_default()).to_vec(),
@@ -842,6 +864,7 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
         read.misreads
             .into_iter()
             .map(|why| why.to_string())
+            .chain(duplicates)
             .collect(),
     ))
 }
@@ -849,12 +872,13 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
 pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let names = layers.key_names()?;
     let mut result = Catalog::default();
+    let mut seen = BTreeSet::new();
     for path in script_files::paths(
         layers,
         "common/military_industrial_organization/organizations/",
         Some(".txt"),
     ) {
-        match parse(&path.read(layers)?, &names) {
+        match parse(&path.read(layers)?, &names, &mut seen) {
             Ok((rows, warnings)) => {
                 result
                     .warnings

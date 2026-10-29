@@ -127,7 +127,7 @@ impl Fixture {
         }
         let mut agencies = Vec::new();
         for country in 1..=countries {
-            let agency = world.alloc(0x140);
+            let agency = world.alloc(cintelligence_agency::DEFENSE + 8);
             world.u64(
                 world.object(country) + ccountry::INTELLIGENCE_AGENCY,
                 agency as u64,

@@ -1,4 +1,5 @@
 import type { AgreementHistory, MarketHistoryReply } from '../../generated/dashboard';
+import type { DrillAction } from '../../charts/drill/drillState';
 import { fixedText, numberAt, valueAt } from '../../dashboard/economyHistory.ts';
 import { FIXED5, FUEL_QUANTITY, holderTagAt, poolAt, readHourOf, variantAt } from '../../dashboard/marketHistory.ts';
 
@@ -72,3 +73,8 @@ export const amountOf = (row: AgreementRow, raw: bigint | null) => raw === null 
 
 /** Delivered (or lost) of the row's first item, for sorting and bars. */
 export const firstAmount = (row: AgreementRow, which: 'delivered' | 'lost') => row.items[0]?.[which] ?? null;
+
+/** Opens a row's drill at its read: an ended agreement stays at its last read, as no
+ * later hour's reply holds it, whatever the playhead or playback. */
+export const openAgreement = (row: Pick<AgreementRow, 'at' | 'ended'>, breakdown: string, playing: boolean, playhead: number | null): DrillAction =>
+  ({ type: 'open', breakdown, hour: row.at, playing, playhead: row.ended ? null : playhead });

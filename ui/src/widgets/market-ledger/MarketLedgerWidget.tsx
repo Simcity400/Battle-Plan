@@ -6,6 +6,8 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { identityTagAt, partyTagsAt } from '../../dashboard/marketHistory';
+import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import LogList from '../../charts/log/LogList';
@@ -24,7 +26,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { DETAILS, OPTIONS } from './definition';
-import { KINDS, LEDGER_EMPTY, ledgerCountries, ledgerEmpty, ledgerFigure, ledgerIcon, ledgerTitle, shownKinds } from './ledgerData';
+import { KINDS, LEDGER_EMPTY, ledgerCountries, ledgerEmpty, ledgerFigure, ledgerIcon, ledgerTitle, loadedHolders, shownKinds } from './ledgerData';
 import type { KindKey, LedgerItem } from './ledgerData';
 import { useMarketLedger } from './useMarketLedger';
 import '../event-feed/eventFeed.css';
@@ -45,14 +47,17 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window ? Math.floor(window.lastHour) : null;
+  // A date range's start bounds the ledger as its end does; otherwise it starts with the branch.
+  const from = widget.time.mode === 'range' && window && track && hour !== null ? Math.min(Math.max(Math.floor(window.firstHour), track.branch.firstHour), hour) : null;
+  const firstHour = from ?? track?.branch.firstHour ?? 0;
   const needsGroups = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = useMemo(() => widget.countries.kind === 'selected' ? selectedTags(widget.countries, track) : [], [widget.countries, track]);
-  const chosen = useMemo(() => track ? ledgerCountries(widget.countries, fallback, groups.data, track.branch.firstHour ?? 0, track.branch.lastHour)
-    : { countries: null, reason: null, known: () => false }, [widget.countries, fallback, groups.data, track]);
+  const chosen = useMemo(() => track ? ledgerCountries(widget.countries, fallback, groups.data, firstHour, track.branch.lastHour)
+    : { countries: null, reason: null, known: () => false }, [widget.countries, fallback, groups.data, track, firstHour]);
   const enabled = (key: KindKey) => options[key] !== false;
   const kinds = shownKinds(enabled);
-  const ledger = useMarketLedger(runtime, track, active, hour, chosen.countries, kinds);
+  const ledger = useMarketLedger(runtime, track, active, from, hour, chosen.countries, kinds);
   const warnings = useMemo(() => chosen.countries?.unobserved
     ? [...ledger.warnings, 'Group membership was not recorded at some hours; occurrences then are not listed.'] : ledger.warnings,
   [chosen.countries?.unobserved, ledger.warnings]);
@@ -77,6 +82,17 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
     dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const drillAt = drillHour(drill, hour) ?? hour ?? 0;
+  // A picked party follows its holder through the identity history where it is exact, else
+  // through what the loaded pages read.
+  const identities = useCountryGroups(runtime, track, active && picked !== null);
+  const holders = useMemo(() => loadedHolders(ledger.pages), [ledger.pages]);
+  const exact = useMemo(() => {
+    const data = identities.data;
+    if (!data) return undefined;
+    const prefix = preparedPrefix(data);
+    return (id: string, hour: number) => identityTagAt(data.countryIdentities, prefix, id, hour);
+  }, [identities.data]);
+  const pickedTags = picked ? partyTagsAt(picked.parties, holders, drillAt, exact) : null;
   const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
@@ -119,7 +135,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
       }}
       menu={row => [{ label: 'Show contract', run: () => open(row.item, row.hour) }, jumpItem(runtime, track.id, row.hour)]}
       // Occurrences whose parties' membership is still being prepared are not listed yet: none is not proof of none.
-      empty={!chosen.known(track.branch.firstHour ?? 0, hour) ? MEMBERSHIP_PREPARING : ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, track.branch.firstHour ?? 0, hour)] : LEDGER_EMPTY.none} />
+      empty={!chosen.known(firstHour, hour) ? MEMBERSHIP_PREPARING : ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, firstHour, hour)] : LEDGER_EMPTY.none} />
     {ledger.errors.size > 0 && <div className="event-feed-load">Some occurrences couldn’t load. <button type="button" onClick={ledger.retry}>Retry</button></div>}
   </div>;
   return <div ref={anchor} className="market-ledger-host">{groupFailure}
@@ -128,8 +144,9 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
       {/* A posted request (kind 10) is the market's request with that id, not a contract. */}
-      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : drillAt} active={active} onAnswered={setDrillShown}
-        tags={[picked.seller, picked.buyer].filter((tag): tag is string => tag !== null)} selected={`contract:${picked.row.kind === 10}:${picked.row.contract}`} />}
+      {picked && (pickedTags ? <MarketDrill runtime={runtime} track={track} hour={drillAt} active={active} onAnswered={setDrillShown}
+        tags={pickedTags} selected={`contract:${picked.row.kind === 10}:${picked.row.contract}`} />
+        : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}
     </DrillHost>
   </div>;
 }

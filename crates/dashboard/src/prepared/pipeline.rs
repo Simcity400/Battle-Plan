@@ -3702,6 +3702,8 @@ fn run_planned(
                                         replay,
                                         score_observer,
                                         score_naming,
+                                        &mut || score_naming
+                                            .content_multipliers(source, load_context),
                                         changes
                                     )
                                 )?;

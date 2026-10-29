@@ -30,7 +30,8 @@ impl PreparedDivision {
 pub struct PreparationPart {
     pub range: Range<usize>,
     rows: Vec<PreparedDivision>,
-    orders: [ScalarOrder; 4],
+    /// Experience, progression, officer, career and history baselines.
+    orders: [ScalarOrder; 5],
     supply: Vec<Option<Arc<crate::supply_inputs::Sample>>>,
     supply_order: ScalarOrder,
     sources: crate::panel_sources::Preparation,
@@ -208,7 +209,9 @@ impl PreparationPart {
                     officer_acquired,
                     career_acquired,
                 ],
-                history: store.history.prefetch_certificates(index, seed),
+                history: store
+                    .history
+                    .prefetch_certificates(index, seed, &mut self.orders[4]),
             });
         }
     }

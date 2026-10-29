@@ -575,7 +575,11 @@ mod tests {
     #[test]
     fn every_catalogued_retired_field_is_an_empty_or_zero_tombstone() {
         for field in compatibility::RETIRED_FIELDS {
-            assert_eq!(field.retired, RETIRED_INPUTS_FORMAT, "{}", field.name);
+            assert!(
+                (RETIRED_INPUTS_FORMAT..=crate::FORMAT_VERSION).contains(&field.retired),
+                "{}",
+                field.name
+            );
             if field.name.contains('.') {
                 // A nested retirement changes its parent's nested layout.
                 continue;
@@ -630,6 +634,7 @@ mod tests {
                 TableId::InvasionPreparations => {
                     TableRows::InvasionPreparations(vec![Default::default()])
                 }
+                TableId::CountryMarket => TableRows::CountryMarket(vec![Default::default()]),
                 table => panic!("add a default row for {table:?}"),
             };
             let stored = stored(rows, field.index);

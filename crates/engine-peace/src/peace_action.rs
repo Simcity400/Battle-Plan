@@ -60,15 +60,22 @@ pub struct Row {
     pub name_key: Option<[u8; crate::ctake_navy_peace_action::LABEL_LITERAL_BYTES]>,
 }
 
+fn kept_in_settlement(status: i32) -> bool {
+    !matches!(status, 3 | 4)
+}
+
 impl Row {
     pub fn included_in_settlement(self) -> bool {
-        !matches!(self.status, 3 | 4)
+        kept_in_settlement(self.status)
     }
 }
 
-/// Copy only proven fields. Authentication precedes form-specific reads;
-/// tokens are retained without a numeric-token or spelling whitelist.
-pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
+/// The authenticated action's form and its header.
+fn identity(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<(Form, [u8; 12]), &'static str> {
     use crate::{
         cforce_government_action as government, cliberate_country_action as liberate,
         cpuppet_country_action as puppet, ctake_navy_peace_action as navy,
@@ -86,6 +93,31 @@ pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'
     .into_iter()
     .find_map(|(rva, form)| (base.checked_add(rva) == Some(vtable)).then_some(form))
     .ok_or("peace action vtable unsupported")?;
+    Ok((form, header))
+}
+
+/// Whether settlement keeps the authenticated action, by status alone, reading no other operand.
+pub fn included_in_settlement(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<bool, &'static str> {
+    identity(memory, base, pointer)?;
+    let status = pointer
+        .checked_add(STATUS)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("peace action status unreadable")?;
+    Ok(kept_in_settlement(status))
+}
+
+/// Copy only proven fields. Authentication precedes form-specific reads;
+/// tokens are retained without a numeric-token or spelling whitelist.
+pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
+    use crate::{
+        cforce_government_action as government, cliberate_country_action as liberate,
+        cpuppet_country_action as puppet, ctake_navy_peace_action as navy,
+    };
+    let (form, header) = identity(memory, base, pointer)?;
     let at = |offset| {
         pointer
             .checked_add(offset)

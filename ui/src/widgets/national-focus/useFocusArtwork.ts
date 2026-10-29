@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { Artwork, DatedFocusArtwork, FocusArtworkParams } from '../../generated/dashboard';
+import type { Artwork, DatedFocusArtwork, FocusArtworkParams, FocusDatabase } from '../../generated/dashboard';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
@@ -13,20 +13,21 @@ const NO_DETAILS: readonly NameAt[] = [];
 const NO_STATIC_TEXT: readonly Artwork[] = [];
 const NO_WARNINGS: readonly string[] = [];
 
-/** Focus tokens reuse the dated fact store's client ownership and bounded queue. */
+/** Focus tokens reuse the dated fact store's client ownership and bounded queue. Each
+ * database keeps its own store, so a national and a continuous focus of one id never share. */
 function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
-  wanted: readonly NameAt[], active: boolean, mode: FocusFactsMode) {
+  database: FocusDatabase, wanted: readonly NameAt[], active: boolean, mode: FocusFactsMode) {
   const spec = useMemo<FactSpec<FocusArtworkFact>>(() => ({
-    product: 'focus-artwork', identity: JSON.stringify([country, mode]), perRequest: mode === 'images' ? 8 : 256,
+    product: 'focus-artwork', identity: JSON.stringify([country, database, mode]), perRequest: mode === 'images' ? 8 : 256,
     requestOrder: 'wanted',
-    params: (branchId, hour, tokens) => ({ branchId, hour, tag: country, tokens,
+    params: (branchId, hour, tokens) => ({ branchId, hour, tag: country, database, tokens,
       textOnly: mode !== 'images', includeDescriptions: mode === 'details',
       ...(mode === 'images' ? { iconsOnly: true } : {}) }),
     extract: (data, params) => {
       const reply = validateFocusArtworkReply(data, params as FocusArtworkParams);
       return new Map(reply.items.map(item => [item.artwork.token, { ...item, warnings: reply.warnings }]));
     },
-  }), [country, mode]);
+  }), [country, database, mode]);
   const read = useCountryFactsRead(client, track, wanted, active && !!country, spec,
     Math.max(1, new Set(wanted.map(item => item.hour)).size));
   const warnings = useMemo(() => {
@@ -39,21 +40,21 @@ function useFocusFacts(client: DashboardClient, track: BoundTrack | undefined, c
   return { read, warnings };
 }
 
-/** Dated text resolves independently; icons arrive in small batches. */
+/** Dated national focus text resolves independently; icons arrive in small batches. */
 export function useFocusText(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
   wanted: readonly NameAt[], active: boolean) {
-  return useFocusFacts(client, track, country, wanted, active, 'titles');
+  return useFocusFacts(client, track, country, 'national', wanted, active, 'titles');
 }
 
-export function useFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
-  wanted: readonly NameAt[], active: boolean, detailsWanted: readonly NameAt[] = NO_DETAILS,
-  staticText: readonly Artwork[] = NO_STATIC_TEXT) {
+function useDatedFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
+  database: FocusDatabase, wanted: readonly NameAt[], active: boolean, detailsWanted: readonly NameAt[],
+  staticText: readonly Artwork[]) {
   // The current validated history reply proves these names are country-independent.
   const staticTitles = useMemo(() => new Map(staticText.filter(item => item.name !== null).map(item => [item.token, item])), [staticText]);
   const titleWanted = useMemo(() => wanted.filter(item => !staticTitles.has(item.tag)), [wanted, staticTitles]);
-  const text = useFocusFacts(client, track, country, titleWanted, active, 'titles');
-  const images = useFocusFacts(client, track, country, wanted, active, 'images');
-  const details = useFocusFacts(client, track, country, detailsWanted, active, 'details');
+  const text = useFocusFacts(client, track, country, database, titleWanted, active, 'titles');
+  const images = useFocusFacts(client, track, country, database, wanted, active, 'images');
+  const details = useFocusFacts(client, track, country, database, detailsWanted, active, 'details');
   const read = useMemo(() => {
     const merged = new Map(text.read);
     for (const item of wanted) {
@@ -81,4 +82,17 @@ export function useFocusArtwork(client: DashboardClient, track: BoundTrack | und
   }, [text.read, images.read, details.read, wanted, staticTitles]);
   return { read, details: details.read, warnings: useMemo(() => [...new Set([...text.warnings, ...images.warnings, ...details.warnings])],
     [text.warnings, images.warnings, details.warnings]) };
+}
+
+/** National focuses: tree entries, completions and the current focus. */
+export function useFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
+  wanted: readonly NameAt[], active: boolean, detailsWanted: readonly NameAt[] = NO_DETAILS,
+  staticText: readonly Artwork[] = NO_STATIC_TEXT) {
+  return useDatedFocusArtwork(client, track, country, 'national', wanted, active, detailsWanted, staticText);
+}
+
+/** A country's active continuous focus, looked up in the continuous database. */
+export function useContinuousFocusArtwork(client: DashboardClient, track: BoundTrack | undefined, country: string | undefined,
+  wanted: readonly NameAt[], active: boolean, staticText: readonly Artwork[] = NO_STATIC_TEXT) {
+  return useDatedFocusArtwork(client, track, country, 'continuous', wanted, active, NO_DETAILS, staticText);
 }

@@ -1249,6 +1249,37 @@ fn wing_staging_overflow_falls_back_to_typed_walk() {
     assert!(!report.raw_ok);
 }
 
+/// A positive slot holding the reserved slot-zero object is skipped as `Reader::at` skips it:
+/// the census stages that authentication, so the aces replay still reads every country.
+#[test]
+fn air_bases_split_copy_matches_direct_walk_with_a_reserved_country_alias() {
+    use super::air_bases_test_kit as kit;
+    let mut bytes = kit::fixture();
+    kit::add_reserved_alias(&mut bytes);
+    let memory = kit::memory(&bytes);
+    let direct = kit::direct(&memory);
+    assert_eq!(direct.aces_outcome, Outcome::Rows { len: 2 });
+    let (split, report, _) = kit::split(&memory);
+    assert!(report.raw_ok);
+    kit::assert_matches_direct(&split, &direct);
+}
+
+/// The statistics walk reads a country only where an owner resolves, so a reserved-object alias
+/// or a null slot before the owner's country loses nothing.
+#[test]
+fn stats_split_copy_matches_direct_walk_past_a_reserved_alias_and_a_null_slot() {
+    use super::stats_test_kit as kit;
+    let mut bytes = kit::fixture();
+    kit::add_reserved_alias_and_null_slot(&mut bytes);
+    let memory = kit::memory(&bytes);
+    let capacities = Capacities::fixture();
+    let direct = kit::direct(&memory, &capacities);
+    assert_eq!(direct.outcome, Outcome::Rows { len: 2 });
+    let (split, report, _) = kit::split(&memory, &capacities);
+    assert!(report.raw_ok);
+    kit::assert_matches_direct(&split, &direct);
+}
+
 #[test]
 fn air_bases_split_copy_matches_direct_walk_with_alias_and_rocket_vector() {
     // Census alias skip plus a non-state base vector: the alias slot

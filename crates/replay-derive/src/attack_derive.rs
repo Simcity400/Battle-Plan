@@ -87,13 +87,14 @@ pub struct Commander {
 }
 
 /// The four `NMilitary` defines the attack preview reads: `RIVER_CROSSING_PENALTY`,
-/// `RIVER_CROSSING_PENALTY_LARGE`, `BASE_NIGHT_ATTACK_PENALTY` and `BASE_FORT_PENALTY`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `RIVER_CROSSING_PENALTY_LARGE`, `BASE_NIGHT_ATTACK_PENALTY` and `BASE_FORT_PENALTY`,
+/// each refused alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Defines {
-    pub river_small: i64,
-    pub river_large: i64,
-    pub night: i64,
-    pub fort: i64,
+    pub river_small: Fact<i64>,
+    pub river_large: Fact<i64>,
+    pub night: Fact<i64>,
+    pub fort: Fact<i64>,
 }
 
 /// The operands the list reads for one division against one move.
@@ -225,7 +226,10 @@ pub fn preview(inputs: &impl Inputs, from: u32, to: u32) -> Fact<Option<Preview>
         Err(reason) => Err(reason.clone()),
     };
     let defines = inputs.defines();
-    let define = |field: fn(&Defines) -> i64| defines.as_ref().map(field).map_err(Clone::clone);
+    let define = |field: fn(&Defines) -> &Fact<i64>| match &defines {
+        Ok(defines) => field(defines).clone(),
+        Err(reason) => Err(reason.clone()),
+    };
     push(
         &mut out,
         "terrain",
@@ -251,8 +255,8 @@ pub fn preview(inputs: &impl Inputs, from: u32, to: u32) -> Fact<Option<Preview>
         "river",
         (|| {
             let define = match crossing.clone()? {
-                Some(2) => define(|d| d.river_small)?,
-                Some(3) => define(|d| d.river_large)?,
+                Some(2) => define(|d| &d.river_small)?,
+                Some(3) => define(|d| &d.river_large)?,
                 _ => return Ok(None),
             };
             let unit = [scalar(|s| &s.river[0])?, scalar(|s| &s.river[1])?];
@@ -326,7 +330,7 @@ pub fn preview(inputs: &impl Inputs, from: u32, to: u32) -> Fact<Option<Preview>
                 kind: NIGHT,
                 value: night(
                     scalar(|s| &s.night)?,
-                    define(|d| d.night)?,
+                    define(|d| &d.night)?,
                     inputs.night_modifier()?,
                     leader(&commander, |c| &c.night)?,
                 ),
@@ -772,10 +776,10 @@ impl<C: Context> Inputs for FrameInputs<'_, C> {
             "SimulationFeatures.runtime_scalars",
         )?;
         Ok(Defines {
-            river_small: known(scalars.river_small, "RIVER_CROSSING_PENALTY")?,
-            river_large: known(scalars.river_large, "RIVER_CROSSING_PENALTY_LARGE")?,
-            night: known(scalars.night, "BASE_NIGHT_ATTACK_PENALTY")?,
-            fort: known(scalars.fort, "BASE_FORT_PENALTY")?,
+            river_small: known(scalars.river_small, "RIVER_CROSSING_PENALTY"),
+            river_large: known(scalars.river_large, "RIVER_CROSSING_PENALTY_LARGE"),
+            night: known(scalars.night, "BASE_NIGHT_ATTACK_PENALTY"),
+            fort: known(scalars.fort, "BASE_FORT_PENALTY"),
         })
     }
 
@@ -810,7 +814,7 @@ impl<C: Context> Inputs for FrameInputs<'_, C> {
 
     fn fort_base(&self, target: u32) -> Fact<i64> {
         let province = self.province(target)?;
-        let define = self.defines()?.fort;
+        let define = self.defines()?.fort?;
         // The controller passed the outer gate, so its reference resolves a country.
         let country = self.country_scalar(
             province.controller,

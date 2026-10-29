@@ -1231,10 +1231,11 @@ fn directory_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
     Ok(entries)
 }
 
-/// A visual mod's folder or archive is mounted as the game mounts it: a symbolic link is not
-/// followed (the game's file system does not permit them), and names that differ only in case
-/// stay apart in an archive and the first in a folder. A recorded layer refuses both instead, as
-/// verification cannot prove what the game read.
+/// A visual mod's folder or archive is mounted as the game mounts it: its folder links are
+/// listed and entered as the game's enumeration takes them ([`walk_folder`]), and its archive
+/// link records are listed but their reads refused by name ([`unfollowed_link`]). Names that
+/// differ only in case stay apart in an archive and the first in a folder. A recorded layer
+/// refuses links and case variants instead, as verification cannot prove what the game read.
 fn collect_folder(
     root: &Path,
     path: &Path,
@@ -1242,29 +1243,42 @@ fn collect_folder(
     coverage: CoveragePolicy,
     overlay: bool,
 ) -> io::Result<()> {
-    for entry in directory_entries(path)? {
-        let full_path = entry.path();
-        let relative = normalize_path(
-            text_path(
-                full_path
-                    .strip_prefix(root)
-                    .map_err(|_| invalid("layer path escaped root"))?,
-            )?
-            .as_bytes(),
-        )?;
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            if overlay {
-                continue;
-            }
-            return Err(invalid(format!(
-                "content layer contains a symbolic link: {}",
-                full_path.display()
-            )));
+    collect_folder_with(root, path, files, coverage, overlay, &entry_kind)
+}
+
+/// [`collect_folder`], `kind` naming each entry. A visual mod's symbolic link to a folder is
+/// refused: the game lists that folder's files only when it enumerates a folder below the link.
+fn collect_folder_with(
+    root: &Path,
+    path: &Path,
+    files: &mut BTreeMap<LayerPath, Member>,
+    coverage: CoveragePolicy,
+    overlay: bool,
+    kind: &dyn Fn(&fs::DirEntry) -> io::Result<Listed>,
+) -> io::Result<()> {
+    let names_folder = |link: &Path| fs::metadata(link).is_ok_and(|metadata| metadata.is_dir());
+    let refused = |link: &Path| {
+        invalid(format!(
+            "symbolic link {} names a folder, whose files the game lists only from a folder below it",
+            link.display()
+        ))
+    };
+    if overlay
+        && fs::symlink_metadata(path)?.file_type().is_symlink()
+        && link_kind(path)? == Listed::LinkedFile
+        && names_folder(path)
+    {
+        return Err(refused(path));
+    }
+    let checked = |entry: &fs::DirEntry| -> io::Result<Listed> {
+        let listed = kind(entry)?;
+        if overlay && listed == Listed::LinkedFile && names_folder(&entry.path()) {
+            return Err(refused(&entry.path()));
         }
-        if kind.is_dir() {
-            collect_folder(root, &full_path, files, coverage, overlay)?;
-        } else if kind.is_file() && coverage.covered_path(&relative) {
+        Ok(listed)
+    };
+    walk_folder(root, path, overlay, &checked, &mut |relative, entry| {
+        if coverage.covered_path(&relative) {
             files.insert(
                 relative,
                 Member {
@@ -1273,6 +1287,152 @@ fn collect_folder(
                 },
             );
         }
+        Ok(())
+    })
+}
+
+/// How the game's Windows enumeration of a folder takes one entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listed {
+    File,
+    Directory,
+    /// A symbolic link: listed as a file whatever it names, and never entered.
+    LinkedFile,
+    /// A junction or other directory link that is no symbolic link: entered.
+    LinkedDirectory,
+    /// Neither listed nor entered.
+    Other,
+}
+
+fn entry_kind(entry: &fs::DirEntry) -> io::Result<Listed> {
+    let kind = entry.file_type()?;
+    Ok(if kind.is_symlink() {
+        link_kind(&entry.path())?
+    } else if kind.is_dir() {
+        Listed::Directory
+    } else if kind.is_file() {
+        Listed::File
+    } else {
+        Listed::Other
+    })
+}
+
+/// The game's enumeration and stat enter any directory but a reparse point tagged a symbolic link.
+#[cfg(windows)]
+fn link_kind(path: &Path) -> io::Result<Listed> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::{
+        Foundation::INVALID_HANDLE_VALUE,
+        Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FindClose, FindFirstFileW,
+            WIN32_FIND_DATAW,
+        },
+    };
+    const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+    let handle = unsafe { FindFirstFileW(name.as_ptr(), &mut data) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    unsafe { FindClose(handle) };
+    let symbolic = data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        && data.dwReserved0 == IO_REPARSE_TAG_SYMLINK;
+    Ok(
+        if !symbolic && data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            Listed::LinkedDirectory
+        } else {
+            Listed::LinkedFile
+        },
+    )
+}
+
+#[cfg(not(windows))]
+fn link_kind(_path: &Path) -> io::Result<Listed> {
+    Ok(Listed::LinkedFile)
+}
+
+/// Each file below `directory` as the game lists it ([`Listed`]); a recorded layer refuses links.
+fn walk_folder(
+    root: &Path,
+    directory: &Path,
+    overlay: bool,
+    kind: &dyn Fn(&fs::DirEntry) -> io::Result<Listed>,
+    visit: &mut dyn FnMut(LayerPath, &fs::DirEntry) -> io::Result<()>,
+) -> io::Result<()> {
+    let start = if !overlay {
+        directory.to_path_buf()
+    } else {
+        // The game enumerates only a directory: a symbolic link to one lists nothing.
+        if fs::symlink_metadata(directory)?.file_type().is_symlink()
+            && link_kind(directory)? == Listed::LinkedFile
+        {
+            return Ok(());
+        }
+        match fs::canonicalize(directory) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            start => start?,
+        }
+    };
+    walk_below(root, directory, &mut vec![start], overlay, kind, visit)
+}
+
+/// [`walk_folder`] below `directory`; `held` are the real folders it is in.
+fn walk_below(
+    root: &Path,
+    directory: &Path,
+    held: &mut Vec<PathBuf>,
+    overlay: bool,
+    kind: &dyn Fn(&fs::DirEntry) -> io::Result<Listed>,
+    visit: &mut dyn FnMut(LayerPath, &fs::DirEntry) -> io::Result<()>,
+) -> io::Result<()> {
+    for entry in directory_entries(directory)? {
+        let full_path = entry.path();
+        let listed = kind(&entry)?;
+        if !overlay && matches!(listed, Listed::LinkedFile | Listed::LinkedDirectory) {
+            return Err(invalid(format!(
+                "content layer contains a symbolic link: {}",
+                full_path.display()
+            )));
+        }
+        let real = match listed {
+            Listed::File | Listed::LinkedFile => {
+                let relative = normalize_path(
+                    text_path(
+                        full_path
+                            .strip_prefix(root)
+                            .map_err(|_| invalid("layer path escaped root"))?,
+                    )?
+                    .as_bytes(),
+                )?;
+                visit(relative, &entry)?;
+                continue;
+            }
+            Listed::Other => continue,
+            Listed::Directory => held
+                .last()
+                .expect("a walk holds its own folder")
+                .join(entry.file_name()),
+            Listed::LinkedDirectory => {
+                let target = match fs::canonicalize(&full_path) {
+                    // The game's enumeration of a link to nothing fails and lists nothing.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    target => target?,
+                };
+                if held.iter().any(|folder| folder.starts_with(&target)) {
+                    return Err(invalid(format!(
+                        "folder link {} leads back to {}, which the game lists only as deep as its own limits allow",
+                        full_path.display(),
+                        target.display()
+                    )));
+                }
+                target
+            }
+        };
+        held.push(real);
+        let walked = walk_below(root, &full_path, held, overlay, kind, visit);
+        held.pop();
+        walked?;
     }
     Ok(())
 }
@@ -1319,10 +1479,8 @@ impl ResolvedLayer {
                     if entry.directory {
                         continue;
                     }
-                    if entry.symlink {
-                        if self.overlay.is_some() {
-                            continue;
-                        }
+                    // A visual mod lists its link records, as the game does (see `collect_folder`).
+                    if entry.symlink && self.overlay.is_none() {
                         return Err(invalid(format!(
                             "archive contains a symbolic link: {}",
                             display(&entry.name)
@@ -1461,16 +1619,22 @@ impl ResolvedLayer {
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return match self.lookup.folders.get(&relative.to_ascii_lowercase()) {
-                    Some(path) => Err(changed(path)),
-                    None => Ok(None),
+                    // An unverified mod's listed link to no file passes on, as the game's open does.
+                    Some(path) if self.verifies() => Err(changed(path)),
+                    _ => Ok(None),
                 };
             }
             opened => opened?,
         };
         let real = match path.strip_prefix(root) {
-            Ok(real) => real,
-            // A link the game does not follow (see `collect_folder`) opens nothing in a mod.
-            Err(_) if self.overlay.is_some() => return Ok(None),
+            Ok(real) => normalize_path(text_path(real)?.as_bytes())?,
+            // The game opens a mod's file through any link, out of its folder too.
+            Err(_)
+                if self.overlay.is_some()
+                    && !(self.verifies() && self.coverage.covered_path(relative)) =>
+            {
+                relative.to_vec()
+            }
             Err(_) => {
                 return Err(invalid(format!(
                     "folder file resolves outside its layer: {}",
@@ -1478,7 +1642,6 @@ impl ResolvedLayer {
                 )));
             }
         };
-        let real = normalize_path(text_path(real)?.as_bytes())?;
         if self.verifies()
             && self.coverage.covered_path(&real)
             && self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real)
@@ -1627,6 +1790,9 @@ impl ResolvedLayer {
         let Some((entry, password)) = mounted.lookup(request) else {
             return Ok(None);
         };
+        if entry.symlink {
+            return Err(unfollowed_link(request).into());
+        }
         let context = |error: io::Error| invalid(format!("{}: {error}", display(request)));
         if self.verifies() && self.files.contains_key(&entry.name) {
             let record = record_digest_observed(&mut archive, entry, observed)
@@ -1658,9 +1824,19 @@ impl ResolvedLayer {
     fn archive_exists(&self, request: &[u8]) -> io::Result<bool> {
         let (mut archive, mounted) = self.verified_archive()?;
         match mounted.lookup(request) {
+            Some((entry, _)) if entry.symlink => Err(unfollowed_link(request)),
             Some((entry, password)) => archive.opens(entry, password),
             None => Ok(false),
         }
+    }
+
+    /// Whether this archive layer's one lookup of `request` reaches a link record.
+    fn reaches_link(&self, request: &[u8]) -> bool {
+        self.lookup
+            .archive
+            .as_ref()
+            .and_then(|archive| archive.mounted.lookup(request))
+            .is_some_and(|(entry, _)| entry.symlink)
     }
 
     /// A lookup this layer answers nothing to, verified as one it answered would be: an archive
@@ -1692,6 +1868,15 @@ impl ResolvedLayer {
 fn changed(relative: &[u8]) -> io::Error {
     invalid(format!(
         "content file changed since verification: {}",
+        display(relative)
+    ))
+}
+
+/// An archive's link record: the game opens the member its text names, and the port does not
+/// follow it, so neither the link's text nor a lower layer answers.
+fn unfollowed_link(relative: &[u8]) -> io::Error {
+    invalid(format!(
+        "{} is a symbolic link record, which the port does not follow to the member it names",
         display(relative)
     ))
 }
@@ -2085,7 +2270,6 @@ impl ResolvedLayers {
         prefix: impl AsRef<[u8]>,
         extensions: &[&str],
     ) -> io::Result<Vec<ScriptPath>> {
-        let prefix = normalize_path(prefix.as_ref())?.to_ascii_lowercase();
         let extensions: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
         if extensions
             .iter()
@@ -2093,9 +2277,19 @@ impl ResolvedLayers {
         {
             return Err(invalid("descriptor extension must be a dot and a suffix"));
         }
+        self.listed_with_suffixes(prefix.as_ref(), &extensions)
+    }
+
+    /// [`Self::descriptor_paths`] for lower-case name suffixes, which need no dot.
+    fn listed_with_suffixes(
+        &self,
+        prefix: &[u8],
+        extensions: &[String],
+    ) -> io::Result<Vec<ScriptPath>> {
+        let prefix = normalize_path(prefix)?.to_ascii_lowercase();
         let mut listings = Vec::with_capacity(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate() {
-            listings.push(listed_files(index, layer, &prefix, &extensions)?);
+            listings.push(listed_files(index, layer, &prefix, extensions)?);
         }
         // Folder lookup ignores case and retains the inventory's first spelling.
         let folded: Vec<BTreeMap<LayerPath, &UncoveredHit>> = self
@@ -2180,10 +2374,9 @@ impl ResolvedLayers {
 
     /// One directory's files as a database loader lists them, without recursion. Merged
     /// PhysFS entries are keyed by name in bytewise, case-sensitive order; names ending
-    /// in the filter are emitted once each in that order; subdirectories are not entered.
-    /// `suffix` must start with
-    /// a dot (see [`Self::descriptor_paths`]); the engine's filter has none, so
-    /// a name such as `footxt` is not listed here. Covered or not: read each
+    /// in `suffix`, the loader's own filter, are emitted once each in that order;
+    /// subdirectories are not entered. The filter is a raw suffix: most loaders pass `.txt`,
+    /// but one passing `txt` also lists a name such as `footxt`. Covered or not: read each
     /// with [`ScriptPath::read_uncovered`]. Names are their bytes.
     pub fn directory_files(
         &self,
@@ -2191,7 +2384,7 @@ impl ResolvedLayers {
         suffix: &str,
     ) -> io::Result<Vec<ScriptPath>> {
         let directory = normalize_path(directory.as_ref())?;
-        let listed = self.descriptor_paths(&directory, &[suffix])?;
+        let listed = self.listed_with_suffixes(&directory, &[suffix.to_ascii_lowercase()])?;
         Ok(directory_order(&directory, suffix, listed))
     }
 
@@ -2299,6 +2492,12 @@ impl ResolvedLayers {
         if self.covered_path(&relative) {
             let hit = self.lookup_path(&relative)?;
             observed.layer = hit.as_ref().map(|hit| hit.layer);
+            if let Some(hit) = &hit
+                && hit.folder.is_none()
+                && self.layers[hit.layer].reaches_link(&hit.path)
+            {
+                return Err(unfollowed_link(&relative).into());
+            }
             return Ok(hit.is_some());
         }
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
@@ -3256,8 +3455,9 @@ fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
 }
 
 /// One layer's files below a lower-case `prefix` with a lower-case suffix,
-/// with the layer's own case and where each is read from. Links and
-/// case-ambiguous names are refused.
+/// with the layer's own case and where each is read from. A recorded layer's
+/// links and case-ambiguous names are refused; a visual mod's are listed as the
+/// game lists them ([`walk_folder`]).
 fn listed_files(
     index: usize,
     layer: &ResolvedLayer,
@@ -3289,34 +3489,13 @@ fn listed_files(
             if !directory.is_dir() {
                 return Ok(paths);
             }
-            let mut pending = vec![directory];
-            while let Some(directory) = pending.pop() {
-                for entry in directory_entries(&directory)? {
-                    let kind = entry.file_type()?;
-                    if kind.is_symlink() {
-                        if overlay {
-                            continue;
-                        }
-                        return Err(invalid(format!(
-                            "content layer contains a symbolic link: {}",
-                            entry.path().display()
-                        )));
-                    }
-                    if kind.is_dir() {
-                        pending.push(entry.path());
-                    } else if kind.is_file() {
-                        let path = entry.path();
-                        let relative = normalize_path(
-                            text_path(
-                                path.strip_prefix(root)
-                                    .map_err(|_| invalid("layer path escaped root"))?,
-                            )?
-                            .as_bytes(),
-                        )?;
-                        admit(relative.clone(), UncoveredHit::Folder(index, relative))?;
-                    }
-                }
-            }
+            walk_folder(
+                root,
+                &directory,
+                overlay,
+                &entry_kind,
+                &mut |relative, _| admit(relative.clone(), UncoveredHit::Folder(index, relative)),
+            )?;
         }
         LayerSource::Archive(_) => {
             for entry in layer.verified_archive()?.1.entries {
@@ -3705,6 +3884,12 @@ fn recorded_dlc_paths(game_dir: &Path, recorded: &[Dlc]) -> io::Result<Vec<PathB
     )
 }
 
+/// Whether the game's scan of `mod/` lists a descriptor of this name: it keeps names that end
+/// in `.mod` byte for byte, case included.
+fn listed_mod_descriptor(name: &str) -> bool {
+    name.ends_with(".mod")
+}
+
 fn recorded_mod_paths(user_dir: &Path, recorded: &[Mod]) -> io::Result<Vec<String>> {
     if recorded.is_empty() {
         return Ok(Vec::new());
@@ -3715,7 +3900,7 @@ fn recorded_mod_paths(user_dir: &Path, recorded: &[Mod]) -> io::Result<Vec<Strin
         for entry in directory_entries(&directory)? {
             let path = entry.path();
             if !entry.file_type()?.is_file()
-                || path.extension().is_none_or(|extension| extension != "mod")
+                || !listed_mod_descriptor(&entry.file_name().to_string_lossy())
             {
                 continue;
             }
@@ -4075,6 +4260,12 @@ fn gather_selected(
             }) {
                 order_notes.push(format!(
                     "enabled mod descriptor {descriptor} is not directly in mod/, where the game lists mods, so the game does not mount it"
+                ));
+                continue;
+            }
+            if !listed_mod_descriptor(&descriptor) {
+                order_notes.push(format!(
+                    "enabled mod descriptor {descriptor} does not end in .mod, the suffix the game lists mods by, so the game does not mount it"
                 ));
                 continue;
             }

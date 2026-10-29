@@ -66,8 +66,11 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     queueMicrotask(() => setHovered({ hour: at, flows: selected }));
   }, []);
   const pending = hour != null && !!prepared?.hasExactHour && !prepared.hasExactHour(hour);
-  const amounts = useMemo(() => hour == null || pending ? [] : contributionAmounts(flows, measure, from, hour, known), [flows, measure, from, hour, known, pending]);
-  const total = hour == null || !flows.length || amounts.some(item => item.raw == null) ? null : measureAmount(flows, measure, from, hour);
+  // Totals and averages add the cumulative prefixes: while those are prepared, nothing is summed.
+  const cumulativePending = measure !== 'current' && flows.some(flow => flow.prepared?.cumulativePending);
+  const amounts = useMemo(() => hour == null || pending || cumulativePending ? [] : contributionAmounts(flows, measure, from, hour, known),
+    [flows, measure, from, hour, known, pending, cumulativePending]);
+  const total = hour == null || pending || cumulativePending || !flows.length || amounts.some(item => item.raw == null) ? null : measureAmount(flows, measure, from, hour);
   const scale = 10 ** trade.reply.decimals;
   const parts = useMemo<DrillPart[]>(() => amounts.map(({ flow, raw }) => {
     const seller = visibleSet.has(flow.key) ? flowCountryAt(flow, 'seller', hour!) : null;
@@ -81,7 +84,8 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
   }; }), [amounts, named, hour, scale, trade.reply.decimals, total, colours, tokens.muted, visibleSet, labels.labelAt, factHour]);
   const dense = useMemo(() => preparedContributionStack(flows), [flows]);
   const stack = useMemo(() => measure === 'current' ? compactStack(flows.map(flow => contributionHistory(flow, known))) : null, [flows, known, measure]);
-  const measured = useMemo(() => measure === 'current' ? null : contributionMeasureModel(flows, measure, from, known), [flows, measure, from, known]);
+  const measured = useMemo(() => measure === 'current' || cumulativePending ? null : contributionMeasureModel(flows, measure, from, known),
+    [flows, measure, from, known, cumulativePending]);
   const colors = useMemo(() => flows.map(flow => colours.get(flow.resource.id) ?? tokens.muted), [flows, colours, tokens.muted]);
   const layers = useMemo<ChartLayer[]>(() => [{
     draw: (ctx, frame, chartTokens, state) => {
@@ -110,6 +114,7 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     {identityNote && <p className="drill-empty">{identityNote}</p>}
     {!flows.length && <p className="drill-empty">No trades match this selection.</p>}
     {hour == null ? <p className="drill-empty">Choose a day.</p> : pending ? <p className="drill-empty">Loading trade amounts…</p>
+      : cumulativePending ? <p className="drill-empty">Trade totals and averages are still being prepared.</p>
       : <DrillParts parts={parts} virtual active={active} onVisible={setVisible} positiveBars signedShares
         total={total == null ? null : Number(total) / scale} format={value => String(value)}
         totalRow={{ label: 'Total', value: total == null ? 'Not recorded' : formatAmount(total, trade.reply.decimals, trade.reply.decimals) }} />}
@@ -125,8 +130,12 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
         overlay={(ctx, frame, chartTokens) => { if (hour != null) drawPlayhead(ctx, frame, chartTokens, hour); }}
         tooltip={at => {
           if (prepared?.hasExactHour && !prepared.hasExactHour(at)) return { title: dayLabel(at), rows: [{ label: 'Trade amounts', value: 'Loading...', tone: 'muted' }] };
-          if (knownSpanAt(known, at) < 0) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
-          const values = contributionAmounts(flows, measure, from, at, known).sort((a, b) => {
+          if (cumulativePending) return { title: dayLabel(at), rows: [{ label: 'Trade totals', value: 'Still being prepared', tone: 'muted' }] };
+          // An unrecorded hour hides only its own amounts: totals so far still add the hours before it.
+          if (measure === 'current' && knownSpanAt(known, at) < 0) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
+          const amountsAt = contributionAmounts(flows, measure, from, at, known);
+          if (amountsAt.some(item => item.raw == null)) return { title: dayLabel(at), rows: [{ label: 'Trade contributions', value: 'Not recorded', tone: 'muted' }] };
+          const values = amountsAt.sort((a, b) => {
             const first = a.raw! < 0n ? -a.raw! : a.raw!;
             const second = b.raw! < 0n ? -b.raw! : b.raw!;
             return first === second ? a.flow.key.localeCompare(b.flow.key) : first > second ? -1 : 1;

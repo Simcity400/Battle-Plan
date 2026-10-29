@@ -290,6 +290,22 @@ struct Kept {
     end: f32,
     seed: u32,
     key: EventKey,
+    life: KeptLife,
+}
+
+/// A kept event's life: its particle runtime finishes it once none of its particles lives,
+/// and its player then drops it, as the game drops a kept emitter it reads as finished.
+#[derive(Clone, Default)]
+pub struct KeptLife(Arc<std::sync::atomic::AtomicBool>);
+
+impl KeptLife {
+    pub fn finish(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn finished(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -341,6 +357,8 @@ pub struct Event {
     pub hidden: bool,
     /// The producer's requested state for the actor ([`IDLE`], [`ATTACK`], ...).
     pub state: u32,
+    /// A kept event's life, for its particle runtime to finish ([`KeptLife::finish`]).
+    pub kept: Option<KeptLife>,
 }
 
 impl Event {
@@ -436,6 +454,7 @@ fn keep_events(
                 end: age,
                 seed: event_seed(instance, index, ordinal, Some(playing)),
                 key: event_key(instance, index, ordinal, Some(playing)),
+                life: KeptLife::default(),
             });
         }
     }
@@ -481,7 +500,20 @@ fn pick(node: &Node, name: &str, random: &mut Random, native: bool) -> Option<us
         .map(|c| c.state.chance.max(0.0))
         .sum();
     if total <= 0.0 {
-        return None;
+        // The game's one state setter enters a lone variant whatever its
+        // chance, and draws uniformly among several that all have none.
+        let mut variants = node
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.state.name == name)
+            .map(|(index, _)| index);
+        let count = variants.clone().count();
+        if count <= 1 {
+            return variants.next();
+        }
+        let fraction = f64::from(random.next_word()) / 2_147_483_648.0;
+        return variants.nth((fraction * count as f64) as usize);
     }
     let mut draw = random.fraction() * total;
     for (i, clip) in node
@@ -979,6 +1011,7 @@ impl Player {
         admitted: bool,
     ) {
         let event_start = events.len();
+        self.kept.retain(|kept| !kept.life.finished());
         // Native draws and native event packets use their source-order actors,
         // not the optional name-joined palette returned to other consumers.
         let pose_required =
@@ -1416,7 +1449,7 @@ impl Player {
                     .state
                     .events
                     .iter()
-                    .map(|event| (event, age, None, None, None))
+                    .map(|event| (event, age, None, None, None, None))
                     .collect::<Vec<_>>();
                 // Before entering the spline's visible interval, the game
                 // sends move; its keep_particle exhaust survives
@@ -1429,7 +1462,9 @@ impl Player {
                             .filter(|c| c.state.name == "move")
                             .flat_map(|c| c.state.events.iter())
                             .filter(|e| e.keep_particle)
-                            .map(|e| (e, time + instance.animation_phase, None, None, None)),
+                            .map(|e| {
+                                (e, time + instance.animation_phase, None, None, None, None)
+                            }),
                     );
                 }
                 authored.extend(
@@ -1443,10 +1478,11 @@ impl Player {
                                 Some(kept.end),
                                 Some(kept.seed),
                                 Some(kept.key.clone()),
+                                Some(kept.life.clone()),
                             )
                         }),
                 );
-                for (event_index, (event, age, emission_end, seed, key)) in
+                for (event_index, (event, age, emission_end, seed, key, kept)) in
                     authored.into_iter().enumerate()
                 {
                     if self.phase.is_some()
@@ -1530,6 +1566,7 @@ impl Player {
                         emission_end,
                         hidden: false,
                         state: instance.animation,
+                        kept,
                     });
                 }
             }
@@ -1875,6 +1912,105 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!((events[0].age - 3.1).abs() < 1e-5);
         assert!((events[0].emission_end.unwrap() - 1.9).abs() < 1e-5);
+    }
+
+    #[test]
+    fn callback_players_enter_a_lone_zero_chance_variant_and_draw_among_unweighted_ones() {
+        let mut rig = stage_rig(false);
+        // `dive` keeps one variant with no chance; `cruise` gets a second, and neither has any.
+        rig.nodes[0].clips[1].state.chance = 0.0;
+        rig.nodes[0].clips[0].state.chance = 0.0;
+        let second = rig.nodes[0].clips[0].clone();
+        rig.nodes[0].clips.push(second);
+        let instance = ModelInstance {
+            scale: 1.,
+            animation_seed: 7,
+            ..Default::default()
+        };
+        for (state, entered) in [("dive", &[1][..]), ("cruise", &[0, 2][..])] {
+            let clock = Clock {
+                time: 1.5,
+                phase: None,
+                requests: Arc::new(vec![Request {
+                    time: 1.,
+                    phase_time: None,
+                    state: state.into(),
+                }]),
+            };
+            let mut player = Player::new(&rig);
+            player.evaluate_clock(
+                &rig,
+                instance,
+                &clock,
+                &mut [PaletteJoint::IDENTITY],
+                &mut Vec::new(),
+            );
+            let playing = player.nodes[0].as_ref().map(|playing| playing.clip);
+            assert!(
+                playing.is_some_and(|clip| entered.contains(&clip)),
+                "{state}: {playing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kept_event_leaves_its_player_once_none_of_its_particles_lives() {
+        let mut rig = stage_rig(true);
+        rig.nodes[0].clips[2].state.events.push(mesh::EntityEvent {
+            time: 0.1,
+            particle: Some("drop".into()),
+            keep_particle: true,
+            ..Default::default()
+        });
+        let instance = ModelInstance {
+            scale: 1.,
+            animation_seed: 7,
+            ..Default::default()
+        };
+        let requests = Arc::new(vec![
+            Request {
+                time: 1.,
+                phase_time: None,
+                state: "dive_intro".into(),
+            },
+            Request {
+                time: 4.,
+                phase_time: None,
+                state: "dive".into(),
+            },
+        ]);
+        let evaluate = |player: &mut Player, time: f32| {
+            let mut events = Vec::new();
+            let clock = Clock {
+                time,
+                phase: None,
+                requests: Arc::clone(&requests),
+            };
+            player.evaluate_clock(
+                &rig,
+                instance,
+                &clock,
+                &mut [PaletteJoint::IDENTITY],
+                &mut events,
+            );
+            events
+        };
+        let kept = |events: &[Event]| events.iter().filter(|event| event.kept.is_some()).count();
+        let mut player = Player::new(&rig);
+        // Leaving the intro keeps its particle event until its runtime says otherwise.
+        let events = evaluate(&mut player, 4.2);
+        assert_eq!(kept(&events), 1);
+        assert_eq!(kept(&evaluate(&mut player, 4.3)), 1);
+        // No emitter draws it, so nothing of it lives: the runtime finishes it.
+        crate::map::weather_effects::advance_entity_effects(
+            &mut Default::default(),
+            &BTreeMap::new(),
+            &crate::map::entity_effects::Lights::default(),
+            events,
+        )
+        .unwrap();
+        assert_eq!(kept(&evaluate(&mut player, 4.4)), 0);
+        assert!(player.kept.is_empty());
     }
 
     fn building_rig() -> Rig {

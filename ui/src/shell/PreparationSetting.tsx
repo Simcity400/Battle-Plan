@@ -25,8 +25,11 @@ export default function PreparationSetting({ client }: { client: DashboardClient
   return <>
     <label className="settings-row"><span className="settings-row-text"><strong>Prepare recordings in the background</strong>
       <small>Prepare opened recordings for faster focus, equipment, map and chart views. Turning this off stops automatic preparation and keeps saved data. You can still prepare a recording from its menu.</small></span>
-      <input type="checkbox" checked={preferences?.backgroundEnabled ?? true} disabled={busy || !preferences}
-        onChange={event => request(event.currentTarget.checked)} aria-label="Prepare recordings in the background" /></label>
-    {error && <p className="map-menu-error" role="alert">{error}</p>}
+      {/* Unread, the preference is unknown: never shown as on or off. */}
+      {preferences ? <input type="checkbox" checked={preferences.backgroundEnabled} disabled={busy}
+        onChange={event => request(event.currentTarget.checked)} aria-label="Prepare recordings in the background" />
+        : <span className="graphics-unavailable" aria-busy={busy}>{busy ? 'Reading…' : 'Unknown'}</span>}</label>
+    {error && <p className="map-menu-error" role="alert">{error}
+      {!preferences && !busy && <> <button type="button" className="button small quiet" onClick={() => request(null)}>Retry</button></>}</p>}
   </>;
 }

@@ -57,6 +57,8 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
       <span><b>{usNumber.format(data.goals.length)}</b> {data.goals.length === 1 ? 'war goal' : 'war goals'}</span>
       {atWar > 0 && <span><b>{usNumber.format(atWar)}</b> against countries at war</span>}
       <span><b>{usNumber.format(data.justifications.length)}</b> being justified</span>
+      {/* A held snapshot says which day it shows while the newer one loads. */}
+      {data.hour !== hour && <span className="war-goals-asof">As of {dayLabel(data.hour)}; {dayLabel(hour)} still loading</span>}
     </div>
     <Section title="Owned goals" count={data.goals.length} empty="No owned war goals.">
       {data.goals.map((goal, index) => {

@@ -560,8 +560,11 @@ impl Engine {
         self.content.as_ref()
     }
 
-    /// Replaces the content; every instance and voice of the old one ends.
+    /// Replaces the content; every instance and voice of the old one ends, and
+    /// the notes about it go with it.
     pub fn set_content(&mut self, content: Option<Arc<Content>>) {
+        self.notes = Notes::default();
+        self.player.failures.clear();
         self.instances.clear();
         self.voices.iter_mut().for_each(|voice| *voice = None);
         self.wanted.clear();

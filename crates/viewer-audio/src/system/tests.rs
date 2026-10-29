@@ -165,6 +165,36 @@ fn an_unreadable_sample_is_refused_and_the_loader_keeps_running() {
     step_until(&mut control, |control| control.engine.loaded(0));
 }
 
+/// Notes describe the content stack they came from: another stack starts,
+/// and publishes, without the old one's.
+#[test]
+fn another_content_stack_drops_the_old_ones_notes() {
+    let (_old_stack, old) = source("audio_system_notes_old");
+    let (_new_stack, new) = source("audio_system_notes_new");
+    let status = Arc::new(Mutex::new(Status::default()));
+    let mut control = Control::new(Arc::clone(&status), None, true);
+    let publish = |control: &mut Control| {
+        control.last_evict = Instant::now() - Duration::from_secs(6);
+        control.step();
+    };
+    control.apply(Command::Claim(1));
+    control.apply(Command::Frame(1, Arc::clone(&old), frame("absent", 1)));
+    control.apply(Command::Frame(1, Arc::clone(&old), frame("crackle", 2)));
+    step_until(&mut control, |control| control.engine.notes.lines().len() == 2);
+    publish(&mut control);
+    assert_eq!(status.lock().unwrap().notes.len(), 2);
+    control.apply(Command::Frame(1, Arc::clone(&new), frame("shot", 3)));
+    assert!(
+        control.engine.notes.is_empty(),
+        "{:?}",
+        control.engine.notes.lines()
+    );
+    assert!(status.lock().unwrap().notes.is_empty());
+    step_until(&mut control, |control| control.engine.loaded(0));
+    publish(&mut control);
+    assert!(status.lock().unwrap().notes.is_empty());
+}
+
 /// A loader that is gone refuses its files by name instead of leaving
 /// voices waiting forever.
 #[test]

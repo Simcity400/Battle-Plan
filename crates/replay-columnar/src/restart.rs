@@ -123,7 +123,7 @@ pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<R
     let slots = reader.count()?;
     let mut live: Vec<u64> = Vec::new();
     reader.values(slots.div_ceil(64), &mut live)?;
-    let live = Bits::from_words(live);
+    let live = Bits::from_words(live)?;
     let mut keys = Vec::new();
     reader.keys(live.count(), &mut keys)?;
     let mut table = Table::with_rows(kinds, slots, live, &keys)?;

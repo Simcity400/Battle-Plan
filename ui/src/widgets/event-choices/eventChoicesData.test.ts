@@ -146,3 +146,15 @@ test('malformed occurrence pages are refused', () => {
     nextCursor: null, pending: [{ firstHour: START + 10, lastHour: END }], coverage: { firstHour: START, lastHour: START + 9, complete: false } });
   assert.deepEqual(prefixed.prefix?.pending, [{ firstHour: START + 10, lastHour: END }]);
 });
+
+test('the chooser is named at its choice, the firing countries at the firing', () => {
+  const rows = prepareChoices(page([occurrence([fire(day(3, 3)), choose(day(3, 9), 1, 'mod | renamed')])]).reply, all);
+  const [card] = shown(rows, END);
+  const asked: [string, number][] = [];
+  const dated = (tag: string, hour: number) => { asked.push([tag, hour]); return `${name(tag)} at ${hour}`; };
+  const lines = choiceTooltip(card.item, dated)[0].rows;
+  assert.equal(lines.find(row => row.label === 'Country')?.value, `receiver at ${day(3, 3)}`);
+  assert.equal(lines.find(row => row.label === 'From')?.value, `sender at ${day(3, 3)}`);
+  assert.equal(lines.find(row => row.label === 'Chosen by')?.value, `renamed at ${day(3, 9)}`);
+  assert.deepEqual(asked, [['mod | receiver', day(3, 3)], ['mod | sender', day(3, 3)], ['mod | renamed', day(3, 9)]]);
+});

@@ -130,6 +130,7 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
         &scanned,
         Content {
             catalogue: Some(&catalogue),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -438,6 +439,14 @@ fn params() -> LossesParams {
     }
 }
 
+/// Content whose Combat Log retention deletes no entry that can still change.
+fn retained() -> Content<'static> {
+    Content {
+        retained_months: Some(12),
+        ..Content::default()
+    }
+}
+
 fn totals(reply: &LossesReply, source: LossSource) -> Vec<(i32, String)> {
     let cause = reply
         .causes
@@ -518,6 +527,7 @@ fn design_names_follow_reads_and_native_suffix_without_crossing_unavailable_hour
         &scanned,
         Content {
             catalogue: Some(&catalogue),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -569,6 +579,7 @@ fn a_design_name_is_not_backfilled_before_its_first_read() {
         &scanned,
         Content {
             catalogue: Some(&catalogue),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -627,6 +638,7 @@ fn land_losses_keep_each_entrys_last_value_through_windows_and_prunes() {
         &scanned,
         Content {
             catalogue: Some(&catalogue),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -735,7 +747,7 @@ fn hours_the_game_did_not_log_the_country_are_not_logged_not_zero() {
             (base + 6, base + 6, Coverage::Logged),
         ]
     );
-    let reply = reply(&params(), &scanned, Content::default(), Vec::new());
+    let reply = reply(&params(), &scanned, retained(), Vec::new());
     assert!(
         reply
             .warnings
@@ -820,7 +832,7 @@ fn ships_convoys_and_lend_lease_join_as_their_own_causes() {
         ),
     ]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), Vec::new());
+    let reply = reply(&params(), &scanned, retained(), Vec::new());
     assert_eq!(
         totals(&reply, LossSource::SunkShips),
         [(base - 10, raw(1)), (base + 5, raw(3))]
@@ -895,6 +907,7 @@ fn a_modded_equipment_type_resolves_through_the_content_stack() {
         &scanned,
         Content {
             archetypes: Some(&empty),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -949,7 +962,7 @@ fn each_record_lists_the_hours_it_was_not_read() {
             (base + 2, base + 2, Coverage::Logged),
         ]
     );
-    let reply = reply(&params(), &scanned, Content::default(), Vec::new());
+    let reply = reply(&params(), &scanned, retained(), Vec::new());
     let unread = |from, to| vec![(from, to, UnknownReason::Unread)];
     for source in [LossSource::CombatLog(0), LossSource::Recovered] {
         assert_eq!(
@@ -1013,7 +1026,7 @@ fn an_exchange_that_ends_after_its_last_read_makes_its_totals_lower_bounds() {
     let later = frame(base + 30, vec![], &[]);
     let replay = replay_of(vec![first, carried, next, later]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), Vec::new());
+    let reply = reply(&params(), &scanned, retained(), Vec::new());
     let sent = cause(&reply, LossSource::LendLeaseSent);
     assert_eq!(
         spans(&sent.unknown_spans),
@@ -1040,7 +1053,7 @@ fn an_exchange_that_ends_after_its_last_read_makes_its_totals_lower_bounds() {
 }
 
 #[test]
-fn a_retention_below_one_is_refused_by_name_and_an_unknown_one_warned() {
+fn a_retention_below_one_or_unknown_is_refused_by_name() {
     let base = 60_827_880;
     let replay = replay_of(vec![frame(base, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER])]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1069,12 +1082,30 @@ fn a_retention_below_one_is_refused_by_name_and_an_unknown_one_warned() {
     let kept = with(Some(1));
     assert_eq!(totals(&kept, LossSource::CombatLog(0)), [(base, raw(3))]);
     assert!(kept.warnings.is_empty());
-    assert!(
-        with(None)
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("COMBAT_LOG_MAX_MONTHS) is unknown"))
+    // A retention the content cannot establish proves no total either.
+    let unknown = with(None);
+    for source in [LossSource::CombatLog(0), LossSource::Recovered] {
+        let land = cause(&unknown, source);
+        assert!(land.leaves.is_empty());
+        assert!(
+            land.unknown
+                .as_deref()
+                .is_some_and(|reason| reason.contains("COMBAT_LOG_MAX_MONTHS is not known"))
+        );
+    }
+    assert!(cause(&unknown, LossSource::SunkShips).unknown.is_none());
+    assert_eq!(unknown.retained_months, None);
+    // Without the Combat Log, the retention decides nothing.
+    let destruction = reply(
+        &LossesParams {
+            land_source: LandSource::Destruction,
+            ..params()
+        },
+        &scanned,
+        Content::default(),
+        Vec::new(),
     );
+    assert!(destruction.causes.iter().all(|cause| cause.unknown.is_none()));
 }
 
 #[test]
@@ -1162,6 +1193,7 @@ fn interface_authored_cause_names_come_from_the_contents_gui() {
         &scanned,
         Content {
             keys: Some(&keys),
+            retained_months: Some(12),
             ..Content::default()
         },
         Vec::new(),
@@ -1292,7 +1324,7 @@ fn daily_records_only_change_at_the_read_that_saw_them() {
         }]));
     let replay = replay_of(vec![first, carried]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(totals(&reply, LossSource::SunkConvoys), [(base, raw(5))]);
     assert_eq!(totals(&reply, LossSource::LendLeaseSent), [(base, raw(5))]);
     assert_eq!(last_known_name(&scanned, 1326).as_deref(), Some("Kar98k"));
@@ -1326,7 +1358,7 @@ fn unread_writer_feature_cannot_prove_logged_coverage() {
     };
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.coverage[0].coverage, Coverage::Unknown);
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(
         totals(&reply, LossSource::CombatLog(0)),
         [(60_827_880, raw(3))]
@@ -1357,7 +1389,7 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.coverage[0].coverage, Coverage::NotLogged);
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(
         totals(&reply, LossSource::CombatLog(0)),
         [(60_827_880, raw(3))]
@@ -1642,7 +1674,7 @@ fn a_frame_inside_a_recorded_gap_does_not_supply_losses_or_coverage() {
         scanned.coverage.last().unwrap().coverage,
         Coverage::NotLogged
     );
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(
         totals(&reply, LossSource::CombatLog(0)),
         [(base, raw(3)), (base + 2, raw(4))]
@@ -1702,7 +1734,7 @@ fn a_convoy_count_that_falls_counts_as_a_new_entry_and_warns() {
         })
         .collect();
     let scanned = scan(&replay_of(frames), 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(
         totals(&reply, LossSource::SunkConvoys),
         [(base, raw(5)), (base + 1, raw(7))]
@@ -1742,7 +1774,7 @@ fn alias_owners_keep_independent_convoy_totals_on_repeated_reads() {
         })
         .collect();
     let scanned = scan(&replay_of(frames), 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(totals(&reply, LossSource::SunkConvoys), [(base, raw(7))]);
     assert_eq!(scanned.convoy_drops, 0);
     assert!(
@@ -1799,7 +1831,7 @@ fn mixed_census_counts_ungrouped_divisions_and_splits_when_the_count_changes() {
             { "firstHour": base + 2, "lastHour": base + 2, "coverage": { "partial": { "ungrouped": 1 } } },
         ])
     );
-    let reply = reply(&params(), &scanned, Content::default(), vec![]);
+    let reply = reply(&params(), &scanned, retained(), vec![]);
     assert_eq!(totals(&reply, LossSource::CombatLog(0)), [(base, raw(3))]);
 }
 

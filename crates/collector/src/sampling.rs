@@ -3022,12 +3022,7 @@ unsafe fn acquire_with_memory(
                 batch.arm_presentation(&mut request);
                 batch.arm_presentation_inputs(request, split, shared.army_stat_store.clone(), false)
             });
-            // The optional native witness still belongs to this callback,
-            // before any presentation worker borrows the input packet.
-            #[cfg(not(feature = "movement_witness"))]
-            {
-                input_payload.presentation = Some(Arc::clone(&presentation_inputs));
-            }
+            input_payload.presentation = Some(Arc::clone(&presentation_inputs));
             let input_pending = queue!(acquisition::Job::DivisionInputs(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
                 context: divisions_ctx,
@@ -3046,8 +3041,7 @@ unsafe fn acquire_with_memory(
                             game_state: state,
                             slots: slots(part + 1),
                             census,
-                            presentation: (!cfg!(feature = "movement_witness"))
-                                .then(|| (Arc::clone(&presentation_inputs), part)),
+                            presentation: Some((Arc::clone(&presentation_inputs), part)),
                         }
                     )));
                 }
@@ -4590,19 +4584,6 @@ unsafe fn acquire_with_memory(
                                     presentation_request.captured.enable_owned_settlement();
                                 }
                                 presentation_request.inputs = inputs.clone();
-                                #[cfg(feature = "movement_witness")]
-                                if let Some(inputs) = presentation_request.inputs.as_deref() {
-                                    // SAFETY: this is the stopped simulation's callback thread;
-                                    // native queries finish before workers borrow its census.
-                                    unsafe {
-                                        presentation_request.captured.capture_movement_witness(
-                                            &memory,
-                                            shared.base,
-                                            state,
-                                            inputs.seeds(),
-                                        );
-                                    }
-                                }
                                 presentation_request.captured.status_workers =
                                     acquisition.worker_count();
                                 let mut movement_request = presentation_request.take_movement();

@@ -32,7 +32,7 @@ export function useEffect(effect, deps) { const index = cursor++; if (changed(sl
 `;
 
 interface Load { request: ProductRequest; signal: AbortSignal; resolve: (value: unknown) => void; reject: (error: Error) => void }
-interface Fixture { loads: Load[]; products: (ProductRequest | null)[]; product: (request: ProductRequest | null) => { data?: unknown; error?: string } }
+interface Fixture { loads: Load[]; products: (ProductRequest | null)[]; product: (request: ProductRequest | null) => { data?: unknown; error?: string }; content?: number }
 const host = globalThis as typeof globalThis & { __weatherHooks?: Fixture };
 
 async function mountHooks() {
@@ -43,6 +43,7 @@ async function mountHooks() {
       transform(code, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/widgets/weather-by-region/useWeather.ts')) return code.replace("from 'react'", "from 'fake-react'");
+        if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => globalThis.__weatherHooks.content ?? 0;';
         if (path.endsWith('/dashboard/products.ts')) return `
           export const useProduct = (_client, request) => { globalThis.__weatherHooks.products.push(request); return { ...globalThis.__weatherHooks.product(request), retry() {} }; };
           export const loadTransientProduct = (_client, request, signal) => new Promise((resolve, reject) =>
@@ -137,6 +138,32 @@ test('a folded day is read through the transient route after its dwell, supersed
     }
     assert.equal(days().get(6), undefined, 'the oldest day is dropped');
     assert.ok(days().get(20 + hooks.RECENT_DAYS - 1)?.data);
+  } finally { mock.timers.reset(); delete host.__weatherHooks; await close(); }
+});
+
+test('a content change forgets the days read under the old content and drops the read in flight', async () => {
+  const fixture: Fixture = { loads: [], products: [], product: () => ({}), content: 0 };
+  host.__weatherHooks = fixture;
+  const { hooks, react, close } = await mountHooks();
+  mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  try {
+    const days = () => react.render(() => hooks.useWeatherDays(widget(), runtime, true, 24));
+    days().want(5);
+    mock.timers.tick(hooks.DWELL_MS);
+    fixture.loads[0].resolve(reply(120, 143, { temperature: 'refused' }));
+    await flush();
+    assert.ok(days().get(5)?.data);
+    days().want(6);
+    mock.timers.tick(hooks.DWELL_MS);
+    fixture.content = 1;
+    assert.equal(days().get(5), undefined, 'a day read under the old content is not shown');
+    assert.equal(fixture.loads[1].signal.aborted, true, 'the read in flight under the old content is dropped');
+    days().want(5);
+    mock.timers.tick(hooks.DWELL_MS);
+    assert.equal(fixture.loads.length, 3, 'the day is read again under the new content');
+    fixture.loads[2].resolve(reply(120, 143));
+    await flush();
+    assert.equal(days().get(5)?.data?.temperature, 'available');
   } finally { mock.timers.reset(); delete host.__weatherHooks; await close(); }
 });
 

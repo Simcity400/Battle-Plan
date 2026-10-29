@@ -77,7 +77,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     const found = labelAt(hour)(tag);
     return { ...found, name: eventCountryName(tag, found) };
   }, [labelAt]);
-  const name = (row: LogRow<ChoiceAt>) => (tag: string) => label(nameHour(row), tag).name;
+  const name = useCallback((tag: string, hour: number) => label(hour, tag).name, [label]);
   const warnings = useMemo(() => [...feed.warnings, ...(feed.data ? scriptNotRecorded(feed.data) : []), ...choiceDiagnostics(feed.replies)],
     [feed.warnings, feed.data, feed.replies]);
   useDiagnostics(onDiagnostics, warnings);
@@ -126,7 +126,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     <LogList key={feed.identity} pages={kinds.length > 0 ? feed.pages : []} label="Event choices" layout="card" density={log.density} months={log.months}
       preparedCoverage={feed.prefix?.coverage} rowHeight={cardHeight} anchorRows
       animate={log.animate && live} playhead={live ? hour : null} onVisible={setVisible} onWantedPages={feed.onWantedPages}
-      renderRow={renderRow} describe={row => choiceDescription(row.item, name(row))} tooltip={row => choiceTooltip(row.item, name(row))}
+      renderRow={renderRow} describe={row => choiceDescription(row.item, name)} tooltip={row => choiceTooltip(row.item, name)}
       menu={row => choiceJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))} empty={!kinds.length || match.known(from ?? track.branch.firstHour, hour!) ? "No recorded events match these settings." : MEMBERSHIP_PREPARING} />
     {feed.errors.size > 0 && <div className="event-feed-load">Some events couldn’t load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
   </div>;

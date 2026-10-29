@@ -92,16 +92,16 @@ pub fn port_operand(frame: &DecodedFrame, countries: &Countries, province: u32) 
     }
 }
 
+/// The game shows a nonempty primary name over the state's, so an unknown or unshowable one refuses.
 pub(super) fn port_name(port: &PortName, cat: &Catalogue) -> Result<String, String> {
     let primary = || -> Result<Option<String>, String> {
         let override_name = port.override_name.as_ref().map_err(Clone::clone)?;
-        if !override_name.is_empty() {
-            return cat
-                .localisation
-                .localise(override_name)
-                .map_err(|why| why.to_string())
-                .and_then(|text| catalogue::plain_text(&text))
-                .map(Some);
+        let text = cat
+            .localisation
+            .localise(override_name)
+            .map_err(|why| why.to_string())?;
+        if !text.is_empty() {
+            return catalogue::plain_text(&text).map(Some);
         }
         let tag = port.owner_tag.as_ref().map_err(Clone::clone)?;
         for key in [
@@ -120,9 +120,8 @@ pub(super) fn port_name(port: &PortName, cat: &Catalogue) -> Result<String, Stri
         }
         Ok(None)
     };
-    let primary = primary();
-    if let Ok(Some(text)) = &primary {
-        return Ok(text.clone());
+    if let Some(text) = primary()? {
+        return Ok(text);
     }
     let state = port.state.as_ref().map_err(Clone::clone)?;
     let content = cat.cached_states();
@@ -132,7 +131,7 @@ pub(super) fn port_name(port: &PortName, cat: &Catalogue) -> Result<String, Stri
         owner_name: state.owner.clone(),
         ..Default::default()
     };
-    let fallback = scripted_text::state_display_name(
+    scripted_text::state_display_name(
         &row,
         cat,
         content
@@ -140,9 +139,7 @@ pub(super) fn port_name(port: &PortName, cat: &Catalogue) -> Result<String, Stri
             .map(|states| &states.names)
             .map_err(String::as_str),
         scripted_text::StateNameUsage::Place,
-    );
-    // A primary failure is retained by the caller independently of a state fallback.
-    fallback
+    )
 }
 
 pub(super) fn resolve(operand: &Operand, cat: Option<&Arc<Catalogue>>) -> Result<YardChoice, String> {

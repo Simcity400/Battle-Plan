@@ -1,4 +1,4 @@
-import type { Scene, SceneList } from '../generated/dashboard';
+import type { ListScroll, Scene, SceneList } from '../generated/dashboard';
 
 /** Interface pixels one wheel line scrolls when the pointer reports lines. */
 export const WHEEL_LINE_PIXELS = 16;
@@ -30,6 +30,18 @@ export type ScrolledList = Pick<SceneList, 'path' | 'horizontal'>;
 
 /** The key a list's offset is kept by. */
 export const listKey = (list: ScrolledList) => JSON.stringify([list.path, list.horizontal]);
+
+/** The offsets to ask for: those already asked for, with the wheel's newer ones in their place. */
+export function settledScroll(asked: readonly ListScroll[], pending: ReadonlyMap<string, ListScroll>): ListScroll[] {
+  const lists = new Map(asked.map(list => [listKey(list), list]));
+  for (const [key, list] of pending) lists.set(key, list);
+  return [...lists.values()];
+}
+
+/** Drops the wheel offsets a drawn reply asked for: the scene now shows them, as the service clamped them. */
+export function acknowledgeScroll(pending: Map<string, ListScroll>, asked: readonly ListScroll[]): void {
+  for (const list of asked) if (pending.get(listKey(list))?.offset === list.offset) pending.delete(listKey(list));
+}
 
 /** The topmost list whose area (`x, y, width, height`) holds a window point; where that list's
  * container scrolls both ways, its axis across or down as `across` asks, when it asks. */

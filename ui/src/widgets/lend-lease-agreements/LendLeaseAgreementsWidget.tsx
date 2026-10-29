@@ -17,11 +17,11 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
+import { groupReasonAt, preparedAt, valueAt } from '../../dashboard/economyHistory';
 import { EquipmentCell, useVariantArt } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
-import { knownAt, MARKET_HISTORY, validateMarketHistory } from '../../dashboard/marketHistory';
+import { knownAt, MARKET_HISTORY, partiesOf, partyTagsAt, validateMarketHistory } from '../../dashboard/marketHistory';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
@@ -29,7 +29,7 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { MarketHistoryReply } from '../../generated/dashboard';
-import { agreementRows, amountOf, firstAmount } from './agreementsData';
+import { agreementRows, amountOf, firstAmount, openAgreement } from './agreementsData';
 import type { AgreementRow, Direction } from './agreementsData';
 import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
 import '../equipment-stockpile/equipmentStockpile.css';
@@ -136,9 +136,11 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const playing = runtime.clock.getSnapshot().playing;
   const open = (row: AgreementRow) => {
     setPick({ client: runtime.client, owner: pickOwner, row });
-    dispatch({ type: 'open', breakdown: AGREEMENT.id, hour: row.at, playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    dispatch(openAgreement(row, AGREEMENT.id, playing, widget.time.mode === 'follow' ? hour : null));
   };
   const at = drillHour(drill, hour) ?? hour;
+  const drillAt = drill.follow ? hour : at;
+  const drillTags = picked && data ? partyTagsAt(partiesOf(data.holders, [picked.agreement.giver, valueAt(picked.agreement.receiver, picked.at)]), data.holders, drillAt) : null;
   // An agreement's fuel terms are a row of their own, not another agreement.
   const active_ = new Set(rows.filter(row => !row.ended).map(row => `${row.agreement.giver}:${row.agreement.id}`)).size;
 
@@ -175,8 +177,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
       title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(drillShown ?? at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
-      {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : at} active={active} onAnswered={setDrillShown}
-        tags={[picked.from, picked.partner].filter((tag): tag is string => tag !== null)} selected={`agreement:${picked.agreement.id}`} />}
+      {picked && (drillTags ? <MarketDrill runtime={runtime} track={track} hour={drillAt} active={active} onAnswered={setDrillShown}
+        tags={drillTags} selected={`agreement:${picked.agreement.id}`} />
+        : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}
     </DrillHost>
   </div>;
 }

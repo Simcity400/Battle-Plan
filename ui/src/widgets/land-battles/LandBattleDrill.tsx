@@ -61,8 +61,10 @@ function Designs({ side, index, colour, total }: { side: DesignLoss[] | string |
 }
 
 /** One battle at the shown hour: its sides, how it went, and the equipment each side lost by design. */
-export default function LandBattleDrill({ row, context, colours, looks, terrain }: {
+export default function LandBattleDrill({ row, context, colours, looks, terrain, heldAt = null }: {
   row: LandBattleRow; context: BattleViewContext; colours: readonly string[]; looks: readonly SideLook[]; terrain: string | null;
+  /** The hour `row` was last listed, when the battle has since left the list. */
+  heldAt?: number | null;
 }) {
   const { track, runtime, active, shownHour } = context;
   const request = { sourceId: track.source.id, revision: track.source.revision, product: 'land-battle-course', params: { branchId: track.branch.id, id: row.id } };
@@ -84,6 +86,7 @@ export default function LandBattleDrill({ row, context, colours, looks, terrain 
   });
   return <div className="lb-drill">
     <p className="lb-drill-facts">{facts}</p>
+    {heldAt !== null && heldAt < context.shownHour && <p className="lb-drill-note">Totals as of {formatDateTime(heldAt)}, when this battle was last listed.</p>}
     <div className="lb-drill-sides">{row.sides.map((side, index) => {
       const manpowerLost = side.losses.find(entry => entry.label === 'Manpower lost');
       return <div className="lb-drill-side" key={index}>

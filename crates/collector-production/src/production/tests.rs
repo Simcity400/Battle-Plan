@@ -917,6 +917,39 @@ fn production_rest_split_copy_matches_direct_walk() {
     assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
 }
 
+/// Positive slots holding the reserved slot-zero object are skipped as the
+/// reader skips them, and the kit's alias of its country is copied only once.
+#[test]
+fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_once() {
+    use super::production_rest_test_kit as kit;
+    const RESERVED: usize = 0x2800;
+    let mut bytes = kit::fixture();
+    let mut put = |address: usize, value: &[u8]| {
+        bytes[address - kit::BASE..address - kit::BASE + value.len()].copy_from_slice(value);
+    };
+    // Slots zero and three the reserved object, one and its alias two the country.
+    for header in [cgame_state::COUNTRIES, cgame_state::COUNTRY_LINKS] {
+        put(kit::BASE + header + 8, &4_u32.to_le_bytes());
+        put(kit::BASE + header + 12, &4_u32.to_le_bytes());
+    }
+    for slot in [0, 3] {
+        put(0x2000 + slot * 8, &(RESERVED as u64).to_le_bytes());
+    }
+    put(RESERVED, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    let memory = engine_native::memory::SliceMemory {
+        base: kit::BASE,
+        bytes: &bytes,
+    };
+    let capacities = kit::capacities();
+    let direct = kit::direct(&memory, &capacities);
+    let (split, _, job) = kit::split(&memory, &capacities);
+    kit::assert_matches_direct(&split, &direct);
+    assert_eq!(split.lines.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(split.deployment_lines.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(split.license_records.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(job.census.len(), 1);
+}
+
 /// The kit's memory plus the six maximum-factory defines at their module
 /// addresses (module base zero).
 struct DefinedMemory<'a>(&'a [u8]);

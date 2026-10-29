@@ -19,7 +19,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { mix } from '../../shell/appearance/color';
-import { cellState, countriesAt, fieldNumber, measureField, pairTooltip, pairsAt, visibleCountries } from './intelCoverageData';
+import { aliasTagsAt, cellState, countriesAt, fieldNumber, measureField, pairTooltip, pairsAt, visibleCountries } from './intelCoverageData';
 import type { Basis, Measure } from './intelCoverageData';
 import { MEASURES, PAIR } from './definition';
 import { setToken } from '../../dashboard/options';
@@ -34,7 +34,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
-  const { track, options, data, error, retry, grouped, groups, roots, chosen, touching } = useIntelCoverage(widget, runtime, active);
+  const { track, options, data, error, retry, grouped, groups, roots, chosen, aliases, touching } = useIntelCoverage(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const measure = (options.measure as Measure) ?? 'covered';
@@ -44,7 +44,8 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   // A group's members at the hour shown, by their tags then.
   const members = useMemo(() => grouped && track ? worldFilter(widget.countries, [], groups.data, hour, track.branch.lastHour) : null,
     [grouped, widget.countries, groups.data, hour, track]);
-  const tags = members ? [...members.tags ?? []] : chosen;
+  // Chosen countries under the tags their native holders held at the hour shown.
+  const tags = members ? [...members.tags ?? []] : aliases ? aliasTagsAt(aliases, hour) : chosen;
   const shown = intelShown(widget);
   const ranked = useMemo(() => data ? countriesAt(data, hour, shown, tags, touching) : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -105,7 +106,9 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   // The chosen country alone: no network of or in it, proven only where the hour is fully read.
   const main = touching && countries.length === 1 ? at.known ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
     : <WidgetState kind="unavailable" message="Intel networks were not fully recorded at this time." />
-    : countries.length < 2 ? <WidgetState kind="empty" message="Fewer than two countries are shown at this date." />
+    // Too few countries is proven only where the hour was read; otherwise the networks are not known.
+    : countries.length < 2 ? at.known ? <WidgetState kind="empty" message="Fewer than two countries are shown at this date." />
+      : <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." />
     : !at.pairs.size && at.known ? <WidgetState kind="empty" message="No intel networks at this date." />
     : <HeatMatrix label="Intel network coverage" rows={axis} columns={axis} cell={cell} revision={`${hour}:${field}:${labels}:${highest}`} active={active} onVisible={onVisible}
       tooltip={tooltip} onSelect={(row, column) => {

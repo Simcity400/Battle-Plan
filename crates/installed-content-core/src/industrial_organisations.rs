@@ -34,6 +34,8 @@ pub struct Database {
     pub notes: Vec<String>,
     refusals: BTreeMap<Vec<u8>, String>,
     unread: Vec<String>,
+    /// Each template's place in creation order, the order the include pass visits.
+    created: BTreeMap<Vec<u8>, usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +58,8 @@ impl Database {
         let read = native::read(
             bytes,
             native::Mode::KeepMark,
-            native::Top::File(Reader::File),
+            // The file loop stops on either a closing brace or the end of text.
+            native::Top::Persistent(Reader::File),
             Some(names),
             &mut |reader, field| match reader {
                 Reader::File => {
@@ -108,6 +111,8 @@ impl Database {
             if self.templates.contains_key(&name) || self.refusals.contains_key(&name) {
                 continue;
             }
+            let next = self.created.len();
+            self.created.entry(name.clone()).or_insert(next);
             let why: Vec<_> = notes
                 .iter()
                 .map(ToString::to_string)
@@ -187,6 +192,8 @@ impl Database {
             let why = why.to_string();
             if let Some(name) = current {
                 self.templates.remove(&name);
+                let next = self.created.len();
+                self.created.entry(name.clone()).or_insert(next);
                 self.refusals.insert(name, why.clone());
             }
             self.unread.push(why.clone());
@@ -216,35 +223,45 @@ impl Database {
         })
     }
 
-    /// Include passes preserve nonempty local values and
-    /// reparent the copied initial trait to the child organisation.
+    /// The name and initial trait name after the include pass. The pass visits
+    /// templates once in creation order, copying an include as it stands then:
+    /// one created later has not inherited anything yet. Nonempty local values
+    /// stay, and the copied initial trait is reparented to the child.
     pub fn display_fields(&self, token: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
-        let mut token = token.to_ascii_lowercase();
-        let mut visited = BTreeSet::new();
-        let mut name = Vec::new();
-        let mut initial = None;
-        let mut deleted_name = false;
-        let mut deleted_initial = false;
-        loop {
-            if !visited.insert(token.clone()) {
-                return Err("MIO include cycle".into());
+        let name = token.to_ascii_lowercase();
+        let template = self.template(&name)?;
+        let local = (template.name.clone(), template.initial_trait_name.clone());
+        let Some(include) = &template.include else {
+            return Ok(local);
+        };
+        if *include == name {
+            return Err(format!(
+                "MIO {} includes itself (count: 1)",
+                String::from_utf8_lossy(token)
+            ));
+        }
+        let parent = match self.template(include) {
+            Ok(_) if self.created.get(include) < self.created.get(&name) => {
+                self.display_fields(include)?
             }
-            let template = self.template(&token)?;
-            if name.is_empty() && !deleted_name {
-                name.clone_from(&template.name);
+            Ok(parent) => (parent.name.clone(), parent.initial_trait_name.clone()),
+            // The pass skips an include that names no template.
+            Err(_) if self.unread.is_empty() && !self.refusals.contains_key(include) => {
+                return Ok(local);
             }
-            if initial.as_ref().is_none_or(Vec::is_empty)
-                && !deleted_initial
-                && let Some(value) = &template.initial_trait_name
-            {
-                initial = Some(value.clone());
-            }
-            deleted_name |= template.delete_name;
-            deleted_initial |= template.delete_initial_trait || template.delete_initial_name;
-            let Some(parent) = &template.include else {
-                break;
-            };
-            token.clone_from(parent);
+            Err(why) => return Err(why),
+        };
+        let (mut name, mut initial) = local;
+        if name.is_empty() && !template.delete_name {
+            name = parent.0;
+        }
+        if !template.delete_initial_trait
+            && let Some(inherited) = parent.1
+            && initial
+                .as_ref()
+                .is_none_or(|own| own.is_empty() && !template.delete_initial_name)
+        {
+            initial = Some(inherited);
         }
         Ok((name, initial))
     }

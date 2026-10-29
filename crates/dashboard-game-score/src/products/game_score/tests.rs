@@ -1823,6 +1823,7 @@ fn prepared_naming() -> Naming {
         templates: Err("Faction content unavailable".into()),
         fallback,
         warnings: Vec::new(),
+        multipliers: Default::default(),
     }
 }
 fn assert_prepared_score_at(
@@ -1925,6 +1926,7 @@ fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_iden
                     &replay,
                     &mut observer,
                     &naming,
+                    &mut || unreachable!("captured multipliers"),
                     &changes.observe(frame, replay.format),
                 )
                 .unwrap();
@@ -1976,6 +1978,7 @@ fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders
                 &replay,
                 &mut observer,
                 &naming,
+                &mut || unreachable!("captured multipliers"),
                 &changes.observe(&first, replay.format),
             )?;
         }
@@ -1985,7 +1988,14 @@ fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders
             hours,
             replay.format,
             |frame, changes| {
-                state.observe(frame, &replay, &mut observer, &naming, changes)?;
+                state.observe(
+                    frame,
+                    &replay,
+                    &mut observer,
+                    &naming,
+                    &mut || unreachable!("captured multipliers"),
+                    changes,
+                )?;
                 Ok(state.work())
             },
         )?;
@@ -2009,6 +2019,7 @@ fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders
             &replay,
             &mut observer,
             &naming,
+            &mut || unreachable!("captured multipliers"),
             &changes.observe(&first, replay.format),
         )?;
         let after = state.work();
@@ -2042,6 +2053,7 @@ fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_co
             &replay,
             &mut observer,
             &naming,
+            &mut || unreachable!("captured multipliers"),
             &tracker.observe(&first, replay.format),
         )
         .unwrap();
@@ -2060,6 +2072,7 @@ fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_co
                 &replay,
                 &mut observer,
                 &naming,
+                &mut || unreachable!("captured multipliers"),
                 &tracker.observe(&next, replay.format),
             )
             .unwrap();
@@ -2083,6 +2096,98 @@ fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_co
         None,
     );
     assert_prepared_score_at(&fixture, &reference, 110);
+}
+
+#[test]
+fn prepared_game_score_reads_the_content_multipliers_of_a_recording_without_score_capture() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let frames: Vec<_> = (100..=102)
+        .map(|hour| {
+            let mut frame = frame(hour);
+            for table in [
+                TableId::CountryGameScoreInputs,
+                TableId::GameScoreMultipliers,
+            ] {
+                *frame.tables[table.index()] = TableView::Unavailable {
+                    reason: replay_data::format::GAME_SCORE_DISABLED_REASON.into(),
+                };
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+    let defines = installed_content_core::defines::Defines::new().unwrap();
+    defines.load("synthetic.lua", b"NDefines = {NCountry = {COUNTRY_SCORE_MULTIPLIER = 1, ARMY_SCORE_MULTIPLIER = 1, NAVY_SCORE_MULTIPLIER = 1, AIR_SCORE_MULTIPLIER = 1, INDUSTRY_SCORE_MULTIPLIER = 1.25, PROVINCE_SCORE_MULTIPLIER = 1}}").unwrap();
+    let fallback = content_multipliers(Ok(&defines));
+    let naming = prepared_naming();
+    let mut observer = naming.observer(&replay);
+    let mut prepared = prepared::Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    let mut content_reads = 0;
+    for frame in &frames {
+        prepared
+            .observe(
+                frame,
+                &replay,
+                &mut observer,
+                &naming,
+                &mut || {
+                    content_reads += 1;
+                    fallback.clone()
+                },
+                &tracker.observe(frame, replay.format),
+            )
+            .unwrap();
+    }
+    assert!(content_reads > 0);
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut writer = fixture.writer();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
+    writer.commit().unwrap();
+    let reference = scan(
+        &replay,
+        &BranchParams {
+            branch_id: "1".into(),
+        },
+        None,
+        Err("Faction content unavailable".into()),
+        None,
+        &mut || fallback.clone(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    for hour in 100..=102 {
+        assert_prepared_score_at(&fixture, &reference, hour);
+    }
+    let value = prepared::query(
+        "series-state",
+        serde_json::json!({ "branchId": "1",
+        "family": {"kind": "game-score"}, "reads": [{"hour": 101}] }),
+        &fixture.store,
+        &fixture.key,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let actual: prepared::GameScoreStateReply = serde_json::from_value(value).unwrap();
+    let reply = &actual.reply;
+    assert_eq!(
+        amount_at(reply, &reply.multipliers, "industry", 101).value(),
+        Some(125_000)
+    );
+    let series = &reply.countries[0].scores;
+    assert_eq!(
+        amount_at(reply, series, "industry", 101).value(),
+        Some(750_000)
+    );
+    assert_eq!(
+        amount_at(reply, series, "army", 101)
+            .missing
+            .unwrap()
+            .reason,
+        replay_data::format::GAME_SCORE_DISABLED_REASON
+    );
 }
 
 #[test]
@@ -2198,7 +2303,14 @@ impl<'a> Lane<'a> {
             self.tracker
                 .observe_updates(decoded, std::sync::Arc::clone(wire), replay.format);
         self.prepared
-            .observe(decoded, replay, &mut self.observer, naming, &changes)
+            .observe(
+                decoded,
+                replay,
+                &mut self.observer,
+                naming,
+                &mut || unreachable!("captured multipliers"),
+                &changes,
+            )
             .unwrap();
         let work = self.prepared.work();
         (
@@ -2641,6 +2753,7 @@ fn prepared_game_score_changed_rows_match_whole_tables_and_history_across_keyfra
         templates: Err("Faction content unavailable".into()),
         fallback: prepared_naming().fallback,
         warnings: Vec::new(),
+        multipliers: Default::default(),
     };
     let fixtures = [Fixture::new(), Fixture::new()];
     // Observed from changed rows, and from the whole tables every hour.

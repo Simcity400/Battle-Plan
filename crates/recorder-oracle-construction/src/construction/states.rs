@@ -59,13 +59,17 @@ pub fn state_pools(
             format!("StateResources states {omitted_negative:?}"),
         );
     }
+    let mut captured_counts = BTreeMap::<u32, usize>::new();
+    let mut unresolved = BTreeSet::new();
     for row in rows
         .iter()
         .filter(|row| row.pool != 0 && emitted.contains(&row.state) && sampled(row.state))
     {
+        *captured_counts.entry(row.state).or_default() += 1;
         let name = match token(names, row.resource) {
             Ok(name) => name,
             Err(reason) => {
+                unresolved.insert(row.state);
                 report.limitation(
                     &format!("state resource {reason}; its pool cannot be matched by name"),
                     format!("state resources.{}.token({})", row.state, row.resource),
@@ -88,15 +92,33 @@ pub fn state_pools(
             None => report.difference(subject, row.pool, "missing saved pool"),
         }
     }
+    let saved_pools = || {
+        saved
+            .iter()
+            .filter(|((state, _), amount)| amount.raw != 0 && sampled(*state))
+            .map(|(key, _)| key)
+    };
     missing(
         report,
         "state resources",
         &seen,
-        saved
-            .iter()
-            .filter(|((state, _), amount)| amount.raw != 0 && sampled(*state))
-            .map(|(key, _)| key.clone()),
+        saved_pools()
+            .filter(|(state, _)| !unresolved.contains(state))
+            .cloned(),
     );
+    for state in unresolved {
+        let subject = format!("state resources.{state}");
+        value(
+            report,
+            &format!("{subject}.row_count"),
+            captured_counts[&state],
+            saved_pools().filter(|(pool_state, _)| *pool_state == state).count(),
+        );
+        report.limitation(
+            "unresolved resource tokens prevent a named pool census at this state; its nonzero pool count is compared without assigning names",
+            subject,
+        );
+    }
     report.compared("StateResources.pool", matched);
     report.limitation(
         "the resource accumulator operands (additive, factor, cost) are not saved",

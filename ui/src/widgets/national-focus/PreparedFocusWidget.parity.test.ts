@@ -11,7 +11,7 @@ import type { PreparedFocusHour } from './preparedFocusData';
 test('the prepared widget supplies its settled page and description to one parity provider', async () => {
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
   type Provider = Partial<ParityPreparation> & { read: () => ParityList };
-  const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as (() => void)[], providers: [] as Provider[],
+  const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as { slot: Slot; setup: () => unknown }[], providers: [] as Provider[],
     completions: [] as { open: boolean; onToggle: (open: boolean) => void }[], calls: [] as string[], statuses: 0,
     emptyDetails: new Map(), markup: '', oracle: undefined as FocusReply | undefined };
   const host = globalThis as typeof globalThis & { __focusCapture?: typeof fixture; __focusCaptureHook?: (name: string, ...args: any[]) => any };
@@ -24,7 +24,7 @@ test('the prepared widget supplies its settled page and description to one parit
         slot.deps = [...deps];
         if (name === 'useMemo') slot.value = factory();
         else if (name === 'useCallback') slot.value = factory;
-        else fixture.effects.push(() => { slot.cleanup?.(); slot.cleanup = factory(); });
+        else fixture.effects.push({ slot, setup: factory });
       }
       return slot.value;
     }
@@ -40,7 +40,8 @@ test('the prepared widget supplies its settled page and description to one parit
     '/dashboard/products.ts': 'export const useProduct = () => ({data:globalThis.__focusCapture.oracle}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _tag, wanted) => ({
       read: new Map(wanted.map(({tag,hour}) => [JSON.stringify([hour,tag]), {artwork:{token:tag,name:'Observed',description:null,baseDurationDays:7,icon:null},reason:null}])),
-      details: globalThis.__focusCapture.emptyDetails, warnings: [] });`,
+      details: globalThis.__focusCapture.emptyDetails, warnings: [] });
+      export const useContinuousFocusArtwork = () => ({ read: new Map(), warnings: [], details: new Map() });`,
     '/dashboard/parityRows.ts': `export const useParityRows = (_root, read, preparation) => {
       if (_root === null) return;
       globalThis.__focusCapture.providers.push({read,...preparation}); };`,
@@ -95,14 +96,16 @@ test('the prepared widget supplies its settled page and description to one parit
       fixture.cursor = 0; fixture.effects = []; fixture.providers = []; fixture.completions = [];
       const tree = Widget(props);
       fixture.markup = renderToStaticMarkup(tree);
-      for (const effect of fixture.effects) effect();
+      // As React does: every changed effect's cleanup runs before any of their setups.
+      for (const { slot } of fixture.effects) slot.cleanup?.();
+      for (const { slot, setup } of fixture.effects) { const cleanup = setup(); slot.cleanup = typeof cleanup === 'function' ? cleanup as () => void : undefined; }
       return tree;
     };
     const settle = async () => { for (let frame = 0; frame < 8; frame++) { await new Promise(resolve => setImmediate(resolve)); render(); } };
     const { LegacyNationalFocusWidget: Legacy } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const compareOracle = () => {
       fixture.oracle = { history: { segments: [{firstHour:10,lastHour:40,order:{completed:Array.from({length:size()}, (_, index) => entry(index)),current:row.current,continuous:null,paused:true}}],
-        progress:[{firstHour:30,lastHour:40,progressRaw:'1000000'}] }, artwork:tokens().map(staticArt), staticText:tokens().map(staticArt), warnings:[] };
+        progress:[{firstHour:30,lastHour:40,progressRaw:'1000000'}] }, artwork:tokens().map(staticArt), staticText:tokens().map(staticArt), continuousStaticText:[], warnings:[] };
       const oracle = renderToStaticMarkup(createElement(Legacy, props));
       assert.equal(fixture.markup.replace('national-focus prepared-focus','national-focus').replace(' aria-busy="false"',''), oracle,
         'settled prepared rows and empty/current layouts match the legacy renderer');

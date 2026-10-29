@@ -1967,8 +1967,11 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
     );
     let layers = stack.catalogue(&[]).content.layers.clone();
     let live = Arc::new(Catalogue::of_layers(layers, "english").unwrap());
-    let mut context =
-        products::artwork::Context::load(live, products::artwork::Kind::Focus).unwrap();
+    let mut context = products::artwork::Context::load(
+        live,
+        products::artwork::Kind::Focus(crate::FocusDatabase::National),
+    )
+    .unwrap();
     let (reply, _) = context
         .catalogue(
             std::collections::BTreeSet::from(["mod_focus"]),
@@ -1976,6 +1979,79 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
         )
         .unwrap();
     assert_eq!(reply[0].description, None);
+}
+
+/// The focus check looks each database's focuses up in it alone: a refused
+/// continuous file leaves the continuous focus unknown, never the national
+/// focus of the same id.
+#[test]
+fn the_focus_check_keeps_each_focus_database_apart() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::{
+        content_check::check,
+        products::{self, Product},
+    };
+    let stack = Stack::new("focus_databases");
+    stack.write(
+        &stack.addon(),
+        "common/national_focus/mod.txt",
+        "focus_tree = { focus = { id = shared text = national_title } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "common/continuous_focus/mod.txt",
+        "continuous_focus_palette = { focus = { id = shared text = continuous_title } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "common/continuous_focus/zz_refused.txt",
+        "continuous_focus_palette = { focus = { text = continuous_title } }",
+    );
+    stack.write(
+        &stack.addon(),
+        "localisation/mod_l_english.yml",
+        "l_english:\n national_title:0 \"National\"\n national_title_desc:0 \"National details\"\n continuous_title:0 \"Continuous\"\n continuous_title_desc:0 \"Continuous details\"\n",
+    );
+    let catalogue = stack.catalogue(&[]);
+    let focus = check(Arc::clone(&catalogue.content), "english")
+        .into_iter()
+        .find(|check| check.key == products::national_focus::NationalFocus::KEY)
+        .unwrap();
+    assert!(focus.error.is_none(), "{focus:?}");
+    assert!(
+        focus
+            .note
+            .contains("1 declared national focuses checked; 0 missing"),
+        "{}",
+        focus.note
+    );
+    // Its refused file leaves the continuous focus's description key unknown.
+    assert!(
+        focus
+            .note
+            .contains("1 declared continuous focuses checked; 1 missing"),
+        "{}",
+        focus.note
+    );
+    let examples: Vec<&String> = focus
+        .findings
+        .iter()
+        .flat_map(|finding| &finding.examples)
+        .collect();
+    assert!(
+        examples.iter().any(|example| example
+            .starts_with("continuous focus shared:")
+            && example.contains("common/continuous_focus/zz_refused.txt")),
+        "{examples:?}"
+    );
+    assert!(
+        examples
+            .iter()
+            .all(|example| !example.starts_with("focus shared:")
+                || !example.contains("continuous_focus")),
+        "{examples:?}"
+    );
 }
 
 #[test]
@@ -2400,7 +2476,7 @@ fn live_catalogue_does_not_accumulate_product_findings() {
     assert!(live.take_findings().is_empty());
     let mut context = crate::products::artwork::Context::load(
         Arc::clone(&live),
-        crate::products::artwork::Kind::Focus,
+        crate::products::artwork::Kind::Focus(crate::FocusDatabase::National),
     )
     .unwrap();
     let tokens = std::collections::BTreeSet::from(["mod_live_focus"]);
@@ -2409,7 +2485,7 @@ fn live_catalogue_does_not_accumulate_product_findings() {
         .unwrap();
     let mut fresh = crate::products::artwork::Context::load(
         Arc::clone(&live),
-        crate::products::artwork::Kind::Focus,
+        crate::products::artwork::Kind::Focus(crate::FocusDatabase::National),
     )
     .unwrap();
     let (second, second_warnings) = fresh.catalogue(tokens, &AtomicBool::new(false)).unwrap();

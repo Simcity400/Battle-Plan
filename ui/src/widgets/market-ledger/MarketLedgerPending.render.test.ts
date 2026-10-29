@@ -12,7 +12,7 @@ test('a market ledger whose group membership is still being prepared is loading,
   const host = globalThis as typeof globalThis & { __ledgerPending?: typeof state }; host.__ledgerPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/market-ledger/MarketLedgerWidget.tsx', {
     // The market was read through the branch and lists nothing for the members asked.
-    '/widgets/market-ledger/useMarketLedger.ts': `export const useMarketLedger = (_runtime, _track, _active, _hour, countries) => {
+    '/widgets/market-ledger/useMarketLedger.ts': `export const useMarketLedger = (_runtime, _track, _active, _from, _hour, countries) => {
       globalThis.__ledgerPending.asked = countries;
       return { data: countries ? { lastHour: ${BRANCH.lastHour}, known: [[${BRANCH.firstHour}, ${BRANCH.lastHour}]] } : undefined,
         pages: [], errors: new Map(), warnings: [], identity: 'ledger', prefix: null, onWantedPages() {}, retry() {} }; };`,

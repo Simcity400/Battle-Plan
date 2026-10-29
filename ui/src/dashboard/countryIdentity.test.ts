@@ -67,3 +67,14 @@ test('5,000 native country choices retain their full alias catalogue without per
   assert.equal(index.aliasRuns(keys, 0, 10).length, 5000);
   assert.equal(index.selected(chosen), keys);
 });
+
+test('a TAG@slot holder follows its own native country through renames, and refuses when the slot held the tag twice', () => {
+  const old = { tag: 'OLD', identities: [{ firstHour: 0, lastHour: 9, slot: 4, countryId: 5 }] };
+  const renamed = { tag: 'NEW', identities: [{ firstHour: 10, lastHour: 20, slot: 4, countryId: 5 }] };
+  const other = { tag: 'OTHER', identities: [{ firstHour: 0, lastHour: 20, slot: 7, countryId: 8 }] };
+  const index = countryIdentityIndex([old, renamed, other]);
+  assert.deepEqual(index.holderAliases('OLD', 4), [{ tag: 'OLD', firstHour: 0, lastHour: 9 }, { tag: 'NEW', firstHour: 10, lastHour: 20 }]);
+  assert.equal(index.holderAliases('OLD', 7), null, 'no native country held OLD in slot 7');
+  const reused = countryIdentityIndex([{ tag: 'OLD', identities: [{ firstHour: 0, lastHour: 9, slot: 4, countryId: 5 }, { firstHour: 15, lastHour: 20, slot: 4, countryId: 6 }] }]);
+  assert.equal(reused.holderAliases('OLD', 4), null, 'two countries held OLD in slot 4: the holder is not known');
+});

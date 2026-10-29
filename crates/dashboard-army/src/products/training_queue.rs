@@ -43,6 +43,16 @@ const NAMING: [TableId; 8] = [
     TableId::CountryLocalSubunits,
 ];
 
+/// The queue's read: what names it, and every operand its priority names' scripted text may read.
+fn read_tables() -> Vec<TableId> {
+    let mut tables = QUEUE.to_vec();
+    tables.extend(NAMING);
+    tables.extend_from_slice(dashboard_text::scripted_text::TABLES);
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TrainingQueueParams {
@@ -201,15 +211,13 @@ impl Product for TrainingQueue {
                     cancelled,
                 )?
                 .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
-                let mut tables = QUEUE.to_vec();
-                tables.extend(NAMING);
                 let read = progressive::latest_read(
                     source,
                     branch,
                     p.hour,
                     TableId::DeploymentLines,
                     replay_data::cadence::STAGGER_PERIOD,
-                    &tables,
+                    &read_tables(),
                     cancelled,
                 )?;
                 let Some(read) = read else {

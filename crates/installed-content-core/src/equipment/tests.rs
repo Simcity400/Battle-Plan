@@ -1113,6 +1113,39 @@ fn saved_validation_requires_explicit_dependency_but_allows_required_default_mod
     );
 }
 
+/// An alias that takes over its parent's name does not redirect the default
+/// walk: it follows the stored links and ends at the original type.
+#[test]
+fn default_modules_follow_stored_links_when_an_alias_takes_over_the_parent_name() {
+    let database = read(&[(
+        "alias.txt",
+        "equipment_modules={basic={category=turret}} equipments={root={is_archetype=yes module_slots={main={required=yes allowed_module_categories={turret}} extra={required=yes allowed_module_categories={turret}}} default_modules={extra=basic}} child={parent=root alias=root module_slots=inherit}}",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    let child = database.named("root").unwrap();
+    assert_eq!(child.name, b"child");
+    assert_eq!(
+        database.validate_modules(child, &[]).unwrap().failures,
+        ["required slot main is empty"]
+    );
+    // Registration order: root 0, child 1. A database built with a loop is refused.
+    let mut looped = database.clone();
+    looped.equipment[0].parent = 1;
+    assert!(
+        looped
+            .validate_modules(&looped.equipment[1], &[])
+            .unwrap_err()
+            .contains("links back through its parents and archetypes")
+    );
+    let detached = database.equipment[0].clone();
+    assert!(
+        database
+            .validate_modules(&detached, &[])
+            .unwrap_err()
+            .contains("not a type of this equipment database")
+    );
+}
+
 #[test]
 fn count_validation_uses_present_explicit_keys_with_child_override_and_native_comparison_mapping() {
     let database = read(&[(

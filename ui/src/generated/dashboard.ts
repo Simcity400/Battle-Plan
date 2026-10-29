@@ -71,6 +71,7 @@ export type Artwork = { token: string, name: string | null, description: string 
  * A PNG data URL of the first authored sprite frame.
  */
 icon: string | null, };
+export type FocusDatabase = "national" | "continuous";
 export type LandOwners = { countries: Array<CountryMetadata>, warnings: Array<string>, };
 export type FocusEntry = { ordinal: number, token: string,
 /**
@@ -495,15 +496,33 @@ export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<Di
 export type DiplomacyProposal = { id: string, handle: string, owner: string | null, sender: string | null, recipient: string | null, originalSender: string | null, originalRecipient: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, storedHour: number, lastCommandHour: number, firstSeen: number, lastSeen: number, goneBy: number | null, goneByBound: boolean, presentAtEnd: boolean, readHour: number, };
 export type DiplomacyProposalsReply = { proposals: Array<DiplomacyProposal>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
-export type FocusReply = { history: FocusHistory, artwork: Array<Artwork>,
+export type FocusReply = { history: FocusHistory,
 /**
- * Country-independent text only; scoped titles still require dated reads.
+ * The national focuses' (completed and current) authored durations.
  */
-staticText?: Array<Artwork>, warnings: Array<string>, };
-export type FocusArtworkParams = { branchId: string, hour: number, tag: string, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
+artwork: Array<Artwork>,
+/**
+ * The national focuses' country-independent text only; scoped titles
+ * still require dated reads.
+ */
+staticText?: Array<Artwork>,
+/**
+ * The continuous focuses' country-independent text and authored
+ * durations, looked up in the continuous database.
+ */
+continuousStaticText: Array<Artwork>, warnings: Array<string>, };
+export type FocusArtworkParams = { branchId: string, hour: number, tag: string,
+/**
+ * The database every token is looked up in.
+ */
+database: FocusDatabase, tokens: Array<string>, textOnly?: boolean, includeDescriptions?: boolean, iconsOnly?: boolean, };
 export type DatedFocusArtwork = { artwork: Artwork, reason: string | null, };
-export type FocusArtworkReply = { branchId: string, hour: number, tag: string, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
+export type FocusArtworkReply = { branchId: string, hour: number, tag: string, database: FocusDatabase, items: Array<DatedFocusArtwork>, warnings: Array<string>, };
 export type FocusArtParams = { branchId: string, tag: string, hour: number,
+/**
+ * The database every token is looked up in.
+ */
+database: FocusDatabase,
 /**
  * Distinct tokens in ascending order, at most one page.
  */
@@ -637,7 +656,11 @@ export type ArmyMixRun = { firstHour: number, lastHour: number, values: Array<nu
  */
 rawValues?: Array<string | null>, };
 export type ArmySeries = { tag: string, identities?: Array<CountryIdentityRun>, runs: Array<ArmyRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, mix?: Array<ArmyMixRun>, };
-export type ArmySizeReply = { templateSections?: Array<string>, branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
+export type ArmySizeReply = { templateSections?: Array<string>, branchId: string, windows: Array<HourSpan>, window: number | null, interval: HourSpan | null, available: boolean, measures: Array<ArmyMeasure>,
+/**
+ * While preparation continues, measures no hour read so far records: unknown, not absent.
+ */
+unknownMeasures: Array<ArmyMeasure>, types: Array<ArmyType>, series: Array<ArmySeries>, warnings: Array<string>, };
 export type MilitaryAidKind = "land" | "expeditionary";
 export type VolunteersExpeditionariesParams = { branchId: string, kind: MilitaryAidKind, tags: Array<string> | null, };
 export type MilitaryAidRun = { firstHour: number, lastHour: number, divisions: number | null, startsSegment: boolean, };
@@ -2935,6 +2958,10 @@ members?: Array<LedgerMember>,
  * The kinds shown; [`LEDGER_KINDS`] by default.
  */
 kinds: Array<number>,
+/**
+ * The first hour shown; from the branch's start when absent.
+ */
+firstHour?: number,
 /**
  * The last hour shown.
  */

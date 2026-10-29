@@ -378,6 +378,64 @@ fn a_posed_vertex_widens_the_reach_where_the_bind_box_would_not() {
     assert_eq!(reach.own_radius, 8.0);
 }
 
+#[test]
+fn culling_reaches_around_every_lod_a_model_may_draw() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_model_lod_reach_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let floats = |name: &str, values: &[f32]| {
+        let mut out = vec![b'!', name.len() as u8];
+        out.extend(name.as_bytes());
+        out.push(b'f');
+        out.extend((values.len() as u32).to_le_bytes());
+        out.extend(values.iter().flat_map(|value| value.to_le_bytes()));
+        out
+    };
+    // The near LOD spans one unit either way, the far one ten.
+    let mut bytes = b"@@b@[object\0".to_vec();
+    for (lod, extent) in [(0_i32, 1.0_f32), (1, 10.0)] {
+        bytes.extend(format!("[[shape{lod}\0").as_bytes());
+        bytes.extend(b"!\x03lodi\x01\0\0\0");
+        bytes.extend(lod.to_le_bytes());
+        bytes.extend(b"[[[mesh\0");
+        bytes.extend(floats("p", &[0., 0., 0., 1., 0., 0., 0., 1., 0.]));
+        bytes.extend(floats("n", &[0., 1., 0., 0., 1., 0., 0., 1., 0.]));
+        bytes.extend(b"!\x03trii\x03\0\0\0\0\0\0\0\x01\0\0\0\x02\0\0\0");
+        bytes.extend(b"[[[[aabb\0");
+        bytes.extend(floats("min", &[-extent, 0., -extent]));
+        bytes.extend(floats("max", &[extent, 1., extent]));
+        bytes.extend(b"[[[[material\0!\x06shaders\x01\0\0\0\x0e\0\0\0AuthoredShader");
+    }
+    std::fs::write(root.join("lods.mesh"), bytes).unwrap();
+    let descriptors = mesh::parse_descriptors(
+        br#"
+            objectTypes = { pdxmesh = { name = body file = "lods.mesh" scale = 1 } }
+            entity = { name = tower pdxmesh = body state = { name = idle } }
+        "#,
+        "fixture.asset",
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let mut warnings = Vec::new();
+    let library = ModelLibrary::load(
+        &layers,
+        Decode::default(),
+        &descriptors,
+        &["tower".into()],
+        &mut warnings,
+    )
+    .unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let tower = &library.meshes[library.slot("tower").unwrap()];
+    assert_eq!(tower.native[0].lods.len(), 2);
+    // The far LOD's corner bounds the cull, not the first LOD's.
+    assert!((tower.radius - 200f32.sqrt()).abs() < 1e-3, "{}", tower.radius);
+    assert!((tower.own_radius - 200f32.sqrt()).abs() < 1e-3);
+}
+
 fn library_with_one_mesh(radius: f32) -> ModelLibrary {
     ModelLibrary {
         meshes: vec![ModelMesh {

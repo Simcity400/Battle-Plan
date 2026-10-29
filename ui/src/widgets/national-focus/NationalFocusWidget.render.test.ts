@@ -11,7 +11,7 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
   const data: FocusReply = { history: { segments: [{ firstHour: 0, lastHour: 30, order: {
     completed: Array.from({ length: completedCount }, (_, ordinal) => ({ ordinal, token: `synthetic_completed_${ordinal}`, completedByHour: ordinal + 1 })),
     current: 'synthetic_unfinished', continuous: null, paused: false,
-  } }], progress: [] }, artwork: [], warnings: [] };
+  } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
   const host = globalThis as typeof globalThis & { __focusListReply?: FocusReply; __focusListInteractive?: boolean[];
     __focusListPredicate?: (item: unknown, index: number) => boolean };
   host.__focusListReply = data;
@@ -23,7 +23,8 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted) => ({ warnings: [],
       read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), { artwork: { token: tag,
-        name: 'Localized ' + tag, description: null, baseDurationDays: 10, icon: null }, reason: null }])) });`,
+        name: 'Localized ' + tag, description: null, baseDurationDays: 10, icon: null }, reason: null }])) });
+      export const useContinuousFocusArtwork = () => ({ read: new Map(), warnings: [], details: new Map() });`,
   };
   const vite = await createServer({ root: fileURLToPath(new URL('../../../../', import.meta.url)), configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-list-fixture', enforce: 'pre',

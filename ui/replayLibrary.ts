@@ -3,10 +3,11 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { ReplayFile, ReplayLibrary } from './src/dashboard/client.ts';
 
-const settingsPath = path.join(process.env.APPDATA || path.join(homedir(), '.config'), 'battle-plan', 'replay-folder.json');
+// Read at each use: a test harness points APPDATA at a private profile after this module loads.
+const settingsPath = () => path.join(process.env.APPDATA || path.join(homedir(), '.config'), 'battle-plan', 'replay-folder.json');
 
 export async function savedReplayFolder(fallback: string): Promise<string> {
-  try { const settings = JSON.parse(await readFile(settingsPath, 'utf8')); return typeof settings.folder === 'string' ? settings.folder : fallback; }
+  try { const settings = JSON.parse(await readFile(settingsPath(), 'utf8')); return typeof settings.folder === 'string' ? settings.folder : fallback; }
   catch { return fallback; }
 }
 
@@ -36,7 +37,8 @@ export async function listReplayFolder(folder: string, signal?: AbortSignal): Pr
 export async function saveReplayFolder(folder: string): Promise<ReplayLibrary> {
   const library = await listReplayFolder(folder);
   if (!library.folder) throw new Error('Choose a replay folder.');
-  await mkdir(path.dirname(settingsPath), { recursive: true });
-  await writeFile(settingsPath, JSON.stringify({ folder: library.folder }), 'utf8');
+  const settings = settingsPath();
+  await mkdir(path.dirname(settings), { recursive: true });
+  await writeFile(settings, JSON.stringify({ folder: library.folder }), 'utf8');
   return library;
 }

@@ -4087,10 +4087,6 @@ fn cap_pool_u64(log: &RawLog<1>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-fn cap_pool_u32(log: &RawLog<1>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
 /// One mirrored span read. `None` addresses (arithmetic overflow) record
 /// nothing because the typed walk fails locally without reads.
 fn capspan(
@@ -4101,35 +4097,6 @@ fn capspan(
     mask: u32,
 ) -> Option<usize> {
     log.take(memory, addr?, len, mask)
-}
-
-/// Mirror of a link-table read with local bounds checks.
-fn cap_link(
-    log: &mut RawLog<1>,
-    memory: &impl Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = capspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        M_CAPITULATION,
-    )?;
-    let slot = cap_pool_u32(log, start);
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
 }
 
 /// One structural copy pass: shared census plus, per country, the diplomacy
@@ -4176,52 +4143,16 @@ fn copy_capitulation_pass(
     if countries.count < 2 || links.count == 0 {
         return;
     }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
+    let Some(mut slots) = crate::raw::CountrySlots::new(countries, links, base) else {
+        return;
     };
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let Some(pointer_start) = capspan(log, memory, pointer_addr, 8, M_CAPITULATION) else {
-            return;
+    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
+    for slot in 1..slots.count() {
+        let pointer = match slots.take(log, memory, slot, M_CAPITULATION) {
+            Some(Some(pointer)) => pointer,
+            Some(None) => continue,
+            None => return,
         };
-        let pointer = match usize::try_from(cap_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&p| p != 0)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let Some(vtable_start) = capspan(log, memory, Some(pointer), 8, M_CAPITULATION) else {
-            return;
-        };
-        if cap_pool_u64(log, vtable_start) != country_vtable {
-            return;
-        }
-        let Some(id_start) = capspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            M_CAPITULATION,
-        ) else {
-            return;
-        };
-        let id = cap_pool_u32(log, id_start);
-        // Authenticate through the link table like `ccountry::Reader`.
-        let canonical = match cap_link(log, memory, &links, countries.count, id) {
-            Some(Some(canonical)) => canonical,
-            _ => return,
-        };
-        let canonical_slot = match cap_link(log, memory, &links, countries.count, slot) {
-            Some(Some(canonical_slot)) => canonical_slot,
-            _ => return,
-        };
-        if canonical_slot != canonical {
-            return;
-        }
         // Per-country diplomacy pointer, then exactly the fields the walk
         // reads from the object.
         let Some(diplo_start) = capspan(
@@ -8397,6 +8328,50 @@ mod tests {
         assert_eq!(split.capitulation.rows[0].country, 1);
         assert_eq!(split.capitulation.rows[0].capitulated, 1);
         assert_eq!(split.capitulation.rows[0].capitulated_hour, i32::MIN);
+    }
+
+    /// A positive slot holding the reserved slot-zero object, and a positive
+    /// alias of a country, are skipped as the reader skips them: the copy
+    /// still captures the table the direct walk reads.
+    #[test]
+    fn capitulation_split_copy_admits_reserved_and_positive_country_aliases() {
+        const RESERVED: usize = 0x2800;
+        let mut bytes = cap_fixture();
+        cap_array(
+            &mut bytes,
+            CAP_GAME + cgame_state::COUNTRIES,
+            CAP_COUNTRIES,
+            4,
+        );
+        cap_array(
+            &mut bytes,
+            CAP_GAME + cgame_state::COUNTRY_LINKS,
+            CAP_LINKS,
+            4,
+        );
+        for (slot, object) in [(0, RESERVED), (2, RESERVED), (3, CAP_COUNTRY)] {
+            cap_put(
+                &mut bytes,
+                CAP_COUNTRIES + slot * 8,
+                &(object as u64).to_le_bytes(),
+            );
+        }
+        cap_put(&mut bytes, CAP_LINKS + 3 * 4, &1_u32.to_le_bytes());
+        cap_put(
+            &mut bytes,
+            RESERVED,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: CAP_GAME,
+            bytes: &bytes,
+        };
+        let direct = cap_direct(&memory);
+        assert_eq!(direct.capitulation.outcome, Outcome::Rows { len: 1 });
+        let (split, report) = cap_split(&memory);
+        assert!(report.raw_ok);
+        assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
+        assert_eq!(split.capitulation.rows[0], direct.capitulation.rows[0]);
     }
 
     /// The raw copy records each owned war goal's pointer, vtable and

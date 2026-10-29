@@ -138,6 +138,17 @@ export function labelDates(reply: ConvoyHealthReply): { wanted: NameAt[]; maxHou
   return { wanted, maxHours: Math.max(MAX_NAME_HOURS, new Set(wanted.map(item => item.hour)).size) };
 }
 
+/** The tag the holder of a deal's exporter run had at `hour`, or null without one. */
+export function exporterAt(reply: ConvoyHealthReply, exporter: readonly EconomyRun[], hour: number): string | null {
+  const run = runAt(exporter, hour);
+  return run ? tagAt(reply.holders[run[2]], hour) : null;
+}
+
+/** The dated names a deal's facts at `hour` show: each exporter as it was then. */
+export function exportersAt(reply: ConvoyHealthReply, hour: number): { hour: number; tag: string }[] {
+  return reply.deals.flatMap(deal => { const tag = exporterAt(reply, deal.exporter, hour); return tag ? [{ hour, tag }] : []; });
+}
+
 /** Whether table `index` (regional, deals, clients) was read complete at `hour`. */
 export const tableKnown = (reply: ConvoyHealthReply, index: number, hour: number) => runAt(reply.known[index] ?? [], hour) !== null;
 
@@ -162,7 +173,9 @@ export function convoyRows(reply: ConvoyHealthReply, names: { country: (tag: str
         const value = big(deal.efficiency, hour);
         if (value === null) return [];
         const [a, b] = deal.factors.map(runs => big(runs, hour));
-        return [{ label: 'Exporter', value: runAt(deal.exporter, hour) ? exporterName : 'Country name unavailable' },
+        // The exporter as it was at this read, not as it was last read.
+        const dated = exporterAt(reply, deal.exporter, hour);
+        return [{ label: 'Exporter', value: dated ? names.country(dated, hour) : 'Country name unavailable' },
           { label: 'Trade efficiency', value: percent(value, reply.scale) },
           ...a !== null && b !== null ? [{ label: 'Factors', value: `${percent(a, reply.scale)} × ${percent(b, reply.scale)}` }] : [],
           ...convoysText(deal.convoys, hour)];

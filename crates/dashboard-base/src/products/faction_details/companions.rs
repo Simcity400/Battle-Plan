@@ -144,6 +144,15 @@ pub(super) fn doctrine(
     row: &FactionDoctrineRow,
     cat: Option<&catalogue::Catalogue>,
 ) -> FactionRuleDetail {
+    doctrine_named(frame, faction, row, cat, true)
+}
+fn doctrine_named(
+    frame: &DecodedFrame,
+    faction: u64,
+    row: &FactionDoctrineRow,
+    cat: Option<&catalogue::Catalogue>,
+    expand: bool,
+) -> FactionRuleDetail {
     let mut detail = FactionRuleDetail {
         ordinal: row.ordinal,
         token: None,
@@ -159,7 +168,7 @@ pub(super) fn doctrine(
             .localisation
             .localise(spelling.as_bytes())
             .map_err(|why| why.to_string())?;
-        if text.contains('[') {
+        if expand && text.contains('[') {
             text = environment(frame, cat, faction, &text)?;
         }
         detail.name = Some(catalogue::plain_text(&text)?);
@@ -305,6 +314,16 @@ pub(super) fn needs_environment(
     if let Ok(rows) = frame.complete::<tables::FactionRules>() {
         for row in selected(rows, faction, |row| row.faction) {
             if rule(frame, faction, row, Some(cat), false)
+                .name
+                .is_some_and(|text| text.contains('['))
+            {
+                return true;
+            }
+        }
+    }
+    if let Ok(rows) = frame.complete::<tables::FactionDoctrine>() {
+        for row in selected(rows, faction, |row| row.faction) {
+            if doctrine_named(frame, faction, row, Some(cat), false)
                 .name
                 .is_some_and(|text| text.contains('['))
             {
@@ -561,8 +580,45 @@ pub(super) fn attach(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::rows::{FactionManpowerRow, FactionProgramRow, TableRows};
+    use replay_data::rows::{FactionManpowerRow, FactionProgramRow, LexicalTokenRow, TableRows};
     use replay_frame::frame::TableView;
+    /// A scripted doctrine name alone selects the text environment.
+    #[test]
+    fn a_scripted_doctrine_name_alone_selects_the_text_environment() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (cat, _folder) = catalogue::tests::folder_catalogue(&[(
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:
+ MOD_PLAIN_DOCTRINE:0 \"Plain doctrine\"
+ MOD_SCRIPTED_DOCTRINE:0 \"[ROOT.GetName] doctrine\"
+",
+        )]);
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(
+            [(1, "MOD_PLAIN_DOCTRINE"), (2, "MOD_SCRIPTED_DOCTRINE")]
+                .into_iter()
+                .map(|(token, literal)| LexicalTokenRow {
+                    token,
+                    literal: literal.as_bytes().to_vec(),
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::FactionRules.index()] =
+            TableView::Complete(TableRows::FactionRules(vec![]));
+        let doctrines = |token| {
+            TableView::Complete(TableRows::FactionDoctrine(vec![FactionDoctrineRow {
+                faction: 7,
+                ordinal: 0,
+                token,
+            }]))
+        };
+        *frame.tables[TableId::FactionDoctrine.index()] = doctrines(1);
+        assert!(!needs_environment(&frame, 7, &cat));
+        *frame.tables[TableId::FactionDoctrine.index()] = doctrines(2);
+        assert!(needs_environment(&frame, 7, &cat));
+        assert!(!needs_environment(&frame, 8, &cat), "another faction's doctrine");
+    }
     #[test]
     fn faction_companion_details_keep_sibling_facts_and_idle_programme_without_content() {
         let mut frame = crate::test_fixtures::source(1, 100, Some(0));

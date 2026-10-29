@@ -815,7 +815,7 @@ fn territory_changed_rows_match_frozen_regions_and_keep_untouched_planes() {
                 };
                 rows.push(CountryRow {
                     id: 300,
-                    canonical_slot: 0,
+                    canonical_slot: 2,
                     tag: b"NEW".to_vec(),
                     ..Default::default()
                 });
@@ -847,9 +847,10 @@ fn territory_changed_rows_match_frozen_regions_and_keep_untouched_planes() {
             &previous.paint.state_of.0,
             &next.paint.state_of.0
         ));
+        assert_eq!(next.countries.get(&0).unwrap().native, 100);
         assert_eq!(
-            next.countries.get(&0).unwrap().native,
-            if step == 2 { 300 } else { 100 }
+            next.countries.get(&2).map(|country| country.native),
+            (step == 2).then_some(300)
         );
         assert!(
             next.countries

@@ -24,6 +24,8 @@ pub enum Pass {
     SeaBorders,
     Demilitarized,
     Straits,
+    /// The viewer's hatch over unknown snow and mud, on the ground and on the water.
+    UnknownSnowMud,
     CountryNames,
     Sky,
 }
@@ -41,6 +43,7 @@ impl Pass {
             Self::SeaBorders => "sea borders",
             Self::Demilitarized => "demilitarized",
             Self::Straits => "straits",
+            Self::UnknownSnowMud => "unknown snow and mud",
             Self::CountryNames => "country names",
             Self::Sky => "sky",
         }

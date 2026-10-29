@@ -462,7 +462,6 @@ mod fresh_railway_eta_tests {
             fresh: None.into(),
             combat_count: 1,
             combat_references: Some(UnitCombatReferences {
-                speed_witness: Default::default(),
                 sample_hour: PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,

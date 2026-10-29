@@ -19,6 +19,14 @@ impl Prepared {
     }
 }
 
+/// Content whose Combat Log retention deletes no entry that can still change.
+fn retained() -> Content<'static> {
+    Content {
+        retained_months: Some(12),
+        ..Content::default()
+    }
+}
+
 fn empty_drain(frame: &mut DecodedFrame) {
     *frame.tables[TableId::EquipmentDestruction.index()] =
         TableView::Complete(TableRows::EquipmentDestruction(Vec::new()));
@@ -221,10 +229,10 @@ fn lend_lease_deletion_visits_only_current_owners_and_resume_rebuilds_the_join()
                         &flag,
                     )?
                     .unwrap();
-                    let actual = reply(&selection, &actual, Content::default(), Vec::new());
+                    let actual = reply(&selection, &actual, retained(), Vec::new());
                     assert_reply_parity(
                         &actual,
-                        &reply(&selection, &expected, Content::default(), Vec::new()),
+                        &reply(&selection, &expected, retained(), Vec::new()),
                     )?;
                     replies.push(serde_json::to_value(actual)?);
                 }
@@ -371,8 +379,8 @@ fn deferred_loss_values_and_exchange_read_dates_match_oracle_through_commits_res
             "equal supplying reads move the exchange ending date"
         );
         assert_reply_parity(
-            &reply(&selection, &actual, Content::default(), Vec::new()),
-            &reply(&selection, &reference, Content::default(), Vec::new()),
+            &reply(&selection, &actual, retained(), Vec::new()),
+            &reply(&selection, &reference, retained(), Vec::new()),
         )?;
         let leaf = prepared.countries[&(0, 100_000)].leaves[&(
             LossSource::Destruction(EquipmentDestructionCause::LandCombat),
@@ -571,8 +579,8 @@ fn a_known_holder_with_an_unresolved_new_link_keeps_unknown_ownership_not_absenc
         UnknownReason::DestructionUnresolved
     );
     dashboard_base::prepared::observer_tests::assert_reply_parity(
-        &reply(&selection, &actual, Content::default(), Vec::new()),
-        &reply(&selection, &reference, Content::default(), Vec::new()),
+        &reply(&selection, &actual, retained(), Vec::new()),
+        &reply(&selection, &reference, retained(), Vec::new()),
     )?;
     Ok(())
 }
@@ -672,8 +680,8 @@ fn prepared_loss_points_match_reference_after_commits_resume_append_and_backdate
         )
         .unwrap()
         .unwrap();
-        let expected = reply(&selection, &reference, Content::default(), Vec::new());
-        let actual = reply(&selection, &actual, Content::default(), Vec::new());
+        let expected = reply(&selection, &reference, retained(), Vec::new());
+        let actual = reply(&selection, &actual, retained(), Vec::new());
         assert_eq!(
             serde_json::to_value(actual).unwrap(),
             serde_json::to_value(expected).unwrap(),
@@ -774,7 +782,7 @@ fn a_request_past_the_prepared_prefix_answers_at_its_last_hour_as_complete_pages
         )
         .unwrap()
         .unwrap();
-        serde_json::to_value(reply(&selection, &scanned, Content::default(), Vec::new())).unwrap()
+        serde_json::to_value(reply(&selection, &scanned, retained(), Vec::new())).unwrap()
     };
     let fixture = Fixture::new();
     let mut prepared = Prepared::new(&replay, 1, 10);
@@ -1029,8 +1037,8 @@ fn retained_holders_are_retagged_while_identity_tables_are_incomplete_and_at_the
             )?
             .unwrap();
             assert_reply_parity(
-                &reply(&selection, &actual, Content::default(), Vec::new()),
-                &reply(&selection, &expected, Content::default(), Vec::new()),
+                &reply(&selection, &actual, retained(), Vec::new()),
+                &reply(&selection, &expected, retained(), Vec::new()),
             )?;
         }
     }
@@ -1143,8 +1151,8 @@ fn a_combat_read_selects_only_its_owner_after_other_owners_rows_are_pruned() -> 
         )?
         .unwrap();
         dashboard_base::prepared::observer_tests::assert_reply_parity(
-            &reply(&selection, &actual, Content::default(), Vec::new()),
-            &reply(&selection, &reference, Content::default(), Vec::new()),
+            &reply(&selection, &actual, retained(), Vec::new()),
+            &reply(&selection, &reference, retained(), Vec::new()),
         )?;
         Ok(work)
     })?;
@@ -1317,6 +1325,14 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
     {
         rows[0].tag = b"AAA".to_vec();
     }
+    // The creator is not dynamic, so its own tag names the design.
+    *input.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            replay_data::rows::CountryAppearanceRow {
+                country: 9001,
+                ..Default::default()
+            },
+        ]));
     let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, first);

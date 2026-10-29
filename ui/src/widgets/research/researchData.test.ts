@@ -8,7 +8,7 @@ import type { DashboardClient, ProductRequest } from '../../dashboard/client';
 
 const request = researchRequest('source', 'v1', { branchId: '1', tag: 'GER' });
 const entry = (token: string, start: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed'): ResearchEntry => ({
-  token, technologyHandle: token.charCodeAt(0), continuityStartHour: 100,
+  token, technologyHandle: token.charCodeAt(0), databaseIndex: token.charCodeAt(0), continuityStartHour: 100,
   level: 0, firstObservedHour: start, startedAfterHour: start - 1, lastObservedHour: (end ?? 400) - 1, endedByHour: end, outcome,
 });
 const history: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 299 }, { firstHour: 301, lastHour: 400 }], slots: [

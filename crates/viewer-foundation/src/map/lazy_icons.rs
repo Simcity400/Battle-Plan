@@ -274,9 +274,24 @@ impl LazyTextures {
     }
 }
 
-/// Turns a flag file's bytes into its finished cell image, or `None` when the
-/// engine's reader would refuse it.
+/// Reads the file the engine opens for a requested flag key, as its finished
+/// cell image, or `None` when that request opens nothing or the engine's reader
+/// would refuse it.
 pub type FlagReader = Arc<dyn Fn(&str) -> Option<Rgba8Image> + Send + Sync>;
+
+/// A flag key's character as a case-blind folder lookup compares it.
+fn fold(ch: char) -> char {
+    let mut upper = ch.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(upper), None) => upper,
+        _ => ch,
+    }
+}
+
+/// A folded index key against a requested key, without allocating.
+fn folded_cmp(folded: &str, key: &str) -> std::cmp::Ordering {
+    folded.chars().cmp(key.chars().map(fold))
+}
 
 #[derive(Default)]
 struct FlagState {
@@ -294,8 +309,10 @@ struct FlagState {
 
 /// One flag set: its file index, and the cells decoded so far on fixed pages.
 pub struct LazyFlags {
-    /// `<TAG>_<group>` or `<TAG>` to its file.
-    index: BTreeMap<String, String>,
+    /// Each file's folded `<TAG>_<group>` or `<TAG>` and its path, by folded key.
+    /// Folder lookups ignore case, so this admits every key that may open a file;
+    /// the read of the requested spelling decides.
+    index: Vec<(String, String)>,
     pages: CellPages,
     read: FlagReader,
     state: Mutex<FlagState>,
@@ -312,8 +329,12 @@ impl LazyFlags {
         read: FlagReader,
         textures: &Arc<LazyTextures>,
     ) -> Arc<Self> {
+        let mut folded: BTreeMap<String, String> = BTreeMap::new();
+        for (key, path) in index {
+            folded.entry(key.chars().map(fold).collect()).or_insert(path);
+        }
         let flags = Arc::new(Self {
-            index,
+            index: folded.into_iter().collect(),
             pages,
             read,
             state: Mutex::default(),
@@ -350,22 +371,32 @@ impl LazyFlags {
         lock(&self.state).keys.len()
     }
 
+    /// The indexed file a request for `key` may open.
+    fn file(&self, key: &str) -> Option<&str> {
+        let at = self
+            .index
+            .binary_search_by(|(folded, _)| folded_cmp(folded, key))
+            .ok()?;
+        Some(self.index[at].1.as_str())
+    }
+
     /// Whether `key` names a file that is not known to be unreadable.
     pub fn contains(&self, key: &str) -> bool {
-        self.index.contains_key(key) && !matches!(lock(&self.state).cells.get(key), Some(None))
+        self.file(key).is_some() && !matches!(lock(&self.state).cells.get(key), Some(None))
     }
 
     /// Longest indexed key at the start of producer text, without decoding its artwork.
     pub fn key_prefix(&self, text: &[char]) -> Option<usize> {
-        use std::ops::Bound::{Included, Unbounded};
         let mut prefix = String::new();
         let mut found = None;
         for (index, ch) in text.iter().enumerate() {
-            prefix.push(*ch);
+            prefix.push(fold(*ch));
+            let at = self
+                .index
+                .partition_point(|(folded, _)| folded.as_str() < prefix.as_str());
             let Some((key, _)) = self
                 .index
-                .range::<str, _>((Included(prefix.as_str()), Unbounded))
-                .next()
+                .get(at)
                 .filter(|(key, _)| key.starts_with(&prefix))
             else {
                 break;
@@ -389,7 +420,7 @@ impl LazyFlags {
         let mut queued = false;
         let mut found = None;
         for key in candidates {
-            if !self.index.contains_key(*key) {
+            if self.file(key).is_none() {
                 continue;
             }
             match state.cells.get(*key) {
@@ -424,7 +455,7 @@ impl LazyFlags {
             let state = lock(&self.state);
             keys.into_iter()
                 .filter(|key| {
-                    self.index.contains_key(*key)
+                    self.file(key).is_some()
                         && !state.cells.contains_key(*key)
                         && !state.decoded.contains_key(*key)
                 })
@@ -433,9 +464,7 @@ impl LazyFlags {
                 .into_iter()
                 .collect()
         };
-        let images = crate::parallel::map(&keys, |key| {
-            self.index.get(key).and_then(|path| (self.read)(path))
-        });
+        let images = crate::parallel::map(&keys, |key| (self.read)(key));
         let mut state = lock(&self.state);
         for (key, image) in keys.into_iter().zip(images) {
             // A cold acquisition may have decided this key while the worker read it.
@@ -455,7 +484,7 @@ impl LazyFlags {
             let mut state = lock(&self.state);
             let mut queued = false;
             for key in candidates {
-                if self.index.contains_key(*key) && !state.cells.contains_key(*key) {
+                if self.file(key).is_some() && !state.cells.contains_key(*key) {
                     state.pending.insert((*key).to_owned());
                     queued = true;
                 }
@@ -482,7 +511,7 @@ impl LazyFlags {
             let state = lock(&self.state);
             let mut decides = false;
             for key in candidates {
-                if !self.index.contains_key(*key) {
+                if self.file(key).is_none() {
                     continue;
                 }
                 match state.cells.get(*key) {
@@ -545,17 +574,15 @@ impl PendingLoad for LazyFlags {
         }
         // Only unwarmed requests decode on the bounded pool. Both paths pack
         // in key order, so one set of requests always lands in the same cells.
-        let decoded = crate::parallel::map(&keys, |key| {
-            self.index.get(key).and_then(|path| (self.read)(path))
-        });
+        let decoded = crate::parallel::map(&keys, |key| (self.read)(key));
         images.extend(keys.into_iter().zip(decoded));
         let mut state = lock(&self.state);
         for (key, image) in images {
             state.decoded.remove(&key);
             let Some(image) = image else {
                 eprintln!(
-                    "Warning: flag {} is not an uncompressed 24/32-bit {} x {} Targa; the next candidate flag is drawn instead.",
-                    self.index.get(&key).map_or(key.as_str(), String::as_str),
+                    "Warning: flag {key} (indexed as {}) does not open under that name or is not an uncompressed 24/32-bit {} x {} Targa; the next candidate flag is drawn instead.",
+                    self.file(&key).unwrap_or(key.as_str()),
                     self.pages.cell[0],
                     self.pages.cell[1]
                 );
@@ -816,31 +843,40 @@ pub fn flag_set(
     textures: &Arc<LazyTextures>,
 ) -> io::Result<Arc<LazyFlags>> {
     let directory = set.directory();
-    // The game builds flag paths from tag text, so non-UTF-8 filenames cannot name flags.
-    let mut names: Vec<&str> = layers
-        .paths()
-        .filter_map(|path| std::str::from_utf8(path).ok())
-        .filter(|path| {
-            path.len() > directory.len()
-                && path[..directory.len()].eq_ignore_ascii_case(directory)
-                && path.to_ascii_lowercase().ends_with(".tga")
-                && !path[directory.len()..].contains('/')
-        })
-        .collect();
-    names.sort_unstable();
-    let index = names
-        .into_iter()
-        .filter_map(|path| {
-            let key = path[directory.len()..].strip_suffix(".tga")?;
-            Some((key.to_owned(), path.to_owned()))
-        })
-        .collect();
+    let mut index = BTreeMap::new();
+    for path in layers.paths() {
+        let Some(name) = path
+            .get(..directory.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(directory.as_bytes()))
+            .map(|_| &path[directory.len()..])
+        else {
+            continue;
+        };
+        let Some(stem) = name
+            .len()
+            .checked_sub(4)
+            .filter(|&end| name[end..].eq_ignore_ascii_case(b".tga"))
+            .map(|end| &name[..end])
+        else {
+            continue;
+        };
+        if stem.contains(&b'/') {
+            continue;
+        }
+        // The game builds flag paths from tag text, so non-UTF-8 filenames cannot name flags.
+        let (Ok(key), Ok(path)) = (std::str::from_utf8(stem), std::str::from_utf8(path)) else {
+            continue;
+        };
+        index.insert(key.to_owned(), path.to_owned());
+    }
     let pages = CellPages::plan(cell, page_limit(), directory)?;
     let layers = Arc::clone(layers);
     // A flag the visual mods break is the recording's own, named.
     let recorded = layers.without_overlays();
-    let read: FlagReader = Arc::new(move |path: &str| {
-        let decoded = |stack: &ResolvedLayers| flags::decode(&stack.read(path).ok()?, cell);
+    let read: FlagReader = Arc::new(move |key: &str| {
+        // The engine opens the name it builds, under the layers' own case rules.
+        let path = format!("{directory}{key}.tga");
+        let decoded = |stack: &ResolvedLayers| flags::decode(&stack.read(&path).ok()?, cell);
         let mut image = match decoded(&layers) {
             Some(image) => image,
             None => {
@@ -881,9 +917,9 @@ mod tests {
             })
             .collect();
         let pages = CellPages::plan(cell, 8192, "flags").unwrap();
-        let read: FlagReader = Arc::new(move |path: &str| {
+        let read: FlagReader = Arc::new(move |key: &str| {
             // Every file of tag 13 is unreadable.
-            (!path.contains("T0013")).then(|| cell_image(cell, path.len() as u8))
+            (!key.contains("T0013")).then(|| cell_image(cell, key.len() as u8))
         });
         LazyFlags::new(index, pages, read, textures)
     }
@@ -937,14 +973,19 @@ mod tests {
             let reads = Arc::new(Mutex::new(Vec::new()));
             let calls = Arc::clone(&reads);
             let caller = std::thread::current().id();
-            let read: FlagReader = Arc::new(move |path| {
+            let read: FlagReader = Arc::new(move |key| {
                 assert_ne!(std::thread::current().id(), caller);
-                lock(&calls).push(path.to_owned());
-                (!path.contains("T0013")).then(|| cell_image(cell, path.len() as u8))
+                lock(&calls).push(key.to_owned());
+                (!key.contains("T0013")).then(|| cell_image(cell, key.len() as u8))
             });
             let cold_textures = foreground();
             let cold = flag_set(&cold_textures, cell);
-            let flags = LazyFlags::new(cold.index.clone(), cold.pages, read, &textures);
+            let flags = LazyFlags::new(
+                cold.index.iter().cloned().collect(),
+                cold.pages,
+                read,
+                &textures,
+            );
             let candidates = [
                 vec!["T0002_fascism", "T0002"],
                 vec!["not indexed", "T0001_fascism", "T0001"],
@@ -1233,5 +1274,76 @@ mod tests {
             (first, third, second)
         });
         assert_eq!([first, third, second], expected);
+    }
+
+    fn tga(cell: [u32; 2], shade: u8) -> Vec<u8> {
+        let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        bytes.extend((cell[0] as u16).to_le_bytes());
+        bytes.extend((cell[1] as u16).to_le_bytes());
+        bytes.extend([32, 8]);
+        bytes.extend(std::iter::repeat_n(shade, (cell[0] * cell[1] * 4) as usize));
+        bytes
+    }
+
+    #[test]
+    fn flags_open_as_the_engine_requests_them_beside_unrelated_unicode_paths() {
+        use installed_content_core::test_support::{Record, zip_records};
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_flag_index_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let (base, archive) = (root.join("base"), root.join("flags.zip"));
+        let cell = [2, 2];
+        for (path, bytes) in [
+            // The flag folder's length ends inside this unrelated path's `é`.
+            ("common/abé.txt", b"x".to_vec()),
+            ("gfx/flags/GER.TGA", tga(cell, 1)),
+            ("gfx/flags/sov_communism.tga", tga(cell, 2)),
+            ("gfx/flags/nested/ITA.tga", tga(cell, 3)),
+        ] {
+            let file = base.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        let ita = tga(cell, 4);
+        let record = Record {
+            name: b"gfx/flags/ita.tga",
+            host: 0,
+            flags: 0,
+            deflate: false,
+            data: &ita,
+        };
+        std::fs::write(&archive, zip_records(b"", &[record])).unwrap();
+        let layers = Arc::new(
+            ResolvedLayers::from_folders(&[(&base, &[][..]), (&archive, &[][..])]).unwrap(),
+        );
+        assert!(
+            layers
+                .paths()
+                .any(|path| path == "common/abé.txt".as_bytes())
+        );
+        let textures = foreground();
+        let flags = super::flag_set(&layers, FlagSet::Normal, cell, |_| {}, &textures).unwrap();
+        // A nested file is no flag; a capitalised extension still is.
+        assert_eq!(flags.len(), 3);
+        // A folder opens any spelling of its file's name.
+        let (texture, uv) = flags.acquire(&["GER"]).expect("folder flag GER.TGA");
+        assert_eq!(flags.key_at(texture, uv).as_deref(), Some("GER"));
+        let (texture, uv) = flags
+            .acquire(&["SOV_communism", "SOV"])
+            .expect("folder flag sov_communism.tga");
+        assert_eq!(flags.key_at(texture, uv).as_deref(), Some("SOV_communism"));
+        let text: Vec<char> = "SOV_communism army".chars().collect();
+        assert_eq!(flags.key_prefix(&text), Some(13));
+        // An archive opens only its member's exact name, so the request falls through.
+        assert!(flags.contains("ITA"));
+        assert_eq!(flags.acquire(&["ITA"]), None);
+        assert!(!flags.contains("ITA"));
+        assert_eq!(flags.rejected(), 1);
+        assert!(flags.acquire(&["ita"]).is_some());
+        assert_eq!(flags.loaded(), 3);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

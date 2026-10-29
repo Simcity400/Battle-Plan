@@ -1098,6 +1098,87 @@ fn force_folds_continue_from_the_blocks_variant_read_where_its_first_hour_names_
     folds_every_block(NAVY, &replay, "variant-reads");
 }
 
+/// [`named_variant_frame`] where designs made after a block's variant read
+/// are flown before the next: the first wing flies variant 2 from +4 and the
+/// second variant 3 from +10, each named by the mutation ledger at the hour
+/// it is made, as the collector names designs between daily reads.
+fn designed_variant_frame(branch: u64, hour: i32) -> DecodedFrame {
+    let at = hour - BASE;
+    let mut observed = named_variant_frame(branch, hour);
+    let designs: [(u64, i32); 2] = [(2, 4), (3, 10)];
+    *observed.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(
+            std::iter::once((1, i32::MIN))
+                .chain(designs)
+                .filter(|&(_, made)| at >= made)
+                .map(|(id, _)| replay_data::rows::VariantDefinitionRow {
+                    id,
+                    equipment_token: id as u32,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    set(
+        &mut observed,
+        TableRows::VariantChanges(
+            designs
+                .into_iter()
+                .filter(|&(_, made)| at == made)
+                .map(|(variant, made)| replay_data::rows::VariantChangeRow {
+                    sequence: made as u64,
+                    hour,
+                    variant,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    if let TableView::Complete(TableRows::WingEquipment(rows)) =
+        &mut *observed.tables[TableId::WingEquipment.index()]
+    {
+        for (row, (variant, made)) in rows.iter_mut().zip(designs) {
+            if at >= made {
+                row.variant = variant;
+            }
+        }
+    }
+    observed
+}
+
+/// A design the mutation ledger names after the worker's tail, flown before
+/// the next variant read, is named in the rows the fold publishes from the
+/// worker, as hourly preparation names it.
+#[test]
+fn air_folds_name_designs_made_after_the_workers_tail_as_hourly_preparation_does() {
+    use crate::products::{air_force::prepared::Air, parts_race_prepared::Family};
+    use dashboard_base::products::equipment::{VariantCatalogue, VariantHour};
+    for table in VariantCatalogue::TABLES {
+        assert!(Air::SAMPLE_TABLES.contains(&table), "{table:?}");
+    }
+    let replay = scenario_of(5, false, designed_variant_frame);
+    let format = replay.format;
+    let mut through = 0;
+    for index in &replay.index {
+        let mut settled = false;
+        replay
+            .read_block_alone(
+                index,
+                &VariantCatalogue::TABLES,
+                |_, frame| {
+                    if !settled {
+                        through += 1;
+                        settled = VariantCatalogue::hour_of(format, frame)
+                            != VariantHour::Carried { complete: true };
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+    }
+    folds_every_block_from(AIR, &replay, "designs-after-tail", through);
+}
+
 /// Three countries with a task force and a ship each at `hour`, but for the
 /// second country, which with its task force and ship is away at 102 and 103.
 fn returning_country_frame(hour: i32) -> DecodedFrame {

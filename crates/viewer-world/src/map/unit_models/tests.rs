@@ -1308,6 +1308,51 @@ fn unsuccessful_unit_bakes_are_not_retried() {
 }
 
 #[test]
+fn lazy_bakes_keep_named_attachment_refusals_for_the_layer_report() {
+    use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
+    let (root, layers) = visual_stack(
+        "bake_warnings",
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            (
+                "base/gfx/entities/armed.asset",
+                br#"entity = { name = armed pdxmesh = body attach = { mount = absent_child } }"#,
+            ),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.0)),
+        ],
+    );
+    let mut assets = UnitModelAssets::off(String::new());
+    assets.roster = layers.descriptor_roster().unwrap();
+    assets.registered = assets.roster.descriptors.entities.keys().cloned().collect();
+    assets.layers = layers;
+    assets.ensure(&["armed".into()]);
+    assets.ensure(&["armed".into()]);
+    // The figure bakes without its attachment and names it, once.
+    assert!(assets.library().slot("armed").is_some());
+    let warnings = assets.bake_warnings();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|line| line.contains("armed -> absent_child"))
+            .count(),
+        1,
+        "{warnings:?}"
+    );
+    let report = ModelReport {
+        bake_warnings: warnings,
+        ..ModelReport::default()
+    };
+    assert!(
+        report
+            .warnings()
+            .iter()
+            .any(|line| line.starts_with("Unit models: Attached entities refused")
+                && line.contains("armed -> absent_child"))
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_order() {
     use super::*;
     let descriptors = mesh::parse_descriptors(

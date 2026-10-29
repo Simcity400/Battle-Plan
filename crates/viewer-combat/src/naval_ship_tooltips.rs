@@ -264,8 +264,15 @@ fn variant_name(
     icons: &dyn TextIcons,
     loc: &Localisation,
     context: Option<&VariantContext<'_>>,
+    recorded_language: Option<&str>,
 ) -> Result<String, String> {
-    super::naval_variants::name(row, icons, loc, context.map(|context| &context.names))
+    super::naval_variants::name(
+        row,
+        icons,
+        loc,
+        context.map(|context| &context.names),
+        recorded_language,
+    )
 }
 
 /// Member name and type labels are cached text, rendered only in the
@@ -305,7 +312,10 @@ fn member_tooltip(
                 row.side, row.battle_slot, row.variant
             )
         })?;
-        (String::new(), variant_name(variant, icons, loc, context)?)
+        (
+            String::new(),
+            variant_name(variant, icons, loc, context, recorded_language)?,
+        )
     };
     let title = builtin(
         icons,
@@ -381,7 +391,15 @@ fn member_tooltip(
                 ],
             )?);
         }
-        air_hits(&mut text, row, variants, icons, loc, context)?;
+        air_hits(
+            &mut text,
+            row,
+            variants,
+            icons,
+            loc,
+            context,
+            recorded_language,
+        )?;
         return Ok(text);
     }
     if row.live_convoy == 0 && row.live_ship == 0 {
@@ -459,7 +477,15 @@ fn member_tooltip(
         text.push_str(&escape_description(row, icons, loc, context)?);
     }
     criticals_and_damage(&mut text, row, icons, loc)?;
-    air_hits(&mut text, row, variants, icons, loc, context)?;
+    air_hits(
+        &mut text,
+        row,
+        variants,
+        icons,
+        loc,
+        context,
+        recorded_language,
+    )?;
     Ok(text)
 }
 
@@ -756,6 +782,7 @@ fn air_hits(
     icons: &dyn TextIcons,
     loc: &Localisation,
     context: Option<&VariantContext<'_>>,
+    recorded_language: Option<&str>,
 ) -> Result<(), String> {
     for vector in &row.air_hits {
         if vector.is_empty() {
@@ -774,7 +801,7 @@ fn air_hits(
                     hit.variant
                 )
             })?;
-            let name = variant_name(variant, icons, loc, context)?;
+            let name = variant_name(variant, icons, loc, context, recorded_language)?;
             text.push_str(&builtin(
                 icons,
                 loc,

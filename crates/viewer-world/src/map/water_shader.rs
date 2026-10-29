@@ -23,6 +23,16 @@ pub fn load(layers: &ResolvedLayers, map: [u32; 2], decode: Decode) -> io::Resul
         .map_err(refuse)
 }
 
+/// Whether a compiled water technique samples the snow/mud texture, as the shipped high
+/// techniques do for ice; a technique that never reads it shows no snow on water.
+pub fn reads_snow_mud(compiled: &shader_pipeline::Compiled) -> bool {
+    compiled
+        .pixel
+        .textures
+        .iter()
+        .any(|&(slot, _)| slot == binding(SNOW_MUD_SLOT, Stage::Pixel))
+}
+
 pub fn technique(high: bool, refractions: bool) -> &'static str {
     // Low-graphics selection precedes underwater selection; debug drawing defaults on.
     if !high {
@@ -49,10 +59,15 @@ pub struct Inputs<'a> {
     pub textures: [&'a wgpu::TextureView; 16],
 }
 
+/// The pixel slot the engine binds the map's snow/mud texture to for the water effect.
+pub const SNOW_MUD_SLOT: u32 = 9;
+
 pub struct Water {
     retained: super::shader_scene::Program,
     pipeline: Arc<gpu::Pipeline>,
     vertices: wgpu::Buffer,
+    /// Whether the technique reads the snow/mud texture at all, after dead-code elimination.
+    pub reads_snow_mud: bool,
 }
 
 impl Water {
@@ -85,6 +100,7 @@ impl Water {
             .map_err(refuse)?
             .ok_or_else(|| refuse(format!("{technique} absent; retained program unavailable")))?;
         let compiled = effect.compiled(selection.index).map_err(refuse)?;
+        let reads_snow_mud = reads_snow_mud(&compiled);
         let mut state =
             gpu::State::authored(&effect.source, &effect.source.techniques[selection.index])
                 .map_err(refuse)?;
@@ -146,6 +162,7 @@ impl Water {
             retained,
             pipeline,
             vertices,
+            reads_snow_mud,
         })
     }
 
@@ -237,5 +254,29 @@ mod tests {
             quad([0x8000, 0xffff]),
             [[i16::MIN, 0], [0, 0], [i16::MIN, -1], [0, -1]]
         );
+    }
+
+    #[test]
+    fn only_a_technique_that_reads_the_snow_mud_slot_shows_snow_on_water() {
+        let stage = |slots: &[u32]| shader_pipeline::Shader {
+            wgsl: String::new(),
+            buffers: Vec::new(),
+            textures: slots
+                .iter()
+                .map(|&slot| (binding(slot, Stage::Pixel), shader_pipeline::TextureKind::D2))
+                .collect(),
+            samplers: Vec::new(),
+            sampling_pairs: Vec::new(),
+            inputs: Vec::new(),
+            clock: Default::default(),
+        };
+        let compiled = |pixel: &[u32]| shader_pipeline::Compiled {
+            vertex: stage(&[SNOW_MUD_SLOT]),
+            pixel: stage(pixel),
+        };
+        assert!(reads_snow_mud(&compiled(&[0, 5, SNOW_MUD_SLOT])));
+        // A technique whose compiler dropped the read, as a low-end one may, shows none; nor
+        // does a vertex-stage read colour the water.
+        assert!(!reads_snow_mud(&compiled(&[0, 5, 8])));
     }
 }

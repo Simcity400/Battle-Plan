@@ -118,7 +118,7 @@ impl Geography for Content {
     }
 }
 
-/// The tables the speed witness decodes: each mover's Divisions and DivisionMovement
+/// The tables the speed check decodes: each mover's Divisions and DivisionMovement
 /// rows and every table the speed terms read ([`replay_derive::eta_derive::frame_terms::TABLES`]).
 pub fn tables() -> impl Iterator<Item = replay_data::rows::TableId> {
     use replay_data::{rows::TableId::DivisionMovement, rows::TableId::Divisions};
@@ -137,53 +137,6 @@ struct Edge {
     speed: Result<i64, String>,
     distance: Option<i64>,
     key: MovementRowKey,
-}
-
-/// Exact native observations at the same held boundary as playback's inputs.
-/// This is independent of the cross-hour progress witness below.
-#[derive(Default)]
-pub struct NativeSamples {
-    pub matched: u64,
-    pub differed: u64,
-    pub refused: u64,
-    pub absent: u64,
-    pub unavailable_hours: u64,
-    listed: Vec<String>,
-}
-
-impl NativeSamples {
-    fn compare(&mut self, native: Option<i64>, derived: &Result<i64, String>) {
-        match (native, derived) {
-            (Some(native), Ok(derived)) if native == *derived => self.matched += 1,
-            (Some(_), Ok(_)) => self.differed += 1,
-            _ => self.refused += 1,
-        }
-    }
-
-    pub fn required_failures(&self) -> [u64; 2] {
-        [
-            self.differed,
-            self.refused + self.absent + self.unavailable_hours + u64::from(self.matched == 0),
-        ]
-    }
-
-    fn optional_failures(&self) -> [u64; 2] {
-        if self.matched + self.differed + self.refused == 0 {
-            [0, 0]
-        } else {
-            self.required_failures()
-        }
-    }
-
-    pub fn print(&self) {
-        println!(
-            "division movement same-boundary native samples: {} equal, {} differing, {} refused, {} movers without samples, {} hours with unavailable tables",
-            self.matched, self.differed, self.refused, self.absent, self.unavailable_hours
-        );
-        for line in &self.listed {
-            println!("  native sample: {line}");
-        }
-    }
 }
 
 #[derive(Default)]
@@ -205,7 +158,6 @@ pub struct Checker {
     listed: Vec<String>,
     /// Differences by the terms the division's edge took, for diagnosis.
     differences: BTreeMap<String, u64>,
-    pub native: NativeSamples,
 }
 
 impl Checker {
@@ -221,7 +173,6 @@ impl Checker {
             return;
         };
         let current = edges(frame, content);
-        self.observe_native(frame, &current);
         if let Some((branch, hour, previous)) = self.previous.take()
             && branch == frame.branch
             && hour.checked_add(1) == Some(frame.hour)
@@ -285,56 +236,7 @@ impl Checker {
         self.previous = Some((frame.branch, frame.hour, current));
     }
 
-    pub fn observe_samples_only(&mut self, frame: &DecodedFrame) {
-        let Some(Ok(content)) = self.content.as_ref() else {
-            self.native.unavailable_hours += 1;
-            return;
-        };
-        let current = edges(frame, content);
-        self.observe_native(frame, &current);
-    }
-
-    fn observe_native(&mut self, frame: &DecodedFrame, current: &BTreeMap<u64, Edge>) {
-        let Ok(movement) = frame.complete::<tables::DivisionMovement>() else {
-            self.native.unavailable_hours += 1;
-            return;
-        };
-        for row in movement.iter().filter(|row| row.path_total != 0) {
-            let sample = match &row.combat_references {
-                Recorded::Value(Some(packet)) if packet.valid_at(frame.hour, row.combat_count) => {
-                    packet.speed_witness.get()
-                }
-                _ => None,
-            };
-            let Some(native) = sample else {
-                self.native.absent += 1;
-                continue;
-            };
-            let derived = current
-                .get(&row.division)
-                .map(|edge| edge.speed.clone())
-                .unwrap_or_else(|| Err("the mover's first edge is unavailable".into()));
-            self.native.compare(*native, &derived);
-            if (native.is_none() || !derived.as_ref().is_ok_and(|speed| Some(*speed) == *native))
-                && self.native.listed.len() < super::LISTED
-            {
-                self.native.listed.push(format!(
-                    "division {:#x} hour {}: native {native:?}, playback {derived:?}",
-                    row.division, frame.hour
-                ));
-            }
-        }
-    }
-
-    pub fn print_samples(&self) {
-        if let Some(Err(reason)) = &self.content {
-            println!("division movement native sample content refused: {reason}");
-        }
-        self.native.print();
-    }
-
     pub fn print(&self) {
-        self.print_samples();
         match &self.content {
             Some(Err(reason)) => println!("division movement speed: content refused: {reason}"),
             _ => {
@@ -365,11 +267,11 @@ impl Checker {
 
     /// Cross-hour progress categories are diagnostic: writers can change an
     /// operand between either endpoint and the movement step. Only content
-    /// failure or a present same-boundary native witness affects the result.
+    /// failure affects the result.
     pub fn failures(&self) -> [u64; 2] {
         match &self.content {
             Some(Err(_)) => [0, 1],
-            _ => self.native.optional_failures(),
+            _ => [0, 0],
         }
     }
 }
@@ -452,14 +354,15 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
         if row.path_total == 0 || division.province == 0 || first == 0 {
             continue;
         }
-        let speed = match row.base_speed {
-            Recorded::Value(Some(base)) => {
-                terms.with_terms(division, row, content, &content.defines, |terms| {
-                    eta_derive::edge_speed(base, division.province, first, terms, &content.defines)
-                })
-            }
-            _ => Err("the division's base speed was refused".into()),
-        };
+        let speed = terms.with_terms(division, row, content, &content.defines, |terms| {
+            eta_derive::edge_speed_with(
+                || eta_derive::base_speed(row),
+                division.province,
+                first,
+                terms,
+                &content.defines,
+            )
+        });
         edges.insert(
             row.division,
             Edge {
@@ -495,22 +398,7 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
 mod tests {
     use super::*;
     #[test]
-    fn native_movement_samples_require_exact_equality_and_complete_coverage() {
-        let mut samples = NativeSamples::default();
-        assert_eq!(samples.required_failures(), [0, 1]);
-        samples.compare(Some(12_785), &Ok(12_785));
-        assert_eq!(samples.required_failures(), [0, 0]);
-        samples.compare(Some(12_785), &Ok(12_784));
-        samples.compare(Some(12_785), &Ok(12_786));
-        assert_eq!(samples.required_failures(), [2, 0]);
-        samples.compare(None, &Ok(12_785));
-        samples.compare(Some(12_785), &Err("missing state term".into()));
-        samples.absent = 3;
-        samples.unavailable_hours = 1;
-        assert_eq!(samples.required_failures(), [2, 6]);
-    }
-    #[test]
-    fn movement_witness_compares_native_progress_clipping_without_a_tolerance() {
+    fn cross_hour_progress_matches_native_clipping_without_a_tolerance() {
         assert!(progress_matches(
             1_016_240,
             1_016_666,
@@ -586,6 +474,41 @@ mod tests {
         assert_eq!(checker.refused.values().sum::<u64>(), 1);
     }
     #[test]
+    fn a_naval_transfer_edge_is_derived_without_the_base_speed() {
+        use replay_data::rows::{DivisionMovementRow, OwnerTransportSpeedRow, TableId, TableRows};
+        use replay_frame::frame::TableView;
+        let mut frame = moving(1, 10);
+        for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
+            *frame.tables[TableId::DivisionMovement.index()] =
+                TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {
+                    division: 7,
+                    path: vec![2],
+                    path_total: 1,
+                    naval_transfer: 1,
+                    base_speed,
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::DivisionTransportSpeeds.index()] = TableView::Complete(
+                TableRows::DivisionTransportSpeeds(vec![OwnerTransportSpeedRow {
+                    owner: 0,
+                    region: 70,
+                    speed: Some(800_000),
+                }]),
+            );
+            let content = Content {
+                map: MovementMap::default(),
+                defines: Defines {
+                    transport_scale: 50_000,
+                    ..Defines::default()
+                },
+                terrain_movement: Vec::new(),
+                regions: BTreeMap::from([(1, 70)]),
+                sub_units: Err("unused".into()),
+            };
+            assert_eq!(edges(&frame, &content)[&7].speed, Ok(400_000));
+        }
+    }
+    #[test]
     fn cross_hour_progress_reports_without_failing_or_requiring_observations() {
         assert_eq!(Checker::default().failures(), [0, 0]);
         let mut checker = checker();
@@ -600,19 +523,5 @@ mod tests {
         assert_eq!(checker.failures(), [0, 0]);
         checker.content = Some(Err("movement content unavailable".into()));
         assert_eq!(checker.failures(), [0, 1]);
-    }
-    #[test]
-    fn report_only_progress_does_not_hide_native_sample_failures() {
-        let mut checker = checker();
-        checker.differed = 35;
-        checker.refused.insert("missing state terms".into(), 4);
-        checker.native.compare(Some(12_785), &Ok(12_785));
-        assert_eq!(checker.failures(), [0, 0]);
-        checker.native.compare(Some(12_785), &Ok(12_784));
-        assert_eq!(checker.failures(), [1, 0]);
-        checker.native.compare(None, &Ok(12_785));
-        assert_eq!(checker.failures(), [1, 1]);
-        checker.native.absent = 1;
-        assert_eq!(checker.failures(), [1, 2]);
     }
 }

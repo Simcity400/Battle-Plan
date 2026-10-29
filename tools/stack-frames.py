@@ -207,7 +207,7 @@ class Functions:
 
 
 def call_graph(dll, functions):
-    """Direct call and tail-jump edges between function starts."""
+    """Direct call and tail-jump edges between function starts: caller -> {callee: is_call}."""
     objdump = tool("llvm-objdump")
     edges = []
     pattern = re.compile(r"\s*([0-9a-f]+):\s+(call|callq|j[a-z]+)\s+0x([0-9a-f]+)")
@@ -248,7 +248,8 @@ def call_graph(dll, functions):
             if callee != target or callee == caller:
                 continue
         if callee is not None and callee != caller:
-            graph.setdefault(caller, set()).add(callee)
+            callees = graph.setdefault(caller, {})
+            callees[callee] = callees.get(callee, False) or call
     return graph
 
 
@@ -256,11 +257,15 @@ def deepest(graph, frame, root):
     """(stack depth, call chain) of the deepest acyclic direct-call chain from root."""
     memo, active = {}, set()
 
+    def through(node, callee):
+        # A tail jump leaves after the caller's epilogue: the callee's frame replaces it.
+        return memo[callee][0] + (frame.get(node, 8) if graph[node][callee] else 0)
+
     def visit(function):
         # Iterative post-order: a recursive call chain counts each function once.
         stack = [(function, iter(sorted(graph.get(function, ()))))]
         active.add(function)
-        best = {function: (0, None)}
+        best = {function: (frame.get(function, 8), None)}
         while stack:
             node, callees = stack[-1]
             advanced = False
@@ -269,23 +274,23 @@ def deepest(graph, frame, root):
                     continue
                 if callee not in memo:
                     active.add(callee)
-                    best[callee] = (0, None)
+                    best[callee] = (frame.get(callee, 8), None)
                     stack.append((callee, iter(sorted(graph.get(callee, ())))))
                     advanced = True
                     break
-                depth = memo[callee][0]
+                depth = through(node, callee)
                 if depth > best[node][0]:
                     best[node] = (depth, callee)
             if advanced:
                 continue
             stack.pop()
             active.discard(node)
-            depth, child = best[node]
-            memo[node] = (frame.get(node, 8) + depth, child)
+            memo[node] = best[node]
             if stack:
                 parent = stack[-1][0]
-                if memo[node][0] > best[parent][0]:
-                    best[parent] = (memo[node][0], node)
+                depth = through(parent, node)
+                if depth > best[parent][0]:
+                    best[parent] = (depth, node)
         return memo[function]
 
     total, _ = visit(root)

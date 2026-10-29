@@ -84,7 +84,7 @@ test('widget metadata preserves world controls and content-choice title policies
     const { definition: army } = await vite.ssrLoadModule('/ui/src/widgets/army-size/definition.ts');
     const { measureChoices } = await vite.ssrLoadModule('/ui/src/widgets/army-size/armySizeData.ts');
     const optionFields = await vite.ssrLoadModule('/ui/src/dashboard/settings/OptionFields.tsx');
-    let available = { measures: ['divisions', 'battalions'] };
+    let available = { measures: ['divisions', 'battalions'], unknownMeasures: [] as string[] };
     const useOptionChoices = () => ({ measure: measureChoices(available) });
     registerWidgets([{ ...army, useOptionChoices }]);
     const saves: { widget: WidgetSpec; view?: boolean }[] = [];
@@ -108,14 +108,14 @@ test('widget metadata preserves world controls and content-choice title policies
       assert.equal(next.widget.options?.measure, 'battalions');
       assert.equal(next.view, true);
     }
-    available = { measures: ['divisions'] };
+    available = { measures: ['divisions'], unknownMeasures: [] };
     const saveCount = saves.length;
     const missingMeasure = settingsFor({ ...armyWidget, options: { measure: 'battalions' } });
     assert.match(missingMeasure, />Saved choice unavailable</);
     assert.match(missingMeasure, /Key: battalions/);
     assert.doesNotMatch(missingMeasure, />battalions \(not in this campaign\)</);
     assert.equal(saves.length, saveCount, 'opening another recording retains the unavailable saved measure');
-    available = { measures: ['divisions', 'battalions'] };
+    available = { measures: ['divisions', 'battalions'], unknownMeasures: [] };
     const measure = army.options.find((field: { key: string }) => field.key === 'measure');
     const { titleChoice: _optOut, ...automatic } = measure;
     registerWidgets([{ ...army, kind: 'test-auto-title', title: 'Automatic content', options: [automatic], useOptionChoices }]);

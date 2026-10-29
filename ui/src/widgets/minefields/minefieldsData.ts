@@ -1,5 +1,6 @@
 import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedRun, KeyedWindow } from '../../dashboard/keyedHistory';
+import type { HolderAt } from '../../dashboard/holderLooks';
 
 export interface Choice { id: string; name: string }
 export interface MinefieldsReply { window: KeyedWindow; regions: readonly Choice[]; scale: number; warnings: readonly string[] }
@@ -92,6 +93,15 @@ export function regionRuns(series: OwnerSeries, region: string): KeyedRun[] {
   return [...amounts, ...zeros].sort((a, b) => a[0] - b[0]);
 }
 
+/** Each owner series with mines in `region` as its own holder (TAG@slot), at the last hour it
+ * held them there: two holders of one tag are never named or coloured as one. */
+export function regionHolders(owners: ReadonlyMap<string, OwnerSeries>, region: string): HolderAt[] {
+  return [...owners.values()].flatMap(series => {
+    const runs = series.regions.get(region);
+    return runs?.length ? [{ key: series.owner, tag: series.tag, hour: runs.at(-1)![1] }] : [];
+  });
+}
+
 export interface RegionMines { region: string; name: string; owners: { owner: string; tag: string; amount: bigint }[]; total: bigint; unknownOwners: number }
 
 /** Sea regions holding mines at `hour`, each with its owners' amounts (largest first) and how
@@ -104,10 +114,13 @@ export function minesAt(reply: MinefieldsReply, owners: ReadonlyMap<string, Owne
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
   const mined = new Set<string>();
   for (const series of owners.values()) for (const [region, runs] of series.regions) { const run = runAtHour(runs, hour); if (run && run[2] !== '0') mined.add(region); }
+  // An owner with no vector, amount or refusal at `hour` holds no minefields then: the read removed it.
+  const present = [...owners.values()].filter(series => runAtHour(series.extent, hour) || runAtHour(series.refused, hour)
+    || [...series.regions.values()].some(runs => runAtHour(runs, hour)));
   const regions = [...mined].map(region => {
     const list: RegionMines['owners'] = [];
     let unknownOwners = unnamed;
-    for (const series of owners.values()) {
+    for (const series of present) {
       const amount = ownerAmount(series, region, hour);
       if (amount === null) unknownOwners++;
       else if (amount !== 0n) list.push({ owner: series.owner, tag: series.tag, amount });

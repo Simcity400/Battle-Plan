@@ -3407,6 +3407,7 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
     *frame.tables[TableId::LandCombats.index()] =
         TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
             id: 62,
+            attacker_classes: vec![0; attackers.len()],
             attackers,
             defenders: vec![20],
             ..Default::default()
@@ -3729,6 +3730,7 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
         [61, 62]
             .map(|id| LandCombatRow {
                 id,
+                attacker_classes: vec![0],
                 attackers: vec![id],
                 defenders: vec![id + 100],
                 ..Default::default()
@@ -3921,6 +3923,7 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
         TableId::LandCombats,
         TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
             id: 62,
+            attacker_classes: vec![0],
             attackers: vec![10],
             defenders: vec![20],
             ..Default::default()

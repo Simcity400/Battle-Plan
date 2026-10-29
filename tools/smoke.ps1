@@ -433,14 +433,20 @@ function Invoke-FullSmoke {
     if (Test-Path -LiteralPath $lock) { throw "Shared game lock is held: $lock" }
     $null = New-Item -ItemType Directory -Path $lock -ErrorAction Stop
     $ownerToken = 'full-smoke-' + [Guid]::NewGuid().ToString()
-    [IO.File]::WriteAllText((Join-Path $lock 'owner'), $ownerToken)
-    $null = New-Item -ItemType Directory -Path $output
-    $utf8 = New-Object Text.UTF8Encoding $false
-    $recordRoot = Join-Path $output 'recording'
-    $bin = Join-Path $output 'bin'
-    $null = New-Item -ItemType Directory -Path $bin
-    $started = [Diagnostics.Stopwatch]::StartNew()
-    $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true }
+    try {
+        [IO.File]::WriteAllText((Join-Path $lock 'owner'), $ownerToken)
+        $null = New-Item -ItemType Directory -Path $output
+        $utf8 = New-Object Text.UTF8Encoding $false
+        $recordRoot = Join-Path $output 'recording'
+        $bin = Join-Path $output 'bin'
+        $null = New-Item -ItemType Directory -Path $bin
+        $started = [Diagnostics.Stopwatch]::StartNew()
+        $report = [ordered]@{ passed=$false; phase='preflight'; checks=@(); source_save=$sourceSave; source_save_sha256=(Get-FileHash $sourceSave -Algorithm SHA256).Hash; started_utc=[DateTime]::UtcNow.ToString('o'); full_smoke=$true }
+    } catch {
+        # Nothing has launched yet: release the lock this run just took.
+        Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
     $game = $null; $reader = $null; $recorderRun = $null; $previousForeground = [IntPtr]::Zero
     $statusPath = $null; $failure = $null; $cleaned = $false
     $selectionWritten = $false

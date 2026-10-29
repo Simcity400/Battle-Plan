@@ -54,7 +54,7 @@ function mergeAutonomy(a: PreparedAutonomy, b: PreparedAutonomy, mode: 'pages' |
     else levels[index] = level;
     return index;
   });
-  const reached = mode === 'reached' ? b.exactHours.map(hour => ({ firstHour: hour, lastHour: hour })) : [];
+  const reached = mode === 'reached' ? b.exactHours.map(hour => ({ firstHour: hour, lastHour: hour })).sort((x, y) => x.firstHour - y.firstHour) : [];
   const overlay = <R extends Band>(rough: readonly R[], exact: readonly R[]): R[] => {
     const cuts = [...reached, ...exact].sort((a, b) => a.firstHour - b.firstHour);
     const retained: R[] = [];
@@ -99,7 +99,8 @@ function mergeAutonomy(a: PreparedAutonomy, b: PreparedAutonomy, mode: 'pages' |
   const unfinished = spans(a.pending ?? [], b.pending ?? []);
   const pending = mode === 'pages' ? unfinished : withoutHours(unfinished, spans(prepared, approximate));
   return validatePreparedAutonomy({ ...a, levels, subjects: mergeSubjects(a.subjects, b.subjects), bands: mergeSubjects(a.bands, b.bands),
-    recorded: spans(a.recorded, b.recorded), unidentified: spans(a.unidentified, b.unidentified),
+    // An exact read answers its hours alone: a missing read there is not the rough block's coverage.
+    recorded: spans(withoutHours(a.recorded, reached), b.recorded), unidentified: spans(withoutHours(a.unidentified, reached), b.unidentified),
     warnings: [...new Set([...a.warnings, ...b.warnings])], summaries: { ...a.summaries, ...b.summaries },
     exactHours: [...new Set([...a.exactHours, ...b.exactHours])].sort((a, b) => a - b),
     coverage, approximate, pending,

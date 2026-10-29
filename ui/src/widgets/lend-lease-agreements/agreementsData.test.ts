@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { MarketHistoryReply } from '../../generated/dashboard';
 import { validateMarketHistory } from '../../dashboard/marketHistory.ts';
-import { agreementRows, amountOf } from './agreementsData.ts';
+import { agreementRows, amountOf, openAgreement } from './agreementsData.ts';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
 
 const item = (pool: number, variant: string, amount: string, from = 10, to = 30) => ({ pool, ordinal: 0, variant, amounts: [[from, to, amount]] });
 const reply = (): MarketHistoryReply => ({
@@ -53,4 +54,13 @@ test('ended agreements keep their last read and can be hidden; later ones are no
   assert.ok(ended.every(row => row.ended && row.at === 30));
   assert.equal(agreementRows(data, 'sent', () => true, 40, false).length, 0);
   assert.equal(agreementRows(data, 'sent', () => true, 5, true).length, 0);
+});
+
+test('an ended agreement opens at its last read, never following the playhead past it', () => {
+  const [ended] = agreementRows(validateMarketHistory('agreements')(reply()), 'sent', () => true, 40, true);
+  assert.ok(ended.ended);
+  for (const playing of [true, false]) assert.deepEqual(reduceDrill(CLOSED, openAgreement(ended, 'agreement', playing, 40)),
+    { breakdown: 'agreement', follow: false, hour: 30 });
+  const [active] = agreementRows(validateMarketHistory('agreements')(reply()), 'sent', () => true, 20, true);
+  assert.equal(reduceDrill(CLOSED, openAgreement(active, 'agreement', true, 20)).follow, true, 'an active one follows playback as before');
 });

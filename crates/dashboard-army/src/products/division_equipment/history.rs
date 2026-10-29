@@ -1652,7 +1652,7 @@ impl Prepared {
             .into_iter()
             .flatten()
             {
-                frames.frame(read);
+                frames.value(&**read);
             }
             frames.total() as usize
                 + carried.placed.len() * 48

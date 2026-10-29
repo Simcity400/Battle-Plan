@@ -81,6 +81,13 @@ pub enum RegionalWeatherShow {
 }
 
 impl RegionalWeatherParams {
+    /// The modifier shown: the chosen one, else the catalogue's first ("First recorded modifier").
+    fn shown_modifier(&self) -> Option<&str> {
+        self.modifier.as_deref().or_else(|| {
+            (self.show == Some(RegionalWeatherShow::Modifier)).then_some(content::MODIFIERS[0].0)
+        })
+    }
+
     fn selects(&self, measure: &str) -> bool {
         match self.show {
             None => true,
@@ -89,7 +96,7 @@ impl RegionalWeatherParams {
             }
             Some(RegionalWeatherShow::Temperature) => measure == "temp",
             Some(RegionalWeatherShow::Modifier) => {
-                measure.strip_prefix("mod:") == self.modifier.as_deref()
+                measure.strip_prefix("mod:") == self.shown_modifier()
             }
         }
     }
@@ -200,9 +207,6 @@ impl Product for RegionalWeather {
             .is_some_and(|selected| !content::MODIFIERS.iter().any(|(id, _, _)| *id == selected))
         {
             return Err("Invalid weather modifier");
-        }
-        if params.show == Some(RegionalWeatherShow::Modifier) && params.modifier.is_none() {
-            return Err("A weather modifier is required");
         }
         if params
             .width
@@ -417,7 +421,7 @@ fn modifier_refusals(
         };
         for (modifier, _, _) in content::MODIFIERS {
             if params.show == Some(RegionalWeatherShow::Modifier)
-                && params.modifier.as_deref() != Some(modifier)
+                && params.shown_modifier() != Some(modifier)
             {
                 continue;
             }

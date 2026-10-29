@@ -338,7 +338,15 @@ fn walk_inner(
             let Some(country) = countries.at(slot)? else {
                 continue;
             };
-            let operative = element_pointer(memory, strategic, slot)?;
+            let operative = strategic
+                .element(slot, 8)
+                .and_then(|address| read::<u64>(memory, address))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .ok_or("intel strategic operative slot unreadable or outside the vector")?;
+            // A null slot has no operative and no networks; the game null-checks its lookups.
+            if operative == 0 {
+                continue;
+            }
             vtable(memory, base, operative, cstrategic_operative::VTABLE_RVA)?;
             let owner = field::<u32>(memory, operative, cstrategic_operative::OWNER)?;
             if countries.resolve(owner)?.pointer != country.pointer {
@@ -960,6 +968,95 @@ mod tests {
                 reason: "duplicate intel network target for owner"
             }
         );
+    }
+
+    #[test]
+    fn a_null_strategic_slot_runs_no_networks_but_an_unreadable_slot_fails() {
+        use crate::ccountry::synthetic::World;
+        const COUNT: u32 = 4;
+        let mut world = World::new(0, COUNT, 0x10);
+        let manager = world.alloc(0x100);
+        let operatives = world.alloc((COUNT as usize + 1) * 8);
+        let operative_objects = world.alloc((COUNT as usize + 1) * 0x20);
+        let graph = world.alloc(0x100);
+        let pointers = world.alloc((COUNT as usize - 1) * 8);
+        let networks = world.alloc((COUNT as usize - 1) * 0x100);
+        let gs = world.game_state();
+        world.u64(
+            gs + cgame_state::STRATEGIC_OPERATIVE_MANAGER,
+            manager as u64,
+        );
+        world.array(
+            manager + cstrategic_operative_manager::OPERATIVES_DATA,
+            operatives,
+            COUNT + 1,
+        );
+        for slot in 1..=COUNT as usize {
+            let operative = operative_objects + slot * 0x20;
+            world.u64(operatives + slot * 8, operative as u64);
+            world.u64(operative, cstrategic_operative::VTABLE_RVA as u64);
+            world.u32(operative + cstrategic_operative::OWNER, slot as u32);
+        }
+        let owner = operative_objects + 0x20;
+        world.array(
+            owner + cstrategic_operative::NETWORKS_DATA,
+            pointers,
+            COUNT - 1,
+        );
+        for index in 0..COUNT as usize - 1 {
+            let network = networks + index * 0x100;
+            world.u64(pointers + index * 8, network as u64);
+            world.u64(network, VTABLE_RVA as u64);
+            world.u32(network + TARGET, index as u32 + 2);
+            world.u64(
+                network + LOCAL_NETWORK,
+                clocal_intel_network::VTABLE_RVA as u64,
+            );
+            world.u64(
+                network + LOCAL_NETWORK + clocal_intel_network::GRAPH,
+                graph as u64,
+            );
+        }
+        // Live country 3, a target of country 1, has no operative object.
+        world.u64(operatives + 3 * 8, 0);
+        let mut states = Vec::new();
+        let mut summaries = Vec::new();
+        let captured =
+            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+        assert_eq!(captured.states, Outcome::Rows { len: 0 });
+        assert_eq!(
+            captured.summaries,
+            Outcome::Rows {
+                len: COUNT as usize - 1
+            }
+        );
+        assert_eq!(
+            summaries[..COUNT as usize - 1]
+                .iter()
+                .map(|row| (row.owner_country, row.target_country))
+                .collect::<Vec<_>>(),
+            [(1, 2), (1, 3), (1, 4)]
+        );
+        let unavailable = Outcome::Unavailable {
+            reason: "intel strategic operative slot unreadable or outside the vector",
+        };
+        // A vector without the last live country's slot is not an absence.
+        world.u32(
+            manager + cstrategic_operative_manager::OPERATIVES_DATA + 12,
+            COUNT,
+        );
+        assert_eq!(walk(&world.memory(), 0, gs, &mut []), unavailable);
+        let captured =
+            walk_with_summaries_growing(&world.memory(), 0, gs, &mut states, &mut summaries);
+        assert_eq!(captured.states, unavailable);
+        assert!(matches!(captured.summaries, Outcome::Unavailable { .. }));
+        // Nor is a slot that cannot be read.
+        world.array(
+            manager + cstrategic_operative_manager::OPERATIVES_DATA,
+            0x4000_0000,
+            COUNT + 1,
+        );
+        assert_eq!(walk(&world.memory(), 0, gs, &mut []), unavailable);
     }
 
     fn fixture() -> Vec<u8> {

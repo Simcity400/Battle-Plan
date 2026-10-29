@@ -831,72 +831,9 @@ pub struct Captured {
     /// The land movement speed's shared operands and each division's combat
     /// movement operand, lent to the independent speed-term pass.
     speed_terms: speed_terms::SpeedTerms,
-    #[cfg(feature = "movement_witness")]
-    movement_witness: Vec<(u64, Option<i64>)>,
 }
 
 impl Captured {
-    /// Native queries belong to the held game-thread callback, before either
-    /// presentation worker leaves. This entire method and its storage are absent
-    /// from ordinary builds.
-    #[cfg(feature = "movement_witness")]
-    pub(crate) unsafe fn capture_movement_witness(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        state: usize,
-        seeds: &[DivisionSeed],
-    ) {
-        self.movement_witness.clear();
-        if let Err(error) = engine_allocation::reserve(&mut self.movement_witness, seeds.len()) {
-            crate::allocation::observe(&error);
-            return;
-        }
-        for seed in seeds {
-            if seed
-                .ordinary_route
-                .and_then(|h| engine_native::cpdx_array::Array::from_header(h, 4))
-                .is_some_and(|route| route.count == 0)
-            {
-                continue;
-            }
-            // SAFETY: sampling calls us only on its held game-thread boundary.
-            let speed =
-                unsafe { carmy::movement_witness::first_edge_speed(memory, base, state, seed) };
-            self.movement_witness.push((seed.division, speed.ok()));
-        }
-        self.movement_witness.sort_unstable_by_key(|entry| entry.0);
-    }
-
-    fn speed_witness(&self, division: u64) -> Witnessed<Option<i64>> {
-        #[cfg(feature = "movement_witness")]
-        {
-            Witnessed(
-                self.movement_witness
-                    .binary_search_by_key(&division, |entry| entry.0)
-                    .ok()
-                    .map(|at| self.movement_witness[at].1),
-            )
-        }
-        #[cfg(not(feature = "movement_witness"))]
-        {
-            let _ = division;
-            Witnessed(None)
-        }
-    }
-
-    fn speed_witness_matches(
-        &self,
-        division: u64,
-        previous: &Recorded<Option<replay_data::rows::UnitCombatReferences>>,
-    ) -> bool {
-        let previous = match previous {
-            Recorded::Value(Some(packet)) => packet.speed_witness.clone(),
-            _ => Witnessed(None),
-        };
-        previous == self.speed_witness(division)
-    }
-
     #[cfg(test)]
     pub(super) fn capture_status_fixture(
         &mut self,
@@ -966,8 +903,6 @@ impl Captured {
             movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
-            #[cfg(feature = "movement_witness")]
-            movement_witness: Vec::new(),
         }
     }
 
@@ -1031,14 +966,10 @@ impl Captured {
             movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
-            #[cfg(feature = "movement_witness")]
-            movement_witness: Vec::new(),
         }
     }
 
     pub fn reset(&mut self) {
-        #[cfg(feature = "movement_witness")]
-        self.movement_witness.clear();
         self.land.reset();
         self.land_ticks = 0;
         self.movement.reset();
@@ -1083,16 +1014,6 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.land.allocated_bytes()
-            + {
-                #[cfg(feature = "movement_witness")]
-                {
-                    self.movement_witness.capacity() * std::mem::size_of::<(u64, Option<i64>)>()
-                }
-                #[cfg(not(feature = "movement_witness"))]
-                {
-                    0
-                }
-            }
             + self.movement.allocated_bytes()
             + self.status.allocated_bytes()
             + self.bans.allocated_bytes()
@@ -2861,7 +2782,6 @@ impl Captured {
                             r.combat_count,
                             &previous.combat_references,
                         )
-                        && self.speed_witness_matches(r.division, &previous.combat_references)
                         && previous.fresh == Recorded::Value(Retired)
                         && Recorded::Value(r.base_speed) == previous.base_speed
                         && Recorded::Value(r.fuel) == previous.fuel
@@ -2896,11 +2816,7 @@ impl Captured {
                             request,
                             self.movement_packet.combat_references(r),
                             r.combat_count,
-                        )
-                        .map(|mut packet| {
-                            packet.speed_witness = self.speed_witness(r.division);
-                            packet
-                        }),
+                        ),
                     ),
                     division: r.division,
                     fresh: Recorded::Value(Retired),
@@ -6012,29 +5928,5 @@ mod combat_reference_capacity_tests {
             capture.movement_packet.allocated_bytes() > 0,
             "the optional arena failure must not replace the legacy packet with vacant"
         );
-    }
-}
-
-#[cfg(all(test, feature = "movement_witness"))]
-mod movement_witness_tests {
-    use super::*;
-
-    #[test]
-    fn movement_witness_projection_rejects_changed_missing_and_refused_samples() {
-        let mut capture = Captured::vacant();
-        capture.movement_witness.push((7, Some(12_785)));
-        let previous = Recorded::Value(Some(replay_data::rows::UnitCombatReferences {
-            speed_witness: Witnessed(Some(Some(12_785))),
-            ..Default::default()
-        }));
-        assert!(capture.speed_witness_matches(7, &previous));
-        capture.movement_witness[0].1 = Some(12_786);
-        assert!(!capture.speed_witness_matches(7, &previous));
-        capture.movement_witness[0].1 = None;
-        assert_eq!(capture.speed_witness(7), Witnessed(Some(None)));
-        assert!(!capture.speed_witness_matches(7, &previous));
-        capture.reset();
-        assert_eq!(capture.speed_witness(7), Witnessed(None));
-        assert!(!capture.speed_witness_matches(7, &previous));
     }
 }

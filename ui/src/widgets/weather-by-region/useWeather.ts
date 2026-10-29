@@ -5,6 +5,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setToken } from '../../dashboard/options';
 import { loadTransientProduct, useProduct } from '../../dashboard/products';
 import { finalPreparedReply } from '../../dashboard/preparedPrefix';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import { validateWeather } from './weatherData';
 import type { WeatherReply } from './weatherData';
 import { OPTIONS } from './definition';
@@ -81,15 +82,17 @@ interface DayRead { data?: WeatherReply; error?: string; at: number }
  * comes back to it. */
 export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, dayHours: number) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, weatherShow(widget), dayHours]);
-  const cache = useRef({ scope, days: new Map<number, DayRead>(), last: null as { day: number; read: DayRead } | null });
-  if (cache.current.scope !== scope) cache.current = { scope, days: new Map(), last: null };
+  // Days read under other content folders, or by another client, are not this widget's.
+  const content = useContentRevision(runtime.client);
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, weatherShow(widget), dayHours, content]);
+  const cache = useRef({ scope, client: runtime.client, days: new Map<number, DayRead>(), last: null as { day: number; read: DayRead } | null });
+  if (cache.current.scope !== scope || cache.current.client !== runtime.client) cache.current = { scope, client: runtime.client, days: new Map(), last: null };
   const [revision, bump] = useReducer((value: number) => value + 1, 0);
   const wanted = useRef<{ day: number; timer?: ReturnType<typeof setTimeout>; controller?: AbortController } | null>(null);
   const forget = () => { if (wanted.current) { clearTimeout(wanted.current.timer); wanted.current.controller?.abort(); } wanted.current = null; };
   // The day under the pointer, or null off the chart: a failure landing after it left is not kept.
   const pointer = useRef<number | null>(null);
-  useEffect(() => forget, [scope, active]);
+  useEffect(() => forget, [scope, active, runtime.client]);
   const want = useCallback((day: number) => {
     const owner = cache.current;
     pointer.current = day;
@@ -125,7 +128,7 @@ export function useWeatherDays(widget: WidgetSpec, runtime: WidgetRuntime, activ
   const get = useCallback((day: number): DayRead | undefined => {
     const owner = cache.current;
     return owner.days.get(day) ?? (owner.last?.day === day ? owner.last.read : undefined);
-  }, [scope, revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope, revision, runtime.client]); // eslint-disable-line react-hooks/exhaustive-deps
   /** The pointer is on `day`, or off the chart (null): a failed read of any other day is
    * forgotten, and a read of another day not yet started is dropped. */
   const hover = useCallback((day: number | null) => {

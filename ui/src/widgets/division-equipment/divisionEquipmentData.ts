@@ -6,8 +6,9 @@ import type { DivisionEquipmentReply, DivisionPoolType, EquipmentDivision, Equip
 
 export type { DivisionEquipmentReply, DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType };
 
-/** A type's key: its archetype, or the unclassified bucket. */
-export const typeKey = (row: { archetype: string | null }) => row.archetype ?? 'unclassified';
+/** A type's key: its archetype, or the unclassified bucket. Tagged, so a mod archetype
+ * named like the bucket is still its own type. */
+export const typeKey = (row: { archetype: string | null }) => JSON.stringify([row.archetype]);
 
 const isArray = Array.isArray;
 export function validateDivisionEquipment(value: unknown): DivisionEquipmentReply {

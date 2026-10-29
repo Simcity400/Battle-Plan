@@ -175,7 +175,31 @@ impl Localisation {
         }
         let mut out = Output::default();
         self.substitute(key, &[], 0, &mut out, names);
-        out.requires_argument
+        out.required.is_some()
+    }
+
+    /// [`Localisation::localise_with`] with arguments supplied only when the
+    /// walk reaches them: `Err` with the index in `deferred` of the first it
+    /// reaches before its buffer fills. A deferred name shadows an argument.
+    pub fn localise_with_deferred(
+        &self,
+        key: &[u8],
+        arguments: &[(&str, Argument<'_>)],
+        deferred: &[&str],
+    ) -> Result<Result<String, Unlocalised>, usize> {
+        let key = crate::parser::c_string(key);
+        if key.is_empty() {
+            return Ok(Ok(String::new()));
+        }
+        let mut out = Output::default();
+        self.substitute(key, arguments, 0, &mut out, deferred);
+        if let Some(index) = out.required {
+            return Err(index);
+        }
+        Ok(out.finish().map_err(|cause| Unlocalised {
+            key: String::from_utf8_lossy(key).into_owned(),
+            cause,
+        }))
     }
 
     /// Every recovery the localiser took while producing this text, through
@@ -274,11 +298,11 @@ impl Localisation {
                 let operand = &rest[open + 1..close];
                 let name = operand.split(|&byte| byte == b'|').next().unwrap();
                 if !out.full()
-                    && required_arguments
+                    && let Some(index) = required_arguments
                         .iter()
-                        .any(|required| required.as_bytes() == name)
+                        .position(|required| required.as_bytes() == name)
                 {
-                    out.requires_argument = true;
+                    out.required = Some(index);
                     return;
                 }
                 if !argument(operand, arguments, out) {
@@ -355,7 +379,8 @@ impl std::error::Error for Unlocalised {}
 #[derive(Default)]
 struct Output {
     bytes: Vec<u8>,
-    requires_argument: bool,
+    /// The first required argument the walk reached, by its index.
+    required: Option<usize>,
     /// Other native callers share the formatter with a smaller scratch buffer.
     capacity: Option<usize>,
     fallbacks: Option<Vec<String>>,
@@ -371,7 +396,7 @@ impl Output {
     }
 
     fn full(&self) -> bool {
-        self.requires_argument || self.room() == 0
+        self.required.is_some() || self.room() == 0
     }
 
     /// A bounded copy writes as much as fits.
@@ -1236,6 +1261,44 @@ mod tests {
         assert!(loc.requires_arguments(b"nested\0ignored", &["ACTOR"]));
         assert!(!loc.requires_arguments(b"target", &["ACTOR"]));
         assert!(!loc.requires_arguments(b"actor", &[]));
+    }
+
+    #[test]
+    fn deferred_arguments_stop_the_walk_only_where_it_reaches_them() {
+        let loc = loc(&[
+            ("both", "$FIRST$ and $SECOND|U$"),
+            ("first", "only $FIRST$"),
+            ("plain", "no $missing$ arguments"),
+        ]);
+        let first = [("FIRST", Argument::Text("one"))];
+        assert_eq!(
+            loc.localise_with_deferred(b"both", &first, &["SECOND", "FIRST"]),
+            Err(1)
+        );
+        assert_eq!(
+            loc.localise_with_deferred(b"both", &first, &["SECOND"]),
+            Err(0)
+        );
+        assert_eq!(
+            loc.localise_with_deferred(b"first", &first, &["SECOND"]),
+            Ok(Ok("only one".to_owned()))
+        );
+        let both = [
+            ("FIRST", Argument::Text("one")),
+            ("SECOND", Argument::Text("two")),
+        ];
+        assert_eq!(
+            loc.localise_with_deferred(b"both", &both, &[]),
+            Ok(loc.localise_with(b"both", &both))
+        );
+        assert_eq!(
+            loc.localise_with_deferred(b"plain", &[], &["FIRST"]),
+            Ok(Ok("no  arguments".to_owned()))
+        );
+        assert_eq!(
+            loc.localise_with_deferred(b"", &[], &["FIRST"]),
+            Ok(Ok(String::new()))
+        );
     }
 
     #[test]

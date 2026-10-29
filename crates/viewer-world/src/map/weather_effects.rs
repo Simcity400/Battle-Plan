@@ -1801,7 +1801,7 @@ impl Pass {
 /// Advances every entity-event particle runtime on `events`, hidden ones included, so hiding never
 /// changes a runtime's population, emission accumulator or random stream; then returns the events
 /// with the lights the shown ones give. A kept event's light lasts until its finished runtime has
-/// no living particle.
+/// no living particle; then the event is finished for its player to drop.
 #[cfg(test)]
 pub(crate) fn advance_entity_effects(
     simulations: &mut EntitySimulations,
@@ -1829,6 +1829,9 @@ pub(crate) fn advance_entity_effects_with_workers(
     for event in &mut events {
         if event.emission_end.is_some() && !simulations.living(event) {
             event.definition.light = None;
+            if let Some(kept) = &event.kept {
+                kept.finish();
+            }
         }
     }
     let lights = lights.evaluate(&events);

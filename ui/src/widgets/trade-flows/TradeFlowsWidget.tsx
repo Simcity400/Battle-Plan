@@ -43,7 +43,7 @@ import TradeDrill from './TradeDrillView';
 import TradeCountryView, { resourceLegendItems } from './TradeCountryView';
 import { countryTradeTags } from './tradeCountry';
 import { useParityRows } from '../../dashboard/parityRows';
-import { useProduct } from '../../dashboard/products';
+import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { NumericReply } from '../../dashboard/numericReply';
 import type { PreparedTradeReply } from './tradeData';
 import { contributionCountryTag, contributionExtent, contributionHour, linkSelection, nodeSelections, observedTradeSpans, openContributions, pinContributions, readSelection, selectedContributors, tradeContext } from './tradeDrill';
@@ -94,7 +94,11 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const playhead = window && following ? window.lastHour : null;
   const savedExtent = track && pinnedView ? contributionExtent(options.tradeExtent, track.branch) : null;
   const extent: [number, number] = savedExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1]);
-  const moment = Math.floor(playhead ?? extent[1]);
+  // While playback's newest hour is read, the last hour read stays shown with its date.
+  const shownAt = (hour: number, held: number | undefined, exact: ((hour: number) => boolean) | undefined) => exact && !exact(hour)
+    && held !== undefined && held >= extent[0] && held <= extent[1] && exact(held) ? held : hour;
+  const requestedHour = Math.floor(playhead ?? extent[1]);
+  const moment = shownAt(requestedHour, incoming.reachedHour, incoming.hasExactHour);
   const from = extent[0];
   useParityRows(anchor, () => ({ kind: 'chart', label: 'Trade flow values', complete: incoming.parityComplete,
     total: data?.flows.length ?? 0, rows: data ? [{ branchId: data.branchId, decimals: data.decimals, resources: data.resources, countries: data.countries,
@@ -345,8 +349,9 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const countryKey = countryTags ? JSON.stringify(countryTags) : null;
   const countryPage = incoming.page ? { ...incoming.page, identities: undefined, membership: undefined, unobserved: [], between: false,
     hours: [extent[1], ...(drillAt === null ? [] : [drillAt])] } : undefined;
-  const countryReply = useProduct<PreparedTradeReply>(runtime.client, !marketView && track && countryTags && effectiveDrill.breakdown != null ? tradeFlowsRequest(track, countryTags, countryPage) : null,
-    active && effectiveDrill.breakdown != null, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const countryReply = useFollowedProduct<PreparedTradeReply>(runtime.client, !marketView && track && countryTags && effectiveDrill.breakdown != null ? tradeFlowsRequest(track, countryTags, countryPage) : null,
+    ['from', 'to', 'width', 'hours'], active && effectiveDrill.breakdown != null, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const countryAnswered = countryReply.data && countryReply.moment ? JSON.parse(countryReply.moment) as [number, number, number, number[] | null] : undefined;
   const countryPoint = useProduct<PreparedTradeReply>(runtime.client, runtime.client.preparedQuery && !marketView && track && countryTags && incoming.pointHour !== null && incoming.pointHour !== undefined
     ? tradeFlowsRequest(track, countryTags, { ...countryPage, from: incoming.pointHour, to: incoming.pointHour, width: 1, hours: [incoming.pointHour] }) : null,
     active && effectiveDrill.breakdown != null, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
@@ -361,6 +366,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const countryPrepared = { ...incoming, navigateFlows: navigateFlows && countryTags ? (flows: readonly string[]) => navigateFlows(flows, countryTags) : undefined,
     hasExactHour: (hour: number) => !runtime.client.preparedQuery ||
     ((countryData?.reply as PreparedTradeReply | undefined)?.exactHours ?? []).includes(Math.floor(hour)) };
+  const countryShown = drillAt === null ? null : shownAt(drillAt, countryAnswered?.[3]?.[1], countryPrepared.hasExactHour);
+  const drillShown = drillAt === null ? null : shownAt(drillAt, incoming.reachedDetail, incoming.hasExactHour);
   const countrySource = countryData ?? trade;
   const countryFact = countryHolder && drillAt != null && countrySource ? identityCountryAt(countrySource, countryHolder, drillAt) : null;
   const countryTitle = useCountryLabelsAt(runtime.client, track, countryFact ? [{ tag: countryFact.tag, hour: countryFact.hour }] : [], active);
@@ -414,7 +421,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   if (resourceIds && !resourceIds.size) return <>{groupFailure}{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
   if (pinnedView && options.tradeSelection && (!savedSelection || savedSelection.kind === 'market')) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;
 
-  const caption = measure === 'current' ? 'Per day'
+  const caption = measure === 'current' ? moment === requestedHour ? 'Per day' : `Per day · As of ${dayLabel(moment)}`
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
   const main = scaleFailure ? <WidgetState kind="error" what="the campaign-wide ribbon scale" detail={scaleFailure} onRetry={incoming.retryScale} />
     : incoming.hasExactHour && !incoming.hasExactHour(moment) ? <WidgetState kind="loading" label="Loading trade amounts…" />
@@ -447,13 +454,15 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         pinContributions(widget, track, chosenSelection, drillAt, effectiveDrill.follow, extent, countryFact?.tag ?? null)) : undefined} main={main}>
       {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" detail={countryReply.error} onRetry={countryReply.retry} />
         : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
-        : <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
-          hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
+        // A failed read of one hovered hour says so and can be retried; the country's history stays.
+        : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour's trade" detail={countryPoint.error} onRetry={countryPoint.retry} />}
+          <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
+          hour={countryShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
           colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
           onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
-          onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
+          onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} /></>
       : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
-        hour={drillAt} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
+        hour={drillShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
         prepared={incoming} known={known} colours={resourceColour} tokens={tokens} identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
         onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />}

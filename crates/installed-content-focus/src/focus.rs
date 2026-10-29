@@ -22,77 +22,133 @@ pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
 /// One file's focus definitions by id.
 pub type Definitions = BTreeMap<String, FocusDefinition>;
 
-/// Every focus file's definitions by id, a later file's replacing an earlier
-/// one's, each with the database that defines it. A file the port refuses
-/// leaves whatever it could define or redefine in its own database unknown.
+/// Each database's definitions by id, a later file's replacing an earlier
+/// one's. The national and continuous databases are separate, so one id can
+/// name a focus in each. A file the port refuses leaves whatever it could
+/// define or redefine in its own database unknown.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Focuses {
-    definitions: BTreeMap<String, (Database, FocusDefinition)>,
-    national: Coverage,
-    continuous: Coverage,
+    national: Store,
+    continuous: Store,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Store {
+    definitions: Definitions,
+    coverage: Coverage,
+}
+
+impl Store {
+    fn get(&self, id: &str) -> Result<Option<&FocusDefinition>, &Gap> {
+        match self.coverage.unknown(id) {
+            Some(gap) => Err(gap),
+            None => Ok(self.definitions.get(id)),
+        }
+    }
+}
+
+/// Why a focus lookup by id alone has no answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unknown<'a> {
+    /// A refused file could define or redefine it.
+    Gap(&'a Gap),
+    /// Both databases define it, differently.
+    Ambiguous,
+}
+
+impl std::fmt::Display for Unknown<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Gap(gap) => write!(f, "{gap}"),
+            Self::Ambiguous => f.write_str(
+                "the national and continuous focus databases define it differently, and which one is meant is not given",
+            ),
+        }
+    }
 }
 
 impl Focuses {
-    /// A focus by id: `None` when no file defines it; `Err` with the refused
-    /// file that could define or redefine it.
-    pub fn get(&self, id: &str) -> Result<Option<&FocusDefinition>, &Gap> {
-        match self.unknown(id) {
-            Some(gap) => Err(gap),
-            None => Ok(self.definitions.get(id).map(|(_, definition)| definition)),
+    /// A focus of one database by id: `None` when none of its files defines
+    /// it; `Err` with the refused file that could define or redefine it.
+    pub fn get_in(&self, database: Database, id: &str) -> Result<Option<&FocusDefinition>, &Gap> {
+        self.store(database).get(id)
+    }
+
+    /// A focus by id alone, for a caller that does not know its database: a
+    /// refused file of either database leaves it unknown, and an id both
+    /// databases define differently is refused.
+    pub fn get(&self, id: &str) -> Result<Option<&FocusDefinition>, Unknown<'_>> {
+        let national = self.national.get(id).map_err(Unknown::Gap)?;
+        let continuous = self.continuous.get(id).map_err(Unknown::Gap)?;
+        match (national, continuous) {
+            (Some(national), Some(continuous)) if national != continuous => Err(Unknown::Ambiguous),
+            (Some(definition), _) | (None, Some(definition)) => Ok(Some(definition)),
+            (None, None) => Ok(None),
         }
     }
 
-    /// Every id a read file defines, a refused file's redefinition aside.
+    /// Every id a read file of either database defines, a refused file's
+    /// redefinition aside.
     pub fn ids(&self) -> impl Iterator<Item = &str> {
-        self.definitions.keys().map(String::as_str)
+        self.national
+            .definitions
+            .keys()
+            .chain(self.continuous.definitions.keys())
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
     }
 
-    /// The definitions no refused file could change.
+    /// Every id a read file of one database defines, a refused file's
+    /// redefinition aside.
+    pub fn ids_in(&self, database: Database) -> impl Iterator<Item = &str> {
+        self.store(database).definitions.keys().map(String::as_str)
+    }
+
+    /// Each database's definitions no refused file could change.
     pub fn known(&self) -> impl Iterator<Item = &FocusDefinition> {
-        self.definitions
+        [Database::National, Database::Continuous]
+            .into_iter()
+            .flat_map(|database| self.known_in(database))
+    }
+
+    /// One database's definitions no refused file could change.
+    pub fn known_in(&self, database: Database) -> impl Iterator<Item = &FocusDefinition> {
+        let store = self.store(database);
+        store
+            .definitions
             .iter()
-            .filter(|(id, _)| self.unknown(id).is_none())
-            .map(|(_, (_, definition))| definition)
+            .filter(move |(id, _)| store.coverage.unknown(id).is_none())
+            .map(|(_, definition)| definition)
     }
 
-    /// A defined focus is changed only by its own database's files; an
-    /// undefined one could be defined by either's.
-    fn unknown(&self, id: &str) -> Option<&Gap> {
-        match self.definitions.get(id) {
-            Some((database, _)) => self.coverage(*database).unknown(id),
-            None => self
-                .national
-                .unknown(id)
-                .or_else(|| self.continuous.unknown(id)),
-        }
-    }
-
-    fn coverage(&self, database: Database) -> &Coverage {
+    fn store(&self, database: Database) -> &Store {
         match database {
             Database::National => &self.national,
             Database::Continuous => &self.continuous,
         }
     }
 
-    fn coverage_mut(&mut self, database: Database) -> &mut Coverage {
+    fn store_mut(&mut self, database: Database) -> &mut Store {
         match database {
             Database::National => &mut self.national,
             Database::Continuous => &mut self.continuous,
         }
     }
 
-    /// The next file's definitions, replacing earlier ones.
+    /// The next file's definitions, replacing earlier ones of its database.
     fn read_file(&mut self, database: Database, definitions: Definitions) {
-        self.coverage_mut(database).next_file();
+        let store = self.store_mut(database);
+        store.coverage.next_file();
         for (id, definition) in definitions {
-            self.coverage_mut(database).replace(&id);
-            self.definitions.insert(id, (database, definition));
+            store.coverage.replace(&id);
+            store.definitions.insert(id, definition);
         }
     }
 
     /// The next file, refused.
     fn refuse_file(&mut self, database: Database, path: &str, cause: String) {
-        let coverage = self.coverage_mut(database);
+        let coverage = &mut self.store_mut(database).coverage;
         coverage.next_file();
         coverage.gap(path, cause);
     }

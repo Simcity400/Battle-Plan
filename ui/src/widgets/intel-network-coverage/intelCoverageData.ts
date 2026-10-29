@@ -55,6 +55,10 @@ export function countriesAt(reply: IntelCoverageReply, hour: number, shown: numb
   return own.length ? [...own, ...present.filter(id => !shownSet.has(id) && linked.has(id)).sort()].map(country) : [];
 }
 
+/** The tags chosen native holders held at `hour`, from their dated aliases. */
+export const aliasTagsAt = (aliases: readonly { tag: string; firstHour: number; lastHour: number }[], hour: number): string[] =>
+  [...new Set(aliases.filter(run => run.firstHour <= hour && hour <= run.lastHour).map(run => run.tag))].sort();
+
 /** The field a measure shows on a basis. */
 export function measureField(measure: Measure, basis: Basis): Field {
   if (measure === 'strongest') return 'maxStrength';

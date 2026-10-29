@@ -561,11 +561,28 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
 #[test]
 fn recent_naming_views_are_saved_by_hour_and_read_again_on_restore() {
     use super::*;
-    let frame = stability_frame(0, stability_inputs(), 0, vec![]);
+    use replay_data::rows::{CharacterRow, LexicalTokenRow};
+    let mut frame = stability_frame(0, stability_inputs(), 0, vec![]);
+    *frame.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![CharacterRow {
+            id: 7,
+            token: b"Leader".to_vec(),
+            name_token_id: -1,
+            ..Default::default()
+        }]));
+    let tokens = |literal: &[u8]| {
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 40,
+            literal: literal.to_vec(),
+        }]))
+    };
+    // Only complete tables are carried unchanged as the hour before's allocation.
     let frames: Vec<_> = (0..20)
         .map(|hour| {
             let mut frame = frame.clone();
             frame.hour = hour;
+            *frame.tables[TableId::LexicalTokens.index()] =
+                tokens(if hour < 10 { &b"before"[..] } else { &b"after"[..] });
             frame
         })
         .collect();
@@ -579,11 +596,15 @@ fn recent_naming_views_are_saved_by_hour_and_read_again_on_restore() {
             || Ok(()),
         )
         .unwrap();
-    // Each hour and its views' indices: every hour holds the same two views.
+    // Each hour and its views' indices: one Characters view, and LexicalTokens changing at 10.
     let json = serde_json::to_value(&scan).unwrap();
     assert_eq!(
         json["recent_names"],
-        serde_json::json!((0..20).map(|hour| [hour, 0, 0]).collect::<Vec<_>>())
+        serde_json::json!(
+            (0..20)
+                .map(|hour| [hour, 0, i32::from(hour >= 10)])
+                .collect::<Vec<_>>()
+        )
     );
     let mut resumed: Scan = serde_json::from_value(json.clone()).unwrap();
     assert!(resumed.recent_names.is_empty());
@@ -600,7 +621,15 @@ fn recent_naming_views_are_saved_by_hour_and_read_again_on_restore() {
     ));
     assert!(SharedView::ptr_eq(
         &resumed.recent_names[0].2,
+        &resumed.recent_names[9].2
+    ));
+    assert!(SharedView::ptr_eq(
+        &resumed.recent_names[10].2,
         &resumed.recent_names[19].2
+    ));
+    assert!(!SharedView::ptr_eq(
+        &resumed.recent_names[9].2,
+        &resumed.recent_names[10].2
     ));
     assert_eq!(serde_json::to_value(&resumed).unwrap(), json);
 }

@@ -167,6 +167,56 @@ pub struct ScannedAir {
     pub undisplayable_tags: BTreeMap<Vec<u8>, usize>,
 }
 
+impl ScannedAir {
+    /// This scan's series of `spans`' tags only, each cut to its tag's spans.
+    fn held(
+        &self,
+        spans: &BTreeMap<String, Vec<HourSpan>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let mut series = BTreeMap::new();
+        let mut segments = BTreeMap::new();
+        for (tag, spans) in spans {
+            let Some(runs) = self.series.get(tag) else {
+                continue;
+            };
+            let mut held = Vec::new();
+            dashboard_base::ranking::for_each_piece(
+                runs,
+                spans,
+                |run| (run.first_hour, run.last_hour),
+                cancelled,
+                |run, first_hour, last_hour| {
+                    held.push(RawRun {
+                        first_hour,
+                        last_hour,
+                        starts_segment: run.starts_segment && first_hour == run.first_hour,
+                        ..run.clone()
+                    });
+                    Ok(())
+                },
+            )?;
+            series.insert(tag.clone(), held);
+            if let Some(spans) = self.segments.get(tag) {
+                segments.insert(tag.clone(), spans.clone());
+            }
+        }
+        Ok(Self {
+            series,
+            segments,
+            unreadable_owners: self.unreadable_owners,
+            equipment_missing: self.equipment_missing,
+            equipment_refused: self.equipment_refused,
+            equipment_remainders: self.equipment_remainders,
+            #[cfg(test)]
+            reconciled_wings: self.reconciled_wings,
+            #[cfg(test)]
+            projected_countries: self.projected_countries,
+            undisplayable_tags: self.undisplayable_tags.clone(),
+        })
+    }
+}
+
 #[derive(Default)]
 struct Scans {
     entries: VecDeque<(u64, Arc<ScannedAir>)>,
@@ -265,8 +315,18 @@ impl Product for AirForceSize {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse().expect("validated branch");
-        let scanned = scanned_branch(source, branch, cancelled)?;
+        let mut scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
+        // An alias counts only while a picked country holds it, as the prepared query counts it.
+        if params.top.is_none() {
+            let spans = country_history::selected_spans(
+                &history,
+                &params.tags,
+                &BTreeMap::new(),
+                cancelled,
+            )?;
+            scanned = Arc::new(scanned.held(&spans, cancelled)?);
+        }
         present(
             source,
             params,

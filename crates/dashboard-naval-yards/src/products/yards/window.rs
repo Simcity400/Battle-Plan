@@ -54,19 +54,6 @@ pub fn present(
         let Some(operand) = state.tokens.get(id) else {
             return Err(io::Error::other("Naval yard token is missing"));
         };
-        if let Operand::Port(port) = operand {
-            if let Err(why) = &port.override_name {
-                *warnings.entry(why.clone()).or_default() += 1;
-            }
-            if port
-                .override_name
-                .as_ref()
-                .is_ok_and(|name| name.is_empty())
-                && let Err(why) = &port.owner_tag
-            {
-                *warnings.entry(why.clone()).or_default() += 1;
-            }
-        }
         if let Operand::ShipRebuilt { naming, group, .. } = operand
             && ship_names::needs_groups(naming, group)
             && let Some(cat) = cat.as_ref()

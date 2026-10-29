@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { LeaderRow, UnitLeadersData } from './generalsData';
 import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, topLeader, validateUnitLeadersReply } from './generalsData.ts';
 import { leaderChoices } from '../general-career/choicesData.ts';
+import { subjectHandle, subjectToken } from '../../dashboard/chosen.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState.ts';
@@ -192,6 +193,10 @@ test('new arrivals are exact after complete reads; unrelated unresolved owners n
   assert.equal(leaderAt(data, leader, 103), null);
   assert.equal(leaderAt(data, leader, 104)?.foughtPartial, true);
   assert.equal(leaderAt(data, leader, 104)?.fought, 0);
+  // An incomplete history's counts are lower bounds, and the tooltip says so.
+  const partial = leaderTooltip(leaderAt(data, leader, 104)!, { name: 'Owner' });
+  assert.match(String(partial.rows!.find(row => row.label === 'Battles won / fought')?.value), /at least 0$/);
+  assert.ok(partial.rows!.some(row => row.label.startsWith('Battle counts are incomplete')));
   leader.battleStarts = [101, 3]; leader.battleStartReadHours = decodedStarts(leader.battleStarts);
   assert.equal(leaderAt(data, leader, 106)?.fought, 2);
   data.observed[0].landBattles = false;
@@ -264,7 +269,8 @@ test('the picker uses the last owner date and sorts names', () => {
   data.people.push({ ...data.people[0], name: 'Zed' });
   data.leaders.unshift({ ...leader, reference: '8', runs: [{ ...leader.runs[0], value: { ...leader.runs[0].value, person: 1 } }] });
   const called: unknown[] = [];
-  const choices = leaderChoices(data, (hour, tag) => { called.push([hour, tag]); return 'Named country'; });
+  const choices = leaderChoices(data, 'c0ffee', (hour, tag) => { called.push([hour, tag]); return 'Named country'; });
+  assert.equal(subjectHandle('beef', choices[0].value), null, 'a choice is saved under its campaign');
   assert.match(choices[0].label, /^A modded commander · Named country/);
   assert.ok(called.some(c => JSON.stringify(c) === JSON.stringify([106, 'transfer country'])));
 });
@@ -352,16 +358,20 @@ test('skill dots, trait markers, defaults and pinning retain the shared kit beha
   assert.deepEqual(lanes[1].spans[0].icons, [undefined]);
   const source = createWidget('generals', 'main'); assert.deepEqual(source.countries, { kind: 'all' });
   const options = resolveOptions(OPTIONS, source.options); assert.deepEqual(tableSortOf(options.tableSort, DEFAULT_SORT), DEFAULT_SORT);
-  const track = { id: 'main', branch: { firstHour: 100 } } as BoundTrack;
+  const track = { id: 'main', branch: { firstHour: 100 }, source: { metadata: { campaignKey: 'c0ffee' } } } as BoundTrack;
   const pinned = pinnedCareer(source, leader.reference, track, 107, true); assert.equal(pinned.kind, 'general-career');
-  assert.deepEqual(pinned.options, { leader: leader.reference, growWithPlayback: false }); assert.deepEqual(pinned.time, { mode: 'follow' });
+  assert.deepEqual(pinned.options, { leader: subjectToken('c0ffee', leader.reference), growWithPlayback: false }); assert.deepEqual(pinned.time, { mode: 'follow' });
+  // The saved general is the campaign's own: another campaign's unit reusing the handle is never it.
+  assert.equal(subjectHandle('c0ffee', String(pinned.options!.leader)), leader.reference);
+  assert.equal(subjectHandle('beef', String(pinned.options!.leader)), null);
+  assert.equal(subjectHandle('c0ffee', leader.reference), null, 'a bare handle names no campaign');
 });
 
 test('Pin career retains the selected day while Follow keeps the shared playback time', () => {
   const source = { ...createWidget('generals', 'main'), campaign: 'tracks' as const,
     countries: { kind: 'tags' as const, tags: ['country with spaces'] }, contentScale: 150,
     time: { mode: 'follow' as const }, options: { growWithPlayback: true } };
-  const track = { id: 'main', axisOffset: 0, branch: { firstHour: 100, lastHour: 500 } } as BoundTrack;
+  const track = { id: 'main', axisOffset: 0, branch: { firstHour: 100, lastHour: 500 }, source: { metadata: { campaignKey: 'c0ffee' } } } as BoundTrack;
   const opened = reduceDrill(CLOSED, { type: 'open', breakdown: '21474841193', hour: 300, playhead: 300, playing: true });
   const picked = reduceDrill(opened, { type: 'pick', hour: 120.9 });
   const pinned = pinnedCareer(source, picked.breakdown!, track, drillHour(picked, 300)!, picked.follow);
@@ -369,7 +379,7 @@ test('Pin career retains the selected day while Follow keeps the shared playback
   assert.deepEqual(resolveWindow(pinned, track, [track], 300), { firstHour: 100, lastHour: 120 });
   assert.equal(pinned.campaign, source.campaign); assert.deepEqual(pinned.trackIds, source.trackIds);
   assert.deepEqual(pinned.countries, source.countries); assert.equal(pinned.contentScale, 150);
-  assert.deepEqual(pinned.options, { leader: '21474841193', growWithPlayback: true });
+  assert.deepEqual(pinned.options, { leader: subjectToken('c0ffee', '21474841193'), growWithPlayback: true });
   const following = reduceDrill(picked, { type: 'follow' });
   const live = pinnedCareer(source, following.breakdown!, track, drillHour(following, 301)!, following.follow);
   assert.deepEqual(live.time, { mode: 'follow' });
@@ -392,7 +402,7 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   const row = leaderAt(data, data.leaders[0], 101)!;
   assert.equal(leaderName(row), '');
   assert.equal(leaderTooltip(row, { name: 'Country' }).title, '');
-  assert.equal(leaderChoices(data, () => 'Country')[0].label, ' · Country');
+  assert.equal(leaderChoices(data, 'c0ffee', () => 'Country')[0].label, ' · Country');
   person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
   person.token = null; assert.equal(leaderName(row), 'Character name unavailable');

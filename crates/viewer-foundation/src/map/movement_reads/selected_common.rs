@@ -942,17 +942,18 @@ impl CommonMoveWorld for Moves<'_, '_> {
         let at = rows
             .binary_search_by_key(&combat.combat, |row| row.id)
             .map_err(|_| "selected counterattack combat side missing")?;
-        for &handle in &rows[at].attackers {
-            // The LandCombats census authenticates the army class; another
-            // class with the same numeric handle cannot supply its location.
-            let row = self
-                .division(handle)?
-                .ok_or("selected counterattack army location missing")?;
-            if row.province == target {
-                return Ok(true);
+        // Any attacker standing there decides, whatever the others' locations.
+        let mut unknown = None;
+        for location in self.attacker_locations(&rows[at])? {
+            match location {
+                Ok(location) if location == target => return Ok(true),
+                Ok(_) => {}
+                Err(reason) => {
+                    unknown.get_or_insert(reason);
+                }
             }
         }
-        Ok(false)
+        unknown.map_or(Ok(false), Err)
     }
     fn selected_path(
         &self,

@@ -1155,9 +1155,6 @@ impl<'a> FrameTerms<'a> {
         estimate: impl FnOnce(&SpeedTerms<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
         use engine_executable::modifier_keys as keys;
-        if panel_combat.is_none() {
-            super::base_speed(movement)?;
-        }
         // A naval transfer, and a move to or from the sea, moves at the logical owner's
         // transport speed in the source's strategic region times the transport scale.
         let transport = |from: u32| -> Result<EdgeTerm, String> {

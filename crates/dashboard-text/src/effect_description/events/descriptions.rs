@@ -547,12 +547,12 @@ impl Renderer<'_, '_, '_> {
             .evaluator()?
             .event_scopes(at)
             .map_err(|why| why.to_string())?;
-        let title = match event.deterministic_title_key(|triggers| {
-            self.evaluator()?.evaluate(triggers, selected).decided()
-        })? {
-            Some(key) => self.localised(key, &[], selected, true)?,
-            None => String::new(),
-        };
+        let title = self.event_title(
+            event.deterministic_title_key(|triggers| {
+                self.evaluator()?.evaluate(triggers, selected).decided()
+            })?,
+            selected,
+        )?;
         // does not expand the wrapper.
         self.char_native_text(
             b"EFFECT_COUNTRY_EVENT",

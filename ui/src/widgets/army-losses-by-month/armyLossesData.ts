@@ -102,7 +102,8 @@ export function monthBars(reply: ArmyLossesReply, measure: Measure, stack: Manpo
       known.add(row.month);
       const amount = BigInt(row.amountRaw);
       if (stack === 'type') {
-        const key = row.archetype ?? UNCLASSIFIED;
+        // Content names are tagged: an archetype named like a bucket (unclassified, other) stays its own part.
+        const key = row.archetype === null ? UNCLASSIFIED : JSON.stringify(['archetype', row.archetype]);
         if (!labels.has(key)) labels.set(key, row.archetype === null ? 'Equipment type unavailable' : row.archetypeName ?? 'Equipment name unavailable');
         add(row.month, key, amount);
       } else add(row.month, groupKey(army), amount);

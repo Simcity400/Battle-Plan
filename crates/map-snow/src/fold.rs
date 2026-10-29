@@ -86,6 +86,8 @@ impl Province {
 pub struct Fold {
     source: Option<ViewIdentity>,
     value: Option<Arc<SnowMud>>,
+    /// Whether the installed hour's table was whole, which observes the provinces it omits.
+    complete: bool,
     provinces: map_display_data::Paged<Option<Province>>,
     present: map_display_data::copy_index::CopyIndex<u32, ()>,
     volumes:
@@ -96,6 +98,7 @@ impl Default for Fold {
         Self {
             source: None,
             value: None,
+            complete: false,
             provinces: Default::default(),
             present: Default::default(),
             volumes: None,
@@ -141,7 +144,9 @@ impl Fold {
             self.source.as_ref(),
             fields,
         );
-        if matches!(changed, replay_frame::frame::TableChanges::Unchanged) {
+        if matches!(changed, replay_frame::frame::TableChanges::Unchanged)
+            && complete == self.complete
+        {
             self.source = Some(view.identity());
             return Ok(Arc::clone(self.value.as_ref().expect("installed snow")));
         }
@@ -204,12 +209,15 @@ impl Fold {
             self.provinces = provinces;
             self.present = present;
             self.volumes = volumes;
+            self.complete = complete;
             self.source = Some(view.identity());
             self.value = Some(Arc::clone(&value));
             return Ok(value);
         }
         let previous = self.value.as_ref().unwrap();
-        if changes.is_some_and(|changes| !changes.touches(fields)) {
+        // A table that turns whole or partial changes which omitted provinces are observed.
+        let complete_changed = complete != self.complete;
+        if !complete_changed && changes.is_some_and(|changes| !changes.touches(fields)) {
             self.source = Some(view.identity());
             return Ok(Arc::clone(previous));
         }
@@ -310,11 +318,18 @@ impl Fold {
             );
         }
         let mut dirty = DirtyCells::new(map_display_data::credit::display_products())?;
+        let mut dirty_known = DirtyCells::new(map_display_data::credit::display_products())?;
         for &(id, value) in &updates {
             let old = self.provinces[id as usize];
             if old.map_or([0; 2], |p| p.display) != value.map_or([0; 2], |p| p.display) {
                 for &cell in cells.province_cells.get(&id).into_iter().flatten() {
                     dirty.insert(cell)?;
+                }
+            }
+            // Under an unchanged completeness only a partial table's rows change what is known.
+            if !complete && !complete_changed && old.is_some() != value.is_some() {
+                for &cell in cells.province_cells.get(&id).into_iter().flatten() {
+                    dirty_known.insert(cell)?;
                 }
             }
         }
@@ -405,6 +420,44 @@ impl Fold {
         });
         let texels = previous.texels.try_edited(edits.chain(edges))?;
         drop(dirty);
+        let boundary = |cell: usize| {
+            cell as u32 % width + 1 == width || cell as u32 / width + 1 == height
+        };
+        let known = |province: u32| complete || provinces[province as usize].is_some();
+        let edges_known = if edge_changed {
+            display.is_some()
+        } else {
+            previous.summary.missing_edges == 0
+        };
+        let unknown = if complete_changed {
+            let count = cells.perm.len();
+            let _scratch = owner.admit_item(count)?;
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(count)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+            values.extend((0..count).map(|cell| {
+                if boundary(cell) {
+                    u8::from(!edges_known)
+                } else {
+                    cells.cell_unknown(cell, known)
+                }
+            }));
+            map_display_data::Paged::try_from_vec_in(owner, values)?
+        } else {
+            let interior = dirty_known
+                .iter()
+                .filter(|&cell| !boundary(cell))
+                .map(|cell| (cell, cells.cell_unknown(cell, known)));
+            let edges = edge_changed.then_some(()).into_iter().flat_map(|()| {
+                (0..height - 1)
+                    .map(|z| z * width + width - 1)
+                    .chain((0..width).map(|x| (height - 1) * width + x))
+                    .map(|cell| (cell as usize, u8::from(!edges_known)))
+            });
+            previous.unknown.try_edited(interior.chain(edges))?
+        };
+        drop(dirty_known);
         let raw_changed = !raw_edits.is_empty();
         let mut dirty_volumes = map_display_data::dirty::Dirty::<16>::new(owner)?;
         if let Some(index) = &self.volumes {
@@ -435,6 +488,7 @@ impl Fold {
             width,
             height,
             texels,
+            unknown,
             province_snow,
             post_factors,
             refresh,
@@ -461,6 +515,7 @@ impl Fold {
         };
         self.provinces = provinces;
         self.present = present;
+        self.complete = complete;
         self.source = Some(view.identity());
         self.value = Some(Arc::clone(&value));
         Ok(value)
@@ -470,6 +525,99 @@ impl Fold {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_cells_stay_unknown_until_a_later_hour_observes_them() {
+        use replay_data::rows::TableRows;
+        // Twelve pixels square: provinces 10, 20 and 30 fill the grid's rows south to north.
+        let ids = (0..144u32).map(|at| [30, 20, 10][(at / 48) as usize]).collect();
+        let map = installed_content_core::map::MapData {
+            width: 12,
+            height: 12,
+            province_ids: ids,
+            definitions: Default::default(),
+            country_colors: Default::default(),
+        };
+        let cells = SnowCells::new(&map, &[false; 144]).unwrap();
+        let winter = crate::winter::Winter {
+            defines: crate::winter::SnowDefines {
+                per_province: [0.0, 1.0],
+                total: [0.0, 1.0],
+            },
+            records: Vec::new(),
+        };
+        let rows = |ids: &[u32]| {
+            let display = WeatherProvinceRow {
+                display: Recorded::Value(Some(replay_data::rows::WeatherDisplay {
+                    width: 3,
+                    height: 3,
+                    refresh_interval: 25_000,
+                    refresh_identity: 1,
+                    edges: vec![5; 10],
+                })),
+                ..Default::default()
+            };
+            std::iter::once(display)
+                .chain(ids.iter().map(|&id| WeatherProvinceRow {
+                    id,
+                    display_snow: id as u8,
+                    display_mud: 1,
+                    ..Default::default()
+                }))
+                .collect::<Vec<_>>()
+        };
+        let frame = |view: TableView| {
+            let mut frame = DecodedFrame {
+                branch: 1,
+                hour: 0,
+                metrics: Default::default(),
+                tables: std::array::from_fn(|_| {
+                    TableView::Unavailable {
+                        reason: "unused".into(),
+                    }
+                    .into()
+                }),
+            };
+            frame.tables[TableId::WeatherProvinces.index()] = view.into();
+            frame
+        };
+        let whole = || TableView::Complete(TableRows::WeatherProvinces(rows(&[10, 20, 30])));
+        let partial = || TableView::Truncated {
+            rows: TableRows::WeatherProvinces(rows(&[10, 30])),
+            missing: 1,
+        };
+        let unknown = |snow: &SnowMud| {
+            (0..snow.unknown.len())
+                .filter(|&cell| snow.unknown[cell] != 0)
+                .collect::<Vec<_>>()
+        };
+        let mut fold = Fold::default();
+        for (hour, (view, expected)) in [
+            (whole(), Vec::new()),
+            // Province 20's interior cells; the boundary keeps its retained edges.
+            (partial(), vec![3, 4]),
+            (
+                TableView::Unavailable {
+                    reason: "synthetic read failure".into(),
+                },
+                (0..9).collect(),
+            ),
+            // A later partial hour observes what it holds, and nothing else.
+            (partial(), vec![3, 4]),
+            (whole(), Vec::new()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let frame = frame(view);
+            let folded = fold.project(&cells, &frame, &winter).unwrap();
+            let built = crate::build(&cells, &frame, &winter).unwrap();
+            assert_eq!(unknown(&folded), expected, "hour {hour}");
+            assert_eq!(folded.unknown, built.unknown, "hour {hour}");
+            assert_eq!(folded.texels, built.texels, "hour {hour}");
+            assert_eq!(folded.summary, built.summary, "hour {hour}");
+        }
+    }
 
     #[test]
     fn dirty_pages_keep_exact_sparse_order_without_population_limits() {

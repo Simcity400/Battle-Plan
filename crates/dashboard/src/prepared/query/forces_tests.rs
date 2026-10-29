@@ -9,29 +9,43 @@ use std::sync::atomic::AtomicBool;
 /// publishes the hourly walk's pages and branch coverage, so its products are
 /// read as when every family is prepared hour by hour.
 trait HubQuery {
-    fn query(&self, product: &str, params: Value) -> Value;
+    fn ask(&self, product: &str, params: Value) -> std::io::Result<Value>;
+    fn query(&self, product: &str, params: Value) -> Value {
+        self.ask(product, params).unwrap()
+    }
+    /// As the data service answers: on the prepared lane without block decodes,
+    /// and again on the sampled-read loader where that lane refused.
+    fn served(&self, product: &str, params: Value) -> Value {
+        let (answer, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                self.ask(product, params.clone())
+            });
+        if refused {
+            self.query(product, params)
+        } else {
+            answer.unwrap()
+        }
+    }
 }
 impl HubQuery for Fixture {
-    fn query(&self, product: &str, params: Value) -> Value {
+    fn ask(&self, product: &str, params: Value) -> std::io::Result<Value> {
         let request = crate::transport::ProductRequest {
             source_id: self.source.key().source_id.clone(),
             revision: self.source.key().revision.clone(),
             product: product.into(),
             params,
         };
-        let reply: Value = serde_json::from_str(
-            &crate::prepared::pipeline::with_test_hourly(|| {
+        let reply: Value = serde_json::from_str(&crate::prepared::pipeline::with_test_hourly(
+            || {
                 crate::prepared::query::query(
                     &self.source,
                     &request,
                     self.context.content.as_ref(),
                     &AtomicBool::new(false),
                 )
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        reply["data"].clone()
+            },
+        )?)?;
+        Ok(reply["data"].clone())
     }
 }
 
@@ -661,12 +675,12 @@ mod supply {
         );
         let mut history_point = point.clone();
         history_point.as_object_mut().unwrap().remove("width");
-        let (history_point, refused) =
-            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
-                fixture.query("supply-health", history_point)
-            });
-        assert!(
-            !refused,
+        // The first tag names no country at 31: its holder is seeded from the
+        // branch's first keyframe, which only the sampled-read loader decodes.
+        let history_point = fixture.served("supply-health", history_point);
+        assert_eq!(
+            dashboard_base::prepared::query::frames::reads(&fixture.source),
+            (0, 1),
             "the two mounted point views share the same extraction"
         );
         assert_eq!(history_point["series"], cold_point["series"]);

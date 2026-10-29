@@ -79,10 +79,14 @@ export function producedDrillData(model: ProducedModel, spec: ChartSpec): Countr
   const parts = chartParts(model, spec);
   const byType = spec.type == null;
   const unresolved = model.reply.keys.flatMap((_, index) => typeOf(model, index).startsWith(UNRESOLVED_MARK) ? [index] : []);
+  // A resolved type's whole is unknown while an unresolved variant holds anything: it
+  // could be of that type. Its models' own counts stay exact.
+  const unsure = (series: ProducedSeriesModel, sample: number) => spec.type != null && !spec.type.startsWith(UNRESOLVED_MARK)
+    && unresolved.some(key => groupValue(series, key, sample) !== 0);
   // The whole a sample's parts make: the product's exact total of every type, or one
   // type's models added (unknown where one of them is).
   const totalOf = (series: ProducedSeriesModel, sample: number, values: readonly number[]) =>
-    byType ? valueAt(series.total, sample) : values.reduce((sum, value) => sum + value, 0);
+    byType ? valueAt(series.total, sample) : unsure(series, sample) ? Number.NaN : values.reduce((sum, value) => sum + value, 0);
   const at = (tag: string, hour: number) => {
     const sample = producedAt(model, tag, hour);
     const series = model.series.get(tag);

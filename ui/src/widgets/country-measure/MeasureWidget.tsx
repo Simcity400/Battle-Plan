@@ -122,6 +122,8 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const [pickedActor, setPickedActor] = useState<{ owner: typeof captureOwner; pick: PowerActorPick } | null>(null);
   const actorPick = pickedActor?.owner === captureOwner ? pickedActor.pick : null;
   const setActorPick = useCallback((pick: PowerActorPick | null) => setPickedActor(pick ? { owner: captureOwner, pick } : null), [captureOwner]);
+  // Only the newest chart pick still open may choose the breakdown's country and hour.
+  const picks = useRef(0);
   const drill = actorPick ? localDrill : CLOSED;
   const localHour = localPick?.owner === captureOwner ? localPick.hour : undefined;
   const setLocalHour = (hour: number | null) => setLocalPick({ owner: captureOwner, hour });
@@ -138,6 +140,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   const choosingActor = actorPick !== null && actorPick.tag === null;
   useEffect(() => {
     dispatchDrill({ type: 'close' });
+    picks.current++;
     setActorPick(null);
     setLocalPick(null);
   }, [captureOwner, setActorPick]);
@@ -525,9 +528,10 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
           placeEndLabels(ctx, frame, chartTokens, ends);
         }}
         onPick={(hour, context?: ChartPick) => {
+          const pick = ++picks.current;
           if (prepared.enabled) {
             void prepared.exactAt(hour).then(exact => {
-              if (!exact) return;
+              if (!exact || pick !== picks.current) return;
               const known = new Set(exact.states.filter(state => state.run !== null).map(state => state.tag));
               const candidates = pickSummaryLines([...prepared.summaryByTag].map(([key, value]) => ({ key, summary: value.summary })), hour, known, context);
               if (!candidates.length) return;
@@ -563,6 +567,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       measure={config.measure} tags={resolved.tags} initialTag={changeList.tag} firstOrdinal={changeList.first} endOrdinal={changeList.end}
       digits={digits} unit={config.unit} visibleThrough={until ?? extent[1]} label={tag => labels.labelAt(Math.floor(head))(tag).name}
       onClose={() => setChangeList(null)} onPick={(tag, hour) => {
+        picks.current++;
         const picked: PowerActorPick = { hour, tag, candidates: [tag] }; setActorPick(picked); setDrillMode('spending');
         dispatchDrill(powerActorDrillAction(picked, drill.breakdown !== null, runtime.clock.getSnapshot().playing, following ? playhead : null));
       }} />}
@@ -577,6 +582,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
       day={drillAt === null ? '' : dayLabel(Math.floor(drillAt))} following={drill.follow}
       canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour} returnFocus=".country-measure-chart canvas" onClose={() => {
         dispatchDrill({ type: 'close' });
+        picks.current++;
         setActorPick(null);
       }} onFollow={() => { if (!choosingActor) dispatchDrill({ type: 'follow' }); }}
       onPin={selectedCountry && actorSpans ? () => {
@@ -591,6 +597,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
         flagAt={{ branchId: track.branch.id, hour: actorPick.hour }} onChange={tag => {
           const chosen = choosePowerActor(actorPick, tag);
           if (chosen === actorPick) return;
+          picks.current++;
           setActorPick(chosen);
           dispatchDrill({ type: 'pick', hour: chosen.hour });
         }} />}

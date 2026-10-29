@@ -1,6 +1,7 @@
 //! Save XP for one selected source and target. No pair values are recorded.
 use super::{queries::*, *};
-use crate::products::industrial_organisations::local_modifier;
+use crate::products::industrial_organisations::{local_modifier, owner_roster};
+use dashboard_text::triggers::{Evaluator, OrganisationCondition};
 use engine_executable::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST as ORGANISATION_CHANGE;
 use installed_content_core::equipment::{ModuleXpRules, UpgradeXpRules};
 
@@ -63,6 +64,12 @@ pub fn organisation_conversion_bonus(
         .position(|row| std::ptr::eq(row, kind))
         .unwrap();
     let admits = |names: &[Vec<u8>]| -> Result<bool, String> {
+        // Past a group reading the port cannot follow, any name may be a later group.
+        if let Some(lost) = &inputs.groups.lost {
+            return Err(format!(
+                "organisation equipment groups are unread past {lost} (count: 1)"
+            ));
+        }
         let members = inputs.groups.expand(names)?;
         for member in members {
             let mask = installed_content_core::equipment::category_mask(&member).unwrap_or(0);
@@ -83,11 +90,19 @@ pub fn organisation_conversion_bonus(
             .map_or(0, |term| term.value)
     };
     let mut sum = 0_i64;
-    use dashboard_text::triggers::{Scope, Scopes};
-    let scope = Scopes::of(Scope::IndustrialOrganisation(reference));
-    if world.evaluate(tree.visible, scope).decided()?
-        && world.evaluate(tree.available, scope).decided()?
-    {
+    // As the organisation's modifiers: `visible`, then `available`, in its organisation/owner scope pair.
+    let ordinary = if tree.visible.is_empty() && tree.available.is_empty() {
+        true
+    } else {
+        Evaluator::new(world, None).organisation_conditions(
+            reference,
+            &[
+                (OrganisationCondition::Visible, tree.visible),
+                (OrganisationCondition::Available, tree.available),
+            ],
+        )?
+    };
+    if ordinary {
         for token in &details.unlocked {
             let token = std::str::from_utf8(spelling(frame, *token)?).map_err(|e| e.to_string())?;
             if let Some(trait_) = inputs.traits.trait_definition(name, token)?
@@ -102,14 +117,8 @@ pub fn organisation_conversion_bonus(
     {
         sum = sum.wrapping_add(bonus(&initial.bonuses));
     }
-    let roster = frame
-        .complete::<tables::IndustrialOrganisationPolicies>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| row.country == organisation.owner)
-        .ok_or_else(|| {
-            format!("organisation {reference} owner policy roster unavailable (count: 1)")
-        })?;
+    // The raw owner can be an alias; the roster is keyed by its country's id.
+    let roster = owner_roster(frame, organisation).map_err(|why| format!("{why} (count: 1)"))?;
     if let Some(selected) = roster
         .policies
         .iter()
@@ -843,6 +852,132 @@ mod tests {
             );
             std::fs::remove_dir_all(&root).unwrap();
         }
+    }
+
+    /// Owner-country roster, owner-scoped composed conditions and partly read groups.
+    #[test]
+    fn organisation_conversion_bonus_reads_the_owner_country_scope_and_known_groups() {
+        use dashboard_text::triggers::{ContentFacts, World};
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("design_mio_conversion_{}", uuid::Uuid::new_v4()));
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "common/military_industrial_organization/policies/cost.txt",
+            "synthetic_policy={production_bonus={armor={production_conversion_speed_factor=0.3}}}",
+        );
+        let (mut frame, equipment, _) = inputs();
+        let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+            &mut *frame.tables[TableId::LexicalTokens.index()]
+        else {
+            unreachable!()
+        };
+        for (token, name) in [
+            (100, "synthetic_org"),
+            (200, "unlocked"),
+            (300, "synthetic_policy"),
+            (500, "synthetic_flag"),
+        ] {
+            tokens.push(rows::LexicalTokenRow {
+                token,
+                literal: name.as_bytes().to_vec(),
+            });
+        }
+        // Raw owner 5_000 aliases country 6_000; a roster keyed by the alias is not the owner's.
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![rows::CountryRow {
+                id: 6_000,
+                canonical_slot: 50,
+                tag: b"SYN".to_vec(),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+            [5_000, 6_000]
+                .into_iter()
+                .map(|id| rows::CountryLinkRow {
+                    id,
+                    canonical_slot: 50,
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::IndustrialOrganisationPolicies.index()] =
+            TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
+                rows::IndustrialOrganisationPoliciesRow {
+                    country: 5_000,
+                    ..Default::default()
+                },
+                rows::IndustrialOrganisationPoliciesRow {
+                    country: 6_000,
+                    policies: vec![rows::IndustrialOrganisationPolicy {
+                        token: 300,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::DesignOrganisationLiveness.index()] =
+            TableView::Complete(TableRows::DesignOrganisationLiveness(vec![
+                rows::DesignOrganisationLivenessRow {
+                    organisation: 7,
+                    live: true,
+                },
+            ]));
+        *frame.tables[TableId::IndustrialOrganisations.index()] =
+            TableView::Complete(TableRows::IndustrialOrganisations(vec![
+                rows::IndustrialOrganisationRow {
+                    organisation: 7,
+                    country: 4_999,
+                    owner: 5_000,
+                    token: 100,
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::IndustrialOrganisationDetails.index()] =
+            TableView::Complete(TableRows::IndustrialOrganisationDetails(vec![
+                rows::IndustrialOrganisationDetailsRow {
+                    organisation: 7,
+                    country: 4_999,
+                    unlocked: vec![200],
+                    state: rows::IndustrialOrganisationState {
+                        policy: 300,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ]));
+        let dlcs = Default::default();
+        let triggers = Default::default();
+        let aliases = Default::default();
+        let world = World::read(
+            &frame,
+            ContentFacts::content_only(&dlcs, &triggers, &aliases),
+        );
+        let bonus = |visible: &str, available: &str, lost: Option<&str>| {
+            write(
+                "common/military_industrial_organization/organizations/cost.txt",
+                &format!(
+                    "synthetic_org={{equipment_type={{armor}} visible={{{visible}}} available={{always={available}}} initial_trait={{token=initial production_bonus={{production_conversion_speed_factor=0.1}}}} trait={{token=unlocked limit_to_equipment_type={{armor}} production_bonus={{production_conversion_speed_factor=0.2}}}}}}"
+                ),
+            );
+            let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+            let mut content = OrganisationContent::load(&layers).unwrap();
+            content.groups.lost = lost.map(str::to_owned);
+            organisation_conversion_bonus(&frame, 7, 20, &content, &equipment, &world)
+        };
+        // FROM is the owner; initial, completed trait and the owner's attached policy.
+        assert_eq!(bonus("FROM={always=yes}", "yes", None), Ok(60_000));
+        // Unrecorded owner flags leave `visible` undecided; only a false `available` decides it.
+        let undecided = "FROM={has_country_flag=synthetic_flag}";
+        assert_eq!(bonus(undecided, "no", None), Ok(40_000));
+        assert!(bonus(undecided, "yes", None).is_err());
+        // Past an unfollowed group reading, membership is unknown, never a mismatch.
+        let refused = bonus("always=yes", "yes", Some("groups.txt line 1: unsettled")).unwrap_err();
+        assert!(refused.contains("unread past groups.txt"), "{refused}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// Fixed results of the organisation change cost across clamp, feature and

@@ -13,6 +13,8 @@ export class PreparationController {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private active = false;
   private owned = false;
+  /** What the panel was asked to open, so a failed open can be retried. */
+  private opening: { path: string; source: DashboardSource | null } | null = null;
   private client: DashboardClient;
   constructor(client: DashboardClient) { this.client = client; }
   getSnapshot = () => this.state;
@@ -20,6 +22,7 @@ export class PreparationController {
   private update(next: PreparationState) { this.state = next; this.listeners.forEach(listener => listener()); }
   async start(path: string, source: DashboardSource | null) {
     this.active = true;
+    this.opening = { path, source };
     this.update({ source: null, reply: null, loading: true, pending: false, error: null });
     const opening = new AbortController(); this.request = opening;
     try {
@@ -32,6 +35,12 @@ export class PreparationController {
   }
   async command(action: PreparationAction) {
     const source = this.state.source;
+    if (this.active && !source && this.opening && !this.state.loading && (action === 'status' || action === 'start')) {
+      // The source never opened: Refresh opens it again, and Prepare then starts.
+      await this.start(this.opening.path, this.opening.source);
+      if (action === 'start' && this.state.source && !this.state.error) await this.command('start');
+      return;
+    }
     if (!this.active || !source || this.state.pending && action !== 'status') return;
     if (this.timer) clearTimeout(this.timer); this.timer = null;
     this.request?.abort();

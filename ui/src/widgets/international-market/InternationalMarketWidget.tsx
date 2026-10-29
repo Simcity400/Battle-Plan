@@ -16,7 +16,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { groupReasonAt, preparedAt, tagAt } from '../../dashboard/economyHistory';
+import { groupReasonAt, preparedAt, valueAt } from '../../dashboard/economyHistory';
 import { EquipmentCell, EQUIPMENT_UNNAMED, useVariantArt } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
@@ -27,9 +27,11 @@ import { usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import type { HolderTag, MarketHistoryReply } from '../../generated/dashboard';
+import type { MarketHistoryReply } from '../../generated/dashboard';
 import { DETAILS, OPTIONS, SORTS, VIEWS } from './definition';
 import { cic, cicLabel, contractRows, firstWithMore, levelText, offerRows, units, unitsLabel } from './marketData';
+import { partiesOf, partyTagsAt } from '../../dashboard/marketHistory';
+import type { Party } from '../../dashboard/marketHistory';
 import type { ContractRow, MarketTab, OfferRow } from './marketData';
 import '../equipment-stockpile/equipmentStockpile.css';
 import './internationalMarket.css';
@@ -54,10 +56,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  // Seller tags can change; the drill must use the native holder's tag at the drill hour.
+  // Tags can change; the drill uses each picked party's native holder's tag at the drill hour.
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const [pick, setPick] = useState<{ client: typeof runtime.client; owner: string | null; title: string; tags: string[]; selected: string | null;
-    holder?: { id: string; tags: readonly HolderTag[] } } | null>(null);
+    parties?: Party[] } | null>(null);
   const picked = pick && pick.client === runtime.client && pick.owner === pickOwner ? pick : null;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
@@ -139,16 +141,16 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const offerTooltip = useCallback((row: OfferRow) => fitTooltip([{ title: row.name ?? EQUIPMENT_UNNAMED, subtitle: `${name(row.seller)} · ${dayLabel(hour)}`,
     rows: [{ label: 'On market', value: units(row.amount) }, { label: 'Price level', value: levelText(row.level) }] }], viewport), [name, hour, viewport]);
   const playing = runtime.clock.getSnapshot().playing;
-  const open = (title: string, rowTags: (string | null)[], selected: string | null, holder?: string) => {
+  const open = (title: string, rowTags: (string | null)[], selected: string | null, holders: readonly (string | null)[]) => {
+    const parties = data ? partiesOf(data.holders, holders) : [];
     setPick({ client: runtime.client, owner: pickOwner, title, tags: rowTags.filter((tag): tag is string => tag !== null), selected,
-      ...(holder === undefined ? {} : { holder: { id: holder, tags: data?.holders[holder] ?? [] } }) });
+      ...(parties.length ? { parties } : {}) });
     dispatch({ type: 'open', breakdown: DETAILS.id, hour, playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const count = view === 'inventory' ? offers.length : contracts.length;
   const at = drillHour(drill, hour) ?? hour;
   const drillAt = drill.follow ? hour : at;
-  const sellerTag = picked?.holder ? tagAt(data?.holders[picked.holder.id] ?? picked.holder.tags, drillAt) : null;
-  const drillTags = picked?.holder ? sellerTag === null ? null : [sellerTag] : picked?.tags ?? null;
+  const drillTags = picked?.parties ? partyTagsAt(picked.parties, data?.holders, drillAt) : picked?.tags ?? null;
 
   if (!track) return <WidgetState kind="empty" icon="globe" message="Load a campaign to see the market." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -174,11 +176,12 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     ? <WidgetState kind="unavailable" message={view === 'inventory' ? 'Market inventory was not recorded.' : 'Contract terms unavailable.'} />
     : view === 'inventory'
       ? offers.length ? <Table key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment" rows={offers} columns={offerColumns} rowKey={row => row.key}
-        tooltip={offerTooltip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${name(row.seller)}: market`, [row.seller], null, row.offer.seller)} {...common} />
+        tooltip={offerTooltip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${name(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
         : <WidgetState kind="empty" icon="globe" message="Nothing listed." />
       : contracts.length ? <Table key={`${track.source.id}:${track.branch.id}:${view}`} label={view === 'contracts' ? 'Market contracts' : 'Market requests'}
         rows={contracts} columns={contractColumns} rowKey={row => row.key} tooltip={contractTooltip} onVisibleRows={onVisibleContracts}
-        onRowClick={row => open(`${name(row.seller)} → ${name(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`)} {...common} />
+        onRowClick={row => open(`${name(row.seller)} → ${name(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`,
+          [row.contract.seller, valueAt(row.contract.buyer, hour)])} {...common} />
         : <WidgetState kind="empty" icon="globe" message={view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'} />;
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
@@ -186,7 +189,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
       title={picked?.title ?? DETAILS.label} day={dayLabel(drillShown ?? at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={<div className="international-market-table">{body}</div>}>
       {picked && (drillTags ? <MarketDrill runtime={runtime} track={track} hour={drillAt} tags={drillTags} selected={picked.selected} active={active} onAnswered={setDrillShown} />
-        : <WidgetState kind="unavailable" message="This seller was not recorded at this hour." />)}
+        : <WidgetState kind="unavailable" message={picked.parties && picked.parties.length > 1 ? 'Neither party was recorded at this hour.' : 'This seller was not recorded at this hour.'} />)}
     </DrillHost>
   </div>;
 }

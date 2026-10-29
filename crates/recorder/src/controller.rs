@@ -1,7 +1,9 @@
 //! The in-process recording API the tray recorder drives. The command line
 //! runs the same capture through [`crate::recording`].
 use crate::{
-    recording::{self, COLLECTOR_LOADED, CaptureOptions, TWO_GAMES, UNSUPPORTED_BUILD},
+    recording::{
+        self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED, TWO_GAMES, UNSUPPORTED_BUILD,
+    },
     windows::{self, Process, ProcessMemory},
 };
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
@@ -230,7 +232,7 @@ pub fn problem_text(error: &str, started: bool) -> &'static str {
         "This the game version is not supported. Nothing recorded."
     } else if error == TWO_GAMES {
         "More than one game is running. Close the extra game to record."
-    } else if error == COLLECTOR_LOADED {
+    } else if error == COLLECTOR_LOADED || error == GAME_CLAIMED {
         "Another recorder is attached to this game."
     } else if error.starts_with("recording completion is partial")
         || error.contains("spool retained")
@@ -329,10 +331,12 @@ mod tests {
             problem_text(TWO_GAMES, false),
             "More than one game is running. Close the extra game to record."
         );
-        assert_eq!(
-            problem_text(COLLECTOR_LOADED, false),
-            "Another recorder is attached to this game."
-        );
+        for attached in [COLLECTOR_LOADED, GAME_CLAIMED] {
+            assert_eq!(
+                problem_text(attached, false),
+                "Another recorder is attached to this game."
+            );
+        }
         assert_eq!(
             problem_text(
                 "recording completion is partial: replay finalization failed: synthetic; recoverable spool retained at x",

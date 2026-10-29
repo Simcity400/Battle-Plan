@@ -249,6 +249,7 @@ fn tactical_target_needs_a_hostile_primary_country_and_the_attached_group() {
         vec![LandCombatRow {
             id: 5,
             province: 412,
+            attacker_classes: vec![0],
             attackers: vec![army(1)],
             defenders: vec![army(2)],
             ..Default::default()

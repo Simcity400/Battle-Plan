@@ -1,4 +1,4 @@
-import type { CountryParams, FocusHistory, FocusOrder, FocusSegment, FocusProgress, FocusReply, FocusArtworkParams, FocusArtworkReply } from '../../generated/dashboard';
+import type { CountryParams, FocusDatabase, FocusHistory, FocusOrder, FocusSegment, FocusProgress, FocusReply, FocusArtworkParams, FocusArtworkReply } from '../../generated/dashboard';
 import type { ProductRequest } from '../../dashboard/client';
 import { artworkEntry, drawableIcon, keepDrawableIcons } from '../../dashboard/artwork.ts';
 
@@ -28,6 +28,14 @@ export function focusSegmentAt(history: FocusHistory, hour: number): FocusSegmen
 
 export function focusAt(history: FocusHistory, hour: number): FocusOrder | null {
   return focusSegmentAt(history, hour)?.order ?? null;
+}
+
+/** The focus a country is working on: its current national focus, else its continuous focus,
+ * with the database its id is looked up in. One id can name a different focus in each. */
+export function activeFocus(order: { current: string | null; continuous: string | null } | null | undefined): { database: FocusDatabase; token: string } | null {
+  if (order?.current != null) return { database: 'national', token: order.current };
+  if (order?.continuous != null) return { database: 'continuous', token: order.continuous };
+  return null;
 }
 
 export interface FocusProgressState {
@@ -97,7 +105,8 @@ export function validateFocusReply(input: unknown): FocusReply {
     })
     // Authored duration metadata has no token count cap.
     && reply.artwork.every(artworkEntry)
-    && (reply.staticText === undefined || Array.isArray(reply.staticText) && reply.staticText.every(item => artworkEntry(item) && item.icon === null));
+    && (reply.staticText === undefined || Array.isArray(reply.staticText) && reply.staticText.every(item => artworkEntry(item) && item.icon === null))
+    && Array.isArray(reply.continuousStaticText) && reply.continuousStaticText.every(item => artworkEntry(item) && item.icon === null);
   if (!valid) throw new Error('Focus history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
   return reply;
@@ -106,7 +115,7 @@ export function validateFocusReply(input: unknown): FocusReply {
 /** Authenticate the supplying read and preserve native per-item refusals. */
 export function validateFocusArtworkReply(value: unknown, params: FocusArtworkParams): FocusArtworkReply {
   const reply = value as FocusArtworkReply;
-  if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || reply.tag !== params.tag
+  if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || reply.tag !== params.tag || reply.database !== params.database
     || !Array.isArray(reply.items) || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')) {
     throw new Error('Focus artwork does not match this country and hour.');
   }

@@ -44,14 +44,15 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
 
   const founded = life[0]?.firstHour ?? null;
   const from = founded == null ? at : Math.min(at, Math.max(track.branch.firstHour, founded));
-  // Runs split across unrecorded hours; only a different country or name is a change.
+  // Runs split across unrecorded hours and renames; only another native country is a change of leader.
   const ledBy = view.leaders.filter(run => run.firstHour <= at);
-  const leaders = changes(ledBy, run => run.tag);
+  const leaders = changes(ledBy, run => view.identities.keyAt(run.tag, run.firstHour) ?? JSON.stringify(['tag', run.tag]));
   const leader = leaderAt(view.leaders, at);
   const leaderRun = leaders.at(-1);
-  const formerLeader = leaders.length > 1 ? leaders[leaders.length - 2].tag : null;
-  // The former leader as it was when it last led: a later holder of its tag is another country.
-  const formerLeaderHour = formerLeader && leaderRun ? ledBy[ledBy.indexOf(leaderRun) - 1].lastHour : at;
+  // The former leader as it was when it last led: by the tag it held then, at that hour.
+  const formerRun = leaders.length > 1 && leaderRun ? ledBy[ledBy.indexOf(leaderRun) - 1] : null;
+  const formerLeader = formerRun?.tag ?? null;
+  const formerLeaderHour = formerRun ? formerRun.lastHour : at;
   const nameRuns = changes(names.filter(run => run.firstHour <= at && run.name), run => run.name);
   const formerName = nameRuns.length > 1 ? nameRuns.at(-2)! : null;
   const events = useMemo(() => joinEvents(view, at), [view, at]);

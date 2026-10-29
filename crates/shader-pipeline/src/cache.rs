@@ -21,24 +21,49 @@ pub trait Compile: Send + Sync {
         technique: &Technique,
         defines: &[String],
     ) -> Result<Compiled, String>;
+    /// Forget a compiler that was not found, so the next compile looks for it again.
+    fn retry(&self) {}
 }
 impl Compile for Compiler {
     fn compile(&self, p: &Program, t: &Technique, d: &[String]) -> Result<Compiled, String> {
         Compiler::compile(self, p, t, d)
     }
 }
-/// The bundled compiler, discovered at the first cache miss of this cache (one content load).
-/// A compiler installed later is found by the next load.
-#[derive(Default)]
-struct Runtime(OnceLock<Result<Compiler, String>>);
+/// The bundled compiler, discovered at the first cache miss of this cache (one content load)
+/// or after a retry ([`Cache::retry_failures`]). A compiler installed later is found by the next
+/// load.
+struct Runtime {
+    discover: fn() -> Result<Compiler, String>,
+    found: Mutex<Option<Arc<Result<Compiler, String>>>>,
+}
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            discover: Compiler::discover,
+            found: Mutex::new(None),
+        }
+    }
+}
 impl Compile for Runtime {
     fn compile(&self, p: &Program, t: &Technique, d: &[String]) -> Result<Compiled, String> {
-        match self.0.get_or_init(Compiler::discover) {
+        let found = Arc::clone(
+            self.found
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get_or_insert_with(|| Arc::new((self.discover)())),
+        );
+        match &*found {
             Ok(compiler) => compiler.compile(p, t, d),
             Err(reason) => Err(format!(
                 "effect {:?}, technique {:?}: {reason}",
                 p.effect, t.name
             )),
+        }
+    }
+    fn retry(&self) {
+        let mut found = self.found.lock().unwrap_or_else(|error| error.into_inner());
+        if found.as_deref().is_some_and(Result::is_err) {
+            *found = None;
         }
     }
 }
@@ -93,6 +118,15 @@ impl Cache {
     }
     pub fn diagnostics(&self) -> Diagnostics {
         self.diagnostics.lock().unwrap().clone()
+    }
+    /// Forget failed compiles and a compiler that was not found, so a repaired compiler serves
+    /// the next request; compiled programs stay.
+    pub fn retry_failures(&self) {
+        self.compiler.retry();
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|_, entry| !matches!(entry.get(), Some(Err(_))));
     }
     fn warn(&self, warning: String) {
         *self
@@ -344,6 +378,83 @@ pub(crate) mod tests {
         }
         assert_eq!(cache.diagnostics().refused.values().sum::<u64>(), 2);
     }
+    #[test]
+    fn a_compiler_repaired_after_a_failure_serves_once_failures_are_retried() {
+        use std::sync::atomic::AtomicBool;
+        #[derive(Default)]
+        struct Repairable {
+            repaired: AtomicBool,
+            compiled: Count,
+            retried: AtomicUsize,
+        }
+        impl Compile for Repairable {
+            fn compile(&self, p: &Program, t: &Technique, d: &[String]) -> Result<Compiled, String> {
+                if self.repaired.load(Ordering::SeqCst) {
+                    self.compiled.compile(p, t, d)
+                } else {
+                    Err("effect \"vanilla.shader\", technique \"Up\": DXC not found".into())
+                }
+            }
+            fn retry(&self) {
+                self.retried.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let compiler = Arc::new(Repairable::default());
+        let cache = Arc::new(Cache::new(None, compiler.clone()));
+        let source = Arc::new(source("static const float4 C = 1;"));
+        let failed = super::super::library::Effect::new(source.clone(), vec![], cache.clone());
+        let compiles = super::super::library::Effect::new(
+            source.clone(),
+            vec!["OTHER".into()],
+            cache.clone(),
+        );
+        assert!(failed.select("Up").is_err());
+        assert!(failed.failed() && !compiles.failed());
+        compiler.repaired.store(true, Ordering::SeqCst);
+        // Until retried, the failure stays: in the effect and in the cache.
+        assert!(failed.select("Up").is_err());
+        assert!(cache.get(&source, &source.techniques[0], &[]).is_err());
+        compiles.select("Up").unwrap();
+        assert_eq!(compiler.compiled.0.load(Ordering::SeqCst), 1);
+        cache.retry_failures();
+        assert_eq!(compiler.retried.load(Ordering::SeqCst), 1);
+        let again = super::super::library::Effect::new(source.clone(), vec![], cache.clone());
+        again.select("Up").unwrap();
+        assert!(!again.failed());
+        // What compiled stays compiled.
+        compiles.select("Up").unwrap();
+        cache.get(&source, &source.techniques[0], &["OTHER".into()]).unwrap();
+        assert_eq!(compiler.compiled.0.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_compiler_not_found_is_looked_for_again_only_after_a_retry() {
+        static LOOKS: AtomicUsize = AtomicUsize::new(0);
+        fn missing() -> Result<Compiler, String> {
+            LOOKS.fetch_add(1, Ordering::SeqCst);
+            Err("DXC not found".into())
+        }
+        let runtime = Runtime {
+            discover: missing,
+            found: Mutex::new(None),
+        };
+        let source = source("static const float4 C = 1;");
+        for _ in 0..2 {
+            let reason = runtime
+                .compile(&source, &source.techniques[0], &[])
+                .unwrap_err();
+            assert!(reason.contains("DXC not found") && reason.contains("Up"), "{reason}");
+        }
+        assert_eq!(LOOKS.load(Ordering::SeqCst), 1);
+        runtime.retry();
+        assert!(
+            runtime
+                .compile(&source, &source.techniques[0], &[])
+                .is_err()
+        );
+        assert_eq!(LOOKS.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn variants_are_lazy_and_keep_pipeline_identity() {
         let compiler = Arc::new(Count(AtomicUsize::new(0)));

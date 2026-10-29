@@ -3,7 +3,7 @@
 
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
 };
 
 use installed_content_core::{
@@ -57,6 +57,8 @@ static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
 struct Inputs {
     map_size: OnceLock<Result<[u32; 2], String>>,
     programs: Mutex<BTreeMap<Vec<u8>, Arc<ParsedProgram>>>,
+    /// Set once the renderer has retried, for this stack, what failed under earlier ones.
+    retried: OnceLock<()>,
 }
 
 type ParsedProgram = OnceLock<Result<Arc<program::Program>, String>>;
@@ -109,10 +111,7 @@ pub fn flag_rectangle_mapped(
     decode: Decode,
 ) -> Result<(), String> {
     let variant = variant(layers, effect, &[], decode)?;
-    let effect = renderer()?
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .effect(variant);
+    let effect = renderer_for(layers)?.effect(variant);
     let named = |why: String| format!("effect {:?}: {why}", effect.source.effect);
     let index = effect
         .select("Up")?
@@ -156,6 +155,16 @@ fn renderer() -> Result<&'static Mutex<Renderer>, String> {
         .get_or_init(|| Renderer::new().map(Mutex::new))
         .as_ref()
         .map_err(Clone::clone)
+}
+
+/// The renderer, which a content stack first using it has retry what failed before: a
+/// shader compiler repaired since then is found.
+fn renderer_for(layers: &ResolvedLayers) -> Result<MutexGuard<'static, Renderer>, String> {
+    let mut renderer = renderer()?.lock().unwrap_or_else(|e| e.into_inner());
+    if layers.derived::<Inputs>().retried.set(()).is_ok() {
+        renderer.retry_failures();
+    }
+    Ok(renderer)
 }
 
 fn variant(
@@ -208,7 +217,7 @@ fn render_targets(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let job = {
-        let mut renderer = renderer()?.lock().unwrap_or_else(|e| e.into_inner());
+        let mut renderer = renderer_for(layers)?;
         let targets = targets
             .into_iter()
             .zip(variants)
@@ -308,6 +317,12 @@ impl Renderer {
             texture_bytes: 0,
             texture_clock: 0,
         })
+    }
+
+    /// Forget failed compiles, their effects and a compiler that was not found.
+    fn retry_failures(&mut self) {
+        self.cache.retry_failures();
+        self.effects.retain(|_, effect| !effect.failed());
     }
 
     fn effect(

@@ -247,11 +247,19 @@ impl Prepared {
         let known = |keyed: &mut Keyed<Field, Extra>, observed: &mut Observed, table: u8| {
             observed.insert(keyed.key(Field::Known(table)), 1);
         };
+        // A row whose owner has no identity is left out, so the table's roster is not known whole.
+        let unknown = |keyed: &mut Keyed<Field, Extra>, observed: &mut Observed, table: u8| {
+            observed.remove(&keyed.key(Field::Known(table)));
+        };
         match frame.complete::<tables::CountryMarket>() {
             Ok(rows) => {
                 known(keyed, &mut observed, 0);
+                let mut orphaned = false;
                 for row in rows {
-                    let Some(seller) = slot(keyed, row.country) else { continue };
+                    let Some(seller) = slot(keyed, row.country) else {
+                        orphaned = true;
+                        continue;
+                    };
                     pool(keyed, &mut observed, &mut named, &row.inventory, &|ordinal, variant| {
                         Field::Inventory(seller, ordinal, variant)
                     });
@@ -263,14 +271,21 @@ impl Prepared {
                         );
                     }
                 }
+                if orphaned {
+                    unknown(keyed, &mut observed, 0);
+                }
             }
             Err(error) => keyed.refuse(format!("market inventory unavailable: {error}")),
         }
         match frame.complete::<tables::MarketContractTerms>() {
             Ok(rows) => {
                 known(keyed, &mut observed, 1);
+                let mut orphaned = false;
                 for row in rows {
-                    let Some(seller) = slot(keyed, row.country) else { continue };
+                    let Some(seller) = slot(keyed, row.country) else {
+                        orphaned = true;
+                        continue;
+                    };
                     let (id, kind) = (row.id, row.kind);
                     if let Some(buyer) = slot(keyed, row.buyer) {
                         observed.insert(keyed.key(Field::ContractBuyer(seller, id, kind)), i128::from(buyer));
@@ -289,14 +304,21 @@ impl Prepared {
                         );
                     }
                 }
+                if orphaned {
+                    unknown(keyed, &mut observed, 1);
+                }
             }
             Err(error) => keyed.refuse(format!("market contract terms unavailable: {error}")),
         }
         match frame.complete::<tables::LendLeaseAgreements>() {
             Ok(rows) => {
                 known(keyed, &mut observed, 2);
+                let mut orphaned = false;
                 for row in rows {
-                    let Some(giver) = slot(keyed, row.country) else { continue };
+                    let Some(giver) = slot(keyed, row.country) else {
+                        orphaned = true;
+                        continue;
+                    };
                     let id = row.id;
                     if let Some(receiver) = slot(keyed, row.receiver) {
                         observed.insert(keyed.key(Field::LeaseReceiver(giver, id)), i128::from(receiver));
@@ -322,6 +344,9 @@ impl Prepared {
                             Field::LeasePool(giver, id, which as u8, ordinal, variant)
                         });
                     }
+                }
+                if orphaned {
+                    unknown(keyed, &mut observed, 2);
                 }
             }
             Err(error) => keyed.refuse(format!("lend-lease agreements unavailable: {error}")),
@@ -916,6 +941,10 @@ pub struct MarketLedgerParams {
     pub members: Option<Vec<LedgerMember>>,
     /// The kinds shown; [`LEDGER_KINDS`] by default.
     pub kinds: Vec<u8>,
+    /// The first hour shown; from the branch's start when absent.
+    #[serde(default)]
+    #[ts(optional)]
+    pub first_hour: Option<i32>,
     /// The last hour shown.
     pub last_hour: i32,
     /// The cursor of the next older page, from the reply's `next`; the
@@ -969,6 +998,9 @@ impl Product for MarketLedger {
         }
         if params.members.iter().flatten().any(|member| member.first_hour > member.last_hour) {
             return Err("Invalid market ledger member hours");
+        }
+        if params.first_hour.is_some_and(|first| first > params.last_hour) {
+            return Err("Invalid market ledger hours");
         }
         if params.kinds.iter().any(|kind| !LEDGER_KINDS.contains(kind)) {
             return Err("Invalid market occurrence kind");
@@ -1051,6 +1083,7 @@ pub fn ledger(
         reply.known = published.text(id, &[(i32::MIN, i32::MAX)])?;
     }
     let to = params.last_hour.min(through);
+    let first = params.first_hour.unwrap_or(i32::MIN);
     if streams.is_empty() {
         reply.total = spans.is_none().then(|| "0".to_owned());
         warnings.extend(published.warnings("Market"));
@@ -1068,14 +1101,14 @@ pub fn ledger(
     // a chosen tag.
     let mut segments = Vec::new();
     match &spans {
-        None => segments.extend(stream_of.iter().map(|(&kind, &chain)| (chain, kind, i32::MIN, to))),
+        None => segments.extend(stream_of.iter().map(|(&kind, &chain)| (chain, kind, first, to))),
         Some(spans) => {
             for (holder, spans) in spans {
                 for (&kind, chunks) in parties.get(holder).into_iter().flatten() {
                     let chain = chains.len();
                     chains.push(Chain::new(chunks.clone(), true)?);
                     for &(from, until) in spans {
-                        let until = until.min(to);
+                        let (from, until) = (from.max(first), until.min(to));
                         if from <= until {
                             segments.push((chain, kind, from, until));
                         }
@@ -1095,7 +1128,7 @@ pub fn ledger(
     }
     reply.next = ledger.cursor();
     if spans.is_none() {
-        reply.total = Some(ledger.total().to_string());
+        reply.total = Some(ledger.total(&mut published)?.to_string());
     }
     let mut rows: Vec<MarketLedgerRow> = Vec::with_capacity(taken.len());
     for (kind, payload) in taken {
@@ -1290,9 +1323,18 @@ impl Ledger {
         Ok(Some((kind, payload)))
     }
 
-    /// Every segment's entries through the last hour: the stream ledger's total.
-    fn total(&self) -> u64 {
-        self.segments.iter().map(|segment| segment.end).sum()
+    /// Every segment's entries from its first hour through the last: the
+    /// stream ledger's total.
+    fn total(&self, published: &mut Published<'_, Field, Extra>) -> io::Result<u64> {
+        let mut total = 0;
+        for segment in &self.segments {
+            let before = match segment.from.checked_sub(1) {
+                Some(until) => self.chains[segment.chain].end(published, until)?,
+                None => 0,
+            };
+            total += segment.end.saturating_sub(before);
+        }
+        Ok(total)
     }
 
     /// The positions to continue from, or None when every segment is paged.

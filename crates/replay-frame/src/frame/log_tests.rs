@@ -165,8 +165,10 @@ fn a_reader_holding_the_frame_before_costs_one_copy() {
     let kept = moving(6);
     let index = TableId::CountryLinks.index();
     let (copied, reused) = (counted("rebuild-copied"), counted("rebuild-reused"));
+    // Bound first: the frames logged must drop before reading, not live through the loop.
+    let log = logged(&moving(6));
     let mut previous: Option<DecodedFrame> = None;
-    for (at, frame) in logged(&moving(6)).into_frames().enumerate() {
+    for (at, frame) in log.into_frames().enumerate() {
         let frame = frame.unwrap();
         assert_same(&frame, &kept[at]);
         if let Some(previous) = &previous {

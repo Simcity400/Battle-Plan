@@ -1482,6 +1482,13 @@ pub(crate) const TWO_GAMES: &str =
 pub(crate) const UNSUPPORTED_BUILD: &str = "unsupported game build";
 pub(crate) const COLLECTOR_LOADED: &str =
     "collector.dll is already loaded in this process; detach its recorder first";
+pub(crate) const GAME_CLAIMED: &str =
+    "another recorder is attaching to or recording this game; nothing recorded";
+
+/// The name a recorder holds while it attaches to and records one game process.
+fn game_claim(pid: u32, start_time: u64) -> String {
+    format!("Local\\HOI4Replay.Game.{pid}.{start_time}")
+}
 const COLLECTOR_UNLOAD_WARNING: &str =
     "collector unload is unconfirmed; quit the game before recording again";
 
@@ -1789,6 +1796,9 @@ pub(crate) fn capture(
     let game_version = PINNED_BUILD
         .read_version_banner(&mut executable)
         .map_err(|e| format!("game version text: {e}"))?;
+    // Held until this capture ends, so no other recorder checks or injects this game meanwhile.
+    let _attachment = windows::Claim::take(&game_claim(pid, process.start_time))?
+        .ok_or(GAME_CLAIMED)?;
     let collector_loaded = windows::modules(pid)?.iter().any(|module| {
         module
             .path
@@ -4842,6 +4852,35 @@ mod tests {
     use std::{cell::RefCell, collections::BTreeMap};
 
     #[test]
+    fn one_recorder_at_a_time_holds_a_game_and_a_reused_pid_is_another_game() {
+        // A process start no game has, so no running recorder shares the name.
+        let start = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let pid = std::process::id();
+        let held = windows::Claim::take(&game_claim(pid, start))
+            .unwrap()
+            .unwrap();
+        assert!(
+            windows::Claim::take(&game_claim(pid, start))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            windows::Claim::take(&game_claim(pid, start + 1))
+                .unwrap()
+                .is_some()
+        );
+        drop(held);
+        assert!(
+            windows::Claim::take(&game_claim(pid, start))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn a_sessions_end_saves_every_campaign_with_auto_save_and_otherwise_only_what_stop_saves() {
         let (current, other) = ("current", "other");
         let saved = |auto_save, stop, discard| {
@@ -5826,8 +5865,9 @@ mod tests {
                 )
                 .unwrap(),
                 "descriptor" => {
+                    // A mod's content hash holds only what its descriptor mounts, not its version.
                     let mut bytes = original_descriptor.clone();
-                    bytes.extend_from_slice(b"\nversion=changed");
+                    bytes.extend_from_slice(b"\nreplace_path=\"common/names\"");
                     fs::write(&descriptor, bytes).unwrap();
                 }
                 "missing-localisation" => fs::remove_file(&localisation_file).unwrap(),

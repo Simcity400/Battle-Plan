@@ -322,7 +322,7 @@ impl Extract for BlockExtract {
     fn bytes(&self) -> u64 {
         let mut held = HeldBytes::default();
         if let Some(first) = &self.first {
-            held.frame(&first.frame).changes(&first.changes);
+            held.value(&first.frame).value(&first.changes);
             held.add(size_of_val(first.countries.as_slice()));
         }
         held.add(self.hours.capacity() * size_of::<Hour>());
@@ -335,9 +335,7 @@ impl Extract for BlockExtract {
                 ..
             } = hour
             {
-                if let Some(frame) = renamed {
-                    held.frame(frame);
-                }
+                held.heap(renamed);
                 held.add(size_of_val(inserted.as_slice()) + size_of_val(values.as_slice()));
                 held.shared(
                     Arc::as_ptr(tags),

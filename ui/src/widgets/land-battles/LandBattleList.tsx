@@ -1,4 +1,4 @@
-import { useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Segmented } from '../../components/Segmented';
@@ -131,7 +131,15 @@ export default function LandBattleList(props: Props) {
   const open = (row: LandBattleRow) => setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour });
   // Reusing an opened battle row before its opening hour would leak future results and totals.
   const opened = openId && openId.client === context.runtime.client && openId.owner === owner ? openId : null;
-  const current = opened ? rows.find(row => row.id === opened.id) ?? (opened.hour <= context.shownHour ? opened.row : null) : null;
+  const listed = opened ? rows.find(row => row.id === opened.id) : undefined;
+  // While listed, the opened battle keeps its latest row and the hour it was read: once it leaves
+  // the list (outranked, or its window released), that row is shown as of that hour.
+  useEffect(() => {
+    if (listed) setOpenId(previous => previous && previous.id === listed.id && (previous.row !== listed || previous.hour !== context.shownHour)
+      ? { ...previous, row: listed, hour: context.shownHour } : previous);
+  }, [listed, context.shownHour]);
+  const current = opened ? listed ?? (opened.hour <= context.shownHour ? opened.row : null) : null;
+  const heldAt = opened && !listed && current ? opened.hour : null;
   const measureText = (row: LandBattleRow) => {
     const value = measure === 'Length' ? row.length : measure === 'Peak size' ? (row.peakUnknown ? null : row.peak.value) : row.casualties;
     if (value === null) return '—';
@@ -176,6 +184,6 @@ export default function LandBattleList(props: Props) {
   const drill = options.drill === 'popout' ? 'popout' : 'inline';
   return <>{header}<DrillHost mode={drill} open={current !== null} title={current ? placeName(current, context.placePending(current)) : ''}
     day={dayLabel(context.shownHour)} following={false} canFollow={false} onFollow={() => {}} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
-    {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} />}
+    {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} heldAt={heldAt} />}
   </DrillHost></>;
 }

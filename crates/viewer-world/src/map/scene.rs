@@ -200,6 +200,15 @@ pub struct Scene {
     heightmap: Bound,
     terrain_ids: Bound,
     snow_mud: Bound,
+    /// One texel per snow/mud cell, set where [`crate::map::weather::Presentation::unknown`]
+    /// hatches it.
+    snow_unknown: Bound,
+    /// The terrain's vertex heights for the hatch, when [`Self::heightmap`] is not them.
+    hatch_heights: Option<Bound>,
+    /// Where the map holds a hatched cell; none skips the hatch.
+    hatch_coverage: Option<crate::map::weather::HatchCoverage>,
+    /// Built on the first hour with an unknown cell for the targets' sample count, or why not.
+    unknown_hatch: Option<(u32, Result<crate::map::weather::UnknownHatch, String>)>,
     snow_presentation: crate::map::weather::Presentation,
     snow_render_delta: crate::map::weather::RenderDelta,
     political: Option<crate::map::political_gpu::View>,
@@ -523,6 +532,28 @@ impl Scene {
             wgpu::TextureFormat::Rgba8Unorm,
             &vec![0u8; (snow_mud_size[0] * snow_mud_size[1] * 4) as usize],
         )?;
+        let snow_unknown = data_texture(
+            device,
+            queue,
+            "unknown snow/mud cells",
+            snow_mud_size,
+            wgpu::TextureFormat::R8Unorm,
+            &vec![0u8; (snow_mud_size[0] * snow_mud_size[1]) as usize],
+        )?;
+        let hatch_heights = assets
+            .height_texture
+            .is_some()
+            .then(|| {
+                data_texture(
+                    device,
+                    queue,
+                    "unknown snow/mud hatch heights",
+                    [assets.heightmap.width, assets.heightmap.height],
+                    wgpu::TextureFormat::R8Unorm,
+                    assets.heightmap_texels(),
+                )
+            })
+            .transpose()?;
         let gradient_size = [1, 1];
         let gradient = |label| {
             data_texture(
@@ -699,6 +730,10 @@ impl Scene {
             heightmap,
             terrain_ids,
             snow_mud,
+            snow_unknown,
+            hatch_heights,
+            hatch_coverage: None,
+            unknown_hatch: None,
             snow_presentation: Default::default(),
             snow_render_delta: Default::default(),
             political: None,
@@ -1601,10 +1636,48 @@ impl Scene {
                 &mut self.snow_presentation,
             )?;
         }
+        Self::update_hatch(
+            device,
+            queue,
+            &mut self.snow_unknown,
+            &mut self.hatch_coverage,
+            &mut self.snow_presentation,
+        )?;
         if let Some(factors) = &snow.post_factors {
             self.post.set_snow_factors(factors);
         } else {
             self.post.set_snow(snow.province_snow.try_as_slice()?)?;
+        }
+        Ok(())
+    }
+
+    /// Rewrites the hatched cells' mask and where they lie when the presentation changed them.
+    fn update_hatch(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mask: &mut Bound,
+        coverage: &mut Option<crate::map::weather::HatchCoverage>,
+        presentation: &mut crate::map::weather::Presentation,
+    ) -> io::Result<()> {
+        if !presentation.take_unknown_upload() {
+            return Ok(());
+        }
+        let size = presentation.size;
+        *coverage = crate::map::weather::HatchCoverage::new(&presentation.unknown, size);
+        if coverage.is_none() {
+            return Ok(());
+        }
+        if [mask.texture.width(), mask.texture.height()] == size {
+            write_data(queue, &mask.texture, size, 1, &presentation.unknown);
+        } else {
+            *mask = data_texture(
+                device,
+                queue,
+                "unknown snow/mud cells",
+                size,
+                wgpu::TextureFormat::R8Unorm,
+                &presentation.unknown,
+            )?;
         }
         Ok(())
     }
@@ -1987,6 +2060,13 @@ impl Scene {
                 &mut self.snow_presentation,
             )?;
         }
+        Self::update_hatch(
+            device,
+            queue,
+            &mut self.snow_unknown,
+            &mut self.hatch_coverage,
+            &mut self.snow_presentation,
+        )?;
         let snow_mud_fade = self.snow_presentation.fade();
         let mut passes = passes::Frame::new(&mut self.pass_diagnostics);
         self.arena.reset();
@@ -2021,6 +2101,18 @@ impl Scene {
             self.generation += 1;
             #[cfg(any(test, feature = "test-support"))]
             faults.after(failure_tests::Point::Targets)?;
+        }
+        let samples = self.targets.as_ref().map_or(1, Targets::samples);
+        if self.hatch_coverage.is_some()
+            && self
+                .unknown_hatch
+                .as_ref()
+                .is_none_or(|(built, _)| *built != samples)
+        {
+            self.unknown_hatch = Some((
+                samples,
+                crate::map::weather::UnknownHatch::new(device, samples),
+            ));
         }
         // Receiver and blur stay backbuffer-sized, even when the
         // scene is half size. Camera projection/culling and GUI also retain size.
@@ -2144,12 +2236,16 @@ impl Scene {
         }
         self.detail_laps.lap("events");
         let lights_profile = viewer_foundation::profiling::thread_span("lights");
-        let lights = self
-            .weather_effects
-            .as_mut()
-            .map(|pass| pass.set_events_with_workers(events, &self.workers))
-            .transpose()?
-            .unwrap_or_default();
+        let lights = match self.weather_effects.as_mut() {
+            Some(pass) => pass.set_events_with_workers(events, &self.workers)?,
+            None => {
+                // Without particle runtimes no kept particle lives.
+                for kept in events.iter().filter_map(|event| event.kept.as_ref()) {
+                    kept.finish();
+                }
+                Vec::new()
+            }
+        };
         self.point_light_tiles.rebuild(camera, &lights);
         self.point_light_maps.write(queue, &self.point_light_tiles);
         drop(lights_profile);
@@ -2715,6 +2811,48 @@ impl Scene {
                 })
             };
         }
+        // Unknown snow and mud lie on the surface just drawn, under everything drawn after it.
+        let (hatch_coverage, unknown_hatch) = (&self.hatch_coverage, &self.unknown_hatch);
+        let hatch_heights = &self.hatch_heights.as_ref().unwrap_or(&self.heightmap).view;
+        let (snow_unknown, hatch_grid) = (&self.snow_unknown.view, self.snow_presentation.size);
+        let (cover, terrain_map) = (&self.cover, self.compiled_terrain.map());
+        let draw_hatch = |encoder: &mut wgpu::CommandEncoder,
+                          view: usize,
+                          surface: crate::map::weather::Surface|
+         -> io::Result<()> {
+            let Some(coverage) = hatch_coverage else {
+                return Ok(());
+            };
+            let hatch = match unknown_hatch {
+                Some((_, Ok(hatch))) => hatch,
+                Some((_, Err(reason))) => return Err(io::Error::other(reason.clone())),
+                None => {
+                    return Err(io::Error::other(
+                        "unknown snow and mud hatch pipeline is not built",
+                    ));
+                }
+            };
+            // The blocks the terrain drew in this wrap, so the hatch stands where the terrain does.
+            let drawn =
+                crate::map::terrain_shader::drawn_blocks(cover, terrain_map, offsets[view])?;
+            let frame = &native_frames[view];
+            let [x, y, z, _] = frame.cam_look_at_dir_global_time;
+            hatch.draw(
+                device,
+                encoder,
+                targets,
+                hatch_heights,
+                snow_unknown,
+                &coverage.instances(&drawn),
+                &crate::map::weather::HatchParams::new(
+                    frame.view_projection,
+                    [x, y, z],
+                    terrain_map,
+                    hatch_grid,
+                    surface,
+                ),
+            )
+        };
         // Complete each admitted wrap before starting the next. Its
         // PS b2 light-grid upload is replaced by the land-border call in that wrap.
         for view in 0..offsets.len() {
@@ -2769,6 +2907,13 @@ impl Scene {
                 }
             }
             mark(&mut encoder, "terrain");
+            if hatch_coverage.is_some() {
+                draw_world!(UnknownSnowMud => draw_hatch(
+                    &mut encoder,
+                    view,
+                    crate::map::weather::Surface::Ground,
+                ));
+            }
             // Land borders, rivers, rails, trees, water and sea highlights share scene depth. The unlit shadow
             // pre-pass uses its own depth buffer.
             let border_inputs = || crate::map::border_shader::Inputs {
@@ -2945,6 +3090,19 @@ impl Scene {
                 ));
             }
             mark(&mut encoder, "water");
+            // Water whose technique reads the snow/mud texture can show it, as the shipped ice does.
+            if hatch_coverage.is_some()
+                && !no_water
+                && self.graphics.water
+                && self.water.shows_snow_mud()
+            {
+                draw_world!(UnknownSnowMud => draw_hatch(
+                    &mut encoder,
+                    view,
+                    crate::map::weather::Surface::Water,
+                ));
+            }
+            mark(&mut encoder, "unknown_snow_mud");
             // borders
             if let Some(borders) = &self.borders {
                 draw_world!(SeaBorders => borders.draw(

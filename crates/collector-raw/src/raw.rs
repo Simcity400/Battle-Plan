@@ -34,8 +34,10 @@ use engine_native::Memory;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
+mod country_slots;
 mod recorded;
 
+pub use country_slots::CountrySlots;
 use recorded::RecordedIndex;
 pub use recorded::index_diagnostics;
 pub use recorded::{Recorded, RecordedCache};

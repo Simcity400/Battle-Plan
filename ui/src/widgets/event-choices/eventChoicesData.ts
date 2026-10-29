@@ -124,24 +124,26 @@ export function awaitingText(at: ChoiceAt): string {
 /** What the options say when none is chosen. */
 export const noChoiceText = (at: ChoiceAt) => at.pause ? 'No choice recorded' : 'No option chosen yet';
 
-export function choiceDescription(at: ChoiceAt, name: (tag: string) => string): string {
-  const country = at.card.country === null ? 'A country not identified' : name(at.card.country);
+export function choiceDescription(at: ChoiceAt, name: (tag: string, hour: number) => string): string {
+  const country = at.card.country === null ? 'A country not identified' : name(at.card.country, at.card.first.row.nameHour);
   const chosen = optionLines(at).find(line => line.chosen);
   return `${country}: ${choiceTitle(at.card)}, ${choiceDates(at)}${at.choice ? `, ${chosen?.letter ? `${chosen.letter}. ` : ''}${chosen?.text}`
     : isOpen(at) ? `, ${awaitingText(at)}` : `, ${noChoiceText(at)}`}`;
 }
 
-/** The event feed's tooltip form: title, dates, the option taken, countries and Content identity. */
-export function choiceTooltip(at: ChoiceAt, name: (tag: string) => string): TooltipContent[] {
+/** The event feed's tooltip form: title, dates, the option taken, countries and Content
+ * identity. Each country is named at the fact naming it: the chooser at its choice. */
+export function choiceTooltip(at: ChoiceAt, name: (tag: string, hour: number) => string): TooltipContent[] {
   const { card, choice } = at;
-  const who = (tag: string | null) => tag === null ? 'Not identified' : name(tag);
-  const rows: TooltipRow[] = [{ label: 'Country', value: who(card.country) }];
-  if (card.sender) rows.push({ label: 'From', value: name(card.sender) });
+  const fired = card.first.row.nameHour;
+  const who = (tag: string | null, hour: number) => tag === null ? 'Not identified' : name(tag, hour);
+  const rows: TooltipRow[] = [{ label: 'Country', value: who(card.country, fired) }];
+  if (card.sender) rows.push({ label: 'From', value: name(card.sender, fired) });
   rows.push(card.fired ? { label: 'Fired', value: formatDateTime(card.fired.row.hour) } : { label: 'Fired', value: 'Not recorded', tone: 'muted' });
   if (choice) {
     rows.push({ label: 'Chosen', value: formatDateTime(choice.row.hour) });
     const chooser = choice.row.participants?.[0] ?? null;
-    if (chooser !== card.country) rows.push({ label: 'Chosen by', value: who(chooser) });
+    if (chooser !== card.country) rows.push({ label: 'Chosen by', value: who(chooser, choice.row.nameHour) });
     const line = optionLines(at).find(line => line.chosen);
     if (line) rows.push({ label: 'Option taken', value: `${line.letter ? `${line.letter}. ` : ''}${line.text}`, tone: line.missing || !line.letter ? 'muted' : undefined });
   } else if (at.pause) {

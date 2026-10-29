@@ -95,6 +95,18 @@ pub(crate) fn add_alias_and_rocket(bytes: &mut [u8]) {
     header(bytes, B2 + cair_base::COUNTRY_CONTAINERS, CVEC2, 0);
 }
 
+/// Slot zero holds the reserved country object (id zero) and a fourth slot holds it again, as
+/// the game's country table may.
+pub(crate) fn add_reserved_alias(bytes: &mut [u8]) {
+    use engine_native::{ccountry, cgame_state};
+    const RESERVED: usize = 0x22000;
+    header(bytes, GAME_STATE + cgame_state::COUNTRIES, CTAB, 4);
+    put64(bytes, CTAB, RESERVED as u64);
+    put64(bytes, CTAB + 24, RESERVED as u64);
+    put64(bytes, RESERVED, ccountry::VTABLE_RVA as u64);
+    put32(bytes, RESERVED + ccountry::ID, 0);
+}
+
 fn fixture_inner() -> Vec<u8> {
     use engine_native::{
         cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state,

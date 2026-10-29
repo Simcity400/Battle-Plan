@@ -221,6 +221,13 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     await render({ ...group });
     assert.equal(host.__ledger.requests.length, 0);
     assert.equal(host.__ledger.state?.message, 'This group has no members in this campaign.');
+
+    // A date range bounds the ledger by its start as well as its end.
+    host.__ledger = fixture();
+    host.__ledger.prepared = 900;
+    await render({ ...widget, countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 400, lastOffset: 800 } } as WidgetSpec);
+    assert.ok(host.__ledger.requests.length > 0);
+    for (const request of host.__ledger.requests) assert.deepEqual([(request.params as { firstHour?: number }).firstHour, (request.params as { lastHour: number }).lastHour], [400, 800]);
   } finally {
     await act(async () => { root.unmount(); });
     await vite.close();

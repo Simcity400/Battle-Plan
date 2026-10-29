@@ -26,7 +26,10 @@ export function validateArmySizeReply(value: unknown): ArmySizeReply {
     || !(value.interval === null || isSpan(value.interval))
     || ((value.window === null) !== (value.interval === null))
     || !Array.isArray(value.measures) || !value.measures.every(measure => MEASURES.some(item => item.value === measure))
-    || new Set(value.measures).size !== value.measures.length || !validCountryValues(value)
+    || new Set(value.measures).size !== value.measures.length
+    || !Array.isArray(value.unknownMeasures) || !value.unknownMeasures.every(measure => MEASURES.some(item => item.value === measure)
+      && !(value.measures as unknown[]).includes(measure))
+    || new Set(value.unknownMeasures).size !== value.unknownMeasures.length || !validCountryValues(value)
     || value.series.some(series => series.identities !== undefined && (!isOrderedSpans(series.identities)
       || series.identities.some(identity => !unsigned32(identity.slot) || !unsigned32(identity.countryId))))
     || value.types.some(type => typeof type.name !== 'string')
@@ -121,14 +124,20 @@ export function mergeArmyWindows(manifest: ArmySizeReply, windows: ReadonlyMap<n
     warnings: [...new Set([...manifest.warnings, ...replies.flatMap(reply => reply.warnings)])] };
 }
 
-/** Only measures the recording reports are selectable. Empty keeps its default
- * dynamic, so manpower can become that default after its capture lands. */
+/** Whether the reply offers `measure`: the recording reports it, or preparation has not yet read an hour that would. */
+export const offersMeasure = (reply: ArmySizeReply | undefined, measure: ArmyMeasure) =>
+  !!reply && (reply.measures.includes(measure) || reply.unknownMeasures.includes(measure));
+
+/** Only measures the recording reports, or may still report while it is prepared, are
+ * selectable. Empty keeps its default dynamic, so manpower can become that default once read. */
 export function measureChoices(reply: ArmySizeReply | undefined): { value: string; label: string }[] {
-  return MEASURES.filter(item => reply?.measures.includes(item.value)).map(item => ({ ...item }));
+  return MEASURES.filter(item => offersMeasure(reply, item.value)).map(item => ({ ...item }));
 }
 
-export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[] | undefined): ArmyMeasure {
-  if (measures?.includes(value as ArmyMeasure)) return value as ArmyMeasure;
+/** The chosen measure while the reply offers it; otherwise the first measure the recording reports. */
+export function armyMeasure(value: OptionValue, measures: readonly ArmyMeasure[] | undefined,
+  unknown: readonly ArmyMeasure[] = []): ArmyMeasure {
+  if (measures?.includes(value as ArmyMeasure) || unknown.includes(value as ArmyMeasure)) return value as ArmyMeasure;
   return MEASURES.find(item => measures?.includes(item.value))?.value ?? 'divisions';
 }
 
@@ -163,8 +172,15 @@ export function* armyTooltips(model: CountryValuesModel, name: string, at: Count
   yield { ...base, rows: [total] };
 }
 
+/** The capability request's measure, which its `available` answers for. */
+const METADATA_MEASURE: ArmyMeasure = 'divisions';
+
 /** The recording capability request shared by the panel and widget. */
 export const armyMetadataRequest = (track: BoundTrack | undefined) => track ? {
   sourceId: track.source.id, revision: track.source.revision, product: 'army-size',
-  params: armySizeRequest(track.branch.id, { tags: [] }, 'divisions', 'owner', false),
+  params: armySizeRequest(track.branch.id, { tags: [] }, METADATA_MEASURE, 'owner', false),
 } : null;
+
+/** The recording reports no army: never said while preparation may still find one. */
+export const armyAbsent = (manifest: ArmySizeReply) =>
+  !manifest.available && !manifest.unknownMeasures.includes(METADATA_MEASURE);

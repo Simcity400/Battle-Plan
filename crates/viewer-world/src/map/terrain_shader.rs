@@ -117,7 +117,7 @@ fn positions() -> Vec<[i16; 4]> {
         })
         .collect()
 }
-fn indices(cells: [u32; 2]) -> Vec<u16> {
+pub(crate) fn indices(cells: [u32; 2]) -> Vec<u16> {
     (0..cells[1])
         .flat_map(|z| {
             (0..cells[0]).flat_map(move |x| {
@@ -203,6 +203,35 @@ fn validate_block(patch: Patch, map: [u32; 2]) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The blocks the terrain draws for one wrap view of a `map`-sized map: the uniform grid's for
+/// that offset, unsnapped, or the free eye's blocks standing on that copy.
+pub fn drawn_blocks(cover: &Cover, map: [u32; 2], offset: f32) -> io::Result<Vec<Block>> {
+    match cover {
+        Cover::Uniform(grid) => Ok(patches(*grid, map, offset)?
+            .into_iter()
+            .map(|patch| Block {
+                origin: patch.origin,
+                step: patch.step,
+                offset,
+                snap: [false; 4],
+            })
+            .collect()),
+        Cover::Blocks(blocks) => blocks
+            .iter()
+            .filter(|block| block.offset == offset)
+            .map(|block| {
+                let patch = Patch {
+                    origin: block.origin,
+                    step: block.step,
+                };
+                validate_block(patch, map)?;
+                Ok(*block)
+            })
+            .collect(),
+        Cover::Refused(reason) => Err(refuse(*reason)),
+    }
 }
 
 /// Select uniform blocks over the approved camera grid, separately for each wrap.
@@ -449,28 +478,24 @@ impl Terrain {
         validate_grid(grid, self.map)
     }
 
+    /// The map's width and height in pixels, which the terrain's blocks tile.
+    pub fn map(&self) -> [u32; 2] {
+        self.map
+    }
+
     /// The cover's blocks for one wrap view: the uniform grid's for that offset, or the free
     /// eye's blocks standing on that copy.
     fn view_blocks(&self, cover: &Cover, offset: f32) -> io::Result<Vec<(Patch, [bool; 4])>> {
-        match cover {
-            Cover::Uniform(grid) => Ok(patches(*grid, self.map, offset)?
-                .into_iter()
-                .map(|patch| (patch, [false; 4]))
-                .collect()),
-            Cover::Blocks(blocks) => blocks
-                .iter()
-                .filter(|block| block.offset == offset)
-                .map(|block| {
-                    let patch = Patch {
-                        origin: block.origin,
-                        step: block.step,
-                    };
-                    validate_block(patch, self.map)?;
-                    Ok((patch, block.snap))
-                })
-                .collect(),
-            Cover::Refused(reason) => Err(refuse(*reason)),
-        }
+        Ok(drawn_blocks(cover, self.map, offset)?
+            .into_iter()
+            .map(|block| {
+                let patch = Patch {
+                    origin: block.origin,
+                    step: block.step,
+                };
+                (patch, block.snap)
+            })
+            .collect())
     }
     pub fn prepare(
         &mut self,

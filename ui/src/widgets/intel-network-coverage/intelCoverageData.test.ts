@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cellState, countriesAt, fieldText, measureField, pairsAt, pairTooltip, validateIntelCoverage, visibleCountries } from './intelCoverageData.ts';
+import { aliasTagsAt, cellState, countriesAt, fieldText, measureField, pairsAt, pairTooltip, validateIntelCoverage, visibleCountries } from './intelCoverageData.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 
 const reply = validateIntelCoverage({
@@ -125,4 +125,21 @@ test('the matrix asks for the chosen group\'s members, and a Top countries group
   assert.equal(intelShown(top(1)), 1);
   assert.deepEqual(intelCoverageRequest(top(1), track, undefined)!.params, { branchId: '1', view: 'matrix', shown: 1, touching: true });
   assert.deepEqual(intelCoverageRequest(top(2), track, undefined)!.params, { branchId: '1', view: 'matrix', shown: 2 });
+});
+
+test('a chosen country renamed by the hour shown is found under the tag it holds then', () => {
+  const renamed = validateIntelCoverage({
+    window: { firstHour: 0, lastHour: 48, known: [{ firstHour: 0, lastHour: 48 }], reads: [[0, 48, 0]], series: [
+      { name: 'member|OLD@7', runs: [[0, 23, '1', true]] },
+      { name: 'member|NEW@7', runs: [[24, 48, '1', true]] },
+      { name: 'member|FRA@9', runs: [[0, 48, '1', true]] },
+    ] },
+    warnings: [],
+  });
+  // One native holder chose by its first tag: OLD until 23, NEW from 24.
+  const aliases = [{ tag: 'OLD', firstHour: 0, lastHour: 23 }, { tag: 'NEW', firstHour: 24, lastHour: 48 }];
+  assert.deepEqual(aliasTagsAt(aliases, 30), ['NEW']);
+  assert.deepEqual(countriesAt(renamed, 30, 10, aliasTagsAt(aliases, 30), true)!.map(country => country.id), ['NEW@7']);
+  assert.deepEqual(countriesAt(renamed, 10, 10, aliasTagsAt(aliases, 10))!.map(country => country.id), ['OLD@7']);
+  assert.deepEqual(countriesAt(renamed, 30, 10, ['OLD']), [], 'the literal first tag alone loses the renamed holder');
 });

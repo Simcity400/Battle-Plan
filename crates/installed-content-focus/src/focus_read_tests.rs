@@ -95,9 +95,25 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
     let expected = serial(&layers, &names)?;
     assert!(expected.1.is_empty(), "{:?}", expected.1);
     assert_eq!(
-        expected.0.get("SYN_DUPLICATE").unwrap().unwrap().localisation,
+        expected
+            .0
+            .get_in(Database::National, "SYN_DUPLICATE")
+            .unwrap()
+            .unwrap()
+            .localisation,
         "MOD_LATE"
     );
+    // The later continuous file never replaces the national focus of that id.
+    assert_eq!(
+        expected
+            .0
+            .get_in(Database::Continuous, "SYN_DUPLICATE")
+            .unwrap()
+            .unwrap()
+            .localisation,
+        "CONTINUOUS"
+    );
+    assert_eq!(expected.0.get("SYN_DUPLICATE"), Err(Unknown::Ambiguous));
     for workers in [1, 2, 3, 8] {
         assert_eq!(
             read_files(
@@ -111,8 +127,9 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
         );
     }
     assert_eq!(read(&layers)?, expected);
-    // National lookup numbers fewer files, so only the definitions compare.
-    assert_eq!(read_national(&layers)?.0.definitions, expected.0.definitions);
+    let (national, _) = read_national(&layers)?;
+    assert_eq!(national.national, expected.0.national);
+    assert_eq!(national.continuous, Store::default());
     Ok(())
 }
 
@@ -207,9 +224,9 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     let layers = stack.layers(&[]);
     let names = layers.key_names()?;
     let expected = serial(&layers, &names)?;
-    let defined = &expected.0.definitions;
-    assert_eq!(defined["RECOVERED"].1.localisation, "RECOVERED_TITLE");
-    assert_eq!(defined["PREFIX"].1.localisation, "PREFIX_TITLE");
+    let defined = &expected.0.national.definitions;
+    assert_eq!(defined["RECOVERED"].localisation, "RECOVERED_TITLE");
+    assert_eq!(defined["PREFIX"].localisation, "PREFIX_TITLE");
     assert!(defined.contains_key("COUNTED"));
     // Complete load-point names let the reader skip this invalid trigger.
     // The apparent variable is consumed as its missing operator, not defined.
@@ -220,10 +237,10 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
     // The last file is refused, so what every earlier file defines is unknown.
     for id in ["RECOVERED", "PREFIX", "VECTOR"] {
         assert!(
-            expected
-                .0
-                .get(id)
-                .is_err_and(|gap| gap.path == "common/national_focus/g.txt"),
+            matches!(
+                expected.0.get(id),
+                Err(Unknown::Gap(gap)) if gap.path == "common/national_focus/g.txt"
+            ),
             "{id}"
         );
     }
@@ -293,9 +310,12 @@ fn a_refused_file_leaves_what_it_could_redefine_unknown() -> io::Result<()> {
         "{warnings:?}"
     );
     for id in ["SYN", "ABSENT"] {
-        assert_eq!(
-            focuses.get(id).unwrap_err().path,
-            "common/national_focus/b.txt"
+        assert!(
+            matches!(
+                focuses.get(id),
+                Err(Unknown::Gap(gap)) if gap.path == "common/national_focus/b.txt"
+            ),
+            "{id}"
         );
     }
     assert_eq!(
@@ -467,10 +487,93 @@ fn a_refused_file_hides_only_its_own_databases_focuses() {
     );
     let continuous = "common/continuous_focus/refused.txt";
     focuses.refuse_file(Database::Continuous, continuous, "refused".to_owned());
-    assert!(focuses.get("NATIONAL").is_ok_and(|found| found.is_some()));
+    assert!(
+        focuses
+            .get_in(Database::National, "NATIONAL")
+            .is_ok_and(|found| found.is_some())
+    );
+    assert!(
+        focuses
+            .get_in(Database::National, "UNDEFINED")
+            .is_ok_and(|found| found.is_none())
+    );
+    for id in ["NATIONAL", "UNDEFINED"] {
+        assert!(
+            matches!(
+                focuses.get_in(Database::Continuous, id),
+                Err(gap) if gap.path == continuous
+            ),
+            "{id}"
+        );
+        // By id alone, the refused file could define either database's focus.
+        assert!(
+            matches!(
+                focuses.get(id),
+                Err(Unknown::Gap(gap)) if gap.path == continuous
+            ),
+            "{id}"
+        );
+    }
     assert_eq!(focuses.known().count(), 1);
-    assert!(focuses.get("UNDEFINED").is_err_and(|gap| gap.path == continuous));
+    assert_eq!(focuses.known_in(Database::National).count(), 1);
+    assert_eq!(focuses.known_in(Database::Continuous).count(), 0);
     let national = "common/national_focus/refused.txt";
     focuses.refuse_file(Database::National, national, "refused".to_owned());
-    assert!(focuses.get("NATIONAL").is_err_and(|gap| gap.path == national));
+    assert!(matches!(
+        focuses.get_in(Database::National, "NATIONAL"),
+        Err(gap) if gap.path == national
+    ));
+    assert!(matches!(
+        focuses.get("NATIONAL"),
+        Err(Unknown::Gap(gap)) if gap.path == national
+    ));
+}
+
+#[test]
+fn each_database_keeps_its_own_definition_of_a_shared_id() {
+    let titled = |title: &str| FocusDefinition {
+        localisation: title.to_owned(),
+        ..FocusDefinition::default()
+    };
+    let mut focuses = Focuses::default();
+    focuses.read_file(
+        Database::National,
+        Definitions::from([
+            ("SHARED".to_owned(), titled("NATIONAL")),
+            ("SAME".to_owned(), titled("SAME")),
+        ]),
+    );
+    focuses.read_file(
+        Database::Continuous,
+        Definitions::from([
+            ("SHARED".to_owned(), titled("CONTINUOUS")),
+            ("SAME".to_owned(), titled("SAME")),
+            ("ONLY".to_owned(), titled("ONLY")),
+        ]),
+    );
+    let title = |database, id| {
+        focuses
+            .get_in(database, id)
+            .unwrap()
+            .map(|definition| definition.localisation.as_str())
+    };
+    assert_eq!(title(Database::National, "SHARED"), Some("NATIONAL"));
+    assert_eq!(title(Database::Continuous, "SHARED"), Some("CONTINUOUS"));
+    assert_eq!(title(Database::National, "ONLY"), None);
+    assert_eq!(focuses.get("SHARED"), Err(Unknown::Ambiguous));
+    assert_eq!(focuses.get("SAME").unwrap().unwrap().localisation, "SAME");
+    assert_eq!(focuses.get("ONLY").unwrap().unwrap().localisation, "ONLY");
+    assert_eq!(
+        focuses.ids().collect::<Vec<_>>(),
+        ["ONLY", "SAME", "SHARED"]
+    );
+    assert_eq!(
+        focuses.ids_in(Database::National).collect::<Vec<_>>(),
+        ["SAME", "SHARED"]
+    );
+    assert_eq!(
+        focuses.ids_in(Database::Continuous).collect::<Vec<_>>(),
+        ["ONLY", "SAME", "SHARED"]
+    );
+    assert_eq!(focuses.known().count(), 5);
 }

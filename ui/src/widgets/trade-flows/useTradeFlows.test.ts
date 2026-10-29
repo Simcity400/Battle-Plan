@@ -102,7 +102,7 @@ test('keyboard navigation asks for the drawn flows in the selection shown', asyn
     plugins: [{ name: 'trade-navigation', enforce: 'pre', transform(_code, id) {
       const path = id.replaceAll('\\', '/');
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({});';
-      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ retry() {} }); export const loadProduct = () => new Promise(() => {});';
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = () => ({ retry() {} }); export const loadProduct = () => new Promise(() => {});';
       if (path.endsWith('/dashboard/viewRead.ts')) return 'export const useViewRead = () => ({ retry() {} });';
       if (path.endsWith('/dashboard/preparedSeries.ts')) return 'export const preparedSeriesQuery = (_client, _source, _product, params) => { globalThis.__tradeNavigation.navigations.push(params); return new Promise(() => {}); };';
     } }] });
@@ -120,4 +120,36 @@ test('keyboard navigation asks for the drawn flows in the selection shown', asyn
     assert.deepEqual(state.navigations[1], { branchId: '1', tags: ['AAA'], between: false, flows: ['ac', 'ab'],
       op: 'navigate', key: 'ArrowLeft', from: 10, firstHour: 0, lastHour: 50 }, "one country's view steps through its own whole trade");
   } finally { await vite.close(); delete globals.__tradeNavigation; }
+});
+
+test('playback reads its newest hour after the one in flight lands, and says which hour that was', async () => {
+  const state = { followed: [] as { product: string; moving: readonly string[] }[] };
+  const globals = globalThis as typeof globalThis & { __tradeFollowed?: typeof state }; globals.__tradeFollowed = state;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'trade-followed', enforce: 'pre', transform(_code, id) {
+      const path = id.replaceAll('\\', '/');
+      if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({});';
+      if (path.endsWith('/dashboard/products.ts')) return `export const useProduct = () => ({ retry() {} }); export const loadProduct = () => new Promise(() => {});
+        export const useFollowedProduct = (_client, request, moving) => { if (!request) return { retry() {} };
+          globalThis.__tradeFollowed.followed.push({ product: request.product, moving });
+          return { data: {}, moment: JSON.stringify([40, 40, [40, 100, 35]]), retry() {} }; };`;
+      if (path.endsWith('/dashboard/viewRead.ts')) return 'export const useViewRead = () => ({ retry() {} });';
+    } }] });
+  try {
+    const { useTradeFlows } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/useTradeFlows.ts');
+    const track = { id: 't', source: { id: 's', revision: '1', metadata: { campaignKey: 'c', countries: [] } }, branch: { id: '1', firstHour: 0, lastHour: 100 }, axisOffset: 0 };
+    const runtime = { client: { preparedQuery() {} }, tracks: [track], clock: { getHour: () => 60 } };
+    let result: { reachedHour?: number; reachedDetail?: number } | null = null;
+    function Probe({ options }: { options: Record<string, unknown> }) {
+      result = useTradeFlows({ trackIds: ['t'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options } as never, runtime as never, true, 60);
+      return null;
+    }
+    renderToStaticMarkup(createElement(Probe, { options: { measure: 'current' } }));
+    assert.deepEqual(state.followed, [{ product: 'trade-flows', moving: ['from', 'to', 'hours'] }]);
+    assert.equal(result!.reachedHour, 40, 'the hour the held read answered');
+    assert.equal(result!.reachedDetail, 35, "the drill's hour the held read answered");
+    state.followed = [];
+    renderToStaticMarkup(createElement(Probe, { options: { view: 'market' } }));
+    assert.deepEqual(state.followed, [{ product: 'market-lendlease', moving: ['hour'] }]);
+  } finally { await vite.close(); delete globals.__tradeFollowed; }
 });

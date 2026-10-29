@@ -302,16 +302,22 @@ mod tests {
         .unwrap();
         for pool in [&reply.resources, &reply.system_resources] {
             let pool = pool.as_ref().unwrap();
+            // The engine's empty slot 0 is no resource and is not listed.
+            assert_eq!(
+                pool.iter().map(|value| value.ordinal).collect::<Vec<_>>(),
+                [1, 2]
+            );
+            let slot = |ordinal| pool.iter().find(|value| value.ordinal == ordinal).unwrap();
             assert!(
-                pool[1]
+                slot(1)
                     .icon
                     .as_ref()
                     .unwrap()
                     .starts_with("data:image/png;base64,")
             );
-            assert!(pool[2].icon.is_none());
-            assert_eq!(pool[1].raw, "-9007199254740993");
-            assert_eq!(pool[2].token.as_deref(), Some("mod_without_art"));
+            assert!(slot(2).icon.is_none());
+            assert_eq!(slot(1).raw, "-9007199254740993");
+            assert_eq!(slot(2).token.as_deref(), Some("mod_without_art"));
         }
         assert!(
             reply

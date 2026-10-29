@@ -407,6 +407,26 @@ pub(super) fn transient_at(runs: &[Run], hour: i32) -> Option<Run> {
         .checked_sub(1)?;
     runs.get(index).copied().filter(|run| hour <= run.last_hour)
 }
+/// The pieces of `runs` inside `spans`; a piece starts a segment only where its run does.
+fn clip_runs(runs: &[Run], spans: &[HourSpan], cancelled: &AtomicBool) -> io::Result<Vec<Run>> {
+    let mut clipped = Vec::new();
+    dashboard_base::ranking::for_each_piece(
+        runs,
+        spans,
+        |run| (run.first_hour, run.last_hour),
+        cancelled,
+        |run, first, last| {
+            clipped.push(Run::new(
+                first,
+                last,
+                run.value,
+                run.break_before && first == run.first_hour,
+            ));
+            Ok(())
+        },
+    )?;
+    Ok(clipped)
+}
 fn part_amount(total: Option<i128>, supplied: Option<Option<i128>>) -> Option<i128> {
     supplied.unwrap_or_else(|| total.map(|_| 0))
 }
@@ -1261,12 +1281,12 @@ fn prepared_query<F: Family>(
         } else {
             mixes.runs(key, first, last)?
         };
-        let mut raw = Vec::new();
+        let mut bounded = Vec::new();
         for run in runs {
             let (_, row) = mixes.latest_event(key, run.first_hour)?.ok_or_else(|| {
                 dashboard_core::invalid(format!("Missing prepared {} composition", F::NAME))
             })?;
-            let mut value: F::Raw = serde_json::from_value(row)?;
+            let value: F::Raw = serde_json::from_value(row)?;
             let bounds = (
                 if product == "series-state" {
                     run.first_hour
@@ -1279,11 +1299,24 @@ fn prepared_query<F: Family>(
                     run.last_hour.min(last)
                 },
             );
-            F::window(&mut value, bounds.0, bounds.1, run.break_before);
             if bounds.0 <= bounds.1 {
-                raw.push(value);
+                bounded.push((bounds, run.break_before, value));
             }
         }
+        // An alias's other holders and hours outside `within` are not the selection.
+        let mut raw = Vec::new();
+        dashboard_base::ranking::for_each_piece(
+            &bounded,
+            &spans,
+            |&(bounds, _, _)| bounds,
+            cancelled,
+            |(bounds, starts, value), first_hour, last_hour| {
+                let mut value = value.clone();
+                F::window(&mut value, first_hour, last_hour, *starts && first_hour == bounds.0);
+                raw.push(value);
+                Ok(())
+            },
+        )?;
         let segments = history.countries[tag]
             .segments
             .iter()
@@ -1681,45 +1714,27 @@ fn progressive_query<F: Family>(
     } else {
         Value::Null
     };
-    let manual = country_history::selected_aliases(&history, &tags)
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let restricted: BTreeMap<String, Vec<HourSpan>> =
+        serde_json::from_value(params.get("within").cloned().unwrap_or_else(|| json!({})))?;
+    // Each alias while a selected native country holds it, inside `within`.
+    let manual = if selection.top.is_none() {
+        country_history::selected_spans(&history, &tags, &restricted, cancelled)?
+    } else {
+        BTreeMap::new()
+    };
     let mut sampled = BTreeMap::new();
     for ((tag, channel), runs) in &tail.0 {
-        if channel != &field || selection.top.is_none() && !manual.contains(tag) {
+        if channel != &field {
             continue;
         }
-        let mut clipped = Vec::new();
-        if selection.top.is_none() {
-            let spans = history
-                .countries
-                .get(tag)
-                .into_iter()
-                .flat_map(|country| country.identities.iter())
-                .filter(|identity| selected.contains(&(identity.slot, identity.country_id)))
-                .map(|identity| HourSpan {
-                    first_hour: identity.first_hour,
-                    last_hour: identity.last_hour,
-                })
-                .collect::<Vec<_>>();
-            dashboard_base::ranking::for_each_piece(
-                runs,
-                &spans,
-                |run| (run.first_hour, run.last_hour),
-                cancelled,
-                |run, first, last| {
-                    clipped.push(Run::new(
-                        first,
-                        last,
-                        run.value,
-                        run.break_before && first == run.first_hour,
-                    ));
-                    Ok(())
-                },
-            )?;
+        let clipped = if selection.top.is_none() {
+            let Some(spans) = manual.get(tag) else {
+                continue;
+            };
+            clip_runs(runs, spans, cancelled)?
         } else {
-            clipped.extend(runs.iter().copied());
-        }
+            runs.clone()
+        };
         sampled.insert(tag.clone(), clipped);
     }
     let membership = selection
@@ -1734,6 +1749,14 @@ fn progressive_query<F: Family>(
             )
         })
         .transpose()?;
+    // Ranked on every sampled value; drawn only inside `within`.
+    if selection.top.is_some() {
+        for (tag, runs) in &mut sampled {
+            if let Some(spans) = restricted.get(tag) {
+                *runs = clip_runs(runs, spans, cancelled)?;
+            }
+        }
+    }
     let mut scanned = point_metadata
         .into_inner()
         .unwrap_or_else(|| F::metadata(&F::Scan::default()));
@@ -1936,8 +1959,7 @@ fn progressive_query<F: Family>(
             row["identities"] = json!(country.identities);
         }
     }
-    let mut within: BTreeMap<String, Vec<HourSpan>> =
-        serde_json::from_value(params.get("within").cloned().unwrap_or_else(|| json!({})))?;
+    let mut within = restricted;
     let wanted: BTreeSet<_> = reply["series"]
         .as_array()
         .into_iter()

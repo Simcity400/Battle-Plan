@@ -961,6 +961,8 @@ pub struct Naming {
     templates: Result<std::sync::Arc<Catalog>, String>,
     fallback: Localisation,
     warnings: Vec<String>,
+    /// The content's multipliers, read at the first hour without captured ones.
+    multipliers: std::sync::OnceLock<GameScoreValues>,
 }
 impl Naming {
     pub fn load(source: &Source, context: &LoadContext) -> Self {
@@ -1001,7 +1003,15 @@ impl Naming {
             templates,
             fallback,
             warnings: naming_warnings,
+            multipliers: std::sync::OnceLock::new(),
         }
+    }
+    /// The multipliers the recorded content defines, as the direct reader
+    /// uses for hours whose capture was disabled.
+    pub fn content_multipliers(&self, source: &Source, context: &LoadContext) -> GameScoreValues {
+        self.multipliers
+            .get_or_init(|| read_content_multipliers(source, context))
+            .clone()
     }
     pub fn observer<'a>(&'a self, replay: &'a Replay) -> ScoreObserver<'a> {
         let language = &replay.identity.language;

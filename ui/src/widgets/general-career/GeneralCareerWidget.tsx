@@ -6,6 +6,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
+import { subjectHandle } from '../../dashboard/chosen';
 import { pendingReplyAt } from '../../dashboard/preparedPrefix';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useCountryNameAt } from '../../dashboard/reachedProduct';
@@ -25,7 +26,9 @@ export default function GeneralCareerWidget(props: WidgetProps) {
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see a leader career." />;
   if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign." />;
   if (!options.leader) return <TopGeneralCareer {...props} hour={Math.floor(window.lastHour)} />;
-  return <CareerView {...props} reference={String(options.leader)} hour={Math.floor(window.lastHour)} />;
+  const reference = subjectHandle(track.source.metadata.campaignKey, String(options.leader));
+  if (reference === null) return <WidgetState kind="unavailable" message="The saved general is from another campaign. Choose one in widget settings." />;
+  return <CareerView {...props} reference={reference} hour={Math.floor(window.lastHour)} />;
 }
 
 /** The first army leader of the widget's countries on the Generals leaderboard at its default sort. */

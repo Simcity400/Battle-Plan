@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { FuelBranchesReply } from '../../generated/dashboard';
-import { branchesAt, chartCountryAt, consumersKnown, countryAt, emptyTimeView, memberAt, memberRatioRuns, ratioRuns, validateFuelBranches } from './fuelBranchesData.ts';
+import { branchesAt, chartCountryAt, consumersKnown, countryAt, emptyTimeView, memberAt, memberRatioRuns, ratioAxis, ratioRuns, validateFuelBranches } from './fuelBranchesData.ts';
 
 const reply = (): FuelBranchesReply => ({
   branchId: '1', lastHour: 40, consumerNames: ['Land', null, 'Sea', null], scale: 100000, warnings: [], known: [[10, 40, '1']],
@@ -87,4 +87,12 @@ test('group membership clips the lines, tooltips and stops to the member hours',
   assert.equal(memberAt(within, 14), false);
   assert.equal(memberAt(within, 16), true);
   assert.equal(memberAt(null, 1), true);
+});
+
+test('the ratio axis keeps 0-100% and grows in round steps to show receipts above the request', () => {
+  const line = (...values: number[]) => ({ runs: values.map((value, index) => ({ firstHour: index, lastHour: index, value, breakBefore: index === 0 })) });
+  assert.deepEqual(ratioAxis([line(40, 100)]), { top: 100, ticks: [0, 25, 50, 75, 100] });
+  assert.deepEqual(ratioAxis([line(40), line(150)]), { top: 150, ticks: [0, 25, 50, 75, 100, 125, 150] });
+  assert.deepEqual(ratioAxis([line(900)]), { top: 1000, ticks: [0, 250, 500, 750, 1000] }, 'a 900% receipt is drawn, not clipped at 100%');
+  assert.deepEqual(ratioAxis([]), { top: 100, ticks: [0, 25, 50, 75, 100] });
 });

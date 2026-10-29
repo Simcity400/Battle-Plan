@@ -48,9 +48,9 @@ test('army-group stacks use the current parent, an independent bucket and an exp
 
 test('attrition adds its three modes, and recovery stays its own ledger', () => {
   const attrition = monthBars(reply(), 'equipment', 'type', 'attrition', span[0], span[1], 10);
-  assert.deepEqual(attrition.periods[0].parts, [{ key: 'rifle', value: 3, raw: 300000n }]);
+  assert.deepEqual(attrition.periods[0].parts, [{ key: JSON.stringify(['archetype', 'rifle']), value: 3, raw: 300000n }]);
   const recovered = monthBars(reply(), 'equipment', 'type', 'recovered', span[0], span[1], 10);
-  assert.deepEqual(recovered.periods[0].parts, [{ key: 'rifle', value: 9, raw: 900000n }]);
+  assert.deepEqual(recovered.periods[0].parts, [{ key: JSON.stringify(['archetype', 'rifle']), value: 9, raw: 900000n }]);
   assert.equal(monthBars(reply(), 'equipment', 'type', 'combat', span[0], span[1], 10).periods[0].unknown, true);
 });
 
@@ -108,4 +108,13 @@ test('the month drill keeps unknown ledgers unknown and armies that kept only an
   assert.deepEqual(combat.map(row => [row.army.reference, row.amount]), [['1', 0n], ['2', 0n], ['3', null]]);
   assert.deepEqual(monthArmies(losses, M, LEDGERS.attrition).map(row => row.amount), [300000n, 0n, 0n]);
   assert.deepEqual(monthArmies(losses, M, LEDGERS.enemy).map(row => row.amount), [null, null, null], 'no army kept the month in this ledger');
+});
+
+test('mod archetypes named like a bucket stay their own parts', () => {
+  const data = reply();
+  data.equipment = [['unclassified', 'Mod unclassified'], [null, null], ['other', 'Mod other'], ['a', 'A'], ['b', 'B']].map(([archetype, archetypeName], i) =>
+    ({ army: '1', ledger: 0, month: M, date: 0, variant: String(i), name: null, archetype, archetypeName, amountRaw: String((10 - i) * 100000) }));
+  const bars = monthBars(data, 'equipment', 'type', 'combat', span[0], span[1], 4);
+  assert.deepEqual(bars.parts.map(part => part.label), ['Mod unclassified', 'Equipment type unavailable', 'Mod other', 'Other']);
+  assert.equal(new Set(bars.parts.map(part => part.key)).size, 4, 'the real "other" archetype and the folded remainder are two parts');
 });

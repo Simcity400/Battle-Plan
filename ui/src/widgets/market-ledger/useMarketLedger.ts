@@ -12,26 +12,27 @@ import type { LedgerCountries, LedgerItem } from './ledgerData';
 
 const NO_WARNINGS: readonly string[] = [];
 
-/** Newest-first pages of the prepared ledger through the hour shown; only wanted pages
+/** Newest-first pages of the prepared ledger from `from` (the branch's start when null)
+ * through the hour shown; only wanted pages
  * load. Every ledger pages by the cursor each page returns (`next`): a page is known
  * once the page before it has loaded, so the log grows by one waiting page as it is
  * scrolled; every country's total only sizes that waiting page. Later pages and their
  * cursors belong to the first page they continue: when preparation advances and the
  * first page changes, they are asked again rather than kept beside it. `countries`
  * null asks nothing. */
-export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean, hour: number | null,
+export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | undefined, active: boolean, from: number | null, hour: number | null,
   countries: LedgerCountries | null, kinds: readonly number[]) {
   const content = useContentRevision(runtime.client);
   const request = (before: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: MARKET_LEDGER,
     params: { branchId: track!.branch.id, tags: countries!.tags, ...countries!.members.length ? { members: countries!.members } : {},
-      kinds: [...kinds], lastHour, pageSize: PAGE_SIZE, ...before === null ? {} : { before } } });
+      kinds: [...kinds], ...from === null ? {} : { firstHour: from }, lastHour, pageSize: PAGE_SIZE, ...before === null ? {} : { before } } });
   const first = useFollowedProduct<MarketLedgerReply>(runtime.client, track && countries && hour !== null && kinds.length ? request(null, hour) : null,
     ['lastHour'], active, validateLedger, track?.source);
   // Later pages continue the hour the first page answers; rows still stop at `hour`.
   const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   const snapshot = first.data ? JSON.stringify([first.data.lastHour, first.data.total, first.data.next, first.data.rows.length,
     first.data.rows[0]?.id ?? null, preparedPrefix(first.data)]) : null;
-  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content, countries, kinds, read, snapshot]) : null;
+  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content, countries, kinds, from, read, snapshot]) : null;
   const [wanted, setWanted] = useState<{ identity: string | null; pages: readonly number[] }>({ identity, pages: [] });
   const wantedPages = wanted.identity === identity ? wanted.pages : NO_PAGES;
   // Each page's cursor, as far as the loaded pages reach: page 0 has none.
@@ -48,8 +49,8 @@ export function useMarketLedger(runtime: WidgetRuntime, track: BoundTrack | unde
     if (next !== known) setCursors({ identity, next });
   }, [first.data, known, chunks.data, identity]);
   const pages = useMemo<readonly LogPage<LedgerItem>[]>(() => !first.data || !first.data.rows.length ? []
-    : ledgerPages(first.data, chained.length, index => chunks.data.get(index), chunks.errors, hour, track?.branch.firstHour ?? 0),
-  [first.data, chunks.data, chunks.errors, chained.length, hour, track?.branch.firstHour]);
+    : ledgerPages(first.data, chained.length, index => chunks.data.get(index), chunks.errors, hour, from ?? track?.branch.firstHour ?? 0),
+  [first.data, chunks.data, chunks.errors, chained.length, hour, from, track?.branch.firstHour]);
   const onWantedPages = useCallback((keys: readonly string[]) => {
     const next = keys.map(Number).filter(Number.isInteger);
     setWanted(previous => previous.identity === identity && previous.pages.join(',') === next.join(',') ? previous : { identity, pages: next });

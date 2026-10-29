@@ -24,9 +24,9 @@ test('prepared windows retain exact data while loading geometry and reject old s
       if (path.endsWith('/dashboard/preparedSeries.ts')) return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__preparedWindow;');
       if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => globalThis.__preparedWindow.content();';
     } }] });
-  const requests: { source: DashboardSource; product:string; params: unknown; signal: AbortSignal; resolve: (value: unknown) => void }[] = [];
+  const requests: { source: DashboardSource; product:string; params: unknown; signal: AbortSignal; resolve: (value: unknown) => void; reject: (error: Error) => void }[] = [];
   const client = { preparedQuery: (source: DashboardSource, product: string, params: unknown, options: { signal: AbortSignal }) =>
-    new Promise(resolve => requests.push({ source, product, params, signal: options.signal, resolve })) } as unknown as DashboardClient;
+    new Promise((resolve, reject) => requests.push({ source, product, params, signal: options.signal, resolve, reject })) } as unknown as DashboardClient;
   let source = { id: 'a', revision: '1' } as DashboardSource, active = true, hour=10;
   try {
     const { usePreparedWindow } = await vite.ssrLoadModule('/ui/src/dashboard/preparedSeries.ts');
@@ -53,6 +53,11 @@ test('prepared windows retain exact data while loading geometry and reject old s
     oldSummary.resolve({wrong:'old content'});oldState.resolve({wrong:'old content'});
     latest('series-summary').resolve({geometry:'new content'});latest('series-state').resolve({exact:12});await tick();result=render();
     assert.deepEqual(result.data,{geometry:'new content',exact:12});
+    // A failed keyboard read on the next campaign never brings back this one's exact data.
+    source={id:'c',revision:'3'} as DashboardSource;result=render();assert.equal(result.data,undefined);
+    latest('series-summary').resolve({geometry:'c'});await tick();result=render();
+    result.onNavigateHour('ArrowRight',12,[0,100],null);latest('series-next-change').reject(new Error('navigation failed'));await tick();
+    result=render();assert.deepEqual(result.data,{geometry:'c'});assert.match(String(result.error),/navigation failed/);
     result.onSummaryView({from:20,to:30,width:50});render();const departing=latest('series-summary');active=false;render();
     assert.ok(departing.signal.aborted,'leaving the screen cancels viewport reads');
   } finally { for (const at of cells) at.cleanup?.(); delete host.__preparedWindow; await vite.close(); }

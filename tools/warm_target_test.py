@@ -69,6 +69,17 @@ class Paths(unittest.TestCase):
         self.assertEqual(wt.render(path, ("\\\\", "lower", "ascii")), b"c:\\\\seed\\\\x")
         self.assertEqual(wt.render(path, ("\\", "drive", "utf-16-le")), "c:\\Seed\\x".encode("utf-16-le"))
 
+    def test_non_ascii_roots_render_in_every_style_and_a_longer_spelling_is_not_patched(self):
+        seed, worktree = "C:\\Seed\\abcd", "C:\\Seed\\åbcd"
+        for style in wt.STYLES:
+            wt.render(worktree, style)
+        self.assertEqual(wt.render(worktree, ("\\", "exact", "utf-8")), "C:\\Seed\\åbcd".encode("utf-8"))
+        utf8 = wt.STYLES.index(("\\", "exact", "utf-8"))
+        wide = wt.STYLES.index(("\\", "exact", "utf-16-le"))
+        # Same characters, more UTF-8 bytes: only the wide spelling can be patched in place.
+        self.assertFalse(wt.patchable([(0, 0, utf8)], [seed], [worktree]))
+        self.assertTrue(wt.patchable([(0, 0, wide)], [seed], [worktree]))
+
     def test_map_text_keeps_each_form(self):
         mapping = [("C:\\seed\\t", "D:\\tgt"), ("C:\\seed", "D:\\work")]
         text = 'C:\\seed\\t\\debug "C:\\\\seed\\\\src" c:/SEED/a C:\\seedling'
@@ -418,6 +429,32 @@ class Slots(unittest.TestCase):
             self.assertEqual(wt.slot_readers(root, "b"), [os.getpid()])
             self.assertEqual(wt.slot_readers(root, "a"), [])
             self.assertEqual(os.listdir(os.path.join(root, wt.READERS_DIR)), [os.path.basename(mine)])
+
+    def test_a_warm_holds_its_slot_until_backdating_has_read_the_checkout(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "target")
+            os.makedirs(target)
+            index = os.path.join(root, "index.json")
+            write(index, "{}")
+            seed = {"slot": "a", "checkout": os.path.join(root, "checkout"), "index": index,
+                    "target": os.path.join(root, "seed-target"), "stamp": {"bytes": 0},
+                    "rebuilt_packages": [], "packages": {}}
+            held = []
+
+            def backdate(inputs, worktree, checkout, started):
+                held.append(wt.slot_readers(root, "a"))
+                return 0, 0
+
+            with mock.patch.multiple(
+                    wt, read_record=lambda _: seed, git_dirty=lambda _: False,
+                    copy_seed=lambda *_: None, target_files=lambda _: ([], seed["stamp"]),
+                    translate=lambda *_: {"invalidated units": 0}, precalculated_units=lambda *_: [],
+                    invalidate=lambda *_: None, source_inputs=lambda *_: set(),
+                    checkout_files=lambda _: set(), install=lambda *_: True, backdate=backdate):
+                wt.warm_into(root, seed, os.path.join(root, "worktree"), target, None, "copy", 1)
+            self.assertEqual(held, [[os.getpid()]])
+            self.assertEqual(wt.slot_readers(root, "a"), [])
 
 
 class BackgroundRefresh(unittest.TestCase):

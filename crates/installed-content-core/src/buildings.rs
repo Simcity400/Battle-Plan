@@ -71,11 +71,12 @@ pub struct BuildingType {
     /// limited by the state's free shared building slots.
     pub shares_slots: bool,
     /// `level_cap = { group_by = X }`: the type's level allowance counts every
-    /// building of its group, in the state and in its provinces.
-    pub group_by: Option<String>,
+    /// building of its group, in the state and in its provinces. X's stored
+    /// bytes, which need not be text.
+    pub group_by: Option<Vec<u8>>,
     /// `level_cap = { exclusive_with = ... }`: types whose presence in the
-    /// location makes this type's maximum level zero.
-    pub exclusive_with: Vec<String>,
+    /// location makes this type's maximum level zero, as stored bytes.
+    pub exclusive_with: Vec<Vec<u8>>,
     /// `icon_frame`: the one-based frame in the interface building strip used
     /// by the construction queue; zero when not declared.
     pub icon_frame: i32,
@@ -612,20 +613,24 @@ fn parse_declarations(
                                         boolean(bytes, &mut building.shares_slots)
                                     }
                                     Some(b"group_by") => {
-                                        if let Ok(group) = cap.value.c_str() {
-                                            building.group_by = Some(group.to_owned());
+                                        if let Some(group) = cap.value.scalar() {
+                                            building.group_by =
+                                                Some(parser::c_string(group).to_vec());
                                         }
                                     }
-                                    Some(b"exclusive_with") => match cap.value.items() {
-                                        Some(items) => {
-                                            building.exclusive_with.extend(items.iter().filter_map(
-                                                |item| item.value.c_str().ok().map(str::to_owned),
-                                            ))
+                                    Some(b"exclusive_with") => {
+                                        let name = |value: &Value| {
+                                            Some(parser::c_string(value.scalar()?).to_vec())
+                                        };
+                                        match cap.value.items() {
+                                            Some(items) => building.exclusive_with.extend(
+                                                items.iter().filter_map(|item| name(&item.value)),
+                                            ),
+                                            None => {
+                                                building.exclusive_with.extend(name(&cap.value))
+                                            }
                                         }
-                                        None => building
-                                            .exclusive_with
-                                            .extend(cap.value.c_str().ok().map(str::to_owned)),
-                                    },
+                                    }
                                     _ => {}
                                 }
                             }

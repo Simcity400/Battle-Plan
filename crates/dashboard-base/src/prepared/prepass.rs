@@ -141,9 +141,10 @@ mod held;
 pub use held::Held;
 
 impl HeldBytes {
-    /// A kept frame: its every table view not yet counted.
+    /// A kept frame whose holder counts its inline size: its every table view
+    /// not yet counted ([`Self::value`] for a frame held on its own).
     pub fn frame(&mut self, frame: &DecodedFrame) -> &mut Self {
-        self.value(frame)
+        self.heap(frame)
     }
 
     /// A kept table view, once per allocation.
@@ -154,15 +155,17 @@ impl HeldBytes {
         self
     }
 
-    /// Kept change facts: their flags, and their recorded updates once.
+    /// Kept change facts whose holder counts their inline size (their flags):
+    /// their recorded updates once ([`Self::value`] for facts held on their
+    /// own).
     pub fn changes(&mut self, changes: &FrameChanges) -> &mut Self {
-        self.value(changes)
+        self.heap(changes)
     }
 
     /// Change facts' recorded updates, once however many keep them.
     fn recorded(&mut self, changes: &FrameChanges) -> &mut Self {
         if let Some(frame) = changes.recorded() {
-            self.value(frame);
+            self.heap(frame);
         }
         self
     }

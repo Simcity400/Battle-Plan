@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { efficiencyText, missionRowsAt, missionTooltip, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
+import { efficiencyText, missionRowsAt, missionTooltip, openWings, regionRows, shownMissions, theatreRegions, validateAirMissions, validateAirWings } from './airMissionsData.ts';
+import { CLOSED, reduceDrill } from '../../charts/drill/drillState.ts';
 
 const reply = validateAirMissions({
   window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 8 }], reads: [[0, 8, 0]], series: [
@@ -59,4 +60,10 @@ test('a mission icon is a strip frame or none, and anything else refuses the rep
   for (const icon of [undefined, 'GFX_strip', { key: 'GFX_strip', frame: -1 }, { key: 'GFX_strip', frame: 0.5 },
     { key: 'GFX_strip', frame: 0, recorded: 5 }, { key: 'GFX_strip', frame: 0, recorded: '' }])
     assert.throws(() => validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon }] }), /malformed/u);
+});
+
+test('rows held from another hour open their wings pinned there, however near the playhead', () => {
+  // Held rows at 100 while paused or playing at 101: never the playhead's wings.
+  for (const following of [true, false]) assert.deepEqual(reduceDrill(CLOSED, openWings(100, 101, following)), { breakdown: 'wings', follow: false, hour: 100 });
+  assert.equal(reduceDrill(CLOSED, openWings(101, 101, true)).follow, true, "the playhead's own rows follow it");
 });

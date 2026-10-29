@@ -114,21 +114,23 @@ test('a country’s flag or name opens its whole trade, reading its own reply on
   type Item = { label: string; run: () => void };
   const state = { slot: 0, states: [] as unknown[], drill: CLOSED as DrillState, requests: [] as unknown[], reply: undefined as TradeFlowsReply | undefined,
     flow: undefined as FlowDiagramProps | undefined, host: undefined as ComponentProps<typeof DrillHost> | undefined,
-    country: undefined as { holder: string; trade: { reply: TradeFlowsReply } } | undefined, menu: [] as Item[] };
+    country: undefined as { holder: string; trade: { reply: TradeFlowsReply } } | undefined, menu: [] as Item[],
+    pointHour: undefined as number | undefined, pointError: undefined as string | undefined };
   const globals = globalThis as typeof globalThis & { __tradeCountry?: typeof state };
   globals.__tradeCountry = state;
   const replacements: Record<string, string> = {
     '/widgets/trade-flows/useTradeFlows.ts': `import { resolveCountries } from '../../dashboard/groups.ts';
       import { decodeTrade, tradeScope } from './tradeData.ts';
-      export const tradeFlowsRequest = (track, tags) => ({ product: 'trade-flows', params: { branchId: track.branch.id, tags } });
+      export const tradeFlowsRequest = (track, tags, prepared) => ({ product: 'trade-flows', params: { branchId: track.branch.id, tags, ...prepared } });
       export const useTradeFlows = (widget, runtime) => {
         const track = runtime.tracks[0], data = ${JSON.stringify(data)};
         const resolved = resolveCountries(widget.countries, ['X'], undefined, track.branch.lastHour, Number.MAX_SAFE_INTEGER);
-        return { track, all: false, resolved, groups: {}, data, scaleData: data, retry() {},
+        return { track, all: false, resolved, groups: {}, data, scaleData: data, retry() {}, pointHour: globalThis.__tradeCountry.pointHour,
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, undefined, track.branch.lastHour, false) };
       };`,
     '/dashboard/products.ts': `export const useProduct = (client, request) => { const s = globalThis.__tradeCountry;
-      if (request) s.requests.push(request); return { data: request ? s.reply : undefined, retry() {} }; };
+      if (request) s.requests.push(request);
+      return { data: request ? s.reply : undefined, error: request?.params.width === 1 ? s.pointError : undefined, retry() {} }; };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
@@ -204,5 +206,13 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.deepEqual(state.country!.trade.reply, data);
     assert.deepEqual(state.requests, []);
     assert.equal(state.host!.title, 'X at 160: imports and exports');
+
+    // A hovered hour whose own read fails says so beside the country's history.
+    (props.runtime.client as { preparedQuery?: () => void }).preparedQuery = () => {};
+    state.pointHour = 130; state.pointError = 'refused';
+    markup = render();
+    assert.ok(state.requests.some(request => (request as { params: { hours?: number[] } }).params.hours?.[0] === 130), 'the hovered hour is read');
+    assert.match(markup, /Couldn’t load this hour's trade\./);
+    assert.match(markup, /country view/, 'the history stays');
   } finally { await vite.close(); delete globals.__tradeCountry; }
 });

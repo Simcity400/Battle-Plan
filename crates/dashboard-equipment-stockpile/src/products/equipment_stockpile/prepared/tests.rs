@@ -1557,6 +1557,14 @@ fn country_rename_between_variant_reads_survives_balance_only_deltas() -> io::Re
     {
         rows[0].tag = b"AAA".to_vec();
     }
+    // The creator is not dynamic, so its own tag names the design.
+    *input.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            replay_data::rows::CountryAppearanceRow {
+                country: 9001,
+                ..Default::default()
+            },
+        ]));
     let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
     let mut prepared = Prepared::default();
     let mut oracle = VariantCatalogue::default();

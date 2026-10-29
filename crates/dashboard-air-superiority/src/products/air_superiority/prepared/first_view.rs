@@ -203,6 +203,22 @@ pub(super) fn query(
     let mut cache = state
         .as_ref()
         .map_or_else(DayCache::default, |state| state.catalogue(&groups));
+    // The prepared prefix's theatre membership, before the sampled tail's.
+    if state.is_some()
+        && params.view == AirView::Choices
+        && params
+            .theatres
+            .as_ref()
+            .is_some_and(|theatres| !theatres.is_empty())
+    {
+        let first = params.first_hour.unwrap_or(i32::MIN);
+        let last = params.last_hour.unwrap_or(i32::MAX).min(after);
+        if first <= last {
+            cache.segments.push(Arc::new(super::theatre_membership(
+                &store, &key, branch, first, last, cancelled,
+            )?));
+        }
+    }
     let mut sides = (*cache.sides).clone();
     let mut segment = scan::DaySegment::default();
     let mut sample_hours = BTreeMap::new();

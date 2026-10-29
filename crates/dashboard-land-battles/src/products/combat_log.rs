@@ -1352,6 +1352,14 @@ mod tests {
                 *read.tables[table.index()] = TableView::Complete(TableRows::empty(table));
             }
         }
+        // The creator's appearance: a country that is not dynamic is named by its own tag.
+        *read.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(vec![
+                replay_data::rows::CountryAppearanceRow {
+                    country: 9001,
+                    ..Default::default()
+                },
+            ]));
         *read.tables[TableId::VariantDefinitions.index()] =
             TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
                 id: variant,

@@ -62,3 +62,17 @@ test('lanes are a section per kind, split by side, with ended agreements faded o
   assert.equal(lanes.find(lane => info.get(lane.id)?.agreement.pact.id === '2')!.spans[0].lastHour, 1000, 'still listed at the last read runs to the branch end');
   assert.ok(!agreementLanes(agreements, false, 1000, text).lanes.some(lane => info.get(lane.id)?.agreement.pact.id === '1'), 'Ended hidden');
 });
+
+test('a pact listed at the last prepared read is not in force beyond it while later hours are still being prepared', () => {
+  const reads = ownerReads([read(0), read(50), read(100)]);
+  const listed = pact('1', 'non_aggression_pact', 10, 100, { presentAtEnd: true });
+  assert.deepEqual(pactState(listed, 100, reads, 100), { state: 'present' });
+  assert.deepEqual(pactState(listed, 150, reads, 100), { state: 'preparing', since: 100 });
+  assert.deepEqual(pactState(listed, 150, reads), { state: 'present' }, 'once prepared, still listed at the last read is in force');
+  const agreements = agreementsOf([listed], 'A', 150, reads, null, 100);
+  const text = { name: 'Alpha', country: (tag: string | null) => ({ name: `Country ${tag}` }), kindName: (kind: string) => kind, colors: ['#112233'] };
+  const { lanes } = agreementLanes(agreements, false, 100, text);
+  assert.equal(lanes[0].identity?.label, 'Non-aggression pacts · 0 in force', 'not counted in force at an hour still being prepared');
+  assert.equal(lanes[1].spans[0].lastHour, 100, 'its bar runs only through the prepared hours');
+  assert.equal(lanes[1].muted, false, 'nor is it shown ended');
+});

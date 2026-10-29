@@ -181,7 +181,7 @@ fn naval_sunk_group_keeps_every_separator_native_newlines_and_pointer_anchor() {
 
 #[test]
 fn naval_convoy_group_keeps_localised_separators_between_all_three_blocks() {
-    let localisation: Localisation = [
+    let mut localisation: Localisation = [
         ("SHIP_AND_TYPE", "convoy"),
         ("NAVAL_COMBAT_SHIP_TOOLTIP", "member|"),
         ("FEX_STATE_ON_THE_WAY", "incoming"),
@@ -193,6 +193,7 @@ fn naval_convoy_group_keeps_localised_separators_between_all_three_blocks() {
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
+    localisation.language = "english".into();
     let ships: Vec<_> = (0..3)
         .map(|battle_slot| NavalCombatShipRow {
             battle_slot,
@@ -229,7 +230,7 @@ fn naval_convoy_group_keeps_localised_separators_between_all_three_blocks() {
         &NoIcons,
         &localisation,
         None,
-        None,
+        Some("english"),
     )
     .unwrap();
     assert_eq!(
@@ -352,7 +353,20 @@ fn explicit_convoy_hover_orders_condition_arrival_criticals_and_damage() {
         ..Default::default()
     };
     let variants = BTreeMap::from([(7, &variant)]);
-    let text = member_tooltip(&row, "AAA", &variants, &NoIcons, &loc(), None, None).unwrap();
+    let mut localisation = loc();
+    localisation.language = "english".into();
+    let tooltip = |language| {
+        member_tooltip(
+            &row,
+            "AAA",
+            &variants,
+            &NoIcons,
+            &localisation,
+            None,
+            language,
+        )
+    };
+    let text = tooltip(Some("english")).unwrap();
     let ordered = ["Escort Mk II", "incoming", "S", "O", "A3", "C2", "T", "L"];
     let mut cursor = 0;
     for term in ordered {
@@ -360,6 +374,15 @@ fn explicit_convoy_hover_orders_condition_arrival_criticals_and_damage() {
         cursor += position + term.len();
     }
     assert!(text.contains(&format!("{INLINE_FLAG}AAA")));
+    // The saved name is stored text, exact only in the recording's language.
+    let reason = tooltip(Some("german")).unwrap_err();
+    assert!(reason.contains("variant 7 explicit name"), "{reason}");
+    assert!(reason.contains("stored in german"), "{reason}");
+    assert!(
+        tooltip(None)
+            .unwrap_err()
+            .contains("has no recording language")
+    );
 }
 
 #[test]

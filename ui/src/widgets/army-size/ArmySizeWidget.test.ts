@@ -11,7 +11,7 @@ import type { reducePartsRaceDrill } from '../../charts/race/partsRaceDrill';
 
 test('actual Army breakdown renders a country template roster when its deployed count is zero', async () => {
   const span = { firstHour: 0, lastHour: 100 };
-  const reply = { branchId: '1', available: true, measures: ['divisions'], types: [], warnings: [],
+  const reply = { branchId: '1', available: true, measures: ['divisions'], unknownMeasures: [], types: [], warnings: [],
     windows: [], window: 0, interval: span, series: [{ tag: 'AAA', membership: null, segments: [span],
       identities: [{ ...span, slot: 1, countryId: 11 }], runs: [[0, 0, 100, '0']] }] };
   const manifest = { ...reply, windows: [span], window: null, interval: null, series: [] };
@@ -49,7 +49,7 @@ test('actual Army keeps dated flags, full inventories and focusable chart return
   const portals: { label: unknown; hour: number | null; reason: string | null }[] = [];
   const window = { firstHour: 0, lastHour: 100 };
   const types = Array.from({ length: 5000 }, (_, index) => ({ key: `mod group ${index}`, name: `Mod group ${index}` }));
-  const reply = { branchId: '1', available: true, measures: ['divisions', 'battalions'], types, warnings: [],
+  const reply = { branchId: '1', available: true, measures: ['divisions', 'battalions'], unknownMeasures: [], types, warnings: [],
     windows: [], window: 0, interval: window, series: [{ tag: 'opaque actor', membership: null, segments: [window], runs: [[0, 3, 100]],
       mix: [{ ...window, values: types.map((_, index) => index === 0 ? 3 : 0) }] }] };
   const manifest = { ...reply, windows: [window], window: null, interval: null, series: [] };

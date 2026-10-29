@@ -27,6 +27,7 @@ fn loc() -> Localisation {
 #[test]
 fn marker_uses_full_roster_primary_order_and_viewer_relative_survival() {
     let combat = LandCombatRow {
+        attacker_classes: vec![0; 3],
         attackers: vec![10, 11, 12],
         defenders: vec![20, 21],
         ..Default::default()
@@ -137,6 +138,7 @@ fn we_uses_secondary_membership_and_canonical_equivalence_not_shared_vision() {
 #[test]
 fn marker_country_list_and_roster_have_no_viewer_cap() {
     let combat = LandCombatRow {
+        attacker_classes: vec![0; 5_000],
         attackers: (0..5_000).collect(),
         ..Default::default()
     };

@@ -38,8 +38,11 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
   const host = globalThis as typeof globalThis & { __spendingTable?: typeof state };
   host.__spendingTable = state;
   const replacements: Record<string, string> = {
-    '/dashboard/usePoliticsSpending.ts': `export const usePoliticsSpending = (_widget, runtime) => ({track: runtime.tracks[0], tags: globalThis.__spendingTable.tags,
-      data: [${JSON.stringify(data)}], ready: true, known: () => true, groupWarnings: [], selection: {matches: () => true, membership: null, unobserved: []}});
+    // The shown hour is the widget's window end, as the real hook answers it.
+    '/dashboard/usePoliticsSpending.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts';
+      export const usePoliticsSpending = (widget, runtime) => ({track: runtime.tracks[0], tags: globalThis.__spendingTable.tags,
+      data: [${JSON.stringify(data)}], ready: true, known: () => true, groupWarnings: [], selection: {matches: () => true, membership: null, unobserved: []},
+      shownHour: resolveWindow(widget, runtime.tracks[0], runtime.tracks, runtime.clock.getHour())?.lastHour});
       export const useSpendingChoices = () => ({}); export const useSpendingIdeaTooltips = () => undefined;`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: hour => tag => ({name: 'Dated ' + tag + ' at ' + hour, known: true})});`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__spendingTable.clock;',

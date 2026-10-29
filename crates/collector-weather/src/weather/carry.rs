@@ -31,7 +31,9 @@
 //! records (and the visited regions' modifier entries) and carries every
 //! other record from the held read. Anything else (the first hour, a gap, a
 //! forced full hour, a moved count, a cursor that moved by anything but one
-//! pass, a failed read) reads every record and holds it.
+//! pass, a failed read) reads every record and holds it. A window read that
+//! fails is not repeated: that part is unavailable for the hour, a refused
+//! region's combat entries are absent, and the next hour reads every record.
 //! Clocks and the two display arrays are still read whole every hour: the
 //! day/night update rewrites every clock hourly.
 
@@ -298,7 +300,7 @@ fn in_window(slot: u32, (first, visits): (u32, u32), count: u32) -> bool {
 }
 
 /// Gathers records `first..first + count` of `array` into `out`, packed;
-/// false when a field did not read.
+/// `Err` with the fields that read when one did not.
 fn gather(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -307,13 +309,14 @@ fn gather(
     first: u32,
     count: u32,
     out: &mut [u8],
-) -> bool {
+) -> Result<(), usize> {
     let record_bytes = layout.stride();
+    let fields = layout.field_count();
     let mut done = 0;
     while done < count {
         let batch = (count - done).min(64);
         let Some(base) = array.element(first + done, stride) else {
-            return false;
+            return Err(done as usize * fields);
         };
         let sources = RecordSources::Strided {
             base,
@@ -326,12 +329,12 @@ fn gather(
             layout,
             &mut out[begin..begin + batch as usize * record_bytes],
         );
-        if completed != batch as usize * layout.field_count() {
-            return false;
+        if completed != batch as usize * fields {
+            return Err(done as usize * fields + completed);
         }
         done += batch;
     }
-    true
+    Ok(())
 }
 
 /// The hour's words and windows (`carry` loaned to the job), before any
@@ -398,17 +401,30 @@ fn capture(
     };
     let record_bytes = layout.stride();
     let fields = layout.field_count();
-    if let (Some(window), Some(array)) = (carry.window(part), payload.array)
-        && follow(memory, array, stride, layout, carry, part, window)
-    {
+    if let (Some(window), Some(array)) = (carry.window(part), payload.array) {
+        let followed = follow(memory, array, stride, layout, carry, part, window);
         let total = array.count as usize * record_bytes;
-        payload.bytes[..total].copy_from_slice(&carry.held_bytes(part)[..total]);
-        payload.copied_fields = array.count as usize * fields;
-        payload.copied_bytes = layout.completed_bytes(window.1 as usize * fields);
-        carry.followed += 1;
-        carry.provinces_followed |= part == Part::Provinces;
-        WINDOW_RECORDS.fetch_add(u64::from(window.1), Relaxed);
-        return;
+        match followed {
+            Followed::Ineligible => {}
+            Followed::Read => {
+                payload.bytes[..total].copy_from_slice(&carry.held_bytes(part)[..total]);
+                payload.copied_fields = array.count as usize * fields;
+                payload.copied_bytes = layout.completed_bytes(window.1 as usize * fields);
+                carry.followed += 1;
+                carry.provinces_followed |= part == Part::Provinces;
+                WINDOW_RECORDS.fetch_add(u64::from(window.1), Relaxed);
+                return;
+            }
+            Followed::Failed { current, read } => {
+                // A failed source is not read again: the part keeps the fields
+                // read this hour, and the next hour reads every record.
+                payload.bytes[..total].copy_from_slice(&carry.held_bytes(part)[..total]);
+                payload.copied_fields = current;
+                payload.copied_bytes = layout.completed_bytes(read);
+                carry.complete = false;
+                return;
+            }
+        }
     }
     // Every record, held when complete.
     payload.capture(memory, stride, layout);
@@ -425,8 +441,20 @@ fn capture(
     }
 }
 
-/// Reads `window` of `array` into the held records; false when it did not
-/// read (the part reads every record).
+/// What following a window read.
+enum Followed {
+    /// Nothing was read: the part reads every record.
+    Ineligible,
+    Read,
+    /// A field did not read. `current` fields of the held records, from slot
+    /// zero, are this hour's; `read` fields were read.
+    Failed {
+        current: usize,
+        read: usize,
+    },
+}
+
+/// Reads `window` of `array` into the held records.
 fn follow(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -435,18 +463,20 @@ fn follow(
     carry: &mut WeatherCarry,
     part: Part,
     (first, visits): (u32, u32),
-) -> bool {
+) -> Followed {
     let record_bytes = layout.stride();
+    let fields = layout.field_count();
     let count = array.count;
     if carry.held_bytes(part).len() < count as usize * record_bytes {
-        return false;
+        return Followed::Ineligible;
     }
     // The window, wrapping at the count, into the held records.
     let head = visits.min(count - first);
+    let tail = visits - head;
     let held = carry.held_bytes(part);
     let (front, back) =
         held[..count as usize * record_bytes].split_at_mut(first as usize * record_bytes);
-    gather(
+    if let Err(read) = gather(
         memory,
         array,
         stride,
@@ -454,15 +484,30 @@ fn follow(
         first,
         head,
         &mut back[..head as usize * record_bytes],
-    ) && gather(
+    ) {
+        // A wrapped window has not yet read its records from slot zero.
+        let current = if tail == 0 {
+            first as usize * fields + read
+        } else {
+            0
+        };
+        return Followed::Failed { current, read };
+    }
+    match gather(
         memory,
         array,
         stride,
         layout,
         0,
-        visits - head,
-        &mut front[..(visits - head) as usize * record_bytes],
-    )
+        tail,
+        &mut front[..tail as usize * record_bytes],
+    ) {
+        Ok(()) => Followed::Read,
+        Err(read) => Followed::Failed {
+            current: read,
+            read: head as usize * fields + read,
+        },
+    }
 }
 
 /// One region's combat modifier entries.
@@ -505,10 +550,16 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     if let Some(carry) = job.carry.as_deref_mut()
         && let Some(window) = carry.window(Part::Regions)
         && carry.combat.len() == count
-        && follow_combat(memory, array, carry, window)
     {
+        let complete = follow_combat(memory, array, carry, window);
         job.combat.extend_from_slice(&carry.combat[..room]);
-        carry.followed += 1;
+        if complete {
+            carry.followed += 1;
+        } else {
+            // A refused region is read again next hour, with every other.
+            carry.combat.clear();
+            carry.complete = false;
+        }
         return;
     }
     for slot in 0..room {
@@ -530,8 +581,8 @@ pub(super) fn capture_combat(memory: &impl Memory, job: &mut WeatherJob) {
     }
 }
 
-/// The window's combat entries into the carried ones; false on a refused
-/// read.
+/// The window's combat entries into the carried ones, each region read
+/// once; false when one was refused.
 fn follow_combat(
     memory: &impl Memory,
     array: engine_native::cpdx_array::Array,
@@ -539,14 +590,14 @@ fn follow_combat(
     (first, visits): (u32, u32),
 ) -> bool {
     let count = array.count;
+    let mut complete = true;
     for visit in 0..visits {
         let slot = (first + visit) % count;
-        let Some(fresh) = region_combat(memory, array, slot) else {
-            return false;
-        };
-        carry.combat[slot as usize] = Some(fresh);
+        let fresh = region_combat(memory, array, slot);
+        complete &= fresh.is_some();
+        carry.combat[slot as usize] = fresh;
     }
-    true
+    complete
 }
 
 /// Reads one province's accumulator into `out`, counting the lookup; false refuses it.

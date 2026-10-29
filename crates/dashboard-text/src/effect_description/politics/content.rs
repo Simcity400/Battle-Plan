@@ -213,7 +213,7 @@ impl Renderer<'_, '_, '_> {
             .focuses
             .as_ref()
             .map_err(Clone::clone)?
-            .get(id)
+            .get_in(installed_content_focus::focus::Database::National, id)
             .map_err(|gap| format!("national focus {id}: {gap}"))?
             .ok_or_else(|| format!("national focus {id} is absent from recorded content"))?;
         let country = self.politics_focus_country(scopes)?;

@@ -3,6 +3,8 @@ import test from 'node:test';
 import type { EquipmentProducedReply, ProducedKey } from '../../generated/dashboard';
 import { formatProduced, formatRaw, producedModel, producedRequest, requestParams, validateProducedReply } from './producedData.ts';
 import { mostDelivered, producedCaption, typeRows, typeValues } from './producedView.ts';
+import { producedDrillData } from './producedDrill.ts';
+import { runAt } from '../../charts/series.ts';
 
 const c = (from: number, deltas: number[], unknown: number[] = []) => ({ from, deltas, unknown });
 const key = (item: Partial<ProducedKey> & { key: string }): ProducedKey => ({ name: null, typeKey: null, domain: null, names: [], ...item });
@@ -112,4 +114,34 @@ test('a count the recording lacks at the hour is not recorded, never zero, which
   assert.equal(typeRows(unitsLater, icLater, 'SOV', 10, null), null);
   // Both read: a type absent from one count is a known zero there.
   assert.deepEqual(shown(typeRows(units, ic, 'SOV', 10, 73_705_000))?.find(row => row[0] === 'tank'), ['tank', 'T-34 AM', 10, true, 0, true]);
+});
+
+test('a resolved type absent from a count is not known while an unresolved variant holds anything there', () => {
+  // SOV delivers no tank but a gun content cannot type; IC goes into an unfinished tank.
+  const units = variants([4]);
+  units.series[0].values = units.series[0].values.map(value => value.key === 2 ? { key: 2, values: c(0, [0]) } : value);
+  units.series[0].total = c(0, [1314]);
+  const ic = { ...variants([0]), count: 'ic' as const, decimals: 5, series: [{ ...variants([0]).series[0],
+    values: [{ key: 0, values: c(0, [73_000_000]) }, { key: 2, values: c(0, [15_725_000]) }], total: c(0, [88_725_000]) }] };
+  const rows = typeRows(producedModel(validateProducedReply(units)), producedModel(validateProducedReply(ic)), 'SOV', 10, 88_725_000)!;
+  assert.deepEqual(rows.map(row => [row.type, row.units, row.ic]), [[':mod_gun', 4, 0], ['rifle', null, 73_000_000], ['tank', null, 15_725_000]],
+    'the gun could be a tank: no tank delivered is not proven');
+  // With nothing unresolved, a type absent from units delivered none.
+  const plain = variants([0]);
+  plain.series[0].values = plain.series[0].values.map(value => value.key === 2 ? { key: 2, values: c(0, [0]) } : value);
+  const proven = typeRows(producedModel(validateProducedReply(plain)), producedModel(validateProducedReply(ic)), 'SOV', 10, 88_725_000)!;
+  assert.deepEqual(proven.find(row => row.type === 'tank')?.units, 0);
+});
+
+test('a selected type drill keeps its models exact but its total unknown while an unresolved variant holds anything', () => {
+  const drill = (gun: number[], unknown: number[] = []) => producedDrillData(producedModel(validateProducedReply(variants(gun, unknown))),
+    { count: 'units', decimals: 0, type: 'rifle' });
+  const sure = drill([0]);
+  assert.deepEqual([sure.at('SOV', 10)?.values, sure.at('SOV', 10)?.total], [[1300, 10], 1310]);
+  for (const unsure of [drill([4]), drill([], [0, 1])]) {
+    assert.deepEqual([unsure.at('SOV', 10)?.values, unsure.at('SOV', 10)?.total], [[1300, 10], null]);
+    assert.ok(unsure.bands('SOV', { firstHour: 8, lastHour: 31 }).every(runs => runAt(runs, 10) == null), 'no stack claims a whole');
+    const tooltip = [...unsure.tooltip('SOV', 10, 'Soviet Union', new Map())!][0];
+    assert.equal(tooltip.rows.find(row => row.label === 'Total')?.value, 'Not known');
+  }
 });

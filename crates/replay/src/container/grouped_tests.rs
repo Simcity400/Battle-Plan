@@ -219,16 +219,31 @@ fn grouped_frame_headers_cost_bytes_not_a_word_per_table_and_keep_read_hours() {
 
 /// One block written directly, given its frames.
 pub(super) fn written_block(frames: &[Frame], layout: grouped::Layout) -> CompressedBlock {
+    pushed_block(frames, layout)
+        .0
+        .compress(&pack::Cores::new(1))
+        .unwrap()
+}
+
+/// One block's frames pushed directly, before compression, with each table's stored plain bytes.
+fn pushed_block(
+    frames: &[Frame],
+    layout: grouped::Layout,
+) -> (grouped::BlockWriter, [u64; TABLE_COUNT]) {
     let mut block = grouped::BlockWriter::with_layout(&frames[0], layout).unwrap();
     let mut decoder = FrameDecoder::new();
     let mut anchors = grouped::Anchors::default();
     let mut aliases = aliases::Encoder::default();
     let cores = pack::Cores::new(1);
+    let mut plain = [0; TABLE_COUNT];
     for frame in frames {
         let decoded = decoder.advance(frame).unwrap();
         let mut payload = Vec::new();
         let sizes = frame.encode_with_sizes(&mut payload).unwrap();
         let prepared = aliases.prepare(frame, decoded, &payload, &sizes).unwrap();
+        for (plain, stored) in plain.iter_mut().zip(prepared.stored_sizes) {
+            *plain += stored as u64;
+        }
         block
             .push_marked(
                 frame,
@@ -243,7 +258,41 @@ pub(super) fn written_block(frames: &[Frame], layout: grouped::Layout) -> Compre
             .unwrap();
         aliases.commit(prepared);
     }
-    block.compress(&cores).unwrap()
+    (block, plain)
+}
+
+#[test]
+fn unfinished_compression_counts_each_map_table_by_its_own_plain_bytes() {
+    let frames = spool_frames(&map_records(1, &[1, 2, 3, 4]));
+    let mapped: Vec<TableId> = TableId::ALL
+        .into_iter()
+        .filter(|&table| {
+            table.last_change().present(FORMAT_VERSION)
+                && crate::scope::records(CaptureMode::Map, table)
+        })
+        .collect();
+    assert!(
+        mapped
+            .iter()
+            .enumerate()
+            .any(|(ordinal, table)| table.index() != ordinal),
+        "Map's tables keep their TableId positions"
+    );
+    let (block, plain) = pushed_block(&frames, grouped::Layout::Chosen);
+    let mut left: u64 = mapped.iter().map(|table| plain[table.index()]).sum();
+    assert_eq!(plain.iter().sum::<u64>(), left, "a left-out table stored bytes");
+    let mut compressing = grouped::Compressing::new(block.written());
+    assert_eq!(compressing.work_bytes(), left);
+    let cores = pack::Cores::new(1);
+    // Each run chooses the next table's sections and stops before the one after.
+    for table in &mapped[..mapped.len() - 1] {
+        let started = std::sync::atomic::AtomicBool::new(false);
+        let stop = || started.swap(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(compressing.run(&cores, &stop).unwrap().is_none());
+        left -= plain[table.index()];
+        assert_eq!(compressing.work_bytes(), left, "after {table:?}");
+    }
+    assert_eq!(left, plain[mapped.last().unwrap().index()]);
 }
 
 fn one_block_in_layout(replay: &Replay, frames: &[Frame], layout: grouped::Layout) -> Replay {

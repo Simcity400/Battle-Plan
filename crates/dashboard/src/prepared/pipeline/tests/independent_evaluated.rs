@@ -1711,6 +1711,62 @@ fn occupation_states_and_first_daily_samples_match_preparation_while_identity_hi
     });
 }
 
+/// Blocks of [`scenario`] that start while a state is occupied.
+const OCCUPIED_BLOCK_STARTS: [i32; 4] = [8, 16, 26, 34];
+
+/// [`occupation_at`] with resistance carried untimed from the hour before into
+/// the first hour of each occupied block, as an hourly table is between reads.
+fn carried_occupation_at(branch: u64, hour: i32) -> DecodedFrame {
+    let mut observed = occupation_at(branch, hour);
+    if OCCUPIED_BLOCK_STARTS.contains(&offset(branch, hour)) {
+        let index = TableId::StateResistance.index();
+        observed.tables[index] = occupation_at(branch, hour - 1).tables[index].clone();
+        observed.metrics.table_ns[index] = 0;
+    }
+    observed
+}
+
+const CARRIED_OCCUPATION: Case = Case {
+    frame: carried_occupation_at,
+    ..OCCUPATION
+};
+
+/// The first view samples a block whose first hour carries resistance
+/// untimed at the block's first timed read, as the observer reads it,
+/// rather than leaving the block pending.
+#[test]
+fn an_untimed_resistance_carry_at_a_block_start_samples_its_first_timed_read() {
+    let replay = full(&CARRIED_OCCUPATION);
+    let mut fixture = Fixture::new(&replay);
+    let family = serde_json::json!({"kind":"occupation-trend", "measure":"resistance", "rankMeasure":"resistance", "top":null, "collaboration":true});
+    own(&CARRIED_OCCUPATION, || {
+        let source = fixture.source("occupation-trend-carried-start");
+        let last = source.block_windows(1).last().unwrap().last_hour;
+        let summary = serde_json::json!({"branchId":"1", "family":family, "tags":[], "from":BASE, "to":last, "width":last-BASE+1});
+        let cold = query(&source, "series-summary", summary).unwrap();
+        let runs: Vec<&serde_json::Value> = cold["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|series| series["summary"]["runs"].as_array().unwrap())
+            .collect();
+        for start in OCCUPIED_BLOCK_STARTS {
+            let hour = i64::from(BASE + start);
+            // The hour after the carried one is the block's first timed read.
+            let read = f64::from((start + 1) * 100) / 100_000.0;
+            assert!(
+                runs.iter().any(|run| {
+                    run["firstHour"].as_i64().unwrap() <= hour
+                        && hour <= run["lastHour"].as_i64().unwrap()
+                        && run["value"].as_f64() == Some(read)
+                }),
+                "the block at +{start} samples its first timed read: {cold}"
+            );
+        }
+        clear(source);
+    });
+}
+
 /// `quiet_projects_at` with GER's state manpower, which nothing the block
 /// reader watches reads, 4321 at the branch's first hour and 8765 from +1;
 /// its `project_flag` variable set from +2; and a project completion the

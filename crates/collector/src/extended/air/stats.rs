@@ -461,39 +461,29 @@ fn copy_stats_owners(
         Some(vtable) => vtable as u64,
         None => return,
     };
+    // The walk reads a slot only through `Reader::read_at` of an owner's canonical slot, so a
+    // null, foreign or reserved-alias slot stops nothing; the replay derives each verdict.
     for slot in 1..countries_array.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
             .and_then(|o| countries_array.data.checked_add(o));
-        let pointer = match sspan(log, memory, pointer_addr, 8, STATS_MASK).and_then(|s| {
+        let pointer = sspan(log, memory, pointer_addr, 8, STATS_MASK).and_then(|s| {
             usize::try_from(stats_pool_u64(log, s))
                 .ok()
                 .filter(|&p| p != 0)
-        }) {
-            Some(pointer) => pointer,
-            None => return,
-        };
-        let vtable = match sspan(log, memory, Some(pointer), 8, STATS_MASK) {
-            Some(start) => start,
-            None => return,
-        };
-        if stats_pool_u64(log, vtable) != country_vtable {
-            return;
-        }
-        let id = match sspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            STATS_MASK,
-        ) {
-            Some(start) => stats_pool_u32(log, start),
-            None => return,
-        };
-        // Range validation mirrors the link reader; the entry bytes are
-        // already staged above, so no per-id take is needed.
-        if id == 0 || id >= links_array.count {
-            return;
+        });
+        if let Some(pointer) = pointer
+            && let Some(vtable) = sspan(log, memory, Some(pointer), 8, STATS_MASK)
+            && stats_pool_u64(log, vtable) == country_vtable
+        {
+            // The id's link entry is staged above.
+            sspan(
+                log,
+                memory,
+                pointer.checked_add(ccountry::ID),
+                4,
+                STATS_MASK,
+            );
         }
         if log.overflowed {
             return;

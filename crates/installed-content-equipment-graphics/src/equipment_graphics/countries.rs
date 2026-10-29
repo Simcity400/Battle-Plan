@@ -42,7 +42,8 @@ pub struct ModelCountry {
     pub original_tag: Option<String>,
     pub original_graphical_culture: Option<String>,
     /// The ruling party's ideology group, `Some(None)` without a ruling
-    /// party; `None` when this hour's party table is incomplete.
+    /// party; `None` when this hour's party table is incomplete or the ruling
+    /// token is not UTF-8, which no pool filter can name.
     pub ruling_ideology: Option<Option<String>>,
 }
 
@@ -70,7 +71,7 @@ pub fn read(frame: &dyn DecodedSource) -> io::Result<BTreeMap<u32, ModelCountry>
         if party.is_ruling != 0
             && let Some(slot) = links.get(&party.country)
         {
-            ideology.insert(*slot, String::from_utf8_lossy(&party.token).into_owned());
+            ideology.insert(*slot, std::str::from_utf8(&party.token).ok());
         }
     }
     let culture = |slot: &u32| {
@@ -107,9 +108,94 @@ pub fn read(frame: &dyn DecodedSource) -> io::Result<BTreeMap<u32, ModelCountry>
                     graphical_culture: culture(&slot),
                     original_tag,
                     original_graphical_culture,
-                    ruling_ideology: parties_known.then(|| ideology.get(&slot).cloned()),
+                    ruling_ideology: match ideology.get(&slot) {
+                        _ if !parties_known => None,
+                        None => Some(None),
+                        Some(&token) => token.map(|token| Some(token.to_owned())),
+                    },
                 },
             ))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use replay_data::rows::{
+        CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, TableId, TableRows,
+    };
+    use replay_frame::frame::{DecodedFrame, Metrics};
+
+    fn frame(parties: Vec<PoliticalPartyRow>) -> DecodedFrame {
+        let mut tables = std::array::from_fn(|_| TableView::Unavailable {
+            reason: "fixture".into(),
+        });
+        let countries = [(1, b"AAA"), (2, b"BBB"), (3, b"CCC")];
+        tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            countries
+                .iter()
+                .map(|(id, tag)| CountryRow {
+                    id: *id,
+                    canonical_slot: *id,
+                    tag: tag.to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+            countries
+                .iter()
+                .map(|(id, _)| CountryLinkRow {
+                    id: *id,
+                    canonical_slot: *id,
+                })
+                .collect(),
+        ));
+        tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(
+                countries
+                    .iter()
+                    .map(|(id, _)| CountryAppearanceRow {
+                        country: *id,
+                        graphical_culture: b"synthetic_gfx".to_vec(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(parties));
+        DecodedFrame {
+            branch: 1,
+            hour: 0,
+            tables: tables.map(Into::into),
+            metrics: Metrics::default(),
+        }
+    }
+
+    #[test]
+    fn a_ruling_token_that_is_not_utf8_is_unknown_not_a_repaired_key() {
+        let party = |country, token: &[u8]| PoliticalPartyRow {
+            country,
+            id: 1,
+            is_ruling: 1,
+            token: token.to_vec(),
+            ..Default::default()
+        };
+        let countries = read(&frame(vec![
+            party(1, b"synthetic_group"),
+            party(2, &[b'x', 0xff]),
+        ]))
+        .unwrap();
+        assert_eq!(
+            countries[&1].ruling_ideology,
+            Some(Some("synthetic_group".into()))
+        );
+        assert_eq!(countries[&2].ruling_ideology, None);
+        assert_eq!(countries[&3].ruling_ideology, Some(None));
+        assert_eq!(
+            countries[&2].graphical_culture.as_deref(),
+            Some("synthetic_gfx")
+        );
+    }
 }

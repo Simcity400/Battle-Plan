@@ -1275,6 +1275,28 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
     }
 
+    /// Bracketed text reads the scope state the title triggers leave, so it
+    /// refuses when their walk stopped short; other text does not depend on it.
+    pub(super) fn event_title(
+        &self,
+        title: installed_content_events::events::TitleKey<'_>,
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let Some(key) = title.key else {
+            return Ok(String::new());
+        };
+        if let Some(why) = title.unsettled {
+            let text = self.localised(key, &[], scopes, false)?;
+            if text
+                .find('[')
+                .is_some_and(|open| text[open..].contains(']'))
+            {
+                return Err(why);
+            }
+        }
+        self.localised(key, &[], scopes, true)
+    }
+
     fn own(&mut self, item: &Item, scopes: Scopes) -> Option<String> {
         match self.leaf(item, scopes) {
             Some(Ok(text)) => Some(text),

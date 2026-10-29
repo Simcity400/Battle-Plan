@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import type { CountryGroupReply, MarketLedgerReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import { logPageItems } from '../../charts/log/logPages.ts';
-import { extendCursors, ledgerCountries, ledgerCursors, ledgerEmpty, ledgerFigure, ledgerPages, ledgerRows, ledgerTitle, shownKinds, validateLedger } from './ledgerData.ts';
+import { extendCursors, ledgerCountries, ledgerCursors, ledgerEmpty, ledgerFigure, ledgerPages, ledgerRows, ledgerTitle, loadedHolders, shownKinds, validateLedger } from './ledgerData.ts';
+import { partyTagsAt } from '../../dashboard/marketHistory.ts';
 
 const row = (id: string, kind: number, amountRaw: string | null, reason: string | null = null) => ({ id, occurrence: id, hour: 20, kind, mode: kind === 34 ? 20 : 0,
   contract: '0000000000000009', seller: '1', buyer: '2', variant: 'a1', amountRaw, totalRaw: '0', reason });
@@ -83,4 +84,14 @@ test('a group whose roster was never recorded is unknown, never "no members"', (
   // A recorded member is asked over its own hours.
   assert.deepEqual(ledgerCountries(group('hour'), [], groups([{ tag: 'AAA', firstHour: 10, lastHour: 20 }], []), 0, 100).countries?.members,
     [{ tag: 'AAA', firstHour: 10, lastHour: 20 }]);
+});
+
+test('a picked contract follows its parties to the tags later pages read for them', () => {
+  const [picked] = ledgerRows(reply(), 0);
+  // Preparation has since reached both parties' renames.
+  const later = reply({ holders: { '1': [{ hour: 0, tag: 'SEL' }, { hour: 30, tag: 'NSL' }], '2': [{ hour: 0, tag: 'BUY' }, { hour: 35, tag: 'NBY' }] } });
+  const pages = [{ key: '0', start: 0, end: 3, count: 3, rows: ledgerRows(later, 0) }];
+  assert.deepEqual(partyTagsAt(picked.item.parties, undefined, 38), ['SEL', 'BUY'], 'the tags read at the pick');
+  assert.deepEqual(partyTagsAt(picked.item.parties, loadedHolders(pages), 38), ['NSL', 'NBY']);
+  assert.deepEqual(partyTagsAt(picked.item.parties, loadedHolders([]), 38), ['SEL', 'BUY'], 'without loaded pages, the pick keeps its own');
 });

@@ -914,6 +914,7 @@ mod tests {
             },
             LandCombatRow {
                 id: 41,
+                attacker_classes: vec![0],
                 attackers: vec![7],
                 ..Default::default()
             },
@@ -1016,7 +1017,6 @@ mod tests {
         let owners = BTreeMap::from([(7, 100)]);
         let links = BTreeMap::new();
         let packet = |entries| UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: replay_data::rows::PacketHour::Stamped(10),
             entries,
         };
@@ -1049,6 +1049,7 @@ mod tests {
             &mut frame,
             TableRows::LandCombats(vec![LandCombatRow {
                 id: 40,
+                attacker_classes: vec![0],
                 attackers: vec![7],
                 ..Default::default()
             }]),
@@ -1089,7 +1090,6 @@ mod tests {
             division: 7,
             combat_count: 1,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                speed_witness: Default::default(),
                 sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![UnitCombatReference {
                     combat: 41,
@@ -1156,7 +1156,6 @@ mod tests {
             division: 7,
             combat_count: 3,
             combat_references: Recorded::Value(Some(UnitCombatReferences {
-                speed_witness: Default::default(),
                 sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
                 entries: vec![
                     UnitCombatReference {
@@ -1239,7 +1238,6 @@ mod tests {
         naval.sides[0].summary.countries = (1..=50).collect();
         set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
         let packet = UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: replay_data::rows::PacketHour::Stamped(frame.hour),
             entries: vec![UnitCombatReference {
                 combat: 41,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::raw::CountrySlots;
 
 // ===========================================================================
 // Scheduled production-rest raw-copy split (ProductionLines, Stockpiles,
@@ -142,10 +143,6 @@ fn p_pool_u64(log: &RawLog<8>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-fn p_pool_u32(log: &RawLog<8>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
 /// One mirrored span read. `None` addresses (arithmetic overflow) record
 /// nothing because the typed walk fails locally without reads.
 fn pspan(
@@ -252,9 +249,8 @@ fn copy_production_census(
     if countries.count < 2 || links.count == 0 {
         return false;
     }
-    let vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return false,
+    let Some(mut slots) = CountrySlots::new(countries, links, base) else {
+        return false;
     };
     if log.worker_growth_enabled()
         && engine_allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err()
@@ -262,93 +258,21 @@ fn copy_production_census(
         log.overflowed = true;
         return false;
     }
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let Some(pointer_start) = pspan(log, memory, pointer_addr, 8, M_P_CENSUS) else {
-            return false;
-        };
-        let pointer = match usize::try_from(p_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&p| p != 0)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let Some(vtable_start) = pspan(log, memory, Some(pointer), 8, M_P_CENSUS) else {
-            return false;
-        };
-        let Some(id_start) = pspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            M_P_CENSUS,
-        ) else {
-            return false;
-        };
-        if p_pool_u64(log, vtable_start) != vtable {
-            return false;
+    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
+    for slot in 1..slots.count() {
+        match slots.take(log, memory, slot, M_P_CENSUS) {
+            Some(Some(pointer)) => {
+                if census.len() == census.capacity() {
+                    log.overflowed = true;
+                    return false;
+                }
+                census.push(ProductionRestCountry { pointer });
+            }
+            Some(None) => {}
+            None => return false,
         }
-        let id = p_pool_u32(log, id_start);
-        let canonical = match copy_production_link(log, memory, &links, countries.count, id) {
-            Some(Some(canonical)) => canonical,
-            _ => return false,
-        };
-        let canonical_slot = match copy_production_link(log, memory, &links, countries.count, slot)
-        {
-            Some(Some(canonical_slot)) => canonical_slot,
-            _ => return false,
-        };
-        if canonical_slot != canonical {
-            return false;
-        }
-        let check = match copy_production_link(log, memory, &links, countries.count, canonical) {
-            Some(Some(check)) => check,
-            _ => return false,
-        };
-        if check != canonical {
-            return false;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let Some(canonical_start) = pspan(log, memory, canonical_addr, 8, M_P_CENSUS) else {
-            return false;
-        };
-        if p_pool_u64(log, canonical_start) != pointer as u64 {
-            return false;
-        }
-        if census.len() == census.capacity() {
-            log.overflowed = true;
-            return false;
-        }
-        census.push(ProductionRestCountry { pointer });
     }
     true
-}
-
-fn copy_production_link(
-    log: &mut RawLog<8>,
-    memory: &impl Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = pspan(log, memory, links.data.checked_add(offset), 4, M_P_CENSUS)?;
-    let slot = p_pool_u32(log, start);
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
 }
 
 /// Production manager for one country (shared by lines/stockpiles/licences/

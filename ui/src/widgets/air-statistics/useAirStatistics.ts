@@ -7,7 +7,7 @@ import { statisticName, validateAirStatistics } from './airStatisticsData';
 import { airStatisticsChannel, airStatisticsRequest } from '../../dashboard/widgetRequests';
 import type { AirStatisticsReply } from './airStatisticsData';
 import { OPTIONS } from './definition';
-import { useAirTheatres } from '../air-missions/useAirTheatres';
+import { choiceHour, theatreChoices, useAirTheatres } from '../air-missions/useAirTheatres';
 
 /** The country's prepared statistics history: one request per country and channel, looked up
  * locally at every playback hour. */
@@ -25,12 +25,12 @@ export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, act
 /** Channels by their game names, and the regions and theatres the recording names. */
 export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const { data, options, track, params } = useAirStatistics(widget, runtime, true);
-  const theatres = useAirTheatres(runtime, track, 'air-statistics', params, track?.branch.lastHour ?? null, true);
+  const theatres = useAirTheatres(runtime, track, 'air-statistics', params, choiceHour(widget, runtime, track), true);
   const picked = new Set(contentSet(options.regions).map(contentKey));
   return {
     channel: (data?.channels ?? []).map(channel => ({ value: setToken(channel.id), label: `${statisticName(channel.ours)} / ${statisticName(channel.enemy)}` })),
     regions: [...(data?.regions ?? []).map(region => ({ value: setToken(region.id), label: region.name })),
       ...[...picked].filter(id => !data?.regions.some(region => region.id === id)).map(id => ({ value: setToken(id), label: `${id} · not in this recording` }))],
-    theatres: (theatres.theatres ?? []).map(theatre => ({ value: setToken(theatre.id), label: theatre.name })),
+    theatres: theatreChoices(theatres.theatres ?? undefined, contentSet(options.theatres).map(contentKey)),
   };
 }

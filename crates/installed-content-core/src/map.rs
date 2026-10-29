@@ -9,12 +9,8 @@ use std::{
 use crate::{
     ResolvedLayers,
     fields::invalid,
-    ideas, modifiers,
     movement::{bitmap::NativeBitmap, records::engine_number},
-    parser::{
-        self,
-        native::{self, Shape},
-    },
+    parser,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,73 +254,8 @@ fn apply_autonomy_colors(
     input: &[u8],
     names: &KeyNames,
 ) -> io::Result<()> {
-    #[derive(Clone, Copy)]
-    enum Node {
-        File,
-        State,
-        Modifier(modifiers::Node),
-        Rule(ideas::RuleNode),
-        Mtth,
-    }
-    let mut undecided = Vec::new();
-    // The database accepts both top-level spellings, then reads each
-    // definition's fields through the shared script reader.
-    let read = native::read(
-        input,
-        native::Mode::KeepMark,
-        native::Top::Persistent(Node::File),
-        Some(names),
-        &mut |node, field| match node {
-            Node::File
-                if field.keyword_is("autonomy_state") || field.keyword_is("autonomous_state") =>
-            {
-                Shape::Object(Node::State)
-            }
-            Node::File => Shape::Skip,
-            Node::State => match field.keyword().as_deref() {
-                Some(
-                    b"id"
-                    | b"default"
-                    | b"cost"
-                    | b"is_puppet"
-                    | b"min_freedom_level"
-                    | b"manpower_influence"
-                    | b"peace_conference_initial_freedom"
-                    | b"use_overlord_color",
-                ) => Shape::One,
-                Some(
-                    b"allowed"
-                    | b"can_take_level"
-                    | b"can_lose_level"
-                    | b"ai_overlord_wants_garrison",
-                ) => Shape::Trigger,
-                Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
-                Some(b"rule") => Shape::Object(Node::Rule(ideas::RuleNode::Rule)),
-                Some(b"allowed_levels_filter") => Shape::List,
-                Some(b"ai_subject_wants_higher" | b"ai_overlord_wants_lower") => {
-                    Shape::Object(Node::Mtth)
-                }
-                Some(b"use_for_peace_conference_weight") => Shape::ObjectIfOpen(Node::Mtth),
-                _ => Shape::Skip,
-            },
-            Node::Modifier(node) => {
-                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided)
-                    .map(Node::Modifier)
-            }
-            Node::Rule(node) => ideas::rule_field(node, field).map(Node::Rule),
-            Node::Mtth => native::mean_time_to_happen(field),
-        },
-    );
-    if let Some(cause) = read.unsettled {
-        return Err(invalid(format!("autonomy definitions: {cause}")));
-    }
-    if let Some(cause) = undecided.first() {
-        return Err(invalid(format!("autonomy definitions: {cause}")));
-    }
-    for item in read.items {
-        if !item.keyword_is("autonomy_state") && !item.keyword_is("autonomous_state") {
-            continue;
-        }
+    // The database's own read of the file ([`crate::autonomy::read_definitions`]).
+    for item in crate::autonomy::read_definitions(input, names)? {
         let Some(items) = item.value.items() else {
             continue;
         };
@@ -359,12 +290,9 @@ fn apply_autonomy_colors(
 pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors> {
     let mut colors = CountryColors::default();
     let names = layers.key_names()?;
-    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
-    for path in layers
-        .paths()
-        .filter(|path| path.starts_with(b"common/autonomous_states/") && path.ends_with(b".txt"))
-    {
-        apply_autonomy_colors(&mut colors, &layers.read_path(path)?, &names)?;
+    // The database loader's roster: the folder's own files in byte order, each by its bytes.
+    for path in crate::script_files::paths(layers, "common/autonomous_states/", Some(".txt")) {
+        apply_autonomy_colors(&mut colors, &path.read(layers)?, &names)?;
     }
     Ok(colors)
 }
@@ -596,6 +524,36 @@ mod tests {
         )
         .unwrap();
         assert!(colors.use_overlord_color[b"x".as_slice()]);
+    }
+
+    /// The colour rule reads the database loader's roster: the folder's own files
+    /// in byte order (`Z.txt` before `a.txt`), found without ASCII case, and no
+    /// file of a subfolder.
+    #[test]
+    fn autonomy_colours_follow_the_database_file_roster() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let stack = crate::test_support::Stack::new("map_autonomy_roster");
+        stack.write(
+            &stack.base(),
+            "common/autonomous_states/a.txt",
+            "autonomy_state = { id = shared use_overlord_color = yes }",
+        );
+        stack.write(
+            &stack.base(),
+            "common/autonomous_states/backup/b.txt",
+            "autonomy_state = { id = shared use_overlord_color = no } autonomy_state = { id = nested }",
+        );
+        stack.write(
+            &stack.addon(),
+            "Common/Autonomous_States/Z.txt",
+            "autonomy_state = { id = shared use_overlord_color = no } autonomy_state = { id = upper use_overlord_color = yes }",
+        );
+        let colors = read_country_colors(&stack.layers(&[])).unwrap();
+        assert_eq!(
+            colors.use_overlord_color,
+            BTreeMap::from([(b"shared".to_vec(), true), (b"upper".to_vec(), true)])
+        );
     }
 
     #[test]

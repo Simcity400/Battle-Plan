@@ -13,9 +13,29 @@ fn event_presentation_keeps_description_picture_and_each_option_admission_trigge
     assert_eq!(event.option_triggers.len(), 1);
     assert_eq!(event.option_triggers[0].len(), 1);
     assert!(event.option_triggers[0][0].keyword_is("always"));
-    assert_eq!(event.original_recipient_only, [true]);
+    assert_eq!(event.original_recipient_only, [Some(true)]);
     assert_eq!(event.options[0].len(), 1);
     assert!(event.options[0][0].keyword_is("custom_effect_tooltip"));
+}
+
+#[test]
+fn any_original_recipient_assignment_gates_the_option_and_a_failed_read_keeps_the_mode() {
+    engine_executable::executable_tables::initialize_for_tests().expect("supported runtime tables");
+    let parsed = parse(
+        b"add_namespace=synthetic country_event={id=synthetic.4 title=TITLE \
+          option={name=KEPT original_recipient_only=yes original_recipient_only=invalid} \
+          option={name=OTHERS original_recipient_only=no} \
+          option={name=REFUSED original_recipient_only=invalid} \
+          option={name=OPEN}}",
+        "synthetic.txt",
+        &KeyNames::default(),
+    );
+    let event = parsed.get(b"synthetic.4").unwrap();
+    assert_eq!(
+        event.original_recipient_only,
+        [Some(true), Some(false), Some(false), None]
+    );
+    assert!(event.options.iter().all(Vec::is_empty));
 }
 
 #[test]
@@ -24,10 +44,16 @@ fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys(
         titles: crate::parser::parse(titles).unwrap().items,
         ..Default::default()
     };
+    let settled = |key: &'static [u8]| {
+        Ok(TitleKey {
+            key: Some(key),
+            unsettled: None,
+        })
+    };
     let bypass = event(b"title={key=ONLY trigger={always=no}}");
     assert_eq!(
         bypass.deterministic_title_key(|_| panic!("sole trigger")),
-        Ok(Some(b"ONLY".as_slice()))
+        settled(b"ONLY")
     );
     let titles = event(b"title={text=FIRST trigger={always=no}} title={text=LAST key=SECOND trigger={always=yes} trigger={always=no}}");
     let mut calls = 0;
@@ -37,12 +63,12 @@ fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys(
             assert_eq!(conditions.len(), if calls == 1 { 1 } else { 2 });
             Ok(calls == 2)
         }),
-        Ok(Some(b"SECOND".as_slice()))
+        settled(b"SECOND")
     );
     assert_eq!(calls, 2);
     assert_eq!(
         titles.deterministic_title_key(|_| Ok(false)),
-        Ok(Some(b"FIRST".as_slice()))
+        settled(b"FIRST")
     );
     assert!(
         titles
@@ -50,11 +76,41 @@ fn title_candidates_evaluate_all_blocks_and_refuse_only_different_eligible_keys(
             .unwrap_err()
             .contains("high-resolution seed")
     );
-    let same = event(b"title=SAME title={key=SAME}");
     assert_eq!(
-        same.deterministic_title_key(|_| Ok(true)),
-        Ok(Some(b"SAME".as_slice()))
+        titles.deterministic_title_key(|_| Err("unrecorded operand".into())),
+        Err("unrecorded operand".into())
     );
+    let same = event(b"title=SAME title={key=SAME}");
+    assert_eq!(same.deterministic_title_key(|_| Ok(true)), settled(b"SAME"));
+}
+
+#[test]
+fn identical_title_keys_survive_a_trigger_that_cannot_be_decided() {
+    let event = Event {
+        titles: crate::parser::parse(
+            b"title={key=SAME trigger={always=yes}} title={text=SAME trigger={always=no}} title={key=SAME trigger={always=yes}}",
+        )
+        .unwrap()
+        .items,
+        ..Default::default()
+    };
+    let mut calls = 0;
+    assert_eq!(
+        event.deterministic_title_key(|_| {
+            calls += 1;
+            if calls == 2 {
+                Err("unrecorded operand".into())
+            } else {
+                Ok(true)
+            }
+        }),
+        Ok(TitleKey {
+            key: Some(b"SAME".as_slice()),
+            unsettled: Some("unrecorded operand".into()),
+        })
+    );
+    // The walk stops where the game's state stops being known.
+    assert_eq!(calls, 2);
 }
 
 #[test]

@@ -20,7 +20,7 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { useCountryColours } from '../../charts/race/countryColours';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import { nameKey, useCountryNamesRead } from '../../dashboard/countryNamesAt';
-import { nameReadText } from '../../dashboard/holderLooks';
+import { nameReadText, useHolderLooks } from '../../dashboard/holderLooks';
 import { chartRuns, countryPart } from '../../dashboard/keyedHistory';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
@@ -31,7 +31,7 @@ import { loadTransientProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { minesAt, minesText, orderRegions, ownerSeries, regionRuns, validateReports } from './minefieldsData';
+import { minesAt, minesText, orderRegions, ownerSeries, regionHolders, regionRuns, validateReports } from './minefieldsData';
 import type { MineReport, RegionMines, ReportsReply } from './minefieldsData';
 import { useMinefields } from './useMinefields';
 import '../air-superiority-region/airSuperiorityRegion.css';
@@ -83,6 +83,8 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const reportNames = useCountryNamesRead(runtime.client, track, useMemo(() => reportNamedAt === null || !reports.data ? [] : [...new Set(reports.data.reports
     .flatMap(report => [report.victim, report.mineOwner]).flatMap(part => part === null ? [] : [countryPart(part)?.tag ?? part]))]
     .map(tag => ({ hour: reportNamedAt, tag })), [reports.data, reportNamedAt]), active);
+  const drillHolders = useMemo(() => picked ? regionHolders(owners, picked.region) : [], [picked, owners]);
+  const holders = useHolderLooks(runtime.client, track, drillHolders, active && picked !== null, tokens);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...reports.data?.warnings ?? []] : null);
   const pill = headerSlot && at && createPortal(<span className="pill">{regions.length} {regions.length === 1 ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
@@ -93,7 +95,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   if (!at) return <WidgetState kind="unavailable" message="Minefields were not recorded at this time." />;
   const prefix = preparedPrefix(data);
   const lines = picked ? [...owners.values()].flatMap(series => series.regions.get(picked.region)?.length
-    ? [{ id: series.owner, label: looks.name(series.tag, hour), color: colour(series.tag, hour), runs: chartRuns(regionRuns(series, picked.region), data.scale) }] : []) : [];
+    ? [{ id: series.owner, label: holders.name(series.owner), color: holders.colour(series.owner), runs: chartRuns(regionRuns(series, picked.region), data.scale) }] : []) : [];
   const main = <div className="air-regions minefields-rows">
     <WindowedRows items={regions.map(region => ({ key: region.region, item: region }))} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Minefields by sea region"
       empty={at.refused ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />

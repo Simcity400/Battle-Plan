@@ -1241,10 +1241,10 @@ fn e_assert_table<const R: usize>(split: &Captured, direct: &Captured, index: us
     let _ = R;
 }
 
-#[test]
-fn economy_fuel_copy_matches_direct_walk() {
+/// The census with both countries' fuel statuses.
+fn e_fuel_world() -> Vec<u8> {
     use engine_fuel::ccountry_fuel_status;
-    use engine_native::{ccountry, memory::SliceMemory};
+    use engine_native::ccountry;
     let mut bytes = vec![0; 0x8000];
     e_census(&mut bytes);
     e_fuel_arrays(&mut bytes);
@@ -1285,9 +1285,13 @@ fn economy_fuel_copy_matches_direct_walk() {
             &9_i64.to_le_bytes(),
         );
     }
-    let memory = SliceMemory {
+    bytes
+}
+
+fn e_assert_fuel_matches_direct(bytes: &[u8]) {
+    let memory = engine_native::memory::SliceMemory {
         base: E_GAME,
-        bytes: &bytes,
+        bytes,
     };
     let cap = e_capacities();
     let direct = e_direct(&memory, &cap);
@@ -1299,6 +1303,34 @@ fn economy_fuel_copy_matches_direct_walk() {
         direct.fuel.rows[..direct.fuel.outcome.len()]
     );
     e_assert_table::<0>(&split, &direct, 0);
+}
+
+#[test]
+fn economy_fuel_copy_matches_direct_walk() {
+    e_assert_fuel_matches_direct(&e_fuel_world());
+}
+
+/// Positive slots holding the reserved slot-zero object are skipped as the
+/// reader skips them; the daily country tables stay available.
+#[test]
+fn economy_copy_skips_positive_aliases_of_the_reserved_country() {
+    use engine_native::{ccountry, cgame_state};
+    const RESERVED: usize = 0x1800;
+    let mut bytes = e_fuel_world();
+    e_array(&mut bytes, E_GAME + cgame_state::COUNTRIES, E_COUNTRIES, 4);
+    for slot in [0, 3] {
+        e_put(
+            &mut bytes,
+            E_COUNTRIES + slot * 8,
+            &(RESERVED as u64).to_le_bytes(),
+        );
+    }
+    e_put(
+        &mut bytes,
+        RESERVED,
+        &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    e_assert_fuel_matches_direct(&bytes);
 }
 
 /// Fuel statuses with three consumers and a full history ring each.

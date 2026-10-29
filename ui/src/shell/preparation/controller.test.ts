@@ -125,3 +125,26 @@ test('paused preparation retains family coverage and validates both fields', () 
   assert.throws(() => validatePreparationReply({ ...paused, pauseReason: 'unknown' } as any, request), /Invalid/);
   assert.throws(() => validatePreparationReply({ ...paused, families: { wars: { '1': { firstHour: 11, lastHour: 10, complete: false } } } }, request), /Invalid/);
 });
+test('Refresh and Prepare reopen a source whose first open failed', async () => {
+  const f = fixture();
+  const open = f.client.openSource;
+  let failing = true;
+  f.client.openSource = async (path: string, signal: AbortSignal) => {
+    if (failing) { f.calls.push('open failed'); throw new Error('recording unavailable'); }
+    return open.call(f.client, path, signal);
+  };
+  try {
+    await f.controller.start(source.path, null);
+    assert.equal(f.controller.getSnapshot().source, null);
+    assert.match(f.controller.getSnapshot().error ?? '', /recording unavailable/);
+    await f.controller.command('status');
+    assert.deepEqual(f.calls, ['open failed', 'open failed'], 'Refresh retries the open while it still fails');
+    failing = false;
+    await f.controller.command('start');
+    assert.equal(f.controller.getSnapshot().source, source);
+    assert.equal(f.controller.getSnapshot().reply?.state, 'preparing');
+    assert.deepEqual(f.calls, ['open failed', 'open failed', 'open', 'status', 'start']);
+  } finally { f.controller.stop(); }
+  await settle();
+  assert.equal(f.calls.at(-1), 'release:source-1', 'the reopened library source is released on close');
+});

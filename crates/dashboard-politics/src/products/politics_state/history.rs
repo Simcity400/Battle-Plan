@@ -422,9 +422,12 @@ impl Prepared {
                 None
             }
         };
+        // A schedule whose country can't be named leaves the hour's schedules unknown, not ended.
+        let mut read = true;
         for row in rows {
             let Some(slot) = tags.slot(row.country) else {
                 self.refuse("an election schedule's country has no identity");
+                read = false;
                 continue;
             };
             let exists = owned
@@ -465,7 +468,7 @@ impl Prepared {
                 }
             }
         }
-        true
+        read
     }
 
     fn exiles(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) -> bool {
@@ -483,9 +486,13 @@ impl Prepared {
         let small = |value: &replay_data::rows::Recorded<Option<i32>>| {
             value.require("exile operand").ok().copied().flatten()
         };
+        // An exile is listed by its host: one whose host or country can't be named
+        // leaves the hour's exiles unknown, never one fewer.
+        let mut read = true;
         for row in rows {
             let Some(host) = small(&row.exile_host) else {
                 self.refuse("an exile host is not recorded");
+                read = false;
                 continue;
             };
             if host <= 0 {
@@ -493,13 +500,15 @@ impl Prepared {
             }
             let Some(slot) = tags.slot(row.country) else {
                 self.refuse("a government in exile has no identity");
+                read = false;
                 continue;
             };
             let host = tags.slot(host as u32);
             if host.is_none() {
                 self.refuse("an exile's host has no identity");
+                read = false;
             }
-            let read = reads.and_then(|reads| {
+            let sliced = reads.and_then(|reads| {
                 replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
             });
             for (field, value) in [
@@ -517,14 +526,14 @@ impl Prepared {
                     small(&row.exile_manpower_cap).map(i128::from),
                 ),
                 (Field::ExileLeaders, small(&row.exile_leaders).map(i128::from)),
-                (Field::ExileRead, read.map(i128::from)),
+                (Field::ExileRead, sliced.map(i128::from)),
             ] {
                 if let Some(value) = value {
                     observed.insert(self.key(slot, field), value);
                 }
             }
         }
-        true
+        read
     }
 
     fn balances(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) -> bool {
@@ -604,16 +613,18 @@ impl Prepared {
             }
         };
         let mut listed = BTreeSet::new();
+        let mut read = true;
         for row in rows {
             let (Some(slot), Some(rival)) = (tags.slot(row.country), tags.slot(row.target)) else {
+                // The lists are incomplete: what they name at this hour is unknown, not ended.
                 self.refuse("a civil-war list names a country with no identity");
+                read = false;
                 continue;
             };
             observed.insert(self.key(slot, Field::CivilWarRival(rival)), 1);
             listed.extend([slot, rival]);
         }
         let predicate = dashboard_text::identity::CivilWars::new(frame);
-        let mut read = true;
         for &slot in &listed {
             match predicate
                 .as_ref()

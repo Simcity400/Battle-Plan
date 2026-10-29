@@ -63,6 +63,20 @@ def prune_incremental():
     note = f'; {len(failed)} paths could not be removed' if failed else ''
     print(f'Pruned incremental caches: disk {usage.used * 100 // usage.total}% -> {after.used * 100 // after.total}%{note}', file=sys.stderr, flush=True)
 
+def embeds_ui(args):
+    """Whether a build enables the desktop's `custom-protocol`, which embeds ui/dist."""
+    if any('custom-protocol' in arg for arg in args):
+        return True
+    if '--all-features' not in args:
+        return False
+    pairs = list(zip(args, args[1:]))
+    if 'replay-desktop' in {value for flag, value in pairs if flag == '--exclude'}:
+        return False
+    packages = {value for flag, value in pairs if flag in ('-p', '--package')}
+    packages |= {arg.split('=', 1)[1] for arg in args if arg.startswith('--package=')}
+    packages |= {arg[2:] for arg in args if arg.startswith('-p') and len(arg) > 2}
+    return not packages or 'replay-desktop' in packages or '--workspace' in args or '--all' in args
+
 def start_cache(token):
     """Starts the compile cache's server outside the job's process group; the environment of its clients, or None and a warning."""
     try:
@@ -371,7 +385,7 @@ elif mode in {'check', 'build', 'ui'}:
                 finally:
                     if incoming:
                         shutil.rmtree(incoming, ignore_errors=True)
-            if mode == 'ui' or (mode == 'build' and any('custom-protocol' in arg for arg in args)):
+            if mode == 'ui' or (mode == 'build' and embeds_ui(args)):
                 package_hash = hashlib.sha256((SRC / 'package-lock.json').read_bytes()).hexdigest()
                 stamp = ROOT / 'node-lock.sha256'
                 modules = ROOT / 'npm' / 'node_modules'
@@ -380,18 +394,23 @@ elif mode in {'check', 'build', 'ui'}:
                 if previous.exists() and not modules.exists():
                     previous.rename(modules)
                 link = SRC / 'node_modules'
-                if link.is_symlink() and link.resolve() != modules:
-                    link.unlink()
-                if not stamp.exists() or stamp.read_text().strip() != package_hash:
-                    if (SRC / 'node_modules').is_symlink():
-                        (SRC / 'node_modules').unlink()
+                if not modules.exists() or not stamp.exists() or stamp.read_text().strip() != package_hash:
+                    # The stamp goes first: an install that fails must not leave it naming the old cache.
+                    stamp.unlink(missing_ok=True)
+                    if link.is_symlink():
+                        link.unlink()
                     subprocess.run(['npm', 'ci', '--no-audit', '--no-fund'], cwd=SRC, check=True)
                     if modules.exists():
                         shutil.rmtree(modules)
-                    (SRC / 'node_modules').rename(modules)
+                    link.rename(modules)
                     stamp.write_text(package_hash)
-                if not (SRC / 'node_modules').exists():
-                    (SRC / 'node_modules').symlink_to(modules, target_is_directory=True)
+                # A failed install elsewhere can leave a real partial directory where the cache link belongs.
+                if link.is_symlink() and link.resolve() != modules:
+                    link.unlink()
+                elif link.exists() and not link.is_symlink():
+                    shutil.rmtree(link)
+                if not link.is_symlink():
+                    link.symlink_to(modules, target_is_directory=True)
                 command = ['npm', 'run', 'check:ui']
                 if mode == 'build':
                     subprocess.run(['npm', 'run', 'build:ui'], cwd=SRC, check=True)

@@ -45,6 +45,12 @@ fn frame(hour: i32) -> DecodedFrame {
             id: 11,
             canonical_slot: 7,
         }]));
+    // A design creator that is not dynamic is named by its own tag.
+    *frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 11,
+            ..Default::default()
+        }]));
     *frame.tables[TableId::TaskForces.index()] =
         TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
             id: TASK,

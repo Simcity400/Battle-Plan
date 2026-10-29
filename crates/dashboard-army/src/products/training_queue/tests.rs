@@ -199,6 +199,19 @@ fn the_queue_follows_the_country_holding_the_tag_at_the_hour() {
     assert!(r.missing.as_deref().is_some_and(|why| why.contains("another country identity")), "{:?}", r.missing);
 }
 
+/// The queue's read carries every operand the scripted text interpreter reads, so a
+/// priority button's `[ROOT.GetName]` resolves from the recorded naming rows.
+#[test]
+fn the_queue_read_carries_the_operands_of_scripted_priority_names() {
+    let tables = read_tables();
+    for table in QUEUE.iter().chain(&NAMING).chain(dashboard_text::scripted_text::TABLES) {
+        assert!(tables.contains(table), "{table:?}");
+    }
+    for table in [TableId::CountryAppearance, TableId::Politics, TableId::PoliticalParties, TableId::Autonomy] {
+        assert!(tables.contains(&table), "{table:?} names a country");
+    }
+}
+
 #[test]
 fn priority_names_are_the_effective_interface_tooltips_of_the_priority_buttons() {
     // The native GUI reader needs the executable's metadata.

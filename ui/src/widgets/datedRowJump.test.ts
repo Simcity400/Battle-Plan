@@ -21,7 +21,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
   } }, { firstHour: focusHour, lastHour: last, order: {
     completed: [{ ordinal: 0, token: 'already_done', completedByHour: null }, { ordinal: 1, token: 'new_done', completedByHour: focusHour }],
     current: 'unfinished', continuous: null, paused: false,
-  } }], progress: [] }, artwork: [], warnings: [] };
+  } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
   const research: ResearchReply = { history: { coverage: [{ firstHour: first, lastHour: last }], slots: [{ index: 0,
     availability: [{ firstHour: first, lastHour: last }], states: [], progress: [], entries: [{ token: 'technology', technologyHandle: 7,
       continuityStartHour: first, level: 0, firstObservedHour: first + 10, startedAfterHour: first + 9,
@@ -39,7 +39,7 @@ test('registered Focus and Research rows Jump to their recorded bounds through p
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
     // Server rendering has no document to read theme colours from.
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['#3987e5'] }); export const useViewportHeight = () => 800;",
-    '/national-focus/useFocusArtwork.ts': 'export const useFocusArtwork = () => ({ read: new Map(), warnings: [] });',
+    '/national-focus/useFocusArtwork.ts': 'export const useFocusArtwork = () => ({ read: new Map(), warnings: [] }); export const useContinuousFocusArtwork = () => ({ read: new Map(), warnings: [], details: new Map() });',
     '/components/ContextMenu.tsx': `import { createElement } from 'react'; export const useContextMenu = label => ({
       menu: createElement('span', { 'data-row-menu': label }),
       open: (x, y, items) => { globalThis.__datedRowMenu = { x, y, items }; } });`,

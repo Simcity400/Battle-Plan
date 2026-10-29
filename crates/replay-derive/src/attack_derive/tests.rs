@@ -52,10 +52,10 @@ impl Default for Mock {
                 night: Ok(0),
             }),
             defines: Ok(Defines {
-                river_small: -30_000,
-                river_large: -60_000,
-                night: -50_000,
-                fort: -150_000,
+                river_small: Ok(-30_000),
+                river_large: Ok(-60_000),
+                night: Ok(-50_000),
+                fort: Ok(-150_000),
             }),
             fort_level: Ok(0),
             fort_base: Err("fort base unasked".into()),
@@ -372,6 +372,58 @@ fn a_missing_operand_refuses_only_its_entries() {
     };
     let preview = super::preview(&mock, 1, 2).unwrap().unwrap();
     assert_eq!(preview.refusals, [("terrain", "group unread".to_owned())]);
+}
+
+#[test]
+fn a_refused_define_refuses_only_the_entries_that_read_it() {
+    let defines = |night: Fact<i64>| {
+        Ok(Defines {
+            river_small: Ok(-30_000),
+            river_large: Err("large river refused".into()),
+            night,
+            fort: Err("fort refused".into()),
+        })
+    };
+    let mock = Mock {
+        crossing: Ok(Some(2)),
+        scalars: Ok(Scalars {
+            river: [Ok(-5_000), Ok(0)],
+            fort: [Ok(0), Ok(0)],
+            snow: Ok(0),
+            night: Ok(4_000),
+        }),
+        defines: defines(Ok(-50_000)),
+        night_factor: Ok(90_000),
+        night_modifier: Ok(0),
+        ..Default::default()
+    };
+    assert_eq!(
+        rows(&mock),
+        [
+            Row {
+                kind: RIVER,
+                value: -35_000
+            },
+            Row {
+                kind: NIGHT,
+                value: -46_000
+            },
+        ]
+    );
+    let mock = Mock {
+        crossing: Ok(Some(3)),
+        defines: defines(Err("night refused".into())),
+        ..mock
+    };
+    let preview = super::preview(&mock, 1, 2).unwrap().unwrap();
+    assert!(preview.rows.is_empty(), "{:?}", preview.rows);
+    assert_eq!(
+        preview.refusals,
+        [
+            ("river", "large river refused".to_owned()),
+            ("night", "night refused".to_owned())
+        ]
+    );
 }
 
 #[test]
@@ -762,6 +814,71 @@ fn recorded_content_variations_change_only_what_they_reach() {
             kind: TERRAIN,
             value: -1 + 40_000 + 1
         }
+    );
+}
+
+/// Each recorded define refused alone refuses only the entry that reads it.
+#[test]
+fn a_recorded_define_refused_alone_refuses_only_its_entry() {
+    let content = Content {
+        index: 2,
+        attack: 3_000,
+        night: 90_000,
+    };
+    let preview = |edit: fn(&mut PoliticalRuntimeScalars)| {
+        let mut frame = frame();
+        let mut scalars = PoliticalRuntimeScalars {
+            sample_hour: PacketHour::Host,
+            river_small: Some(-30_000),
+            river_large: Some(-60_000),
+            night: Some(-50_000),
+            fort: Some(-150_000),
+            ..Default::default()
+        };
+        edit(&mut scalars);
+        put(
+            &mut frame,
+            TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+                runtime_scalars: rows::Recorded::Value(scalars),
+                ..Default::default()
+            }]),
+        );
+        let inputs = FrameInputs::new(&frame, &content, DIVISION);
+        let preview = super::preview(&inputs, 1, 2).unwrap().unwrap();
+        let kinds = preview.rows.iter().map(|row| row.kind).collect::<Vec<_>>();
+        (kinds, preview.refusals)
+    };
+    let refused = |name: &'static str, define: &str| {
+        vec![(name, format!("{define} was refused when recorded"))]
+    };
+    assert_eq!(
+        preview(|scalars| scalars.fort = None),
+        (
+            vec![TERRAIN, RIVER, WEATHER, WEATHER, NIGHT, ENEMY_AIR],
+            refused("fort", "BASE_FORT_PENALTY")
+        )
+    );
+    assert_eq!(
+        preview(|scalars| scalars.river_large = None),
+        (
+            vec![TERRAIN, FORT, WEATHER, WEATHER, NIGHT, ENEMY_AIR],
+            refused("river", "RIVER_CROSSING_PENALTY_LARGE")
+        )
+    );
+    assert_eq!(
+        preview(|scalars| scalars.night = None),
+        (
+            vec![TERRAIN, RIVER, FORT, WEATHER, WEATHER, ENEMY_AIR],
+            refused("night", "BASE_NIGHT_ATTACK_PENALTY")
+        )
+    );
+    // The crossing is large, so the small river define is never read.
+    assert_eq!(
+        preview(|scalars| scalars.river_small = None),
+        (
+            vec![TERRAIN, RIVER, FORT, WEATHER, WEATHER, NIGHT, ENEMY_AIR],
+            Vec::new()
+        )
     );
 }
 

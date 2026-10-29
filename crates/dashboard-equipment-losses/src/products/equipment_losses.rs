@@ -1445,6 +1445,9 @@ fn retention_unknown(months: i32) -> String {
     )
 }
 
+/// Why land totals cannot be kept while the content does not establish the retention.
+const RETENTION_UNREAD: &str = "NGame.COMBAT_LOG_MAX_MONTHS is not known from the recorded content, so whether the game deleted Combat Log entries that were still changing is unknown and no land total can be kept.";
+
 /// What naming and retention the content gives a reply.
 #[derive(Clone, Copy, Default)]
 pub struct Content<'a> {
@@ -1471,15 +1474,14 @@ pub fn reply(
     let no_keys = InterfaceKeys::default();
     let keys = keys.unwrap_or(&no_keys);
     let combat_log = params.land_source == LandSource::CombatLog;
-    // A retention that deletes entries still changing makes land totals
-    // unknowable: refused by name.
-    let land_unknown = retained_months
-        .filter(|_| combat_log)
-        .filter(|&months| months < 1)
-        .map(retention_unknown);
-    if combat_log && retained_months.is_none() {
-        warnings.push("The Combat Log's retention (NGame.COMBAT_LOG_MAX_MONTHS) is unknown; land totals assume a setting of at least 1, under which the game deletes no entry that can still change.".to_owned());
-    }
+    // A retention that deletes entries still changing, or one the content
+    // cannot establish, makes land totals unknowable: refused by name.
+    let land_unknown = match retained_months {
+        _ if !combat_log => None,
+        Some(months) if months < 1 => Some(retention_unknown(months)),
+        Some(_) => None,
+        None => Some(RETENTION_UNREAD.to_owned()),
+    };
     if scanned.convoy_drops != 0 {
         warnings.push(format!(
             "{} recorded SunkConvoys counts fell in value; each was counted as a new entry.",

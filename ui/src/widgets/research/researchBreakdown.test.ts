@@ -7,7 +7,7 @@ import { researchJourney, researchTimeSplit } from './researchJourney.ts';
 
 const start = 43_800_000 + 1938 * 8760;
 const assignment: ResearchEntry = {
-  token: 'radio', technologyHandle: 1, continuityStartHour: start, level: 0, firstObservedHour: start, startedAfterHour: start - 1,
+  token: 'radio', technologyHandle: 1, databaseIndex: 1, continuityStartHour: start, level: 0, firstObservedHour: start, startedAfterHour: start - 1,
   lastObservedHour: start + 150 * 24 - 1, endedByHour: start + 150 * 24, outcome: 'completed',
 };
 function state(from: number, to: number, bonus: string): ResearchSlotState {

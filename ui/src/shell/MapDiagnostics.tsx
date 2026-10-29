@@ -8,6 +8,7 @@ import { Icon } from '../components/Icons';
 import { SettingsBlock } from './appearance/AppearanceSettings';
 import { useMapDiagnostics } from './diagnosticsSetting';
 import { branchCoverage, branchLabels, missingTime } from './diagnosticsData';
+import { damagedRecordingText } from './recordingNotice';
 
 /** How complete the open recording is, and the map's troubleshooting tools: its technical
  * overlay and the problems it last reported. */
@@ -48,19 +49,21 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
   const first = Math.min(...branches.map(branch => branch.firstHour)), last = Math.max(...branches.map(branch => branch.lastHour));
   const gaps = branches.reduce((sum, branch) => sum + branch.gaps.length, 0);
   const losses = branches.flatMap(branch => (branch.eventLosses ?? []).map(loss => ({ branch: branch.id, loss })));
-  const status = metadata.partial ? { tone: 'warning', label: 'Stopped early' } : gaps ? { tone: 'warning', label: `${gaps} ${gaps === 1 ? 'gap' : 'gaps'}` }
+  const status = metadata.damaged ? { tone: 'warning', label: 'Damaged' } : metadata.partial ? { tone: 'warning', label: 'Stopped early' } : gaps ? { tone: 'warning', label: `${gaps} ${gaps === 1 ? 'gap' : 'gaps'}` }
     : losses.length ? { tone: 'warning', label: 'Events incomplete' } : { tone: 'positive', label: 'Complete' };
   return <>
     <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={`${recordingFilename(metadata.path)}\n${metadata.path}`}>{recordingDisplayName(metadata.path)}</strong>
       <small>{branches.length ? `${formatDateTime(first)} – ${formatDateTime(last)}` : 'No recorded time'}</small></span>
       <span className={`pill ${status.tone}`}>{status.label}</span></div>
+    {metadata.damaged && <div className="settings-row"><span className="settings-row-text"><strong>Damaged or modified</strong>
+      <small>{[damagedRecordingText(metadata.damaged), ...metadata.damaged.reasons].join(' · ')}</small></span></div>}
     {metadata.partial && <div className="settings-row"><span className="settings-row-text"><strong>Stopped early</strong>
       <small>{metadata.partial.failedHour != null ? `Nothing after ${formatDateTime(metadata.partial.failedHour)} was saved: ` : 'The end of the recording was not saved: '}{metadata.partial.reason}</small></span></div>}
     {branches.map(branch => {
       const coverage = branchCoverage(branch);
       return <div key={branch.id} className="settings-row diagnostics-coverage">
         <span className="settings-row-text"><strong>{branches.length > 1 ? labels.get(branch.id) : 'Coverage'}</strong>
-          <small>{branch.gaps.length ? `${missingTime(coverage.missingHours)} missing in ${branch.gaps.length} ${branch.gaps.length === 1 ? 'gap' : 'gaps'}` : 'Recorded throughout'}
+          <small>{branch.gaps.length ? `${missingTime(coverage.missingHours)} missing in ${branch.gaps.length} ${branch.gaps.length === 1 ? 'gap' : 'gaps'}` : metadata.damaged ? 'No recorded gaps' : 'Recorded throughout'}
             {branches.length > 1 && ` · from ${formatDateTime(branch.firstHour)}`}</small></span>
         <div className="coverage-bar" role="img" aria-label={branch.gaps.length ? `${branch.gaps.length} gaps` : 'No gaps'}>
           {coverage.gaps.map((gap, gapIndex) => <span key={gapIndex} className="coverage-gap" style={{ left: `${gap.left}%`, width: `${gap.width}%` }}

@@ -722,6 +722,34 @@ fn redraws_keep_a_read_appended_before_a_backdated_finalizer() {
     for keep in [true, false] {
         let fixture = Fixture::new();
         prepare(&source, 1, &fixture, keep, false);
+        // Window 9's redrawn page and window 11's page, where the finalizer was read.
+        for (first_hour, last_hour) in [(190, 199), (200, 219)] {
+            let ranking = forward_query::query(
+                &source,
+                "land-battles-ranking",
+                serde_json::to_value(LandBattlesRankingParams {
+                    branch_id: "1".into(),
+                    first_hour,
+                    last_hour,
+                    top_n: 3.0,
+                    measure: "Casualties".into(),
+                    countries: LandBattleCountryFilter {
+                        tags: None,
+                        membership: None,
+                        unobserved: vec![],
+                    },
+                })
+                .unwrap(),
+                &fixture.store,
+                &fixture.key,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            assert_eq!(
+                ranking["effectiveMeasure"], "Casualties",
+                "kept: {keep}, from {first_hour}: the terminal read appended last ranks casualties"
+            );
+        }
         assert_eq!(served(&source, 1, &fixture, &ids), expected, "kept: {keep}");
         let window = forward_query::query(
             &source,

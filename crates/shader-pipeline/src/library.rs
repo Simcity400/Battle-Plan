@@ -248,6 +248,12 @@ impl Effect {
         }
         result
     }
+    /// Whether a technique of this effect failed to compile; it keeps that failure.
+    pub(crate) fn failed(&self) -> bool {
+        self.compiled
+            .iter()
+            .any(|slot| matches!(slot.get(), Some(Err(_))))
+    }
     /// Missing technique retains native state; a declared technique that fails is refused.
     pub fn select(self: &Arc<Self>, name: &str) -> Result<Option<Selection>, String> {
         let Some(index) = self

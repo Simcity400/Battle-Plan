@@ -92,12 +92,26 @@ pub struct PoliticsContent {
 pub struct PowerContent {
     pub decisions: installed_content_core::decisions::Database,
     pub abilities: installed_content_abilities::abilities::AbilitySprites,
-    pub focuses: installed_content_focus::focus::Focuses,
+    /// The national database only: power is spent selecting a national focus.
+    focuses: installed_content_focus::focus::Focuses,
     pub warnings: Vec<String>,
     pub unit_traits: installed_content_core::unit_leader::Traits,
     pub triggers: installed_content_core::trigger_keys::TriggerNames,
     pub aliases: Arc<installed_content_core::tag_aliases::TagAliases>,
     pub dlcs: std::collections::BTreeSet<String>,
+}
+
+impl PowerContent {
+    /// A national focus by id: `None` when no national file defines it, `Err`
+    /// with the refused national file that could define it.
+    pub fn national_focus(
+        &self,
+        id: &str,
+    ) -> Result<Option<&installed_content_focus::focus::FocusDefinition>, &installed_content_core::coverage::Gap>
+    {
+        self.focuses
+            .get_in(installed_content_focus::focus::Database::National, id)
+    }
 }
 
 type CachedPolitics = Option<(
@@ -253,7 +267,7 @@ impl PoliticsContent {
                 let layers = &self.catalogue.content.layers;
                 let decisions = installed_content_core::decisions::read(layers)?;
                 let abilities = installed_content_abilities::abilities::read(layers)?;
-                let (focuses, focus_warnings) = installed_content_focus::focus::read(layers)?;
+                let (focuses, focus_warnings) = installed_content_focus::focus::read_national(layers)?;
                 let unit_traits = installed_content_core::unit_leader::Traits::registered(layers)?;
                 let triggers = installed_content_core::trigger_keys::TriggerNames::new(
                     installed_content_core::scripted_triggers::read(layers)?,

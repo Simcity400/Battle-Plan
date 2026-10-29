@@ -4411,15 +4411,28 @@ mod tests {
                 continue;
             }
             assert_eq!(history.kind, ChangeKind::AppendedOnly, "{:?}", field.table);
+            // The table last changed with its latest appended or retired field.
+            let retired = RETIRED_FIELDS
+                .iter()
+                .filter(|other| other.table == field.table)
+                .map(|other| other.retired)
+                .max()
+                .unwrap_or(field.retired);
             let current = history
                 .appended
                 .iter()
                 .map(|operand| operand.introduced)
                 .max()
-                .unwrap_or(RETIRED_INPUTS_FORMAT)
-                .max(RETIRED_INPUTS_FORMAT);
+                .unwrap_or(retired)
+                .max(retired);
             assert_eq!(history.format, current, "{:?}", field.table);
-            assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_none());
+            assert!(
+                history
+                    .table_gap(field.table, field.retired - 1)
+                    .is_none(),
+                "{:?}",
+                field.table
+            );
             assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
         }
     }

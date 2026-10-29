@@ -156,6 +156,11 @@ test('actual manual pair choices load their catalogue and request original nativ
     view.render(grouped); assert.ok(state.chord!.frameAt!(0).data, 'the group passes its own membership hour');
     state.hour = 100;
     view.render(grouped); assert.equal(state.chord, undefined, 'the group does not acquire manual all-ever membership');
+    // Prepared only through 125, the flows shown are 125's, filtered by who was a member then.
+    state.windows = new Map([[0, { ...reply, coverage: { ...span, lastHour: 125, complete: false }, pending: [{ firstHour: 126, lastHour: 160 }] }]]);
+    view.render(grouped);
+    assert.ok(state.chord!.frameAt!(0).data, 'membership is read at the prepared prefix shown, not the hour asked');
+    state.windows = new Map([[0, reply]]);
     state.groupsError = 'Native catalogue unavailable';
     const failure = view.render(widget);
     assert.match(failure, /Couldn’t load\./);

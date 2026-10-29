@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cellRuns, heatNavigation, periodAt } from '../../charts/heat/layout.ts';
 import { MAX_NAME_HOURS, wantedHours } from '../../dashboard/countryFacts.ts';
-import { convoyPending, convoyRows, dayPeriods, heatRows, labelDates, periodPending, shownPeriods, validateConvoys } from './convoyData.ts';
+import { convoyPending, convoyRows, dayPeriods, exportersAt, heatRows, labelDates, periodPending, shownPeriods, validateConvoys } from './convoyData.ts';
 
 const base = { branchId: '1', lastHour: 95, tag: 'IMP', scale: 100000, warnings: [], known: [[[0, 95, '1']], [[0, 95, '1']], [[0, 95, '1']]], holders: { '1': [{ hour: 0, tag: 'IMP' }], '2': [{ hour: 0, tag: 'EXP' }] },
   coverage: { firstHour: 0, lastHour: 95, complete: true }, pending: [] };
@@ -136,4 +136,15 @@ test('the pending tail after the last prepared hour joins the reply\'s pending s
     [{ firstHour: 10, lastHour: 12 }, { firstHour: 41, lastHour: 95 }]);
   assert.deepEqual(convoyPending({ lastHour: null }, [], [0, 95]), [{ firstHour: 0, lastHour: 95 }]);
   assert.deepEqual(convoyPending({ lastHour: 95 }, [], [0, 95]), []);
+});
+
+test('a past day names its exporter as it was then, not as it was last read', () => {
+  const reply = validateConvoys('trade')({ ...base, view: 'trade', regions: [], resources: [], leases: [],
+    holders: { ...base.holders, '2': [{ hour: 0, tag: 'OLD' }, { hour: 50, tag: 'NEW' }] },
+    deals: [{ id: '1', exporter: [[0, 95, '2']], resource: [[0, 95, '0']], efficiency: [[0, 95, '50000']], factors: [[], []], convoys: [[], []] }] });
+  assert.deepEqual(exportersAt(reply, 30), [{ hour: 30, tag: 'OLD' }]);
+  const [deal] = convoyRows(reply, { country: (tag, hour) => `${tag} at ${hour}` });
+  assert.equal(deal.label.startsWith('NEW at 95'), true, 'the row is labelled as last read');
+  assert.equal(deal.detail(30).find(row => row.label === 'Exporter')?.value, 'OLD at 30');
+  assert.equal(deal.detail(60).find(row => row.label === 'Exporter')?.value, 'NEW at 60');
 });

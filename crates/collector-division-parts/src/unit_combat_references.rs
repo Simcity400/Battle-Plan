@@ -71,7 +71,6 @@ pub fn project(
         kind: entry.kind,
     })) {
         Ok(entries) => Some(UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: PacketHour::Host,
             entries,
         }),

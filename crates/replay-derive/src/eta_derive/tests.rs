@@ -536,6 +536,60 @@ fn a_prospective_route_subtracts_progress_only_on_the_recorded_first_edge() {
 }
 
 #[test]
+fn only_a_normal_edge_reads_the_base_speed() {
+    let special = |from: u32, _: u32| {
+        Ok(if from == 1 {
+            EdgeTerm::Scaled {
+                speed: 800_000,
+                scale: 50_000,
+            }
+        } else {
+            EdgeTerm::Fixed(700_000)
+        })
+    };
+    let terms = SpeedTerms {
+        edge: &special,
+        ..PLAIN
+    };
+    let mut path = movement(vec![2, 3]);
+    let distance = |_, _| Some(350_000);
+    // 1 -> 2 at 8 * 0.5 = 4 km/h, 2 -> 3 at 7 km/h, whatever the base speed.
+    for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
+        path.base_speed = base_speed;
+        assert_eq!(
+            estimate(&path, 1, land, distance, &terms, &defines()),
+            Ok((87_500, 137_500))
+        );
+        assert_eq!(
+            estimate_route(&path, 1, &[2, 3], land, distance, &terms, &defines()),
+            Ok(137_500)
+        );
+    }
+    // A normal edge anywhere on the route still refuses by the base speed's name.
+    let mixed = |from: u32, _: u32| {
+        Ok(if from == 1 {
+            EdgeTerm::Fixed(700_000)
+        } else {
+            EdgeTerm::Normal(NormalEdgeOperands::default())
+        })
+    };
+    let terms = SpeedTerms {
+        edge: &mixed,
+        ..PLAIN
+    };
+    assert!(
+        estimate(&path, 1, land, distance, &terms, &defines())
+            .unwrap_err()
+            .contains("DivisionMovement.base_speed")
+    );
+    path.base_speed = Recorded::Value(None);
+    assert_eq!(
+        estimate(&path, 1, land, distance, &terms, &defines()),
+        Err("the division's base speed was refused".into())
+    );
+}
+
+#[test]
 fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms() {
     let modifiers = CommonModifiers {
         country_speed: 10_000,

@@ -738,6 +738,19 @@ fn a_sliced_hour_compares_the_countries_read_and_their_last_two_months() {
     let _ = AUGUST;
 }
 
+/// A read SliceReads dates to this hour that found no rows still compares the
+/// country's required saved months.
+#[test]
+fn a_country_read_now_without_rows_is_still_compared() {
+    let save = save(&[month("equipment", 0, &[(1326, "3")])]);
+    let report = run(&frame(vec![], &[GER]), &save, false).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].starts_with("GER.combat_log[group 12793][kind 0]"));
+    // Without that read GER is not compared.
+    let report = run(&frame(vec![], &[]), &save, false).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+}
+
 /// A country whose last complete read is older is read whole outside a
 /// full hour: its older months are compared, never differences for
 /// being there.
@@ -845,20 +858,23 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
             amount_raw: 0,
         },
     ];
-    let tables: [TableView; TableId::ALL.len()] = std::array::from_fn(|index| {
-        let table = TableId::ALL[index];
-        if table == TableId::LendLeaseEquipment {
-            TableView::Complete(TableRows::LendLeaseEquipment(rows.clone()))
-        } else {
-            TableView::Complete(TableRows::empty(table))
+    let frame_of = |rows: &[LendLeaseEquipmentRow]| {
+        let tables: [TableView; TableId::ALL.len()] = std::array::from_fn(|index| {
+            let table = TableId::ALL[index];
+            if table == TableId::LendLeaseEquipment {
+                TableView::Complete(TableRows::LendLeaseEquipment(rows.to_vec()))
+            } else {
+                TableView::Complete(TableRows::empty(table))
+            }
+        });
+        DecodedFrame {
+            branch: 1,
+            hour: DATE,
+            metrics: Default::default(),
+            tables: tables.map(Into::into),
         }
-    });
-    let frame = DecodedFrame {
-        branch: 1,
-        hour: DATE,
-        metrics: Default::default(),
-        tables: tables.map(Into::into),
     };
+    let frame = frame_of(&rows);
     let countries = links();
     let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
     let save = save_with(&[], &exchange(""));
@@ -866,6 +882,17 @@ fn lend_lease_compares_every_saved_amount_and_receiver() {
     lend_lease(&frame, &save, &links, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["LendLeaseEquipment"], 1);
+    // An omitted zero still belongs to its saved exchange, whose receiver it must name.
+    let mut redirected = rows.clone();
+    redirected[1].receiver = GER;
+    let mut report = Report::default();
+    lend_lease(&frame_of(&redirected), &save, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(
+        report.differences[0].contains("[variant 5157].receiver"),
+        "{:?}",
+        report.differences
+    );
     let save = save_with(
         &[],
         &exchange("equipment={ id={ id=5157 type=70 } amount=0.5 }"),

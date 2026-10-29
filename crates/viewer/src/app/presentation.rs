@@ -124,6 +124,7 @@ fn same_snow_content(
         && had.height == snow.height
         && had.province_snow == snow.province_snow
         && had.texels == snow.texels
+        && had.unknown == snow.unknown
 }
 
 impl Viewer {
@@ -1248,6 +1249,7 @@ mod tests {
             width: 2,
             height: 1,
             texels: vec![1, 2, 3, 4, 5, 6, 7, 8].into(),
+            unknown: vec![0, 1].into(),
             province_snow: vec![None, Some(3)].into(),
             post_factors: None,
             build: Default::default(),
@@ -1261,15 +1263,17 @@ mod tests {
             had.width == snow.width
                 && had.height == snow.height
                 && had.texels == snow.texels
+                && had.unknown == snow.unknown
                 && had.province_snow == snow.province_snow
                 && had.refresh == snow.refresh
         };
         let base = snow();
-        let changes: [fn(&mut SnowMud); 6] = [
+        let changes: [fn(&mut SnowMud); 7] = [
             |_| {},
             |snow| snow.width = 3,
             |snow| snow.height = 2,
             |snow| snow.texels[7] = 0,
+            |snow| snow.unknown[1] = 0,
             |snow| snow.province_snow[1] = None,
             |snow| snow.refresh = None,
         ];

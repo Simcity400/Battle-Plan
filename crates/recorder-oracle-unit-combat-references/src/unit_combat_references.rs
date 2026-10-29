@@ -5,19 +5,6 @@ use replay_data::{rows::Recorded, rows::UnitCombatReferences};
 pub fn compare(frame: &DecodedFrame, report: &mut Report) {
     report.attempt("DivisionMovement combat-reference consistency", |report| {
         for row in frame.complete::<tables::DivisionMovement>()? {
-            if let Recorded::Value(Some(packet)) = &row.combat_references {
-                match packet.speed_witness.get() {
-                    Some(None) => report.difference(
-                        format!("DivisionMovement.speed_witness {:#x}", row.division),
-                        "native speed refused", "complete native speed sample",
-                    ),
-                    Some(Some(_)) => report.limitation(
-                        "the native first-edge speed is runtime-only; recorder derived --movement-witness compares it exactly at the same held boundary",
-                        format!("DivisionMovement.speed_witness {:#x}", row.division),
-                    ),
-                    None => {}
-                }
-            }
             check_packet(
                 frame,
                 report,
@@ -122,32 +109,8 @@ fn check_packet(
 mod tests {
     use super::*;
     use replay_data::rows::{LandCombatDetailsRow, LandCombatRow, UnitCombatReference};
-    #[test]
-    fn native_movement_sample_refusal_is_an_oracle_difference() {
-        let (mut frame, _, _, _) = super::super::fixtures::fixture();
-        for speed in [None, Some(12_785)] {
-            *frame.tables[TableId::DivisionMovement.index()] =
-                TableView::Complete(TableRows::DivisionMovement(vec![
-                    replay_data::rows::DivisionMovementRow {
-                        division: 77,
-                        combat_references: Some(UnitCombatReferences {
-                            speed_witness: replay_data::rows::Witnessed(Some(speed)),
-                            ..Default::default()
-                        })
-                        .into(),
-                        ..Default::default()
-                    },
-                ]));
-            *frame.tables[TableId::RailwayGunCounterInputs.index()] =
-                TableView::Complete(TableRows::RailwayGunCounterInputs(Vec::new()));
-            let mut report = Report::default();
-            compare(&frame, &mut report);
-            assert_eq!(report.differences.len(), usize::from(speed.is_none()));
-        }
-    }
     fn packet() -> UnitCombatReferences {
         UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: replay_data::rows::PacketHour::Host,
             entries: vec![
                 UnitCombatReference {
@@ -169,7 +132,6 @@ mod tests {
             (Recorded::Value(None), 0, 1),
             (
                 Recorded::Value(Some(UnitCombatReferences {
-                    speed_witness: Default::default(),
                     sample_hour: replay_data::rows::PacketHour::Host,
                     entries: Vec::new(),
                 })),
@@ -261,7 +223,6 @@ mod tests {
                 }]));
             let actual = u8::from(border.is_some());
             let packet = UnitCombatReferences {
-                speed_witness: Default::default(),
                 sample_hour: replay_data::rows::PacketHour::Host,
                 entries: vec![UnitCombatReference {
                     combat: u64::MAX,

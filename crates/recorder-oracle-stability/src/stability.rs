@@ -13,7 +13,10 @@ use super::{Report, complete, invalid, required_country_tag};
 use installed_content_save::Save;
 use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 
 pub fn compare(
     frame: &DecodedFrame,
@@ -44,18 +47,37 @@ fn inputs(
 ) -> io::Result<()> {
     let rows = complete::<tables::CountryStabilityInputs>(frame)?;
     let reads = complete::<tables::SliceReads>(frame)?;
+    let full = report.full_refresh();
+    // Each country read now has one row; a forced full walk reads all but the reserved one.
+    let mut unrecorded = BTreeSet::new();
+    for read in reads.iter().filter(|read| {
+        read.table == TableId::CountryStabilityInputs.index() as u32
+            && read.sample_hour == frame.hour
+    }) {
+        unrecorded.insert(required_country_tag(read.owner, links)?);
+    }
+    if full {
+        unrecorded.extend(
+            links
+                .values()
+                .filter(|country| country.canonical_slot != 0)
+                .map(|country| country.tag.as_slice()),
+        );
+    }
     let mut compared = 0;
     let mut stale = 0;
     for row in rows {
         // A row keeps the hour its country's slice read it; only rows read at
         // the oracle hour describe the saved instant.
-        if replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
-            != Some(frame.hour)
+        if !full
+            && replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+                != Some(frame.hour)
         {
             stale += 1;
             continue;
         }
         let tag = required_country_tag(row.country, links)?;
+        unrecorded.remove(tag);
         let label = String::from_utf8_lossy(tag).into_owned();
         let Some(saved) = save.countries.get(tag) else {
             report.difference(
@@ -192,6 +214,13 @@ fn inputs(
             }
         }
     }
+    for tag in unrecorded {
+        report.difference(
+            format!("country {} stability inputs", String::from_utf8_lossy(tag)),
+            "absent",
+            "the row of a country read at this hour",
+        );
+    }
     if stale != 0 {
         report.limitation(
             &format!(
@@ -255,6 +284,11 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
     }
 
     fn run(row: CountryStabilityInputRow, read_at: i32) -> Report {
+        run_rows(vec![row], read_at, false)
+    }
+
+    /// `rows` with country 102's SliceReads hour `read_at`, at a forced full walk when `full`.
+    fn run_rows(rows: Vec<CountryStabilityInputRow>, read_at: i32, full: bool) -> Report {
         let mut frame = DecodedFrame {
             branch: 1,
             hour: HOUR,
@@ -265,7 +299,7 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
             metrics: Metrics::default(),
         };
         *frame.tables[TableId::CountryStabilityInputs.index()] =
-            TableView::Complete(TableRows::CountryStabilityInputs(vec![row]));
+            TableView::Complete(TableRows::CountryStabilityInputs(rows));
         *frame.tables[TableId::SliceReads.index()] =
             TableView::Complete(TableRows::SliceReads(vec![SliceReadRow {
                 table: TableId::CountryStabilityInputs.index() as u32,
@@ -274,13 +308,38 @@ states={ 1={owner="GER"} } provinces={ 2={controller="GER"} }
             }]));
         let germany = CountryRow {
             id: 102,
+            canonical_slot: 1,
             tag: b"GER".to_vec(),
             ..Default::default()
         };
         let links = BTreeMap::from([(102, &germany)]);
-        let mut report = Report::default();
+        let mut report = Report {
+            forced_full: full,
+            ..Default::default()
+        };
         compare(&frame, &save(), &links, &mut report).unwrap();
         report
+    }
+
+    #[test]
+    fn a_country_read_at_this_hour_needs_its_row() {
+        // SliceReads dates GER's read to this hour, yet the table holds no row for it.
+        let report = run_rows(Vec::new(), HOUR, false);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("country GER stability inputs"));
+        // A country read earlier is carried, not expected now.
+        let report = run_rows(Vec::new(), HOUR - 3, false);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        // A forced full walk reads every country of the census, whatever SliceReads says,
+        // and its rows are current.
+        let report = run_rows(Vec::new(), HOUR - 3, true);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        let mut changed = row();
+        changed.propaganda_stability_q15 = 0;
+        let report = run_rows(vec![changed], HOUR - 3, true);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("propaganda_stability_penalty"));
+        assert_eq!(report.compared_tables["CountryStabilityInputs"], 1);
     }
 
     #[test]

@@ -120,7 +120,7 @@ impl Database {
     pub fn read(layers: &ResolvedLayers, registries: &Registries<'_>) -> io::Result<Self> {
         let mut database = Self::default();
         let mut names = BTreeMap::new();
-        for path in layers.directory_files(DATABASE_DIRECTORY, ".txt")? {
+        for path in layers.directory_files(DATABASE_DIRECTORY, "txt")? {
             let bytes = path.read_uncovered(layers)?;
             database.add(&bytes, &path.text(), registries, &mut names)?;
         }

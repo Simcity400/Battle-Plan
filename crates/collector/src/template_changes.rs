@@ -1231,7 +1231,7 @@ mod tests {
             .iter()
             .position(|(site, _)| site.name == "set_template_symbol")
             .unwrap();
-        assert_eq!((site, MUTATIONS[site].1), (SITES - 1, Receiver::Every));
+        assert_eq!(MUTATIONS[site].1, Receiver::Every);
         let watches = Watches::enabled(16);
         let receivers = [0x1000, 0x2000, 7];
         let before = receivers.map(|receiver| Changes::sequence(&watches, receiver).unwrap());

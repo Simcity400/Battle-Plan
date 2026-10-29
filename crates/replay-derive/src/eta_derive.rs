@@ -608,10 +608,22 @@ pub fn edge_speed(
     terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<i64, String> {
+    edge_speed_with(|| Ok(base_speed), from, to, terms, defines)
+}
+
+/// [`edge_speed`] with the base speed resolved only for a normal edge, the only edge
+/// that reads it.
+pub fn edge_speed_with(
+    base_speed: impl FnOnce() -> Result<i64, String>,
+    from: u32,
+    to: u32,
+    terms: &SpeedTerms<'_>,
+    defines: &Defines,
+) -> Result<i64, String> {
     Ok(match (terms.edge)(from, to)? {
         EdgeTerm::Normal(edge) => PreparedNormalSpeed {
             modifier: terms.modifier,
-            base_speed,
+            base_speed: base_speed()?,
             organisation: terms.organisation,
             fuel: terms.fuel,
             outer_scale: defines.outer_scale,
@@ -714,10 +726,10 @@ fn walk(
     terms: &SpeedTerms<'_>,
     defines: &Defines,
 ) -> Result<(i64, i64), String> {
-    let base_speed = base_speed(movement)?;
     let path_total =
         u32::try_from(route.len()).map_err(|_| "the route exceeds the native count".to_owned())?;
-    let speed = |from: u32, to: u32| edge_speed(base_speed, from, to, terms, defines);
+    let speed =
+        |from: u32, to: u32| edge_speed_with(|| base_speed(movement), from, to, terms, defines);
     let mut legs = Vec::with_capacity(route.len());
     let mut next_leg_count = 0;
     let mut from = location;

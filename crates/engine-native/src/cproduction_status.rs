@@ -1242,7 +1242,9 @@ mod tests {
     #[test]
     fn maximum_factories_follow_the_type_archetype_and_kind_defines() {
         let mut bytes = fixture();
-        let archetype = EQUIPMENT + 0x200;
+        // Past the image, clear of the type's fields; the reader takes 16 bytes of optionals.
+        let archetype = BASE + bytes.len();
+        bytes.resize(bytes.len() + crate::cequipment_type::MAX_MIL_FACTORIES + 16, 0);
         put(
             &mut bytes,
             EQUIPMENT + crate::cequipment_type::ARCHETYPE,

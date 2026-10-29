@@ -77,8 +77,8 @@ struct Inner {
     set_aside: Vec<Waiting>,
     /// The name each of the running session's recordings would get so far, by campaign.
     names: BTreeMap<String, String>,
-    /// The campaign and flag keys whose flag was last asked for this session.
-    flag_keys: Option<(String, Vec<String>)>,
+    /// The flag last asked for this session.
+    flag_keys: Option<FlagAsk>,
     /// This session's game and Paradox user folders, for its content stack.
     flag_folders: Option<(PathBuf, PathBuf)>,
     /// The last flag shown for each campaign, shown again while not recording it.
@@ -94,15 +94,17 @@ pub struct Recorder {
     flag_content: Mutex<Option<(PathBuf, Arc<FlagContent>)>>,
 }
 
-/// Resolve the viewed country's flag off the record loop, then show it if
-/// the same keys are still wanted.
-fn request_flag(
-    app: &AppHandle,
+/// The flag keys one session asked for, for one campaign: a lookup answers only this ask.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FlagAsk {
     session: PathBuf,
-    (game_dir, user_dir): (PathBuf, PathBuf),
     campaign: String,
     keys: Vec<String>,
-) {
+}
+
+/// Resolve the viewed country's flag off the record loop, then show it if
+/// the same session still wants the same keys.
+fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: FlagAsk) {
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("recorder-flag".into())
@@ -110,30 +112,35 @@ fn request_flag(
             let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
             let _priority = BackgroundPriority::enter();
             let flag = recorder
-                .flag_content(&session, game_dir, user_dir)
-                .and_then(|content| content.find(&keys))
+                .flag_content(&ask.session, game_dir, user_dir)
+                .and_then(|content| content.find(&ask.keys))
                 .unwrap_or_else(|error| {
-                    eprintln!("The flag of {campaign} could not be resolved: {error}");
+                    eprintln!("The flag of {} could not be resolved: {error}", ask.campaign);
                     None
                 });
-            recorder.update(&app, |inner| {
-                if !inner
-                    .flag_keys
-                    .as_ref()
-                    .is_some_and(|(asked, asked_keys)| *asked == campaign && *asked_keys == keys)
-                {
-                    return;
-                }
-                if let Some(flag) = &flag {
-                    inner.last_flags.insert(campaign.clone(), flag.clone());
-                }
-                if inner.snapshot.campaign.as_deref() == Some(campaign.as_str()) {
-                    inner.snapshot.flag = flag;
-                }
-            });
+            recorder.update(&app, |inner| flag_found(inner, &ask, flag));
         });
     if let Err(error) = spawned {
         eprintln!("The flag could not be resolved: {error}");
+    }
+}
+
+/// A flag lookup's answer, kept only while its session still asks for the same keys. It
+/// replaces the campaign's last flag, which a lookup that found none removes.
+fn flag_found(inner: &mut Inner, ask: &FlagAsk, flag: Option<FlagImage>) {
+    if inner.flag_keys.as_ref() != Some(ask) {
+        return;
+    }
+    match &flag {
+        Some(flag) => {
+            inner.last_flags.insert(ask.campaign.clone(), flag.clone());
+        }
+        None => {
+            inner.last_flags.remove(&ask.campaign);
+        }
+    }
+    if inner.snapshot.campaign.as_deref() == Some(ask.campaign.as_str()) {
+        inner.snapshot.flag = flag;
     }
 }
 
@@ -474,19 +481,13 @@ impl Recorder {
 
     /// Save or Discard chosen on the Stop prompt.
     pub fn stop(&self, app: &AppHandle, discard: bool) {
-        if !self.lock().capturing {
-            return;
-        }
-        self.control.stop(discard);
+        let mut accepted = false;
         self.update(app, |inner| {
-            inner.snapshot.stopping = true;
-            if !discard {
-                inner.snapshot.phase = Phase::Saving;
-                inner.snapshot.progress = None;
-                inner.snapshot.problem = None;
-            }
+            accepted = accept_stop(inner, &self.control, discard);
         });
-        self.wake.notify_all();
+        if accepted {
+            self.wake.notify_all();
+        }
     }
 
     /// Recording, with no stop being carried out.
@@ -1023,50 +1024,26 @@ impl Recorder {
         // or another campaign asks for its flag once.
         let flag_request = match (&live.campaign, live.flag_keys.take()) {
             (Some(campaign), Some(keys)) => {
+                let ask = FlagAsk {
+                    session: session.to_path_buf(),
+                    campaign: campaign.clone(),
+                    keys,
+                };
                 let mut inner = self.lock();
-                if inner
-                    .flag_keys
-                    .as_ref()
-                    .is_some_and(|(asked, asked_keys)| asked == campaign && *asked_keys == keys)
-                {
+                if inner.flag_keys.as_ref() == Some(&ask) {
                     None
                 } else {
-                    inner.flag_keys = Some((campaign.clone(), keys.clone()));
-                    inner
-                        .flag_folders
-                        .clone()
-                        .map(|folders| (folders, campaign.clone(), keys))
+                    inner.flag_keys = Some(ask.clone());
+                    inner.flag_folders.clone().map(|folders| (folders, ask))
                 }
             }
             _ => None,
         };
-        if let Some((folders, campaign, keys)) = flag_request {
-            request_flag(app, session.to_path_buf(), folders, campaign, keys);
+        if let Some((folders, ask)) = flag_request {
+            request_flag(app, folders, ask);
         }
         self.update(app, |inner| {
-            inner.hours = live.hours;
-            inner.names.clone_from(names);
-            let snapshot = &mut inner.snapshot;
-            snapshot.session = Some(session.display().to_string());
-            if let Some(campaign) = live.campaign {
-                if snapshot.phase != Phase::Recording {
-                    snapshot.phase = Phase::Recording;
-                    snapshot.started_at = Some(now_ms());
-                }
-                // Another campaign shows its own last flag until its new one resolves.
-                if snapshot.campaign.as_deref() != Some(campaign.as_str()) {
-                    snapshot.flag = inner.last_flags.get(&campaign).cloned();
-                }
-                snapshot.campaign = Some(campaign);
-                snapshot.name = name;
-                snapshot.continued = recording.is_some();
-                snapshot.recording = recording.map(|path| path.display().to_string());
-                snapshot.hour = live.hour.or(snapshot.hour);
-                snapshot.saved_bytes = earlier;
-                snapshot.spool_bytes = Some(live.spool_bytes);
-            }
-            // A failed save of a set-aside campaign stays shown.
-            snapshot.problem = live.problem.or_else(|| inner.sticky.clone());
+            fold_live(inner, live, session, names, name, recording, earlier);
         });
     }
 
@@ -1224,6 +1201,61 @@ impl Recorder {
     }
 }
 
+/// Stop for the capture running now, decided under the lock its end takes: a capture that has
+/// already ended keeps what it ended with, and no stop is left for the next one.
+fn accept_stop(inner: &mut Inner, control: &Control, discard: bool) -> bool {
+    if !inner.capturing {
+        return false;
+    }
+    control.stop(discard);
+    inner.snapshot.stopping = true;
+    if !discard {
+        inner.snapshot.phase = Phase::Saving;
+        inner.snapshot.progress = None;
+        inner.snapshot.problem = None;
+    }
+    true
+}
+
+/// One collector status publication (or the game's loaded campaign standing in) into the
+/// snapshot, with the recording it continues, its size and the name its save gives it.
+fn fold_live(
+    inner: &mut Inner,
+    live: snapshot::Live,
+    session: &Path,
+    names: &BTreeMap<String, String>,
+    name: Option<String>,
+    recording: Option<PathBuf>,
+    earlier: Option<u64>,
+) {
+    // An unread status keeps this session's last count, which only grows.
+    if let Some(hours) = live.hours {
+        inner.hours = hours;
+    }
+    inner.names.clone_from(names);
+    let snapshot = &mut inner.snapshot;
+    snapshot.session = Some(session.display().to_string());
+    if let Some(campaign) = live.campaign {
+        if snapshot.phase != Phase::Recording {
+            snapshot.phase = Phase::Recording;
+            snapshot.started_at = Some(now_ms());
+        }
+        // Another campaign shows its own last flag until its new one resolves.
+        if snapshot.campaign.as_deref() != Some(campaign.as_str()) {
+            snapshot.flag = inner.last_flags.get(&campaign).cloned();
+        }
+        snapshot.campaign = Some(campaign);
+        snapshot.name = name;
+        snapshot.continued = recording.is_some();
+        snapshot.recording = recording.map(|path| path.display().to_string());
+        snapshot.hour = live.hour.or(snapshot.hour);
+        snapshot.saved_bytes = earlier;
+        snapshot.spool_bytes = live.spool_bytes;
+    }
+    // A failed save of a set-aside campaign stays shown.
+    snapshot.problem = live.problem.or_else(|| inner.sticky.clone());
+}
+
 fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
     inner.unloading = false;
     if let Err(error) = result {
@@ -1291,6 +1323,84 @@ mod tests {
                 assert!(inner.snapshot.problem.is_none());
             }
         }
+    }
+
+    #[test]
+    fn a_stop_after_the_capture_ended_keeps_its_result_and_stops_no_later_capture() {
+        let control = Control::new();
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        assert!(accept_stop(&mut inner, &control, false));
+        assert!(control.stopping() && !control.discarding());
+        assert_eq!(inner.snapshot.phase, Phase::Saving);
+        assert!(inner.snapshot.stopping);
+        // The capture ended (Saved) before the stop took the lock.
+        let control = Control::new();
+        let mut inner = Inner {
+            result: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Saved;
+        let ended = inner.snapshot.clone();
+        assert!(!accept_stop(&mut inner, &control, false));
+        assert_eq!(inner.snapshot, ended);
+        assert!(!control.stopping());
+    }
+
+    #[test]
+    fn an_unread_status_shows_no_spool_size_and_keeps_the_sessions_hour_count() {
+        let session = Path::new("session");
+        let names = BTreeMap::new();
+        let mut inner = Inner::default();
+        let read = snapshot::read_live(
+            &serde_json::json!({"campaign": CAMPAIGN, "hours": 12, "last_hour": 9, "spool_bytes": 4096}),
+        );
+        fold_live(&mut inner, read, session, &names, None, None, None);
+        assert_eq!((inner.hours, inner.snapshot.spool_bytes), (12, Some(4096)));
+        // No publication this poll: the game's loaded campaign stands in, its size unknown.
+        let unread = snapshot::Live {
+            campaign: Some(CAMPAIGN.into()),
+            hour: Some(10),
+            ..snapshot::Live::default()
+        };
+        fold_live(&mut inner, unread, session, &names, None, None, None);
+        assert_eq!(inner.snapshot.spool_bytes, None);
+        assert_eq!(inner.hours, 12);
+        assert_eq!(inner.snapshot.phase, Phase::Recording);
+    }
+
+    #[test]
+    fn a_flag_lookup_answers_only_the_session_that_asked() {
+        let flag = |shade| FlagImage {
+            width: 1,
+            height: 1,
+            pixels: vec![shade, 0, 0, 255],
+        };
+        let ask = |session: &str| FlagAsk {
+            session: PathBuf::from(session),
+            campaign: CAMPAIGN.into(),
+            keys: vec!["OWN".into()],
+        };
+        let mut inner = Inner::default();
+        inner.snapshot.campaign = Some(CAMPAIGN.into());
+        inner.flag_keys = Some(ask("later"));
+        // The earlier session's lookup ends last, with the same campaign and keys.
+        flag_found(&mut inner, &ask("earlier"), Some(flag(1)));
+        assert_eq!(inner.snapshot.flag, None);
+        assert!(inner.last_flags.is_empty());
+        flag_found(&mut inner, &ask("later"), Some(flag(2)));
+        assert_eq!(inner.snapshot.flag, Some(flag(2)));
+        assert_eq!(inner.last_flags.get(CAMPAIGN), Some(&flag(2)));
+        // A late failure of the earlier session clears nothing.
+        flag_found(&mut inner, &ask("earlier"), None);
+        assert_eq!(inner.snapshot.flag, Some(flag(2)));
+        // The asking session's own content naming no flag leaves none from earlier content.
+        flag_found(&mut inner, &ask("later"), None);
+        assert_eq!(inner.snapshot.flag, None);
+        assert!(inner.last_flags.is_empty());
     }
 
     fn scratch(name: &str) -> PathBuf {

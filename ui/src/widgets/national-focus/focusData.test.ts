@@ -20,7 +20,7 @@ const reply: FocusReply = { history: { segments: [
   { firstHour: 111, lastHour: 123, progressRaw: '6900000' },
   { firstHour: 125, lastHour: 140, progressRaw: '100000' },
   { firstHour: 141, lastHour: 160, progressRaw: '200000' },
-] }, artwork: [], warnings: [] };
+] }, artwork: [], continuousStaticText: [], warnings: [] };
 
 test('focus histories reject overlap, future completion bounds and invalid artwork', () => {
   assert.equal(validateFocusReply(reply), reply);
@@ -40,6 +40,11 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   // A malformed entry is still refused rather than reaching the widget.
   for (const bad of [null, 'one', {}, { ...art, token: 7 }]) {
     assert.throws(() => validateFocusReply({ ...reply, artwork: [bad] } as unknown as FocusReply));
+  }
+  // Continuous focuses' static text is their own list, never drawn and always present.
+  assert.equal(validateFocusReply({ ...reply, continuousStaticText: [art] }).continuousStaticText[0].name, 'One');
+  for (const continuousStaticText of [undefined, [{ ...art, icon: 'data:image/png;base64,YQ==' }], [null]]) {
+    assert.throws(() => validateFocusReply({ ...reply, continuousStaticText } as unknown as FocusReply));
   }
 });
 
@@ -90,12 +95,13 @@ test('focus progress reports exact days and days left only from a known daily ra
 });
 
 test('dated focus artwork authenticates the read, retains empty text and refuses omitted tokens', () => {
-  const params = { branchId: '1', hour: 10, tag: 'synthetic', tokens: ['focus'] };
+  const params = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national' as const, tokens: ['focus'] };
   const art = { token: 'focus', name: '', description: '', baseDurationDays: 10, icon: null as string | null };
-  const dated = { branchId: '1', hour: 10, tag: 'synthetic', items: [{ artwork: art, reason: 'focus-window mode is not recorded' as string | null }], warnings: ['Named content warning'] };
+  const dated = { branchId: '1', hour: 10, tag: 'synthetic', database: 'national', items: [{ artwork: art, reason: 'focus-window mode is not recorded' as string | null }], warnings: ['Named content warning'] };
   assert.equal(validateFocusArtworkReply(dated, params).items[0].reason, 'focus-window mode is not recorded');
   assert.equal(dated.items[0].artwork.name, '');
-  for (const bad of [{ ...dated, hour: 11 }, { ...dated, tag: 'other' }, { ...dated, branchId: '2' }, { ...dated, items: [] },
+  // A continuous focus's art never answers a national request of the same id.
+  for (const bad of [{ ...dated, hour: 11 }, { ...dated, tag: 'other' }, { ...dated, branchId: '2' }, { ...dated, database: 'continuous' }, { ...dated, items: [] },
     { ...dated, items: [...dated.items, ...dated.items] }, { ...dated, warnings: [null] }]) {
     assert.throws(() => validateFocusArtworkReply(bad, params));
   }
@@ -108,8 +114,8 @@ test('dated focus artwork authenticates the read, retains empty text and refuses
 test('duration metadata and dated requests retain 5000 modded tokens without a chosen cap', () => {
   const artwork = Array.from({ length: 5000 }, (_, index) => ({ token: `synthetic_focus_${index}`, name: null, description: null, baseDurationDays: 10, icon: null }));
   assert.equal(validateFocusReply({ ...reply, artwork }).artwork.length, artwork.length);
-  const params = { branchId: '1', hour: 10, tag: 'synthetic', tokens: artwork.map(art => art.token) };
-  assert.equal(validateFocusArtworkReply({ branchId: params.branchId, hour: params.hour, tag: params.tag,
+  const params = { branchId: '1', hour: 10, tag: 'synthetic', database: 'continuous' as const, tokens: artwork.map(art => art.token) };
+  assert.equal(validateFocusArtworkReply({ branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database,
     items: artwork.map(art => ({ artwork: art, reason: null })), warnings: [] }, params).items.length, 5000);
 });
 
@@ -169,7 +175,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
   const history: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 150, order: {
     completed: [{ ordinal: 0, token: 'done', completedByHour: null }], current: 'switch', continuous: null, paused: false,
   } }], progress: [{ firstHour: 100, lastHour: 150, progressRaw: '100000' }] },
-  artwork: ['done', 'switch'].map(token => ({ token, name: 'Undated static name', description: null, baseDurationDays: 10, icon: null })), warnings: [] };
+  artwork: ['done', 'switch'].map(token => ({ token, name: 'Undated static name', description: null, baseDurationDays: 10, icon: null })), continuousStaticText: [], warnings: [] };
   type Pending = { owner: string; params: FocusArtworkParams; resolve: (reply: FocusArtworkReply) => void; reject: (error: Error) => void };
   const reads: Pending[] = [];
   const client = (owner: string) => ({ product: (request: ProductRequest) => request.product === 'national-focus'
@@ -185,7 +191,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
   const render = () => { state.begin(); return renderToStaticMarkup(createElement(renderer.render, props)); };
   const settle = () => new Promise<void>(resolve => setImmediate(resolve));
   const complete = (read: Pending, name: string | null, reason: string | null = null, warnings: string[] = [], icon = 'data:image/png;base64,YQ==') => read.resolve({
-    branchId: read.params.branchId, hour: read.params.hour, tag: read.params.tag, warnings,
+    branchId: read.params.branchId, hour: read.params.hour, tag: read.params.tag, database: read.params.database, warnings,
     items: read.params.tokens.map(token => ({ artwork: { token, name: token === 'switch' ? name : 'Completed at 100', description: null,
       baseDurationDays: 10, icon: reason || read.params.textOnly ? null : icon }, reason: token === 'switch' ? reason : null })),
   });
@@ -195,6 +201,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     assert.doesNotMatch(render(), /Undated static name/);
     const firstRead = reads.find(read => read.params.hour === 100)!;
     assert.deepEqual([...firstRead.params.tokens].sort(), ['done', 'switch']);
+    assert.ok(reads.every(read => read.params.database === 'national'), 'completed and current focuses are national');
     complete(firstRead, 'Early choice'); await settle();
     assert.match(render(), /Early choice/);
     assert.equal(firstRead.params.textOnly, true);
@@ -259,7 +266,7 @@ test('Follow schedules the current and newest focus first while every time mode 
     completedByHour: ordinal === 0 ? null : 100 + ordinal }));
   const data: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 200, order: {
     completed, current: 'current_focus', continuous: null, paused: false,
-  } }], progress: [] }, artwork: [], warnings: [] };
+  } }], progress: [] }, artwork: [], continuousStaticText: [], warnings: [] };
   const fixture = { data, wanted: [] as { tag: string; hour: number }[] };
   const host = globalThis as typeof globalThis & { __focusPriorities?: typeof fixture };
   host.__focusPriorities = fixture;
@@ -272,7 +279,8 @@ test('Follow schedules the current and newest focus first while every time mode 
       globalThis.__focusPriorities.wanted = wanted;
       return { warnings: [], read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
         artwork: { token: tag, name: 'Localized ' + tag, description: 'Recorded description', baseDurationDays: 10, icon: null }, reason: null,
-      }])) }; };`,
+      }])) }; };
+      export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-priority-renderer', enforce: 'pre',

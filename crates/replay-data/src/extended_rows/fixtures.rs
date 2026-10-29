@@ -474,7 +474,6 @@ fn unit_combat_references_fixture(
         None
     } else {
         Some(UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: PacketHour::sample(tick),
             entries: (0..count as usize)
                 .map(|index| UnitCombatReference::sample(tick + index))

@@ -145,6 +145,16 @@ try {
     Assert-SmokeRestore $null 'before_write'
     Assert-SmokeRestore $null 'delete_failure'
     Assert-SmokeRestore $null 'already_missing'
+    # Setup that fails after the lock is taken, before anything launches, releases it.
+    $setup = $smoke.Find({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.CatchClauses.Count -and $node.Body.Extent.Text -match "WriteAllText\(\(Join-Path \`$lock 'owner'\)"}, $true)
+    if (-not $setup) { throw 'Smoke has no guarded setup after taking the game lock.' }
+    $lock = Join-Path $root 'setuplock'; $ownerToken = 'synthetic'; $sourceSave = Join-Path $root 'no such save.hoi4'
+    $null = New-Item -ItemType Directory -Path $lock
+    $output = Join-Path $root 'setup output'
+    $failed = $false
+    try { & ([scriptblock]::Create($setup.Extent.Text)) } catch { $failed = $true }
+    if (-not $failed -or (Test-Path -LiteralPath $lock)) { throw 'A failed setup kept the game lock.' }
+    $script:Passed++; Write-Host 'PASS failed setup releases the game lock'
     $unicodeName = 'caf' + [char]0xE9 + '.hoi4'
     $unicodeSave = Join-Path $fixtureProfile ('save games\' + $unicodeName)
     [IO.File]::WriteAllBytes($unicodeSave, [byte[]]@())

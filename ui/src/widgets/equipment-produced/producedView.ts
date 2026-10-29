@@ -116,6 +116,10 @@ export function typeRows(units: ProducedModel | null, ic: ProducedModel | null, 
   const typeName = (type: string) => typeLabel({ key: type, name: (units ?? ic)?.reply.types.find(item => item.key === type)?.name
     ?? ic?.reply.types.find(item => item.key === type)?.name ?? null });
   const recorded = { units: unitTypes !== null, ic: icTypes !== null };
+  // A resolved type absent from a count is zero there only when no unresolved variant
+  // holds anything in that count: such production could be of this type.
+  const unsure = (types: readonly TypeValue[]) => types.some(entry => entry.type.startsWith(UNRESOLVED_MARK));
+  const absent = (types: readonly TypeValue[] | null, type: string) => !types ? null : unsure(types) && !type.startsWith(UNRESOLVED_MARK) ? null : 0;
   return keys.map(type => {
     const unitEntry = unitTypes?.find(entry => entry.type === type);
     const icEntry = icTypes?.find(entry => entry.type === type);
@@ -128,8 +132,8 @@ export function typeRows(units: ProducedModel | null, ic: ProducedModel | null, 
       if (!models.has(key)) models.set(key, { label: keyLabel(ic!, model.key, hour), units: unitTypes ? 0 : null });
     }
     const list = [...models.values()];
-    const unitsValue = unitEntry ? unitEntry.value : unitTypes ? 0 : null;
-    const icValue = icEntry ? icEntry.value : icTypes ? 0 : null;
+    const unitsValue = unitEntry ? unitEntry.value : absent(unitTypes, type);
+    const icValue = icEntry ? icEntry.value : absent(icTypes, type);
     const text = !unitTypes || (list.length === 1 && list[0].units === unitsValue) ? list.map(model => model.label).join(' · ')
       : list.map(model => `${model.label} ${model.units == null ? 'not known' : formatRaw(model.units, 0)}`).join(' · ');
     return { type, label: typeName(type), models: text, units: unitsValue, ic: icValue, recorded,

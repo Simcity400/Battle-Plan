@@ -608,6 +608,7 @@ mod tests {
             TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
                 id: 62,
                 province: 9,
+                attacker_classes: vec![0; 2],
                 attackers: vec![1, 2],
                 defenders: vec![3],
                 ..Default::default()

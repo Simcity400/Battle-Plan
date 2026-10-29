@@ -438,7 +438,13 @@ impl Content<'_> {
             .ok_or_else(|| format!("variant {id} has no VariantDefinitions row"))
     }
     fn variant_name(&self, id: u64) -> Result<String, String> {
-        super::naval_variants::name(self.variant(id)?, self.icons, self.loc, Some(&self.names))
+        super::naval_variants::name(
+            self.variant(id)?,
+            self.icons,
+            self.loc,
+            Some(&self.names),
+            Some(&self.static_content.recorded_language),
+        )
     }
     fn model(&self, plane: &NavalResultPlane) -> Result<usize, String> {
         let variant = self.variant(plane.variant)?;

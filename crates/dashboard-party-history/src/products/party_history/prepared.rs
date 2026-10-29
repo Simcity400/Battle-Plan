@@ -538,6 +538,25 @@ fn values_default() -> bool {
     true
 }
 
+/// The walk's range, or each membership span clipped to it.
+fn clipped(within: Option<&[HourSpan]>, navigation: &series::Navigation) -> Vec<(f64, f64)> {
+    let (first, last) = (navigation.first_hour, navigation.last_hour);
+    let mut spans: Vec<_> = match within {
+        Some(spans) => spans
+            .iter()
+            .map(|span| {
+                (
+                    f64::from(span.first_hour).max(first),
+                    f64::from(span.last_hour).min(last),
+                )
+            })
+            .collect(),
+        None => vec![(first, last)],
+    };
+    spans.retain(|(first, last)| first <= last);
+    spans
+}
+
 /// One key's prepared stop as [`series::navigate`] finds it, minus its fallback hour,
 /// so a key without a stop never outbids the unprepared tail's stops.
 fn prepared_stop(
@@ -551,21 +570,8 @@ fn prepared_stop(
         navigation.key,
         series::MeasureKey::Home | series::MeasureKey::ArrowRight
     );
-    let (first, last) = (navigation.first_hour, navigation.last_hour);
-    let spans: Vec<_> = match within {
-        Some(spans) => spans
-            .iter()
-            .map(|span| {
-                (
-                    f64::from(span.first_hour).max(first),
-                    f64::from(span.last_hour).min(last),
-                )
-            })
-            .collect(),
-        None => vec![(first, last)],
-    };
     let mut result: Option<f64> = None;
-    for (first, last) in spans.into_iter().filter(|(first, last)| first <= last) {
+    for (first, last) in clipped(within, navigation) {
         let at = if forward {
             origin.max(first - 1.0)
         } else {
@@ -579,6 +585,64 @@ fn prepared_stop(
         let edge = (carried && (forward && origin < first || !forward && origin > first))
             .then_some(first);
         for hour in [candidate, edge].into_iter().flatten() {
+            result = Some(result.map_or(hour, |previous| {
+                if forward {
+                    previous.min(hour)
+                } else {
+                    previous.max(hour)
+                }
+            }));
+        }
+    }
+    Ok(result)
+}
+
+/// The nearest election beyond the origin, like [`prepared_stop`] without a fallback.
+/// An election is one hour, not a state, so a membership span's edge is no stop.
+fn election_stop(
+    reader: &mut Reader<'_>,
+    key: u64,
+    within: Option<&[HourSpan]>,
+    navigation: &series::Navigation,
+) -> io::Result<Option<f64>> {
+    fn through(reader: &mut Reader<'_>, key: u64, hour: i64) -> io::Result<u64> {
+        match i32::try_from(hour) {
+            Ok(hour) => reader.event_count_through(key, hour),
+            Err(_) if hour < 0 => Ok(0),
+            Err(_) => reader.event_count_through(key, i32::MAX),
+        }
+    }
+    let origin = navigation.origin()?;
+    let forward = matches!(
+        navigation.key,
+        series::MeasureKey::Home | series::MeasureKey::ArrowRight
+    );
+    let mut result: Option<f64> = None;
+    for (first, last) in clipped(within, navigation) {
+        // The span's whole hours strictly beyond the origin.
+        let (low, high) = if forward {
+            (
+                (origin.floor() as i64)
+                    .saturating_add(1)
+                    .max(first.ceil() as i64),
+                last.floor() as i64,
+            )
+        } else {
+            (
+                first.ceil() as i64,
+                (origin.ceil() as i64)
+                    .saturating_sub(1)
+                    .min(last.floor() as i64),
+            )
+        };
+        if low > high {
+            continue;
+        }
+        let before = through(reader, key, low.saturating_sub(1))?;
+        let until = through(reader, key, high)?;
+        if before < until {
+            let ordinal = if forward { before } else { until - 1 };
+            let hour = f64::from(reader.event_date(key, ordinal)?);
             result = Some(result.map_or(hour, |previous| {
                 if forward {
                     previous.min(hour)
@@ -907,55 +971,47 @@ pub fn query(
             let shown = |name: &str| match name {
                 "ruling" => marked("ruling"),
                 "leader" => marked("leader"),
+                "election-marks" => marked("election"),
                 "owner" => params.values,
                 _ => params.values && name.starts_with("value:"),
             };
             let within = params.within.as_deref();
-            if partial {
-                let mut prepared = BTreeMap::new();
-                let mut fields: BTreeSet<_> = sampled
-                    .0
-                    .keys()
-                    .filter(|(_, field)| !field.is_empty() && shown(field.as_str()))
-                    .cloned()
-                    .collect();
-                for (name, &id) in &keys {
-                    let tuple: (String, String) = serde_json::from_str(name)?;
-                    if tuple.0 != params.tag || !shown(tuple.1.as_str()) {
-                        continue;
-                    }
-                    let preceding = sampled
-                        .0
-                        .get(&tuple)
-                        .and_then(|runs| runs.first())
-                        .and_then(|run| run.first_hour.checked_sub(1))
-                        .map(|hour| reader.value_at(id, hour))
-                        .transpose()?
-                        .flatten();
-                    prepared.insert(
-                        tuple.clone(),
-                        (prepared_stop(&mut reader, id, within, &navigation)?, preceding),
-                    );
-                    fields.insert(tuple);
-                }
-                let within = params
-                    .within
-                    .as_ref()
-                    .map(|spans| BTreeMap::from([(params.tag.clone(), spans.clone())]))
-                    .unwrap_or_default();
-                return Ok(
-                    json!({"hour": progressive::navigate(&prepared, &sampled.0, &fields.into_iter().collect::<Vec<_>>(), &within, &navigation)?}),
-                );
-            }
-            let selected = keys
-                .iter()
-                .filter_map(|(name, &id)| {
-                    let (tag, name): (String, String) = serde_json::from_str(name).ok()?;
-                    (tag == params.tag && shown(name.as_str())).then_some((id, within))
-                })
+            // A complete preparation samples no tail, so only its prepared stops count.
+            let mut prepared = BTreeMap::new();
+            let mut fields: BTreeSet<_> = sampled
+                .0
+                .keys()
+                .filter(|(_, field)| !field.is_empty() && shown(field.as_str()))
+                .cloned()
                 .collect();
+            for (name, &id) in &keys {
+                let tuple: (String, String) = serde_json::from_str(name)?;
+                if tuple.0 != params.tag || !shown(tuple.1.as_str()) {
+                    continue;
+                }
+                let preceding = sampled
+                    .0
+                    .get(&tuple)
+                    .and_then(|runs| runs.first())
+                    .and_then(|run| run.first_hour.checked_sub(1))
+                    .map(|hour| reader.value_at(id, hour))
+                    .transpose()?
+                    .flatten();
+                let stop = if tuple.1 == "election-marks" {
+                    election_stop(&mut reader, id, within, &navigation)?
+                } else {
+                    prepared_stop(&mut reader, id, within, &navigation)?
+                };
+                prepared.insert(tuple.clone(), (stop, preceding));
+                fields.insert(tuple);
+            }
+            let within = params
+                .within
+                .as_ref()
+                .map(|spans| BTreeMap::from([(params.tag.clone(), spans.clone())]))
+                .unwrap_or_default();
             return Ok(
-                json!({ "hour": series::navigate(&mut [(&mut reader, selected)], &navigation)? }),
+                json!({"hour": progressive::navigate(&prepared, &sampled.0, &fields.into_iter().collect::<Vec<_>>(), &within, &navigation)?}),
             );
         }
         "summary" => {
@@ -2565,5 +2621,123 @@ mod tests {
                 "the production UI validator sees the same overlap"
             );
         }
+    }
+
+    #[test]
+    fn keyboard_navigation_stops_at_an_election_that_changes_nothing_else() {
+        // GER holds an election at hour 103; popularity and the ruling party stay as they were.
+        let frames: Vec<_> = (100..=106)
+            .map(|hour| {
+                let election = if hour < 103 { 10 } else { 103 };
+                party_frame(hour, 40_00000, 35_00000, "fascism", election)
+            })
+            .collect();
+        let source =
+            source(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap());
+        let context = LoadContext { content: None };
+        let flag = AtomicBool::new(false);
+        let prepare = |through: usize| {
+            let fixture = Fixture::new();
+            let mut state = Prepared::default();
+            for frame in &frames[..through] {
+                state.observe(frame).unwrap();
+            }
+            publish(&mut state, &fixture);
+            fixture
+        };
+        let next = |fixture: &Fixture, coverage: &Coverage, ask: Value| {
+            let reply = super::query(
+                &source,
+                params("GER", "next", ask),
+                &context,
+                &fixture.store,
+                &fixture.key,
+                Some(coverage),
+                &flag,
+            )
+            .unwrap();
+            reply["hour"].as_f64()
+        };
+        let ask = |key: &str, from: Option<i32>, extra: Value| {
+            let mut ask =
+                json!({"navigation": {"key": key, "from": from, "firstHour": 100, "lastHour": 106}});
+            ask.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            ask
+        };
+        let complete = prepare(frames.len());
+        let whole = Coverage {
+            schema: 0,
+            first_hour: 100,
+            last_hour: 106,
+            complete: true,
+        };
+        let shown = json!({"fields": ["ruling", "leader", "election"]});
+        for (key, from, hour) in [
+            ("Home", None, 100.0),
+            ("End", None, 103.0),
+            ("ArrowRight", Some(100), 103.0),
+            ("ArrowRight", Some(103), 103.0),
+            ("ArrowLeft", Some(106), 103.0),
+            ("ArrowLeft", Some(103), 100.0),
+        ] {
+            assert_eq!(
+                next(&complete, &whole, ask(key, from, shown.clone())),
+                Some(hour),
+                "{key} from {from:?}"
+            );
+        }
+        let unmarked = json!({"fields": ["ruling", "leader"]});
+        assert_eq!(
+            next(&complete, &whole, ask("End", None, unmarked.clone())),
+            Some(100.0)
+        );
+        assert_eq!(
+            next(&complete, &whole, ask("ArrowRight", Some(100), unmarked)),
+            Some(100.0),
+            "an election not asked for draws no mark, so it is no stop"
+        );
+        let only = json!({"fields": ["election"], "values": false});
+        for key in ["Home", "End"] {
+            assert_eq!(
+                next(&complete, &whole, ask(key, None, only.clone())),
+                Some(103.0)
+            );
+        }
+        // Membership spans count only member hours, and an election has no edge stop.
+        let apart = json!([{"firstHour":100,"lastHour":102},{"firstHour":104,"lastHour":106}]);
+        let mut member = shown.clone();
+        member["within"] = apart.clone();
+        assert_eq!(
+            next(&complete, &whole, ask("ArrowRight", Some(100), member)),
+            Some(104.0)
+        );
+        let mut member = only.clone();
+        member["within"] = apart;
+        assert_eq!(
+            next(&complete, &whole, ask("ArrowRight", Some(100), member.clone())),
+            Some(100.0)
+        );
+        member["within"] = json!([{"firstHour":103,"lastHour":103}]);
+        assert_eq!(
+            next(&complete, &whole, ask("Home", None, member)),
+            Some(103.0)
+        );
+        // Prepared through 104, the unprepared tail still finds the prepared election.
+        let partial = prepare(5);
+        let prefix = Coverage {
+            last_hour: 104,
+            complete: false,
+            ..whole
+        };
+        assert_eq!(
+            next(&partial, &prefix, ask("ArrowRight", Some(100), shown.clone())),
+            Some(103.0)
+        );
+        assert_eq!(
+            next(&partial, &prefix, ask("ArrowLeft", Some(104), shown)),
+            Some(103.0)
+        );
     }
 }

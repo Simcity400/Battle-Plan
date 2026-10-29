@@ -10,20 +10,33 @@ type StateKey = (u32, u32, u32);
 type NameCache = HashMap<u32, (Vec<u8>, Vec<u8>, Result<String, String>)>;
 const HOURLY: [TableId; 3] = [TableId::States, TableId::Countries, TableId::CountryLinks];
 
+fn hourly_resistance(format: replay_data::format::FormatVersion) -> bool {
+    replay_data::cadence::cadence_in(TableId::StateResistance, format)
+        == replay_data::cadence::Cadence::Hourly
+}
+
 fn resistance_read(
     format: replay_data::format::FormatVersion,
     frame: &DecodedFrame,
     hour: i32,
 ) -> bool {
-    if replay_data::cadence::cadence_in(TableId::StateResistance, format)
-        == replay_data::cadence::Cadence::Hourly
-    {
+    stored_resistance_read(format, &frame.metrics, hour)
+        || hourly_resistance(format)
+            && frame.tables[TableId::StateResistance.index()].sampled_at() == Some(hour)
+}
+
+/// [`resistance_read`] from a stored frame's metrics alone, before its rows are decoded.
+pub(super) fn stored_resistance_read(
+    format: replay_data::format::FormatVersion,
+    metrics: &replay_frame::frame::Metrics,
+    hour: i32,
+) -> bool {
+    if hourly_resistance(format) {
         // This independent worker charges its own acquisition. An untimed carry
         // does not become a new observation merely because its cadence is hourly.
-        frame.metrics.table_ns[TableId::StateResistance.index()] != 0
-            || frame.tables[TableId::StateResistance.index()].sampled_at() == Some(hour)
+        metrics.table_ns[TableId::StateResistance.index()] != 0
     } else {
-        slot_read(format, &frame.metrics, TableId::StateResistance, hour)
+        slot_read(format, metrics, TableId::StateResistance, hour)
     }
 }
 

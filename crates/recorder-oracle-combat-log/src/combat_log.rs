@@ -63,6 +63,13 @@ pub fn compare(
     let reads = complete::<tables::SliceReads>(frame)?;
     let mut actual: BTreeMap<Key<'_>, (i32, i64)> = BTreeMap::new();
     let mut read: BTreeSet<&[u8]> = BTreeSet::new();
+    // SliceReads also dates a read that found no rows for its country.
+    for slice in reads.iter().filter(|slice| {
+        slice.table == TableId::CombatLogEquipment.index() as u32
+            && slice.sample_hour == frame.hour
+    }) {
+        read.insert(required_country_tag(slice.owner, links)?);
+    }
     let mut carried = 0;
     for row in complete::<tables::CombatLogEquipment>(frame)? {
         let tag = required_country_tag(row.country, links)?;
@@ -422,9 +429,12 @@ pub fn lend_lease(
     let mut count = 0;
     let mut zeros = 0;
     let mut omits_zero: BTreeSet<(&[u8], u32, u8)> = BTreeSet::new();
+    // Each exchange saves its receiver whatever its pools omit.
+    let mut receivers: BTreeMap<(&[u8], u32), &[u8]> = BTreeMap::new();
     for (tag, country) in report.canonical_countries(&saved.economy.countries) {
         for exchange in country.lend_lease.iter().flatten() {
             let id = (exchange.id >> 32) as u32;
+            receivers.insert((tag.as_slice(), id), exchange.receiver.as_slice());
             for (kind, pool) in [
                 (DELIVERED_KIND, &exchange.delivered),
                 (SUNK_KIND, &exchange.sunk),
@@ -442,19 +452,25 @@ pub fn lend_lease(
             }
         }
     }
-    for ((giver, exchange, kind, variant), (_, amount)) in actual {
+    for ((giver, exchange, kind, variant), (receiver, amount)) in actual {
+        let label = format!(
+            "{}.lend_lease[{exchange}][kind {kind}][variant {variant}]",
+            String::from_utf8_lossy(giver)
+        );
         if amount == 0 && omits_zero.contains(&(giver, exchange, kind)) {
+            if let Some(&saved_receiver) = receivers.get(&(giver, exchange))
+                && saved_receiver != receiver
+            {
+                report.difference(
+                    format!("{label}.receiver"),
+                    String::from_utf8_lossy(receiver),
+                    String::from_utf8_lossy(saved_receiver),
+                );
+            }
             zeros += 1;
             continue;
         }
-        report.difference(
-            format!(
-                "{}.lend_lease[{exchange}][kind {kind}][variant {variant}]",
-                String::from_utf8_lossy(giver)
-            ),
-            "present",
-            "absent",
-        );
+        report.difference(label, "present", "absent");
     }
     report.compared("LendLeaseEquipment", count);
     if zeros != 0 {

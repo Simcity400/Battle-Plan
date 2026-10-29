@@ -825,7 +825,8 @@ fn bases_link(
 
 /// Authenticated country census shared by the bases, registrations and aces
 /// walks. Records the exact read set of `ccountry::Reader::new` plus one full
-/// `read_at` per slot, taking every discoverable span: validation mismatches
+/// `read_at` per slot and the slot-zero authentication `Reader::at` makes for a
+/// slot holding the reserved object, taking every discoverable span: validation mismatches
 /// never stop the census because each replay derives its own verdict from the
 /// same spans (a mismatch fatal to one walk may be unread by another).
 /// Returns the parsed link array with its country count for the resolve
@@ -914,6 +915,7 @@ fn copy_air_bases_census(
         return None;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    let mut reserved = false;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
@@ -937,6 +939,15 @@ fn copy_air_bases_census(
             continue;
         }
         let id = bases_pool_u32(log, id_start);
+        if id == 0 {
+            bases_link(log, memory, &links, countries.count, slot, mask);
+            // `Reader::at` authenticates slot zero once to skip a slot holding that object.
+            if !reserved {
+                reserved = true;
+                stage_reserved_country(log, memory, &countries, vtable, mask);
+            }
+            continue;
+        }
         let canonical = bases_link(log, memory, &links, countries.count, id, mask);
         let slot_link = bases_link(log, memory, &links, countries.count, slot, mask);
         let (Some(canonical), Some(slot_link)) = (canonical, slot_link) else {
@@ -969,6 +980,31 @@ fn copy_air_bases_census(
         census.push((pointer, slot));
     }
     Some((links, countries.count))
+}
+
+/// The reserved slot-zero object's pointer, vtable and id, as `Reader::at` reads them.
+fn stage_reserved_country(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine_native::Memory,
+    countries: &Array,
+    vtable: u64,
+    mask: u32,
+) {
+    let Some(start) = bspan(log, memory, countries.element(0, 8), 8, mask) else {
+        return;
+    };
+    let Some(root) = usize::try_from(bases_pool_u64(log, start))
+        .ok()
+        .filter(|&root| root != 0)
+    else {
+        return;
+    };
+    let Some(start) = bspan(log, memory, Some(root), 8, mask) else {
+        return;
+    };
+    if bases_pool_u64(log, start) == vtable {
+        bspan(log, memory, root.checked_add(ccountry::ID), 4, mask);
+    }
 }
 
 /// Deduplicated resolve-link take returning the first successfully staged

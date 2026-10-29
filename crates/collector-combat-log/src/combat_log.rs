@@ -257,6 +257,8 @@ impl Capacities {
         let lend = lend_lease::row_demand(memory, base, state);
         if let Ok(rows) = logs {
             crate::country_scale::raise(&mut self.rows, rows);
+            // A prune can delete any retained group log before the next sample.
+            crate::combat_log_prune::prepare(rows);
         }
         if let Ok(rows) = lend {
             crate::country_scale::raise(&mut self.lend_lease, rows);

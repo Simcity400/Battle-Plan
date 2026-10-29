@@ -25,6 +25,7 @@ test('renaming an open recording retains the top-bar flag and list flag requests
       flags++; return { flags: [] };
     },
     async listFlags() { lists++; },
+    reads: new Map<string, unknown>(),
   };
   const host = globalThis as typeof globalThis & { __pickerRename?: typeof fixture };
   host.__pickerRename = fixture;
@@ -38,7 +39,7 @@ test('renaming an open recording retains the top-bar flag and list flag requests
         if (file.endsWith('/dashboard/products.ts')) return 'export const forgetSettledProducts = () => {}; export const loadProduct = (...args) => globalThis.__pickerRename.product(...args); export const loadTransientProduct = loadProduct;';
         if (file.endsWith('/dashboard/flagCache.ts')) return 'export class FlagStore { static key() { return "flag"; } } export const flagStore = () => ({ get() {} }); export const loadListFlags = () => globalThis.__pickerRename.listFlags();';
         if (file.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
-        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const nameKey = () => "";';
+        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const useCountryNamesRead = () => globalThis.__pickerRename.reads; export const nameKey = () => "";';
       },
     }] });
   try {
@@ -46,7 +47,10 @@ test('renaming an open recording retains the top-bar flag and list flag requests
     const countries = [{ id: '1', tag: 'mod-country', name: 'Country', observedBranchId: '1', observedHour: 12 }];
     const props: any = { client: {}, countries, selectedTag: 'mod-country', playerCountryId: '1', onChange() {}, allowedTags: ['mod-country'],
       source: { id: 'lease-1', revision: 'revision-1', path: 'old.battleplan', metadata: { countries, branches: [{ id: '1', firstHour: 12, lastHour: 24 }] } }, flagAt: { branchId: '1', hour: 12 } };
-    const render = async () => { cursor = 0; effects = []; Picker(props); for (const effect of effects) effect(); await new Promise(resolve => setImmediate(resolve)); };
+    let output: unknown;
+    const render = async () => { cursor = 0; effects = []; output = Picker(props); for (const effect of effects) effect(); await new Promise(resolve => setImmediate(resolve)); };
+    const texts = (node: any): string[] => node == null || typeof node === 'boolean' ? [] : typeof node === 'string' || typeof node === 'number' ? [String(node)]
+      : Array.isArray(node) ? node.flatMap(texts) : texts(node.props?.children);
     await render(); await render();
     const beforeFlags = flags, beforeLists = lists;
     assert.ok(beforeFlags > 0); assert.ok(beforeLists > 0);
@@ -57,5 +61,12 @@ test('renaming an open recording retains the top-bar flag and list flag requests
     props.allowedTags = undefined;
     await render();
     assert.equal(ownerSource, props.source, 'campaign-wide owner discovery uses the prepared polling source');
+    // The playback top bar names its country at the day its flag shows, not as first observed.
+    fixture.reads.set('', 'Dated name');
+    await render(); await render();
+    assert.ok(texts(output).includes('Dated name'), 'the top bar names the country at the playback day');
+    fixture.reads.set('', null);
+    await render(); await render();
+    assert.ok(texts(output).includes('Country name unavailable'), 'a day without a recorded name says so');
   } finally { await vite.close(); delete host.__pickerRename; }
 });

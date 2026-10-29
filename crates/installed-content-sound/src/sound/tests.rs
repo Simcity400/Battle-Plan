@@ -220,6 +220,69 @@ fn a_repeated_category_takes_the_later_compressor_and_sounds_read_their_priority
 }
 
 #[test]
+fn escaped_quotes_stay_part_of_sound_names_and_references() {
+    let stack = Stack::new("sound_catalog_quotes");
+    let base = stack.base();
+    stack.write(
+        &base,
+        "sound/a.asset",
+        r#"sound = { name = s file = "plain.wav" }
+           sound = { name = "\"s\"" file = "quoted.wav" }
+           falloff = { name = "\"f\"" }
+           soundeffect = { name = plain sounds = { sound = s } }
+           soundeffect = { name = quoted sounds = { sound = "\"s\"" } falloff = "\"f\"" }
+           category = { name = "\"c\"" soundeffects = { "\"quoted\"" quoted } }"#,
+    );
+    let catalog = Catalog::read(&stack.layers(&[])).unwrap();
+    assert_eq!(catalog.sounds.len(), 2);
+    let (plain, quoted) = (catalog.sound("s").unwrap(), catalog.sound("\"s\"").unwrap());
+    assert_eq!(catalog.sounds[quoted].path, "sound/quoted.wav");
+    let choice = |effect: &str| catalog.effects[catalog.effect(effect).unwrap()].choices[0].sound;
+    assert_eq!((choice("plain"), choice("quoted")), (plain, quoted));
+    let effect = &catalog.effects[catalog.effect("quoted").unwrap()];
+    assert_eq!(effect.falloff, catalog.falloff("\"f\""));
+    assert_eq!(effect.category, catalog.category("\"c\""));
+    assert_eq!(
+        catalog.notes.lines(),
+        ["sound/a.asset: category \"c\" names missing soundeffect \"quoted\""]
+    );
+}
+
+/// The game keeps a sound's name in 64 bytes: a longer one is added and found by its first 63
+/// bytes, so a reference naming it whole misses and a second name sharing them repeats.
+#[test]
+fn a_sound_name_is_added_and_found_by_its_first_63_bytes() {
+    let stack = Stack::new("sound_catalog_long_names");
+    let base = stack.base();
+    let cut = "a".repeat(63);
+    stack.write(
+        &base,
+        "sound/a.asset",
+        &format!(
+            "sound = {{ name = {cut}_first file = first.wav }}
+             sound = {{ name = {cut}_second file = second.wav }}
+             soundeffect = {{ name = cut sounds = {{ sound = {cut} }} }}
+             soundeffect = {{ name = whole sounds = {{ sound = {cut}_first }} }}"
+        ),
+    );
+    let catalog = Catalog::read(&stack.layers(&[])).unwrap();
+    assert_eq!(catalog.sounds.len(), 1);
+    assert_eq!(catalog.sounds[0].path, "sound/first.wav");
+    assert_eq!(catalog.sound(&cut), Some(0));
+    assert_eq!(catalog.sound(&format!("{cut}_first")), None);
+    let effect = |name: &str| &catalog.effects[catalog.effect(name).unwrap()];
+    assert_eq!(effect("cut").choices.len(), 1);
+    assert!(effect("whole").choices.is_empty());
+    assert_eq!(
+        catalog.notes.lines(),
+        [
+            format!("sound/a.asset: refused repeated sound {cut}_second"),
+            format!("sound/a.asset: soundeffect whole names missing sound {cut}_first"),
+        ]
+    );
+}
+
+#[test]
 fn a_mod_replacing_the_sound_folder_hides_the_base_definitions() {
     let stack = Stack::new("sound_catalog_replace");
     let (base, addon) = (stack.base(), stack.addon());

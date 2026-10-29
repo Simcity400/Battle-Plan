@@ -143,6 +143,19 @@ fn malformed_lists_are_refused_by_name() {
 }
 
 #[test]
+fn a_slot_bitmap_past_the_last_u32_slot_is_refused_before_its_words() {
+    // The last word's top bit is the last slot; a word more would name slot 2^32 and up.
+    assert_eq!(SLOT_WORDS * 64 - 1, u32::MAX as usize);
+    let mut read = Vec::new();
+    let mut writer = Writer::new();
+    writer.varint(1).unwrap();
+    writer.u8(SLOT_BITMAP).unwrap();
+    writer.varint(SLOT_WORDS as u64 + 1).unwrap();
+    let error = Reader::new(writer.bytes()).slots(&mut read).unwrap_err();
+    assert_eq!(error.to_string(), "Slot bitmap passes the last slot");
+}
+
+#[test]
 fn integers_lengths_and_keys_round_trip_as_varints() {
     let mut writer = Writer::new();
     writer.ints(&[0i64, -1, 1, i64::MIN, i64::MAX]).unwrap();

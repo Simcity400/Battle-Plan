@@ -1,10 +1,12 @@
-import type { CountryGroupReply, LedgerMember, MarketLedgerReply, MarketLedgerRow } from '../../generated/dashboard';
+import type { CountryGroupReply, HolderTag, LedgerMember, MarketLedgerReply, MarketLedgerRow } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import { countryMatchFilter, groupMembers, groupRuns, groupUnobserved, membersKnown } from '../../dashboard/groups.ts';
 import type { MembershipKnown } from '../../dashboard/groups';
 import { withoutHours } from '../../charts/timeline/runState.ts';
 import type { LogPage, LogRow } from '../../charts/log/logData';
 import { object } from '../../dashboard/validation.ts';
+import { partiesOf } from '../../dashboard/marketHistory.ts';
+import type { Party } from '../../dashboard/marketHistory.ts';
 import { fixedText, isEconomyRuns, isHolderMap, isVariantNames, preparedAt, tagAt, validateEconomyReply, variantNameAt } from '../../dashboard/economyHistory.ts';
 
 export const MARKET_LEDGER = 'market-ledger';
@@ -84,13 +86,15 @@ export interface LedgerItem {
   row: MarketLedgerRow;
   seller: string | null;
   buyer: string | null;
+  /** Seller and buyer by native holder, so a drill follows their later tags. */
+  parties: Party[];
   equipment: string | null;
 }
 
 export function ledgerRows(reply: MarketLedgerReply, page: number): LogRow<LedgerItem>[] {
   return reply.rows.map(row => ({ key: `${page}:${row.id}`, id: row.id, hour: row.hour, item: {
     row, seller: row.seller === null ? null : tagAt(reply.holders[row.seller], row.hour),
-    buyer: row.buyer === null ? null : tagAt(reply.holders[row.buyer], row.hour),
+    buyer: row.buyer === null ? null : tagAt(reply.holders[row.buyer], row.hour), parties: partiesOf(reply.holders, [row.seller, row.buyer]),
     equipment: row.variant === '0' ? null : variantNameAt(reply.variants[row.variant], row.hour) } }));
 }
 
@@ -189,3 +193,11 @@ export function ledgerFigure(item: LedgerItem): { text: string; negative: boolea
 }
 
 export const ledgerIcon = (kind: number) => kind === 21 ? 'chart-bars' : kind === 20 || kind === 34 ? 'anchor' : kind === 12 ? 'close' : kind === 10 ? 'search' : 'handshake';
+
+/** Each holder's tags as the loaded pages last read them, so a picked party's later tags,
+ * found once preparation reaches them, are followed. */
+export function loadedHolders(pages: readonly LogPage<LedgerItem>[]): Record<string, readonly HolderTag[]> {
+  const holders: Record<string, readonly HolderTag[]> = {};
+  for (const page of pages) for (const row of page.rows ?? []) for (const party of row.item.parties) holders[party.id] ??= party.tags;
+  return holders;
+}

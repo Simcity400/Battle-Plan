@@ -2,7 +2,8 @@
 //!
 //! Every `.asset` file below `music/` declares tracks, `music = { name file
 //! volume }`, its `file` relative to the asset's folder; the first track of a
-//! name is kept. Every `.txt` file below `music/` is a song list: its
+//! name, by its first 63 bytes, is kept and a song names it whole. Every
+//! `.txt` file below `music/` is a song list: its
 //! `music_station = "..."` names the station of the songs that follow it in
 //! that file, and each `music = { song = ... chance = { ... } }` offers a
 //! track with a weighted chance. The chance block is a mean-time body: a
@@ -13,7 +14,7 @@
 //! The player chooses among the songs of the stations the user enabled in
 //! `playlists/settings.txt` of the user folder.
 
-use crate::{ResolvedLayers, defines, parser, sound::Notes};
+use crate::{ResolvedLayers, defines, parser, sound::Notes, sound::registered};
 use installed_content_core::parser::native::{self, Shape};
 use std::{collections::BTreeMap, io, path::Path};
 
@@ -40,7 +41,7 @@ pub struct Music {
     pub tracks: Vec<Track>,
     pub songs: Vec<Song>,
     pub notes: Notes,
-    track_names: BTreeMap<String, usize>,
+    track_names: BTreeMap<Vec<u8>, usize>,
 }
 
 impl Music {
@@ -68,7 +69,7 @@ impl Music {
     }
 
     pub fn track(&self, name: &str) -> Option<usize> {
-        self.track_names.get(name).copied()
+        self.track_names.get(name.as_bytes()).copied()
     }
 
     fn declare_tracks(
@@ -110,14 +111,14 @@ impl Music {
                     .rev()
                     .find(|field| field.keyword_is(key))
                     .and_then(|field| field.value.scalar_str())
-                    .map(|value| value.trim_matches('"').to_owned())
+                    .map(str::to_owned)
             };
             let (Some(name), Some(file)) = (text("name"), text("file")) else {
                 self.notes
                     .note(format!("{path}: refused music without a name or file"));
                 continue;
             };
-            if self.track_names.contains_key(&name) {
+            if self.track_names.contains_key(registered(&name)) {
                 self.notes
                     .note(format!("{path}: refused repeated music {name}"));
                 continue;
@@ -143,7 +144,8 @@ impl Music {
                 }
             };
             let file = file.replace('\\', "/");
-            self.track_names.insert(name.clone(), self.tracks.len());
+            self.track_names
+                .insert(registered(&name).to_vec(), self.tracks.len());
             self.tracks.push(Track {
                 name,
                 path: if directory.is_empty() {
@@ -204,10 +206,7 @@ impl Music {
         let mut station: Option<String> = None;
         for item in read.items {
             if item.keyword_is("music_station") {
-                station = item
-                    .value
-                    .scalar_str()
-                    .map(|value| value.trim_matches('"').to_owned());
+                station = item.value.scalar_str().map(str::to_owned);
                 continue;
             }
             if !item.keyword_is("music") {
@@ -231,7 +230,7 @@ impl Music {
                 .rev()
                 .find(|field| field.keyword_is("song"))
                 .and_then(|field| field.value.scalar_str())
-                .map(|value| value.trim_matches('"').to_owned())
+                .map(str::to_owned)
             else {
                 self.notes
                     .note(format!("{path}: refused music without a song"));
@@ -291,7 +290,7 @@ fn parse_enabled(bytes: &[u8]) -> io::Result<Vec<String>> {
         .flat_map(|item| item.value.items().unwrap_or_default())
         .filter(|item| item.key.is_none())
         .filter_map(|item| item.value.scalar_str())
-        .map(|value| value.trim_matches('"').to_owned())
+        .map(str::to_owned)
         .collect())
 }
 
@@ -432,7 +431,94 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
             parse_enabled(b"enabled={\n\tbase_music\tsabaton }").unwrap(),
             ["base_music", "sabaton"]
         );
+        assert_eq!(
+            parse_enabled(br#"enabled={ "\"pack\"" pack }"#).unwrap(),
+            ["\"pack\"", "pack"]
+        );
         assert!(parse_enabled(b"").unwrap().is_empty());
+    }
+
+    #[test]
+    fn escaped_quotes_stay_part_of_track_song_and_station_names() {
+        engine_tables();
+        let stack = Stack::new("music_catalog_quotes");
+        let base = stack.base();
+        stack.write(
+            &base,
+            "music/music.asset",
+            r#"music = { name = theme file = "plain.ogg" }
+               music = { name = "\"theme\"" file = "quoted.ogg" }"#,
+        );
+        stack.write(
+            &base,
+            "music/songs.txt",
+            r#"music_station = "\"pack\""
+               music = { song = "\"theme\"" }
+               music_station = pack
+               music = { song = theme }"#,
+        );
+        let music = Music::read(&stack.layers(&[])).unwrap();
+        assert_eq!(music.tracks.len(), 2, "{:?}", music.notes.lines());
+        assert_eq!(
+            music.tracks[music.track("\"theme\"").unwrap()].path,
+            "music/quoted.ogg"
+        );
+        let songs: Vec<_> = music
+            .songs
+            .iter()
+            .map(|song| {
+                (
+                    music.tracks[song.track].path.as_str(),
+                    song.station.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            songs,
+            [
+                ("music/quoted.ogg", "\"pack\""),
+                ("music/plain.ogg", "pack")
+            ]
+        );
+    }
+
+    /// The game keeps a track's name in 64 bytes: a longer one is added and found by its first 63
+    /// bytes, so a song naming it whole misses and a second name sharing them repeats.
+    #[test]
+    fn a_track_name_is_added_and_found_by_its_first_63_bytes() {
+        engine_tables();
+        let stack = Stack::new("music_catalog_long_names");
+        let base = stack.base();
+        let cut = "t".repeat(63);
+        stack.write(
+            &base,
+            "music/music.asset",
+            &format!(
+                "music = {{ name = {cut}_one file = one.ogg }}
+                 music = {{ name = {cut}_two file = two.ogg }}"
+            ),
+        );
+        stack.write(
+            &base,
+            "music/songs.txt",
+            &format!(
+                "music_station = radio
+                 music = {{ song = {cut} }}
+                 music = {{ song = {cut}_one }}"
+            ),
+        );
+        let music = Music::read(&stack.layers(&[])).unwrap();
+        assert_eq!(music.tracks.len(), 1);
+        assert_eq!(music.tracks[0].path, "music/one.ogg");
+        assert_eq!(music.track(&cut), Some(0));
+        assert_eq!(music.songs.len(), 1);
+        assert_eq!(
+            music.notes.lines(),
+            [
+                format!("music/music.asset: refused repeated music {cut}_two"),
+                format!("music/songs.txt: song {cut}_one names no music track"),
+            ]
+        );
     }
 
     fn engine_tables() {

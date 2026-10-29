@@ -294,7 +294,7 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
     const request = ++sequence.current;
     void change('global',action,from,Math.ceil(x[0]),Math.floor(Math.min(x[1],cutoff ?? x[1]))).then(hour => {
       if (request === sequence.current && currentPick.current === pickOwner) setKeyboard(previous => ({ owner: pickOwner,hour,revision: (previous?.revision ?? 0)+1 }));
-    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setStates(previous=>({...previous,owner,error:String(error)}));});
+    }).catch(error=> {if(!(error instanceof DOMException && error.name==='AbortError') && request===sequence.current && currentPick.current===pickOwner)setStates(previous=>({...(previous?.owner === owner ? previous : {}),owner,error:String(error)}));});
   },[change,pickOwner]);
   const geometry=summaries?.owner===owner ? summaries.data : undefined;
   const exact=states?.owner===owner ? states.data : undefined;

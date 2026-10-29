@@ -99,6 +99,40 @@ fn named_carriers_use_pool_country_and_roster_order() {
     });
 }
 
+/// A frame holding only `scripted_text::TABLES` still enters named carriers and their owners.
+#[test]
+fn the_scripted_text_selection_holds_every_carrier_input() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut f = fixture();
+    for table in TableId::ALL {
+        if !crate::scripted_text::TABLES.contains(&table) {
+            *f.tables[table.index()] = TableView::Unavailable {
+                reason: "not decoded for scripted text".into(),
+            };
+        }
+    }
+    with_world(&f, "", Err("none"), |world| {
+        let evaluator = Evaluator::new(world, None);
+        assert_eq!(
+            evaluator.enter(
+                &installed_content_core::scope::parse("mio:synthetic_mio", false, world.recorded()),
+                Scopes::of(Scope::Country(1))
+            ),
+            Ok(Some(Scope::IndustrialOrganisation(MIO)))
+        );
+        for (scope, owner) in [(Scope::Unit(UNIT), 1), (Scope::IndustrialOrganisation(MIO), 3)] {
+            assert_eq!(
+                evaluator.enter(
+                    &installed_content_core::scope::Scope::Keyword(installed_content_core::scope::Keyword::Owner),
+                    Scopes::of(scope)
+                ),
+                Ok(Some(Scope::Country(owner)))
+            );
+        }
+    });
+}
+
 #[test]
 fn named_carriers_resolve_the_last_country() {
     engine_executable::executable_tables::initialize_for_tests()

@@ -133,7 +133,12 @@ def candidate_files(revision, paths):
         command.append(revision)
     top_level = [':(glob)*.md'] if paths == DEFAULT_PATHS else []
     command += ['--', *paths, *top_level, f':!{SELF}']
-    out = subprocess.run(command, capture_output=True).stdout.decode('utf-8', 'replace')
+    result = subprocess.run(command, capture_output=True)
+    # git grep exits 1 when nothing matches; anything else is a failed scan.
+    if result.returncode not in (0, 1):
+        raise SystemExit(f'git grep failed ({result.returncode}): '
+                         + result.stderr.decode('utf-8', 'replace').strip())
+    out = result.stdout.decode('utf-8', 'replace')
     for name in out.splitlines():
         if revision:
             name = name[len(revision) + 1:]
@@ -149,7 +154,11 @@ def read_files(revision, names):
                 yield name, handle.read().decode('utf-8', 'replace').split('\n')
         return
     request = ''.join(f'{revision}:{name}\n' for name in names).encode()
-    out = subprocess.run(['git', 'cat-file', '--batch'], input=request, capture_output=True).stdout
+    result = subprocess.run(['git', 'cat-file', '--batch'], input=request, capture_output=True)
+    if result.returncode:
+        raise SystemExit(f'git cat-file failed ({result.returncode}): '
+                         + result.stderr.decode('utf-8', 'replace').strip())
+    out = result.stdout
     at = 0
     for name in names:
         end = out.index(b'\n', at)

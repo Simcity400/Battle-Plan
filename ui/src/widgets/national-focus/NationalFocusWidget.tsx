@@ -14,10 +14,11 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { focusParityModel } from './focusParityModel';
 import { useParityRows } from '../../dashboard/parityRows';
-import type { Artwork, FocusEntry, FocusOrder, FocusReply } from '../../generated/dashboard';
+import type { Artwork, FocusDatabase, FocusEntry, FocusOrder, FocusReply } from '../../generated/dashboard';
 import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
-import { useFocusArtwork } from './useFocusArtwork';
-import { focusSegmentAt, focusCompletion, focusProgressAt, focusRequest, validateFocusReply } from './focusData';
+import type { NameAt } from '../../dashboard/countryFacts';
+import { useContinuousFocusArtwork, useFocusArtwork } from './useFocusArtwork';
+import { activeFocus, focusSegmentAt, focusCompletion, focusProgressAt, focusRequest, validateFocusReply } from './focusData';
 import type { FocusProgressState } from './focusData';
 import WidgetState from '../../components/WidgetState';
 import ListSkeleton from '../../components/Skeleton';
@@ -30,6 +31,7 @@ import PreparedFocusWidget from './PreparedFocusWidget';
 import type { FocusPreparedClient } from './preparedFocusData';
 
 const NO_WARNINGS: string[] = [];
+const NO_WANTED: readonly NameAt[] = [];
 const days = (value: number) => `${enTwoDecimals.format(value)} ${value === 1 ? 'day' : 'days'}`;
 export type FocusListItem = { kind: 'completed'; entry: FocusEntry } | { kind: 'unfinished'; token: string };
 export const isCompletedFocus = (item: FocusListItem) => item.kind === 'completed';
@@ -114,6 +116,8 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
     return new Map(data?.artwork.map(({ token, baseDurationDays }) => [token,
       { token, baseDurationDays, name: text.get(token)?.name ?? null, description: text.get(token)?.description ?? null, icon: null } satisfies Artwork]));
   }, [data]);
+  // A continuous focus is looked up in its own database, never as a national focus of the same id.
+  const continuousMetadata = useMemo(() => new Map(data?.continuousStaticText.map(item => [item.token, item])), [data]);
   const segment = data && hour != null ? focusSegmentAt(data.history, hour) : null;
   const order = segment?.order ?? null;
   const state = data && hour != null && moment ? focusProgressAt(data.history, hour) : null;
@@ -124,14 +128,18 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
     // Follow scrolls to the newest completion; schedule that end of the list first.
     // Presentation keeps the recorded ordinal order in every time mode.
     if (live) rows.reverse();
-    const current = order?.current ?? order?.continuous;
-    if (current && hour != null) {
-      const item = { tag: current, hour: currentHour };
+    const current = activeFocus(order);
+    if (current?.database === 'national' && current.token && hour != null) {
+      const item = { tag: current.token, hour: currentHour };
       if (moment) rows.unshift(item);
       else rows.push(item);
     }
     return rows.filter(row => Number.isInteger(row.hour));
   }, [order, readingHour, hour, currentHour, moment, live]);
+  const continuousWanted = useMemo(() => {
+    const current = activeFocus(order);
+    return current?.database === 'continuous' && current.token && hour != null ? [{ tag: current.token, hour: currentHour }] : NO_WANTED;
+  }, [order, hour, currentHour]);
   // Repeated completions may share dated text, but their disclosure state must stay separate.
   const openRows = opened?.identity === detailsIdentity && opened.client === runtime.client ? opened.rows : null;
   const detailsWanted = useMemo(() => {
@@ -144,6 +152,7 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
   }, [openRows, order, readingHour, live]);
   const detailsKeys = useMemo(() => new Set(detailsWanted.map(item => nameKey(item.hour, item.tag))), [detailsWanted]);
   const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange === true, detailsWanted, data?.staticText);
+  const continuousDated = useContinuousFocusArtwork(runtime.client, track, tag, continuousWanted, active && inRange === true, data?.continuousStaticText);
   // Descriptions rows have shown, used while their read has no answer: closing releases the demand, yet the row
   // closes with its text, and reopening shows the same reading at once. Another identity or client starts empty.
   const shown = useRef<{ identity: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
@@ -158,9 +167,9 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
     if (open) next.add(key); else next.delete(key);
     return { identity: detailsIdentity, client: runtime.client, rows: next };
   });
-  const at = (token: string, readHour: number) => {
-    const item = dated.read.get(nameKey(readHour, token));
-    const fallback = metadata.get(token);
+  const at = (database: FocusDatabase, token: string, readHour: number) => {
+    const item = (database === 'national' ? dated : continuousDated).read.get(nameKey(readHour, token));
+    const fallback = (database === 'national' ? metadata : continuousMetadata).get(token);
     return item && item !== FAILED_FACT ? { art: { ...item.artwork, description: item.artwork.description ?? fallback?.description ?? null },
       reason: [item.titlePending ? 'Loading focus name\u2026' : item.titleReason, item.reason].filter(Boolean).join('; ') || undefined, pending: item.titlePending ?? false }
       : { art: fallback, pending: item === undefined, reason: item === undefined ? 'Loading focus name\u2026'
@@ -168,7 +177,7 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
   };
   const unavailable = useMemo(() => {
     const reasons = new Map<string, number>();
-    for (const item of dated.read.values()) {
+    for (const item of [...dated.read.values(), ...continuousDated.read.values()]) {
       const reason = item === FAILED_FACT ? 'Game artwork request failed.'
         : item === null ? 'Game artwork was not recorded at this hour.' : [item.titleReason, item.reason, item.imageReason].filter(Boolean).join('; ');
       if (reason) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
@@ -179,19 +188,19 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
       if (reason) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
     }
     return [...reasons].map(([reason, count]) => ({ reason, count }));
-  }, [dated.read, dated.details]);
-  const diagnostics = useMemo(() => [...(data?.warnings ?? NO_WARNINGS), ...dated.warnings,
-    ...unavailable.map(item => `${item.reason} (${item.count})`)], [data, dated.warnings, unavailable]);
+  }, [dated.read, dated.details, continuousDated.read]);
+  const diagnostics = useMemo(() => [...(data?.warnings ?? NO_WARNINGS), ...new Set([...dated.warnings, ...continuousDated.warnings]),
+    ...unavailable.map(item => `${item.reason} (${item.count})`)], [data, dated.warnings, continuousDated.warnings, unavailable]);
   useDiagnostics(onDiagnostics, diagnostics);
   const list = useRef<HTMLDivElement>(null);
   const listIdentity = useMemo(() => ({}), [detailsIdentity, runtime.client]);
   const count = order?.completed.length ?? 0;
   if (import.meta.env.MODE === 'parity') {
     useParityRows(list, () => focusParityModel(order, state, readingHour, currentHour, moment, data?.staticText ?? [],
-      (token, date) => {
-        const value = at(token, date);
+      data?.continuousStaticText ?? [], (database, token, date) => {
+        const value = at(database, token, date);
         return { artwork: value.art ?? null, pending: value.pending, reason: value.reason ?? null,
-          descriptionDemanded: detailsKeys.has(nameKey(date, token)) };
+          descriptionDemanded: database === 'national' && detailsKeys.has(nameKey(date, token)) };
       }));
   }
   const listItems = useMemo<FocusListItem[]>(() => {
@@ -211,7 +220,8 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
   if (!data) return <ListSkeleton label="Loading national focuses…" />;
   if (!order) return <div className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
-  const currentArt = at(order.current ?? order.continuous ?? '', currentHour);
+  const shownFocus = activeFocus(order);
+  const currentArt = at(shownFocus?.database ?? 'national', shownFocus?.token ?? '', currentHour);
   return <section key={detailsIdentity} className="national-focus" aria-label="National focus">
     {headerSlot && createPortal(<span className="pill focus-header-count">{order.completed.length} completed</span>, headerSlot)}
     {moment && <CurrentFocus order={order} art={currentArt.art} state={state} live={live} reason={currentArt.reason} pending={currentArt.pending} />}
@@ -229,7 +239,7 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
         </div>;
         const entry = item.entry;
         const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token), disclosure = disclosureKey(entry, readHour);
-        const { art, reason, pending } = at(entry.token, readHour);
+        const { art, reason, pending } = at('national', entry.token, readHour);
         if (art?.description) shownTexts.set(key, art.description);
         const description = art?.description ?? (dated.details?.get(key) === undefined ? shownTexts.get(key) : undefined);
         return <FocusCompletion entry={entry} art={art} reason={reason} pending={pending} description={description}

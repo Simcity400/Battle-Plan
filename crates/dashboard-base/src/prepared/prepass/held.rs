@@ -422,4 +422,38 @@ mod tests {
         bytes.heap(&map);
         assert!(bytes.total() >= (1_000 * size_of::<(u32, String)>() + 100) as u64);
     }
+
+    /// An hour an extract keeps in a field nothing else counts: its frame and
+    /// change facts count their inline size once beside what they own.
+    #[test]
+    fn a_frame_and_change_facts_held_on_their_own_count_their_inline_size_once() {
+        use replay_frame::frame::{FrameDecoder, FrameEncoder};
+        let format = replay_data::format::FormatVersion::CURRENT;
+        let (mut encoder, mut decoder) = (FrameEncoder::new(), FrameDecoder::new());
+        let mut tracker = crate::prepared::frame_changes::FrameChangeTracker::new();
+        let mut kept = None;
+        for hour in 100..102 {
+            let wire = encoder
+                .encode(crate::test_fixtures::scale_frame(1, hour, 50), hour == 100)
+                .unwrap();
+            let frame = decoder.advance(&wire).unwrap().clone();
+            let changes = tracker.observe_updates(&frame, Arc::new(wire), format);
+            kept = Some((frame, changes));
+        }
+        let (frame, changes) = kept.as_ref().unwrap();
+        let mut owned = HeldBytes::default();
+        for view in &frame.tables {
+            owned.view(view);
+        }
+        owned.heap(changes.recorded().expect("the hour continues the one before"));
+        let mut alone = HeldBytes::default();
+        alone.value(frame).value(changes);
+        assert_eq!(
+            alone.total(),
+            owned.total() + (size_of::<DecodedFrame>() + size_of::<FrameChanges>()) as u64
+        );
+        let mut inline = HeldBytes::default();
+        inline.frame(frame).changes(changes);
+        assert_eq!(inline.total(), owned.total(), "a slot holding them counts the rest");
+    }
 }

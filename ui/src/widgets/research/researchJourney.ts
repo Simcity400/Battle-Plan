@@ -59,10 +59,12 @@ function assignmentCredits(slot: ResearchSlotHistory, entry: ResearchEntry, endH
 
 /** The assignments a technology moved through to `entry`, earliest first, within
  * one continuous country identity. Completion belongs only to its final slot.
- * Never joined across gaps, repeats, or ambiguous overlaps. */
+ * Never joined across gaps, repeats, ambiguous overlaps, or two definitions: a
+ * history without the recorded definition (`databaseIndex`) cannot prove one. */
 export function researchAssignments(slots: readonly ResearchSlotHistory[], slot: ResearchSlotHistory, entry: ResearchEntry) {
+  if (entry.databaseIndex == null) return [{ slot, entry }];
   const candidates = slots.flatMap(owner => owner.entries.filter(e =>
-    e.token === entry.token && e.technologyHandle === entry.technologyHandle && e.level === entry.level
+    e.databaseIndex === entry.databaseIndex && e.token === entry.token && e.technologyHandle === entry.technologyHandle && e.level === entry.level
     && e.continuityStartHour === entry.continuityStartHour && e.firstObservedHour <= entry.firstObservedHour,
   ).map(e => ({ slot: owner, entry: e }))).sort((a, b) => a.entry.firstObservedHour - b.entry.firstObservedHour || a.slot.index - b.slot.index);
   const target = candidates.findIndex(p => p.slot.index === slot.index && p.entry.firstObservedHour === entry.firstObservedHour);

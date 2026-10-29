@@ -887,6 +887,50 @@ fn deleted_groups_are_the_logs_whose_orders_group_no_longer_resolves() {
     assert!(scan(&f).is_err());
 }
 
+/// The prune detour counts a manager's deleted rows with no room, reserves
+/// that many, and reads them; less room keeps a prefix of whole pools.
+#[test]
+fn a_deleted_log_count_without_room_is_what_a_read_with_room_returns() {
+    let (mut f, manager) = standard();
+    // A null reference table for the type: both groups' logs are deleted.
+    let root = BASE + registry::LOW_ROOTS_RVA + corders_group::REFERENCE_TYPE as usize * 8;
+    f.pointer(root, 0);
+    assert_eq!(
+        deleted_logs(&f, BASE, manager, &mut []),
+        Ok((
+            7,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 6
+            }
+        ))
+    );
+    let mut rows = [Row::default(); 6];
+    assert_eq!(
+        deleted_logs(&f, BASE, manager, &mut rows),
+        Ok((7, Outcome::Rows { len: 6 }))
+    );
+    assert_eq!(rows[0], row(12793, 0, OCTOBER, 1326, 300_000));
+    let mut short = [Row::default(); 2];
+    assert_eq!(
+        deleted_logs(&f, BASE, manager, &mut short),
+        Ok((
+            7,
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 4
+            }
+        ))
+    );
+    assert_eq!(short, rows[..2]);
+    // Every group resolves: nothing is deleted, and the count is empty.
+    f.registry(&[12793, 12794]);
+    assert_eq!(
+        deleted_logs(&f, BASE, manager, &mut []),
+        Ok((7, Outcome::Rows { len: 0 }))
+    );
+}
+
 #[test]
 fn the_variant_memo_changes_no_row_and_no_failure() {
     let (f, _) = standard();

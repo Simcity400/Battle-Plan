@@ -161,12 +161,15 @@ impl Previous {
 struct Changed {
     accounts: Option<BTreeSet<u128>>,
     owners: BTreeMap<Kind, Option<BTreeSet<u64>>>,
+    /// Owners witnessed now but not the hour before: an unchanged table may hold their rows.
+    rewitnessed: BTreeSet<u64>,
     refresh: bool,
     programme_operands: bool,
 }
 impl Changed {
     fn affects(&self, kind: Kind, faction: u64) -> bool {
         self.refresh
+            || self.rewitnessed.contains(&faction)
             || self.owners[&kind]
                 .as_ref()
                 .is_none_or(|keys| keys.contains(&faction))
@@ -192,9 +195,11 @@ impl Prepared {
         dirty: &Changed,
         frame: &DecodedFrame,
         walks: &mut Supplying<'_>,
+        cat: Option<&catalogue::Catalogue>,
         cancelled: &AtomicBool,
     ) -> io::Result<Option<Arc<DecodedFrame>>> {
         let changed = dirty.programme_operands
+            || !dirty.rewitnessed.is_empty()
             || dirty.owners[&Kind::Programme]
                 .as_ref()
                 .is_none_or(|keys| !keys.is_empty());
@@ -208,11 +213,16 @@ impl Prepared {
         if walks.hours.branch() != frame.branch {
             *walks = Supplying::new(walks.hours.source(), frame.branch);
         }
+        // A scripted project name reads its supplying hour's world, as the faction details do.
+        let scripted = |read: &DecodedFrame| {
+            cat.is_some_and(|cat| selectors::programmes_need_environment(frame, read, cat))
+        };
         #[cfg(test)]
         if self.point_seeks {
             self.supplying_reads += 1;
-            return Ok(progressive::latest_read(
-                walks.hours.source(),
+            let source = walks.hours.source();
+            let Some(read) = progressive::latest_read(
+                source,
                 frame.branch,
                 frame.hour,
                 TableId::ProjectPrograms,
@@ -220,7 +230,17 @@ impl Prepared {
                 selectors::PROGRAMME_TABLES,
                 cancelled,
             )?
-            .map(Arc::from));
+            else {
+                return Ok(None);
+            };
+            if !scripted(&*read) {
+                return Ok(Some(Arc::from(read)));
+            }
+            let tables = selectors::programme_text_tables();
+            return Ok(
+                progressive::frame_at(source, frame.branch, read.hour, &tables, cancelled)?
+                    .map(Arc::from),
+            );
         }
         let Some(hour) = progressive::walked_read_hour(
             &mut walks.hours,
@@ -232,24 +252,43 @@ impl Prepared {
         else {
             return Ok(None);
         };
-        if let Some((branch, at, held)) = &self.supplying
+        let mut wide = false;
+        if let Some((branch, at, held_wide, held)) = &self.supplying
             && (*branch, *at) == (frame.branch, hour)
         {
-            return Ok(Some(Arc::clone(held)));
+            if *held_wide || !scripted(&**held) {
+                return Ok(Some(Arc::clone(held)));
+            }
+            wide = true;
         }
         #[cfg(test)]
         {
             self.supplying_reads += 1;
         }
-        let read = progressive::walked_supplying_frame(
-            &mut walks.frames,
-            hour,
-            TableId::ProjectPrograms,
-            selectors::PROGRAMME_TABLES,
-            cancelled,
-        )?
-        .map(Arc::from);
-        self.supplying = read.as_ref().map(|read| (frame.branch, hour, Arc::clone(read)));
+        let mut read = None;
+        if !wide {
+            read = progressive::walked_supplying_frame(
+                &mut walks.frames,
+                hour,
+                TableId::ProjectPrograms,
+                selectors::PROGRAMME_TABLES,
+                cancelled,
+            )?;
+            wide = read.as_deref().is_some_and(scripted);
+        }
+        if wide {
+            read = progressive::walked_supplying_frame(
+                &mut walks.frames,
+                hour,
+                TableId::ProjectPrograms,
+                &selectors::programme_text_tables(),
+                cancelled,
+            )?;
+        }
+        let read = read.map(Arc::from);
+        self.supplying = read
+            .as_ref()
+            .map(|read| (frame.branch, hour, wide, Arc::clone(read)));
         Ok(read)
     }
 }
@@ -368,6 +407,9 @@ pub struct Prepared {
     countries: selectors::Countries,
     #[serde(skip)]
     memberships: BTreeMap<u32, Option<u64>>,
+    /// The owners the hour before witnessed.
+    #[serde(skip)]
+    witnessed: BTreeSet<u64>,
     #[serde(skip)]
     ready: bool,
     unknown_keys: BTreeSet<u64>,
@@ -398,9 +440,10 @@ pub struct Prepared {
     goal_inputs: BTreeMap<u64, reuse::Inputs>,
     #[serde(skip)]
     index: Index,
-    /// The last supplying read of programme operands: its branch, hour and frame.
+    /// The last supplying read of programme operands: its branch, hour, whether it holds the
+    /// scripted-text tables, and frame.
     #[serde(skip)]
-    supplying: Option<(u64, i32, Arc<DecodedFrame>)>,
+    supplying: Option<(u64, i32, bool, Arc<DecodedFrame>)>,
     #[cfg(test)]
     #[serde(skip)]
     pub(super) supplying_reads: usize,
@@ -925,7 +968,7 @@ impl Prepared {
                 )
                 .collect(),
         };
-        let dirty = self.changed(frame, changes, continues);
+        let dirty = self.changed(frame, changes, continues, &witnessed);
         self.goal_dictionary(frame);
         if dirty.refresh {
             self.goal_labels.clear();
@@ -934,7 +977,7 @@ impl Prepared {
         let roster = self.lane(0, Kind::Roster, "", "", None, (0, 0));
         let complete = frame.complete::<tables::Factions>().is_ok();
         self.value(roster, frame.hour, i128::from(complete), !continues);
-        let supplying = self.supplying(&dirty, frame, supplying, cancelled)?;
+        let supplying = self.supplying(&dirty, frame, supplying, cat.as_deref(), cancelled)?;
         let accounts = self.changed_accounts(frame, &dirty, &joins);
         self.accounts(frame, accounts, joins.joined, !continues, cat.as_deref());
         // Dynamic names use the viewing country; changing its identity or link invalidates them.
@@ -1032,8 +1075,12 @@ impl Prepared {
                     (row.ordinal, 0, detail.into())
                 });
             }
+            // Country zero's member is named by its own reserved naming read.
+            let reserved_renamed = changes.rows_changed[TableId::ReservedCountryNaming.index()]
+                && manpower.rows.iter().any(|row| row.country == 0);
             if dirty.affects(Kind::Manpower, faction)
                 || joins.identities_changed
+                || reserved_renamed
                 || !joins.joined
                 || !owner_known
             {
@@ -1046,6 +1093,7 @@ impl Prepared {
                 self.goals(frame, faction, goals_absent, cat.as_deref(), !continues);
             }
         }
+        self.witnessed = witnessed;
         self.previous = Some(Previous::read(frame));
         self.ready = true;
         self.last = Some(frame.hour);
@@ -1100,7 +1148,13 @@ impl Prepared {
             accounts_joined,
         }
     }
-    fn changed(&self, frame: &DecodedFrame, changes: &FrameChanges, continues: bool) -> Changed {
+    fn changed(
+        &self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        continues: bool,
+        witnessed: &BTreeSet<u64>,
+    ) -> Changed {
         macro_rules! dirty {
             ($table:ident) => {
                 self.dirty::<tables::$table>(frame, changes, TableId::$table, continues)
@@ -1134,6 +1188,7 @@ impl Prepared {
         Changed {
             accounts,
             owners,
+            rewitnessed: witnessed.difference(&self.witnessed).copied().collect(),
             refresh,
             programme_operands,
         }

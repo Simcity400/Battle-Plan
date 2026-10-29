@@ -60,7 +60,11 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
-  if (!lanes.length) return <>{failure}<WidgetState kind="empty" message="No national spirits recorded yet." /><PreparedKey pending={prefix?.pending} approximate={data.approximate} /></>;
+  // Held ideas content cannot classify might be spirits: then the set is not known.
+  const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
+  if (!lanes.length) return <>{failure}{data.spans.some(span => unplaced.has(span.token) && span.firstHour <= at)
+    ? <WidgetState kind="unavailable" message="National spirits unavailable: some held ideas could not be classified." />
+    : <WidgetState kind="empty" message="No national spirits recorded yet." />}<PreparedKey pending={prefix?.pending} approximate={data.approximate} /></>;
 
   const byToken = new Map(list.map(spirit => [spirit.token, spirit]));
   // The spirits held at the moment shown, with their effects, for keyboard and screen-reader users.
@@ -70,8 +74,6 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
       tooltips.art.get(spirit.token)?.description, [], undefined, held.firstHour, Infinity))] : [];
   });
   // An unrecorded moment is not the same as holding no spirits.
-  // Held ideas content cannot classify might be spirits: then the set is not known.
-  const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
   const unclassified = data.spans.some(span => unplaced.has(span.token) && span.firstHour <= at && at <= span.lastHour);
   const description = `${dayLabel(Math.floor(at))}: ${inSpans(data.approximate, Math.floor(at)) ? 'approximate national spirit holdings' : pendingAt(prefix, Math.floor(at)) ? 'national spirits still being prepared'
     : inSpans(data.unobserved, Math.floor(at)) ? 'national spirits not recorded'

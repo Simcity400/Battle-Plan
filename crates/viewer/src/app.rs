@@ -2077,6 +2077,11 @@ impl Viewer {
         warnings
     }
 
+    /// The shown hour's notice that part of its snow and mud is unknown, which the map hatches.
+    pub(crate) fn weather_notice(&self) -> Option<&'static str> {
+        self.shown.as_ref().and_then(|shown| shown.snow.0.note())
+    }
+
     /// The diagnostics an embedded map shows over itself: the hour's stats and
     /// its data limitations, collapsed behind their count.
     pub(crate) fn diagnostics_ui(&mut self, ui: &mut egui::Ui, max_height: f32) {
@@ -5264,7 +5269,15 @@ impl Viewer {
             .start_pick
             .choosing()
             .then(|| start_prompt(self.camera_mode));
-        if software || diagnostics || partial || scoped || start_prompt.is_some() {
+        // Hatched snow and mud say why in ordinary viewing too.
+        let weather = self.weather_notice();
+        if software
+            || diagnostics
+            || partial
+            || scoped
+            || start_prompt.is_some()
+            || weather.is_some()
+        {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
@@ -5279,6 +5292,9 @@ impl Viewer {
                     }
                     if scoped {
                         capture_mode_notice(ui, document.playback.replay());
+                    }
+                    if let Some(weather) = weather {
+                        ui.colored_label(egui::Color32::YELLOW, format!("{weather}."));
                     }
                     if software {
                         ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);

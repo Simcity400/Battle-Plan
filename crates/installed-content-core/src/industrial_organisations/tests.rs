@@ -26,6 +26,51 @@ fn display_projection_keeps_name_initial_trait_and_include_overrides() {
     assert!(database.notes.is_empty(), "{:?}", database.notes);
 }
 
+/// The include pass visits templates once in creation order, as the trait
+/// tree does: an include created later is copied before it inherits anything.
+#[test]
+fn display_fields_follow_the_one_pass_include_order() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut database = Database::default();
+    let names = KeyNames::default();
+    database
+        .read_file(
+            b"a={include=b} b={include=c} c={name=C_NAME initial_trait={name=C_TRAIT}} d={include=b} e={include=missing name=E_NAME}",
+            &names,
+        )
+        .unwrap();
+    let inherited = (b"C_NAME".to_vec(), Some(b"C_TRAIT".to_vec()));
+    assert_eq!(database.display_fields(b"b").unwrap(), inherited);
+    assert_eq!(database.display_fields(b"a").unwrap(), (Vec::new(), None));
+    assert_eq!(database.display_fields(b"D").unwrap(), inherited);
+    // An include naming no template is skipped.
+    assert_eq!(
+        database.display_fields(b"e").unwrap(),
+        (b"E_NAME".to_vec(), None)
+    );
+    database.read_file(b"self={include=SELF}", &names).unwrap();
+    assert!(
+        database
+            .display_fields(b"self")
+            .unwrap_err()
+            .contains("includes itself")
+    );
+}
+
+/// The organisations file loop ends at a closing brace, as the trait tree's does.
+#[test]
+fn a_stray_closing_brace_ends_the_organisations_file() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut database = Database::default();
+    database
+        .read_file(b"kept={name=KEPT} } after={name=AFTER}", &KeyNames::default())
+        .unwrap();
+    assert_eq!(database.template(b"kept").unwrap().name, b"KEPT");
+    assert!(database.template(b"after").is_err());
+}
+
 #[test]
 fn visibility_projection_keeps_first_definition_and_include_delete_tokens() {
     engine_executable::executable_tables::initialize_for_tests()

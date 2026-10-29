@@ -68,7 +68,16 @@ export function sourceParts(reserve: HolderReserve): { source: string | null; am
  * whose source does not resolve at their hour, kept only where such amounts occur. Built from
  * the dated segments themselves, so an amount whose source covers only part of its run keeps
  * the rest in the unresolved band. */
-export function holderSourceBands(reply: OccupationReserveReply, holder: string): { sources: (string | null)[]; bands: Run[][] } {
+/** A native holder's reserve key at each hour: one key throughout, or its dated TAG@slot aliases. */
+export type HolderKeys = string | readonly { key: string; firstHour: number; lastHour: number }[];
+
+/** The key `keys` hold at `hour`; null outside every alias. */
+export const holderKeyAt = (keys: HolderKeys, hour: number): string | null => typeof keys === 'string' ? keys
+  : keys.find(run => run.firstHour <= hour && hour <= run.lastHour)?.key ?? null;
+
+const keyNames = (keys: HolderKeys) => typeof keys === 'string' ? [keys] : [...new Set(keys.map(run => run.key))];
+
+export function holderSourceBands(reply: OccupationReserveReply, holder: HolderKeys): { sources: (string | null)[]; bands: Run[][] } {
   const resolved = [...new Set(Object.values(reply.sources))];
   const bands = holderBands(reply, holder, [...resolved, null]);
   return bands.at(-1)!.some(run => run.value > 0) ? { sources: [...resolved, null], bands } : { sources: resolved, bands: bands.slice(0, -1) };
@@ -76,14 +85,18 @@ export function holderSourceBands(reply: OccupationReserveReply, holder: string)
 
 /** One holder's positive reserve from each source over the window, as stacked chart runs
  * (one per source, in the order of `sources`); 0 where an admitted holder has no entry from it. */
-export function holderBands(reply: OccupationReserveReply, holder: string, sources: readonly (string | null)[]): Run[][] {
+export function holderBands(reply: OccupationReserveReply, holder: HolderKeys, sources: readonly (string | null)[]): Run[][] {
   const hours = new Set<number>();
-  for (const series of reply.window.series) if (series.name.startsWith(`${holder}|`)) for (const run of series.runs) { hours.add(run[0]); hours.add(run[1] + 1); }
+  const names = keyNames(holder);
+  for (const series of reply.window.series) if (names.some(name => series.name.startsWith(`${name}|`))) for (const run of series.runs) { hours.add(run[0]); hours.add(run[1] + 1); }
+  // Each hour reads the alias held then, so no span crosses from one alias to the next.
+  if (typeof holder !== 'string') for (const run of holder) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
   const stops = [...hours].sort((a, b) => a - b);
   const bands = sources.map(() => [] as Run[]);
   for (let index = 0; index + 1 < stops.length; index++) {
     const first = stops[index], last = stops[index + 1] - 1;
-    const at = reservesAt(reply, first)?.holders.find(item => item.holder === holder);
+    const key = holderKeyAt(holder, first);
+    const at = key === null ? undefined : reservesAt(reply, first)?.holders.find(item => item.holder === key);
     if (!at) continue;
     const parts = new Map(sourceParts(at).map(part => [part.source, part.amount]));
     sources.forEach((source, band) => {
@@ -100,14 +113,21 @@ export function holderBands(reply: OccupationReserveReply, holder: string, sourc
 /** Each of `holder`'s source countries at an hour one of its entries names it, so the tag is
  * proven its own then: `sample` (the drill's look hour) while named then, else its latest
  * naming up to `hour`, else its first. A source's one colour and legend name are read there. */
-export function sourceWitnesses(reply: OccupationReserveReply, holder: string, hour: number, sample: number): HolderAt[] {
+export function sourceWitnesses(reply: OccupationReserveReply, holder: HolderKeys, hour: number, sample: number): HolderAt[] {
   const named = new Map<string, Span[]>();
   for (const series of reply.window.series) {
     const [owner, , field] = series.name.split('|');
-    if (owner !== holder || field !== 'source') continue;
+    if (!keyNames(holder).includes(owner) || field !== 'source') continue;
     for (const run of series.runs) {
       const source = reply.sources[run[2]];
-      if (source) named.set(source, [...named.get(source) ?? [], { firstHour: run[0], lastHour: run[1] }]);
+      if (!source) continue;
+      // An alias's entries name its sources only while it is the native holder's.
+      const spans = typeof holder === 'string' ? [{ firstHour: run[0], lastHour: run[1] }]
+        : holder.filter(alias => alias.key === owner).flatMap(alias => {
+          const firstHour = Math.max(run[0], alias.firstHour), lastHour = Math.min(run[1], alias.lastHour);
+          return firstHour <= lastHour ? [{ firstHour, lastHour }] : [];
+        });
+      if (spans.length) named.set(source, [...named.get(source) ?? [], ...spans]);
     }
   }
   return [...named].map(([source, spans]) => {

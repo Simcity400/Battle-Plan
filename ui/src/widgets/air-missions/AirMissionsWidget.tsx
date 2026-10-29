@@ -22,7 +22,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useCountryNamesAt, nameKey } from '../../dashboard/countryNamesAt';
 import { DEFAULT_SORT } from './definition';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
-import { efficiencyText, missionRowsAt, missionTooltip, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
+import { efficiencyText, missionRowsAt, missionTooltip, openWings, regionRows, shownMissions, theatreRegions, validateAirWings } from './airMissionsData';
 import type { AirWing, AirWingsReply, MissionRow } from './airMissionsData';
 import { useAirMissions } from './useAirMissions';
 import { useAirTheatres } from './useAirTheatres';
@@ -107,7 +107,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     : <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
       rowKey={rowKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} cellBars={options.cellBars === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} menu={menu}
-      hoursPerSecond={hoursPerSecond} onRowClick={row => { setRegion(row); dispatch({ type: 'open', breakdown: 'wings', hour, playing: widget.time.mode === 'follow', playhead: hour }); }}
+      hoursPerSecond={hoursPerSecond} onRowClick={row => { setRegion(row); dispatch(openWings(rowsHour, hour, widget.time.mode === 'follow')); }}
       parity={{ complete: true, item: row => ({ region: row.region, planes: [...row.planes].map(([id, planes]) => [id, planes.toString()]), wings: row.wings?.toString() ?? null }) }} />;
   return <div ref={anchor} className="air-missions">
     {pill}

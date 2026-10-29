@@ -36,7 +36,7 @@ fn largest_province(map: &MapData) -> u32 {
 fn grid_with(
     largest: u32,
     frame: &DecodedFrame,
-    average: impl FnOnce(&[[u8; 2]]) -> io::Result<(u32, u32, Vec<u8>)>,
+    average: impl FnOnce(&[[u8; 2]], &[bool]) -> io::Result<(u32, u32, Vec<u8>, Vec<u8>)>,
 ) -> io::Result<SnowMud> {
     let (recorded, complete): (&[WeatherProvinceRow], bool) =
         match &*frame.tables[TableId::WeatherProvinces.index()] {
@@ -66,6 +66,8 @@ fn grid_with(
         .checked_add(1)
         .ok_or_else(|| invalid("province count overflow"))?;
     let mut bytes = vec![[0_u8; 2]; provinces];
+    // A whole table observes the provinces it holds no row for; a partial one does not.
+    let mut known = vec![complete; provinces];
     let mut province_snow = vec![None; provinces];
     let mut summary = Summary {
         provinces: recorded.len(),
@@ -81,13 +83,14 @@ fn grid_with(
     } in recorded
     {
         bytes[id as usize] = [display_snow, display_mud];
+        known[id as usize] = true;
         province_snow[id as usize] = Some(snow);
         summary.with_snow += usize::from(snow > 0);
         summary.shown_snow += usize::from(display_snow != 0);
         summary.shown_mud += usize::from(display_mud != 0);
     }
     let start = Instant::now();
-    let (width, height, mut cells) = average(&bytes)?;
+    let (width, height, mut cells, mut unknown) = average(&bytes, &known)?;
     let edge_cells = (width as usize)
         .checked_add(height as usize)
         .and_then(|count| count.checked_sub(1))
@@ -124,6 +127,7 @@ fn grid_with(
         cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
             &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
         );
+        unknown[cell as usize] = u8::from(display.is_none());
     }
     let texels: Vec<u8> = cells
         .chunks_exact(2)
@@ -133,6 +137,7 @@ fn grid_with(
         width,
         height,
         texels: texels.into(),
+        unknown: unknown.into(),
         province_snow: province_snow.into(),
         post_factors: None,
         build: start.elapsed(),
@@ -144,7 +149,8 @@ fn rasterise(
     image: &ProvinceMap<'_>,
     perm_snow: &[bool],
     bytes: &[[u8; 2]],
-) -> io::Result<(u32, u32, Vec<u8>)> {
+    known: &[bool],
+) -> io::Result<(u32, u32, Vec<u8>, Vec<u8>)> {
     image.validate()?;
     if perm_snow.len() != image.ids.len() {
         return Err(invalid(format!(
@@ -156,9 +162,11 @@ fn rasterise(
     let [grid_width, grid_height] = grid_size(image.width, image.height);
     let area = SNOW_MUD_BLOCK * SNOW_MUD_BLOCK;
     let mut cells = vec![0u8; grid_width as usize * grid_height as usize * 2];
+    let mut unknown = vec![0u8; grid_width as usize * grid_height as usize];
     for cell_z in 0..grid_height {
         for cell_x in 0..grid_width {
             let (mut snow, mut mud) = (0u32, 0u32);
+            let mut unobserved = false;
             for step_z in 0..SNOW_MUD_BLOCK {
                 let world_z = cell_z * SNOW_MUD_BLOCK + step_z;
                 for step_x in 0..SNOW_MUD_BLOCK {
@@ -167,6 +175,7 @@ fn rasterise(
                     let at = row as usize * image.width as usize + column as usize;
                     let [province_snow, province_mud] =
                         bytes.get(image.ids[at] as usize).copied().unwrap_or([0; 2]);
+                    unobserved |= known.get(image.ids[at] as usize) != Some(&true);
                     snow += u32::from(if perm_snow[at] {
                         u8::MAX
                     } else {
@@ -175,11 +184,13 @@ fn rasterise(
                     mud += u32::from(province_mud);
                 }
             }
-            let at = (cell_z as usize * grid_width as usize + cell_x as usize) * 2;
-            cells[at..at + 2].copy_from_slice(&[(snow / area) as u8, (mud / area) as u8]);
+            let cell = cell_z as usize * grid_width as usize + cell_x as usize;
+            cells[cell * 2..cell * 2 + 2]
+                .copy_from_slice(&[(snow / area) as u8, (mud / area) as u8]);
+            unknown[cell] = u8::from(unobserved);
         }
     }
-    Ok((grid_width, grid_height, cells))
+    Ok((grid_width, grid_height, cells, unknown))
 }
 pub fn snow(
     map: &MapData,
@@ -192,8 +203,8 @@ pub fn snow(
         height: map.height,
         ids: &map.province_ids,
     };
-    let mut out = grid_with(largest_province(map), frame, |bytes| {
-        rasterise(&image, perm, bytes)
+    let mut out = grid_with(largest_province(map), frame, |bytes, known| {
+        rasterise(&image, perm, bytes, known)
     })?;
     fn band(value: f32, low: f32, high: f32) -> f32 {
         let width = if high - low <= 0.001 {

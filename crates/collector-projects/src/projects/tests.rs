@@ -1122,6 +1122,23 @@ fn split_copy_matches_direct_walk() {
     );
 }
 
+/// A positive slot holding the reserved slot-zero object is skipped as `Reader::at` skips it:
+/// the copy stages that authentication, so the replay still reads every country.
+#[test]
+fn a_reserved_country_alias_keeps_the_split_census() {
+    use super::projects_test_kit as kit;
+    let mut bytes = kit::fixture();
+    kit::add_reserved_alias(&mut bytes);
+    let memory = kit::memory(&bytes);
+    let capacities = split_capacities();
+    let direct = kit::direct(&memory, &capacities);
+    assert_eq!(direct.programs.outcome, Outcome::Rows { len: 1 });
+    let (split, report, _) = kit::split(&memory, &capacities);
+    assert!(report.raw_ok);
+    kit::assert_matches_direct(&split, &direct);
+    assert_eq!(split.breakthroughs.outcome, Outcome::Rows { len: 1 });
+}
+
 #[test]
 fn projects_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND

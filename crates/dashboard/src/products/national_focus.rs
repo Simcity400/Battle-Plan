@@ -1,7 +1,8 @@
 //! Compact focus history. Dates bound observed completions, never pre-recording events.
 use super::{CountryParams, LoadContext, Product, artwork};
 use crate::{
-    Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
+    Artwork, FocusDatabase, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment,
+    Source,
     metadata::{CountryKeys, validate_campaign},
 };
 use replay::container::Replay;
@@ -620,17 +621,23 @@ pub struct NationalFocus;
 #[serde(rename_all = "camelCase")]
 pub struct FocusReply {
     pub history: FocusHistory,
+    /// The national focuses' (completed and current) authored durations.
     pub artwork: Vec<Artwork>,
-    /// Country-independent text only; scoped titles still require dated reads.
+    /// The national focuses' country-independent text only; scoped titles
+    /// still require dated reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub static_text: Option<Vec<Artwork>>,
+    /// The continuous focuses' country-independent text and authored
+    /// durations, looked up in the continuous database.
+    pub continuous_static_text: Vec<Artwork>,
     pub warnings: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct State {
-    artwork: Option<artwork::Context>,
+    national: Option<artwork::Context>,
+    continuous: Option<artwork::Context>,
     history: FocusCache,
 }
 
@@ -683,7 +690,11 @@ impl Product for NationalFocus {
         let state = source.state::<State>();
         let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
         let replay = source.replay();
-        let State { history, artwork } = &mut *state;
+        let State {
+            history,
+            national,
+            continuous,
+        } = &mut *state;
         let mut scan = || {
             history.get_observing(
                 &replay,
@@ -693,17 +704,35 @@ impl Product for NationalFocus {
                 &mut |frame| super::focus_artwork::retain_basic(source, frame, cancelled),
             )
         };
-        let (history, progress_stopped) = if artwork.is_none() {
-            prepare_while_scanning(cancelled, scan, || {
-                artwork::ensure(artwork, source, content, artwork::Kind::Focus).map(|_| ())
-            })?
+        let prepared = national.is_some() && continuous.is_some();
+        let mut prepare = || {
+            artwork::ensure(
+                national,
+                source,
+                content,
+                artwork::Kind::Focus(FocusDatabase::National),
+            )?;
+            artwork::ensure(
+                continuous,
+                source,
+                content,
+                artwork::Kind::Focus(FocusDatabase::Continuous),
+            )
+            .map(|_| ())
+        };
+        let (history, progress_stopped) = if !prepared {
+            prepare_while_scanning(cancelled, scan, prepare)?
         } else {
             let scanned = scan()?;
-            artwork::ensure(artwork, source, content, artwork::Kind::Focus)?;
+            prepare()?;
             scanned
         };
-        let art = artwork.as_mut().expect("focus artwork context prepared");
-        let tokens = history
+        let national = national.as_mut().expect("national focus context prepared");
+        let continuous = continuous
+            .as_mut()
+            .expect("continuous focus context prepared");
+        // Completed and current focuses are national; the continuous focus is continuous.
+        let national_tokens = history
             .segments
             .iter()
             .flat_map(|segment| {
@@ -713,11 +742,17 @@ impl Product for NationalFocus {
                     .iter()
                     .map(|r| r.token.as_str())
                     .chain(segment.order.current.as_deref())
-                    .chain(segment.order.continuous.as_deref())
             })
             .collect::<BTreeSet<_>>();
-        let (static_text, _) = art.text_catalogue(tokens.clone(), cancelled)?;
-        let (artwork, mut warnings) = art.focus_metadata(tokens, cancelled)?;
+        let continuous_tokens = history
+            .segments
+            .iter()
+            .filter_map(|segment| segment.order.continuous.as_deref())
+            .collect::<BTreeSet<_>>();
+        let (static_text, _) = national.text_catalogue(national_tokens.clone(), cancelled)?;
+        let (continuous_static_text, _) =
+            continuous.text_catalogue(continuous_tokens, cancelled)?;
+        let (artwork, mut warnings) = national.focus_metadata(national_tokens, cancelled)?;
         if let Some(hour) = progress_stopped {
             warnings.push(format!(
                 "Focus progress is too large to keep in full; it is unavailable from hour {hour}."
@@ -728,6 +763,7 @@ impl Product for NationalFocus {
             history,
             artwork,
             static_text: Some(static_text),
+            continuous_static_text,
             warnings,
         };
         super::check_reply_budget(&reply)?;

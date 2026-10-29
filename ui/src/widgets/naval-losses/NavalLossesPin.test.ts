@@ -159,7 +159,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       assert.ok(state.detail!.state === undefined);
       assert.equal(state.picker!.selectedTag, tag, 'restoration opens the saved native actor instead of a multi-holder chooser');
       assert.deepEqual(new Set(state.detail!.mix!.bands![0].map(run => run.value)), new Set([40]));
-      assert.deepEqual(new Set(state.detail!.mix!.bands![1].map(run => run.value)), new Set([0]), 'signed corrections retain no positive geometry');
+      assert.deepEqual(new Set(state.detail!.mix!.bands![1].map(run => run.value)), new Set([-3]), 'a signed correction is drawn below zero, as recorded');
       assert.deepEqual(state.detail!.tooltipTags!(102, ['reused alias']), ['old B']);
       const tip = [...state.detail!.tooltip(tag, hour, tag, new Map(), () => alias => ({ name: alias }))!][0];
       assert.equal(tip.rows!.find(row => row.label === 'Ships')!.value, '40');

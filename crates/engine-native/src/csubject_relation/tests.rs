@@ -195,6 +195,45 @@ fn a_retired_subject_counts_while_it_is_installed() {
     }
 }
 
+/// A failed installation read refuses the walk; only the overlord's visit could emit the subject.
+#[test]
+fn an_unreadable_installation_slot_is_not_an_uninstalled_subject() {
+    struct Hole<'a> {
+        bytes: &'a [u8],
+        hole: std::ops::Range<usize>,
+    }
+    impl Memory for Hole<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            !(address < self.hole.end && self.hole.start < address.saturating_add(output.len()))
+                && SliceMemory {
+                    base: 0,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+        }
+    }
+    let mut bytes = fixture();
+    bytes[RELATION + crelation::RETIRED] = 1;
+    let mut rows = [Row::default(); 2];
+    let mut names = [0; 20];
+    assert_eq!(
+        capture(&bytes, false, &mut rows, &mut names).outcome,
+        Outcome::Rows { len: 1 }
+    );
+    // The overlord's (slot 1) status toward its subject (slot 2).
+    let slot = status(0, 2) + crelation_status::SUBJECT_RELATION;
+    let memory = Hole {
+        bytes: &bytes,
+        hole: slot..slot + 8,
+    };
+    assert_eq!(
+        walk(&memory, 0, GS, &mut rows, &mut names).outcome,
+        Outcome::Unavailable {
+            reason: "subject field unreadable or address overflow"
+        }
+    );
+}
+
 #[test]
 fn capacity_omits_whole_rows_and_reports_exact_required_bytes() {
     let bytes = fixture();
@@ -426,7 +465,7 @@ fn overlord_census_of(countries: usize, is_subject: impl Fn(usize) -> bool) -> (
         let at = country(slot);
         p64(&mut space.bytes, at, ccountry::VTABLE_RVA as u64);
         p32(&mut space.bytes, at + ccountry::ID, slot as u32);
-        *root = space.alloc(0x290);
+        *root = space.alloc(cdiplomacy_status::COUNTRY + 8);
         p64(
             &mut space.bytes,
             at + ccountry::DIPLOMACY_STATUS,

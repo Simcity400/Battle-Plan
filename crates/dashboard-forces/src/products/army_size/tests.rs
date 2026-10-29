@@ -620,6 +620,67 @@ fn army_size_recording_availability_and_cancel_are_explicit() {
     );
 }
 
+/// Before preparation reaches the hours recording a measure, an hour the
+/// manifest samples without it leaves it unknown, not absent, and an exact
+/// window read finds its recorded values.
+#[test]
+fn army_manifest_keeps_a_measure_its_sampled_hour_lacks_unknown_while_preparing() {
+    use crate::products::parts_race_prepared::test_fixtures::{frame as forces, tag};
+    use dashboard_base::test_fixtures::continuation_records;
+    let mut sampled = forces(2, 2);
+    *sampled.tables[TableId::DivisionLandInputs.index()] = TableView::Unavailable {
+        reason: "not read at this hour".into(),
+    };
+    let first =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![forces(0, 2), forces(1, 2)])])
+            .unwrap();
+    let replay = first
+        .append(&[continuation_records(&first, 1, vec![sampled, forces(3, 2)])])
+        .unwrap();
+    let (source, root) = dashboard_base::test_fixtures::file_source(replay);
+    let context = LoadContext { content: None };
+    let cancel = AtomicBool::new(false);
+    let mut request = ArmySizeParams {
+        template_at: None,
+        branch_id: "1".into(),
+        tags: vec![tag(0)],
+        top: None,
+        measure: ArmyMeasure::Divisions,
+        count_for: ArmyAttribution::Owner,
+        by_type: false,
+        window: None,
+    };
+    let manifest = prepared::query(&source, &request, &context, &cancel)
+        .unwrap()
+        .unwrap();
+    assert!(manifest.measures.contains(&ArmyMeasure::Divisions));
+    assert!(
+        !manifest.measures.contains(&ArmyMeasure::Manpower),
+        "the sampled hour does not read it"
+    );
+    assert!(
+        manifest.unknown_measures.contains(&ArmyMeasure::Manpower),
+        "nor does it prove the recording lacks it"
+    );
+    request.measure = ArmyMeasure::Manpower;
+    request.window = Some(0);
+    let window = prepared::query(&source, &request, &context, &cancel)
+        .unwrap()
+        .unwrap();
+    assert!(window.measures.contains(&ArmyMeasure::Manpower));
+    assert!(window.series.iter().any(|series| !series.runs.is_empty()));
+    let whole = ArmySize::load(&source, &request, &context, &cancel).unwrap();
+    assert!(whole.measures.contains(&ArmyMeasure::Manpower));
+    assert!(
+        whole.unknown_measures.is_empty(),
+        "a whole read leaves nothing unknown"
+    );
+    let (store, _) = dashboard_base::prepared::files(&source, None).unwrap();
+    let _ = store.clear();
+    drop(source);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 #[ignore = "large transport fixture; filtered explicit run only"]
 fn army_size_refuses_reply_budget() {

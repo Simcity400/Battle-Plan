@@ -355,7 +355,7 @@ mod tests {
         // A later read that stores every component replaces a packed colour, in the same
         // body or a later one; a partial read leaves the packed refusal.
         let packed = parse(
-            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1}} late={color=16711680} LATE={color={0 0 1 0.5}}}",
+            b"state_categories={isle={color=16711680 color={0 1 0}} part={color=16711680 color={0 1 x}} late={color=16711680} LATE={color={0 0 1 0.5}}}",
             &KeyNames::default(),
         )
         .unwrap();

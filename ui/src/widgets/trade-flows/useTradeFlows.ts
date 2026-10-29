@@ -9,7 +9,7 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import { worldFilter, resolveCountries } from '../../dashboard/groups';
 import type { ResolvedCountries } from '../../dashboard/groups';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
-import { loadProduct, useProduct } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
@@ -63,8 +63,9 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const marketReason = marketFilter?.reason ?? (marketView && !all && groups.data && marketFilter?.known && !marketTags.length ? 'Selected countries are unavailable at this time.' : null);
   const marketReady = track && marketView && !marketReason && (all || !!groups.data && marketTags.length > 0)
     && selectionHour >= track.branch.firstHour && selectionHour <= track.branch.lastHour;
-  const market = useProduct<MarketLendLeaseReply>(runtime.client, marketReady ? marketRequest(track, selectionHour, marketTags) : null,
-    active, validateMarketReply, track?.source);
+  // Playback's newest hour is read once the read in flight lands; each reply is dated.
+  const market = useFollowedProduct<MarketLendLeaseReply>(runtime.client, marketReady ? marketRequest(track, selectionHour, marketTags) : null,
+    ['hour'], active, validateMarketReply, track?.source);
   const prepared = !!runtime.client.preparedQuery;
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const view: { from: number; to: number; width?: number } = parity?.requested ? { from: first, to: last } : viewport?.key === key ? viewport : { from: first, to: last, width: 1 };
@@ -92,8 +93,10 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const detailHour = detail?.key === key ? detail.hour : null;
   const exactPage = prepared ? { basis: first, measure: widget.options?.measure ?? 'current', ...selection, from: hour, to: hour, width: 1,
     hours: [hour, last, ...(detailHour === null ? [] : [detailHour])] } : undefined;
-  const reached = useProduct<PreparedTradeReply>(runtime.client, prepared && ready ? tradeFlowsRequest(track, tags, exactPage) : null, active,
-    value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  // The hours last read stay merged in while playback's newest hours are read.
+  const reached = useFollowedProduct<PreparedTradeReply>(runtime.client, prepared && ready ? tradeFlowsRequest(track, tags, exactPage) : null,
+    ['from', 'to', 'hours'], active, value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
+  const answered = reached.data && reached.moment ? JSON.parse(reached.moment) as [number, number, number[] | null] : undefined;
   const pointed = useProduct<PreparedTradeReply>(runtime.client, prepared && ready && pointHour !== null ? tradeFlowsRequest(track, tags,
     { ...exactPage, from: pointHour, to: pointHour, hours: [pointHour, last] }) : null, active,
     value => validateTradeFlowsReply(value) as PreparedTradeReply, track?.source);
@@ -143,7 +146,8 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
     onSummaryView: prepared ? onSummaryView : undefined, onHover: prepared ? onHover : undefined,
     onReachedHour: prepared ? onReachedHour : undefined,
     navigateFlows: prepared ? navigateFlows : undefined, keyboardHour: keyboard?.key === key ? keyboard.hour : undefined,
-    keyboardRevision: keyboard?.key === key ? keyboard.revision : undefined, pointHour, page: page ? { ...page, hours: [hour, last, ...(pointHour === null ? [] : [pointHour])] } : undefined,
+    keyboardRevision: keyboard?.key === key ? keyboard.revision : undefined, pointHour,
+    reachedHour: answered?.[0], reachedDetail: answered?.[2]?.[2] as number | undefined, page: page ? { ...page, hours: [hour, last, ...(pointHour === null ? [] : [pointHour])] } : undefined,
     parityPrepare: parity?.prepare, parityComplete: !!product.data && (!prepared || product.data.coverage?.complete === true) && !!parity?.requested };
 
 }

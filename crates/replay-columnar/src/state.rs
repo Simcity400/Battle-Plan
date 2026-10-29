@@ -5,7 +5,7 @@
 
 use crate::{
     invalid,
-    leaf::{Int, Le, Writer},
+    leaf::{Int, Le, SLOT_WORDS, Writer},
     section::{PatchItems, Patches},
 };
 use std::{collections::HashMap, io};
@@ -36,15 +36,18 @@ pub enum Kind {
     Opaque,
 }
 
-/// Slots, one bit each; bits past the end are clear.
+/// Slots, one bit each; bits past the end are clear. Every bit names a `u32` slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bits {
     words: Vec<u64>,
 }
 
 impl Bits {
-    pub fn from_words(words: Vec<u64>) -> Self {
-        Self { words }
+    pub fn from_words(words: Vec<u64>) -> io::Result<Self> {
+        if words.len() > SLOT_WORDS {
+            return Err(invalid("Slot bits pass the last slot"));
+        }
+        Ok(Self { words })
     }
 
     pub fn words(&self) -> &[u64] {
@@ -874,6 +877,9 @@ impl Table {
     /// follow, one [`Self::set`] per column, before the table is read.
     pub fn with_rows(kinds: &[Kind], slots: usize, live: Bits, keys: &[u128]) -> io::Result<Self> {
         let mut table = Self::new(kinds)?;
+        if slots.div_ceil(64) > SLOT_WORDS {
+            return Err(invalid("Restart table's slot count passes the last slot"));
+        }
         if live.count() != keys.len() {
             return Err(invalid("Restart table's keys differ from its live slots"));
         }

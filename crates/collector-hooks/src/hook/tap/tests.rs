@@ -1364,7 +1364,7 @@ fn duration_add_operands_survive_the_tap_and_reach_the_selected_scalar_writer() 
 fn decision_sparse_writer_spans_are_complete_and_stack_independent() {
     for (site, span) in engine_events::script_event_sites::decisions::TAPS
         .into_iter()
-        .zip([6, 5, 7, 7, 7, 7, 8, 8, 8, 8, 8, 7, 7, 7, 6, 5, 6, 7, 7, 6])
+        .zip([6, 5, 7, 7, 7, 7, 8, 8, 8, 8, 8, 7, 7, 7, 6, 5, 6, 8, 7, 6])
     {
         assert_eq!(instruction_span(&site.sentinel), Ok(span), "{}", site.name);
     }

@@ -12,7 +12,7 @@ test('eager focus and research parity models retain complete exact rows without 
     completedByHour: ordinal === 0 ? null : 100 + ordinal }));
   const focus: FocusReply = { history: { segments: [{ firstHour: 100, lastHour: 11000,
     order: { completed, current: 'unfinished_mod_focus', continuous: null, paused: true } }], progress: [] },
-    artwork: [], staticText: [{ token: 'mod_focus_0', name: '', description: null, baseDurationDays: null, icon: null }], warnings: [] };
+    artwork: [], staticText: [{ token: 'mod_focus_0', name: '', description: null, baseDurationDays: null, icon: null }], continuousStaticText: [], warnings: [] };
   const entries = Array.from({ length: 5000 }, (_, index) => ({ token: `mod_technology_${index % 3}`, technologyHandle: index,
     continuityStartHour: 100, level: index % 7, firstObservedHour: 100 + index * 2, startedAfterHour: 99 + index * 2,
     lastObservedHour: 101 + index * 2, endedByHour: 102 + index * 2, outcomeObservedHour: 102 + index * 2, outcome: 'completed' as const }));
@@ -40,7 +40,8 @@ test('eager focus and research parity models retain complete exact rows without 
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _tag, wanted, _active, details) => {
       globalThis.__eagerParityModels.wanted = wanted;
       if (details.length) throw new Error('Unrequested focus descriptions');
-      return { read: new Map(), warnings: [], details: new Map() }; };`,
+      return { read: new Map(), warnings: [], details: new Map() }; };
+      export const useContinuousFocusArtwork = () => ({ read: new Map(), warnings: [], details: new Map() });`,
     '/research/useTechnologyArtwork.ts': `export const useTechnologyArtwork = (_client, _track, tokens) => {
       globalThis.__eagerParityModels.imageTokens = tokens; return {artwork: new Map(), warnings: []}; };`,
   };

@@ -1379,8 +1379,6 @@ pub use strategic_action::read_inputs as strategic_redeployment_inputs;
 pub use strategic_action::{StrategicAction, StrategicActionFailure, StrategicRedeploymentInputs};
 
 mod movement;
-#[cfg(feature = "movement_witness")]
-pub mod movement_witness;
 pub mod organisation_movement;
 pub use movement::{
     MovementPacket, capture_movement_inputs, capture_movement_inputs_with_combat_references,

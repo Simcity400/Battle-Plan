@@ -273,12 +273,14 @@ fn history_changed(status: usize, field: usize) {
     // The verified delivery writer authenticates its status receiver. Only an
     // event for an uncached, previously zero history needs identity operands.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let owner = status
+    let Some(diplomacy) = status
         .checked_add(engine_native::crelation_status::DIPLOMACY_STATUS)
         .and_then(|p| engine_native::read::<u64>(&memory, p))
-        .and_then(|diplomacy| store.history_owners.get(&(diplomacy as usize)))
-        .copied();
-    let Some((_, country)) = owner else {
+    else {
+        refuse();
+        return;
+    };
+    let Some(&(_, country)) = store.history_owners.get(&(diplomacy as usize)) else {
         // This status belongs to a country outside every recorded war roster.
         return;
     };
@@ -2049,6 +2051,46 @@ mod tests {
         assert_eq!(publish(store).unwrap()[2].len(), 0);
         assert!(!LOST.load(Ordering::SeqCst));
         *slot = None;
+    }
+
+    #[test]
+    fn participation_delivery_event_with_an_unreadable_owner_refuses_rather_than_ignoring_it() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let mut store = Store::default();
+        history_root(&mut store, 1, 11, 0x12300);
+        store.unseen_histories.reserve(1);
+        *STORE.lock().unwrap() = Some(store);
+        LOST.store(false, Ordering::SeqCst);
+        // The lowest pages are never mapped, so the status's owner backlink is unreadable.
+        collector_test_support::with_allocations_denied(|| history_changed(0x1000, 0));
+        assert!(LOST.load(Ordering::SeqCst));
+        assert!(
+            STORE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unseen_histories
+                .is_empty()
+        );
+        // A readable owner outside every recorded roster is not an observation failure.
+        LOST.store(false, Ordering::SeqCst);
+        let mut bytes = vec![0u8; 0x800];
+        let status = bytes.as_ptr() as usize;
+        bytes[engine_native::crelation_status::DIPLOMACY_STATUS..][..8]
+            .copy_from_slice(&0x45600u64.to_le_bytes());
+        collector_test_support::with_allocations_denied(|| history_changed(status, 0));
+        assert!(!LOST.load(Ordering::SeqCst));
+        assert!(
+            STORE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .unseen_histories
+                .is_empty()
+        );
+        *STORE.lock().unwrap() = None;
     }
 
     #[test]

@@ -327,10 +327,7 @@ impl Product for FactionDetails {
         if let (Some(cat), Some(details)) = (cat.as_deref(), programme_frame.as_deref())
             && companions::programmes_need_environment(&frame, details, faction, cat)
         {
-            let mut tables = companions::PROGRAMME_TABLES.to_vec();
-            tables.extend_from_slice(crate::scripted_text::TABLES);
-            tables.sort_unstable();
-            tables.dedup();
+            let tables = selectors::programme_text_tables();
             match crate::prepared::query::progressive::frame_at(
                 source,
                 branch,
@@ -488,6 +485,18 @@ fn needs_environment(
                 .flat_map(|rows| companions::selected(rows, faction, |row| row.faction))
                 .take_while(|row| row.kind <= 2)
                 .filter_map(|row| row.token),
+        )
+        // Accounts name their completed goals through the same goal renderer.
+        .chain(
+            frame
+                .complete::<tables::FactionAccounts>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter(|row| row.kind == 0)
+                .flat_map(|row| &row.completed_goals)
+                .filter(|&&token| token != u64::MAX)
+                .map(|&token| token as u32),
         );
     for token in tokens {
         let Ok(Some(spelling)) = faction_names::template_spelling(frame, Some(token)) else {
@@ -1120,6 +1129,53 @@ mod artwork_tests {
             Some("Faction goal names need localisation")
         );
         assert!(finish_goal(&GoalLabel::default(), None).reason.is_none());
+    }
+    /// A scripted completed account goal alone selects the text environment.
+    #[test]
+    fn a_scripted_completed_account_goal_selects_the_text_environment() {
+        use replay_data::rows::{FactionAccountRow, LexicalTokenRow, TableRows};
+        use replay_frame::frame::TableView;
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (cat, _folder) = catalogue::tests::folder_catalogue(&[
+            (
+                "common/factions/goals/mod.txt",
+                "mod_plain = { name = MOD_PLAIN category = long_term }\nmod_scripted = { name = MOD_SCRIPTED category = long_term }\n",
+            ),
+            (
+                "localisation/mod_l_english.yml",
+                "\u{feff}l_english:\n MOD_PLAIN:0 \"Plain pact goal\"\n MOD_SCRIPTED:0 \"[ROOT.GetTag] pact goal\"\n",
+            ),
+        ]);
+        let definitions = installed_content_core::faction_goals::cached(&cat.content.layers).unwrap();
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(
+                ["mod_plain", "mod_scripted"]
+                    .into_iter()
+                    .zip(1..)
+                    .map(|(literal, token)| LexicalTokenRow {
+                        token,
+                        literal: literal.as_bytes().to_vec(),
+                    })
+                    .collect(),
+            ));
+        let lexical =
+            faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+        for (completed, expected) in [(vec![1, u64::MAX], false), (vec![1, 2], true)] {
+            *frame.tables[TableId::FactionAccounts.index()] =
+                TableView::Complete(TableRows::FactionAccounts(vec![FactionAccountRow {
+                    kind: 0,
+                    country: 9001,
+                    completed_goals: completed.clone(),
+                    ..Default::default()
+                }]));
+            assert_eq!(
+                needs_environment(&frame, 7, &cat, &definitions, &lexical),
+                expected,
+                "{completed:?}"
+            );
+        }
     }
     #[test]
     fn goal_labels_without_content_keep_the_token_and_the_detail_refusal() {

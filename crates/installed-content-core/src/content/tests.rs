@@ -362,6 +362,39 @@ fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
     );
 }
 
+/// A directory lists by its loader's own raw suffix: a `txt` filter lists `footxt` as well,
+/// the `.txt` most loaders pass does not, and neither folds case.
+#[test]
+fn a_database_directory_filters_by_its_loaders_raw_suffix() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_raw_suffix_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let directory = root.join("gfx/train_gfx_database");
+    fs::create_dir_all(directory.join("sub")).unwrap();
+    for name in ["a.txt", "footxt", "upper.TXT", "b.yml", "sub/c.txt"] {
+        fs::write(directory.join(name), b"synthetic").unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let names = |suffix: &str| {
+        layers
+            .directory_files("gfx/train_gfx_database", suffix)
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names("txt"),
+        ["gfx/train_gfx_database/a.txt", "gfx/train_gfx_database/footxt"]
+    );
+    assert_eq!(names(".txt"), ["gfx/train_gfx_database/a.txt"]);
+    drop(layers);
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn coverage_is_closed_and_paths_cannot_escape_the_layer() {
     for path in [
@@ -2426,6 +2459,198 @@ fn a_covered_folder_file_gone_or_appearing_after_verification_is_a_change() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+/// A directory junction at `link` to `target`; making one needs no privilege.
+#[cfg(windows)]
+pub(super) fn junction(link: &Path, target: &Path) {
+    let native = |path: &Path| path.components().collect::<PathBuf>();
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(native(link))
+        .arg(native(target))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "mklink /J {} {}: {}{}",
+        link.display(),
+        target.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Files below `root`, written.
+fn write_tree(root: &Path, files: &[(&str, &[u8])]) {
+    for (path, data) in files {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, data).unwrap();
+    }
+}
+
+/// The game lists a visual mod's symbolic link as a file, whatever it names, and never enters
+/// it; a recorded layer refuses it. A mod's link to a folder is refused when it mounts, as the
+/// game lists that folder's files from a folder below the link only. Entries stand for links
+/// here, so no privilege is needed.
+#[test]
+fn a_visual_mods_symbolic_links_are_listed_as_files_and_never_entered() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_symbolic_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    write_tree(
+        &root,
+        &[
+            ("gfx/interface/a.dds", b"a"),
+            ("gfx/interface/to_file.dds", b"file"),
+            ("gfx/interface/to_folder/inner.dds", b"inner"),
+        ],
+    );
+    let root = fs::canonicalize(&root).unwrap();
+    let kind = |entry: &fs::DirEntry| match entry.file_name().to_str() {
+        Some("to_file.dds" | "to_folder") => Ok(Listed::LinkedFile),
+        _ => entry_kind(entry),
+    };
+    let walk = |overlay| -> io::Result<Vec<String>> {
+        let mut listed = Vec::new();
+        walk_folder(
+            &root,
+            &root.join("gfx"),
+            overlay,
+            &kind,
+            &mut |relative, _| {
+                listed.push(String::from_utf8(relative).unwrap());
+                Ok(())
+            },
+        )?;
+        Ok(listed)
+    };
+    assert_eq!(
+        walk(true).unwrap(),
+        [
+            "gfx/interface/a.dds",
+            "gfx/interface/to_file.dds",
+            "gfx/interface/to_folder"
+        ]
+    );
+    let error = walk(false).unwrap_err().to_string();
+    assert!(
+        error.contains("content layer contains a symbolic link"),
+        "{error}"
+    );
+    let mount = |links: &[&str]| -> io::Result<Vec<String>> {
+        let kind = |entry: &fs::DirEntry| match entry.file_name().to_str() {
+            Some(name) if links.contains(&name) => Ok(Listed::LinkedFile),
+            _ => entry_kind(entry),
+        };
+        let mut files = BTreeMap::new();
+        let gfx = root.join("gfx");
+        collect_folder_with(
+            &root,
+            &gfx,
+            &mut files,
+            CoveragePolicy::default(),
+            true,
+            &kind,
+        )?;
+        Ok(files
+            .into_keys()
+            .map(|path| String::from_utf8(path).unwrap())
+            .collect())
+    };
+    assert_eq!(
+        mount(&["to_file.dds"]).unwrap(),
+        [
+            "gfx/interface/a.dds",
+            "gfx/interface/to_file.dds",
+            "gfx/interface/to_folder/inner.dds"
+        ]
+    );
+    let error = mount(&["to_folder"]).unwrap_err().to_string();
+    assert!(error.contains("names a folder"), "{error}");
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A visual mod's listed link that opens no file, such as one naming nothing, passes the read to
+/// the layers below, as the game's open does; it is no change since verification. A folder
+/// stands for it here: opening either fails.
+#[test]
+fn an_unverified_visual_mods_link_to_no_file_passes_to_the_layers_below() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_link_passes_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (base, art) = (root.join("base"), root.join("art"));
+    write_tree(&art, &[("gfx/interface/x.dds/inner.dds", b"inner")]);
+    let base = folder_of("base", &base, &[("gfx/interface/x.dds", b"base")]);
+    let mut overlay = folder_layer("art", &art, Vec::new());
+    overlay.overlay = Some(Overlay {
+        name: "Art".into(),
+        verified: false,
+    });
+    let LayerSource::Folder(art) = overlay.source.clone() else {
+        unreachable!()
+    };
+    let kind = |entry: &fs::DirEntry| match entry.file_name().to_str() {
+        Some("x.dds") => Ok(Listed::LinkedFile),
+        _ => entry_kind(entry),
+    };
+    let files = std::sync::Arc::make_mut(&mut overlay.files);
+    walk_folder(&art, &art.join("gfx"), true, &kind, &mut |relative, _| {
+        files.insert(
+            relative,
+            Member {
+                archive_entry: None,
+                size: 0,
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    overlay.finish_inventory().unwrap();
+    let mut layers = ResolvedLayers {
+        layers: vec![base, overlay],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert!(
+        layers
+            .listed_paths("gfx/interface")
+            .contains("gfx/interface/x.dds")
+    );
+    assert_eq!(layers.read("gfx/interface/x.dds").unwrap(), b"base");
+    assert!(!layers.supplied_by_visual_mod("gfx/interface/x.dds"));
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// A recorded layer still refuses a junction, which verification cannot prove the game read.
+#[cfg(windows)]
+#[test]
+fn a_recorded_folder_layer_refuses_a_junction() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_installed_content_recorded_junction_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let (layer, outside) = (root.join("layer"), root.join("outside"));
+    write_tree(&layer, &[("common/a.txt", b"a")]);
+    write_tree(&outside, &[("b.txt", b"b")]);
+    junction(&layer.join("common").join("linked"), &outside);
+    let error = ResolvedLayers::from_folders(&[(layer.as_path(), &[][..])])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("content layer contains a symbolic link"),
+        "{error}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
@@ -2911,6 +3136,64 @@ fn nested_dlc_resolves_where_it_was_gathered_and_nested_mods_are_left_out() {
     assert!(
         note.contains("enabled mod descriptor mod/nested/a.mod is not directly in mod/"),
         "{note}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+/// The game lists a mod descriptor by the byte-exact `.mod` end of its name, so a name ending
+/// otherwise is neither gathered nor found again for a recording.
+#[test]
+fn a_mod_descriptor_is_listed_by_its_exact_suffix() {
+    let root = std::env::temp_dir().join(format!("hoi4_mod_suffix_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("game/hoi4.exe", "synthetic executable");
+    write("game/common/file.txt", "vanilla");
+    fs::create_dir_all(root.join("game/dlc")).unwrap();
+    write("user/settings.txt", "language=l_english");
+    write(
+        "user/dlc_load.json",
+        r#"{"enabled_mods":["mod/upper.MOD"],"disabled_dlcs":[]}"#,
+    );
+    write(
+        "user/mod/upper.MOD",
+        r#"name="Upper" remote_file_id=7 path="layers/upper""#,
+    );
+    write("user/layers/upper/common/file.txt", "mod");
+    let gathered = gather(&GatherOptions {
+        game_dir: root.join("game"),
+        user_dir: root.join("user"),
+        cache_dir: root.join("cache"),
+        dlc_order: None,
+    })
+    .unwrap();
+    assert!(gathered.mods.is_empty());
+    assert_eq!(gathered.layers.read("common/file.txt").unwrap(), b"vanilla");
+    let note = gathered.order_note.unwrap_or_default();
+    assert!(
+        note.contains("enabled mod descriptor mod/upper.MOD does not end in .mod"),
+        "{note}"
+    );
+    let recorded = |id: &str| Mod {
+        id: id.into(),
+        display_name: String::new(),
+        declared_version: String::new(),
+        hash: [0; 32],
+    };
+    let user_dir = fs::canonicalize(root.join("user")).unwrap();
+    let missing = recorded_mod_paths(&user_dir, &[recorded("7")]).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    write(
+        "user/mod/lower.mod",
+        r#"name="Lower" remote_file_id=8 path="layers/upper""#,
+    );
+    assert_eq!(
+        recorded_mod_paths(&user_dir, &[recorded("8")]).unwrap(),
+        ["mod/lower.mod"]
     );
     fs::remove_dir_all(&root).unwrap();
 }

@@ -61,7 +61,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.match(html, /^<div style="[^"]*height:100%;/);
     assert.match(html, /class="drill-host"/);
     assert.match(html, /class="race-chart"/);
-    assert.match(html, /1\. mod country A 0; 2\. mod country B 0/);
+    // A top N of known zeros ranks no one (by design): it says so, inside the same filling wrapper.
+    assert.match(html, /No known naval losses yet/);
     assert.match(html, /Since Hour 100/);
   } finally { await vite.close(); }
 });
@@ -391,7 +392,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.equal(state.main!.active, false);
     assert.match(html, /Convoys<\/span>.*?<b class="is-negative">-2<\/b>/, 'correction rows keep their sign');
     assert.match(html, /Convoys<\/span>.*?<small>-50%<\/small>/, 'signed corrections retain their negative share of the signed total');
-    assert.equal(state.detail!.mix!.bands![1][0].value, 0, 'only positive amounts draw ribbons');
+    assert.equal(state.detail!.mix!.bands![1][0].value, -2, 'a signed correction is drawn below zero, as recorded');
     state.host!.onPin!(); assert.deepEqual(state.added[0].countries, { kind: 'tags', tags: ['mod B'] });
     assert.deepEqual(state.added[0].time, { mode: 'pin', windows: { track: { firstOffset: 4, lastOffset: 4 } } });
     state.host!.onFollow(); render(); assert.equal(state.detail!.moment, 108, 'Campaign Follow uses the actual aligned clock');

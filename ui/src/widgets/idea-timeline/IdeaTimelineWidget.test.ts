@@ -101,6 +101,14 @@ test('Idea and spirit history growth uses each resolved track hour, preserving h
       assert.equal(resolveWindow(widget, tracks[0], tracks, 400)?.lastHour, 400);
       assert.match(render(400), /outside the recording/);
       assert.equal(host.__politicsTimeline, undefined, 'another aligned track cannot extend this branch');
+      if (kind === 'spirit-history') {
+        // A held idea the content cannot classify might be a spirit: no history is not proven.
+        host.__politicsHistory = { track: tracks[0], tag: data.tag, data: { ...data, ideas: [data.ideas[0], { ...data.ideas[1], category: null }] } };
+        const unknown = render(150);
+        assert.match(unknown, /could not be classified/);
+        assert.doesNotMatch(unknown, /No national spirits recorded yet/);
+        host.__politicsHistory = { track: tracks[0], tag: data.tag, data };
+      }
     }
   } finally { delete host.__politicsTimeline; delete host.__politicsHistory; await vite.close(); }
 });

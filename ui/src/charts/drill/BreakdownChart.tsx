@@ -17,8 +17,10 @@ export interface BreakdownSeries { id: string; label: string; color: string; run
 
 /** Parts share the same signed stack and exact hover amounts. Picking a day
  * changes the drill state, never the dashboard clock. */
-export default function BreakdownChart({ series, within, selectedHour, tooltipHeight, summaries, ...props }: Omit<TimeChartProps, 'layers' | 'tooltip' | 'revision'> & {
+export default function BreakdownChart({ series, within, selectedHour, tooltipHeight, summaries, overlayExtent, ...props }: Omit<TimeChartProps, 'layers' | 'tooltip' | 'revision'> & {
   series: readonly BreakdownSeries[]; within?: readonly Span[] | null; selectedHour?: number | null;
+  /** The values the overlay draws over `x`, so the value axis keeps them in view. */
+  overlayExtent?: (x: readonly [number, number]) => [number, number] | null;
   /** Fit long cohorts to the viewport, retaining all exact amounts in spoken text. */
   tooltipHeight?: number; summaries?: { parts: readonly ChartSummary[]; total?: ChartSummary };
 }) {
@@ -49,9 +51,12 @@ export default function BreakdownChart({ series, within, selectedHour, tooltipHe
     },
     extent: (x: readonly [number, number]) => {
       const end = Math.min(x[1], until ?? x[1]);
-      return end >= x[0] ? dense ? compactStackExtent(dense.model, x[0], end) : stackExtent(stack, x[0], end) : null;
+      if (end < x[0]) return null;
+      const own = dense ? compactStackExtent(dense.model, x[0], end) : stackExtent(stack, x[0], end);
+      const extra = overlayExtent?.([x[0], end]) ?? null;
+      return own && extra ? [Math.min(own[0], extra[0]), Math.max(own[1], extra[1])] as [number, number] : own ?? extra;
     },
-  }], [stack, dense, parts, until, summaries]);
+  }], [stack, dense, parts, until, summaries, overlayExtent]);
   return <div className="breakdown-chart">{!!dense?.approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <TimeChart {...props} layers={layers} keyHours={props.keyHours ?? dense?.model.hours ?? stack.hours} revision={parts}
     overlay={(ctx, frame, tokens) => {

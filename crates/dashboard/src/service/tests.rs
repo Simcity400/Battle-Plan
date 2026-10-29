@@ -3553,6 +3553,8 @@ fn a_rebind_paused_across_shutdown_leaves_the_source_unbound() {
 /// configured when it runs: it never restores the earlier folders' defaults.
 #[test]
 fn a_stale_map_settings_request_keeps_the_configured_folders_game_settings() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for settings tests");
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[(
         "new/settings.txt",
         "graphics={} mapRenderingOptions={}",

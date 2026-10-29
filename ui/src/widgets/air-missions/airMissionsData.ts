@@ -1,6 +1,7 @@
 import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedWindow } from '../../dashboard/keyedHistory';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { DrillAction } from '../../charts/drill/drillState';
 import { optionalKey } from '../../dashboard/spriteArtwork.ts';
 import type { SpriteFrame } from '../../dashboard/spriteArtwork';
 
@@ -99,3 +100,8 @@ export function efficiencyText(raw: string | null): string {
   const value = Number(raw) / 1000;
   return `${value.toLocaleString('en-US', { maximumFractionDigits: 1 })}%`;
 }
+
+/** A region's wings at the rows' hour: they follow playback only when the rows are the
+ * playhead's own; rows held from another hour open pinned at their hour. */
+export const openWings = (rowsHour: number, playhead: number, following: boolean): DrillAction =>
+  ({ type: 'open', breakdown: 'wings', hour: rowsHour, playing: following && rowsHour === playhead, playhead: rowsHour === playhead ? playhead : null });

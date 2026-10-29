@@ -67,3 +67,50 @@ test('occupation reserve of a group with no member found yet says why once the m
       runtime: runtime(hour), active: true, onDiagnostics() {} } as unknown as WidgetProps)));
   } finally { delete host.__occupationGap; await close(); }
 });
+
+test('a country chosen by its old tag keeps its reserve in the race after it is renamed', async () => {
+  // Native country (slot 1, id 10) is OLD through 99 and NEW from 100; it holds reserve as NEW.
+  const renamed: OccupationReserveReply = { ...reply, window: { ...reply.window, series: [
+    { name: 'NEW@1|0|amount', runs: [[100, BRANCH.lastHour, '1000', true]] },
+    { name: 'NEW@1|0|source', runs: [[100, BRANCH.lastHour, '7', true]] },
+  ] }, holders: [{ tag: 'NEW', slot: 1 }] };
+  const groups = { ...pendingGroups({ final: true }), countryIdentities: [
+    { tag: 'OLD', identities: [{ firstHour: BRANCH.firstHour, lastHour: 99, slot: 1, countryId: 10 }] },
+    { tag: 'NEW', identities: [{ firstHour: 100, lastHour: BRANCH.lastHour, slot: 1, countryId: 10 }] },
+  ] } as CountryGroupReply;
+  const state = { groups, reply: renamed, track: runtime(0).tracks[0], view: undefined as CountryRaceViewProps | undefined };
+  const host = globalThis as typeof globalThis & { __occupationRenamed?: typeof state }; host.__occupationRenamed = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>(
+    '/ui/src/widgets/occupation-reserve-manpower/OccupationReserveWidget.tsx', replacements('__occupationRenamed'));
+  try {
+    renderToStaticMarkup(createElement(module.default, { widget: { id: 'occupation', kind: 'occupation-reserve-manpower',
+      trackIds: ['main'], countries: { kind: 'tags', tags: ['OLD'] }, time: { mode: 'follow' }, options: {} },
+      runtime: runtime(150), active: true, onDiagnostics() {} } as unknown as WidgetProps));
+    assert.deepEqual(state.view?.ranked.map(entry => entry.tag), ['NEW']);
+  } finally { delete host.__occupationRenamed; await close(); }
+});
+
+test('a group member renamed before the hour shown keeps its reserve under its earlier tag', async () => {
+  // Native country (slot 1, id 10) is OLD through 99 and NEW from 100; NEW is the human player then.
+  const renamed: OccupationReserveReply = { ...reply, window: { ...reply.window, series: [
+    { name: 'OLD@1|0|amount', runs: [[BRANCH.firstHour, 99, '1000', true]] },
+    { name: 'OLD@1|0|source', runs: [[BRANCH.firstHour, 99, '7', true]] },
+  ] }, holders: [{ tag: 'OLD', slot: 1 }] };
+  const groups = { ...pendingGroups({ final: true, humans: [{ tag: 'NEW', firstHour: 100, lastHour: BRANCH.lastHour }] }), countryIdentities: [
+    { tag: 'OLD', identities: [{ firstHour: BRANCH.firstHour, lastHour: 99, slot: 1, countryId: 10 }] },
+    { tag: 'NEW', identities: [{ firstHour: 100, lastHour: BRANCH.lastHour, slot: 1, countryId: 10 }] },
+  ] } as CountryGroupReply;
+  const state = { groups, reply: renamed, track: runtime(0).tracks[0], view: undefined as CountryRaceViewProps | undefined };
+  const host = globalThis as typeof globalThis & { __occupationGroupRenamed?: typeof state }; host.__occupationGroupRenamed = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>(
+    '/ui/src/widgets/occupation-reserve-manpower/OccupationReserveWidget.tsx', replacements('__occupationGroupRenamed'));
+  try {
+    for (const membership of ['end', 'ever'] as const) {
+      state.view = undefined as CountryRaceViewProps | undefined;
+      renderToStaticMarkup(createElement(module.default, { widget: { id: 'occupation', kind: 'occupation-reserve-manpower',
+        trackIds: ['main'], countries: humansBy(membership), time: { mode: 'follow' }, options: {} },
+        runtime: runtime(50), active: true, onDiagnostics() {} } as unknown as WidgetProps));
+      assert.deepEqual(state.view?.ranked.map(entry => entry.tag), ['OLD'], membership);
+    }
+  } finally { delete host.__occupationGroupRenamed; await close(); }
+});

@@ -1095,3 +1095,73 @@ fn pending_variant_operands(count: u32) {
 fn variant_invalidations_accumulate_through_skipped_reads_and_snapshots() {
     pending_variant_operands(8);
 }
+
+/// Losing or regaining the creator's appearance row renames its design as a whole read does.
+#[test]
+fn creator_original_tags_follow_their_appearance_row_between_reads() {
+    use crate::prepared::frame_changes::FrameChangeTracker;
+    use replay_data::rows::CountryAppearanceRow;
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let first = slot_hour(TableId::VariantDefinitions);
+    let mut input = named_frame(first, Some(b""));
+    let (mut encoder, mut decoder, mut tracker) = (
+        FrameEncoder::new(),
+        FrameDecoder::new(),
+        FrameChangeTracker::new(),
+    );
+    let (mut actual, mut oracle) = (VariantCatalogue::default(), VariantCatalogue::default());
+    // (the creator's original tag: no row, or the table unread; the expected naming tag or refusal)
+    for (offset, appearance, expected) in [
+        (0, Some(Some("")), Ok("GER")),
+        (1, None, Err("CountryAppearance is unavailable")),
+        (2, Some(Some("")), Ok("GER")),
+        (3, Some(Some("mod original")), Ok("mod original")),
+        (4, Some(None), Err("CountryAppearance lacks the equipment creator's row")),
+        (5, Some(Some("")), Ok("GER")),
+    ] {
+        input.hour = first + offset;
+        input.metrics.table_ns.fill(0);
+        input.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
+        *input.tables[TableId::CountryAppearance.index()] = match appearance {
+            Some(original) => TableView::Complete(TableRows::CountryAppearance(
+                original
+                    .map(|name_tag| CountryAppearanceRow {
+                        country: 9001,
+                        name_tag: name_tag.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                    .into_iter()
+                    .collect(),
+            )),
+            None => TableView::Unavailable {
+                reason: "fixture appearance refusal".into(),
+            },
+        };
+        let wire = Arc::new(encoder.encode(input.clone(), offset == 0).unwrap());
+        let frame = decoder.advance(&wire).unwrap();
+        let changes = tracker.observe_updates(frame, wire.clone(), format);
+        let found = actual.observe_changed(format, frame, &changes);
+        assert_eq!(found, oracle.observe_versions(format, frame, None), "read {offset}");
+        assert_eq!(
+            serde_json::to_vec(&actual).unwrap(),
+            serde_json::to_vec(&oracle).unwrap(),
+            "read {offset}"
+        );
+        let raw = actual.current(20).unwrap();
+        match expected {
+            Ok(tag) => {
+                assert_eq!(raw.name_tag.as_deref(), Some(tag), "read {offset}");
+                assert!(raw.check("name tag").is_ok(), "read {offset}");
+            }
+            Err(reason) => {
+                assert_eq!(raw.name_tag, None, "read {offset}");
+                assert!(
+                    raw.check("name tag").unwrap_err().contains(reason),
+                    "read {offset}: {:?}",
+                    raw.refusals
+                );
+            }
+        }
+    }
+}

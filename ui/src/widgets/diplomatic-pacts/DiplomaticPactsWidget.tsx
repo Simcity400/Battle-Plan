@@ -43,7 +43,10 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const data = reply.data;
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
   const reads = useMemo(() => ownerReads(data?.reads ?? []), [data]);
-  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, reads, kinds) : [], [data, tag, at, reads, kinds]);
+  const prefix = useMemo(() => preparedPrefix(data), [data]);
+  // A prefix reply lists pacts only through its last prepared hour.
+  const through = prefix?.pending.length ? prefix.coverage.lastHour : Infinity;
+  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, reads, kinds, through) : [], [data, tag, at, reads, kinds, through]);
   // Partners are named as they were when last listed (or at the hour shown, if earlier):
   // a tag a later country takes never renames an earlier agreement's partner.
   const [inView, setInView] = useState<[number, number]>([0, 40]);
@@ -57,10 +60,10 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
     return named.known === undefined ? { ...named, name: 'Loading name…' } : named;
   }, [labelAt, at]);
   const kindNames = useMemo(() => new Map(data?.kinds.map(kind => [kind.kind, kind.name]) ?? []), [data]);
-  const { lanes, info } = useMemo(() => agreementLanes(agreements, options.ended !== 'hidden', track?.branch.lastHour ?? at, {
+  const { lanes, info } = useMemo(() => agreementLanes(agreements, options.ended !== 'hidden', Math.min(track?.branch.lastHour ?? at, through), {
     name: tag ? country(tag, at).name : '', country, colors: tokens.categories,
     kindName: kind => kindNames.get(kind) ?? 'Relation name unavailable',
-  }), [agreements, options.ended, track?.branch.lastHour, at, tag, country, tokens.categories, kindNames]);
+  }), [agreements, options.ended, track?.branch.lastHour, through, at, tag, country, tokens.categories, kindNames]);
   // Only the partners of lanes in view (and a margin) are named and flagged.
   const visible = lanes.slice(Math.max(0, inView[0] - 8), inView[1] + 9).flatMap(lane => info.get(lane.id)?.agreement ?? []);
   const visibleKey = JSON.stringify(visible.flatMap(item => item.partner ? [[item.partner, item.lastSeen]] : []));
@@ -70,7 +73,6 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   const diagnostics = useMemo(() => (data?.warnings ?? []).filter(warning => !aboutElsewhere(warning)), [data]);
   useDiagnostics(onDiagnostics, diagnostics.length ? diagnostics : NO_WARNINGS);
   const menu = useContextMenu('Timeline actions');
-  const prefix = useMemo(() => preparedPrefix(data), [data]);
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see diplomacy." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -91,6 +93,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
       { label: 'Since', value: `${item.sinceBound ? 'by ' : ''}${dayLabel(item.since)}` },
       ...(item.expires != null ? [{ label: 'Expires', value: dayLabel(item.expires) }] : []),
       state.state === 'present' ? { label: 'Status', value: 'In force' }
+        : state.state === 'preparing' ? { label: 'Status', value: `In force on ${dayLabel(state.since)}; later still being prepared`, tone: 'muted' as const }
         : state.state === 'gone' ? { label: 'Ended', value: `by ${dayLabel(state.by)}` }
           : { label: 'Last recorded', value: dayLabel(state.since), tone: 'muted' as const },
     ];

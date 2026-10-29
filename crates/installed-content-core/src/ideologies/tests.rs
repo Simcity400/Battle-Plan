@@ -154,6 +154,23 @@ fn groups_keep_colours_and_sub_ideologies() {
     assert!(ideologies.group_of("unknown").unwrap().is_none());
 }
 
+/// Groups and sub-ideologies are found by lexer token, under the ASCII case
+/// fold; a sub-ideology keeps its authored spelling.
+#[test]
+fn groups_and_sub_ideologies_are_found_whatever_their_case() {
+    let ideologies = parsed(b"ideologies = { Democratic = { types = { Mod_Subtype = { } } } }");
+    for sub_ideology in ["Mod_Subtype", "mod_subtype", "MOD_SUBTYPE"] {
+        assert_eq!(
+            ideologies.group_of(sub_ideology).unwrap().unwrap().token,
+            "democratic"
+        );
+    }
+    let group = ideologies.get("DEMOCRATIC").unwrap().unwrap();
+    assert_eq!(group.types, ["Mod_Subtype"]);
+    assert!(ideologies.get("democratic").unwrap().is_some());
+    assert!(ideologies.group_of("mod_subtype_other").unwrap().is_none());
+}
+
 /// A later `color` updates the same colour from where the last left
 /// it. A component that cannot be scanned keeps its value; a `{`-less form
 /// is refused by name when it is a packed hexadecimal number and otherwise
@@ -193,7 +210,7 @@ fn a_later_complete_colour_replaces_a_packed_one() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let ideologies = parsed(
         b"ideologies = { a = { color = 16711680 color = { 0 255 0 } } \
-              b = { color = 16711680 color = { 0 0 } } c = { color = { 0 0 0 } color = 16711680 } }",
+              b = { color = 16711680 color = { 0 0 x } } c = { color = { 0 0 0 } color = 16711680 } }",
     );
     assert_eq!(color(&ideologies, "a"), Ok([0.0, 1.0, 0.0, 1.0]));
     for token in ["b", "c"] {
@@ -204,6 +221,16 @@ fn a_later_complete_colour_replaces_a_packed_one() {
             "{token}"
         );
     }
+}
+
+/// The colour reader always reads three components: a two-component
+/// colour's `}` is its third, and its group's `}` ends it, so the next
+/// group is read inside this one.
+#[test]
+fn a_short_colour_reads_its_groups_closing_brace() {
+    let ideologies = parsed(b"ideologies = { b = { color = { 0 0 } } c = { } }");
+    assert_eq!(color(&ideologies, "b"), Ok([0.0, 0.0, 1.0, 1.0]));
+    assert_eq!(ideologies.get("c"), Ok(None));
 }
 
 /// A group whose token is not UTF-8 is a named gap, never dropped.

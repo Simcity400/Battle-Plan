@@ -10,8 +10,6 @@ license.workspace = true
 doctest = false
 
 [features]
-# Opt-in native movement-speed samples; never enabled by ordinary captures.
-movement_witness = []
 alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
 batch-fallback-test-counts = []
 test-support = ["batch-fallback-test-counts", "engine-allocation/test-support"]

@@ -5,6 +5,7 @@ import type { LogRow } from '../../charts/log/logData';
 import { fixedNumber } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { createWidget } from '../../dashboard/model.ts';
+import { subjectToken } from '../../dashboard/chosen.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { CareerFacts, CareerMedal, CareerRow, DivisionCareersReply, DivisionRecordReply, RecordEntry } from '../../generated/dashboard';
 import { DEFAULT_SORT } from '../most-decorated-divisions/definition.ts';
@@ -83,13 +84,13 @@ export function careerTooltip(row: CareerRow, reply: DivisionCareersReply, count
 }
 
 /** A Division service record widget for one division, at the drill's moment. */
-export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch'>, hour: number, follow: boolean): WidgetSpec {
+export function pinnedRecord(source: WidgetSpec, division: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, hour: number, follow: boolean): WidgetSpec {
   const base = createWidget('division-service-record', track.id);
   const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
     [track.id]: { firstOffset: 0, lastOffset: Math.floor(hour) - track.branch.firstHour },
   } };
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
-    contentScale: source.contentScale, options: { division } };
+    contentScale: source.contentScale, options: { division: subjectToken(track.source.metadata.campaignKey, division) } };
 }
 
 export const divisionKey = (row: CareerRow) => row.division;
@@ -103,8 +104,8 @@ export function topDivision(rows: readonly CareerRow[]): CareerRow | null {
 }
 
 /** Division choices from a careers reply: name and country, ordered by name. */
-export function divisionChoices(reply: DivisionCareersReply, country: (tag: string) => string) {
-  return reply.divisions.map(row => ({ value: row.division, name: divisionName(row.name),
+export function divisionChoices(reply: DivisionCareersReply, campaignKey: string, country: (tag: string) => string) {
+  return reply.divisions.map(row => ({ value: subjectToken(campaignKey, row.division), name: divisionName(row.name),
     label: `${divisionName(row.name)} · ${row.tag ? country(row.tag) : 'Country not recorded'}` }))
     .sort((a, b) => a.name.localeCompare(b.name) || a.value.localeCompare(b.value)).map(({ value, label }) => ({ value, label }));
 }

@@ -31,14 +31,13 @@ impl Limits {
             .ok_or_else(|| invalid("snow raster size overflow"))
     }
     pub fn maximum(self) -> io::Result<usize> {
-        self.raster()?
-            .checked_add(
-                self.provinces
-                    .checked_mul(9)
-                    .ok_or_else(|| invalid("snow province size overflow"))?,
-            )
+        let raster = self.raster()?;
+        // The unknown-cell mask holds a byte per four raster bytes, after its count.
+        raster
+            .checked_add(raster / 4)
+            .and_then(|n| n.checked_add(self.provinces.checked_mul(9)?))
             .and_then(|n| n.checked_add(self.factors.checked_mul(5)?))
-            .and_then(|n| n.checked_add(91))
+            .and_then(|n| n.checked_add(99))
             .ok_or_else(|| invalid("snow product size overflow"))
     }
     pub(super) fn decode_peak(self, encoded: usize) -> io::Result<usize> {
@@ -408,6 +407,7 @@ pub(super) fn encode_product(snow: &SnowMud, limits: Limits) -> io::Result<Vec<u
 fn validate_product(snow: &SnowMud, limits: Limits) -> io::Result<()> {
     if [snow.width, snow.height] != limits.dimensions
         || snow.texels.len() != limits.raster()?
+        || snow.unknown.len() != limits.raster()? / 4
         || snow.province_snow.len() != limits.provinces
         || snow
             .post_factors
@@ -436,6 +436,8 @@ fn admit_product_lengths(bytes: &[u8], limits: Limits) -> io::Result<()> {
     };
     let raster = count(&mut input, limits.raster()?)?;
     input.take(raster)?;
+    let cells = count(&mut input, raster / 4)?;
+    input.take(cells)?;
     for _ in 0..count(&mut input, limits.provinces)? {
         Option::<i64>::decode(&mut input)?;
     }
@@ -449,7 +451,7 @@ pub(super) fn decode_product(bytes: &[u8], limits: Limits) -> io::Result<SnowMud
     if bytes.len() > limits.maximum()? {
         return Err(invalid("snow decoded product exceeds geometry"));
     }
-    // Admit the three geometry-sized containers before the generated decoder allocates them.
+    // Admit the geometry-sized containers before the generated decoder allocates them.
     admit_product_lengths(bytes, limits)?;
     #[cfg(test)]
     PRODUCT_DECODES.with(|decodes| decodes.set(decodes.get() + 1));

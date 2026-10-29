@@ -19,6 +19,8 @@
 //! Speed below one reaches neither progress call. Instant construction applies
 //! only to the player's country and passes exactly 10^10 per segment; other
 //! countries spend normally and draw the bank even while the flag is set.
+//! [`railway_instant`] reads which path an advance takes; an ordinary speed may
+//! equal the instant amount.
 //!
 //! The CIC bank receives effect and international-market contributions, rather
 //! than daily factory production. Speed updates reserve the bank draw and add it
@@ -26,8 +28,8 @@
 //! construction table.
 
 use crate::{
-    Memory, cbuilding_production_line, cgeneral_production_line, cproduction_line,
-    crailway_production_line, read,
+    Memory, cbuilding_production_line, cgame_state, cgeneral_production_line, cpdx_array::Array,
+    cproduction_line, crailway_production_line, read,
 };
 
 /// Storage demand for one daily construction pass, never captured data.
@@ -324,6 +326,60 @@ pub const RAILWAY_PROGRESS: Site = Site {
 pub const INSTANT_CONSTRUCTION: usize = 0x033d_da98;
 /// Railway instant progress amount passed in R9, gated by the player's country.
 pub const RAILWAY_INSTANT_AMOUNT: i64 = 10_000_000_000;
+
+/// Whether the advance of railway `line` takes the instant path: the console
+/// flag is set and the line's country is the viewing country (the positive
+/// playing reference, otherwise the observed one) or shares its country link.
+/// Reads only the flag when it is clear. No game function is called.
+pub fn railway_instant(
+    memory: &impl Memory,
+    base: usize,
+    line: usize,
+) -> Result<bool, &'static str> {
+    let flag = base
+        .checked_add(INSTANT_CONSTRUCTION)
+        .and_then(|address| read::<u8>(memory, address))
+        .ok_or("construction output instant flag unreadable")?;
+    if flag == 0 {
+        return Ok(false);
+    }
+    let country = crate::line_output_sites::owning_country(
+        memory,
+        base,
+        line,
+        &[crailway_production_line::VTABLE_RVA],
+    )?;
+    let state = base
+        .checked_add(cgame_state::SINGLETON_RVA)
+        .and_then(|address| read::<u64>(memory, address))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .filter(|&pointer| pointer != 0)
+        .ok_or("construction output instant viewing state unreadable or null")?;
+    let [playing, observed] = cgame_state::local_player(memory, state)?;
+    let viewing = if (playing as i32) > 0 {
+        playing
+    } else {
+        observed
+    };
+    if viewing == country {
+        return Ok(true);
+    }
+    if viewing == 0 || country == 0 {
+        return Ok(false);
+    }
+    // Compare raw country-link entries without resolving either country.
+    let links = state
+        .checked_add(cgame_state::COUNTRY_LINKS)
+        .and_then(|address| Array::read(memory, address, 4))
+        .ok_or("construction output instant country links unreadable")?;
+    let link = |raw: u32| {
+        links
+            .element(raw, 4)
+            .and_then(|address| read::<u32>(memory, address))
+            .ok_or("construction output instant country link unreadable")
+    };
+    Ok(link(viewing)? == link(country)?)
+}
 /// `creference_registry::invalid_reference` (u64): the empty reference, assigned
 /// at run time (read it live, never a sampled constant).
 pub const INVALID_REFERENCE: usize = 0x033e_b2a0;
@@ -542,12 +598,12 @@ mod tests {
                     if self.short {
                         return false;
                     }
-                    let mut bytes = [0_u8; 0x79];
+                    let mut bytes = [0_u8; crailway_production_line::COMPLETION_FLAG + 1];
                     bytes[..8].copy_from_slice(
                         &((BASE + LINE_VTABLES[usize::from(self.railway)]) as u64).to_le_bytes(),
                     );
                     bytes[LINE_HANDLE..LINE_HANDLE + 8].copy_from_slice(&7_u64.to_le_bytes());
-                    bytes[0x78] = self.cancel;
+                    bytes[crailway_production_line::COMPLETION_FLAG] = self.cancel;
                     out.copy_from_slice(&bytes[..out.len()]);
                     return true;
                 }
@@ -694,6 +750,138 @@ mod tests {
         assert_eq!(
             operands(&f, BASE, LINE, false),
             Err("construction output invalid reference unreadable")
+        );
+    }
+
+    /// Byte regions at their addresses; any other read fails.
+    struct Regions(Vec<(usize, Vec<u8>)>);
+    impl Memory for Regions {
+        fn copy(&self, address: usize, out: &mut [u8]) -> bool {
+            self.0.iter().any(|(start, bytes)| {
+                let Some(source) = address
+                    .checked_sub(*start)
+                    .and_then(|offset| bytes.get(offset..offset.checked_add(out.len())?))
+                else {
+                    return false;
+                };
+                out.copy_from_slice(source);
+                true
+            })
+        }
+    }
+    const STATUS: usize = 0x2000;
+    const COUNTRY: usize = 0x3000;
+    const STATE: usize = 0x8000;
+    const LINKS: usize = 0x9000;
+    fn put(bytes: &mut [u8], offset: usize, value: &[u8]) {
+        bytes[offset..offset + value.len()].copy_from_slice(value);
+    }
+    /// A railway line of country 5 whose links file 5 and 7 together and 6 apart.
+    fn instant_world(flag: u8, playing: u32, observed: u32) -> Regions {
+        let mut line = vec![0; 0x30];
+        put(
+            &mut line,
+            0,
+            &((BASE + crailway_production_line::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut line, LINE_HANDLE, &0x2a_0000_1269_u64.to_le_bytes());
+        put(
+            &mut line,
+            cproduction_line::PRODUCTION_STATUS,
+            &(STATUS as u64).to_le_bytes(),
+        );
+        let mut status = vec![0; crate::cproduction_status::COUNTRY + 8];
+        put(
+            &mut status,
+            0,
+            &((BASE + crate::cproduction_status::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut status,
+            crate::cproduction_status::COUNTRY,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
+        let mut country = vec![0; crate::ccountry::PRODUCTION_STATUS + 8];
+        put(
+            &mut country,
+            0,
+            &((BASE + crate::ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(&mut country, crate::ccountry::ID, &5_u32.to_le_bytes());
+        put(
+            &mut country,
+            crate::ccountry::PRODUCTION_STATUS,
+            &(STATUS as u64).to_le_bytes(),
+        );
+        let mut state = vec![0; cgame_state::LOCAL_PLAYER_COUNTRY + 8];
+        for (offset, value) in [
+            (cgame_state::COUNTRY_LINKS, (LINKS as u64).to_le_bytes()),
+            (
+                cgame_state::COUNTRY_LINKS + 8,
+                (8_u64 | 8 << 32).to_le_bytes(),
+            ),
+            (
+                cgame_state::LOCAL_PLAYER_COUNTRY,
+                (u64::from(playing) | u64::from(observed) << 32).to_le_bytes(),
+            ),
+        ] {
+            put(&mut state, offset, &value);
+        }
+        let links: Vec<u8> = [0_u32, 1, 2, 3, 4, 5, 6, 5]
+            .iter()
+            .flat_map(|link| link.to_le_bytes())
+            .collect();
+        Regions(vec![
+            (BASE + INSTANT_CONSTRUCTION, vec![flag]),
+            (
+                BASE + cgame_state::SINGLETON_RVA,
+                (STATE as u64).to_le_bytes().to_vec(),
+            ),
+            (LINE, line),
+            (STATUS, status),
+            (COUNTRY, country),
+            (STATE, state),
+            (LINKS, links),
+        ])
+    }
+    #[test]
+    fn railway_instant_follows_the_native_flag_and_viewing_country_gate() {
+        // A clear flag reads nothing else: even an absent line is ordinary.
+        let clear = Regions(vec![(BASE + INSTANT_CONSTRUCTION, vec![0])]);
+        assert_eq!(railway_instant(&clear, BASE, LINE), Ok(false));
+        for (playing, observed, instant) in [
+            // The playing country itself, then a country sharing its link.
+            (5, 0, true),
+            (7, 0, true),
+            // Another country, even while the flag is set.
+            (6, 5, false),
+            // A non-positive playing reference selects the observed one.
+            (0, 5, true),
+            (u32::MAX, 7, true),
+            (0, 6, false),
+            // No viewing country.
+            (0, 0, false),
+        ] {
+            assert_eq!(
+                railway_instant(&instant_world(1, playing, observed), BASE, LINE),
+                Ok(instant),
+                "playing {playing}, observed {observed}"
+            );
+            assert_eq!(
+                railway_instant(&instant_world(0, playing, observed), BASE, LINE),
+                Ok(false)
+            );
+        }
+        let mut world = instant_world(1, 7, 0);
+        world.0.retain(|(start, _)| *start != LINKS);
+        assert_eq!(
+            railway_instant(&world, BASE, LINE),
+            Err("construction output instant country link unreadable")
+        );
+        let unreadable = Regions(vec![]);
+        assert_eq!(
+            railway_instant(&unreadable, BASE, LINE),
+            Err("construction output instant flag unreadable")
         );
     }
 }

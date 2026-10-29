@@ -344,6 +344,26 @@ fn hours_the_lists_were_not_read_are_unknown_not_an_ending() {
 }
 
 #[test]
+fn a_list_naming_a_country_with_no_identity_is_unknown_not_an_ending() {
+    let mut state = Prepared::default();
+    record(&mut state, 100, 110, &ALL[..2], &[(2, 1)]);
+    // NEW's list row names a raw country no link resolves.
+    record(&mut state, 111, 115, &ALL[..2], &[(22, 1)]);
+    record(&mut state, 116, 120, &ALL[..2], &[(2, 1)]);
+    let reply = wars(&mut state, 120, &[]);
+    assert_eq!(reply.known, [span(100, 110), span(116, 120)]);
+    let war = &reply.wars[0];
+    assert_eq!((war.first_hour, war.last_hour), (100, 110));
+    assert_eq!(war.at_war, [span(100, 110)]);
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("names a country with no identity"))
+    );
+}
+
+#[test]
 fn only_hours_changing_what_a_part_reads_observe_it() {
     // NEW lists OLD; at war with NEW through a relation that ends at 104,
     // OLD has a civil war while NEW exists and lists it.
@@ -406,7 +426,8 @@ fn only_hours_changing_what_a_part_reads_observe_it() {
         (at(100, 1, 0, 7), Changed::default()),
         // A war's casualties, every hour of a war: nothing the parts read.
         (at(101, 1, 500, 7), Changed::fields(TableId::WarRelations, &["first_casualties"])),
-        // OLD loses its last state: NEW's own list no longer names an existing country.
+        // OLD loses its last state: NEW's own list no longer names an existing
+        // country, and the game no longer holds OLD's elections.
         (at(102, 0, 900, 7), Changed::fields(TableId::CountryCounterInputs, &["owned_state_count"])),
         // A capital moves: not part of an election schedule.
         (at(103, 0, 900, 8), Changed::fields(TableId::Politics, &["capital"])),
@@ -423,6 +444,7 @@ fn only_hours_changing_what_a_part_reads_observe_it() {
             (100, Part::Exiles),
             (100, Part::Balances),
             (100, Part::CivilWars),
+            (102, Part::Elections),
             (102, Part::CivilWars),
             (104, Part::CivilWars),
         ]

@@ -10,6 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 // distinct stamps; exhaustion disables index reuse rather than reusing a stamp.
 static NEXT_BASELINE: AtomicU64 = AtomicU64::new(1);
 
+/// A distinct stamp for a new complete baseline; `None` once stamps run out.
+pub(crate) fn next_baseline() -> Option<u64> {
+    NEXT_BASELINE
+        .fetch_update(Relaxed, Relaxed, |next| next.checked_add(1))
+        .ok()
+}
+
 /// Reusable range-local index into one complete scalar baseline.
 #[derive(Default)]
 pub struct Order {
@@ -27,6 +34,42 @@ impl Order {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * std::mem::size_of::<(u64, usize)>()
+    }
+    /// Where `division` is held in the complete baseline stamped `baseline`,
+    /// whose divisions in held order are `divisions`. `None` when no index can
+    /// be built: the caller keeps its ordered lookup.
+    pub(crate) fn position(
+        &mut self,
+        baseline: Option<u64>,
+        divisions: impl ExactSizeIterator<Item = u64>,
+        division: u64,
+    ) -> Option<Option<usize>> {
+        baseline?;
+        if self.baseline != baseline {
+            self.clear();
+            engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.entries, divisions.len())
+            })
+            .ok()?;
+            self.entries
+                .extend(divisions.enumerate().map(|(at, division)| (division, at)));
+            self.entries.sort_unstable_by_key(|entry| entry.0);
+            self.baseline = baseline;
+            #[cfg(test)]
+            {
+                self.rebuilds += 1;
+            }
+        }
+        Some(
+            self.entries
+                .binary_search_by_key(&division, |entry| entry.0)
+                .ok()
+                .map(|at| self.entries[at].1),
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn rebuilds(&self) -> usize {
+        self.rebuilds
     }
 }
 
@@ -291,9 +334,7 @@ impl<T: Clone> Store<T> {
             return;
         }
         std::mem::swap(&mut self.held, &mut self.next);
-        self.baseline = NEXT_BASELINE
-            .fetch_update(Relaxed, Relaxed, |next| next.checked_add(1))
-            .ok();
+        self.baseline = next_baseline();
         self.next.clear();
     }
 }

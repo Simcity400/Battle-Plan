@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { MIN_ZOOM, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene.ts';
+import { MIN_ZOOM, acknowledgeScroll, described, fitZoom, keyedOffset, listAt, listKey, revealedOffset, scrolledOffset, settledScroll, wheelPixels } from './gameWindowScene.ts';
 
 test('keys scroll a list by a line, a page or to either end, within its range', () => {
   const list = { rect: [0, 0, 100, 120] as [number, number, number, number], max: 300, horizontal: false, scale: 1 };
@@ -76,4 +76,19 @@ test('a container scrolling both ways is a list per axis, the wheel picking by i
   const across = { path: 'c/row', rect: [10, 10, 40, 20] as [number, number, number, number], offset: 0, max: 30, horizontal: true, scale: 1 };
   assert.equal(listAt({ lists: [lists[0], across] }, 20, 20, false)?.path, 'c/row', 'the topmost list takes the wheel whichever way it turns');
   assert.notEqual(listKey(lists[0]), listKey(lists[1]), 'each axis keeps its own offset');
+});
+
+test('wheel offsets are asked for with the ones already asked for and dropped once a reply draws them', () => {
+  const down = (path: string, offset: number) => ({ path, horizontal: false, offset });
+  const pending = new Map([[listKey(down('b', 0)), down('b', 1000)]]);
+  // Settling keeps every list already asked for, with the wheel's newer offset in its place.
+  const asked = settledScroll([down('a', 40), down('b', 8)], pending);
+  assert.deepEqual(asked, [down('a', 40), down('b', 1000)]);
+  // The wheel moved on before the reply came: that newer offset still leads.
+  pending.set(listKey(down('b', 0)), down('b', 1016));
+  acknowledgeScroll(pending, asked);
+  assert.deepEqual([...pending.values()], [down('b', 1016)]);
+  // Drawn at what was asked (the service clamps it): the drawn scene's offset leads again.
+  acknowledgeScroll(pending, [down('b', 1016)]);
+  assert.equal(pending.size, 0);
 });

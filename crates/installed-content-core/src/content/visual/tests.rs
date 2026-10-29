@@ -790,6 +790,239 @@ fn an_archive_mod_mounts_its_records() {
     );
 }
 
+/// The game enters a folder mod's junction and opens files through it, out of the mod's folder
+/// too; a junction to nothing lists nothing.
+#[cfg(windows)]
+#[test]
+fn a_folder_mods_junctions_are_entered_and_read_through() {
+    use super::super::tests::junction;
+    let machine = Machine::new("junction");
+    machine.write("base/gfx/interface/own.dds", b"recorded own");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/gfx/interface/own.dds", b"mod own");
+    machine.write("elsewhere/inner.dds", b"linked inner");
+    machine.write("elsewhere/deep/more.dds", b"linked more");
+    junction(
+        &machine.root.join("art/gfx/interface/linked"),
+        &machine.root.join("elsewhere"),
+    );
+    fs::create_dir_all(machine.root.join("gone")).unwrap();
+    junction(
+        &machine.root.join("art/gfx/interface/gone"),
+        &machine.root.join("gone"),
+    );
+    fs::remove_dir(machine.root.join("gone")).unwrap();
+    let mut layers = machine.recorded(&["base"]);
+    let plan = apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let presentation = layers.presentation();
+    assert_eq!(
+        presentation
+            .listed_paths("gfx/interface")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [
+            "gfx/interface/linked/deep/more.dds",
+            "gfx/interface/linked/inner.dds",
+            "gfx/interface/own.dds"
+        ]
+    );
+    assert_eq!(
+        text(presentation, "gfx/interface/linked/inner.dds"),
+        "linked inner"
+    );
+    assert!(presentation.supplied_by_visual_mod("gfx/interface/linked/inner.dds"));
+    assert_eq!(text(presentation, "gfx/interface/own.dds"), "mod own");
+    let listed: Vec<_> = presentation
+        .descriptor_paths("gfx/interface/linked", &[".dds"])
+        .unwrap()
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "gfx/interface/linked/deep/more.dds",
+            "gfx/interface/linked/inner.dds"
+        ]
+    );
+}
+
+/// A folder mod's junction back to a folder it is in loops; the game lists the loop only as
+/// deep as its own limits allow, which the port does not reproduce, so the mod is refused by name.
+#[cfg(windows)]
+#[test]
+fn a_folder_mod_whose_junction_loops_is_refused_by_name() {
+    use super::super::tests::junction;
+    let machine = Machine::new("junction-loop");
+    machine.write("base/gfx/interface/own.dds", b"recorded own");
+    machine.local("art.mod", "name=\"Art\"", "art");
+    machine.write("art/gfx/interface/own.dds", b"mod own");
+    junction(
+        &machine.root.join("art/gfx/interface/up"),
+        &machine.root.join("art/gfx"),
+    );
+    let mut layers = machine.recorded(&["base"]);
+    let plan = apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    assert!(plan.order.is_empty(), "{:?}", plan.order);
+    assert_eq!(plan.warnings.len(), 1, "{:?}", plan.warnings);
+    assert!(
+        plan.warnings[0].starts_with("Visual mod Art is not shown")
+            && plan.warnings[0].contains("leads back to"),
+        "{:?}",
+        plan.warnings
+    );
+    assert_eq!(
+        text(layers.presentation(), "gfx/interface/own.dds"),
+        "recorded own"
+    );
+}
+
+/// The game opens the member an archive's link record names; the port does not follow it, so a
+/// read of the link is refused by name, never answered with the link's text or a lower layer.
+/// The link is listed, and the member it names reads as usual.
+#[test]
+fn an_archive_link_record_is_listed_and_its_read_refused_by_name() {
+    use super::super::tests::{Record, zip_records};
+    let machine = Machine::new("archive-link");
+    machine.write("base/map/terrain/atlas0.dds", b"recorded atlas");
+    let record = |name: &'static [u8], host: u8, data: &'static [u8]| Record {
+        name,
+        host,
+        flags: 0,
+        deflate: false,
+        data,
+    };
+    let mut zip = zip_records(
+        &[],
+        &[
+            record(b"map/terrain/target.dds", 0, b"linked atlas"),
+            record(b"map/terrain/atlas0.dds", 3, b"map/terrain/target.dds"),
+        ],
+    );
+    // The link's central record: a Unix mode 0o120777 in its external attributes' high half.
+    let central = (0..zip.len() - 46)
+        .find(|&at| {
+            zip[at..at + 4] == 0x0201_4B50_u32.to_le_bytes()
+                && zip[at + 46..].starts_with(b"map/terrain/atlas0.dds")
+        })
+        .unwrap();
+    zip[central + 38..central + 42].copy_from_slice(&0xA1FF_0000_u32.to_le_bytes());
+    let archive = machine.write("link.zip", &zip);
+    machine.write(
+        "user/mod/link.mod",
+        format!(
+            "name=\"Link\"\narchive=\"{}\"",
+            archive.display().to_string().replace('\\', "/")
+        )
+        .as_bytes(),
+    );
+    let mut layers = machine.recorded(&["base"]);
+    let plan = apply(
+        &mut layers,
+        &machine.options,
+        &[pick("mod/link.mod", "Link")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let presentation = layers.presentation();
+    let error = presentation
+        .read("map/terrain/atlas0.dds")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is a symbolic link record"), "{error}");
+    assert_eq!(text(presentation, "map/terrain/target.dds"), "linked atlas");
+    let listed = presentation
+        .descriptor_paths("map/terrain", &[".dds"])
+        .unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|listed| *listed == "map/terrain/atlas0.dds"),
+        "{listed:?}"
+    );
+}
+
+/// A Workshop item mounted from an archive keeps its id when the launcher writes a user
+/// descriptor naming that archive, as an item mounted from its folder does, so a choice saved
+/// before still applies.
+#[test]
+fn a_workshop_archive_keeps_its_id_beside_a_launcher_descriptor() {
+    use super::super::tests::{Record, zip_records};
+    let machine = Machine::new("workshop-archive");
+    machine.write("base/map/terrain/atlas0.dds", b"recorded atlas");
+    let folder = machine.item(
+        "100",
+        "name=\"Packed\"\nremote_file_id=\"100\"\narchive=\"packed.zip\"",
+    );
+    let archive = machine.write(
+        &format!("{folder}/packed.zip"),
+        &zip_records(
+            &[],
+            &[Record {
+                name: b"map/terrain/atlas0.dds",
+                host: 0,
+                flags: 0,
+                deflate: false,
+                data: b"packed atlas",
+            }],
+        ),
+    );
+    let chosen = [pick("workshop/100", "Packed")];
+    let shown = || {
+        let mut layers = machine.recorded(&["base"]);
+        let plan = apply(&mut layers, &machine.options, &chosen, &[], &never()).unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        text(layers.presentation(), "map/terrain/atlas0.dds")
+    };
+    assert_eq!(shown(), "packed atlas");
+    machine.write(
+        "user/mod/ugc_100.mod",
+        format!(
+            "name=\"Packed\"\nremote_file_id=\"100\"\narchive=\"{}\"",
+            archive.display().to_string().replace('\\', "/")
+        )
+        .as_bytes(),
+    );
+    let ids: Vec<_> = installed(&machine.options, &never())
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(ids, ["workshop/100"]);
+    assert_eq!(shown(), "packed atlas");
+}
+
+/// The game lists a descriptor in `mod` only when its name ends in `.mod` byte for byte.
+#[test]
+fn only_an_exact_mod_suffix_lists_a_local_descriptor() {
+    let machine = Machine::new("suffix");
+    machine.local("lower.mod", "name=\"Lower\"", "lower");
+    machine.local("upper.MOD", "name=\"Upper\"", "upper");
+    let ids: Vec<_> = installed(&machine.options, &never())
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(ids, ["mod/lower.mod"]);
+}
+
 /// No count of installed or selected mods is refused.
 #[test]
 fn catalogues_and_selections_are_not_capped() {

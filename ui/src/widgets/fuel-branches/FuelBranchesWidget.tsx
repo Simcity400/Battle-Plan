@@ -29,7 +29,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { FuelBranchesReply } from '../../generated/dashboard';
 import { fuelDecimals, formatFuelPart } from '../fuel/fuelData';
 import { CONSUMPTION, OPTIONS } from './definition';
-import { branchesAt, changeHours, chartCountryAt, consumersKnown, countryAt, emptyTimeView, FUEL_BRANCHES, memberAt, memberRatioRuns, percentText, readAt, validateFuelBranches } from './fuelBranchesData';
+import { branchesAt, changeHours, chartCountryAt, consumersKnown, countryAt, emptyTimeView, FUEL_BRANCHES, memberAt, memberRatioRuns, percentText, ratioAxis, readAt, validateFuelBranches } from './fuelBranchesData';
 import type { BranchAt } from './fuelBranchesData';
 import '../resource-balance/resourceBalance.css';
 import './fuelBranches.css';
@@ -157,6 +157,8 @@ function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount
   const lines = useMemo(() => country ? [...country.branches].sort((a, b) => a.index - b.index).map((branch, index) => ({
     branch, runs: memberRatioRuns(branch, within), color: tokens.categories[index % tokens.categories.length], name: data.consumerNames[branch.index] ?? 'Branch name unavailable' })) : [],
   [country, tokens.categories, data.consumerNames, within]);
+  // Consumers can receive more than they asked for: the axis shows every recorded ratio.
+  const axis = useMemo(() => ratioAxis(lines), [lines]);
   const pending = preparedPending(data);
   const ends = options.endLabels !== false;
   const layers = useMemo<ChartLayer[]>(() => [pendingLayer(pending), {
@@ -191,7 +193,7 @@ function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount
         playback={options.playback === 'cursor' ? 'cursor' : options.playback === 'window' ? 'window' : 'draw-in'}
         afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
-        axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }} valueTicks={[0, 25, 50, 75, 100]}
+        axes={{ xFrom: null, xTo: null, yMin: 0, yMax: axis.top, log: false }} valueTicks={axis.ticks}
         formatValue={value => `${value}%`} padding={ends ? { right: 64 } : undefined}
         layers={layers} active={active} keyHours={keyHours} pickOwner={country}
         revision={`${data.branchId}:${country.holder}:${lines.length}:${ends}:${pending.length}`}

@@ -1273,7 +1273,9 @@ impl DashboardMaps {
                 .and_then(|key| self.sources.get(key))
                 .map(|source| source.source.replay_ref());
             let partial = replay.is_some_and(|replay| replay.is_partial());
-            if state.loading || diagnostics || partial {
+            // Hatched snow and mud say why in ordinary viewing too.
+            let weather = view.viewer.weather_notice();
+            if state.loading || diagnostics || partial || weather.is_some() {
                 let points = view.viewer.interface_points;
                 map_overlay(ui, clip, (id, "status"), points, |ui, height| {
                     if partial {
@@ -1284,6 +1286,9 @@ impl DashboardMaps {
                         {
                             ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);
                         }
+                    }
+                    if let Some(weather) = weather {
+                        ui.colored_label(egui::Color32::YELLOW, format!("{weather}."));
                     }
                     if state.loading {
                         ui.label(match state.hour {

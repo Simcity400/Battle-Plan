@@ -96,10 +96,7 @@ impl Layers {
             let mut range = None;
             for field in fields {
                 if field.keyword_is("sound_effect") {
-                    effect = field
-                        .value
-                        .scalar_str()
-                        .map(|value| value.trim_matches('"').to_owned());
+                    effect = field.value.scalar_str().map(str::to_owned);
                 } else if field.keyword_is("units") {
                     units.extend(
                         field
@@ -109,7 +106,7 @@ impl Layers {
                             .iter()
                             .filter(|unit| unit.key.is_none())
                             .filter_map(|unit| unit.value.scalar_str())
-                            .map(|unit| unit.trim_matches('"').to_owned()),
+                            .map(str::to_owned),
                     );
                 } else if field.keyword_is("divisions_range") {
                     let values: Option<Vec<i32>> = field.value.items().and_then(|values| {
@@ -241,6 +238,19 @@ mod tests {
                 "{expected}: {notes:?}"
             );
         }
+    }
+
+    #[test]
+    fn escaped_quotes_stay_part_of_effect_and_sub_unit_names() {
+        let stack = Stack::new("combat_sounds_quotes");
+        stack.write(
+            &stack.base(),
+            "sound/combat_sounds/00_combat_sounds.txt",
+            r#"quoted = { sound_effect = "\"layers\"" units = { "\"infantry\"" infantry } divisions_range = { 1 -1 } }"#,
+        );
+        let layers = Layers::read(&stack.layers(&[])).unwrap();
+        assert_eq!(layers.sounds[0].effect, "\"layers\"");
+        assert_eq!(layers.sounds[0].units, ["\"infantry\"", "infantry"]);
     }
 
     #[test]

@@ -90,6 +90,7 @@ impl Published {
                 tags: tags.iter().map(|tag| tag.to_string()).collect(),
                 members: None,
                 kinds: Vec::new(),
+                first_hour: None,
                 last_hour: hour,
                 before: before.map(str::to_owned),
                 page_size: size,
@@ -229,6 +230,67 @@ fn agreements_keep_schedules_retained_totals_and_fuel_exact() {
     assert_eq!(pools, vec![0, 3, 4]);
     // A known zero loss is a value.
     assert_eq!(agreement.items[2].amounts[0].2, "0");
+}
+
+#[test]
+fn a_row_whose_owner_has_no_identity_leaves_its_table_unknown_not_empty() {
+    let mut state = Prepared::default();
+    for hour in [5, 6] {
+        let mut at = base(hour);
+        // At 6 each table also lists a row of a country no link resolves.
+        let owners: &[u32] = if hour == 5 { &[1] } else { &[1, 9] };
+        set(
+            &mut at,
+            TableRows::CountryMarket(
+                owners
+                    .iter()
+                    .map(|&country| CountryMarketRow {
+                        country,
+                        inventory: pool(&[(0xa1, 100_000)]),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        set(
+            &mut at,
+            TableRows::MarketContractTerms(owners.iter().map(|&country| terms(country, 2, 9, 1)).collect()),
+        );
+        set(
+            &mut at,
+            TableRows::LendLeaseAgreements(
+                owners
+                    .iter()
+                    .map(|&country| LendLeaseAgreementRow {
+                        country,
+                        id: 4,
+                        receiver: 2,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        state.step(&at);
+    }
+    let published = publish(&mut state);
+    for view in [MarketView::Inventory, MarketView::Contracts, MarketView::Agreements] {
+        let reply = published.history(view, &[], 6);
+        assert_eq!(reply.known, vec![EconomyRun(5, 5, "1".into())], "{view:?}");
+        assert!(
+            reply.warnings.iter().any(|line| line.contains("a market country has no identity")),
+            "{view:?}"
+        );
+    }
+    // The resolved rows are kept through the hour.
+    let inventory = published.history(MarketView::Inventory, &[], 6);
+    assert_eq!(inventory.offers.len(), 1);
+    assert_eq!(inventory.offers[0].inventory[0].amounts.last().unwrap().1, 6);
+    let contracts = published.history(MarketView::Contracts, &[], 6);
+    assert_eq!(contracts.contracts.len(), 1);
+    assert_eq!(contracts.contracts[0].speed.last().unwrap().1, 6);
+    let agreements = published.history(MarketView::Agreements, &[], 6);
+    assert_eq!(agreements.agreements.len(), 1);
+    assert_eq!(agreements.agreements[0].receiver.last().unwrap().1, 6);
 }
 
 #[test]
@@ -452,6 +514,7 @@ fn a_chosen_group_pages_by_its_rows_and_segment_heads_at_campaign_scale() {
                         .collect(),
                 ),
                 kinds: Vec::new(),
+                first_hour: None,
                 last_hour: HOURS,
                 before,
                 page_size: 50,
@@ -519,6 +582,7 @@ fn ledger_cursors_name_each_segment_and_its_position() {
         tags: tags.iter().map(|tag| tag.to_string()).collect(),
         members: None,
         kinds: Vec::new(),
+        first_hour: None,
         last_hour: 10,
         before: Some(before.into()),
         page_size: 10,
@@ -600,6 +664,7 @@ fn a_group_ledger_lists_members_only_while_members() {
                 tags: Vec::new(),
                 members: Some(members),
                 kinds: Vec::new(),
+                first_hour: None,
                 last_hour: 100,
                 before: None,
                 page_size: 10,
@@ -626,6 +691,7 @@ fn a_group_ledger_lists_members_only_while_members() {
         tags: Vec::new(),
         members: Some(vec![member("SEL", 7, 6)]),
         kinds: Vec::new(),
+        first_hour: None,
         last_hour: 10,
         before: None,
         page_size: 10,
@@ -713,4 +779,61 @@ fn observing_by_changes_publishes_what_observing_every_hour_does() {
         }
         changed = serde_json::from_slice(&serde_json::to_vec(&changed).unwrap()).unwrap();
     }
+}
+
+#[test]
+fn a_ledger_from_a_first_hour_lists_and_counts_only_from_then() {
+    let mut state = Prepared::default();
+    for hour in 5..=9 {
+        let mut at = base(hour);
+        set(&mut at, TableRows::MarketEvents(vec![event(u64::from(hour as u32), 21, hour)]));
+        state.step(&at);
+    }
+    let published = publish(&mut state);
+    let ask = |tags: &[&str], first_hour: Option<i32>, before: Option<String>, page_size| {
+        ledger(
+            &published.fixture.store,
+            &published.fixture.key,
+            &MarketLedgerParams {
+                branch_id: "1".into(),
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+                members: None,
+                kinds: Vec::new(),
+                first_hour,
+                last_hour: 100,
+                before,
+                page_size,
+            },
+            Some(100),
+            None,
+            Vec::new(),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let ids = |reply: &MarketLedgerReply| reply.rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let all = ask(&[], Some(7), None, 10);
+    assert_eq!(ids(&all), vec!["9", "8", "7"]);
+    assert_eq!(all.total.as_deref(), Some("3"), "the count starts at the first hour too");
+    assert_eq!(ask(&[], None, None, 10).total.as_deref(), Some("5"));
+    assert_eq!(ids(&ask(&["SEL"], Some(7), None, 10)), vec!["9", "8", "7"]);
+    // Paging stops at the first hour.
+    let first = ask(&[], Some(7), None, 2);
+    assert_eq!(ids(&first), vec!["9", "8"]);
+    let second = ask(&[], Some(7), first.next.clone(), 2);
+    assert_eq!(ids(&second), vec!["7"]);
+    assert_eq!(second.next, None);
+    let mut backwards = MarketLedgerParams {
+        branch_id: "1".into(),
+        tags: Vec::new(),
+        members: None,
+        kinds: Vec::new(),
+        first_hour: Some(11),
+        last_hour: 10,
+        before: None,
+        page_size: 10,
+    };
+    assert!(MarketLedger::validate(&backwards).is_err());
+    backwards.first_hour = Some(10);
+    assert!(MarketLedger::validate(&backwards).is_ok());
 }

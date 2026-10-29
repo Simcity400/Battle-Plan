@@ -252,7 +252,7 @@ impl Extract for BlockExtract {
             .heap(&observer.counter_keys)
             .heap(&observer.inputs);
         if let Some(first) = &self.first {
-            held.frame(&first.frame).changes(&first.changes);
+            held.value(&first.frame).value(&first.changes);
         }
         held.add(self.recording.bytes());
         for view in &self.held {
@@ -270,7 +270,7 @@ impl Extract for BlockExtract {
             );
         }
         if let Some(frame) = &self.observer.frame {
-            held.frame(frame);
+            held.value(frame);
         }
         held.add(self.observer.bytes());
         held.total()

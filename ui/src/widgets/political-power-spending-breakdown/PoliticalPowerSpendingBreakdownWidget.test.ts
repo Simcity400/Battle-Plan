@@ -30,8 +30,11 @@ test('registered spending breakdown draws everything recorded, names unrecorded 
   const host = globalThis as typeof globalThis & {__spendingBreakdown?: typeof state};
   host.__spendingBreakdown = state;
   const replacements: Record<string, string> = {
-    '/dashboard/usePoliticsSpending.ts': `export const usePoliticsSpending = (_widget, runtime) => ({track: runtime.tracks[0], tags: ['synthetic actor'],
-      data: globalThis.__spendingBreakdown.data, ready: true, known: () => globalThis.__spendingBreakdown.known, groupWarnings: [], retry() {}});
+    // The shown hour is the widget's window end, as the real hook answers it.
+    '/dashboard/usePoliticsSpending.ts': `import { resolveWindow } from '/ui/src/dashboard/model.ts';
+      export const usePoliticsSpending = (widget, runtime) => ({track: runtime.tracks[0], tags: ['synthetic actor'],
+      data: globalThis.__spendingBreakdown.data, ready: true, known: () => globalThis.__spendingBreakdown.known, groupWarnings: [], retry() {},
+      shownHour: resolveWindow(widget, runtime.tracks[0], runtime.tracks, runtime.clock.getHour())?.lastHour});
       export const useSpendingIdeaTooltips = () => ({infos: new Map(globalThis.__spendingBreakdown.data[0].ideaTooltips.ideas.map(info => [info.token, info])),
         art: new Map(), sources: {formats: new Map(), text: () => null, countryName: tag => tag, nameAt: (tag, hour) => {
           globalThis.__spendingBreakdown.namedAt.push(hour); return 'Dated ' + tag + ' at ' + hour; }}});`,

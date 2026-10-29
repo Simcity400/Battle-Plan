@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { plotFrame } from '../../charts/frame.ts';
+import { dayLabel } from '../../charts/draw.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ChartTokens } from '../../charts/tokens';
 import { formatBalance } from './measureData.ts';
@@ -15,7 +16,8 @@ test('actual balance widget uses prepared viewport, exact hour and keyboard read
   const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as (() => void)[], chart: undefined as TimeChartProps | undefined,
     products: [] as { product: string; active: boolean }[], queries: [] as { product: string; params: Record<string, unknown>; signal: AbortSignal }[],
     tokens: { surface: '#000', muted: '#888', lineWidth: { series: 2 }, countryColours: 'raw', categories: ['#123'] } as unknown as ChartTokens,
-    styles: { known: new Map([[tag, { tag, name: tag, color: [20, 50, 80] }]]), data: { warnings: [] } } };
+    styles: { known: new Map([[tag, { tag, name: tag, color: [20, 50, 80] }]]), data: { warnings: [] } },
+    drill: undefined as { open: boolean; day: string; onClose: () => void } | undefined, held: undefined as Map<number, () => void> | undefined };
   const host = globalThis as typeof globalThis & { __preparedBalanceFixture?: typeof fixture; __preparedBalanceHook?: (name: string, ...args: unknown[]) => unknown };
   host.__preparedBalanceFixture = fixture;
   host.__preparedBalanceHook = (name, ...args) => {
@@ -55,7 +57,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({open(){},menu:null});',
     '/charts/Legend.tsx': 'export default () => null;',
     '/charts/TimeChart.tsx': 'export default props => {globalThis.__preparedBalanceFixture.chart=props; return null;};',
-    '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
+    '/charts/drill/DrillHost.tsx': 'export default props => { globalThis.__preparedBalanceFixture.drill = props; return props.main; };',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'prepared-balance-fixture', enforce: 'pre', transform(source, id) {
@@ -76,10 +78,15 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
         return { hour: 90 };
       }
       assert.deepEqual(params.family, { kind: 'country-measure', measure: 'politicalPower' });
-      if (product === 'series-state') return { branchId: 'branch', measure: 'politicalPower', decimals: 5, warnings: [],
-        states: (params.reads as { tag: string; hour: number }[]).map(read => ({ ...read,
+      const reads = params.reads as { tag: string; hour: number }[];
+      const states = () => ({ branchId: 'branch', measure: 'politicalPower', decimals: 5, warnings: [],
+        states: reads.map(read => ({ ...read,
           run: read.hour === 50 ? null : { firstHour: read.hour < 50 ? 0 : 51, lastHour: read.hour < 50 ? 49 : 100,
-            valueRaw: raw, slot: 7, countryId: 11, startsSegment: true }, drop: null })) };
+            valueRaw: raw, slot: 7, countryId: 11, startsSegment: true }, drop: null })) });
+      // A chart pick's exact read, held until the test lets it finish.
+      if (product === 'series-state' && fixture.held && reads.length === 1 && [20, 30, 40].includes(reads[0].hour))
+        return new Promise(resolve => fixture.held!.set(reads[0].hour, () => resolve(states())));
+      if (product === 'series-state') return states();
       assert.equal(product, 'series-summary');
       if (Number(params.to) > 100) return null;
       const width = params.width as number;
@@ -121,6 +128,19 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.equal(tooltip!.rows[0].value, `${formatBalance(raw, 5, 2)} PP`, 'geometry f64 never supplies the exact tooltip');
     fixture.chart!.onHover!(50); render(); await settle();
     assert.equal(fixture.chart!.tooltip!(50, frame, [])!.rows[0].value, 'Not recorded');
+    // Picks finish out of order: only the newest still-open one chooses the breakdown.
+    fixture.held = new Map();
+    const pickAt = (hour: number) => fixture.chart!.onPick!(hour, { frame, until: null, point: { x: frame.toX(hour), y: frame.toY(Number(raw) / 1e5) } });
+    pickAt(20); pickAt(30);
+    fixture.held.get(30)!(); await settle();
+    assert.equal(fixture.drill!.open, true);
+    assert.equal(fixture.drill!.day, dayLabel(30));
+    fixture.held.get(20)!(); await settle();
+    assert.equal(fixture.drill!.day, dayLabel(30), 'an older pick finishing last does not take the breakdown back');
+    pickAt(40); fixture.drill!.onClose(); render();
+    fixture.held.get(40)!(); await settle();
+    assert.equal(fixture.drill!.open, false, 'a pick still reading when the breakdown closes does not reopen it');
+    fixture.held = undefined;
     fixture.chart!.onSummaryView!({ from: 0, to: 101, width: 100 }); render(); await settle();
     assert.match(render(), /Preparing the requested balance hours/);
     assert.ok(fixture.chart, 'pending terminal coverage retains the bounded chart and exact reached values');

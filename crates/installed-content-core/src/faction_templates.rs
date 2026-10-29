@@ -24,14 +24,17 @@ pub struct Catalog {
     definitions: BTreeMap<Token, BoundLocalization>,
     /// Each template's sprite name, the last definition's.
     icons: BTreeMap<Token, Vec<u8>>,
-    coverage: Coverage,
+    /// Definitions merge field by field, so the last file setting each
+    /// field decides it; one that leaves it unset decides nothing.
+    names: Coverage,
+    icon_sources: Coverage,
     pub warnings: Vec<String>,
 }
 
 impl Catalog {
     pub fn get(&self, token: &str) -> Result<Option<&BoundLocalization>, String> {
         let token = Token::c_str(token.as_bytes());
-        if let Some(why) = self.coverage.unknown(&identity(&token)) {
+        if let Some(why) = self.names.unknown(&identity(&token)) {
             return Err(why.to_string());
         }
         Ok(self.definitions.get(&token))
@@ -39,7 +42,7 @@ impl Catalog {
     /// The template's sprite name; None when no definition sets one.
     pub fn icon(&self, token: &str) -> Result<Option<&[u8]>, String> {
         let token = Token::c_str(token.as_bytes());
-        if let Some(why) = self.coverage.unknown(&identity(&token)) {
+        if let Some(why) = self.icon_sources.unknown(&identity(&token)) {
             return Err(why.to_string());
         }
         Ok(self.icons.get(&token).map(Vec::as_slice))
@@ -176,16 +179,16 @@ fn apply(catalogue: &mut Catalog, items: &[Item]) {
             continue;
         };
         let token = Token::c_str(item.key.as_deref().unwrap_or_default());
-        catalogue.coverage.add(&identity(&token));
         let found = catalogue.definitions.entry(token.clone()).or_default();
         for field in fields {
             if field.keyword_is("name") {
                 *found = BoundLocalization::from_value(&field.value);
-                catalogue.coverage.replace(&identity(&token));
+                catalogue.names.replace(&identity(&token));
             } else if field.keyword_is("icon")
                 && let Some(icon) = field.value.scalar()
             {
                 catalogue.icons.insert(token.clone(), icon.to_vec());
+                catalogue.icon_sources.replace(&identity(&token));
             }
         }
     }
@@ -196,7 +199,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     let mut result = Catalog::default();
     // Template definitions merge in file and layer order.
     for path in script_files::paths(layers, "common/factions/templates/", Some(".txt")) {
-        result.coverage.next_file();
+        result.names.next_file();
+        result.icon_sources.next_file();
         let file = parse(&path.read(layers)?, &names);
         apply(&mut result, &file.items);
         result.warnings.extend(
@@ -205,7 +209,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
                 .map(|why| format!("Faction templates in {path}: {why}")),
         );
         if let Some(why) = file.unsettled {
-            result.coverage.gap(&path.text(), why.to_string());
+            result.names.gap(&path.text(), why.to_string());
+            result.icon_sources.gap(&path.text(), why.to_string());
         }
     }
     Ok(result)
@@ -363,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn faction_templates_refuse_unknown_suffixes_until_an_explicit_name_replaces_them() {
+    fn faction_templates_refuse_unknown_suffixes_until_an_explicit_field_replaces_them() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let stack = Stack::new("faction_template_coverage");
@@ -381,17 +386,24 @@ mod tests {
         stack.write(
             &base,
             "common/factions/templates/c.txt",
-            "kept={name=KNOWN} hidden={icon=art}",
+            "kept={name=KNOWN} hidden={icon=art} late={icon=late_art}",
         );
         let db = read(&stack.layers(&[])).unwrap();
         assert_eq!(
             db.get("kept").unwrap().unwrap().nodes[0].key,
             FormattedLocalization::Key(b"KNOWN".to_vec())
         );
-        for token in ["hidden", "uncertain", "absent"] {
+        for token in ["hidden", "uncertain", "absent", "late"] {
             let why = db.get(token).unwrap_err();
             assert!(why.contains("b.txt"), "{why}");
             assert!(why.contains("synthetic_prefix"), "{why}");
         }
+        // A later name leaves the icon to the unread suffix; a later icon decides it.
+        for token in ["kept", "uncertain", "absent"] {
+            let why = db.icon(token).unwrap_err();
+            assert!(why.contains("b.txt"), "{why}");
+        }
+        assert_eq!(db.icon("hidden").unwrap(), Some(&b"art"[..]));
+        assert_eq!(db.icon("late").unwrap(), Some(&b"late_art"[..]));
     }
 }

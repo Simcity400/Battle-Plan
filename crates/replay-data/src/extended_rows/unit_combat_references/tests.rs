@@ -12,7 +12,6 @@ fn round_trip<T: Value + std::fmt::Debug + PartialEq>(value: &T) -> Vec<u8> {
 }
 fn packet() -> UnitCombatReferences {
     UnitCombatReferences {
-        speed_witness: Default::default(),
         sample_hour: PacketHour::Host,
         entries: vec![
             UnitCombatReference {
@@ -41,25 +40,22 @@ fn ordered_full_handles_and_repeats_round_trip_without_class_word_inference() {
     assert_eq!(bytes[30], 0);
 }
 #[test]
-fn movement_speed_witness_costs_nothing_when_absent_and_preserves_exact_samples() {
-    let mut packet = packet();
-    let ordinary = round_trip(&packet);
-    // The ordinary packet is exactly its count and ordered reference words:
-    // no diagnostic presence tag, length, field mask or column is added.
+fn a_packet_is_exactly_its_count_and_references_and_nothing_follows_them() {
+    let packet = packet();
+    let bytes = round_trip(&packet);
     let mut expected = (packet.entries.len() as u32).to_le_bytes().to_vec();
     for entry in &packet.entries {
         expected.extend_from_slice(&entry.combat.to_le_bytes());
         expected.push(entry.kind);
     }
-    assert_eq!(ordinary, expected);
-    for speed in [None, Some(0), Some(-1), Some(i64::MIN), Some(i64::MAX)] {
-        packet.speed_witness = Witnessed(Some(speed));
-        let bytes = round_trip(&packet);
-        assert_eq!(&bytes[..ordinary.len()], ordinary);
-        assert_eq!(
-            bytes.len(),
-            ordinary.len() + if speed.is_some() { 9 } else { 1 }
-        );
+    assert_eq!(bytes, expected);
+    // The retired diagnostic speed sample is no longer part of the packet.
+    for sample in [vec![0], vec![1, 0x71, 0x31, 0, 0, 0, 0, 0, 0]] {
+        let mut longer = vec![1];
+        longer.extend_from_slice(&bytes);
+        longer.extend_from_slice(&sample);
+        let field = Field::Opaque(Opaque::Encoded(&longer, crate::FORMAT_VERSION));
+        assert!(<Option<UnitCombatReferences> as NativeValue>::from_field(field).is_err());
     }
 }
 #[test]
@@ -71,7 +67,6 @@ fn historical_absence_current_refusal_and_known_empty_are_distinct() {
     assert!(Value::encode(&absent, &mut Vec::new()).is_err());
     assert_eq!(round_trip::<Field>(&None.into()), [0]);
     let empty = Some(UnitCombatReferences {
-        speed_witness: Default::default(),
         sample_hour: PacketHour::Host,
         entries: Vec::new(),
     })
@@ -110,7 +105,6 @@ fn frame_hour_count_and_kind_admission_are_exact() {
     assert!(packet.valid_at(i32::MAX, 3));
     assert!(!packet.valid_at(i32::MIN, 2));
     let stamped = UnitCombatReferences {
-        speed_witness: Default::default(),
         sample_hour: PacketHour::Stamped(i32::MIN),
         ..packet.clone()
     };
@@ -185,29 +179,6 @@ fn movement_and_railway_suffix_deltas_keep_legacy_fields_and_clear_refusal() {
     };
     suffix(TableId::RailwayGunCounterInputs, 28, &old, &row);
     suffix(TableId::RailwayGunCounterInputs, 28, &row, &old);
-}
-#[test]
-fn native_speed_samples_change_only_the_existing_packet_column() {
-    let mut packet = packet();
-    let ordinary = DivisionMovementRow {
-        division: 7,
-        combat_count: 3,
-        combat_references: Some(packet.clone()).into(),
-        ..Default::default()
-    };
-    packet.speed_witness = Witnessed(Some(Some(12_785)));
-    let witnessed = DivisionMovementRow {
-        combat_references: Some(packet.clone()).into(),
-        ..ordinary.clone()
-    };
-    suffix(TableId::DivisionMovement, 19, &ordinary, &witnessed);
-    packet.speed_witness = Witnessed(Some(None));
-    let refused = DivisionMovementRow {
-        combat_references: Some(packet).into(),
-        ..ordinary.clone()
-    };
-    suffix(TableId::DivisionMovement, 19, &witnessed, &refused);
-    suffix(TableId::DivisionMovement, 19, &refused, &ordinary);
 }
 fn historical_prefix<T: RowCodec + Fields + std::fmt::Debug>(
     table: TableId,

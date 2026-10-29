@@ -1211,53 +1211,58 @@ impl ModelLibrary {
             // Static-resource spheres and multiple-LOD unions have a different construction.
             // Do not substitute a runtime-bounds sphere for those forms.
             out.reach.collision_unsupported |= !frozen_skin || shape_lods.len() != 1;
-            if let Some(shapes) = shape_lods.first() {
+            // Any LOD may be drawn, so culling reaches around them all. Only the first feeds
+            // the collision sphere, which is unsupported with several anyway.
+            for (lod, shapes) in shape_lods.iter().enumerate() {
                 for (_, sub) in shapes
                     .iter()
                     .flat_map(|shape| shape.meshes.iter().map(|sub| (shape.name.as_str(), sub)))
                     .filter(|(_, sub)| super::mesh_effect::candidate(sub))
                 {
-                    // Runtime bounds transform each bone's bind-space box, rather than a
-                    // box fitted to the weighted, posed vertices. The sphere is half the
-                    // resulting bounds' diagonal. Keep this independent of culling reach.
-                    let mut bone_bounds: BTreeMap<i32, ([f32; 3], [f32; 3])> = BTreeMap::new();
-                    for (vertex, &position) in sub.positions.iter().enumerate() {
-                        let joints: Vec<i32> = sub
-                            .skin
-                            .as_ref()
-                            .map(|skin| {
-                                skin.influences(vertex)
-                                    .into_iter()
-                                    .map(|(joint, _)| joint as i32)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        for joint in if joints.is_empty() { vec![-1] } else { joints } {
-                            let (low, high) =
-                                bone_bounds.entry(joint).or_insert((position, position));
-                            for axis in 0..3 {
-                                low[axis] = low[axis].min(position[axis]);
-                                high[axis] = high[axis].max(position[axis]);
+                    if lod == 0 {
+                        // Runtime bounds transform each bone's bind-space box, rather than a
+                        // box fitted to the weighted, posed vertices. The sphere is half the
+                        // resulting bounds' diagonal. Keep this independent of culling reach.
+                        let mut bone_bounds: BTreeMap<i32, ([f32; 3], [f32; 3])> =
+                            BTreeMap::new();
+                        for (vertex, &position) in sub.positions.iter().enumerate() {
+                            let joints: Vec<i32> = sub
+                                .skin
+                                .as_ref()
+                                .map(|skin| {
+                                    skin.influences(vertex)
+                                        .into_iter()
+                                        .map(|(joint, _)| joint as i32)
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            for joint in if joints.is_empty() { vec![-1] } else { joints } {
+                                let (low, high) =
+                                    bone_bounds.entry(joint).or_insert((position, position));
+                                for axis in 0..3 {
+                                    low[axis] = low[axis].min(position[axis]);
+                                    high[axis] = high[axis].max(position[axis]);
+                                }
                             }
                         }
-                    }
-                    for (joint, (low, high)) in bone_bounds {
-                        for corner in 0..8 {
-                            let p = [0, 1, 2].map(|axis| {
-                                if corner & (1 << axis) == 0 {
-                                    low[axis]
+                        for (joint, (low, high)) in bone_bounds {
+                            for corner in 0..8 {
+                                let p = [0, 1, 2].map(|axis| {
+                                    if corner & (1 << axis) == 0 {
+                                        low[axis]
+                                    } else {
+                                        high[axis]
+                                    }
+                                });
+                                let p = if joint >= 0
+                                    && let Some(base) = skin_base
+                                {
+                                    skinned(&self.palette, p, &[(joint as u32, 1.0)], base)
                                 } else {
-                                    high[axis]
-                                }
-                            });
-                            let p = if joint >= 0
-                                && let Some(base) = skin_base
-                            {
-                                skinned(&self.palette, p, &[(joint as u32, 1.0)], base)
-                            } else {
-                                own.transform_point(p)
-                            };
-                            out.reach.collision_point(p);
+                                    own.transform_point(p)
+                                };
+                                out.reach.collision_point(p);
+                            }
                         }
                     }
                     let mut posed = false;

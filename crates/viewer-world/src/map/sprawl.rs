@@ -522,6 +522,9 @@ struct City {
     bounds: [f32; 4],
     mesh: usize,
     instance: ModelInstance,
+    /// Whether its root, once idle, plays idle until requested away, so that a repeated
+    /// idle request is one the game's state setter skips.
+    idle_holds: bool,
 }
 
 #[derive(Clone)]
@@ -669,11 +672,18 @@ impl Presentation {
                     // when its authored default differs or damage is unavailable.
                     for &index in &group.cities {
                         if let Some(actor) = &mut self.actors[index] {
-                            Arc::make_mut(&mut actor.requests).push(Request {
-                                time: time - actor.start,
-                                phase_time: None,
-                                state: "idle".into(),
-                            });
+                            let skipped = self.cities[index].idle_holds
+                                && actor
+                                    .requests
+                                    .last()
+                                    .is_some_and(|request| request.state == "idle");
+                            if !skipped {
+                                Arc::make_mut(&mut actor.requests).push(Request {
+                                    time: time - actor.start,
+                                    phase_time: None,
+                                    state: "idle".into(),
+                                });
+                            }
                             actor.state = "idle";
                             actor.visible = false;
                         }
@@ -861,6 +871,21 @@ impl Sprawl {
             layers.note_refused(format!("model entity {entity}"));
         }
         warnings.extend(model_warnings.into_iter().map(|(_, message)| message));
+        let idle_holds = |slot: usize| {
+            library.rig(slot).nodes.first().is_none_or(|root| {
+                root.clips
+                    .iter()
+                    .filter(|clip| clip.state.name == "idle")
+                    .all(|clip| {
+                        clip.state.looping
+                            || clip
+                                .state
+                                .next_state
+                                .as_deref()
+                                .is_none_or(|next| next == "idle")
+                    })
+            })
+        };
         let mut placed = Vec::with_capacity(plan.buildings.len());
         let mut cities = Vec::with_capacity(plan.buildings.len());
         for (id, building) in plan.buildings.iter().enumerate() {
@@ -887,6 +912,11 @@ impl Sprawl {
                     bounds,
                     mesh: slot,
                     instance,
+                    idle_holds: idle_holds(slot)
+                        && library
+                            .alternatives
+                            .get(&slot)
+                            .is_none_or(|&recorded| idle_holds(recorded)),
                 });
             } else {
                 warnings.push(format!("City sprawl entity {}: 1 particle actor refused; province {} has no bitmap box", building.entity, building.owner));
@@ -1167,6 +1197,7 @@ mod tests {
                 animation: STOPPED,
                 ..Default::default()
             },
+            idle_holds: false,
         }];
         let damage = scene.damage.clone();
         scene = Presentation::new(cities, scene.damaged, scene.destroyed);
@@ -1405,6 +1436,8 @@ mod tests {
                         scale: 1.0,
                         ..Default::default()
                     },
+                    // Every synthetic state loops.
+                    idle_holds: true,
                 }
             })
             .collect();
@@ -1620,6 +1653,61 @@ mod tests {
     }
 
     #[test]
+    fn repeated_culls_request_idle_again_only_where_idle_can_end() {
+        let camera = Placement {
+            center: [10.0, 10.0],
+            height: 60.0,
+            pose: Default::default(),
+        }
+        .on(MapSize::TEST, MapDefines::test());
+        for (idle_holds, expected) in [
+            (true, &["idle", "burning", "idle"][..]),
+            (false, &["idle", "idle", "idle", "burning", "idle"][..]),
+        ] {
+            let mut scene = Presentation::new(
+                vec![City {
+                    province: 7,
+                    bounds: [8.0, 8.0, 12.0, 12.0],
+                    mesh: 0,
+                    instance: ModelInstance {
+                        animation: STOPPED,
+                        ..Default::default()
+                    },
+                    idle_holds,
+                }],
+                80_000,
+                30_000,
+            );
+            let mut damage = Arc::new(Damage {
+                health: BTreeMap::from([(7, Some(100_000))]).try_into().unwrap(),
+                refused: None,
+            });
+            scene.set_shared_damage(&damage);
+            // A healthy city panned out and back three times.
+            for step in 0..3 {
+                let time = 10.0 + step as f32;
+                scene.update(camera, [1024, 768], true, time);
+                scene.update(camera, [1024, 768], false, time + 0.5);
+            }
+            Arc::make_mut(&mut damage).health = damage.health.inserted(7, Some(20_000)).unwrap();
+            scene.set_shared_damage(&damage);
+            scene.update(camera, [1024, 768], true, 20.0);
+            scene.update(camera, [1024, 768], false, 21.0);
+            let actor = scene.actors[0].as_ref().unwrap();
+            assert_eq!(
+                actor
+                    .requests
+                    .iter()
+                    .map(|request| request.state.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+                "idle holds: {idle_holds}"
+            );
+            assert_eq!(actor.state, "idle");
+        }
+    }
+
+    #[test]
     fn unchanged_city_membership_and_state_keep_the_renderer_stream() {
         let mut scene = Presentation::new(
             vec![City {
@@ -1630,6 +1718,7 @@ mod tests {
                     animation: STOPPED,
                     ..Default::default()
                 },
+                idle_holds: false,
             }],
             80_000,
             30_000,
@@ -1698,6 +1787,7 @@ mod tests {
                     animation_seed: index,
                     ..Default::default()
                 },
+                idle_holds: false,
             })
             .collect();
         let mut scene = Presentation::new(cities, 80_000, 30_000);

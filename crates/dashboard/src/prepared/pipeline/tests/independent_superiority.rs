@@ -988,6 +988,66 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
     });
 }
 
+/// While air superiority is prepared through part of the branch, a theatre's
+/// region choices keep the membership its prepared hours hold, as they do
+/// once the branch is prepared.
+#[test]
+fn air_theatre_choices_read_the_prepared_prefix_while_the_rest_is_sampled() {
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("air-theatre-choices");
+        for _ in 0..2 {
+            run_measured(
+                &source,
+                None,
+                &AtomicBool::new(false),
+                true,
+                Duration::ZERO,
+                |_| {},
+            )
+            .unwrap();
+        }
+        let choices = |first: i32, last: i32| {
+            query(
+                &source,
+                serde_json::json!({"branchId":"1", "view":"choices", "firstHour":first,
+                    "lastHour":last, "theatres":["700"]}),
+            )
+        };
+        let regions = |reply: &serde_json::Value| -> Vec<serde_json::Value> {
+            reply["regions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|region| region["id"].clone())
+                .collect()
+        };
+        let unrecorded = |reply: &serde_json::Value| {
+            reply["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning == "Air theatre membership is not recorded in this window")
+        };
+        let windows = [(100, 111), (100, LAST)];
+        let partial: Vec<_> = windows
+            .iter()
+            .map(|&(first, last)| choices(first, last))
+            .collect();
+        assert_eq!(partial[0]["coverage"]["lastHour"], 123);
+        plain(&source);
+        for (partial, &(first, last)) in partial.iter().zip(&windows) {
+            let complete = choices(first, last);
+            assert!(complete.get("approximate").is_none());
+            assert_eq!(regions(&complete), [serde_json::json!(7000)]);
+            assert_eq!(regions(partial), regions(&complete), "{first}..{last}");
+            assert!(!unrecorded(partial), "{first}..{last}");
+        }
+        clear(source);
+    });
+}
+
 fn air_day_values(reply: &serde_json::Value, day: usize) -> serde_json::Value {
     let sides = reply["sides"].as_array().unwrap();
     let mut rows = BTreeMap::new();

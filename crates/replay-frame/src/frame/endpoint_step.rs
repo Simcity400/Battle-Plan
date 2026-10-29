@@ -12,7 +12,7 @@ pub use writer::EndpointWriter;
 pub use writer::key_by_key;
 
 const MAGIC: &[u8; 4] = b"H4ES";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Point {

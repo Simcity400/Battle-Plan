@@ -6,11 +6,11 @@ import { resolveOptions, sectionFields } from '../../dashboard/options.ts';
 import type { ArmySizeReply } from '../../generated/dashboard';
 import '../definitions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw,
-  measureChoices, mergeArmyWindows, validateArmySizeReply, validateArmyWindow } from './armySizeData.ts';
+import { armyAbsent, armyMeasure, armySizeRequest, armyTooltips, armyWindows, formatArmyValue, formatArmyRaw,
+  measureChoices, mergeArmyWindows, offersMeasure, validateArmySizeReply, validateArmyWindow } from './armySizeData.ts';
 
 const REPLY: ArmySizeReply = {
-  branchId: 'synthetic', available: true, measures: ['divisions', 'strength', 'battalions'], warnings: [],
+  branchId: 'synthetic', available: true, measures: ['divisions', 'strength', 'battalions'], unknownMeasures: [], warnings: [],
   windows: [], window: 0, interval: { firstHour: 100, lastHour: 105 },
   types: [{ key: 'modded_group', name: 'Modded unit group' }],
   series: [{ tag: 'opaque tag', membership: null, segments: [{ firstHour: 100, lastHour: 105 }],
@@ -38,6 +38,24 @@ test('only recorded measures are offered; divisions are the fallback until manpo
   assert.equal(armyMeasure('strength', REPLY.measures), 'strength');
   assert.equal(armyMeasure('strength', ['divisions']), 'divisions');
   assert.equal(armyMeasure('', ['strength']), 'strength');
+});
+
+test('a measure no prepared or sampled hour has read yet is unknown, never absent', () => {
+  const preparing: ArmySizeReply = { ...REPLY, available: false, measures: ['strength'], unknownMeasures: ['manpower', 'divisions'] };
+  assert.equal(validateArmySizeReply(preparing), preparing);
+  // A measure is reported or unknown, never both.
+  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: ['divisions'] }));
+  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: ['unknown'] }));
+  assert.throws(() => validateArmySizeReply({ ...REPLY, unknownMeasures: undefined }));
+  assert.deepEqual(measureChoices(preparing).map(choice => choice.value), ['manpower', 'divisions', 'strength']);
+  assert.equal(armyMeasure('manpower', preparing.measures, preparing.unknownMeasures), 'manpower', 'an explicit choice stays chosen');
+  assert.equal(armyMeasure('', preparing.measures, preparing.unknownMeasures), 'strength', 'a default is a reported measure');
+  assert.equal(armyMeasure('battalions', preparing.measures, preparing.unknownMeasures), 'strength');
+  assert.equal(offersMeasure(preparing, 'manpower'), true);
+  assert.equal(offersMeasure(preparing, 'battalions'), false);
+  assert.equal(armyAbsent(preparing), false, 'divisions may still be found');
+  assert.equal(armyAbsent({ ...preparing, unknownMeasures: [] }), true);
+  assert.equal(armyAbsent(REPLY), false);
 });
 
 test('new Army size widgets share the top 10, race, date-off and owner defaults', () => {

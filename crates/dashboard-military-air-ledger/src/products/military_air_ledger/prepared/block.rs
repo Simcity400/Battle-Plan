@@ -193,7 +193,7 @@ impl Extract for BlockExtract {
     fn bytes(&self) -> u64 {
         let mut held = HeldBytes::default();
         if let Some(first) = &self.first {
-            held.frame(&first.frame)
+            held.value(&first.frame)
                 .heap(&first.air)
                 .heap(&first.bombing);
         }

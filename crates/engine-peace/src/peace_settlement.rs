@@ -314,11 +314,19 @@ fn copy_internal(
                         .ok_or("peace action size overflow")?,
                 )?;
                 for ordinal in 0..actions.count as usize {
+                    let action_pointer =
+                        || element::<u64>(memory, actions, ordinal).map(|at| at as usize);
+                    // An excluded bid needs no storage, so it can neither fill nor truncate.
+                    if settled
+                        && !peace_action::included_in_settlement(memory, base, action_pointer()?)?
+                    {
+                        continue;
+                    }
                     if result.actions == output.actions.len() {
                         result.omitted = actions.count as usize - ordinal;
                         return Ok(());
                     }
-                    let action_pointer = element::<u64>(memory, actions, ordinal)? as usize;
+                    let action_pointer = action_pointer()?;
                     let operands = peace_action::copy(memory, base, action_pointer)?;
                     if !settled || operands.included_in_settlement() {
                         let mut action = Action {

@@ -388,6 +388,21 @@ pub fn fixture() -> Vec<u8> {
     bytes
 }
 
+/// Slot zero holds the reserved country object (id zero) and a fourth slot holds it again, as
+/// the game's country table may.
+pub fn add_reserved_alias(bytes: &mut [u8]) {
+    const RESERVED: usize = 0x3200;
+    array(bytes, cgame_state::COUNTRIES, CTAB, 4);
+    pointer(bytes, CTAB, RESERVED);
+    pointer(bytes, CTAB + 3 * 8, RESERVED);
+    put(
+        bytes,
+        RESERVED,
+        ((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+    );
+    put(bytes, RESERVED + ccountry::ID, 0_u32.to_le_bytes());
+}
+
 /// Reference typed walks with identical pooled buffers, outcomes and
 /// arenas installed exactly like `decode_projects_payload` installs them.
 pub fn direct(memory: &impl engine_native::Memory, capacities: &Capacities) -> Captured {

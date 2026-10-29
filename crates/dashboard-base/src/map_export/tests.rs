@@ -763,7 +763,8 @@ fn product_codec_preserves_optional_float_bits_and_refuses_every_unadmitted_type
         assert_eq!(codec::decode_product(&bytes, limits).unwrap(), snow);
     }
     let bytes = codec::encode_product(&snow, limits).unwrap();
-    let province_length = 16 + snow.texels.len();
+    let mask_length = 16 + snow.texels.len();
+    let province_length = mask_length + 8 + snow.unknown.len();
     let factor_length = province_length
         + 8
         + snow
@@ -772,7 +773,7 @@ fn product_codec_preserves_optional_float_bits_and_refuses_every_unadmitted_type
             .map(|word| 1 + usize::from(word.is_some()) * 8)
             .sum::<usize>()
         + 1;
-    for offset in [province_length, factor_length] {
+    for offset in [mask_length, province_length, factor_length] {
         let mut bad = bytes.clone();
         bad[offset..offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(codec::decode_product(&bad, limits).is_err());
@@ -2370,7 +2371,8 @@ fn snow_geometry_rejects_plausible_container_counts_before_generated_allocation(
     let snow = input.build(&frame(1, 0)).unwrap();
     let limits = input.limits();
     let bytes = codec::encode_product(&snow, limits).unwrap();
-    let provinces = 16 + snow.texels.len();
+    let cells = 16 + snow.texels.len();
+    let provinces = cells + 8 + snow.unknown.len();
     let factors = provinces
         + 8
         + snow
@@ -2381,6 +2383,7 @@ fn snow_geometry_rejects_plausible_container_counts_before_generated_allocation(
         + 1;
     for (offset, expected) in [
         (8, snow.texels.len()),
+        (cells, snow.unknown.len()),
         (provinces, limits.provinces),
         (factors, limits.factors),
     ] {
@@ -2472,6 +2475,7 @@ fn finite_headroom_between_encoded_buffers_and_geometry_decode_peak_uses_the_unc
     let typed_peak = raw
         + manifest_raw
         + expected.texels.len()
+        + expected.unknown.len()
         + expected.province_snow.len() * size_of::<Option<i64>>()
         + 2 * limits.factors * size_of::<Option<f32>>()
         + size_of::<SnowMud>()

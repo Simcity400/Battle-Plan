@@ -241,13 +241,25 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         };
     // The speed getter returns the receiver's stored speed at the filtered site.
     let amount = if railway { amount } else { operands.speed };
-    // Railway instant progress is player-only; the amount identifies the path
-    // without reading the player global.
+    // An ordinary railway speed can equal the instant amount: read the path's own gate.
     let cheat = if railway {
-        amount == engine_production::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
+        match engine_production::construction_ic_sites::railway_instant(&memory, base, line) {
+            Ok(cheat) => cheat,
+            Err(reason) => {
+                refuse(reason);
+                return;
+            }
+        }
     } else {
         operands.instant
     };
+    if railway
+        && cheat
+        && amount != engine_production::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
+    {
+        refuse("construction output railway instant amount unsupported");
+        return;
+    }
     // The cheat leaves repairs at ordinary speed but skips their reserved bank withdrawal.
     let unwithdrawn = cheat && !railway && operands.repair;
     let instant = cheat && !unwithdrawn;
@@ -774,12 +786,14 @@ mod growth_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::cproduction_line;
+    use engine_native::{
+        ccountry, cgame_state, cgame_state::SINGLETON_RVA, cproduction_line, cproduction_status,
+    };
     use engine_production::{
         construction_ic_sites::CIC_BANK_DRAW, construction_ic_sites::INSTANT_CONSTRUCTION,
         construction_ic_sites::INVALID_REFERENCE, construction_ic_sites::LINE_HANDLE,
         construction_ic_sites::LINE_VTABLES, construction_ic_sites::LINKED_LINE,
-        construction_ic_sites::REPAIR_LEVELS,
+        construction_ic_sites::RAILWAY_INSTANT_AMOUNT, construction_ic_sites::REPAIR_LEVELS,
     };
 
     #[test]
@@ -848,28 +862,63 @@ mod tests {
         observe_for_test(false, 0);
     }
 
-    /// Owned memory standing in for the two globals the detours read (the instant
-    /// flag and the invalid reference), placed so each is at its RVA from `base`;
-    /// vtables are only compared as values.
+    /// Owned memory standing in for the globals the detours read (the game state,
+    /// the instant flag and the invalid reference), placed so each is at its RVA
+    /// from `base`; vtables are only compared as values.
     struct Image {
         bytes: Vec<u64>,
     }
     impl Image {
         const INVALID: u64 = 0xffff_ffff_0000_0000;
         fn new() -> Self {
-            let mut bytes = vec![0_u64; (INVALID_REFERENCE - INSTANT_CONSTRUCTION) / 8 + 1];
-            bytes[(INVALID_REFERENCE - INSTANT_CONSTRUCTION) / 8] = Self::INVALID;
+            let mut bytes = vec![0_u64; (INVALID_REFERENCE - SINGLETON_RVA) / 8 + 1];
+            bytes[(INVALID_REFERENCE - SINGLETON_RVA) / 8] = Self::INVALID;
             Self { bytes }
         }
         fn base(&self) -> usize {
-            (self.bytes.as_ptr() as usize) - INSTANT_CONSTRUCTION
+            (self.bytes.as_ptr() as usize) - SINGLETON_RVA
         }
         fn set_instant(&mut self, on: bool) {
-            self.bytes[0] = u64::from(on);
+            self.bytes[(INSTANT_CONSTRUCTION - SINGLETON_RVA) / 8] = u64::from(on);
+        }
+        fn set_state(&mut self, state: usize) {
+            self.bytes[0] = state as u64;
         }
     }
 
-    /// A live line image; owner pointers are intentionally absent.
+    /// A railway line's production status, its country `id`, and the game state
+    /// viewing `playing`, whose links file countries 5 and 7 together.
+    struct Owner {
+        status: Vec<u64>,
+        country: Vec<u64>,
+        state: Vec<u64>,
+        links: Vec<u32>,
+    }
+    impl Owner {
+        fn new(image: &mut Image, id: u32, playing: u32) -> Self {
+            let base = image.base();
+            let mut owner = Self {
+                status: vec![0; cproduction_status::COUNTRY / 8 + 1],
+                country: vec![0; ccountry::PRODUCTION_STATUS / 8 + 1],
+                state: vec![0; cgame_state::LOCAL_PLAYER_COUNTRY / 8 + 1],
+                links: vec![0, 1, 2, 3, 4, 5, 6, 5],
+            };
+            let status = owner.status.as_ptr() as u64;
+            let country = owner.country.as_ptr() as u64;
+            owner.status[0] = (base + cproduction_status::VTABLE_RVA) as u64;
+            owner.status[cproduction_status::COUNTRY / 8] = country;
+            owner.country[0] = (base + ccountry::VTABLE_RVA) as u64;
+            owner.country[ccountry::ID / 8] = u64::from(id);
+            owner.country[ccountry::PRODUCTION_STATUS / 8] = status;
+            owner.state[cgame_state::COUNTRY_LINKS / 8] = owner.links.as_ptr() as u64;
+            owner.state[cgame_state::COUNTRY_LINKS / 8 + 1] = 8 | 8 << 32;
+            owner.state[cgame_state::LOCAL_PLAYER_COUNTRY / 8] = u64::from(playing);
+            image.set_state(owner.state.as_ptr() as usize);
+            owner
+        }
+    }
+
+    /// A live line image; owner pointers are absent unless [`Line::owned_by`] sets them.
     struct Line {
         line: Vec<u64>,
     }
@@ -896,6 +945,10 @@ mod tests {
                 Image::INVALID
             };
             Self { line }
+        }
+        fn owned_by(mut self, owner: &Owner) -> Self {
+            self.line[cproduction_line::PRODUCTION_STATUS / 8] = owner.status.as_ptr() as u64;
+            self
         }
         fn address(&self) -> usize {
             self.line.as_ptr() as usize
@@ -1112,7 +1165,8 @@ mod tests {
         let _lock = test_lock();
         let mut image = Image::new();
         observe_for_test(true, image.base());
-        let rail = Line::new(&image, true, 0x32_0000_1269, 0, 0, false);
+        let owner = Owner::new(&mut image, 5, 5);
+        let rail = Line::new(&image, true, 0x32_0000_1269, 0, 0, false).owned_by(&owner);
         // Speed < 1: the production advance makes no progress call.
         RAILWAY_LINE.set((rail.address(), 0));
         RAILWAY_LINE.set((0, 0));
@@ -1120,7 +1174,7 @@ mod tests {
         image.set_instant(true);
         RAILWAY_LINE.set((rail.address(), 0));
         for _ in 0..6 {
-            observe_segment(10_000_000_000);
+            observe_segment(RAILWAY_INSTANT_AMOUNT);
         }
         RAILWAY_LINE.set((0, 0));
         let entries = drained(8).1;
@@ -1136,7 +1190,9 @@ mod tests {
         let mut image = Image::new();
         image.set_instant(true);
         observe_for_test(true, image.base());
-        let rail = Line::new(&image, true, 0x35_0000_1269, 50_000, 0, false);
+        // Another country than the viewing one: the flag does not apply.
+        let owner = Owner::new(&mut image, 6, 5);
+        let rail = Line::new(&image, true, 0x35_0000_1269, 50_000, 0, false).owned_by(&owner);
         RAILWAY_LINE.set((rail.address(), 0));
         observe_segment(180_000);
         observe_segment(30_000);
@@ -1150,6 +1206,46 @@ mod tests {
             (entries[1].bank, entries[1].instant, entries[1].carry),
             (0, false, true)
         );
+        observe_for_test(false, 0);
+    }
+
+    /// An ordinary speed or carry equal to the instant amount stays factory output
+    /// with its bank draw; the path, not the amount, decides.
+    #[test]
+    fn an_ordinary_railway_spend_equal_to_the_instant_amount_keeps_its_bank_draw() {
+        let _lock = test_lock();
+        let mut image = Image::new();
+        observe_for_test(true, image.base());
+        let other = Owner::new(&mut image, 6, 5);
+        let rail = Line::new(&image, true, 0x37_0000_1269, 50_000, 0, false).owned_by(&other);
+        for instant in [false, true] {
+            image.set_instant(instant);
+            RAILWAY_LINE.set((rail.address(), 0));
+            observe_segment(RAILWAY_INSTANT_AMOUNT);
+            observe_segment(RAILWAY_INSTANT_AMOUNT);
+            RAILWAY_LINE.set((0, 0));
+            let (result, entries) = drained(2);
+            assert!(result.unwrap().complete());
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|e| (e.amount, e.bank, e.instant, e.carry))
+                    .collect::<Vec<_>>(),
+                [
+                    (RAILWAY_INSTANT_AMOUNT, 50_000, false, false),
+                    (RAILWAY_INSTANT_AMOUNT, 0, false, true)
+                ]
+            );
+        }
+        // On the instant path the game passes exactly the instant amount.
+        let player = Owner::new(&mut image, 7, 5);
+        let rail = Line::new(&image, true, 0x38_0000_1269, 50_000, 0, false).owned_by(&player);
+        let refused = COUNTERS[11].load(Ordering::Relaxed);
+        RAILWAY_LINE.set((rail.address(), 0));
+        observe_segment(180_000);
+        RAILWAY_LINE.set((0, 0));
+        assert!(drained(2).0.is_err());
+        assert_eq!(COUNTERS[11].load(Ordering::Relaxed), refused + 1);
         observe_for_test(false, 0);
     }
 

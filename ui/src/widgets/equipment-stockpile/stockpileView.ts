@@ -27,12 +27,13 @@ export interface StockRow {
 const unknownWhere = (spans: EquipmentStockpileReply['stockHours'], hour: number, value: bigint | null) => value == null && runAt(spans, hour) != null;
 
 /** Every type with anything at the hour (stock, output, need or a surplus, known or
- * not), and how many types have nothing then. */
+ * not), how many types are read to have nothing then, and how many show nothing only
+ * because a value was not read (`unrecorded`): those are never said to be empty. */
 export function stockRows(reply: EquipmentStockpileReply, groups: readonly StockGroup[], hour: number, mode: BalanceMode, count: StockCount)
-  : { rows: StockRow[]; quiet: number } {
+  : { rows: StockRow[]; quiet: number; unrecorded: number } {
   const amount = (raw: bigint) => formatAmount(raw, reply.decimals, 0);
   const rows: StockRow[] = [];
-  let quiet = 0;
+  let quiet = 0, unrecorded = 0;
   for (const group of groups) {
     const stock = stockAt(reply, group, hour);
     const output = count === 'ic' ? dailyIcAt(reply, group, hour) : dailyAt(reply, group, hour);
@@ -43,7 +44,10 @@ export function stockRows(reply: EquipmentStockpileReply, groups: readonly Stock
     const holds = (stock != null && stock !== 0n) || unknownWhere(reply.stockHours, hour, stock)
       || (output != null && output !== 0n) || unknownWhere(reply.lineHours, hour, output)
       || (player && (!complete || (surplus != null && surplus !== 0n) || (logistics?.need ?? 0n) !== 0n || unknownWhere(reply.balanceHours, hour, surplus)));
-    if (!holds) { quiet++; continue; }
+    if (!holds) {
+      if (stock != null && output != null && (!player || surplus != null && logistics?.need != null)) quiet++; else unrecorded++;
+      continue;
+    }
     const models = group.variants.map(variant => ({ name: variantName(variant, hour), stock: stockAt(reply, { variants: [variant] }, hour),
       output: dailyAt(reply, { variants: [variant] }, hour) }))
       .filter(model => model.stock !== 0n || (model.output != null && model.output !== 0n))
@@ -63,5 +67,5 @@ export function stockRows(reply: EquipmentStockpileReply, groups: readonly Stock
     const text = [named, held].filter(Boolean).join(' · ');
     rows.push({ group, models: text, surplus, share: complete ? shareOf(logistics) : null, stock, output });
   }
-  return { rows, quiet };
+  return { rows, quiet, unrecorded };
 }

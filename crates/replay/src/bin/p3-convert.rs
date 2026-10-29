@@ -35,9 +35,10 @@ use replay_frame::frame::{Metrics, READ_TIME_NOT_RECORDED, TableUpdate, TableVie
 use serde_json::json;
 use std::{
     collections::{BTreeSet, HashMap},
+    ffi::OsString,
     fs::File,
     io::{self, BufWriter, Seek, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Instant,
 };
 
@@ -1057,8 +1058,18 @@ impl Output {
     }
 }
 
-fn main() -> io::Result<()> {
-    let mut args = std::env::args_os().skip(1);
+struct Options {
+    input: PathBuf,
+    output: PathBuf,
+    unit_hours: u32,
+    /// `--unit-hours` times `--restart-units`, which fits a `u32`.
+    restart_hours: u32,
+    level: i32,
+    window_log: u32,
+    budget_mb: u32,
+}
+
+fn options(mut args: impl Iterator<Item = OsString>) -> io::Result<Options> {
     let usage = || invalid("p3-convert <recording.battleplan> <out.h4col> [--unit-hours 720] [--restart-units 9] [--level 3] [--window-log 24] [--budget-mb 30]");
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage());
@@ -1079,12 +1090,87 @@ fn main() -> io::Result<()> {
     if unit_hours == 0 || restart_units == 0 {
         return Err(usage());
     }
-    let (input, output) = (PathBuf::from(input), PathBuf::from(output));
+    let restart_hours = unit_hours
+        .checked_mul(restart_units)
+        .ok_or_else(|| invalid("--unit-hours times --restart-units passes 2^32 hours"))?;
+    Ok(Options {
+        input: PathBuf::from(input),
+        output: PathBuf::from(output),
+        unit_hours,
+        restart_hours,
+        level,
+        window_log,
+        budget_mb,
+    })
+}
+
+/// What one file is, whichever name or hard link reaches it.
+#[cfg(windows)]
+fn identity(file: &File) -> io::Result<(u64, [u8; 16])> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx};
+    let mut info: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: an open handle and an owned FILE_ID_INFO of the size passed.
+    if unsafe { GetFileInformationByHandleEx(file.as_raw_handle(), FileIdInfo, std::ptr::from_mut(&mut info).cast(), std::mem::size_of::<FILE_ID_INFO>() as u32) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+#[cfg(unix)]
+fn identity(file: &File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+/// The unfinished output and the counts file beside `output`, refused where any of them, or
+/// `output` itself, is the recording at `input`: writing one would destroy the recording.
+fn written_paths(input: &Path, output: &Path) -> io::Result<(PathBuf, PathBuf)> {
+    let source = identity(&File::open(input)?)?;
+    let beside = |suffix: &str| {
+        let mut path = output.as_os_str().to_owned();
+        path.push(suffix);
+        PathBuf::from(path)
+    };
+    let (partial, counts) = (beside(".partial"), beside(".counts.json"));
+    for path in [output, &partial, &counts] {
+        let reaches = match File::open(path) {
+            Ok(file) => identity(&file)? == source,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if reaches {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} is the recording being converted", path.display()),
+            ));
+        }
+    }
+    Ok((partial, counts))
+}
+
+/// Removes the unfinished output unless it was published.
+struct Unfinished(Option<PathBuf>);
+
+impl Drop for Unfinished {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn main() -> io::Result<()> {
+    let Options { input, output, unit_hours, restart_hours, level, window_log, budget_mb } = options(std::env::args_os().skip(1))?;
     let source_bytes = std::fs::metadata(&input)?.len();
     let replay = Replay::open_path(&input)?;
+    let (partial, counts) = written_paths(&input, &output)?;
     let mut stream = ReplayStream::new(&TableId::ALL)?;
+    // Declared before `out`, so a failure closes the file before removing it.
+    let mut unfinished = Unfinished(Some(partial.clone()));
     let mut out = Output {
-        file: BufWriter::new(File::create(&output)?),
+        file: BufWriter::new(File::create(&partial)?),
         level,
         window_log,
         budget: budget_mb as usize * 1_000_000,
@@ -1229,7 +1315,7 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
-            if hours % (unit_hours * restart_units) == 0 {
+            if hours % restart_hours == 0 {
                 // The dictionary strings first used since the last restart, then every table.
                 let mut chunk = Bytes::new();
                 chunk.varint((dictionary.bytes.len() - dictionary.restarted) as u64)?;
@@ -1280,6 +1366,8 @@ fn main() -> io::Result<()> {
     out.file.flush()?;
     let total = out.file.stream_position()?;
     drop(out.file);
+    std::fs::rename(&partial, &output)?;
+    unfinished.0 = None;
     let per_hour = |bytes: u64| bytes as f64 / f64::from(hours.max(1));
     let mut memory = out.walker_memory.clone();
     memory.sort_unstable();
@@ -1328,7 +1416,7 @@ fn main() -> io::Result<()> {
         "hours": hours,
         "gate": "every written slot each hour, every live slot at every unit's end and at the end, and every hour's stored metrics: no difference",
         "unit_hours": unit_hours,
-        "restart_hours": unit_hours * restart_units,
+        "restart_hours": restart_hours,
         "level": level,
         "restart_window_log": window_log,
         "walker_decode_memory": {
@@ -1358,8 +1446,6 @@ fn main() -> io::Result<()> {
         "largest_columns": largest,
         "tables": tables,
     });
-    let mut counts = output.into_os_string();
-    counts.push(".counts.json");
     std::fs::write(counts, serde_json::to_vec_pretty(&report)?)?;
     Ok(())
 }
@@ -1370,4 +1456,85 @@ fn column_kind_name(table: &str, column: usize) -> Column {
         .iter()
         .find(|id| format!("{id:?}") == table)
         .map_or(Column::Opaque, |id| replay::native_columns::column(id.schema()[column]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn arguments(text: &[&str]) -> impl Iterator<Item = OsString> {
+        text.iter().map(OsString::from).collect::<Vec<_>>().into_iter()
+    }
+
+    /// A fresh folder of its own, removed afterwards.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!("p3-convert-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_restart_interval_past_32_bits_is_refused_before_converting() {
+        let refused = options(arguments(&["in", "out", "--unit-hours", "65536", "--restart-units", "65536"])).err().unwrap();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+        assert!(refused.to_string().contains("--restart-units"), "{refused}");
+        let largest = options(arguments(&["in", "out", "--unit-hours", "65536", "--restart-units", "65535"])).unwrap();
+        assert_eq!(largest.restart_hours, 65536 * 65535);
+        let default = options(arguments(&["in", "out"])).unwrap();
+        assert_eq!((default.unit_hours, default.restart_hours), (720, 6480));
+        assert!(options(arguments(&["in", "out", "--restart-units", "0"])).is_err());
+    }
+
+    #[test]
+    fn no_written_path_may_be_the_recording_under_any_name() {
+        let folder = Folder::new();
+        let recording = folder.0.join("campaign.battleplan");
+        std::fs::write(&recording, b"recording").unwrap();
+        let refused = |output: &Path| written_paths(&recording, output).unwrap_err().kind() == io::ErrorKind::InvalidInput;
+        assert!(refused(&recording));
+        assert!(refused(&folder.0.join(".").join("campaign.battleplan")));
+        let linked = folder.0.join("linked.h4col");
+        std::fs::hard_link(&recording, &linked).unwrap();
+        assert!(refused(&linked));
+        let beside = folder.0.join("beside.h4col");
+        std::fs::hard_link(&recording, folder.0.join("beside.h4col.partial")).unwrap();
+        assert!(refused(&beside));
+        let counted = folder.0.join("counted.h4col");
+        std::fs::hard_link(&recording, folder.0.join("counted.h4col.counts.json")).unwrap();
+        assert!(refused(&counted));
+        let other = folder.0.join("other.h4col");
+        std::fs::write(&other, b"an earlier conversion").unwrap();
+        let (partial, counts) = written_paths(&recording, &other).unwrap();
+        assert_eq!(partial, folder.0.join("other.h4col.partial"));
+        assert_eq!(counts, folder.0.join("other.h4col.counts.json"));
+        assert!(written_paths(&recording, &folder.0.join("new.h4col")).is_ok());
+        assert_eq!(std::fs::read(&recording).unwrap(), b"recording");
+    }
+
+    #[test]
+    fn an_unfinished_output_is_removed_and_a_published_one_kept() {
+        let folder = Folder::new();
+        let failed = folder.0.join("failed.h4col.partial");
+        std::fs::write(&failed, b"H4COLUMN").unwrap();
+        drop(Unfinished(Some(failed.clone())));
+        assert!(!failed.exists());
+        let published = folder.0.join("published.h4col");
+        std::fs::write(&published, b"H4COLUMN").unwrap();
+        let mut unfinished = Unfinished(Some(published.clone()));
+        unfinished.0 = None;
+        drop(unfinished);
+        assert!(published.exists());
+    }
 }

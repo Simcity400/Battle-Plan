@@ -22,16 +22,26 @@ export function useIntelCoverage(widget: WidgetSpec, runtime: WidgetRuntime, act
   const options = useIntelOptions(widget);
   const selection = widget.countries;
   const grouped = selection.kind === 'group' && selection.group.type !== 'top';
-  const groups = useCountryGroups(runtime, track, active && grouped);
+  const manual = selection.kind === 'tags' || selection.kind === 'selected';
+  // Chosen countries need the identity history too: each native holder follows its renames.
+  const groups = useCountryGroups(runtime, track, active && (grouped || manual));
   const lastHour = track?.branch.lastHour ?? 0;
   // Pending or empty choices never ask for the most active countries instead.
   const roots = grouped ? worldRequestTags(selection, [], groups.data, lastHour) : null;
-  const chosen = selection.kind === 'tags' || selection.kind === 'selected' ? selectedTags(selection, track) : roots?.tags;
+  const chosen = manual ? selectedTags(selection, track) : roots?.tags;
+  const chosenKey = JSON.stringify(chosen ?? null);
+  // Every tag the chosen native holders held, with when: each is found under the one it has at the hour shown.
+  const aliases = useMemo(() => manual && chosen?.length && groups.data
+    ? countryMatchFilter({ kind: 'tags', tags: chosen }, [], groups.data, lastHour).membership : null,
+  [manual, chosenKey, groups.data, lastHour]); // eslint-disable-line react-hooks/exhaustive-deps
   // Members are asked for under every tag they held, so each is found under the one it has at the hour shown.
   const held = useMemo(() => grouped && roots?.ready
-    ? [...new Set(countryMatchFilter(selection, [], groups.data, lastHour).membership?.map(run => run.tag) ?? [])].sort() : undefined,
-  [grouped, roots?.ready, selection, groups.data, lastHour]);
-  const request = roots && !roots.ready || chosen?.length === 0 ? null : intelCoverageRequest(widget, track, held ?? chosen);
+    ? [...new Set(countryMatchFilter(selection, [], groups.data, lastHour).membership?.map(run => run.tag) ?? [])].sort()
+    : aliases ? [...new Set(aliases.map(run => run.tag))].sort() : undefined,
+  [grouped, roots?.ready, selection, groups.data, lastHour, aliases]);
+  // Without the identity history (still loading) chosen tags are not asked for yet; if it fails, by their literal tags.
+  const waiting = manual && !groups.data && !groups.error;
+  const request = roots && !roots.ready || chosen?.length === 0 || waiting ? null : intelCoverageRequest(widget, track, held ?? chosen);
   const product = useProduct<IntelCoverageReply>(runtime.client, request, active, validateIntelCoverage, track?.source);
-  return { track, options, grouped, groups, roots, chosen, touching: intelTouching(widget, chosen), ...product };
+  return { track, options, grouped, groups, roots, chosen, aliases, touching: intelTouching(widget, chosen), ...product };
 }

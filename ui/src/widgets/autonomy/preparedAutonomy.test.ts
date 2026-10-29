@@ -182,3 +182,15 @@ test('reached state at 5000 countries uses one request and preserves every subje
   assert.equal(merged.subjects.length, 5000);
   assert.equal(merged.subjects.every(subject => subject.runs[1].scoreRaw === '500'), true);
 });
+
+test('an exact read that recorded no autonomy at its hour leaves that hour unrecorded, not the rough block covered', () => {
+  const rough = validatePreparedAutonomy({ ...reply, exactHours: [], coverage: { firstHour: 0, lastHour: 1000, complete: false },
+    approximate: [{ firstHour: 0, lastHour: 1000 }], pending: [], unidentified: [{ firstHour: 590, lastHour: 610 }] });
+  const missing = validatePreparedAutonomy({ ...reply, subjects: [], bands: [], recorded: [], unidentified: [], exactHours: [600] });
+  const reached = overlayReachedAutonomy(rough, missing);
+  assert.deepEqual(reached.recorded, [{ firstHour: 0, lastHour: 599 }, { firstHour: 601, lastHour: 1000 }]);
+  assert.deepEqual(reached.unidentified, [{ firstHour: 590, lastHour: 599 }, { firstHour: 601, lastHour: 610 }]);
+  assert.equal(reached.bands[0].runs.some(run => run.firstHour <= 600 && 600 <= run.lastHour), false, 'its subject run is cut as before');
+  const recorded = validatePreparedAutonomy({ ...missing, recorded: [{ firstHour: 600, lastHour: 600 }] });
+  assert.deepEqual(overlayReachedAutonomy(rough, recorded).recorded, [{ firstHour: 0, lastHour: 1000 }], 'a recorded exact hour joins its neighbours again');
+});

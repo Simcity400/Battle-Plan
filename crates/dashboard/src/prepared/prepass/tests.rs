@@ -395,7 +395,7 @@ fn held_bytes_count_each_shared_view_once_at_its_rows_capacity() {
     let held = |frames: &[&DecodedFrame]| {
         let mut held = HeldBytes::default();
         for frame in frames {
-            held.frame(frame);
+            held.value(*frame);
         }
         held.total()
     };

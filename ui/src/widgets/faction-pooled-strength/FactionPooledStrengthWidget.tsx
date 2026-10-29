@@ -70,11 +70,14 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
   const pickedHolder = useMemo(() => picked ? [{ key: 'picked', tag: picked, hour: pickedHour }] : [], [picked, pickedHour]);
   const pickedLook = useHolderLooks(runtime.client, track, pickedHolder, active, tokens);
   const names = useCountryNamesRead(runtime.client, track, useMemo(() => tags.map(tag => ({ hour: dataHour, tag })), [tags, dataHour]), active);
-  // Flags only for the manpower rows the mounted list shows; leaving the list releases them.
+  // Flags for the manpower rows the mounted list shows; leaving the list releases them.
   const listed = pool === 'manpower' && members.length > 0;
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
   useEffect(() => { if (!listed) setVisibleTags(previous => previous.length ? [] : previous); }, [listed]);
-  const flags = useCountryLabelsAt(runtime.client, track, useMemo(() => listed ? visibleTags.map(tag => ({ hour: dataHour, tag })) : [], [listed, visibleTags, dataHour]), active);
+  // The research pool lists every sharing country: their tooltips show those flags.
+  const researchTags = pool === 'research' ? data?.researchCountries ?? null : null;
+  const flags = useCountryLabelsAt(runtime.client, track, useMemo(() => (listed ? visibleTags : researchTags ?? []).map(tag => ({ hour: dataHour, tag })),
+    [listed, visibleTags, researchTags, dataHour]), active);
   const label = useCallback((tag: string) => ({ ...flags.labelAt(dataHour)(tag), name: nameReadText(names.get(nameKey(dataHour, tag))) }), [flags, names, dataHour]);
   const diagnostics = useMemo(() => !data ? (details.error ? [details.error] : NO_WARNINGS)
     : [...data.warnings, ...data.refusals.map(refusal => `${refusal.fact} (${refusal.count}): ${refusal.reason}`),

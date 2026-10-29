@@ -123,6 +123,30 @@ mod tests {
         assert!(product_codec::decode::<Music>(&bytes).is_err());
         assert!(product_codec::decode::<Availability>(&[255]).is_err());
     }
+
+    #[test]
+    fn incomplete_weather_names_its_unknown_snow_and_mud_in_the_status_line() {
+        let whole = Summary {
+            complete: true,
+            ..Summary::default()
+        };
+        assert_eq!(whole.note(), None);
+        assert!(!whole.line().contains("not recorded"));
+        let partial = Summary::default();
+        let note = "Snow and mud not recorded for some provinces this hour";
+        assert_eq!(partial.note(), Some(note));
+        assert!(partial.line().ends_with(note));
+        let edges = Summary {
+            complete: true,
+            missing_edges: 5,
+            ..Summary::default()
+        };
+        assert_eq!(
+            edges.note(),
+            Some("Snow and mud not recorded at the map's edge this hour")
+        );
+        assert!(edges.line().contains("5 retained snow/mud edge cells unavailable"));
+    }
 }
 
 /// One hour's `SnowMudData` payload.
@@ -132,6 +156,9 @@ pub struct SnowMud {
     pub height: u32,
     /// `width * height` RGBA8 texels, row 0 at world `z = 0`.
     pub texels: Paged<u8>,
+    /// One byte per cell in texel order: 1 where the hour's observation leaves the cell's snow
+    /// and mud unknown, so its texels hold no observed value; else 0.
+    pub unknown: Paged<u8>,
     /// Raw winter-grading snow words by province; absent rows remain unknown.
     pub province_snow: Paged<Option<i64>>,
     /// Content-ordered winter factors, including unknown representatives.
@@ -144,8 +171,10 @@ pub struct SnowMud {
 
 impl SnowMud {
     pub fn decode_storage_bytes(texels: usize, provinces: usize) -> io::Result<usize> {
+        let provinces = Paged::<Option<i64>>::decode_storage_bytes(provinces)?;
         Paged::<u8>::decode_storage_bytes(texels)?
-            .checked_add(Paged::<Option<i64>>::decode_storage_bytes(provinces)?)
+            .checked_add(Paged::<u8>::decode_storage_bytes(texels / 4)?)
+            .and_then(|bytes| bytes.checked_add(provinces))
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -156,6 +185,7 @@ impl SnowMud {
     pub fn owned_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             + self.texels.owned_bytes()
+            + self.unknown.owned_bytes()
             + self.province_snow.owned_bytes()
             + self
                 .post_factors
@@ -175,7 +205,8 @@ pub struct Refresh {
 pub struct Summary {
     /// Recorded `WeatherProvinces` rows.
     pub provinces: usize,
-    /// Whether the table is whole; missing provinces draw bare ground.
+    /// Whether the table is whole. Otherwise the cells of the provinces it does not hold are
+    /// unknown ([`SnowMud::unknown`]), hatched over the ground their zero bytes draw.
     pub complete: bool,
     /// Rows whose native snow word is above zero.
     pub with_snow: usize,
@@ -200,7 +231,7 @@ impl Summary {
     /// One line for the status bar and the headless dump.
     pub fn line(&self) -> String {
         format!(
-            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}",
+            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}{}",
             self.provinces,
             if self.complete { "" } else { " (incomplete)" },
             self.with_snow,
@@ -213,8 +244,21 @@ impl Summary {
                     ", {} retained snow/mud edge cells unavailable",
                     self.missing_edges
                 )
-            }
+            },
+            self.note().map_or(String::new(), |note| format!("; {note}"))
         )
+    }
+
+    /// The notice normal viewing shows when part of the hour's snow and mud is unknown.
+    pub fn note(&self) -> Option<&'static str> {
+        match (self.complete, self.missing_edges == 0) {
+            (true, true) => None,
+            (true, false) => Some("Snow and mud not recorded at the map's edge this hour"),
+            (false, true) => Some("Snow and mud not recorded for some provinces this hour"),
+            (false, false) => Some(
+                "Snow and mud not recorded for some provinces or at the map's edge this hour",
+            ),
+        }
     }
 }
 
@@ -223,6 +267,7 @@ impl PartialEq for SnowMud {
         self.width == other.width
             && self.height == other.height
             && self.texels == other.texels
+            && self.unknown == other.unknown
             && self.province_snow == other.province_snow
             && self.summary == other.summary
             && self.refresh == other.refresh
@@ -400,6 +445,7 @@ mod snow_wire_oracle {
             pub width: u32,
             pub height: u32,
             pub texels: Vec<u8>,
+            pub unknown: Vec<u8>,
             pub province_snow: Vec<Option<i64>>,
             pub post_factors: Option<Arc<[Option<f32>]>>,
             pub refresh: Option<Refresh>,
@@ -409,7 +455,7 @@ mod snow_wire_oracle {
         product_codec::product! {
             impl Refresh { interval:i64,identity:u64 } default {}
             impl Summary { provinces:usize,with_snow:usize,shown_snow:usize,shown_mud:usize,missing_edges:usize,complete:bool } default {}
-            impl SnowMud { width:u32,height:u32,texels:Vec<u8>,province_snow:Vec<Option<i64>>,post_factors:Option<winter::SnowFactors>,refresh:Option<Refresh>,summary:Summary } default { build:Duration::ZERO }
+            impl SnowMud { width:u32,height:u32,texels:Vec<u8>,unknown:Vec<u8>,province_snow:Vec<Option<i64>>,post_factors:Option<winter::SnowFactors>,refresh:Option<Refresh>,summary:Summary } default { build:Duration::ZERO }
         }
     }
     #[test]
@@ -420,6 +466,7 @@ mod snow_wire_oracle {
             width: 1,
             height: 1,
             texels: vec![1, 2, 3, 4],
+            unknown: vec![1],
             province_snow: vec![None, Some(i64::MIN)],
             post_factors: Some(Arc::clone(&factors)),
             refresh: Some(legacy::Refresh {
@@ -440,6 +487,7 @@ mod snow_wire_oracle {
             width: 1,
             height: 1,
             texels: vec![1, 2, 3, 4].into(),
+            unknown: vec![1].into(),
             province_snow: vec![None, Some(i64::MIN)].into(),
             post_factors: Some(factors.into()),
             refresh: Some(Refresh {
@@ -506,11 +554,12 @@ impl Product for Intel {
     }
 }
 impl Product for SnowMud {
-    const MIN_BYTES: usize = 67;
+    const MIN_BYTES: usize = 75;
     fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         self.width.encode(out)?;
         self.height.encode(out)?;
         self.texels.encode(out)?;
+        self.unknown.encode(out)?;
         self.province_snow.encode(out)?;
         self.post_factors.encode(out)?;
         self.refresh.encode(out)?;
@@ -521,6 +570,7 @@ impl Product for SnowMud {
             width: u32::decode(input)?,
             height: u32::decode(input)?,
             texels: Paged::decode(input)?,
+            unknown: Paged::decode(input)?,
             province_snow: Paged::decode(input)?,
             post_factors: Option::decode(input)?,
             refresh: Option::decode(input)?,
@@ -541,6 +591,7 @@ impl Product for SnowMud {
         field!(width, u32);
         field!(height, u32);
         field!(texels, Vec<u8>);
+        field!(unknown, Vec<u8>);
         field!(province_snow, Vec<Option<i64>>);
         field!(post_factors, Option<winter::SnowFactors>);
         field!(refresh, Option<Refresh>);

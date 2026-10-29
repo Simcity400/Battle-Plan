@@ -713,6 +713,67 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
     assert!(item.unknown.as_deref().unwrap().contains("country"));
 }
 
+/// Power is spent selecting a national focus, so its id is looked up in the
+/// national database alone: a refused continuous-focus file that could define
+/// the same id neither refuses nor replaces the national focus.
+#[test]
+fn focus_spending_reads_the_national_database_alone() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let stack = Stack::new();
+    let addon = stack.addon();
+    stack.write(
+        &addon,
+        "localisation/english/focus_l_english.yml",
+        "l_english:\n C1:0 \"Mod country\"\n national_title:0 \"National title\"\n continuous_title:0 \"Continuous title\"\n",
+    );
+    stack.write(
+        &addon,
+        "common/national_focus/spending.txt",
+        "focus_tree = { focus = { id = mod_focus text = national_title } }",
+    );
+    stack.write(
+        &addon,
+        "common/continuous_focus/spending.txt",
+        "continuous_focus_palette = { focus = { id = mod_focus text = continuous_title } focus = { text = continuous_title } }",
+    );
+    let content = stack.content();
+    let power = content.power_content().unwrap();
+    assert_eq!(
+        power
+            .national_focus("mod_focus")
+            .unwrap()
+            .unwrap()
+            .localisation,
+        "national_title"
+    );
+    assert!(power.national_focus("absent").unwrap().is_none());
+    let mut spent = named_frame(24, "");
+    let mut row = event(1, PowerCause::Focus, PowerOperation::Subtract, Some(-100_000));
+    row.identity.item_key = b"mod_focus".to_vec();
+    put(&mut spent, TableRows::CountryPowerChanges(vec![row]));
+    let mut scan = Scanned::default();
+    observe_all(&spent, &mut scan, Some(&content)).unwrap();
+    let reply = drawn(
+        &content,
+        present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap(),
+    );
+    let item = reply
+        .spend_items
+        .iter()
+        .find(|item| item.action.starts_with("Started focus"))
+        .unwrap_or_else(|| panic!("{:?}", reply.spend_items));
+    assert_eq!(item.name.as_deref(), Some("National title"));
+    assert!(
+        !item
+            .unknown
+            .as_deref()
+            .is_some_and(|unknown| unknown.contains("continuous_focus")),
+        "{:?}",
+        item.unknown
+    );
+}
+
 #[test]
 fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() {
     engine_executable::executable_tables::initialize_for_tests()

@@ -10,8 +10,6 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-# Diagnostic-only native first-edge speeds at the held hourly capture boundary.
-movement_witness = ["engine-native/movement_witness"]
 default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "faction_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "raid_intel_changes"]
 politics_capture = ["collector-politics/politics_capture"]
 advisor_changes = []

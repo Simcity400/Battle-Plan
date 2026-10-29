@@ -8,7 +8,8 @@
 //! `music_compressor` blocks in any order.
 //!
 //! The first declaration of a sound, sound effect or falloff name is kept; a
-//! later one is refused by name, as the game refuses adding a name twice.
+//! later one is refused by name, as the game refuses adding a name twice. A
+//! sound is named by the first 63 bytes of its name; a reference by its whole name.
 //! References are resolved after every file is read: an effect's sounds and
 //! falloff by exact name, and each category's effect list in category order,
 //! where a later category takes an effect over from an earlier one. A missing
@@ -23,6 +24,11 @@
 use crate::{ResolvedLayers, crt, defines, parser};
 use installed_content_core::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
+
+/// The game keeps a sound's or music track's name in 64 bytes: it is added and found by 63.
+pub(crate) fn registered(name: &str) -> &[u8] {
+    &name.as_bytes()[..name.len().min(63)]
+}
 
 /// One `sound` block: a named sample file and its volume.
 #[derive(Clone, Debug, PartialEq)]
@@ -285,7 +291,7 @@ pub struct Catalog {
     /// Asset files read, in load order.
     pub files: Vec<ScriptPath>,
     pub notes: Notes,
-    sound_names: BTreeMap<String, usize>,
+    sound_names: BTreeMap<Vec<u8>, usize>,
     effect_names: BTreeMap<String, usize>,
     falloff_names: BTreeMap<String, usize>,
     category_names: BTreeMap<String, usize>,
@@ -359,7 +365,7 @@ impl Catalog {
     }
 
     pub fn sound(&self, name: &str) -> Option<usize> {
-        self.sound_names.get(name).copied()
+        self.sound_names.get(name.as_bytes()).copied()
     }
 
     pub fn effect(&self, name: &str) -> Option<usize> {
@@ -385,7 +391,7 @@ impl Catalog {
                 .note(format!("{path}: refused sound {name} without a file"));
             return;
         };
-        if self.sound_names.contains_key(&name) {
+        if self.sound_names.contains_key(registered(&name)) {
             self.notes
                 .note(format!("{path}: refused repeated sound {name}"));
             return;
@@ -413,7 +419,8 @@ impl Catalog {
                     .note(format!("{path}: sound {name} refused field {other}")),
             }
         }
-        self.sound_names.insert(name, self.sounds.len());
+        self.sound_names
+            .insert(registered(&name).to_vec(), self.sounds.len());
         self.sounds.push(sound);
     }
 
@@ -437,7 +444,7 @@ impl Catalog {
                 "name" => {}
                 "sounds" => read_sounds(field, &name, path, &mut sounds, notes),
                 "volume" => number_into(field, &mut effect.volume, path, notes),
-                "falloff" => falloff = field.value.scalar_str().map(unquote),
+                "falloff" => falloff = field.value.scalar_str().map(str::to_owned),
                 "loop" => bool_into(field, &mut effect.looping, path, notes),
                 "is3d" => bool_into(field, &mut effect.positional, path, notes),
                 "max_audible" => {
@@ -445,7 +452,7 @@ impl Catalog {
                     number_into(field, &mut value, path, notes);
                     effect.max_audible = value as i32;
                 }
-                "max_audible_behaviour" => match field.value.scalar_str().map(unquote).as_deref() {
+                "max_audible_behaviour" => match field.value.scalar_str() {
                     Some("fail") => effect.overflow = Overflow::Fail,
                     Some("silent") => effect.overflow = Overflow::Silent,
                     other => notes.note(format!(
@@ -524,7 +531,7 @@ impl Catalog {
                 "min_distance" => number_into(field, &mut falloff.min_distance, path, notes),
                 "max_distance" => number_into(field, &mut falloff.max_distance, path, notes),
                 "height_scale" => number_into(field, &mut falloff.height_scale, path, notes),
-                "type" => match field.value.scalar_str().map(unquote).as_deref() {
+                "type" => match field.value.scalar_str() {
                     Some("linear") => falloff.curve = Curve::Linear,
                     Some("logarithmic") => falloff.curve = Curve::Logarithmic,
                     other => notes.note(format!(
@@ -555,7 +562,7 @@ impl Catalog {
                         items
                             .iter()
                             .filter(|item| item.key.is_none())
-                            .filter_map(|item| item.value.scalar_str().map(unquote)),
+                            .filter_map(|item| item.value.scalar_str().map(str::to_owned)),
                     ),
                     None => self.notes.note(format!(
                         "{path}: category {name} refused scalar soundeffects"
@@ -602,7 +609,7 @@ impl Catalog {
             let effect_name = self.effects[entry.effect].name.clone();
             let source = self.effects[entry.effect].source.clone();
             for (sound, weight) in entry.sounds {
-                match self.sound_names.get(&sound) {
+                match self.sound_names.get(sound.as_bytes()) {
                     Some(&index) => self.effects[entry.effect].choices.push(Choice {
                         sound: index,
                         weight,
@@ -661,7 +668,7 @@ fn read_sounds(
     for item in items {
         if item.keyword_is("sound") {
             match item.value.scalar_str() {
-                Some(name) => out.push((unquote(name), 1)),
+                Some(name) => out.push((name.to_owned(), 1)),
                 None => notes.note(format!(
                     "{path}: soundeffect {effect} refused a sound block"
                 )),
@@ -784,11 +791,7 @@ fn text(fields: &[parser::Item], key: &str) -> Option<String> {
         .rev()
         .find(|field| field.keyword_is(key))
         .and_then(|field| field.value.scalar_str())
-        .map(unquote)
-}
-
-fn unquote(text: &str) -> String {
-    text.trim_matches('"').to_owned()
+        .map(str::to_owned)
 }
 
 fn key_text(item: &parser::Item) -> String {

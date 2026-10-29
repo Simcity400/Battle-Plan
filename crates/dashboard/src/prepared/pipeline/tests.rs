@@ -5180,6 +5180,364 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
     assert_eq!(store.range_count(&key, "air-mixes-1").unwrap(), Some(4));
 }
 
+/// An alias of the selected country that another native country held at
+/// other hours: exact prepared force histories keep only the selected
+/// holder's hours, cut to `within`, as their summaries do.
+#[test]
+fn prepared_force_histories_keep_only_the_selected_holder_of_a_reused_alias() {
+    use crate::products::LoadContext;
+    let reused = "reused alias";
+    let make = |hour: i32| {
+        let mut frame = scale_frame(1, hour, 2);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            // The second country holds the alias until the first takes it at 103.
+            rows[usize::from(hour < 103)].tag = reused.as_bytes().to_vec();
+        }
+        *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
+            [(1, 100_000, 10), (2, 100_001, 15)]
+                .into_iter()
+                .map(|(id, owner, planes)| replay_data::rows::AirWingRow {
+                    id,
+                    owner,
+                    planes,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::WingEquipment.index()] =
+            TableView::Complete(TableRows::WingEquipment(
+                [(1, 77, 1_000_000), (2, 78, 1_500_000)]
+                    .into_iter()
+                    .map(
+                        |(wing, variant, amount_raw)| replay_data::rows::WingEquipmentRow {
+                            wing,
+                            ordinal: 0,
+                            variant,
+                            amount_raw,
+                        },
+                    )
+                    .collect(),
+            ));
+        frame
+    };
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, (100..=105).map(make).collect())])
+            .unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let source = fixture.source("reused-alias");
+    run(&source, None, &flag, |_| {}).unwrap();
+    let selected = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+    let query = |within: serde_json::Value| {
+        crate::products::air_force::prepared::query(
+            &source,
+            "series-summary",
+            &serde_json::json!({"branchId":"1","tags":[selected],
+                "family":{"kind":"air-force-size","top":null,"measure":"planes","ownership":"roster"},
+                "from":100,"to":105,"width":100,"within":within}),
+            &context,
+            &flag,
+        )
+        .unwrap()
+    };
+    let runs = |reply: &serde_json::Value, tag: &str| -> Vec<(i64, i64, i64)> {
+        reply["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["tag"] == tag)
+            .flat_map(|row| row["runs"].as_array().unwrap().iter())
+            .map(|run| {
+                (
+                    run["firstHour"].as_i64().unwrap(),
+                    run["lastHour"].as_i64().unwrap(),
+                    run["total"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let all = query(serde_json::json!({}));
+    assert_eq!(
+        runs(&all, reused),
+        [(103, 105, 10)],
+        "the other holder's planes are not the selection's"
+    );
+    assert_eq!(runs(&all, &selected), [(100, 102, 10)]);
+    let mut within = serde_json::json!({});
+    within[reused] = serde_json::json!([{"firstHour":104,"lastHour":105}]);
+    within[selected.as_str()] = serde_json::json!([]);
+    let within = query(within);
+    assert_eq!(runs(&within, reused), [(104, 105, 10)]);
+    assert!(
+        runs(&within, &selected).is_empty(),
+        "an empty membership selects no hour"
+    );
+}
+
+/// The native air force and navy loads keep a reused alias only while the
+/// selected country holds it, as their prepared queries do.
+#[test]
+fn native_force_sizes_keep_only_the_selected_holder_of_a_reused_alias() {
+    use crate::products::{LoadContext, Product, air_force::*, navy::*};
+    use replay_data::rows::{AirWingRow, ShipRow, TaskForceRow, WingEquipmentRow};
+    let reused = "reused alias";
+    let make = |hour: i32| {
+        let mut frame = scale_frame(1, hour, 2);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            // The second country holds the alias until the first takes it at 103.
+            rows[usize::from(hour < 103)].tag = reused.as_bytes().to_vec();
+        }
+        *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
+            [(1, 100_000, 10), (2, 100_001, 15)]
+                .into_iter()
+                .map(|(id, owner, planes)| AirWingRow {
+                    id,
+                    owner,
+                    planes,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::WingEquipment.index()] =
+            TableView::Complete(TableRows::WingEquipment(
+                [(1, 77, 1_000_000), (2, 78, 1_500_000)]
+                    .into_iter()
+                    .map(|(wing, variant, amount_raw)| WingEquipmentRow {
+                        wing,
+                        ordinal: 0,
+                        variant,
+                        amount_raw,
+                    })
+                    .collect(),
+            ));
+        // The first country's task force holds two ships, the second's one.
+        *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(
+            (0..2)
+                .map(|index| TaskForceRow {
+                    id: u64::from(index) + 1,
+                    roster_owner: 100_000 + index,
+                    logical_owner: 100_000 + index,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(
+            [(1, 1), (2, 1), (3, 2)]
+                .into_iter()
+                .map(|(id, task_force)| ShipRow {
+                    id,
+                    task_force,
+                    class_id: 41,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, (100..=105).map(make).collect())],
+    )
+    .unwrap();
+    let mut fixture = Fixture::new(&replay);
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let source = fixture.source("reused-alias-native");
+    run(&source, None, &flag, |_| {}).unwrap();
+    let selected = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+    let runs = |reply: &serde_json::Value, tag: &str| -> Vec<(i64, i64, i64)> {
+        reply["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["tag"] == tag)
+            .flat_map(|row| row["runs"].as_array().unwrap().iter())
+            .map(|run| {
+                (
+                    run["firstHour"].as_i64().unwrap(),
+                    run["lastHour"].as_i64().unwrap(),
+                    run["total"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let air = AirForceParams {
+        branch_id: "1".into(),
+        tags: vec![selected.clone()],
+        top: None,
+        measure: AirForceMeasure::Planes,
+        ownership: AirForceOwnership::Roster,
+    };
+    let native =
+        serde_json::to_value(AirForceSize::load(&source, &air, &context, &flag).unwrap()).unwrap();
+    let prepared = crate::products::air_force::prepared::query(
+        &source,
+        "series-summary",
+        &serde_json::json!({"branchId":"1","tags":air.tags,
+            "family":{"kind":"air-force-size","top":null,"measure":air.measure,"ownership":air.ownership},
+            "from":100,"to":105,"width":100}),
+        &context,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(runs(&native, reused), [(103, 105, 10)]);
+    assert_eq!(runs(&native, &selected), [(100, 102, 10)]);
+    for tag in [reused, selected.as_str()] {
+        assert_eq!(runs(&native, tag), runs(&prepared, tag), "air {tag}");
+    }
+    let navy = NavyParams {
+        branch_id: "1".into(),
+        tags: vec![selected.clone()],
+        top: None,
+        ownership: NavyOwnership::Roster,
+        grouping: NavyGrouping::Class,
+        measure: NavyMeasure::Ships,
+    };
+    let native =
+        serde_json::to_value(NavySize::load(&source, &navy, &context, &flag).unwrap()).unwrap();
+    let prepared = crate::products::navy::prepared::query(
+        &source,
+        "series-summary",
+        &serde_json::json!({"branchId":"1","tags":navy.tags,
+            "family":{"kind":"navy-size","measure":navy.measure,"ownership":navy.ownership,
+                "grouping":navy.grouping,"top":null},
+            "from":100,"to":105,"width":100}),
+        &context,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(runs(&native, reused), [(103, 105, 2)]);
+    assert_eq!(runs(&native, &selected), [(100, 102, 2)]);
+    for tag in [reused, selected.as_str()] {
+        assert_eq!(runs(&native, tag), runs(&prepared, tag), "navy {tag}");
+    }
+}
+
+/// An alias of the selected country that another native country held at
+/// other hours: zoomed-out prepared supply summaries keep only the selected
+/// holder's hours, as its exact counts do.
+#[test]
+fn prepared_supply_summaries_keep_only_the_selected_holder_of_a_reused_alias() {
+    use replay_data::rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow, Recorded};
+    let reused = "reused alias";
+    let make = |hour: i32| {
+        let mut frame = scale_frame(1, hour, 2);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            // The second country holds the alias until the first takes it at 103.
+            rows[usize::from(hour < 103)].tag = reused.as_bytes().to_vec();
+        }
+        // Each country's one division: the first's in supply, the second's without.
+        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+            (0..2u32)
+                .map(|index| DivisionRow {
+                    id: u64::from(index) + 1,
+                    roster_owner: 100_000 + index,
+                    logical_owner: 100_000 + index,
+                    expeditionary_owner: u32::MAX,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::DivisionLandInputs.index()] =
+            TableView::Complete(TableRows::DivisionLandInputs(
+                (1..=2)
+                    .map(|division| DivisionLandInputsRow {
+                        division,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::DivisionStatus.index()] =
+            TableView::Complete(TableRows::DivisionStatus(
+                (1..=2)
+                    .map(|division| DivisionStatusRow {
+                        division,
+                        supply_ratio: if division == 1 { 100_000 } else { 0 },
+                        supply_grace_maximum: Recorded::Value(1_000_000),
+                        supply_grace_remaining: Recorded::Value(0),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        frame
+    };
+    let frames: Vec<_> = (100..=105).map(make).collect();
+    let mut fixture = Fixture::new(
+        &Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap(),
+    );
+    let game = fixture.root.join("content");
+    for (path, text) in [
+        ("hoi4.exe", "test"),
+        (
+            "user/dlc_load.json",
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        ),
+        (
+            "user/settings.txt",
+            "language=l_english force_pow2_textures=no",
+        ),
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}",
+        ),
+    ] {
+        let path = game.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let (options, identity) = crate::test_fixtures::content_identity(&game);
+    let mut wire = records(1, frames);
+    if let replay::spool::Record::SessionStart(session) = &mut wire[0] {
+        session.identity = identity;
+    }
+    fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
+    let context = crate::products::LoadContext {
+        content: Some(options),
+    };
+    let source = fixture.source("reused-alias-supply");
+    let flag = AtomicBool::new(false);
+    run(&source, context.content.as_ref(), &flag, |_| {}).unwrap();
+    let selected = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
+    let reply = crate::products::supply_health::prepared::query(
+        &source,
+        &serde_json::json!({"branchId":"1","tags":[selected],"from":100,"to":105,"width":1}),
+        &context,
+        &flag,
+    )
+    .unwrap()
+    .unwrap();
+    let hours = |tag: &str| -> Vec<(i32, i32)> {
+        reply
+            .summaries
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|display| display.tag == tag)
+            .flat_map(|display| &display.values)
+            .flat_map(|summary| summary.buckets.iter().flatten())
+            .map(|bucket| (bucket.first_hour, bucket.last_hour))
+            .collect()
+    };
+    let alias = hours(reused);
+    assert_eq!(alias.len(), 3, "each share is summarised");
+    assert!(
+        alias.iter().all(|&(first, last)| (first, last) == (103, 105)),
+        "the other holder's divisions are not the selection's: {alias:?}"
+    );
+    let own = hours(&selected);
+    assert!(
+        own.iter().all(|&(first, last)| (first, last) == (100, 102)),
+        "{own:?}"
+    );
+}
+
 #[test]
 fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, navy::*};
@@ -5874,6 +6232,7 @@ fn progressive_game_score_state_reads_unprepared_hour_and_tail_only_countries_wi
             &replay,
             &mut observer,
             &naming,
+            &mut || unreachable!("captured multipliers"),
             &crate::prepared::frame_changes::FrameChangeTracker::new()
                 .observe(&prefix, replay.format),
         )

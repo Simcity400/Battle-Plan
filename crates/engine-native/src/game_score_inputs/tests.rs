@@ -668,19 +668,27 @@ fn game_score_wing_uses_stored_mission_one_record_and_shared_plane_read() {
 
 #[test]
 fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
-    const FIRST: usize = 0x033e_1f00;
-    let offsets = [0, 0xa8, 0x158, 0x1f0, 0x298, 0x360];
-    let mut bytes = vec![0; 0x368];
-    for (index, offset) in offsets.into_iter().enumerate() {
-        u64_at(&mut bytes, offset, (index as i64 - 2) as u64);
+    const MODULE: usize = 0x1_0000;
+    let rvas = [
+        COUNTRY_SCORE_MULTIPLIER_RVA,
+        ARMY_SCORE_MULTIPLIER_RVA,
+        NAVY_SCORE_MULTIPLIER_RVA,
+        AIR_SCORE_MULTIPLIER_RVA,
+        INDUSTRY_SCORE_MULTIPLIER_RVA,
+        PROVINCE_SCORE_MULTIPLIER_RVA,
+    ];
+    let first = rvas.into_iter().min().unwrap();
+    let mut bytes = vec![0; rvas.into_iter().max().unwrap() + 8 - first];
+    // Nonzero values, so a global read from an unwritten address cannot match.
+    let values = [-3_i64, -2, -1, 1, 2, 3];
+    for (rva, value) in rvas.into_iter().zip(values) {
+        u64_at(&mut bytes, rva - first, value as u64);
     }
-    let all = read_multipliers(
-        &SliceMemory {
-            base: FIRST,
-            bytes: &bytes,
-        },
-        0,
-    );
+    let image = SliceMemory {
+        base: MODULE + first,
+        bytes: &bytes,
+    };
+    let all = read_multipliers(&image, MODULE);
     assert_eq!(
         [
             all.total_raw,
@@ -690,22 +698,17 @@ fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
             all.industry_raw,
             all.land_raw
         ],
-        [Ok(-2), Ok(-1), Ok(0), Ok(1), Ok(2), Ok(3)]
+        values.map(Ok::<i64, &'static str>)
     );
-    struct MissingArmy<'a>(&'a [u8]);
+    struct MissingArmy<'a>(SliceMemory<'a>);
     impl Memory for MissingArmy<'_> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-            at != FIRST + 0xa8
-                && SliceMemory {
-                    base: FIRST,
-                    bytes: self.0,
-                }
-                .copy(at, output)
+            at != MODULE + ARMY_SCORE_MULTIPLIER_RVA && self.0.copy(at, output)
         }
     }
-    let partial = read_multipliers(&MissingArmy(&bytes), 0);
+    let partial = read_multipliers(&MissingArmy(image), MODULE);
     assert!(partial.army_raw.is_err());
-    assert_eq!((partial.total_raw, partial.land_raw), (Ok(-2), Ok(3)));
+    assert_eq!((partial.total_raw, partial.land_raw), (Ok(-3), Ok(3)));
 }
 
 #[test]

@@ -638,6 +638,7 @@ pub fn query(
             &scan,
             Some(Arc::new(Default::default())),
             None,
+            true,
         )
         .map(Some);
     }
@@ -782,6 +783,7 @@ fn prepared_query(
         &scan,
         Some(history),
         membership,
+        !coverage.as_ref().is_some_and(|coverage| coverage.complete),
     )
     .map(Some)
 }
@@ -1045,6 +1047,7 @@ fn progressive_window(
         &scan,
         Some(Arc::new(history)),
         None,
+        !coverage.is_some_and(|coverage| coverage.complete),
     )
 }
 

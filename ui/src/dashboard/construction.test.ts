@@ -145,7 +145,12 @@ test('both construction renderers release dated-name demand outside their branch
       widget.time = { mode: 'range', firstOffset: -50, lastOffset: 30 };
       render(400); expectDemand(130);
       widget.time = { mode: 'follow' };
-      render(124, false); expectDemand(null);
+      render(124, false);
+      if (kind === 'construction-log') {
+        // Off screen the log's reads wait, but the names already read stay on its rows.
+        assert.deepEqual(fixture.demands.find(demand => demand.kind === 'state'), { kind: 'state', active: false, wanted: [{ state: 7, hour: 124 }] }, kind);
+        assert.deepEqual(fixture.demands.find(demand => demand.kind === 'country'), { kind: 'country', active: false, wanted: [{ hour: 100, tag: project.tag }] }, kind);
+      } else expectDemand(null);
     }
   } finally { delete host.__constructionDemand; await vite.close(); }
 });

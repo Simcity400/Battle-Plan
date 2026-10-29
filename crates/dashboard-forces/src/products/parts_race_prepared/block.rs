@@ -142,13 +142,13 @@ where
     fn bytes(&self) -> u64 {
         let mut held = HeldBytes::default();
         if let Some(frame) = &self.first {
-            held.frame(frame);
+            held.value(frame);
         }
         if let Some((_, tail)) = &self.tail {
             held.value(tail);
         }
         if let Some(last) = &self.last {
-            held.frame(last);
+            held.value(last);
         }
         held.heap(&self.hours).value(&self.scan).total()
     }
@@ -485,10 +485,10 @@ mod bytes_tests {
     fn frames_alone<F: Family>(extract: &BlockExtract<F>) -> u64 {
         let mut held = HeldBytes::default();
         if let Some(first) = &extract.first {
-            held.frame(first);
+            held.value(first);
         }
         if let Some(last) = &extract.last {
-            held.frame(last);
+            held.value(last);
         }
         held.total()
     }

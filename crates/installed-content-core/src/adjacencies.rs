@@ -33,10 +33,10 @@ pub struct Adjacency {
     pub start: (i32, i32),
     /// `stop_x`, `stop_y` as written.
     pub stop: (i32, i32),
-    /// The rule column is looked up by its exact bytes, `None` when empty.
-    /// A name holding a `\r` (a nine-column CRLF row) or the NUL appended
-    /// at the end of the file names no rule, which the game reports.
-    pub rule: Option<String>,
+    /// The rule column's exact bytes, which the game matches against rule names;
+    /// `None` when empty. A name holding a `\r` (a nine-column CRLF row) or the
+    /// NUL appended at the end of the file names no rule, which the game reports.
+    pub rule: Option<Vec<u8>>,
 }
 
 /// A byte stream that retains carriage returns and treats both byte 0xFF
@@ -143,7 +143,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<Vec<Adjacency>> {
             through,
             start: (ends[0], ends[1]),
             stop: (ends[2], ends[3]),
-            rule: (!rule.is_empty()).then(|| String::from_utf8_lossy(&rule).into_owned()),
+            rule: (!rule.is_empty()).then_some(rule),
         });
         csv.skip_line();
     }
@@ -182,7 +182,7 @@ mod tests {
                 through: 7617,
                 start: (1560, 1009),
                 stop: (1556, 1016),
-                rule: Some("PANAMA_CANAL".into()),
+                rule: Some(b"PANAMA_CANAL".to_vec()),
             }
         );
         assert_eq!((rows[0].start, rows[0].stop), ((-1, -1), (-1, -1)));
@@ -191,7 +191,7 @@ mod tests {
         // `-1` is looked up as a rule name, which names none.
         assert_eq!(
             (rows[3].kind, rows[3].rule.as_deref()),
-            (IMPASSABLE, Some("-1"))
+            (IMPASSABLE, Some(&b"-1"[..]))
         );
         assert_eq!(rows[4].kind, LARGE_RIVER);
     }
@@ -211,7 +211,7 @@ mod tests {
     fn empty_integer_fields_store_zero() {
         let rows = parse(b"h\n5960;5539;sea;;;-1;-1;-1;Strait_of_Malacca;Malacca\n").unwrap();
         assert_eq!((rows[0].through, rows[0].start), (0, (0, -1)));
-        assert_eq!(rows[0].rule.as_deref(), Some("Strait_of_Malacca"));
+        assert_eq!(rows[0].rule.as_deref(), Some(&b"Strait_of_Malacca"[..]));
     }
 
     /// Extra columns do not change the row: the loader reads nine fields
@@ -237,7 +237,7 @@ mod tests {
             .iter()
             .map(|row| (row.from, row.rule.as_deref()))
             .collect();
-        assert_eq!(read, [(1, Some("STRAIT\r")), (4, None)]);
+        assert_eq!(read, [(1, Some(&b"STRAIT\r"[..])), (4, None)]);
     }
 
     /// Past the end an integer field stores nothing, so `To` and `Through`
@@ -256,7 +256,7 @@ mod tests {
                 through: 9,
                 start: (0, 0),
                 stop: (0, 0),
-                rule: Some("\0".into()),
+                rule: Some(b"\0".to_vec()),
             }
         );
         // A 0xFF byte reads as the end.

@@ -23,6 +23,8 @@ struct Held {
 #[derive(Default)]
 pub struct Store {
     held: Vec<Held>,
+    /// The stamp of `held`, which preparation ranges index once each.
+    baseline: Option<u64>,
     next: Vec<Held>,
     order: Vec<(u64, usize)>,
     seen: Vec<bool>,
@@ -111,16 +113,46 @@ impl Store {
         self.defer_edits = true;
         result
     }
+    /// The held entry of `seed` at census `index`: the same ordinal on an
+    /// unchanged roster, otherwise through the range's index of this baseline.
+    fn prefetch_held(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        order: &mut crate::division_experience::Order,
+    ) -> Option<&Held> {
+        if let Some(held) = self
+            .held
+            .get(index)
+            .filter(|held| held.division == seed.division)
+        {
+            return Some(held);
+        }
+        if self.held.is_empty() {
+            return None;
+        }
+        let at = order
+            .position(
+                self.baseline,
+                self.held.iter().map(|held| held.division),
+                seed.division,
+            )
+            .unwrap_or_else(|| {
+                self.held
+                    .iter()
+                    .position(|held| held.division == seed.division)
+            });
+        at.and_then(|at| self.held.get(at))
+            .filter(|held| held.division == seed.division)
+    }
     pub(super) fn prefetch_certificates(
         &self,
         index: usize,
         seed: &DivisionSeed,
+        order: &mut crate::division_experience::Order,
     ) -> Option<Certificates> {
         let held = self
-            .held
-            .get(index)
-            .filter(|held| held.division == seed.division)
-            .or_else(|| self.held.iter().find(|held| held.division == seed.division))
+            .prefetch_held(index, seed, order)
             .filter(|held| held.army == seed.pointer);
         let history = changes::sequence_at(
             seed.pointer.checked_add(unit_history::DIVISION_HISTORY)?,
@@ -145,6 +177,7 @@ impl Store {
         self.pending.clear();
         self.defer_edits = false;
         self.held.clear();
+        self.baseline = None;
         self.next.clear();
         self.order.clear();
         self.rows.clear();
@@ -473,6 +506,7 @@ impl Store {
             }
         }
         std::mem::swap(&mut self.held, &mut self.next);
+        self.baseline = crate::division_experience::next_baseline();
         self.next.clear();
         changes::entry_demand(self.binding_count);
         self.rows.finish()
@@ -679,10 +713,11 @@ mod tests {
             put(&mut world.bytes, entry + 0x138, 100_000_i64.to_le_bytes());
             let seeds = [seed(0x2000, 2), seed(0x1000, 1)];
             let mut store = Store::default();
+            let mut order = crate::division_experience::Order::default();
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -699,7 +734,7 @@ mod tests {
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -728,7 +763,7 @@ mod tests {
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -760,7 +795,7 @@ mod tests {
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -782,7 +817,7 @@ mod tests {
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -798,7 +833,7 @@ mod tests {
             begin(&mut store);
             for (index, seed) in seeds.iter().enumerate() {
                 let prepared = owned
-                    .then(|| store.prefetch_certificates(index, seed))
+                    .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
                 store.observe_prepared(&world, 0, seed, prepared).unwrap();
             }
@@ -807,6 +842,58 @@ mod tests {
             changes::patched(false);
             changes::forwarder(false);
         }
+    }
+    /// A division added ahead of the whole baseline shifts every census
+    /// ordinal; each lookup then uses one index of the baseline, not a scan.
+    #[test]
+    fn a_shifted_census_finds_each_held_history_through_one_index() {
+        const COUNT: u64 = 30_000;
+        let held = |division: u64| Held {
+            division,
+            army: division as usize * 0x100,
+            history: None,
+            history_slot: usize::MAX,
+            medals_slot: usize::MAX,
+            store: 0,
+            medals: None,
+            counts: [0; 2],
+            available: false,
+            edit_epoch: None,
+        };
+        let mut store = Store::default();
+        store.held = (1..=COUNT).map(held).collect();
+        store.baseline = crate::division_experience::next_baseline();
+        let mut order = crate::division_experience::Order::default();
+        for index in 1..=COUNT as usize {
+            let division = index as u64;
+            let found = store.prefetch_held(index, &seed(index * 0x100, division), &mut order);
+            assert_eq!(found.map(|held| held.division), Some(division));
+        }
+        assert!(
+            store
+                .prefetch_held(0, &seed(0x100, COUNT + 1), &mut order)
+                .is_none()
+        );
+        assert_eq!(order.rebuilds(), 1);
+        // An unchanged census needs no index.
+        let mut unchanged = crate::division_experience::Order::default();
+        for (index, held) in store.held.iter().enumerate() {
+            let census = seed(held.army, held.division);
+            assert!(
+                store
+                    .prefetch_held(index, &census, &mut unchanged)
+                    .is_some()
+            );
+        }
+        assert_eq!(unchanged.rebuilds(), 0);
+        // A new baseline is indexed afresh.
+        store.baseline = crate::division_experience::next_baseline();
+        assert!(
+            store
+                .prefetch_held(0, &seed(0x200, 2), &mut order)
+                .is_some()
+        );
+        assert_eq!(order.rebuilds(), 2);
     }
     #[test]
     fn an_uncertified_entry_edit_rereads_every_history_holding_the_entry() {

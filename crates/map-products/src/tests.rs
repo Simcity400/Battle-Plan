@@ -2902,7 +2902,9 @@ impl CertifiedFrames {
                 && (rows.table().key_bits() != 0 || rows.len() == 1)
             {
                 complete.push(index);
-                if packet_hours(rows).iter().all(|hour| hour.stamp().is_none()) {
+                if !PACKET_HOUR_HOSTS.contains(&rows.table())
+                    || packet_hours(rows).iter().all(|hour| hour.stamp().is_none())
+                {
                     continue;
                 }
                 stamped.push(index);

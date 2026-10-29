@@ -149,7 +149,8 @@ test('actual cipher label reads finish during fast playback and retain only thei
     active = false; view = render(130); await settle();
     assert.equal(changed.signal.aborted, true);
     assert.equal(view.labels.pair(view.row).target.flagReason, undefined);
-    assert.equal(view.labels.pair(view.row).target.flagPending, false);
+    // Off screen nothing is awaited: an absent pending flag shows no pending indicator, as false does.
+    assert.ok(!view.labels.pair(view.row).target.flagPending);
     active = true; fixture.advance(3000); render(130); render(130); await settle();
     const priorClient = first.calls.at(-1)!;
     const other = transport(); client = other.client; view = render(130); await settle();

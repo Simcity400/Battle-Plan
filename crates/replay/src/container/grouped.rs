@@ -2249,11 +2249,11 @@ impl Compressing {
     pub(crate) fn work_bytes(&self) -> u64 {
         if self.sections.is_empty() {
             self.block
-                .plain
+                .tables
                 .iter()
                 .zip(&self.chosen)
                 .filter(|(_, chosen)| chosen.is_none())
-                .map(|(bytes, _)| *bytes as u64)
+                .map(|(writer, _)| self.block.plain[writer.table.index()] as u64)
                 .sum()
         } else {
             self.unstored

@@ -194,8 +194,8 @@ impl Extract for BlockExtract {
     fn bytes(&self) -> u64 {
         let mut held = HeldBytes::default();
         if let Some(first) = &self.first {
-            held.frame(&first.frame)
-                .changes(&first.changes)
+            held.value(&first.frame)
+                .value(&first.changes)
                 .heap(&first.live)
                 .heap(&first.deletions);
         }

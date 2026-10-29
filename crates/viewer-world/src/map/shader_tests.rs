@@ -24,6 +24,7 @@ fn standalone_map_shaders_validate() {
             include_str!("../../../viewer-foundation/src/map/texture_unpack.wgsl"),
         ),
         ("sprites", SHADER),
+        ("unknown_hatch", crate::map::weather::UNKNOWN_HATCH_SHADER),
     ] {
         validate(name, source);
     }

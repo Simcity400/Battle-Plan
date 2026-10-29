@@ -72,9 +72,10 @@ export function doctrineMasteryRequest(widget: WidgetSpec, track: Track) {
   return track && tag ? request(track, 'doctrine-mastery', requests.doctrineMastery(track.branch.id, tag)) : null;
 }
 
-export const occupationReserveRequest = (widget: WidgetSpec, track: Track) =>
+/** `tags` are the holders' tags to ask for: by default the chosen literal tags. */
+export const occupationReserveRequest = (widget: WidgetSpec, track: Track, tags: readonly string[] | undefined = chosenTags(widget)) =>
   track && resolveOptions(OCCUPATION, widget.options).show !== 'breakdown'
-    ? request(track, 'occupation-reserve-manpower', requests.occupationRace(track.branch.id, chosenTags(widget))) : null;
+    ? request(track, 'occupation-reserve-manpower', requests.occupationRace(track.branch.id, tags)) : null;
 
 /** How many of the most active countries the matrix shows: a Top countries group's count, else Countries shown. */
 export function intelShown(widget: WidgetSpec): number {

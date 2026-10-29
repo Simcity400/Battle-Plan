@@ -23,12 +23,18 @@ use crate::{
 /// category bit.
 pub fn sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
     let mut indices = SubUnits::default();
-    for directory in SUB_UNIT_DIRECTORIES {
-        for path in script_files::paths(layers, directory, Some(".txt")) {
-            indices.read(&path.read(layers)?, &path.text());
-        }
+    for path in sub_unit_files(layers) {
+        indices.read(&path.read(layers)?, &path.text());
     }
     Ok(indices)
+}
+
+/// The files the sub-unit database reads, in its order, for every reader of its definitions.
+pub fn sub_unit_files(layers: &ResolvedLayers) -> Vec<script_files::ScriptPath> {
+    SUB_UNIT_DIRECTORIES
+        .iter()
+        .flat_map(|directory| script_files::paths(layers, directory, Some(".txt")))
+        .collect()
 }
 
 /// Each directory the database reads, in order.

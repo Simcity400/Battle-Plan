@@ -221,6 +221,11 @@ impl Targets {
         self.size
     }
 
+    /// The scene and depth attachments' sample count, which every world pipeline matches.
+    pub fn samples(&self) -> u32 {
+        self.samples
+    }
+
     /// HDR scene and depth dimensions; output, GUI and refraction keep [`Self::size`].
     pub fn world_size(&self) -> [u32; 2] {
         self.world_size

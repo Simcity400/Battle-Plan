@@ -6,7 +6,7 @@ use viewer_foundation::map::test_support::TEST_HANG_GUARD;
 use viewer_foundation::map::test_support::gpu as tests;
 use viewer_foundation::map::textures::data_texture;
 
-pub(super) const ALL_PASSES: [Pass; 12] = [
+pub(super) const ALL_PASSES: [Pass; 13] = [
     Pass::Underwater,
     Pass::Terrain,
     Pass::LandBorders,
@@ -17,6 +17,7 @@ pub(super) const ALL_PASSES: [Pass; 12] = [
     Pass::SeaBorders,
     Pass::Demilitarized,
     Pass::Straits,
+    Pass::UnknownSnowMud,
     Pass::CountryNames,
     Pass::Sky,
 ];
@@ -44,6 +45,7 @@ fn typed_dependency_closure() {
             "sea borders",
             "demilitarized",
             "straits",
+            "unknown snow and mud",
             "country names",
             "sky",
         ]
@@ -86,6 +88,38 @@ fn typed_dependency_closure() {
         assert_eq!(lines(&diagnostics).collect::<Vec<_>>(), expected);
         assert_eq!(Frame::new(&mut diagnostics).run(failed, || Ok(9)), Some(9));
     }
+}
+
+#[test]
+fn a_refused_hatch_is_named_once_and_withholds_no_other_pass() {
+    let mut diagnostics = Diagnostics::new();
+    let mut frame = Frame::new(&mut diagnostics);
+    let reason = "unknown snow and mud hatch pipeline: unsupported target";
+    assert!(
+        frame
+            .run::<()>(Pass::UnknownSnowMud, || Err(io::Error::other(reason)))
+            .is_none()
+    );
+    // The water draw of the same frame is not retried, and nothing else waits on the hatch.
+    assert!(
+        frame
+            .run(Pass::UnknownSnowMud, || -> io::Result<()> {
+                panic!("refused hatch retried")
+            })
+            .is_none()
+    );
+    for pass in ALL_PASSES
+        .into_iter()
+        .filter(|&pass| pass != Pass::UnknownSnowMud)
+    {
+        assert!(frame.ready(pass), "{pass:?}");
+    }
+    assert_eq!(
+        lines(&diagnostics).collect::<Vec<_>>(),
+        [format!(
+            "Map shader unknown snow and mud: 1 refused pass: {reason}"
+        )]
+    );
 }
 
 #[test]

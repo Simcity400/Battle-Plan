@@ -9,7 +9,7 @@ import { completedTooltip, coverageAt, researchDateRange, researchItemDate, rese
 const base = HOUR_EPOCH + 1944 * 8760 + 12;
 const day = (n: number) => base + n * 24;
 const entry = (token: string, first: number, end: number | null, outcome: ResearchEntry['outcome'] = 'completed', startedAfter: number | null = first - 24): ResearchEntry => ({
-  token, technologyHandle: token.charCodeAt(0), continuityStartHour: day(0), level: 0, firstObservedHour: first, startedAfterHour: startedAfter,
+  token, technologyHandle: token.charCodeAt(0), databaseIndex: token.charCodeAt(0), continuityStartHour: day(0), level: 0, firstObservedHour: first, startedAfterHour: startedAfter,
   lastObservedHour: end === null ? first : end - 24, endedByHour: end, outcome,
 });
 const slot = (index: number, availability: { firstHour: number; lastHour: number }[], entries: ResearchEntry[], states: ResearchSlotState[] = []): ResearchSlotHistory => ({

@@ -4,7 +4,9 @@ import type { DiplomacyKind, DiplomacyPact, DiplomacyReadRun } from '../../gener
 
 type Pact = DiplomacyPact;
 
-export type PactState = { state: 'present' } | { state: 'gone'; by: number } | { state: 'unknown'; since: number };
+export type PactState = { state: 'present' } | { state: 'gone'; by: number } | { state: 'unknown'; since: number }
+  /** Listed at the last prepared read (`since`); later hours are still being prepared. */
+  | { state: 'preparing'; since: number };
 
 /** Each owner's supplying reads, in hour order, for dating when a listed pact stopped being listed. */
 export function ownerReads(reads: readonly DiplomacyReadRun[]): Map<string, number[]> {
@@ -23,8 +25,9 @@ export function ownerReads(reads: readonly DiplomacyReadRun[]): Map<string, numb
  * last read); gone once a later read of its owner no longer lists it, dated by that read; and
  * unknown in between or where its owner was not read again, never assumed gone. Nothing is
  * said about the game's own state words. */
-export function pactState(pact: Pact, at: number, reads: ReadonlyMap<string, readonly number[]>): PactState {
-  if (at <= pact.lastSeen || pact.presentAtEnd) return { state: 'present' };
+export function pactState(pact: Pact, at: number, reads: ReadonlyMap<string, readonly number[]>, through = Infinity): PactState {
+  if (at <= pact.lastSeen) return { state: 'present' };
+  if (pact.presentAtEnd) return at <= through ? { state: 'present' } : { state: 'preparing', since: through };
   // An episode a recording gap ended proves no absence: the next read may list it again.
   if (pact.endedBy) return { state: 'unknown', since: pact.lastSeen };
   const owner = pact.identities[0];
@@ -73,9 +76,9 @@ export interface Agreement {
 }
 
 /** The chosen country's agreements at `at`: those listed by then, offers turned round,
- * kinds shown elsewhere left out, and one per relation. */
+ * kinds shown elsewhere left out, and one per relation. `through` is the last prepared hour. */
 export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, reads: ReadonlyMap<string, readonly number[]>,
-  kinds: ReadonlySet<string> | null): Agreement[] {
+  kinds: ReadonlySet<string> | null, through = Infinity): Agreement[] {
   const joined = new Map<string, { pacts: Pact[]; kind: string; outgoing: boolean; partner: string | null }>();
   for (const pact of pacts) {
     if (pact.firstSeen > at || ELSEWHERE.has(pact.kind)) continue;
@@ -94,7 +97,7 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, re
     const since = Math.min(...entry.pacts.map(pactSince));
     const expiry = latest.endHour != null && latest.endHour > since ? latest.endHour : null;
     return { key, kind: entry.kind, outgoing: entry.outgoing, partner: entry.partner, since, sinceBound: latest.startHour == null,
-      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at, reads), pact: latest };
+      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at, reads, through), pact: latest };
   });
 }
 
@@ -109,14 +112,17 @@ export interface AgreementText {
 }
 
 const faded = (color: string) => /^#[0-9a-f]{6}$/i.test(color) ? `${color}66` : color;
-const order = (a: Agreement, b: Agreement) => Number(a.state.state !== 'present') - Number(b.state.state !== 'present') || a.since - b.since;
+/** Listed at the hour shown, or at the last prepared read with nothing known since. */
+const live = (item: Agreement) => item.state.state === 'present' || item.state.state === 'preparing';
+const order = (a: Agreement, b: Agreement) => Number(!live(a)) - Number(!live(b)) || a.since - b.since;
 
 /** A section per kind (headed by how many are in force), split by direction where the
- * kind has one, and a lane per partner with its bar from start to end. */
-export function agreementLanes(agreements: readonly Agreement[], ended: boolean, branchLastHour: number, text: AgreementText) {
+ * kind has one, and a lane per partner with its bar from start to end. A pact still listed
+ * at the last known read runs open to `knownLastHour`: the branch end once prepared. */
+export function agreementLanes(agreements: readonly Agreement[], ended: boolean, knownLastHour: number, text: AgreementText) {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, AgreementLaneInfo>();
-  const present = agreements.filter(item => ended || item.state.state === 'present');
+  const present = agreements.filter(item => ended || live(item));
   const known = new Map(KNOWN.map((entry, index) => [entry.kind, index]));
   const kinds = [...new Set(present.map(item => item.kind))].sort((a, b) => (known.get(a) ?? KNOWN.length) - (known.get(b) ?? KNOWN.length)
     || text.kindName(a).localeCompare(text.kindName(b)));
@@ -139,12 +145,12 @@ export function agreementLanes(agreements: readonly Agreement[], ended: boolean,
       for (const item of [...side.items].sort(order)) {
         const id = `agreement:${item.key}`;
         const look = text.country(item.partner, item.lastSeen);
-        const live = item.state.state === 'present';
-        const span: TimelineSpan = { id: 'bar', firstHour: item.since, lastHour: item.pact.presentAtEnd ? branchLastHour : item.lastSeen,
-          label: look.name, color: live ? color : faded(color), barHeight: 8, openEnd: true };
+        const listed = live(item);
+        const span: TimelineSpan = { id: 'bar', firstHour: item.since, lastHour: item.pact.presentAtEnd ? knownLastHour : item.lastSeen,
+          label: look.name, color: listed ? color : faded(color), barHeight: 8, openEnd: true };
         info.set(id, { agreement: item, title: spec?.one ?? title, mutual: !!spec && !spec.out });
         lanes.push({ id, label: '', identity: { label: look.name, countryFlag: look }, depth: 1, rowHeight: 22, singleLine: true,
-          separator: false, icons: false, names: false, muted: !live, spans: [span] });
+          separator: false, icons: false, names: false, muted: !listed, spans: [span] });
       }
     }
   });

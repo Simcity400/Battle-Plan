@@ -7,8 +7,15 @@
 //! assumed, and its state sorts after every state with a known level.
 
 use crate::{
-    Diagnostic, DiagnosticKind, ResolvedLayers, fixed5,
-    parser::{Document, Value},
+    Diagnostic, DiagnosticKind, ResolvedLayers,
+    fields::invalid,
+    fixed5, ideas,
+    key_names::KeyNames,
+    modifiers,
+    parser::{
+        Item, Value,
+        native::{self, Shape},
+    },
     script_files,
 };
 use std::io;
@@ -48,11 +55,84 @@ impl AutonomyStates {
     }
 }
 
-fn last<'a>(items: &'a [crate::parser::Item], key: &[u8]) -> Option<&'a Value> {
+/// The definitions of one autonomy file, as the database reads it: both
+/// top-level spellings by keyword, variables replayed and every field
+/// consumed by its reader. A read that cannot be settled refuses the file.
+pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec<Item>> {
+    #[derive(Clone, Copy)]
+    enum Node {
+        File,
+        State,
+        Modifier(modifiers::Node),
+        Rule(ideas::RuleNode),
+        Mtth,
+    }
+    let mut undecided = Vec::new();
+    let read = native::read(
+        input,
+        native::Mode::KeepMark,
+        native::Top::Persistent(Node::File),
+        Some(names),
+        &mut |node, field| match node {
+            Node::File
+                if field.keyword_is("autonomy_state") || field.keyword_is("autonomous_state") =>
+            {
+                Shape::Object(Node::State)
+            }
+            Node::File => Shape::Skip,
+            Node::State => match field.keyword().as_deref() {
+                Some(
+                    b"id"
+                    | b"default"
+                    | b"cost"
+                    | b"is_puppet"
+                    | b"min_freedom_level"
+                    | b"manpower_influence"
+                    | b"peace_conference_initial_freedom"
+                    | b"use_overlord_color",
+                ) => Shape::One,
+                Some(
+                    b"allowed"
+                    | b"can_take_level"
+                    | b"can_lose_level"
+                    | b"ai_overlord_wants_garrison",
+                ) => Shape::Trigger,
+                Some(b"modifier") => Shape::Object(Node::Modifier(modifiers::Node::Modifier)),
+                Some(b"rule") => Shape::Object(Node::Rule(ideas::RuleNode::Rule)),
+                Some(b"allowed_levels_filter") => Shape::List,
+                Some(b"ai_subject_wants_higher" | b"ai_overlord_wants_lower") => {
+                    Shape::Object(Node::Mtth)
+                }
+                Some(b"use_for_peace_conference_weight") => Shape::ObjectIfOpen(Node::Mtth),
+                _ => Shape::Skip,
+            },
+            Node::Modifier(node) => {
+                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided)
+                    .map(Node::Modifier)
+            }
+            Node::Rule(node) => ideas::rule_field(node, field).map(Node::Rule),
+            Node::Mtth => native::mean_time_to_happen(field),
+        },
+    );
+    if let Some(cause) = read.unsettled {
+        return Err(invalid(format!("autonomy definitions: {cause}")));
+    }
+    if let Some(cause) = undecided.first() {
+        return Err(invalid(format!("autonomy definitions: {cause}")));
+    }
+    Ok(read
+        .items
+        .into_iter()
+        .filter(|item| item.keyword_is("autonomy_state") || item.keyword_is("autonomous_state"))
+        .collect())
+}
+
+/// The last field that is the keyword `key`.
+fn last<'a>(items: &'a [Item], key: &str) -> Option<&'a Value> {
     items
         .iter()
         .rev()
-        .find(|item| item.key.as_deref() == Some(key))
+        .find(|item| item.keyword_is(key))
         .map(|item| &item.value)
 }
 
@@ -71,31 +151,38 @@ fn plain_number(bytes: &[u8]) -> bool {
         && fraction.is_none_or(|part| part.iter().all(u8::is_ascii_digit))
 }
 
-fn from_document(
-    document: &Document,
+fn from_definitions(
+    definitions: &[Item],
     path: &str,
     warnings: &mut Vec<Diagnostic>,
 ) -> Vec<AutonomyState> {
     let mut states = Vec::new();
-    for value in document.get_all(b"autonomy_state") {
-        let Some(items) = value.items() else {
+    for definition in definitions {
+        let Some(items) = definition.value.items() else {
             warnings.push((
                 DiagnosticKind::Refused,
                 format!("{path}: an autonomy_state is not a block and is left out."),
             ));
             continue;
         };
-        let Some(id) = last(items, b"id")
-            .and_then(Value::scalar_str)
-            .filter(|id| !id.is_empty())
-        else {
-            warnings.push((
-                DiagnosticKind::Refused,
-                format!("{path}: an autonomy_state has no id and is left out."),
-            ));
-            continue;
+        let id = match last(items, "id").map(Value::read_str) {
+            Some(Ok(id)) if !id.is_empty() => id,
+            Some(Err(why)) => {
+                warnings.push((
+                    DiagnosticKind::Refused,
+                    format!("{path}: an autonomy_state id is {why}; the state is left out."),
+                ));
+                continue;
+            }
+            _ => {
+                warnings.push((
+                    DiagnosticKind::Refused,
+                    format!("{path}: an autonomy_state has no id and is left out."),
+                ));
+                continue;
+            }
         };
-        let level = last(items, b"min_freedom_level");
+        let level = last(items, "min_freedom_level");
         let min_freedom_level = level
             .and_then(Value::scalar)
             .filter(|bytes| plain_number(bytes))
@@ -121,16 +208,21 @@ fn from_document(
 /// Every autonomy state in load order, with notes about files and states left
 /// out or unordered. A state defined again replaces the earlier one in place.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnostic>)> {
+    let names = layers.key_names()?;
     let mut warnings = Vec::new();
     let mut result = AutonomyStates::default();
-    for (path, document) in script_files::documents(
-        layers,
-        "common/autonomous_states/",
-        "Autonomy states",
-        &mut warnings,
-    )? {
-        for state in from_document(&document, &path, &mut warnings) {
-            merge(&mut result, state, &path, &mut warnings);
+    for path in script_files::paths(layers, "common/autonomous_states/", Some(".txt")) {
+        let path_text = path.to_string();
+        match read_definitions(&path.read(layers)?, &names) {
+            Ok(definitions) => {
+                for state in from_definitions(&definitions, &path_text, &mut warnings) {
+                    merge(&mut result, state, &path_text, &mut warnings);
+                }
+            }
+            Err(error) => warnings.push((
+                DiagnosticKind::ParseFailure,
+                format!("Autonomy states unavailable in {path}: {error}"),
+            )),
         }
     }
     Ok((result, warnings))
@@ -169,12 +261,41 @@ mod tests {
         let mut warnings = Vec::new();
         let mut result = AutonomyStates::default();
         for (path, text) in files {
-            let (document, _) = crate::parser::parse_unclosed(text.as_bytes()).unwrap();
-            for state in from_document(&document, path, &mut warnings) {
+            let definitions = read_definitions(text.as_bytes(), &KeyNames::default()).unwrap();
+            for state in from_definitions(&definitions, path, &mut warnings) {
                 merge(&mut result, state, path, &mut warnings);
             }
         }
         (result, warnings)
+    }
+
+    /// Both top-level spellings and every keyword in any ASCII case are read,
+    /// as the map's colour rule reads them; quoted keys are no keywords.
+    #[test]
+    fn states_are_read_through_the_database_keyword_dispatch() {
+        let (read, warnings) = states(&[(
+            "mod.txt",
+            "autonomous_state = { ID = mod_level MIN_FREEDOM_LEVEL = 0.4 } \
+             AUTONOMY_STATE = { id = upper min_freedom_level = 0.6 } \
+             \"autonomy_state\" = { id = quoted min_freedom_level = 0.1 } \
+             autonomy_state = { id = keyed \"min_freedom_level\" = 0.2 min_freedom_level = 0.3 \"id\" = other } \
+             @level = 0.9 autonomy_state = { id = variable min_freedom_level = @level }",
+        )]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let levels: Vec<_> = read
+            .states
+            .iter()
+            .map(|state| (state.id.as_str(), state.min_freedom_level))
+            .collect();
+        assert_eq!(
+            levels,
+            [
+                ("mod_level", Some(40_000)),
+                ("upper", Some(60_000)),
+                ("keyed", Some(30_000)),
+                ("variable", Some(90_000)),
+            ]
+        );
     }
 
     #[test]
@@ -230,19 +351,28 @@ mod tests {
 
     #[test]
     fn unsupported_numeric_suffixes_are_unknown_instead_of_prefix_levels() {
-        let (read, warnings) = states(&[(
-            "mod.txt",
-            "autonomy_state = { id = suffix min_freedom_level = 0.4a } \
-             autonomy_state = { id = exponent min_freedom_level = 1e3 } \
-             autonomy_state = { id = block min_freedom_level = { value = 0.2 } } \
-             autonomy_state = { id = signed min_freedom_level = +0.60 } \
-             autonomy_state = { id = negative min_freedom_level = -1.234567 }",
-        )]);
+        let (read, warnings) = states(&[
+            (
+                "mod.txt",
+                "autonomy_state = { id = suffix min_freedom_level = 0.4a } \
+                 autonomy_state = { id = exponent min_freedom_level = 1e3 } \
+                 autonomy_state = { id = signed min_freedom_level = +0.60 } \
+                 autonomy_state = { id = negative min_freedom_level = -1.234567 }",
+            ),
+            // The level reader takes `{` as its value: the block's contents join the
+            // state, whose own `}` then ends the file's loop.
+            (
+                "z.txt",
+                "autonomy_state = { id = block min_freedom_level = { value = 0.2 } } \
+                 autonomy_state = { id = unread min_freedom_level = 0.5 }",
+            ),
+        ]);
         for id in ["suffix", "exponent", "block"] {
             assert_eq!(read.get(id).unwrap().min_freedom_level, None);
             assert!(warnings.iter().any(|(_, warning)| warning.contains(id)));
         }
         assert_eq!(warnings.len(), 3);
+        assert!(read.get("unread").is_none());
         assert_eq!(read.get("signed").unwrap().min_freedom_level, Some(60_000));
         assert_eq!(
             read.get("negative").unwrap().min_freedom_level,

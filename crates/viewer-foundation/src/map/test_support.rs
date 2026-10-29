@@ -439,6 +439,8 @@ pub fn put_sample_campaign(frame: &mut replay_frame::frame::DecodedFrame) {
             province: 2,
             attackers: vec![10],
             defenders: vec![11],
+            attacker_classes: vec![0],
+            defender_classes: vec![0],
             ..Default::default()
         }]),
     );

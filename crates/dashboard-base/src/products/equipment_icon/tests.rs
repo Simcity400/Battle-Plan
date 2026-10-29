@@ -62,14 +62,14 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
                 "technology_type".to_owned(),
                 vec![Enabler {
                     id: "mod_technology".into(),
-                    parent: None,
+                    parent: Ok(None),
                 }],
             ),
             (
                 String::new(),
                 vec![Enabler {
                     id: "null_technology".into(),
-                    parent: None,
+                    parent: Ok(None),
                 }],
             ),
         ]
@@ -212,7 +212,7 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
                 "bare_type".to_owned(),
                 vec![Enabler {
                     id: "mod_technology".into(),
-                    parent: None,
+                    parent: Ok(None),
                 }],
             )]
             .into(),
@@ -274,7 +274,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
             "rifles_1".to_owned(),
             vec![Enabler {
                 id: "infantry_weapons1".into(),
-                parent: Some("infantry_weapons".into()),
+                parent: Ok(Some("infantry_weapons".into())),
             }],
         )]
         .into(),

@@ -166,7 +166,7 @@ fn relation<M: Memory>(
     // The shared-vision subject terms read only the status's subject-relation pointer and its type,
     // never the retired byte, and link clearing is what uninstalls a subject. So a retired relation
     // counts exactly while it is still installed; one left only in an owned vector is skipped.
-    if retired && matrix_index.is_none() && !reader.installed(pointer, overlord, subject, pass) {
+    if retired && matrix_index.is_none() && !reader.installed(pointer, overlord, subject, pass)? {
         return Ok(None);
     }
     let first = pass.resolver.resolve(&reader.countries, overlord)?;

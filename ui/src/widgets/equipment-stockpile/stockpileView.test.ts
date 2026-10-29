@@ -80,3 +80,10 @@ test('for an AI-controlled country the game computes no surplus: the table holds
   ]);
   assert.equal(quiet, 1);
 });
+
+test('a type showing nothing only because a table was not read is not recorded, never empty', () => {
+  // The production lines were not read at the hour shown: close air support's output is unknown.
+  const { quiet, unrecorded } = rows(validateStockpileReply({ ...structuredClone(REPLY), lineHours: [], lineReads: [] }));
+  assert.equal(quiet, 0);
+  assert.equal(unrecorded, 1);
+});

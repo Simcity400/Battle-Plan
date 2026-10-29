@@ -8,6 +8,7 @@ import { firstHourOfMonth, formatDateTime, gameDate, monthIndex } from '../../da
 import { createWidget } from '../../dashboard/model.ts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options.ts';
+import { subjectToken } from '../../dashboard/chosen.ts';
 import { GROW_WITH_PLAYBACK_OPTION } from '../general-career/definition.ts';
 import { DEFAULT_SORT } from './definition.ts';
 import type { NameAt } from '../../dashboard/countryFacts';
@@ -249,6 +250,9 @@ export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, l
   return 'No recorded entry at this hour';
 }
 
+/** A count from an incomplete battle history is a lower bound. */
+const atLeast = (row: LeaderRow, count: number | null) => count == null ? '—' : row.foughtPartial ? `at least ${count}` : String(count);
+
 export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string }): TooltipContent {
   const dates = new Map(row.career.traitGains.filter(g => g.hour <= row.hour).map(g => [g.token, g]));
   const names = attributeNames(row.value);
@@ -256,9 +260,10 @@ export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: st
     rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },
-      { label: 'Battles won / fought', value: row.preparing ? 'Still being prepared' : `${row.won ?? 'Result not recorded'} / ${row.fought}`, divider: true },
-      { label: 'Battles lost', value: row.preparing ? 'Still being prepared' : row.lost == null ? 'Result not recorded' : String(row.lost) },
-      { label: 'Unresolved battles', value: row.preparing ? 'Still being prepared' : String(row.unresolved) },
+      { label: 'Battles won / fought', value: row.preparing ? 'Still being prepared' : `${row.won == null ? 'Result not recorded' : atLeast(row, row.won)} / ${atLeast(row, row.fought)}`, divider: true },
+      { label: 'Battles lost', value: row.preparing ? 'Still being prepared' : row.lost == null ? 'Result not recorded' : atLeast(row, row.lost) },
+      { label: 'Unresolved battles', value: row.preparing ? 'Still being prepared' : atLeast(row, row.unresolved) },
+      ...row.foughtPartial && !row.preparing ? [{ label: 'Battle counts are incomplete: some battles were not recorded.', tone: 'muted' as const }] : [],
       { label: 'Win rate', value: row.preparing ? 'Still being prepared' : row.winRate == null ? row.won == null ? 'Result not recorded' : 'No battles with known results.' : `${Math.round(row.winRate)}%` },
       ...(row.value.traits?.length === 0 ? [{ label: 'Traits', value: 'None recorded', divider: true }] : row.value.traits?.map((token, i) => {
         const gain = dates.get(token); const trait = row.traitCatalogue[token];
@@ -325,7 +330,7 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
   ];
 }
 
-export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch'>,
+export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>,
   hour: number, follow: boolean): WidgetSpec {
   const base = createWidget('general-career', track.id);
   const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
@@ -333,7 +338,7 @@ export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<
   } };
   const options = resolveOptions([GROW_WITH_PLAYBACK_OPTION], source.options);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
-    contentScale: source.contentScale, options: { leader: reference, growWithPlayback: options.growWithPlayback } };
+    contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback: options.growWithPlayback } };
 }
 
 export function leaderRequestSelection(tags: readonly string[] | null | undefined): LeaderSelection | undefined {

@@ -41,7 +41,10 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HMODULE, WAIT_OBJECT_0},
+    Foundation::{
+        CloseHandle, ERROR_ALREADY_EXISTS, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
+        HMODULE, SetLastError, WAIT_OBJECT_0,
+    },
     Storage::FileSystem::{
         CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
         FILE_SHARE_WRITE, GetFileSizeEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
@@ -183,6 +186,84 @@ impl Drop for Event {
         unsafe {
             CloseHandle(self.0);
         }
+    }
+}
+
+/// This game's one collector: a named mutex that exists while it is held, and stays held
+/// while `shared` is published, as a run that retains its hooks for live relays leaves it.
+struct Owner<'a> {
+    handle: HANDLE,
+    shared: &'a AtomicPtr<Shared>,
+}
+impl<'a> Owner<'a> {
+    /// Refused while another collector, however it was loaded, runs in the game started at
+    /// `process_start`.
+    fn claim(process_start: u64, shared: &'a AtomicPtr<Shared>) -> Result<Self, &'static str> {
+        let name = format!(
+            "Local\\HOI4Replay.Collector.{}.{process_start}",
+            unsafe { GetCurrentProcessId() }
+        );
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        unsafe { SetLastError(0) };
+        let handle = unsafe { CreateMutexW(ptr::null(), 0, wide.as_ptr()) };
+        let existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        if handle.is_null() {
+            crate::allocation::native_error(&io::Error::last_os_error());
+            return Err("CreateMutexW failed");
+        }
+        let owner = Self { handle, shared };
+        if existed {
+            return Err("another collector already runs in this game");
+        }
+        Ok(owner)
+    }
+}
+impl Drop for Owner<'_> {
+    fn drop(&mut self) {
+        if self.shared.load(Ordering::Acquire).is_null() {
+            unsafe {
+                CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    #[test]
+    fn a_second_collector_in_one_game_is_refused_until_the_first_ends() {
+        // A synthetic process start, so no other test or process shares the name.
+        let process_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let shared = AtomicPtr::new(ptr::null_mut());
+        let first = Owner::claim(process_start, &shared).unwrap();
+        assert_eq!(
+            Owner::claim(process_start, &shared).err(),
+            Some("another collector already runs in this game")
+        );
+        assert!(Owner::claim(process_start + 1, &shared).is_ok(), "another game");
+        drop(first);
+        assert!(Owner::claim(process_start, &shared).is_ok());
+    }
+
+    #[test]
+    fn a_run_that_retains_its_hooks_keeps_the_game_claimed() {
+        let process_start = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+            ^ 1;
+        // Shared is still published, as a teardown that could not restore its hooks leaves it.
+        let retained = AtomicPtr::new(std::ptr::NonNull::<Shared>::dangling().as_ptr());
+        drop(Owner::claim(process_start, &retained).unwrap());
+        assert_eq!(
+            Owner::claim(process_start, &AtomicPtr::new(ptr::null_mut())).err(),
+            Some("another collector already runs in this game")
+        );
     }
 }
 
@@ -657,6 +738,8 @@ fn run(
     if session.process_start_time != process_start || prepared_process_start != process_start {
         return Err("collector config process creation time differs");
     }
+    // Before any game read or hook; held until this collector's run ends.
+    let _owner = Owner::claim(process_start, &SHARED)?;
     let mut frequency = 0;
     if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0
         || frequency <= 0
@@ -2079,6 +2162,7 @@ fn run(
         }
         if let Err(reason) = crate::land_events::release()
             .and_then(|()| collector_combat_log::history_events::release_storage())
+            .and_then(|()| crate::combat_log_prune::release_storage())
             .and_then(|()| crate::equipment_destruction::release())
             .and_then(|()| crate::naval_result_sources::release())
             .and_then(|()| crate::fuel_awards::release())

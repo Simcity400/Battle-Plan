@@ -45,9 +45,11 @@ impl Default for VideoSettings {
         }
     }
 }
+/// The app interface scales, in percent, that the app supports.
+const UI_SCALE_RANGE: std::ops::RangeInclusive<f64> = 75.0..=150.0;
 impl VideoSettings {
     fn validate(&self) -> Result<(), String> {
-        if !self.ui_scale.is_finite() || !(75.0..=150.0).contains(&self.ui_scale) {
+        if !self.ui_scale.is_finite() || !UI_SCALE_RANGE.contains(&self.ui_scale) {
             return Err("Invalid UI scale".into());
         }
         if self.map_ui_scale.is_some_and(|percent| {
@@ -198,6 +200,8 @@ fn game_map_ui_scale() -> Option<f64> {
 }
 /// The preferences from `settings.txt`'s keys as the game reads them
 /// ([`installed_content_settings::settings::SettingsKeys`]: any case, the last stored value of each field).
+/// The game accepts any finite interface scale and fits it to its own window; the app
+/// interface takes it within the scales the app supports.
 fn parse_game_display(
     keys: &installed_content_settings::settings::SettingsKeys,
 ) -> Result<VideoSettings, String> {
@@ -206,6 +210,7 @@ fn parse_game_display(
     }
     let scale = f64::from(
         keys.f32_at(&["graphics", "gui_scale"])
+            .filter(|scale| scale.is_finite())
             .ok_or("Invalid game UI scale")?,
     );
     let vsync = keys
@@ -213,7 +218,7 @@ fn parse_game_display(
         .ok_or("Missing vsync in game settings")?;
     let settings = VideoSettings {
         use_game_settings: true,
-        ui_scale: scale * 100.0,
+        ui_scale: (scale * 100.0).clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end()),
         vsync,
         map_ui_scale: None,
         map_diagnostics: false,
@@ -554,6 +559,37 @@ mod tests {
         assert!(!old.map_diagnostics && !settings.map_diagnostics);
         assert!(!VideoSettings::default().map_diagnostics);
         assert_eq!(old.map_ui_scale, None);
+    }
+
+    /// Any finite game interface scale is valid: the app interface takes it within
+    /// the app's scales, and the game's VSync choice stays.
+    #[test]
+    fn a_game_scale_outside_the_app_range_keeps_the_game_settings() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let parse = |text: &str| {
+            parse_game_display(&installed_content_settings::settings::SettingsKeys::read(
+                text.as_bytes(),
+            ))
+        };
+        let large = parse("graphics={size={x=2048 y=1152} gui_scale=2.0 VSync=no}").unwrap();
+        assert_eq!(large.ui_scale, 150.0);
+        assert!(large.use_game_settings && !large.vsync);
+        large.validate().unwrap();
+        let small = parse("graphics={gui_scale=0.4 VSync=yes}").unwrap();
+        assert_eq!(small.ui_scale, 75.0);
+        assert!(small.vsync);
+        assert_eq!(
+            parse("graphics={gui_scale=inf VSync=no}").unwrap_err(),
+            "Invalid game UI scale"
+        );
+        // The manual form keeps the app's own scales.
+        let manual = VideoSettings {
+            use_game_settings: false,
+            ui_scale: 200.0,
+            ..VideoSettings::default()
+        };
+        assert!(manual.validate().is_err());
     }
 
     #[test]

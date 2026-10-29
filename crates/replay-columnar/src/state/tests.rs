@@ -229,6 +229,16 @@ fn a_restart_restores_the_same_table() {
 }
 
 #[test]
+fn a_restart_past_the_last_u32_slot_is_refused() {
+    let error = Table::with_rows(&KINDS, SLOT_WORDS * 64 + 1, Bits::default(), &[]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Restart table's slot count passes the last slot"
+    );
+    assert!(Bits::from_words(vec![1 << 63]).is_ok());
+}
+
+#[test]
 fn runs_the_grammar_forbids_are_refused_by_name() {
     let mut table = Table::new(&KINDS).unwrap();
     let mut model = BTreeMap::new();

@@ -3,7 +3,7 @@
 //! Run through tools/accept-rebuild-slice.ps1 to isolate all process caches.
 
 use dashboard::{
-    Source, SourceKey, prepared,
+    FocusDatabase, Source, SourceKey, prepared,
     prepared_focus::{FocusArt, FocusArtMode, FocusArtParams},
     products::{
         ContentOptions, LoadContext, Product,
@@ -1021,22 +1021,29 @@ fn focus(
             // presents the same tokens at that hour.
             for (mode, descriptions) in [(FocusArtMode::Display, false), (FocusArtMode::Text, true)]
             {
-                let mut dates: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
+                // Completed and current focuses are national; the continuous focus is continuous.
+                let mut dates: BTreeMap<(FocusDatabase, i32), BTreeSet<String>> = BTreeMap::new();
                 for entry in &dated.order.completed {
                     dates
-                        .entry(entry.completed_by_hour.unwrap_or(dated.first_hour))
+                        .entry((
+                            FocusDatabase::National,
+                            entry.completed_by_hour.unwrap_or(dated.first_hour),
+                        ))
                         .or_default()
                         .insert(entry.token.clone());
                 }
-                if let Some(active) = dated
-                    .order
-                    .current
-                    .as_ref()
-                    .or(dated.order.continuous.as_ref())
-                {
-                    dates.entry(hour).or_default().insert(active.clone());
+                let active = match (&dated.order.current, &dated.order.continuous) {
+                    (Some(current), _) => Some((FocusDatabase::National, current)),
+                    (None, Some(continuous)) => Some((FocusDatabase::Continuous, continuous)),
+                    (None, None) => None,
+                };
+                if let Some((database, active)) = active {
+                    dates
+                        .entry((database, hour))
+                        .or_default()
+                        .insert(active.clone());
                 }
-                for (at, tokens) in dates {
+                for ((database, at), tokens) in dates {
                     let tokens: Vec<String> = tokens.into_iter().collect();
                     for (page, tokens) in tokens.chunks(128).enumerate() {
                         let art = FocusArt::load(
@@ -1045,6 +1052,7 @@ fn focus(
                                 branch_id: branch.clone(),
                                 tag: tag.clone(),
                                 hour: at,
+                                database,
                                 tokens: tokens.to_vec(),
                                 mode,
                             },
@@ -1057,6 +1065,7 @@ fn focus(
                                 branch_id: branch.clone(),
                                 hour: at,
                                 tag: tag.clone(),
+                                database,
                                 tokens: tokens.to_vec(),
                                 text_only: descriptions.then_some(true),
                                 include_descriptions: Some(descriptions),
@@ -1066,12 +1075,12 @@ fn focus(
                             &AtomicBool::new(false),
                         )?;
                         evidence.compare(
-                            &format!("{label}/focus-art/{mode:?}/{at}/{page}"),
+                            &format!("{label}/focus-art/{mode:?}/{database:?}/{at}/{page}"),
                             serde_json::to_value(&expected.items)?,
                             serde_json::to_value(&art.art)?,
                         )?;
                         evidence.compare(
-                            &format!("{label}/focus-art/{mode:?}/{at}/{page}/failures"),
+                            &format!("{label}/focus-art/{mode:?}/{database:?}/{at}/{page}/failures"),
                             json!([]),
                             serde_json::to_value(&art.failures)?,
                         )?;

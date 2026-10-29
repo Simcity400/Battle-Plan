@@ -159,6 +159,58 @@ impl ScannedNavy {
             NavyMeasure::Strength => &self.strength_series[params.ownership.index()],
         }
     }
+
+    /// This scan's series of `spans`' tags only, each cut to its tag's spans.
+    fn held(
+        &self,
+        spans: &BTreeMap<String, Vec<HourSpan>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let held = |all: &BTreeMap<String, Vec<RawNavyRun>>| -> io::Result<_> {
+            let mut series = BTreeMap::new();
+            for (tag, spans) in spans {
+                let Some(runs) = all.get(tag) else {
+                    continue;
+                };
+                let mut pieces = Vec::new();
+                ranking::for_each_piece(
+                    runs,
+                    spans,
+                    |run| (run.first_hour, run.last_hour),
+                    cancelled,
+                    |run, first_hour, last_hour| {
+                        pieces.push(RawNavyRun {
+                            first_hour,
+                            last_hour,
+                            starts_segment: run.starts_segment && first_hour == run.first_hour,
+                            ..run.clone()
+                        });
+                        Ok(())
+                    },
+                )?;
+                series.insert(tag.clone(), pieces);
+            }
+            Ok(series)
+        };
+        let [roster, logical] = &self.series;
+        let [roster_strength, logical_strength] = &self.strength_series;
+        Ok(Self {
+            classes: Arc::clone(&self.classes),
+            series: [held(roster)?, held(logical)?],
+            strength_series: [held(roster_strength)?, held(logical_strength)?],
+            segments: spans
+                .keys()
+                .filter_map(|tag| Some((tag.clone(), self.segments.get(tag)?.clone())))
+                .collect(),
+            unattributed: self.unattributed,
+            unread: self.unread,
+            undisplayable_tags: self.undisplayable_tags.clone(),
+            refused_strength: self.refused_strength,
+            maximum_overflows: self.maximum_overflows,
+            #[cfg(test)]
+            updated_ships: self.updated_ships,
+        })
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -623,8 +675,18 @@ impl Product for NavySize {
         cancelled: &AtomicBool,
     ) -> io::Result<NavyReply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let scanned = scanned_branch(source, branch, cancelled)?;
+        let mut scanned = scanned_branch(source, branch, cancelled)?;
         let history = country_history::branch_histories(source, branch, false, &[], cancelled)?;
+        // An alias counts only while a picked country holds it, as the prepared query counts it.
+        if params.top.is_none() {
+            let spans = country_history::selected_spans(
+                &history,
+                &params.tags,
+                &BTreeMap::new(),
+                cancelled,
+            )?;
+            scanned = Arc::new(scanned.held(&spans, cancelled)?);
+        }
         present(
             source,
             params,

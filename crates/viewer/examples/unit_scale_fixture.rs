@@ -261,6 +261,7 @@ fn main() -> io::Result<()> {
         .map(|((attackers, defenders), id)| LandCombatRow {
             id,
             province: defenders[0].2,
+            attacker_classes: vec![0; attackers.len()],
             attackers: attackers.iter().map(|division| division.1).collect(),
             defenders: defenders.iter().map(|division| division.1).collect(),
             ..shape.clone()

@@ -49,7 +49,8 @@ pub struct ArmyCombat {
     /// Whether the army belongs to the attacking or defending side.
     pub attacking: bool,
     pub defending: bool,
-    /// Locations of the attacking side's units.
+    /// Locations of the attacking side's units, of every class. Only a defending
+    /// army's movement reads them, so an attacking army's may be left empty.
     pub attacker_locations: Vec<u32>,
     /// Whether the combat has reached its minimum duration.
     pub minimum_duration: bool,

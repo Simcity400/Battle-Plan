@@ -397,13 +397,15 @@ fn prepared_query(
         let runs = if let Some(width) =
             width.filter(|width| i64::from(to) - i64::from(from) + 1 > i64::from(*width))
         {
+            // Only the hours a selected native country holds the alias are its.
             let mut dates = std::collections::BTreeSet::new();
             for bucket in rows
-                .summary(
+                .summary_within(
                     actor,
                     (from, to),
                     (f64::from(from), f64::from(to), width),
                     0,
+                    Some(&spans),
                 )?
                 .buckets
                 .into_iter()
@@ -419,11 +421,12 @@ fn prepared_query(
                     format!("supply-values-{branch}-{bucket}"),
                     cancelled,
                 )?;
-                let summary = values.summary(
+                let summary = values.summary_within(
                     actor,
                     (from, to),
                     (f64::from(from), f64::from(to), width),
                     SHARE_DECIMALS,
+                    Some(&spans),
                 )?;
                 for bucket in summary.buckets.iter().flatten() {
                     dates.extend([

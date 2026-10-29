@@ -1176,6 +1176,26 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
         restricted_estimate(&frame, &map),
         two_legs(3_500_000, 1_000_000).map_err(str::to_owned)
     );
+    // The road and rail speeds never read the stat block's base speed.
+    let unspeeded = |frame: &mut DecodedFrame, row: &DivisionMovementRow| {
+        put(
+            frame,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                base_speed: Recorded::Value(None),
+                ..row.clone()
+            }]),
+        );
+        let estimate = Etas::read(frame, Some(&map))
+            .unwrap()
+            .estimate(DIVISION)
+            .map_err(str::to_owned);
+        put(frame, TableRows::DivisionMovement(vec![row.clone()]));
+        estimate
+    };
+    assert_eq!(
+        unspeeded(&mut frame, &row),
+        two_legs(3_500_000, 1_000_000).map_err(str::to_owned)
+    );
     // A disable-redeployment modifier blocks the rail: the ordinary speed applies.
     row.strategic_action =
         Recorded::Value(StrategicAction::Available(StrategicRedeploymentInputs {
@@ -1185,6 +1205,10 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     let blocked = Etas::read(&frame, Some(&map)).unwrap();
     assert_eq!(blocked.estimate(DIVISION), two_legs(SPEED, SPEED));
+    assert_eq!(
+        unspeeded(&mut frame, &row),
+        Err("the division's base speed was refused".to_owned())
+    );
     row.strategic_action = Recorded::Value(StrategicAction::Withheld(
         StrategicActionFailure::CountryModifier,
     ));
@@ -1649,6 +1673,21 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         restricted_estimate(&transfer, &map),
         Ok(two_legs(400_000, 200_000).unwrap())
     );
+    // Nor do they read the stat block's base speed.
+    for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
+        let mut unspeeded = frame.clone();
+        put(
+            &mut unspeeded,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                base_speed,
+                ..row.clone()
+            }]),
+        );
+        assert_eq!(
+            restricted_estimate(&unspeeded, &map),
+            Ok(two_legs(400_000, 200_000).unwrap())
+        );
+    }
     speeds(&mut frame, None);
     assert!(
         restricted_estimate(&frame, &map)

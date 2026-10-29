@@ -27,6 +27,14 @@ impl WaterPass {
             format,
         }
     }
+    /// Whether the water this frame drew reads the snow/mud texture, so snow can show on it.
+    pub fn shows_snow_mud(&self) -> bool {
+        self.compiled
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, water)| water.as_ref().is_ok_and(|water| water.reads_snow_mud))
+    }
+
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,

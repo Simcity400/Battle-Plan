@@ -1527,7 +1527,6 @@ fn compatibility_current_movement_profile_delta_uses_only_its_actual_suffix() {
         numerator: i64::MIN,
         combat_count: 1,
         combat_references: Some(rows::UnitCombatReferences {
-            speed_witness: Default::default(),
             sample_hour: rows::PacketHour::Host,
             entries: vec![rows::UnitCombatReference {
                 combat: u64::MAX,

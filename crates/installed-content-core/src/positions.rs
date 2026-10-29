@@ -120,12 +120,51 @@ pub fn parse_unit_stacks(input: &[u8]) -> io::Result<Vec<UnitStack>> {
 /// The longest floating-point prefix of a semicolon-delimited field,
 /// 0 when none is. The scan's grammar is `%f`'s ([`crate::crt::scan_f32`]),
 /// which refuses prefixes that the field conversion backs off from
-/// (`1e`, `0x`, `infin`).
+/// (`1e`, `0x`, `infin`, `nan(`). Only those back-offs can shorten the
+/// field's own scan, so at most two scans decide it.
 fn strtof(field: &[u8]) -> f32 {
-    (0..=field.len())
-        .rev()
-        .find_map(|end| crate::crt::scan_f32(&field[..end]))
-        .unwrap_or(0.0)
+    let text = crate::parser::c_string(field);
+    if let Some(value) = crate::crt::scan_f32(text) {
+        return value;
+    }
+    let space = text
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'..=b'\r'))
+        .count();
+    let start = space + usize::from(matches!(text.get(space), Some(b'+' | b'-')));
+    let rest = &text[start..];
+    let named = |word: &[u8]| {
+        rest.get(..word.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(word))
+    };
+    let end = if named(b"inf") || named(b"nan") {
+        start + 3
+    } else {
+        let hexadecimal = matches!(rest, [b'0', b'x' | b'X', ..]);
+        let radix = if hexadecimal { 16 } else { 10 };
+        let digits = |from: usize| {
+            rest[from..]
+                .iter()
+                .take_while(|byte| char::from(**byte).is_digit(radix))
+                .count()
+        };
+        let mut at = if hexadecimal { 2 } else { 0 };
+        let whole = digits(at);
+        at += whole;
+        let mut fraction = 0;
+        if rest.get(at) == Some(&b'.') {
+            fraction = digits(at + 1);
+            at += 1 + fraction;
+        }
+        match (whole + fraction > 0, hexadecimal) {
+            // An exponent marker without a digit: the mantissa before it.
+            (true, _) => start + at,
+            // `0x` without a digit: its `0`.
+            (false, true) => start + 1,
+            (false, false) => return 0.0,
+        }
+    };
+    crate::crt::scan_f32(&text[..end]).unwrap_or(0.0)
 }
 
 /// `strtol(text, _, 10)` of the text from a field's start: the white space,
@@ -307,6 +346,56 @@ mod tests {
             (buildings[2].state, buildings[2].adjacent_sea),
             (-3i32 as u32, u32::MAX)
         );
+    }
+
+    /// The back-off agrees with trying every prefix from the longest, and a
+    /// field of nothing but white space, however long, is one pass to 0.
+    #[test]
+    fn coordinates_back_off_to_the_longest_float_prefix_in_one_pass() {
+        let every_prefix = |field: &[u8]| {
+            (0..=field.len())
+                .rev()
+                .find_map(|end| crate::crt::scan_f32(&field[..end]))
+                .unwrap_or(0.0)
+        };
+        for field in [
+            &b""[..],
+            b" \t",
+            b"-",
+            b"+.",
+            b"x",
+            b"1e",
+            b"1e+",
+            b".5e",
+            b"-2.5E-x",
+            b"0x",
+            b" -0X",
+            b"0x1p",
+            b"0x.p1",
+            b"0xp1",
+            b"0x1.8p1z",
+            b"in",
+            b"infin",
+            b"-INFINIT",
+            b"n",
+            b"nan(",
+            b"nan(a-b)",
+            b"NaN(snan",
+            b"7\x00e5",
+            b"  12px",
+        ] {
+            assert_eq!(
+                strtof(field).to_bits(),
+                every_prefix(field).to_bits(),
+                "{}",
+                field.escape_ascii()
+            );
+        }
+        let mut row = b"1;custom_building;".to_vec();
+        row.resize(row.len() + 1_000_000, b' ');
+        row.extend_from_slice(b";2;3;4;0");
+        let buildings = parse_buildings(&row).unwrap();
+        assert_eq!((buildings[0].x, buildings[0].y), (0.0, 2.0));
     }
 
     #[test]

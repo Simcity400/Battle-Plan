@@ -1,5 +1,5 @@
 //! Canonical sub-unit equipment requirements, from recorded simulation
-//! state and the matching `common/units` content.
+//! state and the matching sub-unit database content.
 //!
 //! A country-local clone is a separate definition
 //! from its global one: it groups apart, and its requirements are the
@@ -8,7 +8,6 @@
 
 #[cfg(test)]
 use crate::subunit_files::subunit_keys;
-use crate::subunit_files::subunit_paths;
 pub use installed_content_equipment_graphics::equipment_graphics::authored_fixed5;
 use std::sync::{Arc, OnceLock};
 use std::{
@@ -19,6 +18,7 @@ use std::{
 
 use installed_content_core::{
     ResolvedLayers, equipment::Database, equipment::Equipment, parser, parser::Item, parser::Value,
+    unit_leader::SubUnits,
 };
 use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -111,7 +111,7 @@ pub struct EquipmentModel<'a> {
 pub struct Content {
     subunits: BTreeMap<String, SubUnit>,
     /// Sub-unit keys in database order (the game creates each on first
-    /// sight: files in path byte order, keys in declaration order), which
+    /// sight: the database's files in its order, keys in declaration order), which
     /// The game walks from index 1 (0 is the null object).
     order: Vec<String>,
     pub equipment: Arc<Database>,
@@ -122,6 +122,7 @@ pub struct Content {
 }
 
 impl Content {
+    /// The sub-unit database's files in its order; type masks and groups are the database's own.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut content = Self {
             equipment: layers
@@ -129,14 +130,18 @@ impl Content {
                 .get_or_init(|| Database::load_complete(layers))?,
             ..Self::default()
         };
-        for path in subunit_paths(layers.paths()) {
-            let shown = String::from_utf8_lossy(path);
-            let document = parser::parse(&layers.read_path(path)?)
+        for path in installed_content_core::unit_leader::sub_unit_files(layers) {
+            let shown = path.text();
+            let document = parser::parse(&path.read(layers)?)
                 .map_err(|error| invalid(format!("{shown}: {error}")))?;
             content
                 .read_subunits(&document)
                 .map_err(|error| invalid(format!("{shown}: {error}")))?;
         }
+        let units = layers
+            .derived::<crate::catalogue::CachedResult<SubUnits>>()
+            .get_or_init(|| installed_content_core::unit_leader::sub_units(layers))?;
+        content.take_database(&units)?;
         content.canonicalize_requirements()?;
         Ok(content)
     }
@@ -145,18 +150,35 @@ impl Content {
         for root in document
             .items
             .iter()
-            .filter(|root| root.key.as_deref() == Some(b"sub_units"))
+            .filter(|root| root.keyword_is("sub_units"))
         {
             for item in root.value.items().unwrap_or_default() {
                 let (Some(key), Some(fields)) = (item.key.as_deref(), item.value.items()) else {
                     continue;
                 };
                 let key = text(key)?.to_owned();
-                let subunit = read_subunit(&key, fields)?;
+                let subunit = read_subunit(&key, self.subunits.get(&key), fields)?;
                 if !self.subunits.contains_key(&key) {
                     self.order.push(key.clone());
                 }
                 self.subunits.insert(key, subunit);
+            }
+        }
+        Ok(())
+    }
+
+    /// The database's type masks (by lexer token kind) and groups (kept by a redefinition).
+    fn take_database(&mut self, units: &SubUnits) -> io::Result<()> {
+        for (key, subunit) in &mut self.subunits {
+            subunit.category = units
+                .category(key.as_bytes())
+                .map_err(|why| invalid(format!("sub-unit {key} type: {why}")))?;
+            match units.group(key.as_bytes()) {
+                Ok(group) => subunit.sheet.group = group.map(str::to_owned),
+                Err(why) => subunit
+                    .sheet
+                    .refused
+                    .push(format!("sub-unit {key} group: {why}")),
             }
         }
         Ok(())
@@ -232,11 +254,14 @@ impl Content {
             equipment: Arc::new(equipment),
             ..Self::default()
         };
-        for document in documents {
+        let mut units = SubUnits::default();
+        for (document, path) in documents.iter().zip(&paths) {
             content
                 .read_subunits(&parser::parse(document).unwrap())
                 .unwrap();
+            units.read(document, path);
         }
+        content.take_database(&units).unwrap();
         content.canonicalize_requirements().unwrap();
         content
     }
@@ -390,23 +415,33 @@ impl Content {
     }
 }
 
-fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
+/// One declaration replayed onto `previous`: the game's reset keeps model priority, categories and essential.
+fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::Result<SubUnit> {
     let mut subunit = SubUnit {
         key: key.to_owned(),
         ..SubUnit::default()
     };
+    if let Some(previous) = previous {
+        subunit.model_priority = previous.model_priority;
+        subunit.sheet.categories.clone_from(&previous.sheet.categories);
+        subunit.sheet.essential.clone_from(&previous.sheet.essential);
+    }
     for field in fields {
-        match field.key.as_deref() {
-            Some(b"sprite") => subunit.sprite = scalar(&field.value)?.to_owned(),
-            Some(b"division_3d_model_priority") => {
+        let Some(keyword) = field.keyword() else {
+            continue;
+        };
+        let keyword = keyword.folded();
+        match keyword.as_slice() {
+            b"sprite" => subunit.sprite = scalar(&field.value)?.to_owned(),
+            b"division_3d_model_priority" => {
                 subunit.model_priority = Some(integer(&field.value)?);
             }
-            Some(b"type") => subunit.category |= category(&field.value)?,
-            Some(b"can_be_parachuted") => {
+            b"type" | b"group" => {}
+            b"can_be_parachuted" => {
                 subunit.can_be_parachuted =
                     yes(&field.value).map_err(|why| format!("sub-unit {key}: {why}"));
             }
-            Some(b"combat_width") => {
+            b"combat_width" => {
                 subunit.sheet.combat_width = sheet_fixed5(
                     key,
                     "combat_width",
@@ -414,11 +449,11 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                     &mut subunit.sheet.refused,
                 );
             }
-            Some(b"manpower") => {
+            b"manpower" => {
                 subunit.sheet.manpower =
                     sheet_integer(key, "manpower", &field.value, &mut subunit.sheet.refused);
             }
-            Some(b"training_time") => {
+            b"training_time" => {
                 subunit.sheet.training_time = sheet_integer(
                     key,
                     "training_time",
@@ -426,11 +461,10 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                     &mut subunit.sheet.refused,
                 );
             }
-            Some(b"group") => subunit.sheet.group = field.value.scalar_str().map(str::to_owned),
-            Some(b"transport") => {
+            b"transport" => {
                 subunit.sheet.transport = field.value.scalar_str().map(str::to_owned)
             }
-            Some(b"own_equipment_fuel_consumption_mult") => {
+            b"own_equipment_fuel_consumption_mult" => {
                 subunit.sheet.own_fuel_consumption = Some(sheet_fixed5(
                     key,
                     "own_equipment_fuel_consumption_mult",
@@ -438,35 +472,25 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                     &mut subunit.sheet.refused,
                 ));
             }
-            Some(b"categories") => match field.value.items() {
-                Some(items) => subunit.sheet.categories.extend(
-                    items
-                        .iter()
-                        .filter_map(|item| item.value.scalar_str())
-                        .map(str::to_owned),
-                ),
-                None => subunit
-                    .sheet
-                    .refused
-                    .push(format!("sub-unit {key}: categories is not a list")),
-            },
-            Some(b"essential") => match field.value.items() {
-                Some(items) => subunit.sheet.essential.extend(
-                    items
-                        .iter()
-                        .filter_map(|item| item.value.scalar_str())
-                        .map(str::to_owned),
-                ),
-                None => subunit
-                    .sheet
-                    .refused
-                    .push(format!("sub-unit {key}: essential is not a list")),
-            },
-            Some(b"battalion_mult") => {
+            b"categories" => extend_tokens(
+                key,
+                "categories",
+                field,
+                &mut subunit.sheet.categories,
+                &mut subunit.sheet.refused,
+            ),
+            b"essential" => extend_tokens(
+                key,
+                "essential",
+                field,
+                &mut subunit.sheet.essential,
+                &mut subunit.sheet.refused,
+            ),
+            b"battalion_mult" => {
                 let grant = read_grant(key, &field.value, &mut subunit.sheet.refused);
                 subunit.sheet.grants.extend(grant);
             }
-            Some(b"need") => {
+            b"need" => {
                 for need in block(&field.value)? {
                     let name = need
                         .key
@@ -477,7 +501,7 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                     subunit.requirements.push((text(name)?.to_owned(), amount));
                 }
             }
-            Some(word) => {
+            word => {
                 if let Some(value) = field.value.scalar_str() {
                     subunit
                         .sheet
@@ -485,10 +509,35 @@ fn read_subunit(key: &str, fields: &[Item]) -> io::Result<SubUnit> {
                         .push((String::from_utf8_lossy(word).into_owned(), value.to_owned()));
                 }
             }
-            None => {}
         }
     }
     Ok(subunit)
+}
+
+/// Names resolved by token: only bare entries count, and one already held (without case) is skipped.
+fn extend_tokens(
+    key: &str,
+    field_name: &str,
+    field: &Item,
+    names: &mut Vec<String>,
+    refused: &mut Vec<String>,
+) {
+    let Some(items) = field.value.items() else {
+        refused.push(format!("sub-unit {key}: {field_name} is not a list"));
+        return;
+    };
+    for item in items {
+        if item.value_keyword().is_none() {
+            continue;
+        }
+        let Some(name) = item.value.scalar_str() else {
+            refused.push(format!("sub-unit {key}: a {field_name} entry is not UTF-8"));
+            continue;
+        };
+        if !names.iter().any(|held| held.eq_ignore_ascii_case(name)) {
+            names.push(name.to_owned());
+        }
+    }
 }
 
 /// An authored fixed5 word of the sheet, or zero with its refusal noted.
@@ -524,18 +573,24 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Gra
     };
     let mut grant = Grant::default();
     for item in items {
-        match item.key.as_deref() {
-            Some(b"category") => match item.value.scalar_str() {
+        let Some(keyword) = item.keyword() else {
+            refused.push(format!(
+                "sub-unit {key}: battalion_mult has a field that is no keyword"
+            ));
+            continue;
+        };
+        match keyword.folded().as_slice() {
+            b"category" => match item.value.scalar_str() {
                 Some(category) => grant.category = category.to_owned(),
                 None => refused.push(format!(
                     "sub-unit {key}: battalion_mult category is not a name"
                 )),
             },
-            Some(b"add") => match yes(&item.value) {
+            b"add" => match yes(&item.value) {
                 Ok(add) => grant.add = add,
                 Err(why) => refused.push(format!("sub-unit {key}: battalion_mult {why}")),
             },
-            Some(word) => match item.value.scalar_str() {
+            word => match item.value.scalar_str() {
                 Some(value) => grant
                     .words
                     .push((String::from_utf8_lossy(word).into_owned(), value.to_owned())),
@@ -544,9 +599,6 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Gra
                     String::from_utf8_lossy(word)
                 )),
             },
-            None => refused.push(format!(
-                "sub-unit {key}: battalion_mult has an unkeyed field"
-            )),
         }
     }
     if grant.category.is_empty() {
@@ -824,18 +876,6 @@ fn block(value: &Value) -> io::Result<&[Item]> {
 }
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
-/// A sub-unit `type` ORs all named category flags. Unknown categories are refused.
-fn category(value: &Value) -> io::Result<u64> {
-    if let Some(items) = value.items() {
-        return items
-            .iter()
-            .try_fold(0, |mask, item| Ok(mask | category(&item.value)?));
-    }
-    let name = scalar(value)?;
-    installed_content_core::equipment::category_mask(name)
-        .ok_or_else(|| invalid(format!("unknown equipment category {name}")))
 }
 
 #[cfg(test)]

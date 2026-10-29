@@ -53,7 +53,8 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__pickerWitness.content;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
       export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted = wanted;
-        return new Map(wanted.flatMap(({ tag, hour }) => { const key = nameKey(hour, tag); return s.names.has(key) ? [[key, s.names.get(key)]] : []; })); };`,
+        return new Map(wanted.flatMap(({ tag, hour }) => { const key = nameKey(hour, tag); return s.names.has(key) ? [[key, s.names.get(key)]] : []; })); };
+      export const useCountryNamesRead = () => new Map();`,
     '/dashboard/products.ts': `export const forgetSettledProducts = () => {};
       export const loadProduct = (_client, request) => {
         const s = globalThis.__pickerWitness;
@@ -168,7 +169,7 @@ test('the listbox names its active option only while that row is drawn, and is m
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = () => createElement('span');`,
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map();',
     '/dashboard/products.ts': `export const forgetSettledProducts = () => {}; export const loadProduct = () => new Promise(() => {});
       export const loadTransientProduct = loadProduct;`,
     '/dashboard/flagCache.ts': `export class FlagStore { static key(...args) { return JSON.stringify(args); } }

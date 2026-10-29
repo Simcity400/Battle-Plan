@@ -155,7 +155,7 @@ mod tests {
         world.u32(groups + GROUP_COUNT, 5000);
         let mut source = 0;
         for index in 0..5000 {
-            let model = world.alloc(0x500);
+            let model = world.alloc(definition::ARCHETYPE + 8);
             world.u64(model + definition::ARCHETYPE, archetype as u64);
             world.u32(model + definition::ARCHETYPE_ID, index as u32);
             let at = world.alloc(0x500);

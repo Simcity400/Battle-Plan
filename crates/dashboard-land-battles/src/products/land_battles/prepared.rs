@@ -72,8 +72,10 @@ struct Slicing {
     carry: i32,
     runs: Vec<LandBattleRun>,
     before: Vec<LandBattleRun>,
+    /// The reads in the hours and the one carried into them, newest appended first.
     reads: Vec<losses::LossRead>,
-    carried: Option<losses::LossRead>,
+    /// Whether `reads` holds the newest-appended read at or before `carry`.
+    carried: bool,
 }
 impl Slicing {
     /// Takes what a redraw needs of a segment older than those taken before:
@@ -88,15 +90,16 @@ impl Slicing {
                 }
             }
         }
-        if self.carried.is_none() {
+        if !self.carried {
             // A finalizer's read can be dated before reads appended ahead of it.
             for read in reads.iter().rev() {
                 if read.hour > self.carry {
                     if read.hour <= self.last {
                         self.reads.push(read.clone());
                     }
-                } else if self.carried.is_none() {
-                    self.carried = Some(read.clone());
+                } else if !self.carried {
+                    self.carried = true;
+                    self.reads.push(read.clone());
                 }
             }
         }
@@ -125,7 +128,7 @@ fn slice<'a>(
         runs: Vec::new(),
         before: Vec::new(),
         reads: Vec::new(),
-        carried: None,
+        carried: false,
     };
     slicing.take(&episode.runs, &episode.losses, true);
     let mut peaks = None;
@@ -139,7 +142,7 @@ fn slice<'a>(
             peaks = Some(part.peaks.clone());
         }
         match part.earlier {
-            Some(next) if peaks.is_none() || slicing.carried.is_none() => page = next,
+            Some(next) if peaks.is_none() || !slicing.carried => page = next,
             _ => break,
         }
     }
@@ -147,7 +150,6 @@ fn slice<'a>(
         mut runs,
         mut before,
         mut reads,
-        carried,
         ..
     } = slicing;
     let mut slice = episode.clone();
@@ -163,7 +165,7 @@ fn slice<'a>(
     }
     slice.runs = runs;
     reads.reverse();
-    slice.losses = carried.into_iter().chain(reads).collect();
+    slice.losses = reads;
     slice.history = None;
     Ok(Cow::Owned(slice))
 }
@@ -341,16 +343,19 @@ impl Census {
                 row.history = None;
                 row.runs = runs;
                 let loss_first = first.min(row.runs[0].first_hour);
+                // Append order: a backdated finalizer's read supersedes reads appended before it.
+                let carried = episode
+                    .losses
+                    .iter()
+                    .rposition(|read| read.hour <= loss_first);
                 row.losses = episode
-                    .loss_at(loss_first)
-                    .into_iter()
-                    .chain(
-                        episode
-                            .losses
-                            .iter()
-                            .filter(|read| read.hour > loss_first && read.hour <= last),
-                    )
-                    .cloned()
+                    .losses
+                    .iter()
+                    .enumerate()
+                    .filter(|&(at, read)| {
+                        Some(at) == carried || read.hour > loss_first && read.hour <= last
+                    })
+                    .map(|(_, read)| read.clone())
                     .collect();
                 row.loss_inputs = None;
                 row.prior_peaks = std::array::from_fn(|index| {

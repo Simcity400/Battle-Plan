@@ -1,6 +1,6 @@
 use super::*;
 use engine_native::memory::SliceMemory;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 // Offsets from the world's base.
 const STATE: usize = 0;
@@ -577,6 +577,96 @@ fn an_unfollowed_province_hour_reads_every_province_modifier_entry() {
     let (carry, census) = hour(&world, carry, 2, false, Some(1));
     assert!(!carry.provinces_followed);
     assert_eq!(read(&world, &census).1, every(provinces));
+}
+
+/// Memory whose first read covering `fault` fails; later reads of it succeed.
+struct FailsOnce<'a> {
+    inner: SliceMemory<'a>,
+    fault: usize,
+    attempts: Cell<usize>,
+}
+
+impl Memory for FailsOnce<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        if address <= self.fault && self.fault < address.saturating_add(destination.len()) {
+            self.attempts.set(self.attempts.get() + 1);
+            if self.attempts.get() == 1 {
+                return false;
+            }
+        }
+        self.inner.copy(address, destination)
+    }
+}
+
+/// A window record field whose first read fails is not read again, though a
+/// second read would succeed: its part is unavailable for the hour, nothing is
+/// held, and the next hour reads every record.
+#[test]
+fn a_failed_window_record_is_not_read_again() {
+    for regions in [true, false] {
+        let (mut world, mut carry) = held(40, 9, (5, 2));
+        let (region_window, province_window) = next_windows(&world);
+        world.pass(1);
+        let fault = world.base
+            + if regions {
+                world.region(region_window.0) + sweather_per_region::SNOW
+            } else {
+                world.province(province_window.0) + sweather_per_province::TEMPERATURE
+            };
+        let memory = FailsOnce {
+            inner: world.memory(),
+            fault,
+            attempts: Cell::new(0),
+        };
+        carry.begin(2, false, Some(0));
+        let (_, mut job) = run(&memory, world.base + STATE, Some(carry));
+        assert_eq!(memory.attempts.get(), 1, "regions {regions}");
+        let faulted = if regions {
+            job.regions.faulted(sweather_per_region::FIELDS.len())
+        } else {
+            job.provinces.faulted(sweather_per_province::FIELDS.len())
+        };
+        assert!(faulted, "regions {regions}");
+        assert!(job.log.fault[usize::from(!regions)]);
+        carry = job.carry.take().unwrap();
+        assert!(carry.held.is_none());
+        world.pass(2);
+        let (_, census) = hour(&world, carry, 3, false, Some(0));
+        assert_eq!(read(&world, &census), (every(9), every(40)));
+    }
+}
+
+/// A window region whose combat entries fail their first read is refused, not
+/// read again; every other region keeps its value, and the next hour reads all.
+#[test]
+fn a_failed_window_combat_lookup_is_not_read_again() {
+    let (mut world, carry) = held(40, 9, (5, 2));
+    let (region_window, _) = next_windows(&world);
+    world.pass(1);
+    let failed = region_window.0 as usize;
+    let memory = FailsOnce {
+        inner: world.memory(),
+        fault: world.base + world.region(region_window.0) + sweather_per_region::MODIFIERS,
+        attempts: Cell::new(0),
+    };
+    let mut carry = carry;
+    carry.begin(2, false, Some(0));
+    let (captured, mut job) = run(&memory, world.base + STATE, Some(carry));
+    assert_eq!(memory.attempts.get(), 1);
+    let (full, _) = run(&world.memory(), world.base + STATE, None);
+    for slot in 0..9 {
+        let expected = if slot == failed {
+            None
+        } else {
+            full.combat[slot]
+        };
+        assert_eq!(captured.combat[slot], expected, "region {slot}");
+    }
+    let carry = job.carry.take().unwrap();
+    assert!(carry.held.is_none() && carry.combat.is_empty());
+    world.pass(2);
+    let (_, census) = hour(&world, carry, 3, false, Some(0));
+    assert_eq!(read(&world, &census), (every(9), every(40)));
 }
 
 /// A weather hour's guarded read at the vanilla census (13,414 provinces,

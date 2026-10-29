@@ -22,7 +22,9 @@ pub struct Event {
     pub descriptions: Vec<Item>,
     pub picture: Vec<u8>,
     pub option_triggers: Vec<Vec<Item>>,
-    pub original_recipient_only: Vec<bool>,
+    /// Any `original_recipient_only` gates the option on its read mode, even when
+    /// the boolean read refuses every value; `None` without the field.
+    pub original_recipient_only: Vec<Option<bool>>,
     pub immediate: Vec<Item>,
     pub options: Vec<Vec<Item>>,
     /// Option-name strings in the same order as `options`.
@@ -78,17 +80,23 @@ impl Event {
 
     /// A sole candidate bypasses its trigger. Otherwise evaluate all candidates
     /// and fall back to the first when none pass. Differing eligible keys need
-    /// the transient selection seed.
+    /// the transient selection seed. When every candidate names one key, a
+    /// trigger that cannot be decided leaves that key, with its reason kept for
+    /// text that reads what the triggers would have written.
     pub fn deterministic_title_key(
         &self,
         mut matches: impl FnMut(&[Item]) -> Result<bool, String>,
-    ) -> Result<Option<&[u8]>, String> {
+    ) -> Result<TitleKey<'_>, String> {
         let Some(first) = self.titles.first() else {
-            return Ok(None);
+            return Ok(TitleKey::default());
         };
         if self.titles.len() == 1 {
-            return self.sole_title_key();
+            return Ok(TitleKey {
+                key: self.sole_title_key()?,
+                unsettled: None,
+            });
         }
+        let common = self.sole_title_key().ok();
         let mut eligible = Vec::new();
         for item in &self.titles {
             // Append each trigger block to the candidate's AND trigger in order.
@@ -101,8 +109,16 @@ impl Event {
                 .flat_map(|field| field.value.items().unwrap_or_default())
                 .cloned()
                 .collect();
-            if matches(&triggers)? {
-                eligible.push(Self::title_key(item));
+            match (matches(&triggers), common) {
+                (Ok(true), _) => eligible.push(Self::title_key(item)),
+                (Ok(false), _) => {}
+                (Err(why), Some(key)) => {
+                    return Ok(TitleKey {
+                        key,
+                        unsettled: Some(why),
+                    });
+                }
+                (Err(why), None) => return Err(why),
             }
         }
         let key = eligible
@@ -116,9 +132,22 @@ impl Event {
                 String::from_utf8_lossy(&self.id)
             ));
         }
-        Ok((!key.is_empty()).then_some(key))
+        Ok(TitleKey {
+            key: (!key.is_empty()).then_some(key),
+            unsettled: None,
+        })
     }
 }
+
+/// An event's title key: `None` for empty title text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TitleKey<'a> {
+    pub key: Option<&'a [u8]>,
+    /// Why the candidates' triggers stopped short: the key stands, but the
+    /// scope state they write while evaluated is unknown.
+    pub unsettled: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Events {
     pub entries: BTreeMap<Vec<u8>, Event>,
@@ -394,9 +423,18 @@ impl EventRead {
                         .cloned()
                         .collect(),
                 );
-                event
-                    .original_recipient_only
-                    .push(string_field(&option, "original_recipient_only") == b"yes");
+                event.original_recipient_only.push(
+                    option
+                        .iter()
+                        .any(|item| item.keyword_is("original_recipient_only"))
+                        .then(|| {
+                            crate::parser::read_bool_field(
+                                &option,
+                                "original_recipient_only",
+                                false,
+                            )
+                        }),
+                );
                 event.options.push(
                     option
                         .into_iter()

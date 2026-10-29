@@ -1219,6 +1219,276 @@ fn manpower_negative_values_and_the_zero_country_keep_the_native_total_and_reser
     assert_eq!(empty.total[0].value, Some(0));
 }
 
+/// Observes `frames` as continuing hours: a table changed only where its view did.
+fn observe_continuing(
+    state: &mut Prepared,
+    source: &Source,
+    context: &LoadContext,
+    frames: &[DecodedFrame],
+) {
+    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+    for frame in frames {
+        let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
+        state
+            .observe(source, context, frame, &changes, &AtomicBool::new(false))
+            .unwrap();
+    }
+}
+fn manpower_history(source: &Source, files: &Fixture, faction: &str, last: i32) -> FactionManpowerReply {
+    match reply(
+        source,
+        files,
+        FactionStateParams::Manpower {
+            branch_id: "1".into(),
+            faction: faction.into(),
+        },
+        last,
+        true,
+    ) {
+        FactionStateReply::Manpower(reply) => reply,
+        _ => unreachable!(),
+    }
+}
+fn manpower_spans(runs: &[FactionManpowerRun]) -> Vec<(i32, i32, Option<i32>)> {
+    runs.iter()
+        .map(|run| (run.first_hour, run.last_hour, run.value))
+        .collect()
+}
+
+#[test]
+fn a_reserved_naming_read_alone_closes_and_restores_the_reserved_manpower_member() {
+    let mut first = frame(100);
+    *first.tables[TableId::FactionManpower.index()] =
+        TableView::Complete(TableRows::FactionManpower(vec![
+            FactionManpowerRow {
+                faction: 9,
+                ordinal: 0,
+                country: 0,
+                value: -5,
+            },
+            FactionManpowerRow {
+                faction: 9,
+                ordinal: 1,
+                country: 101,
+                value: -7,
+            },
+        ]));
+    *first.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                tag: b"mod_reserved".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    // Only the reserved naming read changes: lost at 101, read again at 102.
+    let mut second = first.clone();
+    second.hour = 101;
+    *second.tables[TableId::ReservedCountryNaming.index()] = TableView::Unavailable {
+        reason: "synthetic naming gap".into(),
+    };
+    let mut third = first.clone();
+    third.hour = 102;
+    let mut fourth = first.clone();
+    fourth.hour = 103;
+    let frames = [first, second, third, fourth];
+    let source = source(frames.to_vec());
+    let mut state = Prepared::default();
+    observe_continuing(&mut state, &source, &LoadContext { content: None }, &frames);
+    let files = Fixture::new();
+    publish(&mut state, &files);
+    let history = manpower_history(&source, &files, "9", 103);
+    let reserved = history
+        .members
+        .iter()
+        .find(|member| member.tag == "mod_reserved")
+        .unwrap();
+    assert_eq!(
+        manpower_spans(&reserved.runs),
+        [(100, 100, Some(-5)), (101, 101, None), (102, 103, Some(-5))]
+    );
+    assert!(reserved.runs[2].starts_segment);
+    let member = history
+        .members
+        .iter()
+        .find(|member| member.tag == "mod_a")
+        .unwrap();
+    assert_eq!(manpower_spans(&member.runs), [(100, 103, Some(-7))]);
+    assert_eq!(manpower_spans(&history.total), [(100, 103, Some(-12))]);
+    assert!(
+        history
+            .warnings
+            .iter()
+            .any(|why| why.starts_with("1 faction facts:")
+                && why.contains("entry 0 country 0 identity is unavailable")),
+        "{:?}",
+        history.warnings
+    );
+}
+
+#[test]
+fn an_owner_witnessed_again_or_first_witnessed_gets_its_empty_pool_and_closes_unknown_rules() {
+    let mut first = frame(100);
+    *first.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 1,
+            literal: b"mod_rule".to_vec(),
+        }]));
+    *first.tables[TableId::FactionRules.index()] =
+        TableView::Complete(TableRows::FactionRules(vec![FactionRuleRow {
+            faction: 10,
+            ordinal: 0,
+            token: 1,
+        }]));
+    // Only the roster witnesses 10: unreadable at 101, when 10's rule also ends.
+    let mut second = first.clone();
+    second.hour = 101;
+    *second.tables[TableId::Factions.index()] = TableView::Unavailable {
+        reason: "synthetic roster gap".into(),
+    };
+    *second.tables[TableId::FactionRules.index()] =
+        TableView::Complete(TableRows::FactionRules(Vec::new()));
+    // 10 is listed again and 12 first listed; no manpower or rule row changes.
+    let mut third = first.clone();
+    third.hour = 102;
+    third.tables[TableId::FactionRules.index()] =
+        second.tables[TableId::FactionRules.index()].clone();
+    *third.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
+        [9, 10, 12]
+            .into_iter()
+            .map(|id| FactionRow {
+                id,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    let mut fourth = third.clone();
+    fourth.hour = 103;
+    let frames = [first, second, third, fourth];
+    let source = source(frames.to_vec());
+    let mut state = Prepared::default();
+    observe_continuing(&mut state, &source, &LoadContext { content: None }, &frames);
+    let files = Fixture::new();
+    publish(&mut state, &files);
+    assert_eq!(
+        manpower_spans(&manpower_history(&source, &files, "10", 103).total),
+        [(100, 100, Some(0)), (101, 101, None), (102, 103, Some(0))]
+    );
+    assert_eq!(
+        manpower_spans(&manpower_history(&source, &files, "12", 103).total),
+        [(102, 103, Some(0))]
+    );
+    let history = rules(&source, &files, "10", 103);
+    let runs = &history.rules[0].runs;
+    assert_eq!(
+        runs.iter()
+            .map(|run| (run.first_hour, run.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 100), (101, 101), (102, 103)]
+    );
+    assert_eq!(runs[0].token.as_deref(), Some("mod_rule"));
+    assert!(runs[1].reason.as_ref().unwrap().contains("owner is unavailable"));
+    assert_eq!((&runs[2].token, &runs[2].reason), (&None, &None));
+}
+
+#[test]
+fn a_scripted_programme_name_reads_its_supplying_hours_world_as_the_faction_details_do() {
+    let machine = dashboard_base::test_fixtures::visual_mods::Machine::new("faction_programme_text");
+    machine.write(
+        "common/defines/mod.lua",
+        b"NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}, NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}",
+    );
+    machine.write(
+        "common/special_projects/projects/mod.txt",
+        b"mod_project={specialization=mod_kind}",
+    );
+    machine.write(
+        "common/special_projects/specialization/mod.txt",
+        b"mod_kind={color={1 2 3}}",
+    );
+    machine.write(
+        "localisation/english/mod_l_english.yml",
+        "\u{feff}l_english:\n mod_project:0 \"[ROOT.GetRulingParty] programme\"\n MOD_PARTY:0 \"Mod party\"\n"
+            .as_bytes(),
+    );
+    let reference =
+        (17_u64 << 32) | u64::from(engine_projects::nproject_cprogram::REFERENCE_TYPE);
+    let mut f = frame(100);
+    *f.tables[TableId::FactionPrograms.index()] =
+        TableView::Complete(TableRows::FactionPrograms(vec![FactionProgramRow {
+            faction: 9,
+            ordinal: 0,
+            reference,
+        }]));
+    *f.tables[TableId::ProjectPrograms.index()] =
+        TableView::Complete(TableRows::ProjectPrograms(vec![ProjectProgramRow {
+            id: 17,
+            owner: 11,
+            active_project: Some(5),
+            ..Default::default()
+        }]));
+    *f.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(vec![ProjectRow {
+        owner: 11,
+        local_id: 5,
+        definition_id: 8,
+        program_reference: reference,
+        started: 1,
+        ..Default::default()
+    }]));
+    *f.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 8,
+            literal: b"mod_project".to_vec(),
+        }]));
+    // The name's environment: tables outside the programme's own supplying read.
+    *f.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+        country: 11,
+        ruling_party: Some(3),
+        ..Default::default()
+    }]));
+    *f.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 11,
+            id: 3,
+            name_default: 0,
+            name: b"MOD_PARTY".to_vec(),
+            ..Default::default()
+        }]));
+    f.metrics.table_ns[TableId::ProjectPrograms.index()] = 1;
+    let (source, options) = machine.open_frames(vec![f.clone()]);
+    let context = LoadContext {
+        content: Some(options),
+    };
+    let flag = AtomicBool::new(false);
+    let detail = dashboard_base::products::faction_details::FactionDetails::load(
+        &source,
+        &dashboard_base::products::faction_details::FactionDetailParams {
+            branch_id: "1".into(),
+            hour: 100,
+            faction: "9".into(),
+        },
+        &context,
+        &flag,
+    )
+    .unwrap();
+    let shown = &detail.programmes.unwrap()[0];
+    assert_eq!(shown.project.as_deref(), Some("Mod party programme"));
+    for alone in [false, true] {
+        let mut state = Prepared::default();
+        state.point_seeks = alone;
+        let changes = FrameChanges::alone(&f, replay_data::format::FormatVersion::CURRENT);
+        state.observe(&source, &context, &f, &changes, &flag).unwrap();
+        let files = Fixture::new();
+        publish(&mut state, &files);
+        let history = rules(&source, &files, "9", 100);
+        let run = &history.programmes[0].runs[0];
+        assert_eq!(
+            (&run.name, &run.reason),
+            (&shown.project, &shown.reason),
+            "point seeks {alone}"
+        );
+    }
+}
+
 #[test]
 fn an_unrelated_unresolved_membership_does_not_erase_a_witnessed_account_share() {
     let mut f = frame(100);

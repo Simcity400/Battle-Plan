@@ -183,8 +183,8 @@ mod tests {
                 ("SYN_group".into(), "missing".into()),
             ]),
             CellPages::plan(cell, 64, "resolved flags").unwrap(),
-            Arc::new(move |path| {
-                (path == "plain").then(|| installed_content_image::Rgba8Image {
+            Arc::new(move |key| {
+                (key == "SYN").then(|| installed_content_image::Rgba8Image {
                     width: cell[0],
                     height: cell[1],
                     pixels: vec![255; (cell[0] * cell[1] * 4) as usize],

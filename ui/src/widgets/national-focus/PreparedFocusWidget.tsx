@@ -16,8 +16,10 @@ import { CurrentFocus, FocusArt, FocusCompletion, isCompletedFocus } from './Nat
 import type { FocusListItem } from './NationalFocusWidget';
 import { useFocusArtwork } from './useFocusArtwork';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
-import { FAILED_FACT } from '../../dashboard/countryFacts';
+import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts';
+import type { FocusEntry } from '../../generated/dashboard';
 import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus } from './preparedFocusData';
+import { activeFocus } from './focusData';
 import type { FocusPreparedClient, PreparedFocusArt, PreparedFocusSnapshot } from './preparedFocusData';
 
 import { usePreparedFocusParity } from './usePreparedFocusParity';
@@ -121,9 +123,9 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     snapshot: held.snapshot && carries(held.snapshot) ? held.snapshot : null };
   const snapshot = shown?.snapshot;
   const detailEntries = useMemo(() => opened?.identity === identity && opened.client === runtime.client && opened.slot === snapshot?.hour.slot && opened.countryId === snapshot?.hour.countryId
-    ? snapshot.order.filter(item => opened.rows.has(disclosureKey(item.ordinal, preparedArtKey(item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token)))) : [], [opened, identity, runtime.client, snapshot]);
+    ? snapshot.order.filter(item => opened.rows.has(disclosureKey(item.ordinal, preparedArtKey('national', item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token)))) : [], [opened, identity, runtime.client, snapshot]);
   const detailOwner = JSON.stringify([identity, snapshot?.hour.slot, snapshot?.hour.countryId, snapshot?.page.toString()]);
-  const detailKeys = JSON.stringify(detailEntries.map(item => preparedArtKey(item.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, item.token)));
+  const detailKeys = JSON.stringify(detailEntries.map(item => preparedArtKey('national', item.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, item.token)));
   type DetailResult = { data: PreparedFocusArt | null; pending: boolean; error: string | null };
   const [preparedDetail, setPreparedDetail] = useState<{ owner: string; client: typeof runtime.client; rows: Map<string, DetailResult> } | null>(null);
   const detailResults = preparedDetail?.owner === detailOwner && preparedDetail.client === runtime.client ? preparedDetail.rows : undefined;
@@ -131,7 +133,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     if (!active || !track || !tag || !detailEntries.length || !snapshot) { setPreparedDetail(null); return; }
     const controller = new AbortController();
     let current = true;
-    const wanted = new Map(detailEntries.map(entry => [preparedArtKey(entry.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, entry.token), entry]));
+    const wanted = new Map(detailEntries.map(entry => [preparedArtKey('national', entry.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, entry.token), entry]));
     const rows = new Map([...wanted.keys()].map(key => [key, detailResults?.get(key) ?? { data: null, pending: true, error: null }]));
     setPreparedDetail({ owner: detailOwner, client: runtime.client, rows });
     const results = new Map(rows);
@@ -148,12 +150,14 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     const result = detailResults?.get(key);
     return result?.pending === false && result.data === null && result.error === null;
   };
-  const detailsWanted = useMemo(() => detailEntries.filter(entry => fallbackDetails(preparedArtKey(entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token)))
+  const detailsWanted = useMemo(() => detailEntries.filter(entry => fallbackDetails(preparedArtKey('national', entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token)))
     .map(entry => ({ tag: entry.token, hour: entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at })), [detailEntries, snapshot, detailResults]);
   // A description focus art did not return keeps the dated oracle for opened rows.
   const details = useFocusArtwork(runtime.client, track, tag, NO_WANTED, active && inRange, detailsWanted);
-  const detailRead = (key: string) => fallbackDetails(key) ? details.details?.get(key) : detailResults?.get(key)?.data;
-  const detailPending = (key: string) => fallbackDetails(key) ? detailRead(key) === undefined : detailResults?.get(key)?.pending !== false;
+  // The dated fallback keys a completion's description by its hour and token alone, as completions are national.
+  const detailRead = (key: string, entry: FocusEntry) => fallbackDetails(key)
+    ? details.details?.get(nameKey(entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token)) : detailResults?.get(key)?.data;
+  const detailPending = (key: string, entry: FocusEntry) => fallbackDetails(key) ? detailRead(key, entry) === undefined : detailResults?.get(key)?.pending !== false;
   const descriptions = useRef<{ owner: string; client: typeof runtime.client; texts: Map<string, string> } | null>(null);
   if (descriptions.current?.owner !== detailOwner || descriptions.current.client !== runtime.client) descriptions.current = { owner: detailOwner, client: runtime.client, texts: new Map() };
   const warnings = useMemo(() => snapshot ? [...(shown?.warnings ?? []), ...snapshot.warnings, ...details.warnings,
@@ -180,11 +184,11 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const openedOrdinals = useMemo(() => detailEntries.map(entry => entry.ordinal), [detailEntries]);
   const paritySnapshot = import.meta.env.MODE === 'parity' ? useMemo(() => snapshot && !shown?.pending ? { ...snapshot,
     details: new Map(detailEntries.flatMap(entry => {
-      const read = detailRead(preparedArtKey(entry.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, entry.token));
+      const read = detailRead(preparedArtKey('national', entry.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, entry.token), entry);
       return read && read !== FAILED_FACT ? [[entry.ordinal, read] as const] : [];
     })),
   } : undefined, [snapshot, shown?.pending, detailEntries, detailResults, details.details]) : undefined;
-  const parityReady = !!shown && !shown.pending && detailEntries.every(entry => !detailPending(preparedArtKey(entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token)));
+  const parityReady = !!shown && !shown.pending && detailEntries.every(entry => !detailPending(preparedArtKey('national', entry.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, entry.token), entry));
   const parityRoot = import.meta.env.MODE === 'parity' ? usePreparedFocusParity(runtime.client as FocusPreparedClient, track?.source, track?.branch.id, tag, hour, moment, identity, active && inRange && parityReady, openedOrdinals, paritySnapshot) : undefined;
   if (!track || !tag) return <div className="dash-empty" role="status">Load a campaign and choose a country to see its national focuses.</div>;
   if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
@@ -193,8 +197,8 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   if (!shown || shown.pending && !snapshot) return <div ref={parityRoot}><ListSkeleton label="Loading national focuses…" /></div>;
   if (!snapshot) return <div ref={parityRoot} className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
   const row = snapshot.hour;
-  const current = row.current ?? row.continuous;
-  const currentArt = current ? snapshot.art.get(preparedArtKey(snapshot.displayHour, current)) : undefined;
+  const current = activeFocus(row);
+  const currentArt = current?.token ? snapshot.art.get(preparedArtKey(current.database, snapshot.displayHour, current.token)) : undefined;
   const finalPage = lastPage(row.completed);
   const changePage = (page: bigint) => { setSelection({ identity, page }); setOpened(null); };
   return <section ref={parityRoot} className="national-focus prepared-focus" aria-label="National focus" aria-busy={shown.pending}>
@@ -220,12 +224,12 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
           <span className="focus-label"><strong data-tooltip={contentTitleHint(item.token, currentArt?.reason ?? undefined)}>{contentTitle(currentArt?.artwork.name, item.token, 'Focus name unavailable', shown.pending)}</strong>
             <span>{row.paused ? 'Paused' : 'In progress'}</span></span>
         </div>;
-        const entry = item.entry, key = preparedArtKey(entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token), disclosure = disclosureKey(entry.ordinal, key);
-        const art = snapshot.art.get(key), read = detailRead(key);
+        const entry = item.entry, key = preparedArtKey('national', entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token), disclosure = disclosureKey(entry.ordinal, key);
+        const art = snapshot.art.get(key), read = detailRead(key, entry);
         const description = read && read !== FAILED_FACT ? read.artwork.description ?? art?.artwork.description : art?.artwork.description;
         if (description) descriptions.current!.texts.set(key, description);
         return <FocusCompletion datePreparing={row.preparing?.includes('completedByHour')} entry={entry} art={art?.artwork} reason={art?.reason ?? undefined} pending={shown.pending}
-          description={description ?? (detailPending(key) ? descriptions.current!.texts.get(key) : null)} open={detailEntries.some(item => item.ordinal === entry.ordinal)}
+          description={description ?? (detailPending(key, entry) ? descriptions.current!.texts.get(key) : null)} open={detailEntries.some(item => item.ordinal === entry.ordinal)}
           onToggle={open => setOpened(previous => {
             const wanted = previous?.identity === identity && previous.client === runtime.client && previous.slot === row.slot && previous.countryId === row.countryId ? previous.rows : new Set<string>();
             if (wanted.has(disclosure) === open) return previous;

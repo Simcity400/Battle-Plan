@@ -67,6 +67,8 @@ signed_int!(i16, i32, i64);
 
 const SLOT_DELTAS: u8 = 0;
 const SLOT_BITMAP: u8 = 1;
+/// Words of a bitmap with one bit for every `u32` slot.
+pub const SLOT_WORDS: usize = u32::MAX as usize / 64 + 1;
 const POSITION_BITMAP: u8 = 0;
 const POSITION_RUNS: u8 = 1;
 
@@ -423,6 +425,9 @@ impl<'a> Reader<'a> {
             }
             SLOT_BITMAP => {
                 let words = self.count()?;
+                if words > SLOT_WORDS {
+                    return Err(invalid("Slot bitmap passes the last slot"));
+                }
                 let mut bits = Vec::new();
                 self.values::<u64>(words, &mut bits)?;
                 if bits.last() == Some(&0) {

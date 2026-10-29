@@ -119,11 +119,76 @@ fn peace_countries_and_actions_scale_linearly_at_design_and_stress_sizes() {
 #[test]
 fn peace_full_action_arena_stops_before_reading_unstored_operands() {
     let mut f = Fixture::new(0, 5000);
-    f.u64(0x20000 + 0x70, 99);
+    // An accepted navy bid whose selected ship cannot be read: only its status is needed.
+    f.u64(
+        0x20000 + 0x70,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+    );
+    f.u64(
+        0x20000 + 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
+        0xdead_0000,
+    );
     let result = f.copy(&mut [], &mut [Action::default()]);
     assert_eq!(result.failure, None);
     assert_eq!(result.actions, 1);
     assert_eq!(result.omitted, 4999);
+}
+
+#[test]
+fn peace_excluded_bids_never_fill_or_truncate_a_settlement() {
+    let mut f = Fixture::new(0, 3);
+    for (i, status) in [(1, 3), (2, 4)] {
+        f.u32(0x20000 + i * 0x70 + peace_action::STATUS, status);
+    }
+    // An excluded bid's form-specific operands are never read.
+    f.u64(
+        0x20000 + 2 * 0x70,
+        engine_peace::ctake_navy_peace_action::VTABLE_RVA as u64,
+    );
+    f.u64(
+        0x20000 + 2 * 0x70 + engine_peace::ctake_navy_peace_action::SHIP,
+        0xdead_0000,
+    );
+    let mut actions = [Action::default()];
+    let result = f.copy(&mut [], &mut actions);
+    assert_eq!(result.failure, None);
+    assert_eq!((result.actions, result.omitted), (1, 0));
+    assert_eq!(actions[0].ordinal, 0);
+    // With no accepted bid at all, an empty action arena is enough.
+    f.u32(0x20000 + peace_action::STATUS, 3);
+    let result = f.copy(&mut [], &mut []);
+    assert_eq!(result.failure, None);
+    assert_eq!((result.actions, result.omitted), (0, 0));
+    // An excluded bid is still authenticated before its status is trusted.
+    f.u64(0x20000 + 0x70, 99);
+    assert_eq!(
+        f.copy(&mut [], &mut []).failure,
+        Some("peace action vtable unsupported")
+    );
+    // Resident bids still keep every status, so the same arena truncates.
+    f.u64(
+        0x20000 + 0x70,
+        engine_peace::ctake_state_action::VTABLE_RVA as u64,
+    );
+    f.bytes[0x100 + c::FINALIZED] = 0;
+    let bids = p::copy_bids(
+        &SliceMemory {
+            base: 0,
+            bytes: &f.bytes,
+        },
+        0,
+        0x100,
+        p::Output {
+            winners: &mut [],
+            losers: &mut [],
+            actions: &mut [],
+            transfers: &mut [],
+            subjects: &mut [],
+            name_bytes: &mut [],
+        },
+    );
+    assert_eq!(bids.failure, None);
+    assert_eq!((bids.actions, bids.omitted), (0, 3));
 }
 
 #[test]

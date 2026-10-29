@@ -2218,7 +2218,7 @@ fn war_census(countries: usize) -> Census {
         let at = country(slot);
         p64(&mut space.bytes, at, ccountry::VTABLE_RVA as u64);
         p32(&mut space.bytes, at + ccountry::ID, slot as u32);
-        *root = space.alloc(0x290);
+        *root = space.alloc(cdiplomacy_status::COUNTRY + 8);
         p64(
             &mut space.bytes,
             at + ccountry::DIPLOMACY_STATUS,

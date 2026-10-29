@@ -1023,43 +1023,56 @@ pub struct Multipliers {
     pub land_raw: Result<i64, &'static str>,
 }
 
+/// NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER, fixed5.
+pub const COUNTRY_SCORE_MULTIPLIER_RVA: usize = 0x033e_1f00;
+/// NDefines.NCountry.ARMY_SCORE_MULTIPLIER, fixed5.
+pub const ARMY_SCORE_MULTIPLIER_RVA: usize = 0x033e_1f98;
+/// NDefines.NCountry.NAVY_SCORE_MULTIPLIER, fixed5.
+pub const NAVY_SCORE_MULTIPLIER_RVA: usize = 0x033e_2038;
+/// NDefines.NCountry.AIR_SCORE_MULTIPLIER, fixed5.
+pub const AIR_SCORE_MULTIPLIER_RVA: usize = 0x033e_20c8;
+/// NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER, fixed5.
+pub const INDUSTRY_SCORE_MULTIPLIER_RVA: usize = 0x033e_2158;
+/// NDefines.NCountry.PROVINCE_SCORE_MULTIPLIER, fixed5.
+pub const PROVINCE_SCORE_MULTIPLIER_RVA: usize = 0x033e_21f8;
+
 /// Content-loaded fixed5 score globals; read each independently.
 pub fn read_multipliers(memory: &impl Memory, base: usize) -> Multipliers {
     Multipliers {
         total_raw: field(
             memory,
             base,
-            0x033e_1f00,
+            COUNTRY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.COUNTRY_SCORE_MULTIPLIER unreadable",
         ),
         army_raw: field(
             memory,
             base,
-            0x033e_1f98,
+            ARMY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.ARMY_SCORE_MULTIPLIER unreadable",
         ),
         navy_raw: field(
             memory,
             base,
-            0x033e_2038,
+            NAVY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.NAVY_SCORE_MULTIPLIER unreadable",
         ),
         air_raw: field(
             memory,
             base,
-            0x033e_20c8,
+            AIR_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.AIR_SCORE_MULTIPLIER unreadable",
         ),
         industry_raw: field(
             memory,
             base,
-            0x033e_2158,
+            INDUSTRY_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.INDUSTRY_SCORE_MULTIPLIER unreadable",
         ),
         land_raw: field(
             memory,
             base,
-            0x033e_21f8,
+            PROVINCE_SCORE_MULTIPLIER_RVA,
             "NDefines.NCountry.PROVINCE_SCORE_MULTIPLIER unreadable",
         ),
     }

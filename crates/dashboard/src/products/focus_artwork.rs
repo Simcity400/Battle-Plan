@@ -1,7 +1,7 @@
 //! Hour-specific focus presentation; history consumers share the native selector.
 use super::{LoadContext, Product, artwork, validate_tag};
 use crate::{
-    Artwork, Source,
+    Artwork, FocusDatabase, Source,
     metadata::{check_cancel, validate_campaign},
 };
 use replay::container::Replay;
@@ -22,6 +22,8 @@ pub struct FocusArtworkParams {
     pub branch_id: String,
     pub hour: i32,
     pub tag: String,
+    /// The database every token is looked up in.
+    pub database: FocusDatabase,
     pub tokens: Vec<String>,
     #[serde(default)]
     #[ts(optional)]
@@ -45,14 +47,24 @@ pub struct FocusArtworkReply {
     pub branch_id: String,
     pub hour: i32,
     pub tag: String,
+    pub database: FocusDatabase,
     pub items: Vec<DatedFocusArtwork>,
     pub warnings: Vec<String>,
 }
+
+/// Each projection's context over one focus database, so no cached art of a
+/// national focus answers for a continuous focus of the same id.
 #[derive(Default)]
-struct State {
+struct Contexts {
     artwork: Arc<Mutex<Option<artwork::Context>>>,
     text: Arc<Mutex<Option<artwork::Context>>>,
     titles: Arc<Mutex<Option<artwork::Context>>>,
+}
+
+#[derive(Default)]
+struct State {
+    national: Contexts,
+    continuous: Contexts,
     frame: Arc<SharedFrames>,
 }
 
@@ -405,22 +417,31 @@ impl Product for FocusArtwork {
         let state = source.state::<State>();
         let (slot, frame) = {
             let state = state.lock().unwrap_or_else(|error| error.into_inner());
+            let contexts = match params.database {
+                FocusDatabase::National => &state.national,
+                FocusDatabase::Continuous => &state.continuous,
+            };
             (
                 Arc::clone(
                     if params.text_only == Some(true) && params.include_descriptions == Some(false)
                     {
-                        &state.titles
+                        &contexts.titles
                     } else if params.text_only == Some(true) {
-                        &state.text
+                        &contexts.text
                     } else {
-                        &state.artwork
+                        &contexts.artwork
                     },
                 ),
                 Arc::clone(&state.frame),
             )
         };
         let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
-        let art = artwork::ensure(&mut slot, source, context.content()?, artwork::Kind::Focus)?;
+        let art = artwork::ensure(
+            &mut slot,
+            source,
+            context.content()?,
+            artwork::Kind::Focus(params.database),
+        )?;
         let needs_frame = if params.icons_only == Some(true) {
             art.requested_focus_icons_need_frame(&params.tokens)
         } else if params.include_descriptions == Some(false) {
@@ -491,6 +512,7 @@ fn reply_within(
         branch_id: params.branch_id.clone(),
         hour: params.hour,
         tag: params.tag.clone(),
+        database: params.database,
         items: Vec::new(),
         warnings,
     };
@@ -592,7 +614,9 @@ mod tests {
             serde_json::to_value(&first.0[1..]).unwrap()
         );
         let catalogue = crate::catalogue::catalogue(&source, context.content().unwrap()).unwrap();
-        let mut art = artwork::Context::load(catalogue, artwork::Kind::Focus).unwrap();
+        let mut art =
+            artwork::Context::load(catalogue, artwork::Kind::Focus(FocusDatabase::National))
+                .unwrap();
         for ((hour, tag, token), actual) in requests.iter().zip(&first.0) {
             let frame = read_frame(source.replay_ref(), 1, *hour, true, &cancelled).unwrap();
             let expected = art.focuses_at(&[(*token, *tag)], &frame).remove(0);
@@ -753,9 +777,17 @@ mod tests {
     #[test]
     fn icon_only_requests_preserve_defaults_and_reject_conflicting_fields() {
         let old: FocusArtworkParams = serde_json::from_value(serde_json::json!({
-            "branchId": "1", "hour": 100, "tag": "synthetic", "tokens": ["static"]
+            "branchId": "1", "hour": 100, "tag": "synthetic", "database": "national", "tokens": ["static"]
         }))
         .unwrap();
+        assert_eq!(old.database, FocusDatabase::National);
+        // Every request names the database its tokens are looked up in.
+        assert!(
+            serde_json::from_value::<FocusArtworkParams>(serde_json::json!({
+                "branchId": "1", "hour": 100, "tag": "synthetic", "tokens": ["static"]
+            }))
+            .is_err()
+        );
         assert_eq!(old.icons_only, None);
         assert_eq!(old.text_only, None);
         assert_eq!(old.include_descriptions, None);
@@ -795,6 +827,7 @@ mod tests {
             branch_id: "1".into(),
             hour: 100,
             tag: String::from_utf8(scale_tag(12)).unwrap(),
+            database: FocusDatabase::National,
             tokens: vec!["static".into()],
             text_only: Some(false),
             include_descriptions: Some(false),
@@ -878,6 +911,7 @@ mod tests {
                 branch_id: "1".into(),
                 hour: 100,
                 tag: String::from_utf8(scale_tag(2)).unwrap(),
+                database: FocusDatabase::National,
                 tokens: vec!["unauthored".into()],
                 text_only,
                 include_descriptions,
@@ -890,6 +924,185 @@ mod tests {
             assert!(
                 reason.contains("focus unauthored: definition absent from recorded content"),
                 "{text_only:?}/{include_descriptions:?}/{icons_only:?}: {reason}"
+            );
+        }
+    }
+
+    /// One id naming a national focus and a different continuous focus; with
+    /// `refused`, a later continuous file the reader refuses, which could
+    /// redefine any continuous focus.
+    fn database_files(refused: bool) -> Vec<(&'static str, &'static str)> {
+        let mut files = vec![
+            (
+                "common/national_focus/synthetic.txt",
+                "focus_tree={focus={id=shared text=national_title cost=2} focus={id=national_only text=national_title}}",
+            ),
+            (
+                "common/continuous_focus/synthetic.txt",
+                "continuous_focus_palette={focus={id=shared text=continuous_title}}",
+            ),
+            (
+                "common/defines/synthetic.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NFocus={FOCUS_POINT_DAYS=7}}",
+            ),
+            (
+                "localisation/synthetic_l_english.yml",
+                "\u{feff}l_english:\n national_title:0 \"National title\"\n continuous_title:0 \"Continuous title\"\n",
+            ),
+        ];
+        if refused {
+            files.push((
+                "common/continuous_focus/zz_refused.txt",
+                "continuous_focus_palette={focus={text=continuous_title}}",
+            ));
+        }
+        files
+    }
+
+    /// A tree focus is asked for as national and a continuous focus as
+    /// continuous. One id names a different focus in each database: neither
+    /// answers for the other, though the national reply is kept first, and a
+    /// refused continuous file leaves the national focus answered.
+    #[test]
+    fn each_focus_database_answers_its_own_art_and_names() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for refused in [false, true] {
+            let (catalogue, folder) =
+                crate::catalogue::tests::folder_catalogue(&database_files(refused));
+            let frame = focus_scale_frame(100, 4, 2, &["shared"]);
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+            let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
+            let cancelled = AtomicBool::new(false);
+            let tag = String::from_utf8(scale_tag(2)).unwrap();
+            let load = |database, text_only| {
+                FocusArtwork::load(
+                    &source,
+                    &FocusArtworkParams {
+                        branch_id: "1".into(),
+                        hour: 100,
+                        tag: tag.clone(),
+                        database,
+                        tokens: vec!["national_only".into(), "shared".into()],
+                        text_only: Some(text_only),
+                        include_descriptions: Some(false),
+                        icons_only: None,
+                    },
+                    &context,
+                    &cancelled,
+                )
+                .unwrap()
+            };
+            let item = |reply: &FocusArtworkReply, token: &str| {
+                reply
+                    .items
+                    .iter()
+                    .find(|item| item.artwork.token == token)
+                    .unwrap()
+                    .clone()
+            };
+            for text_only in [true, false] {
+                let national = load(FocusDatabase::National, text_only);
+                assert_eq!(national.database, FocusDatabase::National);
+                for token in ["national_only", "shared"] {
+                    let art = item(&national, token);
+                    assert_eq!(art.artwork.name.as_deref(), Some("National title"), "{token}");
+                    if text_only {
+                        assert_eq!(art.reason, None, "{token}");
+                    }
+                }
+                assert_eq!(
+                    item(&national, "shared").artwork.base_duration_days,
+                    Some(14.0)
+                );
+                let continuous = load(FocusDatabase::Continuous, text_only);
+                assert_eq!(continuous.database, FocusDatabase::Continuous);
+                let only = item(&continuous, "national_only");
+                assert_eq!(only.artwork.name, None);
+                let shared = item(&continuous, "shared");
+                assert_eq!(shared.artwork.base_duration_days, None);
+                if refused {
+                    assert_eq!(shared.artwork.name, None);
+                    for art in [only, shared] {
+                        let reason = art.reason.unwrap();
+                        assert!(
+                            reason.contains("common/continuous_focus/zz_refused.txt"),
+                            "{reason}"
+                        );
+                    }
+                } else {
+                    assert_eq!(shared.artwork.name.as_deref(), Some("Continuous title"));
+                    assert!(
+                        only.reason.as_deref().unwrap().contains(
+                            "focus national_only: definition absent from recorded content"
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    /// The focus history's text names its completed focuses from the national
+    /// database and its continuous focus from the continuous one, even where
+    /// one id names both.
+    #[test]
+    fn focus_history_text_keeps_each_database_apart() {
+        use crate::products::{CountryParams, national_focus::NationalFocus};
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for refused in [false, true] {
+            let (catalogue, folder) =
+                crate::catalogue::tests::folder_catalogue(&database_files(refused));
+            let mut frame = focus_scale_frame(100, 4, 2, &["shared"]);
+            if let TableView::Complete(TableRows::Focus(rows)) =
+                &mut *frame.tables[TableId::Focus.index()]
+            {
+                rows[2].continuous = Some(b"shared".to_vec());
+            }
+            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+            let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
+            let params = CountryParams {
+                branch_id: "1".into(),
+                tag: String::from_utf8(scale_tag(2)).unwrap(),
+            };
+            let reply =
+                NationalFocus::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+            let order = &reply.history.segments[0].order;
+            assert_eq!(order.completed[0].token, "shared");
+            assert_eq!(order.continuous.as_deref(), Some("shared"));
+            let texts = |items: &[Artwork]| {
+                items
+                    .iter()
+                    .map(|item| {
+                        (
+                            item.token.clone(),
+                            item.name.clone(),
+                            item.base_duration_days,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            // A refused continuous file leaves the national focus as it was.
+            assert_eq!(
+                texts(reply.static_text.as_deref().unwrap()),
+                [("shared".to_owned(), Some("National title".to_owned()), Some(14.0))]
+            );
+            assert_eq!(
+                reply
+                    .artwork
+                    .iter()
+                    .map(|item| (item.token.as_str(), item.base_duration_days))
+                    .collect::<Vec<_>>(),
+                [("shared", Some(14.0))]
+            );
+            // The continuous focus never takes the national focus's title or cost.
+            assert_eq!(
+                texts(&reply.continuous_static_text),
+                [(
+                    "shared".to_owned(),
+                    (!refused).then(|| "Continuous title".to_owned()),
+                    None
+                )]
             );
         }
     }
@@ -944,6 +1157,7 @@ mod tests {
                 branch_id: "1".into(),
                 hour,
                 tag: String::from_utf8(scale_tag(12)).unwrap(),
+                database: FocusDatabase::National,
                 tokens: vec!["conditional".into()],
                 text_only: Some(false),
                 include_descriptions: Some(false),
@@ -1025,6 +1239,7 @@ mod tests {
             branch_id: "1".into(),
             hour: 100,
             tag,
+            database: FocusDatabase::National,
             tokens: vec!["focus_a".into()],
             text_only: Some(false),
             include_descriptions: Some(false),
@@ -1302,6 +1517,7 @@ mod tests {
                 branch_id: "1".into(),
                 hour,
                 tag: tag.clone(),
+                database: FocusDatabase::National,
                 tokens: vec![token.into()],
                 text_only: Some(false),
                 include_descriptions: Some(false),
@@ -1328,6 +1544,7 @@ mod tests {
                 branch_id: "1".into(),
                 hour: 102,
                 tag: tag.clone(),
+                database: FocusDatabase::National,
                 tokens: vec!["focus_scoped".into()],
                 text_only: Some(true),
                 include_descriptions: Some(false),
@@ -1711,6 +1928,7 @@ mod tests {
             branch_id: "1".into(),
             hour: 10,
             tag: "synthetic".into(),
+            database: FocusDatabase::National,
             tokens: vec!["focus".into()],
             text_only: None,
             include_descriptions: None,

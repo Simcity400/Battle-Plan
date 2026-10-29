@@ -30,7 +30,7 @@ test('an obsolete focus page failure cannot replace a newer successful generatio
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/dashboard/preparedSeries.ts': 'export const preparedSeriesQuery = (...args) => { globalThis.__focusGeneration.publish = args[8]; return new Promise(() => {}); };',
-    '/national-focus/useFocusArtwork.ts': 'export const useFocusArtwork = () => ({ details: new Map(), warnings: [] });',
+    '/national-focus/useFocusArtwork.ts': 'export const useFocusArtwork = () => ({ details: new Map(), warnings: [] }); export const useContinuousFocusArtwork = () => ({ read: new Map(), warnings: [], details: new Map() });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-generation', enforce: 'pre',

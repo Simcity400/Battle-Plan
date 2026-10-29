@@ -172,6 +172,17 @@ fn load_json<P: Product>(
         .map(|(store, key)| store.scope(key))
         .transpose()
         .map_err(|error| error.to_string())?;
+    // A content reply holds its folders' content while it runs, so its reads, its diagnostics
+    // and whether it is kept all follow one read set, whatever the source binds meanwhile.
+    let held = context
+        .content
+        .as_ref()
+        .filter(|_| P::CONTENT_DEPENDENT)
+        .and_then(|content| source.content(&content.options).ok());
+    let reads_uncovered = || match &held {
+        Some(_) => source.reply_reads_uncovered(context.content.as_ref()),
+        None => source.reads_uncovered(),
+    };
     // Whole-recording replies persist between sessions; hover answers are quicker to compute.
     let entry = (!P::INTERACTIVE && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
         .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
@@ -188,10 +199,10 @@ fn load_json<P: Product>(
     // The data serializes last.
     reply.truncate(reply.len() - "null}".len());
     // Content read outside the recorded coverage is reported on every reply, so
-    // no reply is served from or kept on disk while any is.
+    // no reply is served from or kept on disk while its read set holds any.
     let stored = entry
         .as_ref()
-        .filter(|_| !source.reads_uncovered())
+        .filter(|_| !reads_uncovered())
         .and_then(reply_cache::Entry::get);
     let data = match stored {
         Some(data) => data,
@@ -215,7 +226,7 @@ fn load_json<P: Product>(
             // work, whatever is selected), and only while its admission still holds the source's
             // current binding: a reply of a binding the source has left is not kept.
             if let Some(entry) = &entry
-                && !source.reads_uncovered()
+                && !reads_uncovered()
                 && context
                     .content
                     .as_ref()

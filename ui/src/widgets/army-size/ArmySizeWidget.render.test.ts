@@ -11,7 +11,7 @@ import type { CountryGroupReply } from '../../generated/dashboard';
 
 test('army sizes of a group at an hour still being prepared are loading, not unknown', async () => {
   const window = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
-  const reply = { branchId: BRANCH.id, available: true, measures: ['divisions'], types: [], warnings: [], windows: [], window: 0, interval: window,
+  const reply = { branchId: BRANCH.id, available: true, measures: ['divisions'], unknownMeasures: [], types: [], warnings: [], windows: [], window: 0, interval: window,
     series: [{ tag: 'GER', membership: null, segments: [window], runs: [[0, 3, BRANCH.lastHour]] }] };
   const state = { groups: pendingGroups() as CountryGroupReply, reply, view: undefined as CountryRaceViewProps | undefined };
   const host = globalThis as typeof globalThis & { __armyPending?: typeof state }; host.__armyPending = state;
@@ -48,7 +48,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
 
 test('army sizes of a group with no member found yet say what the moment was once read, and load until then', async () => {
   const window = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
-  const manifest = { branchId: BRANCH.id, available: true, measures: ['divisions'], types: [], warnings: [], windows: [window], window: null, interval: null, series: [] };
+  const manifest = { branchId: BRANCH.id, available: true, measures: ['divisions'], unknownMeasures: [], types: [], warnings: [], windows: [window], window: null, interval: null, series: [] };
   const state = { groups: gapGroups(), reply: { ...manifest, windows: [], window: 0, interval: window } };
   const host = globalThis as typeof globalThis & { __armyGap?: typeof state }; host.__armyGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/army-size/ArmySizeWidget.tsx', {

@@ -132,12 +132,15 @@ fn add_observations(
 }
 
 impl Prepared {
+    /// `content_multipliers` supplies the multipliers of hours whose capture
+    /// was disabled, as the direct reader does.
     pub fn observe(
         &mut self,
         frame: &DecodedFrame,
         replay: &Replay,
         observer: &mut ScoreObserver<'_>,
         naming: &Naming,
+        content_multipliers: &mut impl FnMut() -> GameScoreValues,
         changes: &FrameChanges,
     ) -> io::Result<()> {
         if !self.metadata.initialized {
@@ -147,15 +150,8 @@ impl Prepared {
             self.metadata.content_warnings = naming.warnings.clone();
             self.metadata.initialized = true;
         }
-        let (facts, change) = observer.observe_changed(
-            frame,
-            replay,
-            &mut || {
-                // Prepared recordings use the current format's captured multipliers.
-                unreachable!("Prepared score inputs require the current recording format")
-            },
-            Some(changes),
-        )?;
+        let (facts, change) =
+            observer.observe_changed(frame, replay, content_multipliers, Some(changes))?;
         self.count_warnings(facts, &change);
         let hour = frame.hour;
         let continuous = self
@@ -658,10 +654,9 @@ fn tail_state(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<GameScoreStateReply> {
-    use std::cell::{OnceCell, RefCell};
+    use std::cell::RefCell;
     let hour = params.reads[0].hour;
     let replay = source.replay_ref();
-    let old_multipliers = OnceCell::new();
     // Retain only the requested frame, never an intervening block or history.
     let target = RefCell::new(None);
     let check = |frame: &DecodedFrame| {
@@ -670,9 +665,7 @@ fn tail_state(
     };
     let sample = |frame: &DecodedFrame, _requested: Option<&[(String, String)]>| {
         let samples = super::sample(frame, replay.format, &mut || {
-            old_multipliers
-                .get_or_init(|| read_content_multipliers(source, context))
-                .clone()
+            naming.content_multipliers(source, context)
         });
         let values = samples.values();
         if frame.hour == hour {
@@ -1009,6 +1002,7 @@ mod state_tests {
             templates: Err("synthetic faction templates unavailable".into()),
             fallback: Localisation::default(),
             warnings: Vec::new(),
+            multipliers: Default::default(),
         };
         for switches in [false, true] {
             let frames = (0..=10).map(|hour| frame(1, hour, Some(1))).collect();

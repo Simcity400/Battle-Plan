@@ -104,6 +104,8 @@ export default function FuelBreakdown({ reply: suppliedReply, history: suppliedH
     text: formatFuelPart(recipientTotal - assigned, BigInt(reply.gainScale)), shareText: fuelPartShare(recipientTotal - assigned, recipientTotal) }
     : undefined, [recipientTotal, assigned, reply.gainScale]);
   return <div ref={parity}>
+    {/* The accounting's own reads: a failure says so, keeping any history already drawn. */}
+    {prepared.enabled && prepared.error && <WidgetState kind="error" what="fuel accounting" detail={prepared.error} onRetry={prepared.retry} />}
     {retainedSelection && !selection && <p className="drill-empty">Choose a recipient again.</p>}
     {selection ? <>
       <button type="button" className="button small quiet" onClick={() => { setConsumer(selection.consumer); onSelection(null); }}>All consumer recipients</button>

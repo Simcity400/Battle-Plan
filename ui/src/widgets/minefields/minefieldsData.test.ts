@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, regionRuns, validateMinefields, validateReports } from './minefieldsData.ts';
+import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, regionHolders, regionRuns, validateMinefields, validateReports } from './minefieldsData.ts';
 
 const reply = validateMinefields({
   window: { firstHour: 0, lastHour: 20, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
@@ -77,4 +77,31 @@ test("a region's drill runs keep witnessed zeros and leave refused hours unknown
   }).window;
   assert.deepEqual(regionRuns(ownerSeries(history).get('GER@7')!, '5'), [
     [0, 1, '0', true], [2, 4, '300000', false], [5, 7, '0', false], [8, 9, '100000', false], [10, 11, '0', false]]);
+});
+
+test('an owner with nothing at the hour has no minefields then, not unknown ones', () => {
+  const history = validateMinefields({
+    window: { firstHour: 0, lastHour: 9, known: [{ firstHour: 0, lastHour: 9 }], reads: [[0, 9, 0]], series: [
+      { name: 'GER@7|extent', runs: [[0, 4, '40', true]] },
+      { name: 'ENG@3|5', runs: [[5, 9, '100000', true]] },
+      { name: 'ENG@3|extent', runs: [[5, 9, '40', true]] },
+    ] },
+    regions: [{ id: '5', name: 'North Sea' }], scale: 100000, warnings: [],
+  });
+  const owners = ownerSeries(history.window);
+  const north = minesAt(history, owners, 7)!.regions.find(region => region.region === '5')!;
+  assert.deepEqual(north.owners.map(owner => owner.owner), ['ENG@3']);
+  assert.equal(north.unknownOwners, 0, 'GER@7 stopped laying mines at 4');
+});
+
+test('two holders of a reused tag stay two holders in a region, each at an hour it held its mines', () => {
+  const reused = validateMinefields({
+    window: { firstHour: 0, lastHour: 20, known: [{ firstHour: 0, lastHour: 20 }], reads: [[0, 20, 0]], series: [
+      { name: 'GER@7|5', runs: [[0, 8, '100000', true]] },
+      { name: 'GER@9|5', runs: [[12, 20, '200000', true]] },
+      { name: 'ENG@3|50', runs: [[0, 20, '100000', true]] },
+    ] },
+    regions: [{ id: '5', name: 'North Sea' }], scale: 100000, warnings: [],
+  });
+  assert.deepEqual(regionHolders(ownerSeries(reused.window), '5'), [{ key: 'GER@7', tag: 'GER', hour: 8 }, { key: 'GER@9', tag: 'GER', hour: 20 }]);
 });

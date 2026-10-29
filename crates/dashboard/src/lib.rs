@@ -55,6 +55,7 @@ pub fn typescript_contract() -> String {
         RecordingEventLoss::decl(),
         CountryMetadata::decl(),
         Artwork::decl(),
+        FocusDatabase::decl(),
         LandOwners::decl(),
         FocusEntry::decl(),
         FocusOrder::decl(),

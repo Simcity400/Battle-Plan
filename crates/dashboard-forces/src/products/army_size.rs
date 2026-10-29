@@ -154,6 +154,8 @@ pub struct ArmySizeReply {
     pub interval: Option<HourSpan>,
     pub available: bool,
     pub measures: Vec<ArmyMeasure>,
+    /// While preparation continues, measures no hour read so far records: unknown, not absent.
+    pub unknown_measures: Vec<ArmyMeasure>,
     pub types: Vec<ArmyType>,
     pub series: Vec<ArmySeries>,
     pub warnings: Vec<String>,
@@ -1537,7 +1539,7 @@ impl Product for ArmySize {
         let detailed =
             params.measure != ArmyMeasure::Divisions || params.count_for == ArmyAttribution::Host;
         let scan = scanned(source, branch, detailed, cancelled)?;
-        build_reply(source, params, context, cancelled, &scan, None, None)
+        build_reply(source, params, context, cancelled, &scan, None, None, false)
     }
 }
 
@@ -1553,6 +1555,8 @@ fn build_reply(
     scan: &Scan,
     histories: Option<Arc<dashboard_base::products::country_history::RecordedHistories>>,
     prepared_membership: Option<BTreeMap<String, Vec<HourSpan>>>,
+    // `scan` holds only some of the branch's hours: what it did not see is unknown.
+    preparing: bool,
 ) -> io::Result<ArmySizeReply> {
     let branch = params
         .branch_id
@@ -1588,20 +1592,24 @@ fn build_reply(
                 "{} country attribution-hours have unresolved division ownership or missing/invalid template composition; battalion totals stay unknown.",
                 scan.composition_unreadable));
     }
-    let measures = [
+    let (measures, unknown_measures): (Vec<_>, Vec<_>) = [
         ArmyMeasure::Manpower,
         ArmyMeasure::Divisions,
         ArmyMeasure::Strength,
         ArmyMeasure::Battalions,
     ]
     .into_iter()
-    .filter(|measure| match measure {
+    .partition(|measure| match measure {
         ArmyMeasure::Divisions => scan.divisions,
         ArmyMeasure::Strength => scan.strength,
         ArmyMeasure::Manpower => scan.manpower,
         ArmyMeasure::Battalions => scan.battalions,
-    })
-    .collect();
+    });
+    let unknown_measures = if preparing {
+        unknown_measures
+    } else {
+        Vec::new()
+    };
     let mut projection = params.clone();
     let identities = if params.top.is_none() && !params.tags.is_empty() {
         let identities = if let Some(histories) = histories {
@@ -1692,6 +1700,7 @@ fn build_reply(
             ArmyMeasure::Battalions => scan.battalions,
         },
         measures,
+        unknown_measures,
         types,
         series: Vec::new(),
         warnings,

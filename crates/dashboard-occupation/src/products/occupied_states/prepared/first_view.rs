@@ -129,35 +129,41 @@ pub(super) fn tail(
                     .sum::<usize>()
         },
         &|block| {
-            // Metrics locate the first supplying read without decoding occupation
-            // deltas for the rest of the block. Only that hour needs its rows.
+            // Metrics locate the supplying reads, by the observer's own evidence, without
+            // decoding occupation deltas for the rest of the block. Only the first one
+            // that holds a read needs its rows.
             let replay = source.replay_ref();
             let frames = replay.read_block_selected(block, &[])?;
-            let Some(read) = frames.iter().find(|frame| {
-                slot_read(
+            let reads = frames.iter().filter(|frame| {
+                super::super::scan::stored_resistance_read(
                     replay.format,
                     &frame.metrics,
-                    TableId::StateResistance,
                     frame.hour,
                 ) && !replay.gaps.iter().any(|gap| {
                     gap.branch == branch
                         && gap.first_hour <= frame.hour
                         && frame.hour <= gap.last_hour
                 })
-            }) else {
-                return Ok(None);
-            };
-            let mut prepared = Prepared::default();
-            prepared.configure(source, context);
-            let tables = observed_tables(prepared.reads_trigger_world());
-            let Some(frame) = progressive::frame_at(source, branch, read.hour, &tables, cancelled)?
-            else {
-                return Ok(None);
-            };
-            prepared.observe_frame(&frame, replay.format, None)?;
-            if !prepared.scan.holds_read() {
-                return Ok(None);
+            });
+            let mut held = None;
+            for read in reads {
+                let mut prepared = Prepared::default();
+                prepared.configure(source, context);
+                let tables = observed_tables(prepared.reads_trigger_world());
+                let Some(frame) =
+                    progressive::frame_at(source, branch, read.hour, &tables, cancelled)?
+                else {
+                    continue;
+                };
+                prepared.observe_frame(&frame, replay.format, None)?;
+                if prepared.scan.holds_read() {
+                    held = Some((read, prepared, frame));
+                    break;
+                }
             }
+            let Some((read, prepared, frame)) = held else {
+                return Ok(None);
+            };
             let mut identities = HistoryScan::new(false, &[]);
             identities.observe(&frame);
             let history = prepared.scan.trend.history(Some(read.hour));

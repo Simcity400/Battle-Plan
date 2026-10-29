@@ -179,18 +179,47 @@ impl Database {
         }
         Ok(true)
     }
-    pub fn default_module<'a>(&'a self, equipment: &'a Equipment, slot: &[u8]) -> Option<&'a [u8]> {
-        let mut current = equipment;
-        loop {
-            if let Some((_, module)) = current
-                .default_modules
-                .iter()
-                .find(|(key, _)| Token::c_str(key) == Token::c_str(slot))
-            {
-                return (!module.eq_ignore_ascii_case(b"empty")).then_some(module.as_slice());
+    /// The index of a type borrowed from this database. Aliases take over names
+    /// in the name index, so a type's own index is never found through its name.
+    fn index_of(&self, equipment: &Equipment) -> Result<usize, String> {
+        self.equipment
+            .iter()
+            .position(|held| std::ptr::eq(held, equipment))
+            .ok_or_else(|| {
+                format!(
+                    "equipment {} is not a type of this equipment database",
+                    String::from_utf8_lossy(&equipment.name)
+                )
+            })
+    }
+
+    /// `at`, then every type its stored parent and archetype links reach.
+    fn chain(&self, at: usize) -> Result<Vec<usize>, String> {
+        let mut chain = vec![at];
+        while let Some(next) = self.next(chain[chain.len() - 1]) {
+            if chain.contains(&next) {
+                return Err(format!(
+                    "equipment {} links back through its parents and archetypes",
+                    String::from_utf8_lossy(&self.equipment[at].name)
+                ));
             }
-            current = &self.equipment[self.next(self.get(&current.name)?)?];
+            chain.push(next);
         }
+        Ok(chain)
+    }
+
+    /// The first default for `slot` along `chain`; `empty` installs none.
+    fn default_module(&self, chain: &[usize], slot: &[u8]) -> Option<&[u8]> {
+        chain
+            .iter()
+            .find_map(|&at| {
+                self.equipment[at]
+                    .default_modules
+                    .iter()
+                    .find(|(key, _)| Token::c_str(key) == Token::c_str(slot))
+            })
+            .map(|(_, module)| module.as_slice())
+            .filter(|module| !module.eq_ignore_ascii_case(b"empty"))
     }
     fn dependency_graph(&self, equipment: &Equipment) -> BTreeMap<Node, Vec<Edge>> {
         let mut categories: Vec<BTreeSet<Token>> = equipment
@@ -271,6 +300,7 @@ impl Database {
         if let Some(reason) = &self.lost {
             return Err(reason.clone());
         }
+        let chain = self.chain(self.index_of(equipment)?)?;
         let graph = self.dependency_graph(equipment);
         let explicit = |slot: &[u8]| {
             assignments
@@ -287,7 +317,7 @@ impl Database {
             let name = row
                 .map(|row| row.module)
                 .filter(|name| !name.is_empty())
-                .or_else(|| self.default_module(equipment, slot));
+                .or_else(|| self.default_module(&chain, slot));
             let active = row.map_or(name.is_some(), |row| row.active);
             if !active || name.is_none() {
                 if rule.required {
@@ -347,17 +377,12 @@ impl Database {
             }
         }
         let mut limits: Vec<&ModuleCountLimit> = equipment.module_count_limits.iter().collect();
-        let mut at = self.next(
-            self.get(&equipment.name)
-                .ok_or("equipment content identity is absent")?,
-        );
-        while let Some(index) = at {
+        for &index in &chain[1..] {
             for limit in &self.equipment[index].module_count_limits {
                 if !limits.iter().any(|held| held.key == limit.key) {
                     limits.push(limit);
                 }
             }
-            at = self.next(index);
         }
         if limits.is_empty() {
             return Ok(result);

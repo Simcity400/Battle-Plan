@@ -356,7 +356,18 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         national_focus::NationalFocus::KEY
         | focus_artwork::FocusArtwork::KEY
         | crate::prepared_focus::FocusArt::KEY => {
-            artwork_check(content, artwork::Kind::Focus, findings)
+            // Each database's focuses are checked as they are looked up: in it alone.
+            let national = artwork_check(
+                content,
+                artwork::Kind::Focus(crate::FocusDatabase::National),
+                findings,
+            )?;
+            let continuous = artwork_check(
+                content,
+                artwork::Kind::Focus(crate::FocusDatabase::Continuous),
+                findings,
+            )?;
+            Ok(format!("{national} {continuous}"))
         }
         research::Research::KEY | technology_artwork::TechnologyArtwork::KEY => {
             artwork_check(content, artwork::Kind::Technology, findings)
@@ -1078,7 +1089,10 @@ fn artwork_check(
         let subject = format!(
             "{} {token}",
             match kind {
-                products::artwork::Kind::Focus => "focus",
+                products::artwork::Kind::Focus(crate::FocusDatabase::National) => "focus",
+                products::artwork::Kind::Focus(crate::FocusDatabase::Continuous) => {
+                    "continuous focus"
+                }
                 products::artwork::Kind::Technology => "technology",
             }
         );
@@ -1091,8 +1105,12 @@ fn artwork_check(
         take(catalogue, &subject, findings);
     }
     Ok(match kind {
-        products::artwork::Kind::Focus => format!(
-            "{total} declared items checked; {without_description} missing description localisation keys (descriptions are unavailable)."
+        products::artwork::Kind::Focus(database) => format!(
+            "{total} declared {} checked; {without_description} missing description localisation keys (descriptions are unavailable).",
+            match database {
+                crate::FocusDatabase::National => "national focuses",
+                crate::FocusDatabase::Continuous => "continuous focuses",
+            }
         ),
         products::artwork::Kind::Technology => {
             format!("{total} declared technologies checked (text and icons).")

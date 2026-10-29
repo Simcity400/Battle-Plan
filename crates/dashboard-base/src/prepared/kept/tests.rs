@@ -2,6 +2,47 @@ use super::*;
 use std::cell::Cell;
 
 #[test]
+fn observed_hours_count_their_frame_and_change_facts_inline_once() {
+    use crate::prepared::prepass::HeldBytes;
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let (mut encoder, mut decoder) = (FrameEncoder::new(), FrameDecoder::new());
+    let mut tracker = FrameChangeTracker::new();
+    let mut hours = Vec::with_capacity(8);
+    for hour in 100..106 {
+        let wire = encoder
+            .encode(crate::test_fixtures::scale_frame(1, hour, 50), hour == 100)
+            .unwrap();
+        let frame = decoder.advance(&wire).unwrap().clone();
+        let changes = tracker.observe_updates(&frame, Arc::new(wire), format);
+        hours.push(Hour::Observed { frame, changes });
+    }
+    push_quiet(&mut hours, 106, 120);
+    // The slots already hold each frame and its facts; beyond them, views and updates once.
+    let mut owned = HeldBytes::default();
+    owned.add(hours.capacity() * size_of::<Hour>());
+    let mut recorded = 0;
+    for hour in &hours {
+        if let Hour::Observed { frame, changes } = hour {
+            for view in &frame.tables {
+                owned.view(view);
+            }
+            if let Some(updates) = changes.recorded() {
+                owned.heap(updates);
+                recorded += 1;
+            }
+        }
+    }
+    assert_eq!(recorded, 5, "every hour after the first continues the one before");
+    let countries = |at: usize| match &hours[at] {
+        Hour::Observed { frame, .. } => &frame.tables[TableId::Countries.index()],
+        Hour::Quiet { .. } => unreachable!(),
+    };
+    assert!(SharedView::ptr_eq(countries(0), countries(5)));
+    assert_eq!(hours_bytes(&hours), owned.total());
+}
+
+#[test]
 fn carried_reductions_visit_no_rows_and_keep_each_supplying_date() {
     let source = crate::test_fixtures::scale_frame(1, 100, 32);
     let visits = Cell::new(0);

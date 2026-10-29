@@ -98,7 +98,7 @@ fn research_categories_and_trait_conditions_are_retained_and_inherited() {
 }
 
 fn catalog(input: &[u8]) -> Catalog {
-    let (rows, warnings) = parse(input, &KeyNames::default()).unwrap();
+    let (rows, warnings) = parse(input, &KeyNames::default(), &mut BTreeSet::new()).unwrap();
     let mut result = Catalog {
         warnings,
         ..Default::default()
@@ -150,6 +150,8 @@ fn mio_trait_names_follow_includes_overrides_and_first_match() {
     );
 }
 
+/// The include pass copies an include as it stands when visited; a repeated
+/// token is a duplicate database id whose body is skipped.
 #[test]
 fn mio_trait_include_pass_is_once_in_first_creation_order() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -158,27 +160,64 @@ fn mio_trait_include_pass_is_once_in_first_creation_order() {
         br#"
         child={include=middle}
         middle={include=base}
-        base={trait={token=obsolete name=OLD}}
-        BASE={trait={token=active name=NEW}}
+        base={initial_trait={name=FIRST_INITIAL} trait={token=kept name=OLD}}
+        BASE={initial_trait={name=SKIPPED_INITIAL} trait={token=skipped name=NEW}}
         after={include=middle}
     "#,
     );
-    assert!(db.trait_definition("child", "active").unwrap().is_none());
-    assert_eq!(
-        db.trait_definition("middle", "active")
-            .unwrap()
-            .unwrap()
-            .name,
-        "NEW"
+    assert!(db.trait_definition("child", "kept").unwrap().is_none());
+    assert!(db.tree("child").unwrap().unwrap().initial.is_none());
+    for organisation in ["middle", "after", "base"] {
+        assert_eq!(
+            db.trait_definition(organisation, "kept")
+                .unwrap()
+                .unwrap()
+                .name,
+            "OLD",
+            "{organisation}"
+        );
+        assert!(
+            db.trait_definition(organisation, "skipped")
+                .unwrap()
+                .is_none(),
+            "{organisation}"
+        );
+        assert_eq!(
+            db.tree(organisation).unwrap().unwrap().initial.unwrap().name,
+            "FIRST_INITIAL",
+            "{organisation}"
+        );
+    }
+    assert!(
+        db.warnings
+            .iter()
+            .any(|why| why.contains("MIO BASE at line") && why.contains("duplicate definition skipped"))
     );
-    assert_eq!(
-        db.trait_definition("after", "active")
-            .unwrap()
-            .unwrap()
-            .name,
-        "NEW"
-    );
-    assert!(db.trait_definition("base", "obsolete").unwrap().is_none());
+}
+
+/// A later file's definition of a token is a duplicate too.
+#[test]
+fn a_later_file_cannot_redefine_an_organisation() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut seen = BTreeSet::new();
+    let mut db = Catalog::default();
+    for input in [
+        &b"org={trait={token=first name=FIRST}}"[..],
+        b"ORG={trait={token=second name=SECOND}} other={include=org}",
+    ] {
+        let (rows, warnings) = parse(input, &KeyNames::default(), &mut seen).unwrap();
+        db.warnings.extend(warnings);
+        for row in rows {
+            db.insert(row);
+        }
+    }
+    db.finalize();
+    for organisation in ["org", "other"] {
+        assert!(db.trait_definition(organisation, "first").unwrap().is_some());
+        assert!(db.trait_definition(organisation, "second").unwrap().is_none());
+    }
+    assert!(db.warnings.iter().any(|why| why.contains("duplicate definition skipped")));
 }
 
 #[test]
@@ -259,7 +298,7 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
         b"custom={trait={token=bad position={x=1 y=2 z=3}}}",
     ] {
         assert!(
-            parse(input, &KeyNames::default())
+            parse(input, &KeyNames::default(), &mut BTreeSet::new())
                 .unwrap_err()
                 .to_string()
                 .contains("integer-point token recovery")
@@ -268,6 +307,7 @@ fn mio_trait_readers_consume_names_modifiers_raw_lists_and_integer_points() {
     let (rows, _) = parse(
         b"custom={trait={token=bad equipment_bonus={unknown={@name=LEAK}}} trait={token=next name=@name}}",
         &KeyNames::default(),
+        &mut BTreeSet::new(),
     ).unwrap();
     assert!(rows[0].traits[0].bonuses.is_empty());
     assert_eq!(rows[0].traits[1].name, "@name"); // Unknown block cannot leak its variable.

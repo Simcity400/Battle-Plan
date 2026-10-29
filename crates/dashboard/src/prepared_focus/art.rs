@@ -6,6 +6,7 @@
 //! Results that read no recorded state are kept per content binding, within
 //! a byte budget, least recently used evicted first.
 use super::*;
+use crate::FocusDatabase;
 use crate::products::{Product, validate_tag};
 use replay_frame::frame::SharedView;
 use std::sync::{Arc, PoisonError};
@@ -18,7 +19,8 @@ const MAX_TOKENS: usize = PAGE_ROWS;
 /// only: evicted art is evaluated again, never refused or shortened.
 const KEPT_ART_BYTES: usize = 64 * 1024 * 1024;
 
-type ArtKey = (Presentation, String, String);
+/// The database, presentation, token and (for country-specific art) tag.
+type ArtKey = (FocusDatabase, Presentation, String, String);
 
 /// Art that reads no recorded state, kept within a byte budget: the least
 /// recently used goes first.
@@ -63,7 +65,7 @@ impl Kept {
             ArtKey,
             (crate::catalogue::Drawn<artwork::ResolvedArt>, u64, usize),
         )>() + node::<(u64, ArtKey)>()
-            + 2 * (key.1.capacity() + key.2.capacity())
+            + 2 * (key.2.capacity() + key.3.capacity())
             + art.token.capacity()
             + text(&art.name)
             + text(&art.description)
@@ -128,12 +130,34 @@ struct Binding {
     result: Result<(), crate::catalogue::ContentError>,
 }
 
+/// Each focus database's context: a token is looked up in its own alone.
+struct Contexts {
+    national: artwork::Context,
+    continuous: artwork::Context,
+}
+
+impl Contexts {
+    fn of(&self, database: FocusDatabase) -> &artwork::Context {
+        match database {
+            FocusDatabase::National => &self.national,
+            FocusDatabase::Continuous => &self.continuous,
+        }
+    }
+
+    fn of_mut(&mut self, database: FocusDatabase) -> &mut artwork::Context {
+        match database {
+            FocusDatabase::National => &mut self.national,
+            FocusDatabase::Continuous => &mut self.continuous,
+        }
+    }
+}
+
 /// Focus tree presentation over one content binding. Results that read no
 /// recorded state are kept; the others are evaluated on each hour's frame.
 #[derive(Default)]
 pub(crate) struct Evaluator {
     binding: Option<Binding>,
-    context: Option<artwork::Context>,
+    contexts: Option<Contexts>,
     catalogue: Option<Arc<crate::catalogue::Catalogue>>,
     warnings: Vec<String>,
     kept: Kept,
@@ -146,18 +170,25 @@ impl Evaluator {
             bound.source == *source.key() && crate::catalogue::binding_matches(&bound.key, content)
         }) {
             self.binding = None;
-            self.context = None;
+            self.contexts = None;
             self.catalogue = None;
             self.warnings.clear();
             self.kept = Kept::default();
             let result = (|| {
                 let catalogue = crate::catalogue::catalogue(source, content)?;
                 self.catalogue = Some(Arc::clone(&catalogue));
-                let context = artwork::Context::load(catalogue, artwork::Kind::Focus)?;
-                self.warnings = context.standing_warnings();
+                let load = |database| {
+                    artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus(database))
+                };
+                let contexts = Contexts {
+                    national: load(FocusDatabase::National)?,
+                    continuous: load(FocusDatabase::Continuous)?,
+                };
+                // Both databases share one content reading and its warnings.
+                self.warnings = contexts.national.standing_warnings();
                 self.warnings.sort();
                 self.warnings.dedup();
-                self.context = Some(context);
+                self.contexts = Some(contexts);
                 Ok(())
             })();
             if result
@@ -181,26 +212,45 @@ impl Evaluator {
             .map_err(crate::catalogue::ContentError::error)
     }
 
-    /// Whether any of `tokens` reads recorded state for `tag` in `mode`.
-    fn needs_frame(&self, tag: &str, tokens: &[String], mode: Presentation) -> bool {
-        let context = self.context.as_ref().expect("focus context loaded");
+    /// The loaded context of `database`.
+    fn context(&self, database: FocusDatabase) -> &artwork::Context {
+        self.contexts
+            .as_ref()
+            .expect("focus contexts loaded")
+            .of(database)
+    }
+
+    /// Whether any of `tokens` of `database` reads recorded state for `tag` in `mode`.
+    fn needs_frame(
+        &self,
+        database: FocusDatabase,
+        tag: &str,
+        tokens: &[String],
+        mode: Presentation,
+    ) -> bool {
+        let context = self.context(database);
         tokens
             .iter()
             .any(|token| context.requested_tree_focus_needs_frame(token, tag, mode))
     }
 
-    /// `tokens`' presentation for `tag` on `inputs`, in token order, as the
-    /// focus tree shows it.
+    /// `tokens`' presentation for `tag` on `inputs`, each looked up in
+    /// `database`, in token order, as the focus tree shows it.
     fn present(
         &mut self,
         inputs: &artwork::FocusFrame<'_>,
+        database: FocusDatabase,
         tag: &str,
         tokens: &[String],
         mode: Presentation,
         cancelled: &AtomicBool,
     ) -> io::Result<Vec<PresentedFocus>> {
         check_cancel(cancelled)?;
-        let context = self.context.as_mut().expect("focus context loaded");
+        let context = self
+            .contexts
+            .as_mut()
+            .expect("focus contexts loaded")
+            .of_mut(database);
         let mut requests = Vec::new();
         // Kept art is taken now, so keeping new art cannot evict a row this
         // request counts on.
@@ -212,6 +262,7 @@ impl Evaluator {
                 Presentation::Display | Presentation::Icons | Presentation::Full
             ) && context.focus_country_icon_override(token, tag);
             let key = (
+                database,
                 mode,
                 token.clone(),
                 if scoped {
@@ -300,9 +351,10 @@ fn recorded(source: &Source, branch: u64, hour: i32) -> bool {
         .any(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
 }
 
-/// `tokens`' focus tree art for `tag` at `hour`, as hourly preparation
-/// presented it at that hour, in token order. A content binding that failed,
-/// or an evaluation that failed, is the reply's named, counted failure.
+/// `tokens`' focus tree art for `tag` at `hour`, each looked up in
+/// `database`, as hourly preparation presented it at that hour, in token
+/// order. A content binding that failed, or an evaluation that failed, is the
+/// reply's named, counted failure.
 #[allow(clippy::too_many_arguments)]
 pub fn art_at(
     source: &Source,
@@ -310,6 +362,7 @@ pub fn art_at(
     branch: u64,
     tag: &str,
     hour: i32,
+    database: FocusDatabase,
     tokens: &[String],
     mode: Presentation,
     cancelled: &AtomicBool,
@@ -334,7 +387,7 @@ pub fn art_at(
                 Err(error) => return Ok(failed(error.to_string(), Vec::new())),
                 Ok(()) => {}
             }
-            if frame.is_some() || !evaluator.needs_frame(tag, tokens, mode) {
+            if frame.is_some() || !evaluator.needs_frame(database, tag, tokens, mode) {
                 let unread;
                 let decoded = match &frame {
                     Some(frame) => frame,
@@ -351,7 +404,7 @@ pub fn art_at(
                 );
                 let inputs = artwork::FocusFrame::new(decoded, &catalogue);
                 let warnings = evaluator.warnings.clone();
-                return match evaluator.present(&inputs, tag, tokens, mode, cancelled) {
+                return match evaluator.present(&inputs, database, tag, tokens, mode, cancelled) {
                     Ok(art) => Ok(FocusArtReply {
                         art,
                         warnings,
@@ -371,11 +424,13 @@ pub fn art_at(
     }
 }
 
-/// The content's text for each of `tokens`, in request order (repeats
-/// included): titles and descriptions that read no recorded state.
+/// The content's text for each of `tokens`, each looked up in `database`, in
+/// request order (repeats included): titles and descriptions that read no
+/// recorded state.
 pub fn static_text(
     source: &Source,
     content: Option<&ContentOptions>,
+    database: FocusDatabase,
     tokens: &[String],
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Artwork>> {
@@ -388,7 +443,7 @@ pub fn static_text(
     let state = source.state::<ArtState>();
     let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
     state.0.configure(source, content)?;
-    let context = state.0.context.as_ref().expect("focus context loaded");
+    let context = state.0.context(database);
     let unique: BTreeSet<&str> = tokens.iter().map(String::as_str).collect();
     let (items, _) = context.text_catalogue(unique, cancelled)?;
     let by_token: BTreeMap<String, Artwork> = items
@@ -429,7 +484,9 @@ pub(crate) fn event_art(
     check_cancel(cancelled)?;
     let state = source.state::<EventArtState>();
     let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-    let art = match artwork::ensure(&mut state.0, source, content, artwork::Kind::Focus) {
+    // Completions are of national focuses.
+    let national = artwork::Kind::Focus(FocusDatabase::National);
+    let art = match artwork::ensure(&mut state.0, source, content, national) {
         Ok(art) => art,
         Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
         Err(error) => return Ok(Err(error.to_string())),
@@ -530,6 +587,8 @@ pub struct FocusArtParams {
     pub branch_id: String,
     pub tag: String,
     pub hour: i32,
+    /// The database every token is looked up in.
+    pub database: FocusDatabase,
     /// Distinct tokens in ascending order, at most one page.
     pub tokens: Vec<String>,
     pub mode: FocusArtMode,
@@ -611,6 +670,7 @@ impl Product for FocusArt {
             branch,
             &params.tag,
             params.hour,
+            params.database,
             &params.tokens,
             params.mode.presentation(),
             cancelled,

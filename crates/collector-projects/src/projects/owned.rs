@@ -556,8 +556,17 @@ fn copy_census(
         log.overflowed = true;
         return None;
     }
+    let mut reserved = None;
     for slot in 1..countries.count {
-        match copy_slot(log, memory, vtable, &countries, &links, slot) {
+        match copy_slot(
+            log,
+            memory,
+            vtable,
+            &countries,
+            &links,
+            slot,
+            Some(&mut reserved),
+        ) {
             Some(Some(entry)) => {
                 if census.len() == census.capacity() {
                     log.overflowed = true;
@@ -572,9 +581,10 @@ fn copy_census(
     Some((links, countries, vtable, countries.count))
 }
 
-/// Mirror of `Reader::read_at`. A repeated link or pointer read of a key this
-/// slot already staged is not staged again. `None` ends the census; an inner
-/// `None` is a null slot, skipped without further reads.
+/// Mirror of `Reader::at` in the census, whose `reserved` is the slot-zero object it
+/// authenticated, and of `Reader::read_at` without one. A repeated link or pointer read of a
+/// key this slot already staged is not staged again. `None` ends the census; an inner `None`
+/// is a null slot or an alias of the reserved object, skipped.
 fn copy_slot(
     log: &mut RawLog<2>,
     memory: &impl Memory,
@@ -582,6 +592,7 @@ fn copy_slot(
     countries: &Array,
     links: &Array,
     slot: u32,
+    reserved: Option<&mut Option<usize>>,
 ) -> Option<Option<CensusEntry>> {
     let pointer_at = |slot: u32| {
         (slot as usize)
@@ -595,6 +606,12 @@ fn copy_slot(
     else {
         return Some(None);
     };
+    if reserved
+        .as_deref()
+        .is_some_and(|root| *root == Some(pointer))
+    {
+        return Some(None);
+    }
     let Some(id_address) = pointer.checked_add(ccountry::ID) else {
         span(log, memory, Some(pointer), 8, M_ALL)?;
         return None;
@@ -606,6 +623,26 @@ fn copy_slot(
         return None;
     }
     let id = pool_u32(log, starts[1]);
+    if id == 0
+        && let Some(reserved) = reserved
+        && reserved.is_none()
+    {
+        // `Reader::at` authenticates slot zero once, and skips a slot holding that object.
+        let root_start = span(log, memory, pointer_at(0), 8, M_ALL)?;
+        let root = usize::try_from(pool_u64(log, root_start))
+            .ok()
+            .filter(|&root| root != 0)?;
+        let root_vtable = span(log, memory, Some(root), 8, M_ALL)?;
+        if pool_u64(log, root_vtable) != vtable {
+            return None;
+        }
+        let root_id = span(log, memory, root.checked_add(ccountry::ID), 4, M_ALL)?;
+        if pool_u32(log, root_id) != 0 || root != pointer {
+            return None;
+        }
+        *reserved = Some(root);
+        return Some(None);
+    }
     let Some(Some(canonical)) = copy_link(log, memory, links, countries.count, id) else {
         return None;
     };
@@ -798,6 +835,7 @@ fn copy_resolve(
             census.countries,
             census.links,
             slot,
+            None,
         )??,
         None => return None,
     };

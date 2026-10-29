@@ -165,7 +165,10 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   if (!data || !transfers) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading territory transfers…" />;
   if (pinned && selectionMissing) return failure ?? <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
   if (scope === 'conference' && !conference) return failure ?? <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
-  if (filtered && !match.ready) return <>{failure}<WidgetState kind="loading" label="Loading territory transfers…" /></>;
+  // Chosen countries need the country groups' identity history: a failed read says so and can be retried.
+  if (filtered && !match.ready) return <>{failure}{groups.error && !groups.data
+    ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />
+    : <WidgetState kind="loading" label="Loading territory transfers…" />}</>;
 
   const [gapFrom, until] = transferGapWindow(conference, scoped, track.branch.firstHour, moment);
   const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));

@@ -126,7 +126,7 @@ pub fn resource_map(
     );
     rights(rows, saved, links, names, report)?;
     routes(rows, saved, links, hour, report)?;
-    clients(rows, economy, threshold, report)?;
+    clients(rows, economy, links, threshold, report)?;
     market_route_endpoints(rows, saved, economy, links, hour, report)?;
     regional(rows, saved, countries, links, threshold, report)?;
     report.limitation(
@@ -598,11 +598,13 @@ fn regional(
     Ok(())
 }
 
-/// A convoy client the save writes: its category, its two efficiency factors and its
-/// convoy counts.
+/// A convoy client the save writes: its category, its owner and other countries, its two
+/// efficiency factors and its convoy counts.
 struct SavedClient<'a> {
     category: u8,
     owner_ordinal: Option<u32>,
+    /// An import's or lend-lease's saved owner and other; markets' are checked with routes.
+    endpoints: Option<[Option<&'a [u8]>; 2]>,
     factors: [&'a installed_content_save::Decimal; 2],
     convoys: ConvoyCounts,
 }
@@ -611,11 +613,13 @@ struct SavedClient<'a> {
 /// receiver's import), each lend-lease exchange and each market contract's `convoy_client`.
 fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClient<'_>>> {
     use engine_resources::{resource_map::IMPORT, resource_map::LEND_LEASE, resource_map::MARKET};
-    let exchanges = economy.countries.values().flat_map(|country| {
-        let exports = country.exports.iter().flatten().map(|exchange| {
+    let exchanges = economy.countries.iter().flat_map(|(tag, country)| {
+        // An import's owner is the export's receiver and its other the exporter.
+        let exports = country.exports.iter().flatten().map(move |exchange| {
             (
                 exchange.id,
                 IMPORT,
+                Some([exchange.receiver.as_deref(), Some(tag.as_slice())]),
                 [
                     &exchange.efficiency,
                     &exchange.efficiency_due_to_lost_convoys,
@@ -630,10 +634,11 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
                 .iter()
                 .flatten()
                 .enumerate()
-                .map(|(ordinal, exchange)| {
+                .map(move |(ordinal, exchange)| {
                     (
                         exchange.id,
                         LEND_LEASE,
+                        Some([Some(tag.as_slice()), Some(exchange.receiver.as_slice())]),
                         [
                             &exchange.efficiency,
                             &exchange.efficiency_due_to_lost_convoys,
@@ -649,17 +654,19 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
         (
             client.id,
             MARKET,
+            None,
             [&client.efficiency, &client.efficiency_due_to_lost_convoys],
             client.convoys,
             None,
         )
     });
     let mut clients = BTreeMap::new();
-    for (id, category, factors, convoys, owner_ordinal) in exchanges.chain(market) {
+    for (id, category, endpoints, factors, convoys, owner_ordinal) in exchanges.chain(market) {
         let handle = (id >> 32) as u32;
         let client = SavedClient {
             category,
             owner_ordinal,
+            endpoints,
             factors,
             convoys,
         };
@@ -673,10 +680,11 @@ fn saved_clients(economy: &economy::Pack) -> io::Result<BTreeMap<u32, SavedClien
 }
 
 /// Every recorded convoy client but supply transfers against the saved clients, by handle
-/// id: its category, line colour and convoy counts.
+/// id: its category, an import's or lend-lease's countries, line colour and convoy counts.
 fn clients(
     rows: &ResourceMapRows<'_>,
     economy: &economy::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
     threshold: i64,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -724,6 +732,17 @@ fn clients(
                 row.owner_ordinal,
                 Some(ordinal),
             );
+        }
+        if let Some([owner, other]) = client.endpoints {
+            for (name, country, saved) in [("owner", row.owner, owner), ("other", row.other, other)]
+            {
+                value(
+                    report,
+                    &format!("{subject}.{name}"),
+                    country_tag(country, links)?,
+                    saved,
+                );
+            }
         }
         let [a, b] = client.factors;
         value(
@@ -840,7 +859,7 @@ mod client_tests {
                 resources: &[],
             };
             let mut report = Report::default();
-            clients(&rows, &economy, 80_000, &mut report).unwrap();
+            clients(&rows, &economy, &BTreeMap::new(), 80_000, &mut report).unwrap();
             report
         };
         assert!(run(std::slice::from_ref(&row)).differences.is_empty());

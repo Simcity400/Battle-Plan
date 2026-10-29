@@ -82,6 +82,43 @@ test('trade drill hovers show a positive more count and keep the trading-day uni
   } finally { delete host.__tradeDrillPresentation; await vite.close(); }
 });
 
+test('contributor totals wait while their prefixes are prepared, and a gap hides only the current amount', async () => {
+  const state = { chart: undefined as TimeChartProps | undefined };
+  const host = globalThis as typeof globalThis & { __tradeDrillPresentation?: typeof state }; host.__tradeDrillPresentation = state;
+  const replacements: Record<string, string> = {
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/countryLooks.ts': 'export const lookHour = (_branch, hour) => ({ hour });',
+    '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
+    '/charts/drill/DrillParts.tsx': 'export default props => `Total ${props.totalRow.value}`;',
+    '/charts/TimeChart.tsx': 'export default props => { globalThis.__tradeDrillPresentation.chart = props; return null; };',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'trade-drill-cumulative', enforce: 'pre', transform(_code, id) {
+      return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1];
+    } }] });
+  try {
+    const { default: Component } = await vite.ssrLoadModule('/ui/src/widgets/trade-flows/TradeDrillView.tsx');
+    // Recorded 0–20 and 31–71: hours 21–30 are a gap.
+    const trade = decodeTrade({ ...reply(2), known: [{ firstHour: 0, lastHour: 20 }, { firstHour: 31, lastHour: 71 }] });
+    const track = { id: 'main', source: { id: 'source', revision: '1' }, branch: { id: 'b', firstHour: 0, lastHour: 71, gaps: [] } } as unknown as BoundTrack;
+    const props = (measure: string, flows = trade.flows) => ({ flows, trade, track, runtime: { client: {}, clock: { getSnapshot: () => ({ hoursPerSecond: 0 }) } },
+      measure, from: 0, hour: 25, extent: [0, 71], playhead: null, known: trade.reply.known, colours: new Map(),
+      tokens: { muted: '#888888' }, active: true, onPick() {}, onContextMenu() {} }) as unknown as ComponentProps<typeof TradeDrill>;
+    const tip = () => state.chart!.tooltip!(25, undefined as never, [])!;
+    // Totals so far still add the recorded hours before the gap.
+    assert.match(renderToStaticMarkup(createElement(Component, props('total'))), /Total (?!Not recorded)/);
+    assert.notEqual(tip().rows[0]?.value, 'Not recorded');
+    renderToStaticMarkup(createElement(Component, props('current')));
+    assert.equal(tip().rows[0]?.value, 'Not recorded', 'only the current amount is unrecorded in a gap');
+    // While the cumulative prefixes are prepared, nothing is summed and nothing throws.
+    const pending = trade.flows.map(flow => ({ ...flow, prepared: { prefixes: {}, scoped: false, cumulativePending: true } }));
+    for (const measure of ['total', 'average']) {
+      assert.match(renderToStaticMarkup(createElement(Component, props(measure, pending))), /Trade totals and averages are still being prepared\./);
+      assert.equal(tip().rows[0]?.value, 'Still being prepared');
+    }
+  } finally { delete host.__tradeDrillPresentation; await vite.close(); }
+});
+
 test('an Other node and ribbon expose all 5,000 native contributors beyond the quick tooltip', () => {
   const data = decodeTrade(reply(5000));
   const diagram = buildDiagram(data.flows, 'current', 0, 5, 2);

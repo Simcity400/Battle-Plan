@@ -27,7 +27,7 @@ test('missing is the summed shortfall as sent, never held minus needed, and stoc
 
 test('unclassified holdings keep their own named bucket', () => {
   const unclassified = type({ archetype: null, name: null });
-  assert.equal(typeKey(unclassified), 'unclassified');
+  assert.notEqual(typeKey(unclassified), typeKey(type({ archetype: 'unclassified' })), 'a mod archetype named unclassified is its own type');
   assert.equal(typeName(unclassified), 'Unclassified equipment');
   assert.equal(validateDivisionEquipment(reply([unclassified])).types.length, 1);
 });

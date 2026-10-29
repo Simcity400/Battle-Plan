@@ -851,7 +851,10 @@ mod tests {
         let (source, root) = file_source(replay(vec![frame(1, 0, None)]));
         let flag = AtomicBool::new(false);
         let block = &source.replay_ref().index[0];
-        let cache = scope(&source, "test-recent", None);
+        let mut cache = scope(&source, "test-recent", None);
+        // Room for every answer asked, as a recording of more blocks has: distinct
+        // requests may evict each other, and this is about which one is offered.
+        cache.blocks = 8;
         let other = scope(&source, "test-recent-other", None);
         let ask = |cache: &Scope, branch: u64, hour: u32, lineage: &str, expected: Option<u32>| {
             *cache

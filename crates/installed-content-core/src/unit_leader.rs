@@ -38,7 +38,7 @@ mod sub_units;
 
 pub use division_experience::{DivisionExperience, DivisionExperienceProgress};
 pub use skills::{Component, Skills};
-pub use sub_units::{SubUnit, SubUnits, sub_units};
+pub use sub_units::{SubUnit, SubUnits, sub_unit_files, sub_units};
 
 #[cfg(test)]
 use sub_units::SUB_UNIT_DIRECTORIES;

@@ -249,6 +249,32 @@ pub fn programme_detail(
     companions::programme_detail(supplying, ordinal, reference, cat)
 }
 
+/// The supplying read's tables with those a scripted project name reads.
+pub fn programme_text_tables() -> Vec<TableId> {
+    let mut tables = PROGRAMME_TABLES.to_vec();
+    tables.extend_from_slice(crate::scripted_text::TABLES);
+    tables.sort_unstable();
+    tables.dedup();
+    tables
+}
+
+/// Whether any faction's programme in `frame` names a scripted project at the supplying read `details`.
+pub fn programmes_need_environment(
+    frame: &DecodedFrame,
+    details: &DecodedFrame,
+    cat: &catalogue::Catalogue,
+) -> bool {
+    frame
+        .complete::<tables::FactionPrograms>()
+        .is_ok_and(|rows| {
+            let factions: std::collections::BTreeSet<u64> =
+                rows.iter().map(|row| row.faction).collect();
+            factions
+                .into_iter()
+                .any(|faction| companions::programmes_need_environment(frame, details, faction, cat))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

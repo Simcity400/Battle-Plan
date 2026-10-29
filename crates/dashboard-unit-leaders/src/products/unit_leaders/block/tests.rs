@@ -118,61 +118,68 @@ fn bound_content_keeps_variables_and_only_the_tag_resolvers_counter_field() {
 #[test]
 fn kept_hours_hold_the_rows_they_change_not_a_copy_of_each_table() {
     use dashboard_base::prepared::prepass::HeldBytes;
-    // One leader of 256 gains experience every hour, so every hour is kept.
-    let frames: Vec<_> = (100..=119)
-        .map(|hour| {
-            let mut frame = frame(hour, 256);
-            if let replay_frame::frame::TableView::Complete(TableRows::UnitLeaders(rows)) =
-                &mut *frame.tables[TableId::UnitLeaders.index()]
-            {
-                rows[0].experience = i64::from(hour);
-            }
-            frame
-        })
-        .collect();
-    let table = {
-        let mut held = HeldBytes::default();
-        held.view(&frames[0].tables[TableId::UnitLeaders.index()]);
-        held.total()
-    };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let selection = selected(false);
-    let mut extract = start(replay.format, selection);
-    let mut tracker = FrameChangeTracker::new();
-    let mut held = Vec::new();
-    replay
-        .read_block_alone(
-            &replay.index[0],
-            &selection.tables,
-            |_, frame| {
-                extract.observe(&replay, frame, &tracker.observe(frame, replay.format))?;
-                held.push(extract.bytes());
-                Ok(())
-            },
-            || Ok(()),
-        )
-        .unwrap();
-    // From the first kept hour, whose reduced tables differ from the whole
-    // first hour's once.
-    let grown = held.last().unwrap() - held[1];
-    assert!(
-        grown < 18 * table / 8,
-        "18 kept hours grew {grown} bytes; the leaders table is {table}"
-    );
-    let facts = extract.finish().unwrap().downcast::<BlockFacts>().unwrap();
-    assert!(
-        facts
-            .hours
-            .iter()
-            .skip(1)
-            .all(|hour| matches!(hour, Hour::Kept { .. }))
-    );
-    for (kept, frame) in facts.kept.into_frames().zip(&frames) {
-        assert_eq!(
-            kept.unwrap().complete::<tables::UnitLeaders>().unwrap(),
-            frame.complete::<tables::UnitLeaders>().unwrap()
+    // One leader gains experience every hour, so every hour is kept. Returns
+    // what 18 kept hours added and the size of the leaders table.
+    let kept = |leaders: u32| {
+        let frames: Vec<_> = (100..=119)
+            .map(|hour| {
+                let mut frame = frame(hour, leaders);
+                if let replay_frame::frame::TableView::Complete(TableRows::UnitLeaders(rows)) =
+                    &mut *frame.tables[TableId::UnitLeaders.index()]
+                {
+                    rows[0].experience = i64::from(hour);
+                }
+                frame
+            })
+            .collect();
+        let table = {
+            let mut held = HeldBytes::default();
+            held.view(&frames[0].tables[TableId::UnitLeaders.index()]);
+            held.total()
+        };
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
+        let selection = selected(false);
+        let mut extract = start(replay.format, selection);
+        let mut tracker = FrameChangeTracker::new();
+        let mut held = Vec::new();
+        replay
+            .read_block_alone(
+                &replay.index[0],
+                &selection.tables,
+                |_, frame| {
+                    extract.observe(&replay, frame, &tracker.observe(frame, replay.format))?;
+                    held.push(extract.bytes());
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        let facts = extract.finish().unwrap().downcast::<BlockFacts>().unwrap();
+        assert!(
+            facts
+                .hours
+                .iter()
+                .skip(1)
+                .all(|hour| matches!(hour, Hour::Kept { .. }))
         );
-    }
+        for (kept, frame) in facts.kept.into_frames().zip(&frames) {
+            assert_eq!(
+                kept.unwrap().complete::<tables::UnitLeaders>().unwrap(),
+                frame.complete::<tables::UnitLeaders>().unwrap()
+            );
+        }
+        // From the first kept hour, whose reduced tables differ from the
+        // whole first hour's once.
+        (held.last().unwrap() - held[1], table)
+    };
+    // A kept hour's read timing and change facts grow with the format's tables, not the leaders.
+    let (few, few_table) = kept(256);
+    let (many, many_table) = kept(1_500);
+    assert!(
+        many.abs_diff(few) < (many_table - few_table) / 8,
+        "18 kept hours grew {few} bytes with a {few_table}-byte leaders table \
+         and {many} bytes with a {many_table}-byte one"
+    );
 }
 
 #[test]
@@ -283,6 +290,16 @@ fn overlord_visibility_folds_fast_and_matches_whole_frame_payloads() {
                     original_tag_buckets: Recorded::Value(Some(vec![vec![], vec![], vec![]])),
                     ..Default::default()
                 }]),
+                // Resolving `tag = BBB` reads whether BBB owns a state.
+                TableRows::CountryCounterInputs(
+                    [100_000, 100_001]
+                        .map(|country| CountryCounterInputRow {
+                            country,
+                            owned_state_count: 1,
+                            ..Default::default()
+                        })
+                        .into(),
+                ),
                 TableRows::ScriptVariables(
                     [100_000, 100_001]
                         .map(|scope_id| ScriptVariablesRow {

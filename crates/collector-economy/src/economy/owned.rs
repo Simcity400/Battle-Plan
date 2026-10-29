@@ -1,4 +1,5 @@
 use super::*;
+use crate::raw::CountrySlots;
 
 /// Acquire one owned payload and report its per-table costs.
 #[cfg(any(test, feature = "test-support"))]
@@ -664,32 +665,6 @@ fn copy_economy_string(log: &mut RawLog<N>, memory: &impl Memory, string: usize,
     let _ = espan(log, memory, source.checked_add(len), 1, mask);
 }
 
-/// Authenticated country census shared by fuel, experience, hubs, disrupted,
-/// foreign, resources, exchanges and purchases. Records the exact read set of
-/// `ccountry::Reader::new` plus one full `read_at` per slot. Returns the
-/// canonical country list (slot, pointer, id) for per-country detail copies.
-fn copy_economy_link(
-    log: &mut RawLog<N>,
-    memory: &impl Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<Option<u32>> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = espan(log, memory, links.data.checked_add(offset), 4, M_E_CENSUS)?;
-    let slot = e_pool_u32(log, start);
-    if slot == 0 {
-        return Some(None);
-    }
-    if slot >= countries {
-        return None;
-    }
-    Some(Some(slot))
-}
-
 /// One structural copy pass over the active raw tables. The hourly supply
 /// block is independent of the daily country and market sources.
 #[allow(clippy::collapsible_if)]
@@ -742,9 +717,8 @@ fn copy_economy_rest_pass(
     if countries.count < 2 || links.count == 0 {
         return;
     }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
+    let Some(mut slots) = CountrySlots::new(countries, links, base) else {
+        return;
     };
     // Market manager shared by purchases.
     let market = game_state
@@ -778,60 +752,13 @@ fn copy_economy_rest_pass(
     }
     // Per-country batched gathers: fuel, experience, resources, market status,
     // supply systems with hub/disrupted/foreign details.
-    for slot in 1..countries.count {
-        let pointer_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let Some(pointer_start) = espan(log, memory, pointer_addr, 8, M_E_CENSUS) else {
-            return;
+    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
+    for slot in 1..slots.count() {
+        let pointer = match slots.take(log, memory, slot, M_E_CENSUS) {
+            Some(Some(pointer)) => pointer,
+            Some(None) => continue,
+            None => return,
         };
-        let pointer = match usize::try_from(e_pool_u64(log, pointer_start))
-            .ok()
-            .filter(|&p| p != 0)
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let Some(vtable_start) = espan(log, memory, Some(pointer), 8, M_E_CENSUS) else {
-            return;
-        };
-        let Some(id_start) = espan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            M_E_CENSUS,
-        ) else {
-            return;
-        };
-        if e_pool_u64(log, vtable_start) != country_vtable {
-            return;
-        }
-        let id = e_pool_u32(log, id_start);
-        let canonical = match copy_economy_link(log, memory, &links, countries.count, id) {
-            Some(Some(c)) => c,
-            _ => return,
-        };
-        if copy_economy_link(log, memory, &links, countries.count, slot) != Some(Some(canonical)) {
-            return;
-        }
-        if copy_economy_link(log, memory, &links, countries.count, canonical)
-            != Some(Some(canonical))
-        {
-            return;
-        }
-        let canonical_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|o| countries.data.checked_add(o));
-        let Some(canonical_start) = espan(log, memory, canonical_addr, 8, M_E_CENSUS) else {
-            return;
-        };
-        if e_pool_u64(log, canonical_start) != pointer as u64 {
-            return;
-        }
-        if slot != canonical {
-            continue;
-        }
         // Fuel status block (batched gather): one bulk covers the walk's
         // scattered status reads for both fuel tables, then its consumer
         // entries and history ring.

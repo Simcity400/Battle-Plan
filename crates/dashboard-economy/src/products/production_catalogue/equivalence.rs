@@ -726,6 +726,7 @@ fn churn(hour: i32) -> DecodedFrame {
             literal: b"mio_d".to_vec(),
         });
     }
+    lexical.sort_by_key(|row| row.token);
     set(&mut at, TableRows::LexicalTokens(lexical));
     if hour == 44 {
         unavailable(&mut at, TableId::LexicalTokens);

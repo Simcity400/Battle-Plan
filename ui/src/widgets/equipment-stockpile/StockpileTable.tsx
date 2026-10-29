@@ -41,7 +41,7 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
   const mode = balanceMode(data, hour);
   const player = mode === 'player';
   const groups = useMemo(() => stockGroups(data, 'type', hour, included), [data, hour, included]);
-  const { rows, quiet } = useMemo(() => stockRows(data, groups, hour, mode, count), [data, groups, hour, mode, count]);
+  const { rows, quiet, unrecorded } = useMemo(() => stockRows(data, groups, hour, mode, count), [data, groups, hour, mode, count]);
   const artCoverage = player ? data.balanceHours : data.stockHours;
   const artHour = runAt(artCoverage, hour) ? readAt(player ? data.logisticsReads : data.reads, hour) : null;
   const artwork = useStockpileArtwork(runtime, track, data.tag, artHour, [], active);
@@ -90,5 +90,6 @@ export default function StockpileTable({ data, hour, included, count, setCount, 
           menu={() => read == null ? [] : [jumpItem(runtime, track.id, read)]} />
       </div>}
     {quiet > 0 && <p className="stockpile-empty">{quiet.toLocaleString()} more {quiet === 1 ? 'type' : 'types'}: nothing in stock, being made or needed on {date}.</p>}
+    {unrecorded > 0 && <p className="stockpile-empty">{unrecorded.toLocaleString()} more {unrecorded === 1 ? 'type' : 'types'}: stock, production or need not recorded on {date}.</p>}
   </div>;
 }

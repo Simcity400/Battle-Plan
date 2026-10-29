@@ -751,6 +751,7 @@ fn initiative_adds_the_reconnaissance_define_before_comparing_skills() {
 fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
     let combat = replay_data::rows::LandCombatRow {
         province: 362,
+        attacker_classes: vec![0; 2],
         attackers: vec![1, 2],
         ..Default::default()
     };

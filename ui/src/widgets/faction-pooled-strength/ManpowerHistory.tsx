@@ -34,7 +34,10 @@ export default function ManpowerHistory({ runtime, track, faction, tag, picked, 
   }))], [lines, colour, pending]);
   if (reply.error) return <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />;
   if (!reply.data) return <WidgetState kind="loading" label="Loading manpower history…" />;
-  if (!lines.some(line => line.length)) return <WidgetState kind="unavailable" message="This member’s contribution was not recorded." />;
+  // The picked hour still being prepared proves nothing yet: the history is loading, not unrecorded.
+  if (!lines.some(line => line.length)) return pending?.some(span => span.firstHour <= picked && picked <= span.lastHour)
+    ? <WidgetState kind="loading" label="This range is still being prepared." />
+    : <WidgetState kind="unavailable" message="This member’s contribution was not recorded." />;
   return <div className="pooled-history">
     <TimeChart label={`${name} manpower contribution over time`} extent={[track.branch.firstHour, Math.max(track.branch.firstHour + 1, track.branch.lastHour)]}
       playhead={hour} playback="cursor" branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}

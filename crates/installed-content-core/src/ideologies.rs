@@ -45,24 +45,31 @@ pub struct Ideologies {
 }
 
 impl Ideologies {
-    /// A group by token: None when no file defines it, the gap when a file
-    /// that could define or redefine it stops short.
+    /// A group by token under the lexer's ASCII case fold: None when no file
+    /// defines it, the gap when a file that could define or redefine it stops short.
     pub fn get(&self, token: &str) -> Result<Option<&Ideology>, &Gap> {
-        match self.coverage.unknown(token) {
-            Some(gap) => Err(gap),
-            None => Ok(self.groups.iter().find(|group| group.token == token)),
-        }
-    }
-
-    /// The group a sub-ideology belongs to; any file that stops short could
-    /// declare it.
-    pub fn group_of(&self, sub_ideology: &str) -> Result<Option<&Ideology>, &Gap> {
-        match self.coverage.any_gap() {
+        let token = token.to_ascii_lowercase();
+        match self.coverage.unknown(&token) {
             Some(gap) => Err(gap),
             None => Ok(self
                 .groups
                 .iter()
-                .find(|group| group.types.iter().any(|kind| kind == sub_ideology))),
+                .find(|group| group.token.eq_ignore_ascii_case(&token))),
+        }
+    }
+
+    /// The group a sub-ideology belongs to, matched as the game finds it: by
+    /// lexer token, under the ASCII case fold. Any file that stops short could
+    /// declare it.
+    pub fn group_of(&self, sub_ideology: &str) -> Result<Option<&Ideology>, &Gap> {
+        match self.coverage.any_gap() {
+            Some(gap) => Err(gap),
+            None => Ok(self.groups.iter().find(|group| {
+                group
+                    .types
+                    .iter()
+                    .any(|kind| kind.eq_ignore_ascii_case(sub_ideology))
+            })),
         }
     }
 

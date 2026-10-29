@@ -770,7 +770,14 @@ fn kept_art_stays_within_its_budget_evicting_the_least_recently_used() {
             )
         })
     };
-    let key = |token: &str| (Presentation::Display, token.to_owned(), String::new());
+    let key = |token: &str| {
+        (
+            crate::FocusDatabase::National,
+            Presentation::Display,
+            token.to_owned(),
+            String::new(),
+        )
+    };
     let mut kept = art::Kept::with_budget(100_000);
     kept.insert(key("a"), art("a", 40_000));
     kept.insert(key("b"), art("b", 40_000));
@@ -1008,11 +1015,11 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     let catalogue = Arc::new(catalogue);
     crate::catalogue::set_test_catalogue(&source, &content, Arc::clone(&catalogue));
     let reads = || art::FRAME_READS.with(std::cell::Cell::get);
+    let national = artwork::Kind::Focus(crate::FocusDatabase::National);
     // Hourly preparation's rows: every token of the country's order
     // evaluated on the hour's whole frame by a context of its own.
     let oracle = |frame: &DecodedFrame, tag: &str, tokens: &[String], mode: Presentation| {
-        let mut context =
-            artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+        let mut context = artwork::Context::load(Arc::clone(&catalogue), national).unwrap();
         let inputs = artwork::FocusFrame::new(frame, &catalogue);
         let requests: Vec<_> = tokens.iter().map(|token| (token.as_str(), tag)).collect();
         let rows: Vec<artwork::ResolvedArt> =
@@ -1043,6 +1050,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
                 1,
                 "ENG",
                 frame.hour,
+                crate::FocusDatabase::National,
                 &["a_static".into()],
                 mode,
                 &cancelled,
@@ -1063,7 +1071,15 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
             ] {
                 let before = reads();
                 let reply = art_at(
-                    &source, &content, 1, "GER", frame.hour, &subset, mode, &cancelled,
+                    &source,
+                    &content,
+                    1,
+                    "GER",
+                    frame.hour,
+                    crate::FocusDatabase::National,
+                    &subset,
+                    mode,
+                    &cancelled,
                 )
                 .unwrap();
                 let dynamic = subset.iter().any(|token| token.starts_with('t'));
@@ -1093,6 +1109,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
         1,
         "GER",
         100,
+        crate::FocusDatabase::National,
         &["b_refused".into()],
         Presentation::Display,
         &cancelled,
@@ -1101,8 +1118,15 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     assert!(refused.art[0].reason.is_some());
     // Static text is the content's, in request order with repeats.
     let wanted = vec!["t00".to_owned(), "a_static".into(), "t00".into()];
-    let text = art::static_text(&source, Some(&content), &wanted, &cancelled).unwrap();
-    let context = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+    let text = art::static_text(
+        &source,
+        Some(&content),
+        crate::FocusDatabase::National,
+        &wanted,
+        &cancelled,
+    )
+    .unwrap();
+    let context = artwork::Context::load(Arc::clone(&catalogue), national).unwrap();
     for (token, item) in wanted.iter().zip(&text) {
         let (mut expected, _) = context
             .text_catalogue(BTreeSet::from([token.as_str()]), &cancelled)
@@ -1112,7 +1136,16 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
             serde_json::to_value(expected.pop().unwrap()).unwrap()
         );
     }
-    assert!(art::static_text(&source, None, &wanted, &cancelled).is_err());
+    assert!(
+        art::static_text(
+            &source,
+            None,
+            crate::FocusDatabase::National,
+            &wanted,
+            &cancelled
+        )
+        .is_err()
+    );
     // The event feed's art at each completion's hour is the event
     // presentation of that hour's frame.
     let requests = [
@@ -1123,7 +1156,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
     let (art, _) = art::event_art(&source, &content, 1, &requests, &cancelled)
         .unwrap()
         .unwrap();
-    let mut events = artwork::Context::load(Arc::clone(&catalogue), artwork::Kind::Focus).unwrap();
+    let mut events = artwork::Context::load(Arc::clone(&catalogue), national).unwrap();
     for ((hour, tag, token), actual) in requests.iter().zip(&art) {
         let expected = events
             .focuses_at(&[(*token, *tag)], &frames[(*hour - 100) as usize])
@@ -1143,6 +1176,7 @@ fn focus_art_params_are_one_ordered_page_of_distinct_tokens() {
         branch_id: "1".into(),
         tag: "GER".into(),
         hour: 100,
+        database: crate::FocusDatabase::National,
         tokens: tokens.into_iter().map(str::to_owned).collect(),
         mode: FocusArtMode::Display,
     };
@@ -1162,6 +1196,142 @@ fn focus_art_params_are_one_ordered_page_of_distinct_tokens() {
     let mut over = params(Vec::new());
     over.tokens = page;
     assert!(FocusArt::validate(&over).is_err());
+}
+
+/// `focus-art` and `focus-static-text` look every token up in the database
+/// the request names. One id names a different focus in each: the art kept
+/// for the national focus never answers for the continuous one, and a
+/// refused continuous file leaves the national focus answered.
+#[test]
+fn focus_art_and_static_text_keep_each_database_apart() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use crate::FocusDatabase::{Continuous, National};
+    for refused in [false, true] {
+        let mut files = vec![
+            (
+                "common/national_focus/databases.txt",
+                "focus_tree={focus={id=shared text=national_title}}",
+            ),
+            (
+                "common/continuous_focus/databases.txt",
+                "continuous_focus_palette={focus={id=shared text=continuous_title}}",
+            ),
+            (
+                "localisation/databases_l_english.yml",
+                "\u{feff}l_english:\n national_title:0 \"National title\"\n national_title_desc:0 \"National details\"\n continuous_title:0 \"Continuous title\"\n continuous_title_desc:0 \"Continuous details\"\n",
+            ),
+        ];
+        if refused {
+            // A later continuous file the reader refuses could redefine any continuous focus.
+            files.push((
+                "common/continuous_focus/zz_refused.txt",
+                "continuous_focus_palette={focus={text=continuous_title}}",
+            ));
+        }
+        let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&files);
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![crate::test_fixtures::source(1, 100, Some(1))])],
+        )
+        .unwrap();
+        let cancelled = AtomicBool::new(false);
+        let source = Source::from_replay(
+            crate::SourceKey {
+                source_id: uuid::Uuid::new_v4().to_string(),
+                revision: "1".into(),
+            },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &cancelled,
+        )
+        .unwrap();
+        let content = ContentOptions {
+            options: installed_content_core::ResolveOptions {
+                game_dir: folder.0.clone(),
+                user_dir: folder.0.join("user"),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: true,
+            presentation: Default::default(),
+        };
+        crate::catalogue::set_test_catalogue(&source, &content, Arc::new(catalogue));
+        let context = LoadContext {
+            content: Some(content.clone()),
+        };
+        let art = |database| {
+            let reply = FocusArt::load(
+                &source,
+                &FocusArtParams {
+                    branch_id: "1".into(),
+                    tag: "GER".into(),
+                    hour: 100,
+                    database,
+                    tokens: vec!["shared".into()],
+                    mode: FocusArtMode::Text,
+                },
+                &context,
+                &cancelled,
+            )
+            .unwrap();
+            assert!(reply.failures.is_empty(), "{:?}", reply.failures);
+            reply.art.into_iter().next().unwrap()
+        };
+        // The national art is kept first, where a key without its database would answer again.
+        for _ in 0..2 {
+            let national = art(National);
+            assert_eq!(national.artwork.name.as_deref(), Some("National title"));
+            assert_eq!(
+                national.artwork.description.as_deref(),
+                Some("National details")
+            );
+            assert_eq!(national.reason, None);
+            let continuous = art(Continuous);
+            if refused {
+                assert_eq!(continuous.artwork.name, None);
+                assert_eq!(continuous.artwork.description, None);
+                let reason = continuous.reason.unwrap();
+                assert!(
+                    reason.contains("common/continuous_focus/zz_refused.txt"),
+                    "{reason}"
+                );
+            } else {
+                assert_eq!(continuous.artwork.name.as_deref(), Some("Continuous title"));
+                assert_eq!(
+                    continuous.artwork.description.as_deref(),
+                    Some("Continuous details")
+                );
+                assert_eq!(continuous.reason, None);
+            }
+        }
+        let text = |database| {
+            art::static_text(
+                &source,
+                Some(&content),
+                database,
+                &["shared".to_owned()],
+                &cancelled,
+            )
+            .unwrap()
+            .remove(0)
+        };
+        let national = text(National);
+        assert_eq!(national.name.as_deref(), Some("National title"));
+        assert_eq!(national.description.as_deref(), Some("National details"));
+        let continuous = text(Continuous);
+        let expected = |text: &str| (!refused).then(|| text.to_owned());
+        assert_eq!(continuous.name, expected("Continuous title"));
+        assert_eq!(continuous.description, expected("Continuous details"));
+        // The event feed's completions are national focuses.
+        let (events, _) = art::event_art(&source, &content, 1, &[(100, "GER", "shared")], &cancelled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(events[0].0.name.as_deref(), Some("National title"));
+        assert_eq!(
+            events[0].0.description.as_deref(),
+            Some("National details")
+        );
+    }
 }
 
 /// A continuation of another schema is refused, so preparation rebuilds it.

@@ -519,6 +519,9 @@ pub struct ModelReport {
     pub undecided_mission_formations: usize,
     /// Client RNG chooses support locators; hull identities and counts are derived.
     pub support_locator_rng: usize,
+    /// What the entity bakes so far reported ([`UnitModelAssets::bake_warnings`]): a figure
+    /// drawn without a refused attachment is named here.
+    pub bake_warnings: Vec<String>,
 }
 
 impl ModelReport {
@@ -542,6 +545,11 @@ impl ModelReport {
                 "Unit models: naval_support_locator_rng: {} formations use viewer support positions; game support locators use an unrecorded performance-counter seed.",
                 self.support_locator_rng
             )))
+            .chain(
+                self.bake_warnings
+                    .iter()
+                    .map(|line| format!("Unit models: {line}")),
+            )
             .collect()
     }
 }
@@ -559,6 +567,8 @@ pub struct UnitModelAssets {
     /// Each name owns its bake, including an unsuccessful attempt. The map
     /// lock only locates these slots; cold loads never hold it.
     bakes: Mutex<BTreeMap<String, Arc<Mutex<bool>>>>,
+    /// What the lazy bakes reported, such as refused attachments, each line once.
+    bake_warnings: Mutex<BTreeSet<String>>,
     conventional: retained_bridge::RetainedBridge,
     roster: Arc<mesh::Roster>,
     /// The content the library bakes from.
@@ -580,7 +590,8 @@ pub struct UnitModelAssets {
     disabled: Option<String>,
 }
 debug_fields!(UnitModelAssets(this) {
-    library, bakes, roster, sub_units, gates, bounds, graphics, geography, camouflage, ships, disabled
+    library, bakes, bake_warnings, roster, sub_units, gates, bounds, graphics, geography, camouflage,
+    ships, disabled
 } {
     registered => viewer_foundation::debug_fields::sorted_set(&this.registered)
 });
@@ -720,6 +731,7 @@ impl UnitModelAssets {
             library: RwLock::new(ModelLibrary::default()),
             field_identity: Arc::new(()),
             bakes: Mutex::new(BTreeMap::new()),
+            bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
             roster: Arc::new(mesh::Roster::default()),
             layers: ResolvedLayers::default(),
@@ -791,6 +803,7 @@ impl UnitModelAssets {
             library: RwLock::new(ModelLibrary::empty(decode)),
             field_identity: Arc::new(()),
             bakes: Mutex::new(BTreeMap::new()),
+            bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
             sub_units,
             gates: Gates::read(defines)?,
@@ -844,6 +857,16 @@ impl UnitModelAssets {
             ));
         }
         refusals
+    }
+
+    /// What the lazy entity bakes so far reported, each line once.
+    pub fn bake_warnings(&self) -> Vec<String> {
+        self.bake_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Whether any `gfx` descriptor declares the entity.
@@ -1210,7 +1233,8 @@ impl UnitModelAssets {
                     .cloned()
                     .partition(|name| entity_refusal(&self.roster, name).is_some())
             });
-        if let Ok(shard) = spans.measure("units.ensure.load_shown", |spans| {
+        let mut failed = Vec::new();
+        match spans.measure("units.ensure.load_shown", |spans| {
             ModelLibrary::load_profiled(
                 &self.layers,
                 decode,
@@ -1220,15 +1244,18 @@ impl UnitModelAssets {
                 spans,
             )
         }) {
-            let mut library = spans.measure("units.ensure.merge_shown_wait", |_| {
-                self.library
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-            });
-            spans.measure("units.ensure.merge_shown", |_| library.merge(shard));
+            Ok(shard) => {
+                let mut library = spans.measure("units.ensure.merge_shown_wait", |_| {
+                    self.library
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                });
+                spans.measure("units.ensure.merge_shown", |_| library.merge(shard));
+            }
+            Err(error) => failed.push(format!("{} did not bake: {error}", own.join(", "))),
         }
-        if !recorded.is_empty()
-            && let Ok(shard) = spans.measure("units.ensure.load_recorded", |spans| {
+        if !recorded.is_empty() {
+            match spans.measure("units.ensure.load_recorded", |spans| {
                 ModelLibrary::load_recorded_profiled(
                     &self.layers,
                     decode,
@@ -1236,15 +1263,30 @@ impl UnitModelAssets {
                     |name| entity_refusal(&self.roster, name).unwrap_or_default(),
                     spans,
                 )
-            })
-        {
-            let mut library = spans.measure("units.ensure.merge_recorded_wait", |_| {
-                self.library
-                    .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-            });
-            spans.measure("units.ensure.merge_recorded", |_| library.merge(shard));
+            }) {
+                Ok(shard) => {
+                    let mut library = spans.measure("units.ensure.merge_recorded_wait", |_| {
+                        self.library
+                            .write()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    });
+                    spans.measure("units.ensure.merge_recorded", |_| library.merge(shard));
+                }
+                Err(error) => failed.push(format!(
+                    "{} did not bake from the recording: {error}",
+                    recorded.join(", ")
+                )),
+            }
         }
+        self.bake_warnings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(
+                warnings
+                    .into_iter()
+                    .map(|(_, line)| line)
+                    .chain(failed),
+            );
         // An entity a visual mod supplies that does not bake was baked from the recording
         // instead, named, by the library load itself (`ModelLibrary::load`).
         spans.measure("units.ensure.complete", |_| {
@@ -1621,6 +1663,7 @@ impl UnitModelAssets {
             .map(|row| row.id)
             .collect();
         lap("um_owned");
+        report.bake_warnings = self.bake_warnings();
         Ok(PreparedModels {
             staged_field: Mutex::new(None),
             targets: None,

@@ -1,6 +1,7 @@
 //! Country display names in the reader's language, rebuilt from recorded
-//! operands. Key selection tries cosmetic keys before tag keys, then expands
-//! subject substitutions. The game stores the result in its client language,
+//! operands. Key selection tries cosmetic keys before tag keys; the chosen key
+//! goes through the game's localiser, with the subject arguments only for a
+//! positive overlord. The game stores the result in its client language,
 //! so the recording keeps the operands needed to localise it independently.
 //!
 //! Operands, per canonical country slot:
@@ -22,7 +23,7 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use replay_frame::frame::TableView;
 
-use crate::localisation::Localisation;
+use crate::localisation::{Argument, Localisation};
 
 /// Every table the resolver reads, for a reader that reconstructs only those.
 pub const TABLES: [TableId; 7] = [
@@ -148,39 +149,38 @@ impl Operands {
     }
 }
 
-/// Resource limits of the viewer, not game rules: all substitutions of one
-/// displayed name share one budget.
-const WORK_LIMIT: usize = 1024;
-const BYTES_LIMIT: usize = 64 * 1024;
-const DEPTH_LIMIT: usize = 64;
+/// The arguments the game binds for a positive overlord.
+const SUBJECT_ARGUMENTS: [&str; 5] = [
+    "OVERLORDADJ",
+    "OVERLORDNAMEDEF",
+    "NONIDEOLOGY",
+    "NONIDEOLOGYDEF",
+    "NONIDEOLOGYADJ",
+];
 
-struct Budget {
-    work: usize,
-    bytes: usize,
+/// One displayed name's build: the names being built under it, and those built.
+#[derive(Default)]
+struct Walk {
+    active: BTreeSet<(u32, String)>,
+    built: BTreeMap<(u32, String), Result<String, String>>,
 }
 
-impl Budget {
-    fn new() -> Self {
-        Self {
-            work: WORK_LIMIT,
-            bytes: BYTES_LIMIT,
-        }
-    }
-    fn visit(&mut self) -> Result<(), String> {
-        self.work = self
-            .work
-            .checked_sub(1)
-            .ok_or("localisation expansion exceeds its budget")?;
-        Ok(())
-    }
-    fn append(&mut self, out: &mut String, text: &str) -> Result<(), String> {
-        self.bytes = self
-            .bytes
-            .checked_sub(text.len())
-            .ok_or("localisation expansion exceeds its budget")?;
-        out.push_str(text);
-        Ok(())
-    }
+/// A subject's name being built: its key, and the arguments its text has reached.
+struct Frame {
+    identity: (u32, String),
+    key: String,
+    tag: String,
+    overlord: u32,
+    values: Vec<(&'static str, String)>,
+    deferred: Vec<&'static str>,
+    /// The overlord argument whose name is being built above this frame.
+    asked: Option<&'static str>,
+}
+
+/// A name finished at once, or a subject's frame to build.
+enum Step {
+    Done(Result<String, String>),
+    Subject(Frame),
 }
 
 /// Country operands at one hour, resolved against one localisation.
@@ -220,7 +220,7 @@ impl<'a> CountryNames<'a> {
 
     /// Reads only the requested canonical slots and their overlords. Raw table
     /// keys are sorted; canonical aliases retain the last Countries row, as
-    /// [`Self::read`] does. Name expansion keeps the same cycle and work limits.
+    /// [`Self::read`] does. Names are built the same way.
     pub fn read_selected(
         frame: &dyn replay_frame::frame::DecodedSource,
         localisation: &'a Localisation,
@@ -238,10 +238,8 @@ impl<'a> CountryNames<'a> {
         } else {
             None
         };
-        if let (Ok(countries), Ok(links)) = (
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-        ) {
+        if let Ok(countries) = frame.complete::<tables::Countries>() {
+            let links = links(frame);
             let by_slot = |slot: u32| {
                 countries
                     .iter()
@@ -255,7 +253,7 @@ impl<'a> CountryNames<'a> {
                 let Some(country) = by_slot(slot) else {
                     continue;
                 };
-                let input = country_operands(frame, &by_slot, links, country);
+                let input = country_operands(frame, &by_slot, &links, country);
                 if let Some(overlord) = input.as_ref().ok().and_then(|input| input.overlord) {
                     pending.push(overlord);
                 }
@@ -279,13 +277,13 @@ impl<'a> CountryNames<'a> {
     /// last localisation candidate; when even that key is absent, `name_key`
     /// returns None and this documented display ends in the tag.
     pub fn name(&self, slot: u32) -> Result<String, String> {
-        self.resolve(slot, "", &mut BTreeSet::new(), &mut Budget::new())
+        self.resolve(slot, "", &mut Walk::default())
     }
 
     /// [`Self::name`] with a key suffix: `_DEF` for the definite name or
     /// `_ADJ` for the adjective, both built by the same key chooser.
     pub fn name_with(&self, slot: u32, suffix: &str) -> Result<String, String> {
-        self.resolve(slot, suffix, &mut BTreeSet::new(), &mut Budget::new())
+        self.resolve(slot, suffix, &mut Walk::default())
     }
 
     /// The ruling party's ideology group token (`Politics.ruling_party` ->
@@ -301,13 +299,81 @@ impl<'a> CountryNames<'a> {
         }
     }
 
-    fn resolve(
-        &self,
-        slot: u32,
-        suffix: &str,
-        active: &mut BTreeSet<(u32, String)>,
-        budget: &mut Budget,
-    ) -> Result<String, String> {
+    /// A name and every overlord name its text reaches, each subject's on a stack of
+    /// its own rather than the thread's: a chain is as deep as its overlords go.
+    fn resolve(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Result<String, String> {
+        let mut stack = Vec::new();
+        let mut answer = match self.begin(slot, suffix, walk) {
+            Step::Done(result) => return result,
+            Step::Subject(frame) => {
+                walk.active.insert(frame.identity.clone());
+                stack.push(frame);
+                None
+            }
+        };
+        while let Some(top) = stack.len().checked_sub(1) {
+            // The overlord's name the top frame asked for.
+            if let Some(result) = answer.take() {
+                match result {
+                    Ok(value) => {
+                        let name = stack[top].asked.take().expect("an answer follows a question");
+                        stack[top].values.push((name, value));
+                    }
+                    Err(reason) => {
+                        answer = Some(self.finish(stack.pop().expect("a top frame"), Err(reason), walk));
+                        continue;
+                    }
+                }
+            }
+            let reached = {
+                let frame = &stack[top];
+                let arguments: Vec<_> = frame
+                    .values
+                    .iter()
+                    .map(|(name, value)| (*name, Argument::Text(value.as_str())))
+                    .collect();
+                self.localisation
+                    .localise_with_deferred(frame.key.as_bytes(), &arguments, &frame.deferred)
+            };
+            let index = match reached {
+                Ok(text) => {
+                    let text = text.map_err(|why| why.to_string());
+                    answer = Some(self.finish(stack.pop().expect("a top frame"), text, walk));
+                    continue;
+                }
+                Err(index) => index,
+            };
+            let frame = &mut stack[top];
+            let name = frame.deferred.remove(index);
+            // The overlord's stored names, and the tag's own texts localised
+            // without arguments.
+            let value = match name {
+                "OVERLORDADJ" | "OVERLORDNAMEDEF" => {
+                    frame.asked = Some(name);
+                    let suffix = if name == "OVERLORDADJ" { "_ADJ" } else { "_DEF" };
+                    match self.begin(frame.overlord, suffix, walk) {
+                        Step::Done(result) => answer = Some(result),
+                        Step::Subject(next) => {
+                            walk.active.insert(next.identity.clone());
+                            stack.push(next);
+                        }
+                    }
+                    continue;
+                }
+                "NONIDEOLOGY" => self.localised(&frame.tag),
+                "NONIDEOLOGYDEF" => self.localised(&format!("{}_DEF", frame.tag)),
+                _ => self.localised(&format!("{}_ADJ", frame.tag)),
+            };
+            match value {
+                Ok(value) => frame.values.push((name, value)),
+                Err(reason) => answer = Some(self.finish(stack.pop().expect("a top frame"), Err(reason), walk)),
+            }
+        }
+        answer.expect("the first frame's name")
+    }
+
+    /// A name that needs no overlord argument, built now; or a subject's frame.
+    fn begin(&self, slot: u32, suffix: &str, walk: &mut Walk) -> Step {
         // Slot zero may still hold constructor strings because name rebuilding
         // skips it. Witness each cache separately instead of rebuilding it early.
         if slot == 0
@@ -320,94 +386,67 @@ impl<'a> CountryNames<'a> {
                 _ => 0,
             };
             if bit != 0 && built & bit == 0 {
-                return Ok(String::new());
+                return Step::Done(Ok(String::new()));
             }
         }
-        budget.visit()?;
         let identity = (slot, suffix.to_owned());
-        if active.len() >= DEPTH_LIMIT || !active.insert(identity.clone()) {
-            return Err("country names refer to each other in a cycle".into());
+        if let Some(built) = walk.built.get(&identity) {
+            return Step::Done(built.clone());
         }
-        let result = (|| {
-            let input = match self.operands.get(&slot) {
-                Some(Ok(input)) => input,
-                Some(Err(reason)) => return Err(reason.clone()),
-                None => return Err(format!("country slot {slot} has no naming operands")),
-            };
-            let exists = |key: &str| self.localisation.get(key).is_some();
-            let key = input
-                .name_key(suffix, exists)
-                .ok_or_else(|| format!("no localisation key names {}{suffix}", input.tag))?;
-            self.expand(&key, input, active, &mut BTreeSet::new(), budget)
-        })();
-        active.remove(&identity);
+        if walk.active.contains(&identity) {
+            return Step::Done(Err("country names refer to each other in a cycle".into()));
+        }
+        let input = match self.operands.get(&slot) {
+            Some(Ok(input)) => input,
+            Some(Err(reason)) => return self.built(identity, Err(reason.clone()), walk),
+            None => return self.built(identity, Err(format!("country slot {slot} has no naming operands")), walk),
+        };
+        let exists = |key: &str| self.localisation.get(key).is_some();
+        let Some(key) = input.name_key(suffix, exists) else {
+            let reason = format!("no localisation key names {}{suffix}", input.tag);
+            return self.built(identity, Err(reason), walk);
+        };
+        match input.overlord {
+            None => {
+                let text = self.localised(&key).and_then(|text| unscripted(&key, text));
+                self.built(identity, text, walk)
+            }
+            Some(overlord) => Step::Subject(Frame {
+                identity,
+                key,
+                tag: input.tag.clone(),
+                overlord,
+                values: Vec::new(),
+                deferred: SUBJECT_ARGUMENTS.to_vec(),
+                asked: None,
+            }),
+        }
+    }
+
+    fn built(&self, identity: (u32, String), result: Result<String, String>, walk: &mut Walk) -> Step {
+        walk.built.insert(identity, result.clone());
+        Step::Done(result)
+    }
+
+    fn finish(&self, frame: Frame, text: Result<String, String>, walk: &mut Walk) -> Result<String, String> {
+        let result = text.and_then(|text| unscripted(&frame.key, text));
+        walk.active.remove(&frame.identity);
+        walk.built.insert(frame.identity, result.clone());
         result
     }
 
-    /// Localises `key`, expanding `$VARIABLE$` references. Subject variables
-    /// apply only with a positive overlord.
-    fn expand(
-        &self,
-        key: &str,
-        input: &Operands,
-        active: &mut BTreeSet<(u32, String)>,
-        keys: &mut BTreeSet<String>,
-        budget: &mut Budget,
-    ) -> Result<String, String> {
-        budget.visit()?;
-        if keys.len() >= DEPTH_LIMIT || !keys.insert(key.to_owned()) {
-            return Err(format!("localisation {key} refers to itself"));
-        }
-        let result = (|| {
-            let text = self
-                .localisation
-                .get(key)
-                .ok_or_else(|| format!("localisation key {key} is missing"))?;
-            if text.contains('[') {
-                return Err(format!("localisation {key} uses unsupported scripted text"));
-            }
-            let mut out = String::new();
-            let mut rest = text;
-            // Localisation turns `$$` into `$` but copies an unmatched `$` and the remaining text.
-            while let Some(start) = rest.find('$') {
-                let Some(end) = rest[start + 1..].find('$') else {
-                    break;
-                };
-                if end == 0 {
-                    budget.append(&mut out, &rest[..=start])?;
-                    rest = &rest[start + 2..];
-                    continue;
-                }
-                budget.append(&mut out, &rest[..start])?;
-                rest = &rest[start + 1..];
-                let variable = &rest[..end];
-                let value = match (input.overlord, variable) {
-                    (Some(overlord), "OVERLORDADJ") => {
-                        self.resolve(overlord, "_ADJ", active, budget)?
-                    }
-                    (Some(overlord), "OVERLORDNAMEDEF") => {
-                        self.resolve(overlord, "_DEF", active, budget)?
-                    }
-                    (Some(_), "NONIDEOLOGY") => {
-                        self.expand(&input.tag, input, active, keys, budget)?
-                    }
-                    (Some(_), "NONIDEOLOGYADJ") => {
-                        self.expand(&format!("{}_ADJ", input.tag), input, active, keys, budget)?
-                    }
-                    (Some(_), "NONIDEOLOGYDEF") => {
-                        self.expand(&format!("{}_DEF", input.tag), input, active, keys, budget)?
-                    }
-                    _ => self.expand(variable, input, active, keys, budget)?,
-                };
-                budget.append(&mut out, &value)?;
-                rest = &rest[end + 1..];
-            }
-            budget.append(&mut out, rest)?;
-            Ok(out)
-        })();
-        keys.remove(key);
-        result
+    fn localised(&self, key: &str) -> Result<String, String> {
+        self.localisation
+            .localise(key.as_bytes())
+            .map_err(|why| why.to_string())
     }
+}
+
+fn unscripted(key: &str, text: String) -> Result<String, String> {
+    if text.contains('[') {
+        return Err(format!("localisation {key} uses unsupported scripted text"));
+    }
+    Ok(text)
 }
 
 /// The rows a table holds this hour and whether that is all of them.
@@ -632,16 +671,21 @@ fn naming_tag<'a>(
 /// The original-or-own tag, shared with the collector's status summary.
 pub use replay_data::country_flags::original_tag;
 
+/// CountryLinks, or why it is unavailable; only a positive overlord reads it.
+fn links(frame: &dyn replay_frame::frame::DecodedSource) -> Result<&[CountryLinkRow], String> {
+    frame
+        .complete::<tables::CountryLinks>()
+        .map_err(|why| format!("CountryLinks is unavailable this hour: {why}"))
+}
+
 /// Per canonical slot: the operands, or why they are unavailable this hour.
 fn operands(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> BTreeMap<u32, Result<Operands, String>> {
-    let (Ok(countries), Ok(links)) = (
-        frame.complete::<tables::Countries>(),
-        frame.complete::<tables::CountryLinks>(),
-    ) else {
+    let Ok(countries) = frame.complete::<tables::Countries>() else {
         return BTreeMap::new();
     };
+    let links = links(frame);
     // The last row of a slot wins, as a reverse search would find it.
     let slots: BTreeMap<u32, &CountryRow> = countries
         .iter()
@@ -653,7 +697,7 @@ fn operands(
         .map(|country| {
             (
                 country.canonical_slot,
-                country_operands(frame, &by_slot, links, country),
+                country_operands(frame, &by_slot, &links, country),
             )
         })
         .collect()
@@ -670,7 +714,7 @@ fn last_by_key<T, K: Ord>(rows: &[T], wanted: K, key: impl Fn(&T) -> K) -> Optio
 fn country_operands<'r>(
     frame: &dyn replay_frame::frame::DecodedSource,
     by_slot: &dyn Fn(u32) -> Option<&'r CountryRow>,
-    links: &[CountryLinkRow],
+    links: &Result<&[CountryLinkRow], String>,
     country: &CountryRow,
 ) -> Result<Operands, String> {
     let table =
@@ -703,6 +747,7 @@ fn country_operands<'r>(
         }
     };
     let overlord = if row.overlord > 0 {
+        let links = *links.as_ref().map_err(String::clone)?;
         Some(
             last_by_key(links, row.overlord as u32, |row| row.id)
                 .ok_or_else(|| format!("overlord link {} has no country", row.overlord))?
@@ -902,15 +947,13 @@ mod tests {
         );
         assert_eq!(names.name(2).as_deref(), Ok("British Raj"));
         assert_eq!(
-            names
-                .resolve(2, "_DEF", &mut BTreeSet::new(), &mut Budget::new())
-                .as_deref(),
+            names.name_with(2, "_DEF").as_deref(),
             Ok("India of the United Kingdom")
         );
     }
 
     #[test]
-    fn scripted_cyclic_and_exponential_text_is_refused() {
+    fn scripted_text_is_refused_and_cycles_and_long_text_follow_the_localiser() {
         let scripted = localisation(&[("TAG", "[ROOT.GetName]")]);
         assert!(
             names(&scripted, vec![(1, input("TAG"))])
@@ -918,14 +961,67 @@ mod tests {
                 .unwrap_err()
                 .contains("scripted")
         );
-        let cyclic = localisation(&[("TAG", "$ALIAS$"), ("ALIAS", "$TAG$")]);
-        assert!(names(&cyclic, vec![(1, input("TAG"))]).name(1).is_err());
-        let mut doubling: Vec<(String, String)> = (0..30)
-            .map(|i| (format!("A{i}"), format!("$A{}$$A{}$", i + 1, i + 1)))
-            .collect();
-        doubling.push(("A30".into(), String::new()));
-        let doubling: Localisation = doubling.into_iter().collect();
-        assert!(names(&doubling, vec![(1, input("A0"))]).name(1).is_err());
+        // The localiser's depth limit omits the cycle's text.
+        let cyclic = localisation(&[("TAG", "Name $ALIAS$"), ("ALIAS", "$TAG$")]);
+        assert_eq!(
+            names(&cyclic, vec![(1, input("TAG"))]).name(1),
+            Ok("Name ".repeat(16))
+        );
+        // Doubling text stops at the localiser's 0x1800-byte output buffer.
+        let doubling = |leaf: &str| -> Localisation {
+            (0..12)
+                .map(|i| (format!("A{i}"), format!("$A{}$$A{}$", i + 1, i + 1)))
+                .chain([("A12".to_owned(), leaf.to_owned())])
+                .collect()
+        };
+        for (leaf, length) in [("x", 4096), ("xx", 0x1800)] {
+            assert_eq!(
+                names(&doubling(leaf), vec![(1, input("A0"))]).name(1),
+                Ok("x".repeat(length))
+            );
+        }
+    }
+
+    #[test]
+    fn country_names_use_the_localisers_recovery_and_argument_formats() {
+        let localisation = localisation(&[
+            ("IND", "Federation $UNDEFINED_NAME$"),
+            ("FREE", "$OVERLORDADJ$Republic"),
+            ("ENG_ADJ", "british"),
+            ("SUB_ENG_subject", "$OVERLORDADJ|U$ $NONIDEOLOGY$"),
+            ("SUB", "$OVERLORDADJ$Sub"),
+            ("ONLY_ENG_subject", "$NONIDEOLOGYDEF$"),
+            ("ONLY_DEF", "the only"),
+        ]);
+        let subject = |tag: &str, overlord: u32| Operands {
+            overlord: Some(overlord),
+            overlord_suffix: "_ENG".into(),
+            autonomy_suffix: "_autonomy".into(),
+            ..input(tag)
+        };
+        let mut operands: BTreeMap<u32, Result<Operands, String>> = [
+            (1, Ok(input("IND"))),
+            (2, Ok(input("FREE"))),
+            (3, Ok(input("ENG"))),
+            (4, Ok(subject("SUB", 3))),
+            (5, Ok(subject("ONLY", 9))),
+            (6, Ok(subject("SUB", 9))),
+        ]
+        .into();
+        operands.insert(9, Err("overlord operands are unavailable".into()));
+        let names = CountryNames::of_operands(&localisation, operands);
+        // A missing nested reference is omitted rather than refused.
+        assert_eq!(names.name(1).as_deref(), Ok("Federation "));
+        // Without a positive overlord no subject argument is bound.
+        assert_eq!(names.name(2).as_deref(), Ok("Republic"));
+        // The argument keeps its format; the tag's own text has no arguments.
+        assert_eq!(names.name(4).as_deref(), Ok("British Sub"));
+        // An unavailable overlord refuses only text that reaches it.
+        assert_eq!(names.name(5).as_deref(), Ok("the only"));
+        assert_eq!(
+            names.name(6),
+            Err("overlord operands are unavailable".into())
+        );
     }
 
     #[test]
@@ -1025,6 +1121,34 @@ mod tests {
             selected.name(30),
             Err("Politics is incomplete this hour".into())
         );
+    }
+
+    #[test]
+    fn missing_country_links_withhold_only_names_that_follow_an_overlord() {
+        let localisation = localisation(&[("GER_NEW_nazism", "Fixture successor")]);
+        let mut frame = frame();
+        *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+            reason: "unrecorded links".into(),
+        };
+        let read = CountryNames::read(&frame, &localisation);
+        let selected = CountryNames::read_selected(&frame, &localisation, [30]);
+        for names in [&read, &selected] {
+            assert_eq!(names.name(30).as_deref(), Ok("Fixture successor"));
+        }
+        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        {
+            rows[0].overlord = 7;
+        }
+        let read = CountryNames::read(&frame, &localisation);
+        let selected = CountryNames::read_selected(&frame, &localisation, [30]);
+        for names in [&read, &selected] {
+            let why = names.name(30).unwrap_err();
+            assert!(
+                why.starts_with("CountryLinks is unavailable this hour"),
+                "{why}"
+            );
+        }
     }
 
     #[test]
@@ -1286,5 +1410,24 @@ mod tests {
             selected.name(0),
             CountryNames::read(&frame, &localisation).name(0)
         );
+    }
+
+    #[test]
+    fn a_chain_of_overlords_as_deep_as_the_campaign_names_its_deepest_subject() {
+        let localisation = localisation(&[("ROOT_ADJ", "root"), ("SUB", "$OVERLORDADJ$"), ("SUB_ADJ", "$OVERLORDADJ$")]);
+        let mut operands = vec![(1, input("ROOT"))];
+        for slot in 2..=1500 {
+            operands.push((slot, Operands { overlord: Some(slot - 1), ..input("SUB") }));
+        }
+        assert_eq!(names(&localisation, operands).name(1500).as_deref(), Ok("root"));
+    }
+
+    #[test]
+    fn overlords_naming_each_other_refuse_only_the_names_that_reach_the_cycle() {
+        let localisation = localisation(&[("AAA", "$OVERLORDADJ$"), ("AAA_ADJ", "$OVERLORDADJ$"), ("BBB_ADJ", "$OVERLORDADJ$"), ("BBB", "Plain")]);
+        let subject = |tag: &str, overlord| Operands { overlord: Some(overlord), ..input(tag) };
+        let names = names(&localisation, vec![(1, subject("AAA", 2)), (2, subject("BBB", 1))]);
+        assert!(names.name(1).unwrap_err().contains("cycle"));
+        assert_eq!(names.name(2).as_deref(), Ok("Plain"), "a text not reaching its overlord is built");
     }
 }
