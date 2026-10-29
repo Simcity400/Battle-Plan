@@ -65,8 +65,8 @@ pub fn authored(
     requirements: &[(String, i64)],
 ) -> Result<Definition, String> {
     let sheet = &subunit.sheet;
-    if let Some(why) = sheet.refused.first() {
-        return Err(why.clone());
+    if let Some(refusal) = sheet.refused.first() {
+        return Err(refusal.why.clone());
     }
     let mut stats = [0_i64; STAT_COUNT];
     // A definition that does not say otherwise affects its division's speed.

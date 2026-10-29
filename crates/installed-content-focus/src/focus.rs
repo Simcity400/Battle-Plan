@@ -164,6 +164,8 @@ pub struct FocusDefinition {
     pub icon: Option<String>,
     /// An authored trigger-chosen icon block, distinct from no icon field.
     pub scripted_icon: bool,
+    /// An `icon` field was authored, even an empty block: only then are the qualified sprites tried.
+    pub icon_present: bool,
     pub icons: crate::scripted_keys::ScriptedKey,
     pub alternate_icons: crate::scripted_keys::ScriptedKey,
     /// Parsed alternate icon definitions, including an empty block.
@@ -206,6 +208,12 @@ impl FocusDefinition {
         }
         sprites.push(format!("GFX_{token}"));
         sprites
+    }
+
+    /// [`Self::sprite_overrides`] as focus-tree buttons and continuous-focus items try them:
+    /// only for a focus with an `icon` field; without one they show the unknown icon.
+    pub fn button_sprite_overrides(&self, token: &str, tag: Option<&str>) -> Vec<String> {
+        if self.icon_present { self.sprite_overrides(token, tag) } else { Vec::new() }
     }
 
     /// Normal icon selection is independent of the unrecorded alternate-mode
@@ -524,8 +532,10 @@ pub fn parse(
                 let mut icons = crate::scripted_keys::ScriptedKey::default();
                 let mut alternate_icons = crate::scripted_keys::ScriptedKey::default();
                 let mut alternate_icon_present = false;
+                let mut icon_present = false;
                 for field in children {
                     let target = if field.keyword_is("icon") {
+                        icon_present = true;
                         &mut icons
                     } else if field.keyword_is("alternate_icon") {
                         alternate_icon_present = true;
@@ -558,6 +568,7 @@ pub fn parse(
                             .map(|cost| cost as f64 / 100_000.0),
                         icon,
                         scripted_icon: icons.cases.iter().any(|case| case.trigger.is_some()),
+                        icon_present,
                         icons,
                         alternate_icons,
                         alternate_icon_present,
@@ -1052,5 +1063,37 @@ mod icon_selection_tests {
                 .unwrap_err()
                 .contains("focus-window mode")
         );
+    }
+}
+
+#[cfg(test)]
+mod sprite_override_tests {
+    use super::*;
+
+    fn definition(source: &[u8], id: &str, database: Database) -> FocusDefinition {
+        parse(source, database, &KeyNames::default()).unwrap().0[id].clone()
+    }
+
+    #[test]
+    fn only_a_focus_with_an_icon_field_tries_the_qualified_sprites_on_its_button() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for (source, database) in [
+            (&b"focus_tree={focus={id=f_icon icon=GFX_own}}"[..], Database::National),
+            (b"continuous_focus_palette={focus={id=f_icon icon=GFX_own}}", Database::Continuous),
+        ] {
+            assert_eq!(
+                definition(source, "f_icon", database).button_sprite_overrides("f_icon", Some("SYN")),
+                ["GFX_SYN_f_icon", "GFX_f_icon"]
+            );
+        }
+        // An empty block is still an icon field.
+        let empty = definition(b"focus_tree={focus={id=f_empty icon={}}}", "f_empty", Database::National);
+        assert_eq!(empty.button_sprite_overrides("f_empty", Some("SYN")), ["GFX_SYN_f_empty", "GFX_f_empty"]);
+        // Without one the focus shows the unknown icon, whatever qualified sprites exist.
+        let bare = definition(b"focus_tree={focus={id=f_bare}}", "f_bare", Database::National);
+        assert!(bare.button_sprite_overrides("f_bare", Some("SYN")).is_empty());
+        // Summaries outside the tree still try them.
+        assert_eq!(bare.sprite_overrides("f_bare", Some("SYN")), ["GFX_SYN_f_bare", "GFX_f_bare"]);
     }
 }

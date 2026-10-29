@@ -622,6 +622,90 @@ fn a_redefinition_keeps_what_the_reset_leaves() {
     );
 }
 
+/// What else a redefinition keeps, as the game's reset leaves it: transport, the own-fuel
+/// multiplier and the kept scalars stay; battalion multipliers add up; the stats start again.
+#[test]
+fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipliers() {
+    let content = content_with(
+        br#"sub_units = {
+            ranger = {
+                transport = motorized
+                own_equipment_fuel_consumption_mult = 0.5
+                affects_speed = no
+                hit_profile_mult = 0.75
+                same_support_type = recon
+                soft_attack = 0.5
+                combat_width = 2
+                manpower = 1000
+                battalion_mult = { category = category_line add = yes entrenchment = 0.5 }
+            }
+        }
+        sub_units = {
+            ranger = {
+                defense = 3
+                same_support_type = scouts
+                battalion_mult = { category = category_line add = yes entrenchment = 0.5 }
+            }
+        }"#,
+    );
+    let ranger = content.subunit("ranger").unwrap();
+    assert_eq!(ranger.sheet.transport.as_deref(), Some("motorized"));
+    assert_eq!(ranger.sheet.own_fuel_consumption, Some(50_000));
+    let words: Vec<(&str, &str)> = ranger
+        .sheet
+        .words
+        .iter()
+        .map(|(word, value)| (word.as_str(), value.as_str()))
+        .collect();
+    // The kept words first, the new declaration's after; the earlier soft attack is gone.
+    assert_eq!(
+        words,
+        [
+            ("affects_speed", "no"),
+            ("hit_profile_mult", "0.75"),
+            ("same_support_type", "recon"),
+            ("defense", "3"),
+            ("same_support_type", "scouts"),
+        ]
+    );
+    assert_eq!(ranger.sheet.combat_width, 0);
+    assert_eq!(ranger.sheet.manpower, 0);
+    // Each block adds an entry, a repeated one included.
+    assert_eq!(ranger.sheet.grants.len(), 2);
+    // A refused kept field stays refused; a refused reset field is read again.
+    let refused = content_with(
+        br#"sub_units = { ranger = { battalion_mult = yes combat_width = wide } }
+        sub_units = { ranger = { combat_width = 1 } }"#,
+    );
+    let ranger = refused.subunit("ranger").unwrap();
+    let whys = |subunit: &SubUnit| subunit.sheet.refused.iter().map(|refusal| refusal.why.clone()).collect::<Vec<_>>();
+    assert_eq!(whys(ranger), ["sub-unit ranger: battalion_mult is not a block"]);
+    // A list entry that cannot be read stays refused, by its field.
+    // Equipment files are read as text, so the raw-byte declarations go to the sub-unit reader alone.
+    let mut entry = content_with(b"");
+    for document in [&b"sub_units = { ranger = { categories = { \xff } } }"[..], b"sub_units = { ranger = { } }"] {
+        entry.read_subunits(&parser::parse(document).unwrap()).unwrap();
+    }
+    assert_eq!(whys(entry.subunit("ranger").unwrap()), ["sub-unit ranger: a categories entry is not UTF-8"]);
+    // A kept scalar's refusal stays until the new declaration assigns it, which replaces it.
+    let fuel = |second: &[u8]| {
+        let mut source = b"sub_units = { ranger = { own_equipment_fuel_consumption_mult = broken } } ".to_vec();
+        source.extend_from_slice(second);
+        content_with(&source)
+    };
+    let unassigned = fuel(b"sub_units = { ranger = { } }");
+    assert_eq!(whys(unassigned.subunit("ranger").unwrap()), ["sub-unit ranger: own_equipment_fuel_consumption_mult is not a number"]);
+    let corrected = fuel(b"sub_units = { ranger = { own_equipment_fuel_consumption_mult = 0.5 } }");
+    let ranger = corrected.subunit("ranger").unwrap();
+    assert!(ranger.sheet.refused.is_empty(), "{:?}", ranger.sheet.refused);
+    assert_eq!(ranger.sheet.own_fuel_consumption, Some(50_000));
+    // A kept scalar word assigned again replaces the earlier one, so only the new is read.
+    let speed = content_with(
+        b"sub_units = { ranger = { affects_speed = invalid } } sub_units = { ranger = { affects_speed = no } }",
+    );
+    assert_eq!(speed.subunit("ranger").unwrap().sheet.words, [("affects_speed".to_owned(), "no".to_owned())]);
+}
+
 /// A bare key in another ASCII case is the field; a quoted one is no keyword and reads nothing.
 #[test]
 fn sub_unit_fields_dispatch_by_keyword() {

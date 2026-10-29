@@ -1127,9 +1127,10 @@ impl Context {
     /// shows visual mods, the recording's own its draw falls back to ([`Self::drawing_catalogues`]).
     pub fn focus_country_icon_override(&self, token: &str, tag: &str) -> bool {
         self.focus(token).ok().flatten().is_some_and(|definition| {
-            let country = &definition.sprite_overrides(token, Some(tag))[0];
-            self.drawing_catalogues()
-                .any(|catalogue| !matches!(catalogue.sprites.find(country), Ok(None)))
+            definition.button_sprite_overrides(token, Some(tag)).first().is_some_and(|country| {
+                self.drawing_catalogues()
+                    .any(|catalogue| !matches!(catalogue.sprites.find(country), Ok(None)))
+            })
         })
     }
 
@@ -1197,7 +1198,7 @@ impl Context {
         // override: this context's, or the recording's own its draw can fall back to.
         let icons = projection.icons()
             && self.focus(token).ok().flatten().is_some_and(|definition| {
-                let overrides = definition.sprite_overrides(token, Some(tag));
+                let overrides = definition.button_sprite_overrides(token, Some(tag));
                 focus_icons_need_frame(definition)
                     && self.drawing_catalogues().any(|catalogue| {
                         !overrides
@@ -1320,7 +1321,7 @@ impl Context {
                     let definition = self.focus(token).ok()??;
                     let selected = if tree {
                         let mut selected = None;
-                        for name in definition.sprite_overrides(token, Some(tag)) {
+                        for name in definition.button_sprite_overrides(token, Some(tag)) {
                             match self.catalogue.sprites.find(&name) {
                                 Ok(Some(_)) => {
                                     selected = Some(name);
@@ -1382,7 +1383,7 @@ impl Context {
                         // Focus-tree buttons probe authored country/id and id overrides before
                         // the definition's icon. Events use the definition.
                         let overrides = if tree {
-                            definition.sprite_overrides(token, Some(tag))
+                            definition.button_sprite_overrides(token, Some(tag))
                         } else {
                             Vec::new()
                         };

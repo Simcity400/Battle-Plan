@@ -85,7 +85,18 @@ pub struct Sheet {
     pub grants: Vec<Grant>,
     pub transport: Option<String>,
     pub own_fuel_consumption: Option<i64>,
-    pub refused: Vec<String>,
+    pub refused: Vec<Refusal>,
+}
+
+/// A field of the sheet that cannot be read, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    pub field: String,
+    pub why: String,
+}
+
+fn refuse(refused: &mut Vec<Refusal>, field: &str, why: String) {
+    refused.push(Refusal { field: field.to_owned(), why });
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -175,10 +186,7 @@ impl Content {
                 .map_err(|why| invalid(format!("sub-unit {key} type: {why}")))?;
             match units.group(key.as_bytes()) {
                 Ok(group) => subunit.sheet.group = group.map(str::to_owned),
-                Err(why) => subunit
-                    .sheet
-                    .refused
-                    .push(format!("sub-unit {key} group: {why}")),
+                Err(why) => refuse(&mut subunit.sheet.refused, "group", format!("sub-unit {key} group: {why}")),
             }
         }
         Ok(())
@@ -415,7 +423,35 @@ impl Content {
     }
 }
 
-/// One declaration replayed onto `previous`: the game's reset keeps model priority, categories and essential.
+/// Scalars the game's reset leaves as an earlier declaration set them: kept until the new
+/// declaration assigns them again.
+const KEPT_SCALARS: [&str; 6] = [
+    "affects_speed",
+    "can_exfiltrate_from_coast",
+    "hit_profile_mult",
+    "critical_part_damage_chance_mult",
+    "abbreviation",
+    "own_equipment_fuel_consumption_mult",
+];
+
+/// Lists the reset leaves and a redefinition extends: their entries and refusals all stay.
+const KEPT_LISTS: [&str; 7] = [
+    "categories",
+    "essential",
+    "battalion_mult",
+    "same_support_type",
+    "critical_parts",
+    "required_dlc",
+    "allowed_battalion_groups",
+];
+
+fn kept(names: &[&str], field: &str) -> bool {
+    names.iter().any(|name| field.eq_ignore_ascii_case(name))
+}
+
+/// One declaration replayed onto `previous`, as the game's reset leaves it: model priority,
+/// transport, the own-fuel multiplier and the kept words stay; categories, essential and
+/// battalion multipliers are extended; everything else starts again.
 fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::Result<SubUnit> {
     let mut subunit = SubUnit {
         key: key.to_owned(),
@@ -425,7 +461,20 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
         subunit.model_priority = previous.model_priority;
         subunit.sheet.categories.clone_from(&previous.sheet.categories);
         subunit.sheet.essential.clone_from(&previous.sheet.essential);
+        subunit.sheet.grants.clone_from(&previous.sheet.grants);
+        subunit.sheet.transport.clone_from(&previous.sheet.transport);
+        subunit.sheet.own_fuel_consumption = previous.sheet.own_fuel_consumption;
     }
+    // What the earlier declaration left of the kept scalars and lists; a scalar the new
+    // declaration assigns replaces its earlier word and refusal.
+    let (carried_words, carried_refused) = previous.map_or_else(Default::default, |previous| {
+        let words: Vec<_> = previous.sheet.words.iter()
+            .filter(|(word, _)| kept(&KEPT_SCALARS, word) || kept(&KEPT_LISTS, word)).cloned().collect();
+        let refused: Vec<_> = previous.sheet.refused.iter()
+            .filter(|refusal| kept(&KEPT_SCALARS, &refusal.field) || kept(&KEPT_LISTS, &refusal.field)).cloned().collect();
+        (words, refused)
+    });
+    let mut assigned = Vec::new();
     for field in fields {
         let Some(keyword) = field.keyword() else {
             continue;
@@ -465,6 +514,7 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
                 subunit.sheet.transport = field.value.scalar_str().map(str::to_owned)
             }
             b"own_equipment_fuel_consumption_mult" => {
+                assigned.push("own_equipment_fuel_consumption_mult".to_owned());
                 subunit.sheet.own_fuel_consumption = Some(sheet_fixed5(
                     key,
                     "own_equipment_fuel_consumption_mult",
@@ -503,14 +553,22 @@ fn read_subunit(key: &str, previous: Option<&SubUnit>, fields: &[Item]) -> io::R
             }
             word => {
                 if let Some(value) = field.value.scalar_str() {
-                    subunit
-                        .sheet
-                        .words
-                        .push((String::from_utf8_lossy(word).into_owned(), value.to_owned()));
+                    let word = String::from_utf8_lossy(word).into_owned();
+                    if kept(&KEPT_SCALARS, &word) {
+                        assigned.push(word.clone());
+                    }
+                    subunit.sheet.words.push((word, value.to_owned()));
                 }
             }
         }
     }
+    let replaced = |field: &str| kept(&KEPT_SCALARS, field) && assigned.iter().any(|name| field.eq_ignore_ascii_case(name));
+    let mut words: Vec<_> = carried_words.into_iter().filter(|(word, _)| !replaced(word)).collect();
+    words.append(&mut subunit.sheet.words);
+    subunit.sheet.words = words;
+    let mut refused: Vec<_> = carried_refused.into_iter().filter(|refusal| !replaced(&refusal.field)).collect();
+    refused.append(&mut subunit.sheet.refused);
+    subunit.sheet.refused = refused;
     Ok(subunit)
 }
 
@@ -520,10 +578,10 @@ fn extend_tokens(
     field_name: &str,
     field: &Item,
     names: &mut Vec<String>,
-    refused: &mut Vec<String>,
+    refused: &mut Vec<Refusal>,
 ) {
     let Some(items) = field.value.items() else {
-        refused.push(format!("sub-unit {key}: {field_name} is not a list"));
+        refuse(refused, field_name, format!("sub-unit {key}: {field_name} is not a list"));
         return;
     };
     for item in items {
@@ -531,7 +589,7 @@ fn extend_tokens(
             continue;
         }
         let Some(name) = item.value.scalar_str() else {
-            refused.push(format!("sub-unit {key}: a {field_name} entry is not UTF-8"));
+            refuse(refused, field_name, format!("sub-unit {key}: a {field_name} entry is not UTF-8"));
             continue;
         };
         if !names.iter().any(|held| held.eq_ignore_ascii_case(name)) {
@@ -541,40 +599,40 @@ fn extend_tokens(
 }
 
 /// An authored fixed5 word of the sheet, or zero with its refusal noted.
-fn sheet_fixed5(key: &str, field: &str, value: &Value, refused: &mut Vec<String>) -> i64 {
+fn sheet_fixed5(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusal>) -> i64 {
     match value
         .scalar_str()
         .map(|text| authored_fixed5(text.as_bytes()))
     {
         Some(Ok(value)) => value,
         _ => {
-            refused.push(format!("sub-unit {key}: {field} is not a number"));
+            refuse(refused, field, format!("sub-unit {key}: {field} is not a number"));
             0
         }
     }
 }
 
 /// An authored integer of the sheet, or zero with its refusal noted.
-fn sheet_integer(key: &str, field: &str, value: &Value, refused: &mut Vec<String>) -> i32 {
+fn sheet_integer(key: &str, field: &str, value: &Value, refused: &mut Vec<Refusal>) -> i32 {
     match value.scalar_str().map(str::parse::<i32>) {
         Some(Ok(value)) => value,
         _ => {
-            refused.push(format!("sub-unit {key}: {field} is not a whole number"));
+            refuse(refused, field, format!("sub-unit {key}: {field} is not a whole number"));
             0
         }
     }
 }
 
 /// One `battalion_mult` block: its category, its kind and its stat values.
-fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Grant> {
+fn read_grant(key: &str, value: &Value, refused: &mut Vec<Refusal>) -> Option<Grant> {
     let Some(items) = value.items() else {
-        refused.push(format!("sub-unit {key}: battalion_mult is not a block"));
+        refuse(refused, "battalion_mult", format!("sub-unit {key}: battalion_mult is not a block"));
         return None;
     };
     let mut grant = Grant::default();
     for item in items {
         let Some(keyword) = item.keyword() else {
-            refused.push(format!(
+            refuse(refused, "battalion_mult", format!(
                 "sub-unit {key}: battalion_mult has a field that is no keyword"
             ));
             continue;
@@ -582,19 +640,19 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Gra
         match keyword.folded().as_slice() {
             b"category" => match item.value.scalar_str() {
                 Some(category) => grant.category = category.to_owned(),
-                None => refused.push(format!(
+                None => refuse(refused, "battalion_mult", format!(
                     "sub-unit {key}: battalion_mult category is not a name"
                 )),
             },
             b"add" => match yes(&item.value) {
                 Ok(add) => grant.add = add,
-                Err(why) => refused.push(format!("sub-unit {key}: battalion_mult {why}")),
+                Err(why) => refuse(refused, "battalion_mult", format!("sub-unit {key}: battalion_mult {why}")),
             },
             word => match item.value.scalar_str() {
                 Some(value) => grant
                     .words
                     .push((String::from_utf8_lossy(word).into_owned(), value.to_owned())),
-                None => refused.push(format!(
+                None => refuse(refused, "battalion_mult", format!(
                     "sub-unit {key}: battalion_mult field {} is not a scalar",
                     String::from_utf8_lossy(word)
                 )),
@@ -602,7 +660,7 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<String>) -> Option<Gra
         }
     }
     if grant.category.is_empty() {
-        refused.push(format!("sub-unit {key}: battalion_mult names no category"));
+        refuse(refused, "battalion_mult", format!("sub-unit {key}: battalion_mult names no category"));
         return None;
     }
     Some(grant)
