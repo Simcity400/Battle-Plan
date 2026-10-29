@@ -2507,6 +2507,108 @@ impl Cached {
 const DECODED_BLOBS: usize = 256;
 /// The decoded blob bytes a reader keeps; beyond them the least recently used go first.
 const DECODED_BYTES: usize = 64 << 20;
+/// Keys a multi-key read decodes together, their blobs read at once.
+const DECODE_KEYS: usize = 1024;
+#[cfg(test)]
+thread_local! {
+    /// [`DECODED_BYTES`] for this thread's readers, which a test can lower.
+    pub(super) static TEST_DECODED_BYTES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(DECODED_BYTES) };
+}
+fn decoded_bytes() -> usize {
+    #[cfg(test)]
+    return TEST_DECODED_BYTES.get();
+    #[cfg(not(test))]
+    DECODED_BYTES
+}
+/// The most stored blob bytes one read takes, and the most unwanted bytes between two blobs it
+/// reads through rather than reading them apart.
+const DECODE_READ: u64 = 16 << 20;
+const DECODE_GAP: u64 = 64 << 10;
+
+/// One key's changes at a read's hours, built from its blob in each span's batch in turn,
+/// and the first of those blobs that failed.
+#[derive(Default)]
+struct Built {
+    changes: Vec<(usize, Option<i128>)>,
+    current: Option<i128>,
+    settled: usize,
+    failed: Option<io::Error>,
+}
+
+impl Built {
+    /// Each hour from `from` holds `value`, up to the next segment.
+    fn segment(&mut self, from: usize, to: usize, value: Option<i128>) {
+        if from < to && self.current != value {
+            self.changes.push((from, value));
+            self.current = value;
+        }
+    }
+
+    /// The hours `range` of `hours`, answered by a batch holding the key's `rows`.
+    fn span(&mut self, hours: &[i32], range: &std::ops::Range<usize>, rows: &[Run]) {
+        self.segment(self.settled, range.start, None);
+        let span = &hours[range.clone()];
+        // The index of the first of the span's hours from `hour`, or after it.
+        let from_hour = |hour: i32| range.start + span.partition_point(|&h| h < hour);
+        let after_hour = |hour: i32| range.start + span.partition_point(|&h| h <= hour);
+        // An hour takes the last run starting by then while that run lasts: only the last run
+        // starting by the span's first hour, and those starting within it, do.
+        let first = rows
+            .partition_point(|run| run.first_hour <= span[0])
+            .saturating_sub(1);
+        let last = span[span.len() - 1];
+        let mut from = range.start;
+        for (index, run) in rows.iter().enumerate().skip(first) {
+            if run.first_hour > last {
+                break;
+            }
+            let start = from_hour(run.first_hour);
+            self.segment(from, start, None);
+            let until = rows
+                .get(index + 1)
+                .map_or(range.end, |next| from_hour(next.first_hour));
+            let held = after_hour(run.last_hour).clamp(start, until.max(start));
+            self.segment(start, held, Some(run.value));
+            self.segment(held, until, None);
+            from = from.max(until);
+        }
+        self.segment(from, range.end, None);
+        self.settled = range.end;
+    }
+
+    fn finish(mut self, hours: usize) -> io::Result<Vec<(usize, Option<i128>)>> {
+        if let Some(error) = self.failed {
+            return Err(error);
+        }
+        self.segment(self.settled, hours, None);
+        Ok(self.changes)
+    }
+}
+
+/// A key's blob as a read gives it, or why it could not.
+type Blob = io::Result<Arc<Cached>>;
+
+/// What refuses a read cancelled part way: the first key's failure already `found`, in key
+/// order, else the cancellation.
+fn refusal(found: impl IntoIterator<Item = Option<io::Error>>, cancelled: io::Error) -> io::Error {
+    found.into_iter().flatten().next().unwrap_or(cancelled)
+}
+
+/// Visits `blob` at `at`, unless it failed once the read was cancelled: that failure is the
+/// cancellation, which stops the read.
+fn hand(
+    cancelled: &AtomicBool,
+    visit: &mut dyn FnMut(usize, Blob),
+    at: usize,
+    blob: Blob,
+) -> io::Result<()> {
+    if blob.is_err() {
+        check_cancel(cancelled)?;
+    }
+    visit(at, blob);
+    Ok(())
+}
 
 /// A reader's decoded blobs by batch and key, the least recently used dropped first once they
 /// hold more than [`DECODED_BYTES`], the latest always kept: a read sweeping thousands of keys
@@ -2540,7 +2642,7 @@ impl Decoded {
             self.used.remove(&last);
         }
         self.used.insert(self.clock, id);
-        while self.bytes > DECODED_BYTES && self.used.len() > 1 {
+        while self.bytes > decoded_bytes() && self.used.len() > 1 {
             let (_, oldest) = self.used.pop_first().expect("more than one blob is held");
             let (blob, _) = self.blobs.remove(&oldest).expect("a used blob is held");
             self.bytes -= blob.bytes();
@@ -2549,6 +2651,11 @@ impl Decoded {
 
     fn held(&self, id: (u64, u64)) -> &Arc<Cached> {
         &self.blobs[&id].0
+    }
+
+    /// The blob held for `id`, marking it the most recently used.
+    fn get(&mut self, id: (u64, u64)) -> Option<Arc<Cached>> {
+        self.touch(id).then(|| Arc::clone(self.held(id)))
     }
 }
 /// The most a blob read reserves before its first read.
@@ -2834,17 +2941,31 @@ impl<'a> Reader<'a> {
         let Some(batch) = self.batches(hour, hour)?.next() else {
             return Ok(vec![None; keys.len()]);
         };
-        keys.iter()
-            .map(|&key| {
-                let rows = &self.data(batch, key)?.runs;
-                let index = rows.partition_point(|run| run.first_hour <= hour);
-                Ok(index
-                    .checked_sub(1)
-                    .map(|index| rows[index])
-                    .filter(|run| run.last_hour >= hour)
-                    .map(|run| run.value))
-            })
-            .collect()
+        let mut amounts = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(DECODE_KEYS) {
+            let mut read: Vec<Option<io::Result<Option<i128>>>> =
+                std::iter::repeat_with(|| None).take(chunk.len()).collect();
+            let visited = self.each_blob(batch, chunk, &mut |at, blob| {
+                read[at] = Some(blob.map(|blob| {
+                    let rows = &blob.runs;
+                    let index = rows.partition_point(|run| run.first_hour <= hour);
+                    index
+                        .checked_sub(1)
+                        .map(|index| rows[index])
+                        .filter(|run| run.last_hour >= hour)
+                        .map(|run| run.value)
+                }));
+            });
+            if let Err(cancelled) = visited {
+                let found = read.into_iter().map(|amount| amount.and_then(Result::err));
+                return Err(refusal(found, cancelled));
+            }
+            // A key's failure refuses the read in key order, as reading each alone does.
+            for amount in read {
+                amounts.push(amount.expect("every key's blob is visited")?);
+            }
+        }
+        Ok(amounts)
     }
     /// What [`Self::values_at`] reads of each of `keys` at the ascending `hours`, as
     /// each key's changes: the index of each hour whose value differs from the hour
@@ -2874,53 +2995,175 @@ impl<'a> Reader<'a> {
         result
             .try_reserve_exact(keys.len())
             .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        for &key in keys {
-            check_cancel(self.cancelled)?;
-            let mut changes = Vec::new();
-            let mut current = None;
-            // Each hour from `from` holds `value`, up to the next segment.
-            let mut segment = |from: usize, to: usize, value: Option<i128>| {
-                if from < to && current != value {
-                    changes.push((from, value));
-                    current = value;
-                }
-            };
-            let mut settled = 0;
+        for chunk in keys.chunks(DECODE_KEYS) {
+            // Built span by span, each span's blobs let go once applied.
+            let mut built: Vec<Built> = std::iter::repeat_with(Built::default)
+                .take(chunk.len())
+                .collect();
             for (batch, range) in &spans {
-                segment(settled, range.start, None);
-                let span = &hours[range.clone()];
-                // The index of the first of the span's hours from `hour`, or after it.
-                let from_hour = |hour: i32| range.start + span.partition_point(|&h| h < hour);
-                let after_hour = |hour: i32| range.start + span.partition_point(|&h| h <= hour);
-                let rows = &self.data(*batch, key)?.runs;
-                // An hour takes the last run starting by then while that run lasts: only the
-                // last run starting by the span's first hour, and those starting within it, do.
-                let first = rows
-                    .partition_point(|run| run.first_hour <= span[0])
-                    .saturating_sub(1);
-                let last = span[span.len() - 1];
-                let mut from = range.start;
-                for (index, run) in rows.iter().enumerate().skip(first) {
-                    if run.first_hour > last {
-                        break;
-                    }
-                    let start = from_hour(run.first_hour);
-                    segment(from, start, None);
-                    let until = rows
-                        .get(index + 1)
-                        .map_or(range.end, |next| from_hour(next.first_hour));
-                    let held = after_hour(run.last_hour).clamp(start, until.max(start));
-                    segment(start, held, Some(run.value));
-                    segment(held, until, None);
-                    from = from.max(until);
+                let read = check_cancel(self.cancelled).and_then(|()| {
+                    self.each_blob(*batch, chunk, &mut |at, blob| {
+                        let built = &mut built[at];
+                        if built.failed.is_none() {
+                            match blob {
+                                Ok(blob) => built.span(hours, range, &blob.runs),
+                                Err(error) => built.failed = Some(error),
+                            }
+                        }
+                    })
+                });
+                if let Err(cancelled) = read {
+                    let found = built.into_iter().map(|built| built.failed);
+                    return Err(refusal(found, cancelled));
                 }
-                segment(from, range.end, None);
-                settled = range.end;
             }
-            segment(settled, hours.len(), None);
-            result.push(changes);
+            // A key's first failure refuses the read in key order, as reading each alone does.
+            for built in built {
+                result.push(built.finish(hours.len())?);
+            }
         }
         Ok(result)
+    }
+    /// Visits each of `keys`' blobs in `batch`, by its place in `keys`, as [`Self::data`] gives
+    /// it, as soon as it is read: in no set order, and none kept once visited. Blobs not yet
+    /// held are read in as few file reads as their layout allows; a blob too long to read with
+    /// others, running past the batch, or in a run whose read fails is read alone, as `data`
+    /// reads it, so each key's failure is the one reading it alone gives. A key asked again
+    /// shares its first read, or reads alone again should that have failed. A cancellation
+    /// stops the read part way, and is its error.
+    fn each_blob(
+        &mut self,
+        batch: u64,
+        keys: &[u64],
+        visit: &mut dyn FnMut(usize, Blob),
+    ) -> io::Result<()> {
+        let cancelled = self.cancelled;
+        let (id, size) = match self.file(batch) {
+            Ok(file) => (file.id().cache_key(), file.len()),
+            Err(_) => {
+                for (at, &key) in keys.iter().enumerate() {
+                    hand(cancelled, visit, at, self.alone(batch, key))?;
+                }
+                return Ok(());
+            }
+        };
+        let readable = |dir: &Directory| {
+            let (offset, length) = dir.blob;
+            length <= DECODE_READ && offset.checked_add(length).is_some_and(|end| end <= size)
+        };
+        let mut stored = Vec::new();
+        let mut alone = Vec::new();
+        // The other places asking for each key still to be read.
+        let mut repeats: std::collections::HashMap<u64, Vec<usize>> = Default::default();
+        for (at, &key) in keys.iter().enumerate() {
+            if let Some(blob) = self.cached.get((batch, key)) {
+                visit(at, Ok(blob));
+                continue;
+            }
+            if let Some(blob) = query::held_blob((id, key)) {
+                self.cached.insert((batch, key), Arc::clone(&blob));
+                visit(at, Ok(blob));
+                continue;
+            }
+            if let Some(waiting) = repeats.get_mut(&key) {
+                waiting.push(at);
+                continue;
+            }
+            match self.info(batch, key) {
+                Ok(dir) if dir.blob.1 == 0 => {
+                    let decoded = decode(Vec::new(), dir, cancelled);
+                    hand(cancelled, visit, at, self.decoded(batch, id, key, decoded))?;
+                }
+                Ok(dir) => {
+                    repeats.insert(key, Vec::new());
+                    if readable(&dir) {
+                        stored.push((at, key, dir));
+                    } else {
+                        alone.push((at, key));
+                    }
+                }
+                Err(error) => hand(cancelled, visit, at, Err(error))?,
+            }
+        }
+        let mut deliver = |reader: &mut Self, at: usize, key: u64, blob: Blob| -> io::Result<()> {
+            // The first read is visited before any repeat reads again, so its failure stands.
+            let shared = blob.as_ref().ok().map(Arc::clone);
+            hand(cancelled, visit, at, blob)?;
+            for repeat in repeats.remove(&key).unwrap_or_default() {
+                let again = match &shared {
+                    Some(shared) => Ok(Arc::clone(shared)),
+                    None => reader.alone(batch, key),
+                };
+                hand(cancelled, visit, repeat, again)?;
+            }
+            Ok(())
+        };
+        stored.sort_unstable_by_key(|&(_, _, dir)| dir.blob.0);
+        let mut start = 0;
+        while start < stored.len() {
+            // The blobs lying together from `start`, read at once: at most `DECODE_READ` bytes,
+            // each blob within the batch.
+            let first = stored[start].2.blob.0;
+            let mut last = first + stored[start].2.blob.1;
+            let mut end = start + 1;
+            while let Some(&(_, _, dir)) = stored.get(end) {
+                let (offset, length) = dir.blob;
+                let through = (offset + length).max(last);
+                if offset.saturating_sub(last) > DECODE_GAP || through - first > DECODE_READ {
+                    break;
+                }
+                last = through;
+                end += 1;
+            }
+            let run = &stored[start..end];
+            start = end;
+            // A cancelled read allocates no further run.
+            check_cancel(cancelled)?;
+            let mut bytes = vec![0; (last - first) as usize];
+            let read = self.file(batch).and_then(|file| {
+                file.seek(SeekFrom::Start(first))?;
+                file.read_exact(&mut bytes)
+            });
+            if read.is_err() {
+                check_cancel(cancelled)?;
+                alone.extend(run.iter().map(|&(at, key, _)| (at, key)));
+                continue;
+            }
+            for &(at, key, dir) in run {
+                let decoded = (|| {
+                    check_cancel(cancelled)?;
+                    let from = (dir.blob.0 - first) as usize;
+                    let raw = decompress(&bytes[from..from + dir.blob.1 as usize])?;
+                    decode(raw, dir, cancelled)
+                })();
+                let blob = self.decoded(batch, id, key, decoded);
+                deliver(self, at, key, blob)?;
+            }
+        }
+        for (at, key) in alone {
+            check_cancel(cancelled)?;
+            let blob = self.alone(batch, key);
+            deliver(self, at, key, blob)?;
+        }
+        Ok(())
+    }
+    /// `key`'s blob in `batch` read alone ([`Self::data`]).
+    fn alone(&mut self, batch: u64, key: u64) -> Blob {
+        let read = self.data(batch, key).map(|_| ());
+        read.map(|()| Arc::clone(self.cached.held((batch, key))))
+    }
+    /// A blob decoded for `key`, kept as [`Self::data`] keeps one.
+    fn decoded(
+        &mut self,
+        batch: u64,
+        id: [u64; 3],
+        key: u64,
+        decoded: io::Result<Cached>,
+    ) -> io::Result<Arc<Cached>> {
+        let blob = Arc::new(decoded?);
+        query::keep_blob((id, key), &blob);
+        self.cached.insert((batch, key), Arc::clone(&blob));
+        Ok(blob)
     }
     pub fn value_at(&mut self, key: u64, hour: i32) -> io::Result<Option<Run>> {
         let Some(batch) = self.batches(hour, hour)?.next() else {

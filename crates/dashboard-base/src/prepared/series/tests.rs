@@ -1855,6 +1855,119 @@ fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps() {
 }
 
 #[test]
+fn many_keys_read_together_give_each_keys_blob_as_reading_it_alone() {
+    let mut fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for (batch, (first, last)) in [(0, 49), (50, 99)].into_iter().enumerate() {
+        for hour in first..=last {
+            for key in 0..1500_u64 {
+                // A fifth of the keys hold nothing in each batch, their blobs empty.
+                let amount = (key % 5 != batch as u64)
+                    .then(|| i128::from(hour / (1 + key as i32 % 7)) + i128::from(key));
+                values.observe(key, hour, amount, false);
+            }
+        }
+        let mut writer = if batch == 1 {
+            fixture.append_writer()
+        } else {
+            fixture.writer()
+        };
+        values.flush(&mut writer, "values", 0, &flag).unwrap();
+        writer.commit().unwrap();
+        values = serde_json::from_slice(&serde_json::to_vec(&values).unwrap()).unwrap();
+    }
+    // More keys than one read decodes together, asked out of their stored order.
+    let keys: Vec<u64> = (0..1500).rev().collect();
+    assert!(keys.len() > DECODE_KEYS);
+    let open = || Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let (mut together, mut alone) = (open(), open());
+    for hour in [0, 25, 49, 50, 77, 99] {
+        let batch = alone.batches(hour, hour).unwrap().next().unwrap();
+        let expected: Vec<Option<i128>> = keys
+            .iter()
+            .map(|&key| {
+                let rows = &alone.data(batch, key).unwrap().runs;
+                let index = rows.partition_point(|run| run.first_hour <= hour);
+                index
+                    .checked_sub(1)
+                    .map(|index| rows[index])
+                    .filter(|run| run.last_hour >= hour)
+                    .map(|run| run.value)
+            })
+            .collect();
+        let read = together.values_at(&keys, hour).unwrap();
+        assert_eq!(read, expected, "hour {hour}");
+    }
+}
+
+#[test]
+fn keys_read_together_decode_a_repeated_key_once_and_stop_when_cancelled() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 0..20 {
+        for key in 0..3_u64 {
+            let amount = i128::from(hour) * i128::from(key + 1);
+            values.observe(key, hour, Some(amount), false);
+        }
+    }
+    let mut writer = fixture.writer();
+    values.flush(&mut writer, "values", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let decodes = BLOB_DECODES.get();
+    let read = reader.values_at(&[1, 1, 2, 1], 10).unwrap();
+    assert_eq!(read, [Some(20), Some(20), Some(30), Some(20)]);
+    assert_eq!(BLOB_DECODES.get() - decodes, 2, "each key decoded once");
+    let cancelled = AtomicBool::new(false);
+    let mut reader =
+        Reader::new(&fixture.store, &fixture.key, "values".into(), &cancelled).unwrap();
+    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let decodes = BLOB_DECODES.get();
+    let error = reader.values_at(&[0, 1, 2], 10).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    let decoded = BLOB_DECODES.get() - decodes;
+    assert_eq!(decoded, 0, "nothing decoded once cancelled");
+}
+
+#[test]
+fn a_repeated_key_shares_its_first_read_however_little_the_reader_keeps() {
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 0..20 {
+        for key in 0..3_u64 {
+            let amount = i128::from(hour) + i128::from(key) * 100;
+            values.observe(key, hour, Some(amount), false);
+        }
+    }
+    let mut writer = fixture.writer();
+    values.flush(&mut writer, "values", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    // Only the latest decoded blob is kept, so every other one is evicted at once.
+    TEST_DECODED_BYTES.set(1);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
+    let decodes = BLOB_DECODES.get();
+    let read = reader.values_at(&[0, 0, 1, 2, 0], 10);
+    let decoded = BLOB_DECODES.get() - decodes;
+    TEST_DECODED_BYTES.set(DECODED_BYTES);
+    let expected = [Some(10), Some(10), Some(110), Some(210), Some(10)];
+    assert_eq!(read.unwrap(), expected);
+    assert_eq!(decoded, 3, "each key decoded once");
+}
+
+#[test]
+fn a_read_cancelled_part_way_reports_a_failure_found_before_it() {
+    let cancelled = || io::Error::from(io::ErrorKind::Interrupted);
+    let failed = Some(io::Error::from(io::ErrorKind::InvalidData));
+    let refused = refusal([None, failed, None], cancelled());
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+    let refused = refusal([None, None], cancelled());
+    assert_eq!(refused.kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
 fn a_sweep_over_more_keys_than_a_count_bound_held_decodes_each_blob_once() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

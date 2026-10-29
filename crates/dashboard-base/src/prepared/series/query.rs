@@ -244,6 +244,31 @@ pub(super) fn blob(
 ) -> io::Result<Arc<Cached>> {
     reuse(current(), id, |cache| &mut cache.blobs, read)
 }
+
+/// The blob this request's scope already holds, kept for its next publication too.
+pub(super) fn held_blob(id: ([u64; 3], u64)) -> Option<Arc<Cached>> {
+    let scope = current()?;
+    let mut state = scope.borrow_mut();
+    let blob = state
+        .current
+        .blobs
+        .get(&id)
+        .or_else(|| state.previous.blobs.get(&id))
+        .cloned()?;
+    state.current.blobs.insert(id, Arc::clone(&blob));
+    Some(blob)
+}
+
+/// A blob decoded outside [`blob`], kept with this request's scope as `blob` keeps one.
+pub(super) fn keep_blob(id: ([u64; 3], u64), blob: &Arc<Cached>) {
+    if let Some(scope) = current() {
+        scope
+            .borrow_mut()
+            .current
+            .blobs
+            .insert(id, Arc::clone(blob));
+    }
+}
 pub(super) fn summaries(
     id: ([u64; 3], u64),
     read: impl FnOnce() -> io::Result<Summaries>,
