@@ -633,6 +633,45 @@ fn query_within(
     budget: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
+    careers(store, key, params, history, cancelled)?
+        .map(|careers| answer_within(&careers, params, hour, budget))
+        .transpose()
+}
+
+/// `careers` as `hour` asks for them: a leaderboard is cut at the hour, which no other view reads.
+pub fn answer_at(
+    careers: &UnitLeadersReply,
+    params: &UnitLeadersParams,
+    hour: Option<i32>,
+) -> io::Result<UnitLeadersReply> {
+    answer_within(careers, params, hour, MAX_REPLY_BYTES)
+}
+
+fn answer_within(
+    careers: &UnitLeadersReply,
+    params: &UnitLeadersParams,
+    hour: Option<i32>,
+    budget: usize,
+) -> io::Result<UnitLeadersReply> {
+    let mut reply = careers.clone();
+    if params.view == LeaderView::Leaderboard
+        && let Some(hour) = hour
+    {
+        leaderboard_at(&mut reply, hour);
+    }
+    reply_bytes_within(&reply, budget)?;
+    Ok(reply)
+}
+
+/// A selection's leaders as every hour asks for them, before a leaderboard is cut at its hour
+/// ([`answer_at`]).
+pub fn careers(
+    store: &store::Store,
+    key: &store::SourceKey,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<UnitLeadersReply>> {
     let branch = params.branch_id.parse().expect("validated leader branch");
     let Some((keys, metadata)) =
         series::read_catalogue::<Metadata>(store, key, "unit-leaders", branch)?
@@ -738,7 +777,6 @@ fn query_within(
         };
         let mut reply = project(&full, &choice_params, None);
         reply.selection_tags = choice_tags;
-        reply_bytes_within(&reply, budget)?;
         return Ok(Some(reply));
     }
     let mut materialized = Vec::new();
@@ -796,14 +834,7 @@ fn query_within(
     }
     scan.stored_runs = materialized;
     let full = scan.finish(&full_params(&params.branch_id), None)?;
-    let mut reply = project(&full, params, history);
-    if params.view == LeaderView::Leaderboard
-        && let Some(hour) = hour
-    {
-        leaderboard_at(&mut reply, hour);
-    }
-    reply_bytes_within(&reply, budget)?;
-    Ok(Some(reply))
+    Ok(Some(project(&full, params, history)))
 }
 /// A key's events in order, each parsed from its stored row straight into an [`Event`].
 fn events(reader: &mut Reader<'_>, key: u64, cancelled: &AtomicBool) -> io::Result<Vec<Event>> {

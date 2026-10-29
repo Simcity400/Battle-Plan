@@ -684,3 +684,28 @@ fn leaders_at_a_cold_hour_show_prepared_values_with_battle_counts_pending() {
         clear(source);
     });
 }
+
+#[test]
+fn every_hour_of_a_selection_shares_its_careers() {
+    let replay = scenario(LAST, false);
+    let mut fixture = Fixture::new(&replay);
+    independent::with_test_hourly(|| {
+        let source = fixture.source("leader-hours");
+        plain(&source);
+        let at = |hour: i32| {
+            serde_json::json!({"branchId":"1", "view":"leaderboard", "selection":{"kind":"all"}, "hour":hour})
+        };
+        let early = query(&source, "unit-leaders", at(105));
+        let late = query(&source, "unit-leaders", at(LAST));
+        let computed = || {
+            dashboard_base::prepared::query::observations::usage(&source, "unit-leaders:careers").2
+        };
+        assert_eq!(computed(), 1, "the second hour cuts the careers the first computed");
+        // Each hour answers as a source computing it alone does.
+        let fresh = fixture.source("leader-hours-fresh");
+        assert_eq!(query(&fresh, "unit-leaders", at(105)), early);
+        let alone = fixture.source("leader-hours-alone");
+        assert_eq!(query(&alone, "unit-leaders", at(LAST)), late);
+        clear(source);
+    });
+}

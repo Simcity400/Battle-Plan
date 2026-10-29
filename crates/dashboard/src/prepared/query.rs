@@ -1700,14 +1700,50 @@ fn query_data(
             let Some(prefix) = prefix else {
                 return Ok(Value::Null);
             };
-            let mut reply = crate::products::unit_leaders::prepared::query_at(
+            // Every hour asks a selection's same careers, kept until the leaders or the
+            // countries' identities publish again; only a leaderboard is cut at its hour.
+            let mut pages = super::pipeline::query_pages(&store, &key, branch, "unit-leaders")?;
+            pages.extend(super::pipeline::query_pages(
                 &store,
                 &key,
+                branch,
+                "country-identities",
+            )?);
+            let identities = format!("country-identities-{branch}");
+            let identity = store
+                .read(&key, &identities, 0)?
+                .map(|file| file.id().cache_key());
+            pages.push((identities, identity));
+            let careers = dashboard_base::prepared::query::observations::scope(
+                source,
+                "unit-leaders:careers",
+                Some(&key),
+            )
+            .get_entry(
+                branch,
                 &params,
-                history.as_deref(),
-                hour,
+                &pages,
                 cancelled,
+                |careers: &Option<crate::products::unit_leaders::UnitLeadersReply>| {
+                    dashboard_base::prepared::query::observations::serde_bytes(careers)
+                },
+                || {
+                    crate::products::unit_leaders::prepared::careers(
+                        &store,
+                        &key,
+                        &params,
+                        history.as_deref(),
+                        cancelled,
+                    )
+                },
             )?;
+            let mut reply = careers
+                .as_ref()
+                .as_ref()
+                .map(|careers| {
+                    crate::products::unit_leaders::prepared::answer_at(careers, &params, hour)
+                })
+                .transpose()?;
             if let Some(reply) = &mut reply {
                 crate::products::unit_leaders::present_traits(source, content, &mut reply.traits)?;
             }
