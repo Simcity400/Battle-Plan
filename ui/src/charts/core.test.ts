@@ -112,6 +112,11 @@ test('end labels keep their order without overlapping and stay in bounds', () =>
   assert.ok(placed.get('c')! <= 193);
   assert.equal(fitLabelWidth(['ab', 'abcd'], text => text.length * 10, 20, 200, 6), 46);
   assert.equal(fitLabelWidth(['x'.repeat(100)], text => text.length * 10, 20, 200), 200);
+  // Past one text filling the widest column, the others are not measured.
+  const measured: string[] = [];
+  const width = fitLabelWidth(['ab', 'x'.repeat(30), 'abcd', 'y'.repeat(40)], text => { measured.push(text); return text.length * 10; }, 20, 200, 6);
+  assert.equal(width, 200);
+  assert.deepEqual(measured, ['ab', 'x'.repeat(30)]);
 });
 
 test('canvases follow on-screen size, so the Size zoom stays sharp', () => {

@@ -88,8 +88,45 @@ export interface LedgerSeries { country: MilitaryAirCountry; points: LedgerTotal
 export interface LedgerIndex { reply: MilitaryAirReply; series: LedgerSeries[]; byTag: ReadonlyMap<string, LedgerSeries[]>; unknown: LedgerTotal[] }
 const sharedIndices = new WeakMap<MilitaryAirReply, LedgerIndex>();
 
-/** Accumulate exact per-read deltas once; playback then uses a binary search. */
+/** Accumulate exact per-read deltas once; playback then uses a binary search. Summed as
+ * numbers while every total and sum is a safe integer, which gives what bigints give, and as
+ * bigints otherwise. */
 export function ledgerTotals(leaves: readonly MilitaryAirLeaf[]): LedgerTotal[] {
+  return safeLedgerTotals(leaves) ?? exactLedgerTotals(leaves);
+}
+
+/** A total of at most fifteen digits, which a number holds exactly. */
+const SAFE_TOTAL = /^-?\d{1,15}$/;
+
+/** {@link ledgerTotals} in numbers, or null once a total or a sum is not a safe integer. */
+function safeLedgerTotals(leaves: readonly MilitaryAirLeaf[]): LedgerTotal[] | null {
+  const deltas = new Map<number, { dealt: number; taken: number; nativeHour: number }>();
+  for (const leaf of leaves) {
+    const side = leaf.dealt ? 'dealt' : 'taken';
+    let before = 0;
+    for (const point of leaf.points) {
+      if (!SAFE_TOTAL.test(point.totalRaw)) return null;
+      const current = Number(point.totalRaw), delta = current - before;
+      before = current;
+      const row = deltas.get(point.readHour) ?? { dealt: 0, taken: 0, nativeHour: point.hour };
+      row[side] += delta;
+      if (!Number.isSafeInteger(row[side])) return null;
+      row.nativeHour = Math.max(row.nativeHour, point.hour);
+      deltas.set(point.readHour, row);
+    }
+  }
+  let dealt = 0, taken = 0;
+  const totals: LedgerTotal[] = [];
+  for (const [readHour, delta] of [...deltas].sort(([a], [b]) => a - b)) {
+    dealt += delta.dealt; taken += delta.taken;
+    if (!Number.isSafeInteger(dealt) || !Number.isSafeInteger(taken)) return null;
+    totals.push({ readHour, nativeHour: delta.nativeHour, dealt: BigInt(dealt), taken: BigInt(taken) });
+  }
+  return totals;
+}
+
+/** {@link ledgerTotals} in bigints, for totals or sums past a safe integer. */
+function exactLedgerTotals(leaves: readonly MilitaryAirLeaf[]): LedgerTotal[] {
   const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
   for (const leaf of leaves) {
     let before = 0n;

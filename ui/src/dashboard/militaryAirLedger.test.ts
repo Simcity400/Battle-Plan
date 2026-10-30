@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
-import { militaryAirPreparing, airLossParts, leafAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerPinnedIdentity, ledgerRuns, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
+import { militaryAirPreparing, airLossParts, leafAmount, ledgerComplete, ledgerCountries, ledgerCountryAt, ledgerPinnedIdentity, ledgerRuns, ledgerTotals, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, validateMilitaryAirReply } from './militaryAirLedger.ts';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const leaf = (extra: Partial<MilitaryAirLeaf> = {}): MilitaryAirLeaf => ({ tag: 'mod country', identity: '3:9', dealt: false,
@@ -12,6 +12,40 @@ const reply = (extra: Partial<MilitaryAirReply> = {}): MilitaryAirReply => ({ fa
   countries: [{ tag: 'mod country', identity: '3:9', present: [span(10, 11), span(13, 14)], membership: null }],
   leaves: [leaf()], regions: [{ id: '40001', name: null, missing: 'The recorded mod did not define this region.' }], buildings: [], warnings: [], ...extra });
 const noFilters = { regions: new Set<number>(), causes: new Set<number>() };
+
+test('ledger totals are exact, summed in numbers while safe and in bigints past that', () => {
+  // The totals summed in bigints throughout, as the ledger has always summed them.
+  const reference = (leaves: readonly MilitaryAirLeaf[]) => {
+    const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
+    for (const item of leaves) {
+      let before = 0n;
+      for (const point of item.points) {
+        const current = BigInt(point.totalRaw), delta = current - before;
+        before = current;
+        const row = deltas.get(point.readHour) ?? { dealt: 0n, taken: 0n, nativeHour: point.hour };
+        row[item.dealt ? 'dealt' : 'taken'] += delta;
+        row.nativeHour = Math.max(row.nativeHour, point.hour);
+        deltas.set(point.readHour, row);
+      }
+    }
+    let dealt = 0n, taken = 0n;
+    return [...deltas].sort(([a], [b]) => a - b).map(([readHour, delta]) => {
+      dealt += delta.dealt; taken += delta.taken;
+      return { readHour, nativeHour: delta.nativeHour, dealt, taken };
+    });
+  };
+  const points = (...totals: string[]) => totals.map((totalRaw, index) => ({ hour: 20 - index, readHour: 10 + index, totalRaw }));
+  for (const leaves of [
+    // Safe totals, corrections included, over two sides and one shared read.
+    [leaf({ points: points('300000', '200000', '-5') }), leaf({ dealt: true, points: points('7', '7', '900') })],
+    // A total past a safe integer, and fifteen-digit totals whose sum is past one.
+    [leaf({ points: points('9007199254740993', '1') })],
+    [leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }),
+      leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }),
+      leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }), leaf({ points: points('999999999999999') }),
+      leaf({ points: points('999999999999999') })],
+  ]) assert.deepEqual(ledgerTotals(leaves), reference(leaves));
+});
 
 test('the product validator returns the payload and accepts later publications with earlier native dates', () => {
   const data = reply();

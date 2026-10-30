@@ -322,17 +322,19 @@ export default function Timeline(props: TimelineProps) {
       labelTruncate = p.truncateLabels;
       if (refit) {
         labelsFitted = true;
-        if (p.labelCatalogue) fitted = catalogueWidth(p.labelCatalogue, item => {
-          context.font = font(tokens, item.size ?? tokens.fontSize.body, item.weight);
-          return context.measureText(item.text).width;
-        });
+        // Setting a font parses it, so it is set only when the text to measure needs another.
+        let measuring = '';
+        const measureIn = (shown: string, text: string) => {
+          if (shown !== measuring) { context.font = shown; measuring = shown; }
+          return context.measureText(text).width;
+        };
+        if (p.labelCatalogue) fitted = catalogueWidth(p.labelCatalogue, item =>
+          measureIn(font(tokens, item.size ?? tokens.fontSize.body, item.weight), item.text));
         else {
           const texts = p.lanes.flatMap(lane => (lane.compact ? [lane.label] : [lane.label, p.emptyLabel ?? 'Empty', ...(lane.identity ? [lane.identity.label] : []), ...lane.spans.map(span => span.label)])
             .map(text => [text, ((lane.depth ?? 0) + (lane.expanded == null ? 0 : 1)) * INDENT, p.truncateLabels === false ? lane.heading ? 600 : 500 : lane.pill ? 500 : 600] as const));
-          fitted = fitLabelWidth(texts, ([text, indent, weight]) => {
-            context.font = font(tokens, tokens.fontSize.body, weight);
-            return context.measureText(text).width + indent;
-          }, 120, 280, ICON + 30);
+          fitted = fitLabelWidth(texts, ([text, indent, weight]) => measureIn(font(tokens, tokens.fontSize.body, weight), text) + indent,
+            120, 280, ICON + 30);
         }
       }
       left = leftColumn(fitted, layoutWidth);

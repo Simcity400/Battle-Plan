@@ -31,10 +31,15 @@ export function layoutEndLabels(labels: readonly EndLabel[], top: number, bottom
 
 /** A label column only as wide as its longest text over the whole campaign, so it
  * never jumps during playback; clamped to [min, max]. A text may carry more than its
- * words (such as an indent), which `measure` then counts. */
+ * words (such as an indent), which `measure` then counts. `measure` gives a finite width
+ * and nothing else: texts after one that fills the widest column are not measured. */
 export function fitLabelWidth<T = string>(texts: Iterable<T>, measure: (text: T) => number, min: number, max: number, padding = 0): number {
   let widest = 0;
-  for (const text of texts) widest = Math.max(widest, measure(text));
+  for (const text of texts) {
+    widest = Math.max(widest, measure(text));
+    // Once one text fills the widest column, no other can change it.
+    if (widest + padding >= max) break;
+  }
   return Math.ceil(Math.min(max, Math.max(min, widest + padding)));
 }
 
