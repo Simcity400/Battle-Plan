@@ -56,6 +56,9 @@ export class ResourceCache<T> {
     });
   }
 
+  /** Whether a load of `key` is going or settled, so another cache's ask can join it. */
+  holds(key: string): boolean { return this.entries.has(key); }
+
   /** Mounted progressive reads can reuse only final results, never another mount's polling. */
   getSettled(key: string): Promise<T> | undefined {
     const entry = this.entries.get(key);

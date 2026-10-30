@@ -27,16 +27,19 @@ function receivedLength(reply: ProductReply<unknown>): number | undefined {
   return replyLengths.get(reply) ?? (data !== null && typeof data === 'object' ? replyLengths.get(data) : undefined);
 }
 
-/** One shared, bounded cache of final product replies per client. One-shot
- * requests share native work; progressive replies and polling belong to each mount. */
-const caches = new WeakMap<DashboardClient, ResourceCache<ProductReply<unknown>>>();
-function cache(client: DashboardClient): ResourceCache<ProductReply<unknown>> {
+/** Two bounded caches of final product replies per client. One-shot requests share native
+ * work; progressive replies and polling belong to each mount. Replies that follow the playhead
+ * (`hours`) are kept apart, so however many hours are read, they never push out the replies that
+ * do not follow it, which are the costliest to read again. */
+const caches = new WeakMap<DashboardClient, { shared: ResourceCache<ProductReply<unknown>>; hours: ResourceCache<ProductReply<unknown>> }>();
+const replySize = (reply: ProductReply<unknown>) => (receivedLength(reply) ?? JSON.stringify(reply).length) * 2;
+function cache(client: DashboardClient, hours = false): ResourceCache<ProductReply<unknown>> {
   let entry = caches.get(client);
   if (!entry) {
-    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => (receivedLength(reply) ?? JSON.stringify(reply).length) * 2);
+    entry = { shared: new ResourceCache(128, 64 * 1024 * 1024, replySize), hours: new ResourceCache(64, 32 * 1024 * 1024, replySize) };
     caches.set(client, entry);
   }
-  return entry;
+  return hours ? entry.hours : entry.shared;
 }
 
 const contentProducts: ReadonlySet<string> = new Set(CONTENT_PRODUCTS);
@@ -64,12 +67,28 @@ interface ProgressiveRead {
   /** Whether it waits for preparation to cover it. */
   waiting: boolean;
   listeners: Set<ProgressiveListener>;
-  /** What each validator last made of a published value, its reply or its refusal, so none validates a value twice. */
-  validations: Map<((data: unknown) => unknown) | undefined, { value: unknown; made: { reply: ProductReply<unknown> } | { refused: unknown } }>;
   controller: AbortController;
   done: Promise<unknown>;
 }
 const progressive = new WeakMap<DashboardClient, Map<string, ProgressiveRead>>();
+
+/** What each validator made of a reply's data, or why it refused: caches hold raw replies, and each
+ * consumer is given the data its own validator makes, never another's, validated once. */
+const validations = new WeakMap<object, WeakMap<(data: unknown) => unknown, { data: unknown } | { refused: unknown }>>();
+function validatedData<T>(data: unknown, validate?: (data: unknown) => T): T {
+  if (!validate) return data as T;
+  if (data === null || typeof data !== 'object') return validate(data);
+  let made = validations.get(data);
+  // Held weakly: a validator made afresh each render is let go with what it made.
+  if (!made) validations.set(data, made = new WeakMap());
+  let result = made.get(validate);
+  if (!result) {
+    try { result = { data: validate(data) }; } catch (refused) { result = { refused }; }
+    made.set(validate, result);
+  }
+  if ('refused' in result) throw result.refused;
+  return result.data as T;
+}
 
 /** `promise`, or a cancellation as soon as `signal` aborts. */
 function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
@@ -83,45 +102,35 @@ function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
 }
 
 /** One-shot loads return their first reply. Mounted prepared loads publish each
- * accepted extent; only final replies enter the shared bounded cache. Mounts asking the same
- * thing share one read, each told every extent and, while it waits for preparation to cover it,
- * `pending`; a one-shot load may join another's request and is told nothing. */
-export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void): Promise<T> {
+ * accepted extent; only final replies enter a bounded cache, the hours' own for a read that
+ * follows the playhead (`hours`). Mounts asking the same thing share one read, each told every
+ * extent and, while it waits for preparation to cover it, `pending`; a one-shot load may join
+ * another's request and is told nothing. */
+export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void, hours = false): Promise<T> {
   const prepared = usesPrepared(client, request, source);
-  const replies = cache(client), key = productKey(request, contentRevision(client).snapshot(), prepared);
-  const validated = (reply: ProductReply<unknown>): ProductReply<unknown> => {
-    if (!validate) return reply;
-    const value = { ...reply, data: validate(reply.data) };
-    const length = receivedLength(reply);
-    if (length !== undefined) replyLengths.set(value, length);
-    return value;
-  };
+  const replies = cache(client, hours), key = productKey(request, contentRevision(client).snapshot(), prepared);
+  // A final reply either cache holds answers at once, whichever kind of read settled it.
+  const settled = () => replies.getSettled(key) ?? cache(client, !hours).getSettled(key);
+  const told = (data: unknown) => validatedData(data, validate);
   if (prepared && publish) {
     if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-    const cached = replies.getSettled(key);
+    const cached = settled();
     if (cached) {
-      const reply = await cached;
+      const reply = await untilAborted(cached, signal);
+      // An abort after the reply settled but before this continuation still cancels.
       if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
-      publish(reply.data as T);
-      return reply.data as T;
+      const data = told(reply.data);
+      publish(data);
+      return data;
     }
-    // Mounts asking for what another is reading join its read: each is told every reply it
-    // publishes, validated its own way. A retry reads afresh. No partial reply is cached.
+    // Mounts asking for what another is reading join its read, whichever cache it lands in: each
+    // is told every reply it publishes, validated its own way. A retry reads afresh. No partial
+    // reply is cached.
     const reads = progressive.get(client) ?? new Map<string, ProgressiveRead>();
     progressive.set(client, reads);
-    const validatedBy = (read: ProgressiveRead, value: unknown): ProductReply<unknown> => {
-      const held = read.validations.get(validate);
-      let made = held && held.value === value ? held.made : undefined;
-      if (!made) {
-        try { made = { reply: validated({ ...request, data: value }) }; } catch (refused) { made = { refused }; }
-        read.validations.set(validate, { value, made });
-      }
-      if ('refused' in made) throw made.refused;
-      return made.reply;
-    };
     let read = restart ? undefined : reads.get(key);
     if (!read) {
-      const created: ProgressiveRead = { users: 0, waiting: false, listeners: new Set(), validations: new Map(), controller: new AbortController(), done: Promise.resolve(undefined) };
+      const created: ProgressiveRead = { users: 0, waiting: false, listeners: new Set(), controller: new AbortController(), done: Promise.resolve(undefined) };
       // A unique in-flight entry keeps source release cancellation in the same
       // cache machinery. It retains no result; the final reply uses the real key.
       created.done = replies.get(JSON.stringify([request.sourceId, key, newId()]), async shared => {
@@ -134,11 +143,11 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
             for (const listener of created.listeners) listener.publish(value);
           });
         if (shared.aborted) throw new DOMException('Request cancelled', 'AbortError');
+        // A final reply the first mount's validation refuses stays uncached; the others still take it.
         if (finalPreparedReply(data)) {
-          let reply: ProductReply<unknown> | undefined;
-          // A final reply the first mount's validation refuses stays uncached; the others still take it.
-          try { reply = validatedBy(created, data); } catch { reply = undefined; }
-          if (reply) replies.put(key, reply);
+          let accepted = true;
+          try { told(data); } catch { accepted = false; }
+          if (accepted) replies.put(key, { ...request, data });
         }
         return { ...request, data };
       }, created.controller.signal, () => false).then(reply => reply.data).finally(() => { if (reads.get(key) === created) reads.delete(key); });
@@ -146,7 +155,6 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
       read = created;
     }
     const joined = read;
-    const told = (value: unknown) => validatedBy(joined, value).data as T;
     // What this mount is told failing fails this mount alone.
     let fail!: (error: unknown) => void;
     const failed = new Promise<never>((_, reject) => { fail = reject; });
@@ -174,14 +182,23 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
       });
     }
   }
+  const held = settled();
+  if (held) return untilAborted(held, signal).then(reply => {
+    if (signal.aborted) throw new DOMException('Request cancelled', 'AbortError');
+    return told(reply.data);
+  });
   let final = true;
-  return replies.get(key, async shared => {
+  // A load going in the other cache is joined there: one request, kept where it was started.
+  const other = cache(client, !hours);
+  return (!replies.holds(key) && other.holds(key) ? other : replies).get(key, async shared => {
     const reply = prepared ? { ...request, data: await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
       request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart) }
       : validateProductReply(await client.product<unknown>(request, shared), request);
     final = !prepared || finalPreparedReply(reply.data);
-    return validated(reply);
-  }, signal, () => final).then(reply => reply.data as T);
+    // A reply this load's validation refuses fails it, and is never held.
+    told(reply.data);
+    return reply;
+  }, signal, () => final).then(reply => told(reply.data));
 }
 
 /** Prepared smart groups share the ordinary content/source cache and cancellation.
@@ -204,6 +221,7 @@ export async function loadTransientProduct<T>(client: DashboardClient, request: 
 /** Forget every cached product of a source when it is released; in-flight loads are cancelled. */
 export function forgetProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSource(sourceId);
+  cache(client, true).deleteSource(sourceId);
   forgetFlags(client, sourceId);
   forgetFacts(client, sourceId);
   forgetTimelines(client, sourceId);
@@ -213,6 +231,7 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
 /** Forget completed products of a source so they are requested again; loads in flight are untouched. */
 export function forgetSettledProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSettled(sourceId);
+  cache(client, true).deleteSettled(sourceId);
   forgetFlags(client, sourceId);
   forgetFacts(client, sourceId);
   forgetTimelines(client, sourceId, true);
@@ -304,7 +323,7 @@ export function useFollowedProduct<T>(client: DashboardClient, request: ProductR
     Object.entries(params).filter(([name]) => !moving.includes(name))]) : null;
   const viewKey = JSON.stringify(moving.map(name => params[name]));
   const read = useViewRead<ProductRequest, T>(lane, request, viewKey, active,
-    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish), client);
+    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client);
   // A failure belongs to the moment it was asked for; a newer moment is still loading.
   const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
   return { data: read.data, error, retry: read.retry, moment: read.viewKey, asking: read.asking };
@@ -332,7 +351,7 @@ export function useFollowedProducts<T>(client: DashboardClient, requests: readon
         if (batch.signal.aborted) return;
         values[index] = value; published.add(index);
         if (published.size === at.length) publish({ requests: at, values: [...values] });
-      }))).then(results => ({ requests: at, values: results }), error => { batch.abort(); throw error; })
+      }, undefined, true))).then(results => ({ requests: at, values: results }), error => { batch.abort(); throw error; })
         .finally(() => signal.removeEventListener('abort', stop));
     }, client);
   const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);

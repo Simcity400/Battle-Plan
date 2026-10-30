@@ -96,7 +96,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       // A window held from its prepared prefix is asked again until complete.
       if (current?.errors.has(window) || current?.data.has(window) && !(progressive && partial(current.data.get(window)))) continue;
       const publish = progressive ? (data: T) => arrive(() => arrived.data.push([window, data])) : undefined;
-      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish).then(
+      void loadProduct<T>(client, request(window), controller.signal, validate, source, attempt > 0, publish, undefined, true).then(
         data => arrive(() => arrived.data.push([window, data])),
         error => arrive(() => arrived.errors.push([window, error instanceof Error ? error.message : String(error)])),
       );
