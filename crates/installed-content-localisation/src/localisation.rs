@@ -1176,6 +1176,15 @@ fn merge_file(
 /// earlier layer's replacement still beats a later layer's ordinary file.
 /// The `:N` version number never affects these comparisons.
 pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation> {
+    read_with(layers, language, &|bytes| parse_file(bytes, language))
+}
+
+/// [`read`], each file's bytes parsed by `parse`.
+fn read_with(
+    layers: &ResolvedLayers,
+    language: &str,
+    parse: &(dyn Fn(&[u8]) -> ParsedFile + Sync),
+) -> io::Result<Localisation> {
     if language.is_empty()
         || !language
             .bytes()
@@ -1205,7 +1214,7 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
         // A panicking read fails in its file's place, as an error callers can fall back from.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let bytes = layers.read_path(&normalize_path(path)?)?;
-            io::Result::Ok(parse_file(&bytes, language))
+            io::Result::Ok(parse(&bytes))
         }))
         .unwrap_or_else(|_| Err(invalid("Localisation reader worker failed")))
     });
@@ -1217,9 +1226,259 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
     Ok(localisation)
 }
 
+/// What starts a language's parse memo, the format it is written in.
+const MEMO_MAGIC: &[u8; 8] = b"HOI4LP\x00\x01";
+
+/// [`read`], with each file's parse kept in `cache_dir` between runs: every file is still looked
+/// up, read and verified as [`read`] reads it, and only parsing a file whose bytes were parsed
+/// before is skipped, its parse taken from the language's memo by the digest of those bytes.
+/// Every language's files are parsed to find one language's, so a warm read spares nearly all of
+/// that. The memo is written again only when this read parsed a file anew or left one unused.
+pub fn read_cached(
+    layers: &ResolvedLayers,
+    language: &str,
+    cache_dir: &std::path::Path,
+) -> io::Result<Localisation> {
+    let Some(build) = build() else {
+        return read(layers, language);
+    };
+    let path = cache_dir.join(format!("localisation-{language}.bin"));
+    let memo = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| decode_memo(&bytes, build, language))
+        .unwrap_or_default();
+    // Each file's digest, with its parse when it was parsed now.
+    let used = std::sync::Mutex::new(BTreeMap::<[u8; 32], Option<ParsedFile>>::new());
+    let localisation = read_with(layers, language, &|bytes| {
+        let digest = *blake3::hash(bytes).as_bytes();
+        let kept = memo.get(&digest).cloned();
+        let parsed = kept.clone().unwrap_or_else(|| parse_file(bytes, language));
+        let mut used = used.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = used.entry(digest).or_default();
+        if kept.is_none() {
+            *entry = Some(parsed.clone());
+        }
+        parsed
+    })?;
+    let used = used
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if used.values().any(Option::is_some) || used.len() != memo.len() {
+        let kept: BTreeMap<[u8; 32], ParsedFile> = used
+            .into_iter()
+            .filter_map(|(digest, parsed)| {
+                Some((digest, parsed.or_else(|| memo.get(&digest).cloned())?))
+            })
+            .collect();
+        let _ = write_memo(&path, build, language, &kept);
+    }
+    Ok(localisation)
+}
+
+/// This build, as the running executable's size and modification time, read once: a parse kept
+/// by another build is parsed again.
+fn build() -> Option<(u64, u128)> {
+    static BUILD: std::sync::OnceLock<Option<(u64, u128)>> = std::sync::OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let metadata = std::env::current_exe().ok()?.metadata().ok()?;
+        let modified = metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some((metadata.len(), modified.as_nanos()))
+    })
+}
+
+fn put_text(out: &mut Vec<u8>, text: &str) {
+    out.extend((text.len() as u64).to_le_bytes());
+    out.extend(text.as_bytes());
+}
+
+fn put_texts(out: &mut Vec<u8>, texts: &[String]) {
+    out.extend((texts.len() as u64).to_le_bytes());
+    for text in texts {
+        put_text(out, text);
+    }
+}
+
+/// Writes the memo whole or not at all, its payload's digest last.
+fn write_memo(
+    path: &std::path::Path,
+    build: (u64, u128),
+    language: &str,
+    kept: &BTreeMap<[u8; 32], ParsedFile>,
+) -> io::Result<()> {
+    let mut out = Vec::new();
+    out.extend(MEMO_MAGIC);
+    out.extend(build.0.to_le_bytes());
+    out.extend(build.1.to_le_bytes());
+    put_text(&mut out, language);
+    out.extend((kept.len() as u64).to_le_bytes());
+    for (digest, parsed) in kept {
+        out.extend(digest);
+        out.extend((parsed.entries.len() as u64).to_le_bytes());
+        for (key, value) in &parsed.entries {
+            put_text(&mut out, key);
+            put_text(&mut out, value);
+        }
+        put_texts(&mut out, &parsed.logged);
+        put_texts(&mut out, &parsed.refused);
+    }
+    let checksum = *blake3::hash(&out).as_bytes();
+    out.extend(checksum);
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    // Each write its own, so two reads of the language at once never write into one file.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temporary = path.with_extension(format!(
+        "{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&temporary, &out)
+        .and_then(|()| std::fs::rename(&temporary, path))
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temporary);
+        })
+}
+
+/// A memo read back, or `None` unless the whole file is one this build wrote for `language`
+/// and its payload matches the digest it ends with.
+fn decode_memo(
+    bytes: &[u8],
+    build: (u64, u128),
+    language: &str,
+) -> Option<std::collections::HashMap<[u8; 32], ParsedFile>> {
+    struct Input<'a>(&'a [u8]);
+    impl<'a> Input<'a> {
+        fn take(&mut self, length: usize) -> Option<&'a [u8]> {
+            let (head, rest) = self.0.split_at_checked(length)?;
+            self.0 = rest;
+            Some(head)
+        }
+        fn count(&mut self, least: usize) -> Option<usize> {
+            let count = usize::try_from(u64::from_le_bytes(self.take(8)?.try_into().ok()?)).ok()?;
+            // Each item takes at least `least` bytes, so a count the rest cannot hold is damage.
+            (count <= self.0.len() / least.max(1)).then_some(count)
+        }
+        fn text(&mut self) -> Option<String> {
+            let length = self.count(1)?;
+            String::from_utf8(self.take(length)?.to_vec()).ok()
+        }
+        fn texts(&mut self) -> Option<Vec<String>> {
+            let count = self.count(8)?;
+            (0..count).map(|_| self.text()).collect()
+        }
+    }
+    let (payload, checksum) = bytes.split_at_checked(bytes.len().checked_sub(32)?)?;
+    if blake3::hash(payload).as_bytes() != checksum {
+        return None;
+    }
+    let mut input = Input(payload);
+    if input.take(MEMO_MAGIC.len())? != MEMO_MAGIC
+        || u64::from_le_bytes(input.take(8)?.try_into().ok()?) != build.0
+        || u128::from_le_bytes(input.take(16)?.try_into().ok()?) != build.1
+        || input.text()? != language
+    {
+        return None;
+    }
+    let count = input.count(32)?;
+    let mut memo = std::collections::HashMap::with_capacity(count);
+    for _ in 0..count {
+        let digest: [u8; 32] = input.take(32)?.try_into().ok()?;
+        let entries = input.count(16)?;
+        let entries = (0..entries)
+            .map(|_| Some((input.text()?, input.text()?)))
+            .collect::<Option<Vec<_>>>()?;
+        let parsed = ParsedFile {
+            entries,
+            logged: input.texts()?,
+            refused: input.texts()?,
+        };
+        memo.insert(digest, parsed);
+    }
+    input.0.is_empty().then_some(memo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A warm read takes each file's parse from the memo and reads as a cold one; the memo is
+    /// written again only when a file is parsed anew, and one damaged, another language's or
+    /// another build's is not taken. Files are still read and verified: one changed since
+    /// resolution is refused as a cold read refuses it.
+    #[test]
+    fn a_memoised_read_reads_as_a_cold_one() {
+        let root = std::env::temp_dir().join(format!(
+            "localisation-memo-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let game = root.join("game");
+        let cache = root.join("cache");
+        std::fs::create_dir_all(game.join("localisation/english")).unwrap();
+        std::fs::create_dir_all(game.join("localisation/french")).unwrap();
+        let write = |text: &str| {
+            std::fs::write(
+                game.join("localisation/english/a_l_english.yml"),
+                format!("\u{feff}l_english:\n {text}\n"),
+            )
+            .unwrap();
+        };
+        write("key:0 \"first\"\n dup:0 \"one\"");
+        std::fs::write(
+            game.join("localisation/english/b_l_english.yml"),
+            "\u{feff}l_english:\n dup:0 \"two\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            game.join("localisation/french/a_l_french.yml"),
+            "\u{feff}l_french:\n key:0 \"premier\"\n",
+        )
+        .unwrap();
+        let memo = cache.join("localisation-english.bin");
+        let layers = ResolvedLayers::from_folders(&[(&game, &[][..])]).unwrap();
+        let cold = read(&layers, "english").unwrap();
+        assert_eq!(cold.get("key"), Some("first"));
+        assert!(!cold.duplicates.is_empty());
+        assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
+        let written = std::fs::read(&memo).unwrap();
+        let build = build().unwrap();
+        assert_eq!(decode_memo(&written, build, "english").unwrap().len(), 3);
+        // A warm read reads the same and leaves the memo as it was.
+        assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
+        assert_eq!(std::fs::read(&memo).unwrap(), written);
+        // A memo damaged in place, another language's or another build's is not taken.
+        let mut damaged = written.clone();
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 1;
+        assert!(decode_memo(&damaged, build, "english").is_none());
+        assert!(decode_memo(&written, build, "french").is_none());
+        assert!(decode_memo(&written, (build.0 + 1, build.1), "english").is_none());
+        assert!(decode_memo(&written[..written.len() - 1], build, "english").is_none());
+        std::fs::write(&memo, &damaged).unwrap();
+        assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
+        assert_eq!(std::fs::read(&memo).unwrap(), written);
+        // A file changed since resolution is refused, as a cold read refuses it.
+        write("key:0 \"changed\"");
+        assert_eq!(
+            read_cached(&layers, "english", &cache).unwrap_err().to_string(),
+            read(&layers, "english").unwrap_err().to_string()
+        );
+        // Resolved again, it is parsed anew and the memo keeps only what the read used.
+        let changed = ResolvedLayers::from_folders(&[(&game, &[][..])]).unwrap();
+        assert_eq!(
+            read_cached(&changed, "english", &cache).unwrap(),
+            read(&changed, "english").unwrap()
+        );
+        let kept = decode_memo(&std::fs::read(&memo).unwrap(), build, "english").unwrap();
+        assert_eq!(kept.len(), 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn other_languages_validate_escapes_without_building_values() {

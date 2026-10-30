@@ -64,9 +64,10 @@ pub(crate) fn localisation_in(
     let mut warnings = Vec::new();
     check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
     let layers = resolved()?;
-    let localisation = Arc::new(installed_content_localisation::localisation::read(
+    let localisation = Arc::new(installed_content_localisation::localisation::read_cached(
         &layers.layers,
         &key.2,
+        &content.options.cache_dir,
     )?);
     *state = Some((key, Arc::clone(&localisation)));
     Ok(localisation)
