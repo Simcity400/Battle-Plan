@@ -55,10 +55,37 @@ function usesPrepared(client: DashboardClient, request: ProductRequest, source?:
   return prepared;
 }
 
+interface ProgressiveListener { publish: (value: unknown) => void; pending?: () => void }
+/** A mounted prepared read in flight, which every mount asking the same thing joins. */
+interface ProgressiveRead {
+  users: number;
+  /** The newest reply published, for a mount joining late. */
+  latest?: { value: unknown };
+  /** Whether it waits for preparation to cover it. */
+  waiting: boolean;
+  listeners: Set<ProgressiveListener>;
+  /** What each validator last made of a published value, its reply or its refusal, so none validates a value twice. */
+  validations: Map<((data: unknown) => unknown) | undefined, { value: unknown; made: { reply: ProductReply<unknown> } | { refused: unknown } }>;
+  controller: AbortController;
+  done: Promise<unknown>;
+}
+const progressive = new WeakMap<DashboardClient, Map<string, ProgressiveRead>>();
+
+/** `promise`, or a cancellation as soon as `signal` aborts. */
+function untilAborted<V>(promise: Promise<V>, signal: AbortSignal): Promise<V> {
+  return new Promise<V>((resolve, reject) => {
+    const abort = () => reject(new DOMException('Request cancelled', 'AbortError'));
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(value => { signal.removeEventListener('abort', abort); resolve(value); },
+      error => { signal.removeEventListener('abort', abort); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
 /** One-shot loads return their first reply. Mounted prepared loads publish each
- * accepted extent; only final replies enter the shared bounded cache. A mounted load owns its
- * request, so its `pending` is told when it waits for preparation to cover it; a one-shot load
- * may join another's request and is told nothing. */
+ * accepted extent; only final replies enter the shared bounded cache. Mounts asking the same
+ * thing share one read, each told every extent and, while it waits for preparation to cover it,
+ * `pending`; a one-shot load may join another's request and is told nothing. */
 export async function loadProduct<T>(client: DashboardClient, request: ProductRequest, signal: AbortSignal, validate?: (data: unknown) => T, source?: DashboardSource, restart = false, publish?: (data: T) => void, pending?: () => void): Promise<T> {
   const prepared = usesPrepared(client, request, source);
   const replies = cache(client), key = productKey(request, contentRevision(client).snapshot(), prepared);
@@ -78,24 +105,74 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
       publish(reply.data as T);
       return reply.data as T;
     }
-    // Each mount owns its transient replies and cancellation. The existing
-    // query loop alone polls accepted coverage; no partial reply is cached.
-    let latest: ProductReply<unknown> | undefined, latestRaw: unknown;
-    // A unique in-flight entry keeps source release cancellation in the same
-    // cache machinery. It retains no result; the final reply uses the real key.
-    const reply = await replies.get(JSON.stringify([request.sourceId, key, newId()]), async shared => {
-      const data = await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
-        request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart, pending, undefined, value => {
-          latestRaw = value;
-          latest = validated({ ...request, data: value });
-          if (!signal.aborted) publish(latest.data as T);
-        });
-      if (signal.aborted || shared.aborted) throw new DOMException('Request cancelled', 'AbortError');
-      const reply = latest && latestRaw === data ? latest : validated({ ...request, data });
-      if (finalPreparedReply(data)) replies.put(key, reply);
-      return reply;
-    }, signal, () => false);
-    return reply.data as T;
+    // Mounts asking for what another is reading join its read: each is told every reply it
+    // publishes, validated its own way. A retry reads afresh. No partial reply is cached.
+    const reads = progressive.get(client) ?? new Map<string, ProgressiveRead>();
+    progressive.set(client, reads);
+    const validatedBy = (read: ProgressiveRead, value: unknown): ProductReply<unknown> => {
+      const held = read.validations.get(validate);
+      let made = held && held.value === value ? held.made : undefined;
+      if (!made) {
+        try { made = { reply: validated({ ...request, data: value }) }; } catch (refused) { made = { refused }; }
+        read.validations.set(validate, { value, made });
+      }
+      if ('refused' in made) throw made.refused;
+      return made.reply;
+    };
+    let read = restart ? undefined : reads.get(key);
+    if (!read) {
+      const created: ProgressiveRead = { users: 0, waiting: false, listeners: new Set(), validations: new Map(), controller: new AbortController(), done: Promise.resolve(undefined) };
+      // A unique in-flight entry keeps source release cancellation in the same
+      // cache machinery. It retains no result; the final reply uses the real key.
+      created.done = replies.get(JSON.stringify([request.sourceId, key, newId()]), async shared => {
+        const data = await preparedSeriesQuery(client, source ?? { id: request.sourceId, revision: request.revision } as DashboardSource,
+          request.product as Parameters<typeof preparedSeriesQuery>[2], request.params, shared, restart, () => {
+            created.waiting = true;
+            for (const listener of created.listeners) listener.pending?.();
+          }, undefined, value => {
+            created.latest = { value };
+            for (const listener of created.listeners) listener.publish(value);
+          });
+        if (shared.aborted) throw new DOMException('Request cancelled', 'AbortError');
+        if (finalPreparedReply(data)) {
+          let reply: ProductReply<unknown> | undefined;
+          // A final reply the first mount's validation refuses stays uncached; the others still take it.
+          try { reply = validatedBy(created, data); } catch { reply = undefined; }
+          if (reply) replies.put(key, reply);
+        }
+        return { ...request, data };
+      }, created.controller.signal, () => false).then(reply => reply.data).finally(() => { if (reads.get(key) === created) reads.delete(key); });
+      if (!restart) reads.set(key, created);
+      read = created;
+    }
+    const joined = read;
+    const told = (value: unknown) => validatedBy(joined, value).data as T;
+    // What this mount is told failing fails this mount alone.
+    let fail!: (error: unknown) => void;
+    const failed = new Promise<never>((_, reject) => { fail = reject; });
+    const guarded = (tell: () => void) => {
+      try { tell(); } catch (error) { joined.listeners.delete(mine); fail(error); }
+    };
+    const mine: ProgressiveListener = { publish: value => guarded(() => { if (!signal.aborted) publish(told(value)); }),
+      pending: pending && (() => guarded(pending)) };
+    try {
+      joined.users++;
+      joined.listeners.add(mine);
+      // A mount joining late is told what the read has published so far.
+      if (joined.latest) mine.publish(joined.latest.value);
+      if (joined.waiting) mine.pending?.();
+      const value = await untilAborted(Promise.race([joined.done, failed]), signal);
+      return told(value);
+    } finally {
+      joined.listeners.delete(mine);
+      joined.users--;
+      // React effect replay can rejoin before shared work is cancelled.
+      queueMicrotask(() => {
+        if (joined.users) return;
+        if (reads.get(key) === joined) reads.delete(key);
+        joined.controller.abort();
+      });
+    }
   }
   let final = true;
   return replies.get(key, async shared => {
