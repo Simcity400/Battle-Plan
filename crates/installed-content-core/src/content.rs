@@ -3516,7 +3516,9 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     };
     if handle == INVALID_HANDLE_VALUE {
         let error = io::Error::last_os_error();
-        return Err(if path.is_dir() {
+        // A missing file is a miss either way: only another failure (a directory's is access
+        // denied) needs the stat that tells a directory, which a lookup passes over.
+        return Err(if error.kind() != io::ErrorKind::NotFound && path.is_dir() {
             not_found(relative.as_bytes())
         } else {
             error
