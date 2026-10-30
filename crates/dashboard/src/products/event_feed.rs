@@ -742,7 +742,6 @@ fn plain_item(
 #[derive(Default)]
 struct ScriptContentIndex(std::sync::Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
 
-/// The event database of the catalogue's content stack, read once per stack.
 /// Reads the script events presenting `items` reads ([`script_presentation`]) together, each
 /// event file once, so presenting them reads none
 /// ([`installed_content_events::events::LazyEvents::prefetch`]).
@@ -771,6 +770,7 @@ fn presents_event(kind: EventFeedKind) -> bool {
     )
 }
 
+/// The event database of the catalogue's content stack, read once per stack.
 fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events::LazyEvents> {
     let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
     let mut index = cache
