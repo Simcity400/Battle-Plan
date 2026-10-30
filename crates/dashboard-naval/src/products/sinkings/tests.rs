@@ -1158,3 +1158,66 @@ fn shared_sinking_observer_matches_oracle_after_commits_resume_append_and_countr
     assert!(archived.last_key_value().unwrap().1.victim.is_none());
     assert_eq!(history.scan.country_candidates[&1].len(), 2);
 }
+
+/// The convoys of hour `hour` at `count`, read when `read`, on `before`'s other views.
+fn convoy_hour(before: Option<&DecodedFrame>, hour: i32, count: i32, read: bool) -> DecodedFrame {
+    let mut frame = before.cloned().unwrap_or_else(|| {
+        let mut frame = dashboard_core::test_fixtures::source(1, hour, Some(1));
+        *frame.tables[TableId::SunkShips.index()] =
+            TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow::default()]));
+        frame
+    });
+    frame.hour = hour;
+    let rows = TableRows::SunkConvoys(vec![SunkConvoyRow {
+        month: 1000,
+        killer_country: 11,
+        owner_country: 12,
+        convoys: count,
+        ordinal: 0,
+    }]);
+    if !matches!(&*frame.tables[TableId::SunkConvoys.index()], TableView::Complete(held) if *held == rows)
+    {
+        frame.tables[TableId::SunkConvoys.index()] = TableView::Complete(rows).into();
+    }
+    frame.metrics.table_ns = [0; replay_data::rows::TABLE_COUNT];
+    if read {
+        frame.metrics.table_ns[TableId::SunkConvoys.index()] = 1;
+    }
+    frame
+}
+
+/// Regression: an equal read confirmed the convoys against the hour before rather than the
+/// last read, so a change between reads was taken only where a row block happened to start.
+#[test]
+fn convoys_changed_between_reads_are_counted_at_the_next_read_wherever_blocks_start() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let format = replay_data::format::FormatVersion::CURRENT;
+    let run = |block_start: Option<i32>| {
+        let mut history = ShipHistory::new(100);
+        let mut tracker = FrameChangeTracker::new();
+        let mut frame: Option<DecodedFrame> = None;
+        let mut events = Vec::new();
+        for hour in 100..=110 {
+            let next = convoy_hour(
+                frame.as_ref(),
+                hour,
+                if hour >= 103 { 4 } else { 3 },
+                hour % 2 == 0,
+            );
+            if Some(hour) == block_start {
+                tracker.invalidate();
+            }
+            let changes = tracker.observe(&next, format);
+            for change in history.prepare(format, &next, &changes) {
+                if let Some(convoy) = change.convoy {
+                    events.push((convoy.read_hour, convoy.count));
+                }
+            }
+            frame = Some(next);
+        }
+        events
+    };
+    let expected = vec![(100, 3), (104, 1)];
+    assert_eq!(run(None), expected);
+    assert_eq!(run(Some(108)), expected);
+}

@@ -61,7 +61,7 @@ fn assert_prepass_matches_hourly(replay: &Replay, label: &str) {
     for (workers, parallelism) in [(1, 2), (3, 4)] {
         let source = fixture.source(label);
         let noted = || {
-            ["resources", "army"].map(|family| {
+            ["resources"].map(|family| {
                 (
                     prepass::noted(&format!("{family}.fallback")),
                     prepass::noted(&format!("{family}.sequential")),
@@ -92,10 +92,6 @@ fn assert_prepass_matches_hourly(replay: &Replay, label: &str) {
 #[test]
 fn prepass_publishes_and_saves_every_section_as_hourly_observation() {
     assert_prepass_matches_hourly(&resources(5, true), "prepass-parity");
-    assert_prepass_matches_hourly(
-        &crate::products::army_size::prepared::block::test_fixtures::recording(),
-        "prepass-army",
-    );
 }
 
 #[test]
@@ -459,9 +455,9 @@ fn block_change_facts_alone_equal_the_facts_preparation_observes() {
 #[test]
 fn shared_section_consumers_decode_once_and_publish_the_uncached_hourly_bytes() {
     use replay::container::test_work::table_decodes;
-    let replay = crate::products::army_size::prepared::block::test_fixtures::recording();
+    let replay = resources(5, true);
     let mut fixture = Fixture::new(&replay);
-    let tables = crate::products::army_size::prepared::TABLES;
+    let tables = crate::products::resource_balance::prepared::FAMILY.tables;
     let mut reference = None;
     for cached in [false, true] {
         let source = fixture.source("section-cache-hourly");

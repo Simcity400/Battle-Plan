@@ -24,7 +24,7 @@ test('market moment respects pin/campaign/range while closed and pins/restores e
       };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__marketWidget.hour;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': 'export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',
+    '/dashboard/countryFlagsAt.ts': 'export const flagReadMetadata = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => () => ({}) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = () => ""; export const useCountryFactsRead = () => new Map();',
     '/dashboard/products.ts': 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [], surface: "#000000", text: "#ffffff", countryColours: "raw" }); export const useViewportHeight = () => 1000;',

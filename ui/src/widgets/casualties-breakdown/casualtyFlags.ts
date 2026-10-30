@@ -1,5 +1,6 @@
 import { nameKey, type FAILED_FACT } from '../../dashboard/countryFacts.ts';
-import { flagReadMetadata, type FlagRead } from '../../dashboard/countryFlagsAt.ts';
+import { flagReadMetadata } from '../../dashboard/countryFlagsAt.ts';
+import type { FlagRead } from '../../dashboard/countryFlags';
 import type { LossRow } from './casualtiesBreakdownData';
 
 /** An ended enemy keeps its supplying holder/hour for names and structured flags. */

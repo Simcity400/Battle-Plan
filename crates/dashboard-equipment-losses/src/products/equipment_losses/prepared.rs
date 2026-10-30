@@ -261,16 +261,21 @@ impl Prepared {
             .iter()
             .find(|start| start.id == branch)
             .map_or(first, |start| branch_bounds(replay, start).0);
+        Self::starting(replay.format, first)
+    }
+
+    /// A branch's state whose hours, gaps included, start at `first`.
+    pub fn starting(format: replay_data::format::FormatVersion, first: i32) -> Self {
         Self {
             next: i64::from(first),
             interrupted: false,
             keys: BTreeMap::new(),
             countries: BTreeMap::new(),
             absent: Scanned {
-                format: replay.format,
+                format,
                 ..Default::default()
             },
-            absent_state: state(replay.format),
+            absent_state: state(format),
             variants: Default::default(),
             loss_variants: BTreeSet::new(),
             variant_counts: BTreeMap::new(),

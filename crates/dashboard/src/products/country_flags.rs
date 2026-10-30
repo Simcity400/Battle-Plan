@@ -1,23 +1,22 @@
 //! Country flags from the recorded content stack, never launcher state or a tag catalog.
 //!
-//! Every size reads the game's own flag files through the recording's content
-//! layers, so a mod's flags and its cosmetic or ideology variants win exactly as
-//! they did in the game. Files decode as the engine's `DecodeFlagTga` does, at
-//! the cell sizes the content's defines give. `Shield` draws the flag as the
-//! recorded top bar's `player_flag` button draws it, through its masked shield;
-//! `Panel` is app styling: the same draw with the overlay's edge shading evened
+//! Preparation chooses each country's flag: the file key each of the game's flag atlases
+//! resolves the country's candidates to in the recording's own layers ([`FlagFolders`]), which
+//! `country-facts` carries. This product draws those choices and reads no recording: through
+//! the source's visual mods, so a mod's restyled file of a chosen key is what is drawn. Files
+//! decode as the engine's `DecodeFlagTga` does, at the cell sizes the content's defines give.
+//! `Shield` draws the flag as the recorded top bar's `player_flag` button draws it, through its
+//! masked shield; `Panel` is app styling: the same draw with the overlay's edge shading evened
 //! out, for flags drawn inside the dashboard's panels.
 
-use super::{LoadContext, Product, validate_tag};
-pub use crate::flag_choices::{FlagChoice, choices, ruling_groups};
-use crate::{Source, catalogue::Catalogue, content, invalid};
+use super::{LoadContext, Product};
+use crate::{Source, catalogue::Catalogue, content, flag_choices::Chain, invalid};
+use dashboard_base::products::country_styles::CountryFlagChoice;
 use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::FlagSet};
 use installed_content_image::Rgba8Image;
-use replay::container::SeekResult;
-use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{
         Arc, Mutex, OnceLock,
@@ -48,7 +47,7 @@ pub enum CountryFlagSize {
 }
 
 impl CountryFlagSize {
-    /// Flag sets searched in order; a medium flag a mod omits falls back to the
+    /// Flag sets drawn from in order; a medium flag a mod omits falls back to the
     /// same country's large flag rather than to no flag. A shield's descriptor
     /// chooses its set ([`ShieldStyle::sets`]).
     pub(crate) fn sets(self) -> &'static [FlagSet] {
@@ -61,23 +60,35 @@ impl CountryFlagSize {
     }
 }
 
+/// A flag set's place in a choice's keys ([`CountryFlagChoice::keys`]).
+fn atlas(set: FlagSet) -> usize {
+    match set {
+        FlagSet::Normal => 0,
+        FlagSet::Medium => 1,
+        FlagSet::Small => 2,
+    }
+}
+
 /// The top bar opens the topbar window from its authored declaration.
 const TOP_BAR: &str = "topbar";
 /// The flag button uses player_flag. Its sprite is content, read from the
 /// top bar's own declaration wherever it is.
 const PLAYER_FLAG: &str = "player_flag";
-/// Decoded hours kept per source, so a picker and a header following playback
-/// do not evict each other.
-const RECENT_HOURS: usize = 4;
+/// Flag contexts kept per source, one per presentation, so requests under two selections do
+/// not evict each other.
+const RECENT: usize = 4;
 /// Longest side of any flag the product returns.
 const MAX_FLAG_EDGE: u32 = 128;
+/// Choices one request draws at most.
+const MAX_FLAGS: usize = 32;
+/// Why an atlas draws nothing, when nothing more is known.
+const UNAVAILABLE: &str = "flag artwork unavailable in the recorded content";
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CountryFlagParams {
-    pub branch_id: String,
-    pub hour: i32,
-    pub tags: Vec<String>,
+    /// The choices to draw, as `country-facts` gives them.
+    pub flags: Vec<CountryFlagChoice>,
     #[serde(default)]
     pub size: CountryFlagSize,
 }
@@ -85,7 +96,8 @@ pub struct CountryFlagParams {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagImage {
-    pub tag: String,
+    /// The choice drawn: its index in the request's `flags`.
+    pub flag: u32,
     /// The flag file drawn, as the content names it.
     pub asset: String,
     /// What the flag shows: its file and a digest of its pixels, so two flags share it only
@@ -101,15 +113,14 @@ pub struct CountryFlagImage {
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagUnavailable {
-    pub tag: String,
+    /// The choice: its index in the request's `flags`.
+    pub flag: u32,
     pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagReply {
-    pub branch_id: String,
-    pub hour: i32,
     pub size: CountryFlagSize,
     pub flags: Vec<CountryFlagImage>,
     pub unavailable: Vec<CountryFlagUnavailable>,
@@ -134,14 +145,17 @@ impl Product for CountryFlags {
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        if params.tags.is_empty() || params.tags.len() > 32 {
+        if params.flags.is_empty() || params.flags.len() > MAX_FLAGS {
             return Err("Invalid country flag selection");
         }
-        for tag in &params.tags {
-            validate_tag(tag)?;
-        }
-        if params.branch_id.parse::<u64>().is_err() {
-            return Err("Invalid country flag branch");
+        // Keys come from the request: each must stay below its flag folder.
+        if params
+            .flags
+            .iter()
+            .flat_map(|choice| choice.keys.iter().flatten())
+            .any(|key| !safe_flag_key(key))
+        {
+            return Err("Invalid country flag key");
         }
         Ok(())
     }
@@ -161,7 +175,7 @@ impl Product for CountryFlags {
         match state
             .contexts
             .iter()
-            .position(|cached| cached.matches(&content.options, &presentation, params))
+            .position(|cached| cached.matches(&content.options, &presentation))
         {
             Some(0) => {}
             Some(index) => {
@@ -169,10 +183,10 @@ impl Product for CountryFlags {
                 state.contexts.insert(0, recent);
             }
             None => {
-                // Flags follow the source's visual mods; recorded facts read the recorded layers.
+                // Flags are drawn through the source's visual mods; preparation chose their keys
+                // in the recorded layers.
                 let resolved = Arc::clone(&presented.content);
-                // The cells and flag files are content facts: kept across hours, reread with
-                // new content.
+                // The cells and flag files are content facts, read again with new content.
                 let cells = state
                     .contexts
                     .iter()
@@ -184,7 +198,7 @@ impl Product for CountryFlags {
                             Arc::clone(&cached.files),
                         )
                     });
-                // Other hours' requests use the cache while this one reads the recording.
+                // Other requests use the kept contexts while this one reads the content.
                 drop(state);
                 let (cells, cell_fallbacks, files) = match cells {
                     Some(cells) => cells,
@@ -196,21 +210,22 @@ impl Product for CountryFlags {
                         (cells?, fallbacks, Arc::default())
                     }
                 };
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(invalid("Flag request cancelled"));
+                }
                 let mut loaded = FlagContext::load(
                     source,
                     resolved,
                     cells,
                     content.options.clone(),
                     content.allow_unverified,
-                    params,
-                    cancelled,
                 )?;
                 loaded.presentation = presented.presentation.clone();
                 loaded.cell_fallbacks = cell_fallbacks;
                 loaded.files = files;
                 state = shared.lock().unwrap_or_else(|error| error.into_inner());
                 state.contexts.insert(0, Arc::new(loaded));
-                state.contexts.truncate(RECENT_HOURS);
+                state.contexts.truncate(RECENT);
             }
         }
         installed_content_core::content::credit_overlay_refusals(&state.contexts[0].cell_fallbacks);
@@ -590,6 +605,14 @@ fn flag_file(
     Ok(file)
 }
 
+/// `error`, met reading the flag file at `asset`, named by it.
+fn unreadable(asset: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("flag file {asset} could not be read: {error}"),
+    )
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -756,7 +779,7 @@ fn ladder(
                     return Ok(Err(Broken { asset, why }));
                 }
             }
-            match read? {
+            match read.map_err(|error| unreadable(&asset, error))? {
                 FlagFile::Missing => {}
                 FlagFile::Refused(reason) => {
                     if !reported.refused.insert((stack, set_index, asset.clone())) {
@@ -897,14 +920,83 @@ fn even_overlay(overlay: &Rgba8Image) -> Rgba8Image {
     }
 }
 
-/// The tables [`choices`] reads, its ruling groups included.
-const CHOICE_TABLES: [TableId; 5] = [
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryAppearance,
-    TableId::Politics,
-    TableId::PoliticalParties,
-];
+/// The recording's own flag folders, which preparation chooses each country's flag in: the
+/// recorded mod stack's layers, never the visual mods, whose files only restyle a chosen key.
+pub struct FlagFolders {
+    layers: installed_content_core::ResolvedLayers,
+    /// The normal, medium and small cells of the recording's defines.
+    cells: [[u32; 2]; 3],
+}
+
+impl FlagFolders {
+    /// The recorded layers of `content`, at the cells their defines give.
+    pub fn read(content: &ResolvedContent) -> io::Result<Self> {
+        let layers = content.layers.recorded_only();
+        let cells = flag_cells(&layers)?;
+        Ok(Self { layers, cells })
+    }
+
+    /// Folders of `layers` at `cells`, for tests building their own.
+    #[cfg(test)]
+    pub(crate) fn of(layers: installed_content_core::ResolvedLayers, cells: [[u32; 2]; 3]) -> Self {
+        Self { layers, cells }
+    }
+
+    /// The key each atlas draws for `chain`: its first candidate whose file that atlas decodes,
+    /// as the game builds each atlas apart ([`find_flag`]), with what was refused on the way;
+    /// no key past a candidate this reader cannot resolve, and no key where `chain` names none.
+    /// A file that cannot be read fails it, named: no fact of the game, it refuses no hour.
+    pub fn choose(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
+        let mut choice = CountryFlagChoice::default();
+        for set in [FlagSet::Normal, FlagSet::Medium, FlagSet::Small] {
+            let at = atlas(set);
+            // Each search reads its files afresh: preparation keeps choices, never pixels.
+            let (found, findings) = find_flag(
+                &self.layers,
+                &[set],
+                &self.cells,
+                &chain.candidates,
+                &mut FlagCache::default(),
+            )
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::InvalidData => io::Error::other(error.to_string()),
+                _ => error,
+            })?;
+            let refused: Vec<String> = findings
+                .into_iter()
+                .filter(|finding| finding.kind == crate::content_check::Kind::Refused)
+                .map(|finding| finding.message)
+                .collect();
+            let refused = (!refused.is_empty()).then(|| refused.join("; "));
+            match found {
+                FlagSearch::Found { asset, .. } => {
+                    choice.keys[at] = asset
+                        .strip_prefix(set.directory())
+                        .and_then(|key| key.strip_suffix(".tga"))
+                        .map(str::to_owned);
+                    choice.reasons[at] = refused;
+                }
+                FlagSearch::Unresolvable => {
+                    choice.reasons[at] = Some(
+                        refused
+                            .or_else(|| chain.refusal.clone())
+                            .unwrap_or_else(|| UNAVAILABLE.into()),
+                    );
+                }
+                FlagSearch::Absent => {
+                    choice.reasons[at] = Some(
+                        chain
+                            .refusal
+                            .clone()
+                            .or(refused)
+                            .unwrap_or_else(|| UNAVAILABLE.into()),
+                    );
+                }
+            }
+        }
+        Ok(choice)
+    }
+}
 
 pub struct FlagContext {
     options: ResolveOptions,
@@ -920,10 +1012,6 @@ pub struct FlagContext {
     cell_fallbacks: BTreeSet<String>,
     /// The flag files read from `content`, kept by every context of it.
     files: Arc<FlagFiles>,
-    /// The first choice per tag, in raw country id order.
-    choices: HashMap<String, FlagChoice>,
-    branch_id: String,
-    hour: i32,
     warnings: Vec<String>,
 }
 
@@ -932,14 +1020,11 @@ impl FlagContext {
         &self,
         options: &ResolveOptions,
         presentation: &crate::presentation::Presentation,
-        request: &CountryFlagParams,
     ) -> bool {
         self.presentation == *presentation
             && self.options.game_dir == options.game_dir
             && self.options.user_dir == options.user_dir
             && self.options.cache_dir == options.cache_dir
-            && self.branch_id == request.branch_id
-            && self.hour == request.hour
     }
 
     fn load(
@@ -948,37 +1033,9 @@ impl FlagContext {
         cells: [[u32; 2]; 3],
         options: ResolveOptions,
         allow_unverified: bool,
-        request: &CountryFlagParams,
-        cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         let mut warnings = vec!["Flag artwork is resolved from the recording's game content; visual assets are outside the content hash coverage.".into()];
         content::check_replay(source.replay_ref(), allow_unverified, &mut warnings)?;
-        let branch = request
-            .branch_id
-            .parse::<u64>()
-            .map_err(|_| invalid("Invalid flag branch"))?;
-        if cancelled.load(Ordering::Acquire) {
-            return Err(invalid("Flag request cancelled"));
-        }
-        // Through the frames other products read the hour through, so its block decodes once.
-        let frame = match dashboard_base::prepared::query::frames::seek(
-            source,
-            branch,
-            request.hour,
-            &CHOICE_TABLES,
-            cancelled,
-        )? {
-            SeekResult::Frame(frame) => frame,
-            SeekResult::Gap { reason, .. } => {
-                return Err(invalid(format!(
-                    "Flag identities unavailable at this hour: {reason}"
-                )));
-            }
-        };
-        let mut by_tag = HashMap::new();
-        for choice in choices(&frame)? {
-            by_tag.entry(choice.tag.clone()).or_insert(choice);
-        }
         Ok(Self {
             options,
             presentation: Default::default(),
@@ -986,9 +1043,6 @@ impl FlagContext {
             cells,
             cell_fallbacks: BTreeSet::new(),
             files: Arc::default(),
-            choices: by_tag,
-            branch_id: request.branch_id.clone(),
-            hour: request.hour,
             warnings,
         })
     }
@@ -1007,15 +1061,11 @@ impl FlagContext {
             Some(Err(reason)) => {
                 warnings.push(format!("Shield artwork unavailable: {reason}"));
                 return Ok(CountryFlagReply {
-                    branch_id: request.branch_id.clone(),
-                    hour: request.hour,
                     size: request.size,
                     flags,
-                    unavailable: request
-                        .tags
-                        .iter()
-                        .map(|tag| CountryFlagUnavailable {
-                            tag: tag.clone(),
+                    unavailable: (0..request.flags.len() as u32)
+                        .map(|flag| CountryFlagUnavailable {
+                            flag,
                             reason: format!("Shield artwork unavailable: {reason}"),
                         })
                         .collect(),
@@ -1032,72 +1082,52 @@ impl FlagContext {
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
-        // Found flags, drawn together once every tag is searched.
+        let sets = shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets);
+        // Found flags, drawn together once every choice is read.
         let mut shielded = Vec::new();
-        for tag in &request.tags {
+        for (flag, choice) in (0_u32..).zip(&request.flags) {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Flag request cancelled"));
             }
-            let Some(choice) = self.choices.get(tag) else {
-                warnings.push(format!("{tag}: country identity unavailable at this hour"));
-                unavailable.push(CountryFlagUnavailable {
-                    tag: tag.clone(),
-                    reason: "country identity unavailable at this hour".into(),
-                });
-                continue;
-            };
-            // A flag key is the recorded tag (any bytes but NUL, spaces
-            // included) with a cosmetic tag or party token; one this reader
-            // cannot resolve costs only this country's flag. Each country's search reports what
-            // it found as it would asked alone, so its refusal is its own whatever else is asked.
-            let (found, findings) = find_flag(
-                flag_layers,
-                shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets),
-                cells,
-                &choice.candidates,
-                &mut FlagCache::over(Arc::clone(files)),
-            )?;
-            let reasons: Vec<_> = findings
-                .iter()
-                .filter(|finding| finding.kind == crate::content_check::Kind::Refused)
-                .map(|finding| finding.message.clone())
-                .collect();
-            warnings.extend(
-                findings
-                    .into_iter()
+            // Each set's own key, the next set drawn only where one has none.
+            let mut found = None;
+            let mut reasons = Vec::new();
+            for &set in sets {
+                let at = atlas(set);
+                let Some(key) = &choice.keys[at] else {
+                    reasons.extend(choice.reasons[at].clone());
+                    continue;
+                };
+                // Each choice's search reports what it found as it would drawn alone.
+                let (search, findings) = find_flag(
+                    flag_layers,
+                    &[set],
+                    cells,
+                    std::slice::from_ref(key),
+                    &mut FlagCache::over(Arc::clone(files)),
+                )?;
+                for finding in findings {
                     // Substitution and engine-skipped files stay corpus-only.
-                    // Refusals differ from a file the engine could draw.
-                    .filter(|finding| finding.kind == crate::content_check::Kind::Refused)
-                    .map(|finding| format!("{tag}: {}", finding.message)),
-            );
+                    if finding.kind == crate::content_check::Kind::Refused {
+                        warnings.push(format!("{key}: {}", finding.message));
+                        reasons.push(finding.message);
+                    }
+                }
+                if let FlagSearch::Found { asset, image } = search {
+                    found = Some((asset, image));
+                    break;
+                }
+            }
             match found {
-                FlagSearch::Found { asset, image } => shielded.push((tag.clone(), asset, image)),
-                FlagSearch::Unresolvable => unavailable.push(CountryFlagUnavailable {
-                    tag: tag.clone(),
+                Some((asset, image)) => shielded.push((flag, asset, image)),
+                None => unavailable.push(CountryFlagUnavailable {
+                    flag,
                     reason: if reasons.is_empty() {
-                        choice.refusal.clone().unwrap_or_else(|| {
-                            "flag artwork unavailable in the recorded content".into()
-                        })
+                        UNAVAILABLE.into()
                     } else {
                         reasons.join("; ")
                     },
                 }),
-                FlagSearch::Absent => {
-                    warnings.push(match &choice.refusal {
-                        Some(reason) => format!("{tag}: flag not drawn: {reason}"),
-                        None => format!("{tag}: flag artwork unavailable in the recorded content"),
-                    });
-                    unavailable.push(CountryFlagUnavailable {
-                        tag: tag.clone(),
-                        reason: choice.refusal.clone().unwrap_or_else(|| {
-                            if reasons.is_empty() {
-                                "flag artwork unavailable in the recorded content".into()
-                            } else {
-                                reasons.join("; ")
-                            }
-                        }),
-                    });
-                }
             }
         }
         // Each flag drawn, or why it could not be.
@@ -1124,7 +1154,7 @@ impl FlagContext {
                 .map(|(_, _, image)| Ok(image.as_ref().clone()))
                 .collect(),
         };
-        for ((tag, asset, _), drawn) in shielded.into_iter().zip(drawn) {
+        for ((flag, asset, _), drawn) in shielded.into_iter().zip(drawn) {
             let image = match drawn {
                 Ok(image) => image,
                 Err(error) => {
@@ -1132,7 +1162,7 @@ impl FlagContext {
                     if !warnings.contains(&reason) {
                         warnings.push(reason.clone());
                     }
-                    unavailable.push(CountryFlagUnavailable { tag, reason });
+                    unavailable.push(CountryFlagUnavailable { flag, reason });
                     continue;
                 }
             };
@@ -1141,7 +1171,7 @@ impl FlagContext {
             let key = flag_key(&asset, &image.pixels);
             match crate::artwork::png_url(&image) {
                 Ok(png) => flags.push(CountryFlagImage {
-                    tag,
+                    flag,
                     key,
                     asset,
                     width: image.width,
@@ -1149,14 +1179,12 @@ impl FlagContext {
                     png,
                 }),
                 Err(error) => unavailable.push(CountryFlagUnavailable {
-                    tag,
+                    flag,
                     reason: format!("flag artwork could not be encoded: {error}"),
                 }),
             }
         }
         Ok(CountryFlagReply {
-            branch_id: request.branch_id.clone(),
-            hour: request.hour,
             size: request.size,
             flags,
             unavailable,
@@ -1168,7 +1196,6 @@ impl FlagContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_frame::frame::DecodedFrame;
 
     /// A reply flag's straight-alpha RGBA, decoded from its PNG.
     fn decoded(image: &CountryFlagImage) -> Vec<u8> {
@@ -1182,308 +1209,242 @@ mod tests {
         pixels
     }
 
-    fn flag_frame(
-        original: replay_data::rows::Recorded<Option<Vec<u8>>>,
-        cosmetic: &[u8],
-    ) -> DecodedFrame {
-        use replay_data::{
-            rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow,
-            rows::PoliticalPartyRow, rows::PoliticsRow, rows::TableId, rows::TableRows,
-        };
-        use replay_frame::{frame::Metrics, frame::TableView};
-        let mut frame = DecodedFrame {
-            branch: 1,
-            hour: 1,
-            metrics: Metrics::default(),
-            tables: std::array::from_fn(|index| {
-                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
-            }),
-        };
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
-                id: 10,
-                canonical_slot: 2,
-            }]));
-        *frame.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![CountryRow {
-                id: 10,
-                canonical_slot: 2,
-                tag: b"OWN".to_vec(),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::CountryAppearance.index()] =
-            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
-                country: 10,
-                name_tag: b"GEN".to_vec(),
-                cosmetic_tag: cosmetic.to_vec(),
-                original_tag: original,
-                original_tag_reference: replay_data::rows::Recorded::Value(Some(1)),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::Politics.index()] =
-            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
-                country: 10,
-                ruling_party: Some(4),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::PoliticalParties.index()] =
-            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
-                country: 10,
-                id: 4,
-                token: b"group".to_vec(),
-                ..Default::default()
-            }]));
-        frame
+    /// A context drawing from `content` at `cells`, standing warnings `warnings`.
+    fn context(
+        content: &Arc<ResolvedContent>,
+        cells: [[u32; 2]; 3],
+        warnings: Vec<String>,
+    ) -> FlagContext {
+        FlagContext {
+            presentation: Default::default(),
+            options: ResolveOptions {
+                game_dir: "G".into(),
+                user_dir: "U".into(),
+                cache_dir: "C".into(),
+            },
+            content: Arc::clone(content),
+            cells,
+            cell_fallbacks: BTreeSet::new(),
+            files: Arc::default(),
+            warnings,
+        }
     }
 
+    /// The choice of one key in every atlas.
+    fn every(key: &str) -> CountryFlagChoice {
+        CountryFlagChoice {
+            keys: [0; 3].map(|_| Some(key.to_owned())),
+            reasons: Default::default(),
+        }
+    }
+
+    fn chain(candidates: &[&str]) -> Chain {
+        Chain {
+            candidates: candidates.iter().map(|&key| key.to_owned()).collect(),
+            refusal: None,
+        }
+    }
+
+    /// Each atlas takes the first candidate whose file it decodes: a header the engine refuses
+    /// falls through silently; a file this reader refuses where the game would not is named with
+    /// the key found after it or as the reason none is. A medium draw falls back to the normal
+    /// atlas's own key, and draws carry the choice's reasons, never a search of their own.
     #[test]
-    fn flag_choices_use_exact_original_and_keep_known_cosmetic_before_suffix_refusals() {
-        use replay_data::rows::Recorded;
-        for (captured, tail) in [
-            (Recorded::Value(Some(b"ORI".to_vec())), "ORI"),
-            (Recorded::Value(Some(Vec::new())), ""),
-        ] {
-            let choices = choices(&flag_frame(captured, b"COS")).unwrap();
-            assert_eq!(
-                choices[0].candidates,
-                [
-                    "COS_group".to_owned(),
-                    "COS".to_owned(),
-                    format!("{tail}_group"),
-                    tail.to_owned()
-                ]
-            );
-            assert_eq!(choices[0].key(|key| key == tail), Ok(tail));
-            assert!(choices[0].refusal.is_none());
-        }
-        for (captured, reason) in [
-            (Recorded::Value(None), "original_tag capture refused"),
-            (Recorded::NotRecorded, "original_tag not recorded"),
-            (Recorded::Value(Some(vec![0xff])), "not UTF-8"),
-        ] {
-            let choices = choices(&flag_frame(captured, b"COS")).unwrap();
-            assert_eq!(choices[0].candidates, ["COS_group", "COS"]);
-            assert_eq!(choices[0].key(|key| key == "COS"), Ok("COS"));
-            assert!(
-                choices[0]
-                    .key(|key| key == "OWN" || key == "GEN")
-                    .unwrap_err()
-                    .contains(reason)
-            );
-        }
-        let invalid =
-            choices(&flag_frame(Recorded::Value(Some(b"ORI".to_vec())), &[0xff])).unwrap();
-        assert!(invalid[0].candidates.is_empty());
-        assert!(
-            invalid[0]
-                .key(|key| key == "ORI")
-                .unwrap_err()
-                .contains("cosmetic tag is not UTF-8")
+    fn each_atlas_chooses_its_own_key_and_names_what_it_refused() {
+        let image = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        let mut skipped = image.clone();
+        skipped[2] = 10;
+        let mut truncated = image.clone();
+        truncated.pop();
+        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
+            &[],
+            &[
+                ("gfx/flags/mod_normal.tga", image.clone()),
+                ("gfx/flags/medium/mod_good.tga", image),
+                ("gfx/flags/medium/mod_skipped.tga", skipped),
+                ("gfx/flags/medium/mod_truncated.tga", truncated),
+            ],
         );
-        // A nonpositive raw reference chooses own independently of the
-        // unused optional original bytes, including a failed byte capture.
-        for reference in [0, -7] {
-            let mut frame = flag_frame(Recorded::Value(None), b"COS");
-            let appearance =
-                match &mut *frame.tables[replay_data::rows::TableId::CountryAppearance.index()] {
-                    replay_frame::frame::TableView::Complete(
-                        replay_data::rows::TableRows::CountryAppearance(rows),
-                    ) => &mut rows[0],
-                    _ => unreachable!(),
-                };
-            appearance.original_tag_reference = Recorded::Value(Some(reference));
-            let choice = choices(&frame).unwrap().remove(0);
-            assert_eq!(choice.candidates, ["COS_group", "COS", "OWN_group", "OWN"]);
-            assert!(choice.refusal.is_none());
-        }
-        for (reference, reason) in [
+        let folders = FlagFolders::of(catalogue.content.layers.clone(), [[1, 1]; 3]);
+        for (candidates, medium, refused, asset, reason) in [
             (
-                Recorded::Value(None),
-                "original_tag_reference capture refused",
+                vec!["mod_normal"],
+                None,
+                Some(UNAVAILABLE),
+                Some("gfx/flags/mod_normal.tga"),
+                None,
             ),
-            (Recorded::NotRecorded, "original_tag_reference not recorded"),
+            (
+                vec!["mod_skipped", "mod_good"],
+                Some("mod_good"),
+                None,
+                Some("gfx/flags/medium/mod_good.tga"),
+                None,
+            ),
+            (
+                vec!["mod_truncated", "mod_good"],
+                Some("mod_good"),
+                Some("game does not check read status"),
+                Some("gfx/flags/medium/mod_good.tga"),
+                None,
+            ),
+            (
+                vec!["mod_truncated"],
+                None,
+                Some("game does not check read status"),
+                None,
+                Some("game does not check read status"),
+            ),
+            (
+                vec!["mod_absent"],
+                None,
+                Some(UNAVAILABLE),
+                None,
+                Some(UNAVAILABLE),
+            ),
         ] {
-            let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
-            let appearance =
-                match &mut *frame.tables[replay_data::rows::TableId::CountryAppearance.index()] {
-                    replay_frame::frame::TableView::Complete(
-                        replay_data::rows::TableRows::CountryAppearance(rows),
-                    ) => &mut rows[0],
-                    _ => unreachable!(),
-                };
-            appearance.original_tag_reference = reference;
-            let choice = choices(&frame).unwrap().remove(0);
-            assert_eq!(choice.candidates, ["COS_group", "COS"]);
-            assert_eq!(choice.key(|key| key == "COS"), Ok("COS"));
-            assert!(choice.key(|key| key == "ORI").unwrap_err().contains(reason));
-        }
-    }
-
-    #[test]
-    fn flag_choices_preserve_unknown_ruling_groups_before_plain_candidates() {
-        use replay_data::{
-            rows::PoliticalPartyRow, rows::PoliticsRow, rows::Recorded, rows::TableId,
-            rows::TableRows,
-        };
-        use replay_frame::frame::TableView;
-        let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
-        *frame.tables[TableId::Politics.index()] =
-            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
-                country: 10,
-                ruling_party: Some(4),
-                ..Default::default()
-            }]));
-        for (party, reason) in [
-            (None, "needs PoliticalParties ruling group 4"),
-            (Some(vec![0xff]), "ruling group is not UTF-8"),
-        ] {
-            *frame.tables[TableId::PoliticalParties.index()] =
-                TableView::Complete(TableRows::PoliticalParties(
-                    party
-                        .map(|token| PoliticalPartyRow {
-                            country: 10,
-                            id: 4,
-                            token,
-                            ..Default::default()
-                        })
-                        .into_iter()
-                        .collect(),
-                ));
-            let choice = choices(&frame).unwrap().remove(0);
-            assert!(choice.candidates.is_empty());
-            assert!(
-                choice
-                    .key(|key| key == "COS" || key == "ORI")
-                    .unwrap_err()
-                    .contains(reason)
-            );
-        }
-        *frame.tables[TableId::PoliticalParties.index()] =
-            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
-                country: 10,
-                id: 4,
-                token: b"group".to_vec(),
-                ..Default::default()
-            }]));
-        assert_eq!(
-            choices(&frame).unwrap()[0].candidates,
-            ["COS_group", "COS", "ORI_group", "ORI"]
-        );
-        // A flag read reconstructs only CHOICE_TABLES: they hold everything choices reads.
-        let mut selected = frame.clone();
-        for table in TableId::ALL {
-            if !CHOICE_TABLES.contains(&table) {
-                *selected.tables[table.index()] = TableView::Unavailable {
-                    reason: "not selected".into(),
-                };
+            let choice = folders.choose(&chain(&candidates)).unwrap();
+            assert_eq!(choice.keys[1].as_deref(), medium, "{candidates:?}");
+            match refused {
+                Some(refused) => assert!(
+                    choice.reasons[1]
+                        .as_deref()
+                        .is_some_and(|reason| reason.contains(refused)),
+                    "{candidates:?}: {:?}",
+                    choice.reasons
+                ),
+                None => assert_eq!(choice.reasons[1], None, "{candidates:?}"),
+            }
+            let request = CountryFlagParams {
+                flags: vec![choice],
+                size: CountryFlagSize::Medium,
+            };
+            let reply = context(&catalogue.content, [[1, 1]; 3], Vec::new())
+                .reply(&request, None, &AtomicBool::new(false))
+                .unwrap();
+            assert_eq!(reply.flags.first().map(|flag| flag.asset.as_str()), asset);
+            assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+            match reason {
+                Some(reason) => {
+                    assert_eq!(reply.unavailable.len(), 1);
+                    assert_eq!(reply.unavailable[0].flag, 0);
+                    assert!(
+                        reply.unavailable[0].reason.contains(reason),
+                        "{:?}",
+                        reply.unavailable
+                    );
+                }
+                None => assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable),
             }
         }
-        assert_eq!(
-            choices(&selected).unwrap()[0].candidates,
-            ["COS_group", "COS", "ORI_group", "ORI"]
+    }
+
+    /// A mod with no file for any candidate gives no atlas a key, each naming why: never another
+    /// country's flag or a guessed one. A chain whose operands are unknown names their refusal.
+    #[test]
+    fn a_mod_without_a_matching_flag_chooses_nothing_and_names_why() {
+        let image = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
+            &[],
+            &[
+                ("gfx/flags/GER.tga", image.clone()),
+                ("gfx/flags/small/GER.tga", image),
+            ],
         );
-        *frame.tables[TableId::PoliticalParties.index()] =
-            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
-                country: 10,
-                id: 4,
-                token: Vec::new(),
-                ..Default::default()
-            }]));
-        assert_eq!(ruling_groups(&frame).unwrap()[&10], Ok(Some(String::new())));
-        // The ordinary group's capture identity proves an active flag even with
-        // an empty token, so the qualified candidates keep the underscore.
-        assert_eq!(
-            choices(&frame).unwrap()[0].candidates,
-            ["COS_", "COS", "ORI_", "ORI"]
-        );
-        *frame.tables[TableId::Politics.index()] =
-            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
-                country: 10,
-                ruling_party: None,
-                ..Default::default()
-            }]));
-        assert!(
-            choices(&frame).unwrap()[0]
-                .key(|key| key == "COS")
-                .unwrap_err()
-                .contains("null ruling-party pointer")
-        );
-        *frame.tables[TableId::Politics.index()] = TableView::Unavailable {
-            reason: "read failed".into(),
+        let folders = FlagFolders::of(catalogue.content.layers.clone(), [[1, 1]; 3]);
+        let choice = folders
+            .choose(&chain(&[
+                "MOD_COS_fascism",
+                "MOD_COS",
+                "MOD_fascism",
+                "MOD",
+            ]))
+            .unwrap();
+        assert_eq!(choice.keys, [None, None, None]);
+        assert_eq!(choice.reasons, [0; 3].map(|_| Some(UNAVAILABLE.to_owned())));
+        let refused = Chain {
+            candidates: Vec::new(),
+            refusal: Some("country 7 flag needs its Politics row".into()),
         };
-        assert!(
-            choices(&frame).unwrap()[0]
-                .key(|key| key == "COS")
-                .unwrap_err()
-                .contains("needs its Politics row")
-        );
-    }
-
-    #[test]
-    fn flag_aliases_use_the_resolved_country_objects_operands() {
-        use replay_data::{rows::CountryLinkRow, rows::Recorded, rows::TableId, rows::TableRows};
-        use replay_frame::frame::TableView;
-        let mut frame = flag_frame(Recorded::Value(Some(b"ORI".to_vec())), b"COS");
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(vec![
-                CountryLinkRow {
-                    id: 10,
-                    canonical_slot: 2,
-                },
-                CountryLinkRow {
-                    id: 11,
-                    canonical_slot: 2,
-                },
-            ]));
-        let choices = choices(&frame).unwrap();
+        let choice = folders.choose(&refused).unwrap();
+        assert_eq!(choice.keys, [None, None, None]);
         assert_eq!(
-            choices.iter().map(|choice| choice.raw).collect::<Vec<_>>(),
-            [10, 11]
+            choice.reasons,
+            [0; 3].map(|_| Some("country 7 flag needs its Politics row".to_owned()))
         );
-        assert_eq!(choices[0].candidates, choices[1].candidates);
-        assert!(choices.iter().all(|choice| choice.refusal.is_none()));
-        // The resolved object's own link need not occur in a partial alias
-        // list for its already captured politics and appearance to be usable.
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(vec![CountryLinkRow {
-                id: 11,
-                canonical_slot: 2,
-            }]));
-        let alias_only = super::choices(&frame).unwrap();
-        assert_eq!(alias_only[0].candidates, choices[0].candidates);
-        assert!(alias_only[0].refusal.is_none());
+        // A known cosmetic candidate supplies the flag though the tag tail is unknown.
+        let tail = Chain {
+            candidates: vec!["GER".into()],
+            refusal: Some("CountryAppearance.original_tag capture refused".into()),
+        };
+        let choice = folders.choose(&tail).unwrap();
+        assert_eq!(choice.keys, [Some("GER".into()), None, Some("GER".into())]);
+        assert_eq!(
+            choice.reasons[1].as_deref(),
+            Some("CountryAppearance.original_tag capture refused")
+        );
     }
 
+    /// A choice's refusal is its own whatever else is drawn with it: two chains naming one
+    /// unreadable file, or one unresolvable name, each name it, alone or together.
     #[test]
-    fn a_flag_read_shares_the_frames_other_products_read_its_hour_through() {
+    fn each_choices_refusal_is_its_own_whatever_else_is_drawn() {
+        let mut truncated = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        truncated.pop();
+        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
+            &[],
+            &[("gfx/flags/medium/mod_truncated.tga", truncated)],
+        );
+        let folders = FlagFolders::of(catalogue.content.layers.clone(), [[1, 1]; 3]);
+        let choices: Vec<CountryFlagChoice> =
+            ["mod_truncated", "mod_truncated", "../escape", "../escape"]
+                .iter()
+                .map(|&candidate| folders.choose(&chain(&[candidate])).unwrap())
+                .collect();
+        let context = context(&catalogue.content, [[1, 1]; 3], Vec::new());
+        let reply = |flags: &[CountryFlagChoice]| {
+            let request = CountryFlagParams {
+                flags: flags.to_vec(),
+                size: CountryFlagSize::Medium,
+            };
+            context
+                .reply(&request, None, &AtomicBool::new(false))
+                .unwrap()
+        };
+        let together = reply(&choices);
+        for (at, choice) in choices.iter().enumerate() {
+            let alone = reply(std::slice::from_ref(choice));
+            let reason = alone.unavailable[0].reason.clone();
+            assert!(
+                reason.contains("read status") || reason.contains("cannot be resolved"),
+                "{at}: {reason}"
+            );
+            assert_eq!(together.unavailable[at].flag, at as u32);
+            assert_eq!(together.unavailable[at].reason, reason, "{at}");
+        }
+    }
+
+    /// Drawing a choice reads no hour of the recording: preparation made it.
+    #[test]
+    fn a_flag_draw_reads_no_recording() {
         use dashboard_base::prepared::query::frames;
         let (_catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[]);
         let frame = dashboard_base::test_fixtures::source(1, 100, Some(1));
         let (source, context) =
             dashboard_base::test_fixtures::source_with_content(vec![frame], &folder.0);
-        let content = context.content().unwrap();
-        let presented = source.presented_for(content).unwrap();
         let params = CountryFlagParams {
-            branch_id: "1".into(),
-            hour: 100,
-            tags: vec!["GER".into()],
+            flags: vec![every("GER")],
             size: CountryFlagSize::Full,
         };
-        let flag = AtomicBool::new(false);
         let before = frames::reads(&source);
-        let _ = FlagContext::load(
-            &source,
-            Arc::clone(&presented.content),
-            [[1, 1]; 3],
-            content.options.clone(),
-            content.allow_unverified,
-            &params,
-            &flag,
-        );
-        let read = frames::reads(&source);
-        assert_eq!(read.1, before.1 + 1, "one hour sought");
-        frames::seek(&source, 1, 100, &CHOICE_TABLES, &flag).unwrap();
-        assert_eq!(frames::reads(&source), read, "the hour already read");
+        let _ = CountryFlags::load(&source, &params, &context, &AtomicBool::new(false));
+        assert_eq!(frames::reads(&source), before);
     }
 
     #[test]
@@ -1504,192 +1465,6 @@ mod tests {
             .unwrap();
             assert!(matches!(found, FlagSearch::Unresolvable));
             assert_eq!(findings.len(), usize::from(index == 0));
-        }
-    }
-
-    #[test]
-    fn live_flag_reply_warns_only_for_unreproduced_draws() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let image = vec![
-            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
-        ];
-        let mut skipped = image.clone();
-        skipped[2] = 10;
-        let mut truncated = image.clone();
-        truncated.pop();
-        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
-            &[],
-            &[
-                ("gfx/flags/mod_normal.tga", image.clone()),
-                ("gfx/flags/medium/mod_good.tga", image),
-                ("gfx/flags/medium/mod_skipped.tga", skipped),
-                ("gfx/flags/medium/mod_truncated.tga", truncated),
-            ],
-        );
-        for (candidates, asset, reason) in [
-            (vec!["mod_normal"], Some("gfx/flags/mod_normal.tga"), None),
-            (
-                vec!["mod_skipped", "mod_good"],
-                Some("gfx/flags/medium/mod_good.tga"),
-                None,
-            ),
-            (
-                vec!["mod_truncated", "mod_good"],
-                Some("gfx/flags/medium/mod_good.tga"),
-                Some("game does not check read status"),
-            ),
-            (
-                vec!["mod_truncated"],
-                None,
-                Some("game does not check read status"),
-            ),
-            (
-                vec!["mod_absent"],
-                None,
-                Some("mod tag: flag artwork unavailable in the recorded content"),
-            ),
-        ] {
-            let context = FlagContext {
-                presentation: Default::default(),
-                options: ResolveOptions {
-                    game_dir: "G".into(),
-                    user_dir: "U".into(),
-                    cache_dir: "C".into(),
-                },
-                content: Arc::clone(&catalogue.content),
-                cells: [[1, 1]; 3],
-                cell_fallbacks: BTreeSet::new(),
-                files: Arc::default(),
-                choices: HashMap::from([(
-                    "mod tag".into(),
-                    FlagChoice {
-                        raw: 0,
-                        tag: "mod tag".into(),
-                        candidates: candidates.into_iter().map(str::to_owned).collect(),
-                        refusal: None,
-                    },
-                )]),
-                branch_id: "1".into(),
-                hour: 0,
-                warnings: Vec::new(),
-            };
-            let request = CountryFlagParams {
-                branch_id: "1".into(),
-                hour: 0,
-                tags: vec!["mod tag".into()],
-                size: CountryFlagSize::Medium,
-            };
-            let reply = context
-                .reply(&request, None, &AtomicBool::new(false))
-                .unwrap();
-            assert_eq!(reply.flags.first().map(|flag| flag.asset.as_str()), asset);
-            if asset.is_some() {
-                assert!(reply.unavailable.is_empty());
-            } else {
-                assert_eq!(reply.unavailable.len(), 1);
-                assert_eq!(reply.unavailable[0].tag, "mod tag");
-                let reason = reason.unwrap();
-                assert!(
-                    reply.unavailable[0]
-                        .reason
-                        .contains(reason.strip_prefix("mod tag: ").unwrap_or(reason))
-                );
-            }
-            match reason {
-                Some(reason) => assert_eq!(
-                    reply
-                        .warnings
-                        .iter()
-                        .filter(|warning| warning.contains(reason))
-                        .count(),
-                    1,
-                    "{:?}",
-                    reply.warnings
-                ),
-                None => assert!(reply.warnings.is_empty(), "{:?}", reply.warnings),
-            }
-        }
-    }
-
-    /// A country's refused flag gives the reason it gives asked alone, whatever else its request
-    /// asks: two countries naming one unreadable file, or one unresolvable name, each name it.
-    #[test]
-    fn each_countrys_flag_refusal_is_its_own_whatever_else_is_asked() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let mut truncated = vec![
-            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
-        ];
-        truncated.pop();
-        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
-            &[],
-            &[("gfx/flags/medium/mod_truncated.tga", truncated)],
-        );
-        let choices: [(&str, &str); 4] = [
-            ("AAA", "mod_truncated"),
-            ("BBB", "mod_truncated"),
-            ("CCC", "../escape"),
-            ("DDD", "../escape"),
-        ];
-        let context = FlagContext {
-            presentation: Default::default(),
-            options: ResolveOptions {
-                game_dir: "G".into(),
-                user_dir: "U".into(),
-                cache_dir: "C".into(),
-            },
-            content: Arc::clone(&catalogue.content),
-            cells: [[1, 1]; 3],
-            cell_fallbacks: BTreeSet::new(),
-            files: Arc::default(),
-            choices: choices
-                .iter()
-                .map(|&(tag, candidate)| {
-                    (
-                        tag.to_owned(),
-                        FlagChoice {
-                            raw: 0,
-                            tag: tag.to_owned(),
-                            candidates: vec![candidate.to_owned()],
-                            refusal: None,
-                        },
-                    )
-                })
-                .collect(),
-            branch_id: "1".into(),
-            hour: 0,
-            warnings: Vec::new(),
-        };
-        let reply = |tags: &[&str]| {
-            let request = CountryFlagParams {
-                branch_id: "1".into(),
-                hour: 0,
-                tags: tags.iter().map(|&tag| tag.to_owned()).collect(),
-                size: CountryFlagSize::Medium,
-            };
-            context
-                .reply(&request, None, &AtomicBool::new(false))
-                .unwrap()
-        };
-        let together = reply(&choices.map(|(tag, _)| tag));
-        for (tag, _) in choices {
-            let reason = |reply: &CountryFlagReply| {
-                reply
-                    .unavailable
-                    .iter()
-                    .find(|unavailable| unavailable.tag == tag)
-                    .map(|unavailable| unavailable.reason.clone())
-            };
-            let alone = reason(&reply(&[tag]));
-            assert!(
-                alone
-                    .as_deref()
-                    .is_some_and(|reason| reason.contains("read status")
-                        || reason.contains("cannot be resolved")),
-                "{tag}: {alone:?}"
-            );
-            assert_eq!(reason(&together), alone, "{tag}");
         }
     }
 
@@ -1743,26 +1518,13 @@ mod tests {
     }
 
     fn assert_shield_warning(catalogue: &crate::catalogue::Catalogue, reason: &str) {
-        let context = FlagContext {
-            presentation: Default::default(),
-            options: ResolveOptions {
-                game_dir: "G".into(),
-                user_dir: "U".into(),
-                cache_dir: "C".into(),
-            },
-            content: Arc::clone(&catalogue.content),
-            cells: [[1, 1]; 3],
-            cell_fallbacks: BTreeSet::new(),
-            files: Arc::default(),
-            choices: HashMap::new(),
-            branch_id: "1".into(),
-            hour: 0,
-            warnings: vec!["standing warning".into()],
-        };
+        let context = context(
+            &catalogue.content,
+            [[1, 1]; 3],
+            vec!["standing warning".into()],
+        );
         let request = CountryFlagParams {
-            branch_id: "1".into(),
-            hour: 0,
-            tags: vec!["MOD tag".into()],
+            flags: vec![every("MOD tag")],
             size: CountryFlagSize::Shield,
         };
         let reply = context
@@ -1770,7 +1532,7 @@ mod tests {
             .unwrap();
         assert!(reply.flags.is_empty());
         assert_eq!(reply.unavailable.len(), 1);
-        assert_eq!(reply.unavailable[0].tag, "MOD tag");
+        assert_eq!(reply.unavailable[0].flag, 0);
         assert_eq!(
             reply.unavailable[0].reason,
             format!("Shield artwork unavailable: {reason}")
@@ -1943,30 +1705,7 @@ mod tests {
             installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
         );
         let style = ShieldStyle::load(&catalogue).unwrap();
-        let context = FlagContext {
-            presentation: Default::default(),
-            options: ResolveOptions {
-                game_dir: "G".into(),
-                user_dir: "U".into(),
-                cache_dir: "C".into(),
-            },
-            content: Arc::clone(&catalogue.content),
-            cells,
-            cell_fallbacks: BTreeSet::new(),
-            files: Arc::default(),
-            choices: HashMap::from([(
-                "MOD".to_owned(),
-                FlagChoice {
-                    raw: 0,
-                    tag: "MOD".into(),
-                    candidates: vec!["MOD".into()],
-                    refusal: None,
-                },
-            )]),
-            branch_id: "1".into(),
-            hour: 0,
-            warnings: Vec::new(),
-        };
+        let context = context(&catalogue.content, cells, Vec::new());
         let pixel = |reply: &CountryFlagReply, x: u32, y: u32| {
             let image = &reply.flags[0];
             let at = ((y * image.width + x) * 4) as usize;
@@ -1975,9 +1714,7 @@ mod tests {
         let mut drawn = Vec::new();
         for size in [CountryFlagSize::Shield, CountryFlagSize::Panel] {
             let request = CountryFlagParams {
-                branch_id: "1".into(),
-                hour: 0,
-                tags: vec!["MOD".into()],
+                flags: vec![every("MOD")],
                 size,
             };
             let reply = context
@@ -2078,34 +1815,9 @@ mod tests {
         let ((centre, edge), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
             let catalogue = Catalogue::of_layers(layers, "english").unwrap();
             let style = ShieldStyle::load(&catalogue).unwrap();
-            let context = FlagContext {
-                presentation: Default::default(),
-                options: ResolveOptions {
-                    game_dir: "G".into(),
-                    user_dir: "U".into(),
-                    cache_dir: "C".into(),
-                },
-                content: Arc::clone(&catalogue.content),
-                cells,
-                cell_fallbacks: BTreeSet::new(),
-                files: Arc::default(),
-                choices: HashMap::from([(
-                    "MOD".to_owned(),
-                    FlagChoice {
-                        raw: 0,
-                        tag: "MOD".into(),
-                        candidates: vec!["MOD".into()],
-                        refusal: None,
-                    },
-                )]),
-                branch_id: "1".into(),
-                hour: 0,
-                warnings: Vec::new(),
-            };
+            let context = context(&catalogue.content, cells, Vec::new());
             let request = CountryFlagParams {
-                branch_id: "1".into(),
-                hour: 0,
-                tags: vec!["MOD".into()],
+                flags: vec![every("MOD")],
                 size: CountryFlagSize::Shield,
             };
             let reply = context
@@ -2400,24 +2112,26 @@ mod tests {
     }
 
     #[test]
-    fn flag_params_default_to_full_and_reject_invalid_tags_and_unbounded_batches() {
-        let value = serde_json::json!({ "branchId": "1", "hour": 0, "tags": ["GER"] });
+    fn flag_params_default_to_full_and_reject_unsafe_keys_and_unbounded_batches() {
+        let value = serde_json::json!({
+            "flags": [{ "keys": ["GER", null, "GER"], "reasons": [null, "absent", null] }],
+        });
         let params: CountryFlagParams = serde_json::from_value(value).unwrap();
         assert_eq!(params.size, CountryFlagSize::Full);
         assert!(CountryFlags::validate(&params).is_ok());
+        // A key names a file below its flag folder, of any spelling the recording gave.
         let mut params = CountryFlagParams {
-            branch_id: "1".into(),
-            hour: 0,
-            tags: vec!["Z01".into(), "MOD_TAG".into()],
+            flags: vec![every("variants/red"), every("mod country tag")],
             size: CountryFlagSize::Full,
         };
         assert!(CountryFlags::validate(&params).is_ok());
-        // Request tags are lookup keys; asset names come from recorded rows.
-        params.tags = vec!["A\0B".into()];
+        for key in ["../escape", "", "a\\b", "c:flag"] {
+            params.flags = vec![every(key)];
+            assert!(CountryFlags::validate(&params).is_err(), "{key:?}");
+        }
+        params.flags = Vec::new();
         assert!(CountryFlags::validate(&params).is_err());
-        params.tags = vec![String::new()];
-        assert!(CountryFlags::validate(&params).is_err());
-        params.tags = vec!["Z01".into(); 33];
+        params.flags = vec![every("GER"); 33];
         assert!(CountryFlags::validate(&params).is_err());
     }
 }

@@ -172,6 +172,7 @@ fn compare(
     cross: bool,
 ) {
     let mut walk = Synthetic::new(super::super::super::block::TABLES, 1, inputs[0].hour).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let fixtures = [Fixture::new(), Fixture::new()];
     let (mut row, mut projected) = (Prepared::default(), Prepared::default());
     let mut tracker = FrameChangeTracker::new();
@@ -226,6 +227,18 @@ fn compare(
         }
         write_hour(&mut walk, input, carried);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &super::needs().unwrap(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             row.observe(
                 frame,
                 FormatVersion::CURRENT,
@@ -247,6 +260,7 @@ fn compare(
                         opens,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -277,6 +291,7 @@ fn compare(
 /// One projector's hours over consecutive `inputs`.
 fn one_projector(inputs: &[DecodedFrame]) -> Vec<Hour> {
     let mut walk = Synthetic::new(super::super::super::block::TABLES, 1, inputs[0].hour).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let mut projector = Projector::new(FormatVersion::CURRENT, CaptureMode::Full).unwrap();
     let mut hours: Vec<Hour> = Vec::new();
     projector
@@ -285,6 +300,18 @@ fn one_projector(inputs: &[DecodedFrame]) -> Vec<Hour> {
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &super::needs().unwrap(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -296,6 +323,7 @@ fn one_projector(inputs: &[DecodedFrame]) -> Vec<Hour> {
                         opens: starts,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -756,6 +784,7 @@ fn a_restart_builds_a_baseline_only_after_a_refused_hour() {
             };
         }
         let mut walk = Synthetic::new(super::super::super::block::TABLES, 1, 0).unwrap();
+        let mut world_held: Option<dashboard_world::World> = None;
         for input in &inputs[..2] {
             write_hour(&mut walk, input, None);
             walk.end(|_, _, _, _| ()).unwrap();
@@ -764,7 +793,19 @@ fn a_restart_builds_a_baseline_only_after_a_refused_hour() {
         let mut hours: Vec<Hour> = Vec::new();
         projector.start(Start::Restart(walk.state()), 1, 2).unwrap();
         write_hour(&mut walk, &inputs[2], None);
-        walk.end(|state, manifest, frame, _| {
+        walk.end(|state, manifest, frame, walk_starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                walk_starts,
+                &super::needs().unwrap(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -776,6 +817,7 @@ fn a_restart_builds_a_baseline_only_after_a_refused_hour() {
                         opens: true,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )

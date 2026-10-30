@@ -74,10 +74,66 @@ enum Event {
     Battle((i32, i32, bool, u8, u64, u8)),
     Observation(LeaderObservation),
 }
+
+/// An [`Event`] borrowing what it publishes, written as the `Event` is.
+#[derive(Serialize)]
+enum EventRef<'a> {
+    Run(&'a UnitLeaderRun),
+    Trait(&'a LeaderTraitGain),
+    Command(&'a LeaderCommand),
+    Battle(&'a (i32, i32, bool, u8, u64, u8)),
+}
+
+/// `Event::Run(run)` as written, its progress already written as `progress`.
+fn run_event(run: &UnitLeaderRun, progress: &[u8]) -> io::Result<Vec<u8>> {
+    let value = &run.value;
+    let mut row = Vec::with_capacity(progress.len() + 96);
+    row.extend_from_slice(b"{\"Run\":");
+    serde_json::to_writer(
+        &mut row,
+        &(
+            run.first_hour,
+            run.last_hour,
+            value.person,
+            value.role,
+            value.skill,
+            value.components,
+            value.traits.as_deref(),
+        ),
+    )?;
+    // The run's tuple goes on with its progress.
+    row.pop();
+    row.push(b',');
+    row.extend_from_slice(progress);
+    row.extend_from_slice(b"]}");
+    Ok(row)
+}
+
+/// The key named `name`, numbered as names are first published.
+fn key(keys: &mut BTreeMap<String, u64>, name: String) -> io::Result<u64> {
+    if let Some(&key) = keys.get(&name) {
+        return Ok(key);
+    }
+    let key = u64::try_from(keys.len())
+        .ok()
+        .and_then(|count| count.checked_add(1))
+        .ok_or_else(|| dashboard_core::invalid("Leader event key overflow"))?;
+    keys.insert(name, key);
+    Ok(key)
+}
+
 impl Prepared {
     pub fn new(replay: &Replay, branch: u64) -> Self {
         Self {
             scan: Scan::new(replay, branch).expect("prepared branch has recorded frames"),
+            ..Default::default()
+        }
+    }
+
+    /// A branch's state whose first recorded hour is `start`.
+    pub fn starting(format: FormatVersion, branch: u64, start: i32) -> Self {
+        Self {
+            scan: Scan::at(format, branch, start),
             ..Default::default()
         }
     }
@@ -106,20 +162,43 @@ impl Prepared {
     pub fn saved_bytes(&self) -> io::Result<Vec<u8>> {
         dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)
     }
-    fn key(&mut self, name: String) -> io::Result<u64> {
-        if let Some(&key) = self.keys.get(&name) {
-            return Ok(key);
-        }
-        let key = u64::try_from(self.keys.len())
-            .ok()
-            .and_then(|count| count.checked_add(1))
-            .ok_or_else(|| dashboard_core::invalid("Leader event key overflow"))?;
-        self.keys.insert(name, key);
-        Ok(key)
+
+    /// What [`Self::read`] takes beside the continuation [`Self::flush`] writes, its
+    /// catalogue's keys and metadata, saved for a preparation going on from it.
+    pub fn saved_catalogue(&self) -> io::Result<Vec<u8>> {
+        let catalogue = (
+            &self.keys,
+            &self.countries,
+            &self.content_warnings,
+            &self.admissions,
+            &self.kinds,
+            &self.published,
+        );
+        series::compress(serde_json::to_vec(&catalogue)?.as_slice(), 3)
     }
-    fn event(&mut self, reference: u64, event: Event) -> io::Result<()> {
-        let key = self.key(reference.to_string())?;
-        self.series.event(key, self.through, &event)
+
+    /// The continuation `reader` holds, as [`Self::flush`] wrote it, going on with the
+    /// catalogue [`Self::saved_catalogue`] saved.
+    pub fn resumed(reader: impl io::Read, catalogue: &[u8]) -> io::Result<Self> {
+        let (keys, countries, warnings, admissions, kinds, published): (
+            BTreeMap<String, u64>,
+            BTreeMap<String, BTreeSet<u64>>,
+            Vec<String>,
+            BTreeMap<String, BTreeSet<(u64, u32, u32)>>,
+            BTreeMap<u64, BTreeSet<u8>>,
+            Published,
+        ) = serde_json::from_slice(&series::decompress(catalogue)?)?;
+        let metadata = Metadata {
+            countries,
+            warnings,
+            admissions,
+            kinds,
+            published,
+        };
+        Self::read(io::BufReader::new(reader), keys, metadata)
+    }
+    fn key(&mut self, name: String) -> io::Result<u64> {
+        key(&mut self.keys, name)
     }
     /// Runs `run` as this family's own consumer of the shared content
     /// ([`dashboard_text::catalogue::own_refusals`]).
@@ -142,6 +221,32 @@ impl Prepared {
         self.own(|state| state.observe_own(frame, replay, content, changes, changes, None))
             .map(drop)
     }
+    pub fn observe_projected(&mut self, hour: columnar::Hour) -> io::Result<()> {
+        self.series.advance_span(hour.first, hour.hour)?;
+        self.through = hour.hour;
+        self.refusals.merge(&hour.refusals);
+        for (reference, role, holder) in &hour.admissions {
+            self.kinds.entry(*reference).or_default().insert(role.kind);
+            if let Some(owner) = &role.owner {
+                self.countries
+                    .entry(owner.clone())
+                    .or_default()
+                    .insert(*reference);
+                if let Some((slot, country)) = holder {
+                    self.admissions
+                        .entry(owner.clone())
+                        .or_default()
+                        .insert((*reference, *slot, *country));
+                }
+            }
+        }
+        hour.stitch(
+            &mut self.scan,
+            &self.published.outcomes,
+            &self.published.sources,
+        )
+    }
+
     /// [`Self::observe`] of an hour of a block read by its changes, on a
     /// frame kept from it (`frame`), whose rows differ from the hour's whole
     /// frame only as `reduced` says; `tables` says what changed since the
@@ -378,32 +483,42 @@ impl Prepared {
         {
             self.key(reference.to_string())?;
         }
-        let mut events = Vec::new();
+        // Each event is written as its leader's turn comes: a key's events keep their order.
+        let through = self.through;
+        let Self {
+            scan, series, keys, ..
+        } = self;
         let mut runs = Vec::new();
-        for leader in &mut self.scan.leaders {
+        let mut progress = HashMap::new();
+        for leader in &mut scan.leaders {
             check_cancel(cancelled)?;
             let reference = leader.reference;
+            let key = key(keys, reference.to_string())?;
             let mut chain = leader.last_run;
             while let Some(index) = chain {
-                let stored = &mut self.scan.stored_runs[index];
+                let stored = &mut scan.stored_runs[index];
                 if Some(index) != leader.last_run && !stored.emitted {
-                    events.push((reference, Event::Run(stored.run.clone())));
+                    let row = match scan.run_progress.get(&index) {
+                        Some(written) => run_event(&stored.run, written)?,
+                        None => serde_json::to_vec(&EventRef::Run(&stored.run))?,
+                    };
+                    series.event_raw(key, through, row)?;
                     stored.emitted = true;
                 }
                 chain = stored.previous;
             }
-            events.extend(
-                std::mem::take(&mut leader.career.trait_gains)
-                    .into_iter()
-                    .map(|gain| (reference, Event::Trait(gain))),
-            );
+            for gain in std::mem::take(&mut leader.career.trait_gains) {
+                series.event_raw(key, through, serde_json::to_vec(&EventRef::Trait(&gain))?)?;
+            }
             let mut commands = Vec::new();
             for mut command in std::mem::take(&mut leader.career.commands) {
-                if command.last_hour != self.through {
-                    events.push((reference, Event::Command(command)));
+                if command.last_hour != through {
+                    let row = serde_json::to_vec(&EventRef::Command(&command))?;
+                    series.event_raw(key, through, row)?;
                 } else {
                     if command.name_unknown.len() > 1 {
-                        events.push((reference, Event::Command(command.clone())));
+                        let row = serde_json::to_vec(&EventRef::Command(&command))?;
+                        series.event_raw(key, through, row)?;
                         let last = command.name_unknown.pop().expect("unknown command spans");
                         command.name_unknown = vec![last];
                     }
@@ -436,9 +551,12 @@ impl Prepared {
                 .flatten()
                 .collect::<BTreeSet<_>>()
             {
-                let mut stored = self.scan.stored_runs[old].clone();
+                let mut stored = scan.stored_runs[old].clone();
                 stored.previous = None;
                 let index = runs.len();
+                if let Some(written) = scan.run_progress.get(&old) {
+                    progress.insert(index, Arc::clone(written));
+                }
                 if Some(old) == last_known {
                     leader.last_known_run = Some(index);
                 }
@@ -448,14 +566,15 @@ impl Prepared {
                 runs.push(stored);
             }
         }
-        self.scan.stored_runs = runs;
-        for (reference, rows) in std::mem::take(&mut self.scan.battle_hours) {
-            events.extend(rows.into_iter().map(|row| (reference, Event::Battle(row))));
+        scan.stored_runs = runs;
+        scan.run_progress = progress;
+        for (reference, rows) in std::mem::take(&mut scan.battle_hours) {
+            let key = key(keys, reference.to_string())?;
+            for row in rows {
+                series.event_raw(key, through, serde_json::to_vec(&EventRef::Battle(&row))?)?;
+            }
         }
-        self.scan.battle_indices.clear();
-        for (reference, event) in events {
-            self.event(reference, event)?;
-        }
+        scan.battle_indices.clear();
         let shared = self.key("observed".into())?;
         if let Some(last) = self.scan.reply.observed.pop() {
             for row in std::mem::take(&mut self.scan.reply.observed) {
@@ -510,7 +629,7 @@ impl Prepared {
         self.series.event(key, self.through, &value)
     }
 }
-fn full_params(branch: &str) -> UnitLeadersParams {
+pub(super) fn full_params(branch: &str) -> UnitLeadersParams {
     UnitLeadersParams {
         branch_id: branch.into(),
         selection: LeaderSelection::All,

@@ -176,6 +176,28 @@ pub(super) struct Queue {
     duplicates: usize,
 }
 impl Queue {
+    /// The bytes it owns, itself and its proposals included.
+    pub(super) fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self
+                .rows
+                .values()
+                .map(|proposal| {
+                    size_of::<(u128, Arc<Proposal>)>()
+                        + size_of::<Proposal>()
+                        + proposal.signature.capacity()
+                        + proposal.roles.capacity() * size_of::<Option<DiplomacyCountry>>()
+                        + proposal
+                            .roles
+                            .iter()
+                            .flatten()
+                            .map(|country| country.tag.capacity())
+                            .sum::<usize>()
+                        + proposal.raw_countries.capacity() * size_of::<u32>()
+                })
+                .sum::<usize>()
+            + self.handles.len() * size_of::<((u32, u64), usize)>()
+    }
     pub(super) fn set(&mut self, key: u128, proposal: Option<Arc<Proposal>>) {
         if let Some(old) = self.rows.remove(&key) {
             let handle = (old.row.country, old.row.handle);

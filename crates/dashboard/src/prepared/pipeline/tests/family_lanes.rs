@@ -180,7 +180,6 @@ const LANE_FAMILIES: &[&str] = &[
     "measure",
     "navy",
     "air",
-    "supply",
     "stockpile",
     "air_ledger",
     "aces",
@@ -197,9 +196,8 @@ const LANE_FAMILIES: &[&str] = &[
     "parties",
     "leaders",
     "intelligence",
-    "stability",
+    "parts",
     "experience",
-    "politics_ledger",
     "fuel",
     "occupation",
     "casualties",
@@ -214,7 +212,6 @@ const MOVED: &[&str] = &[
     "construction",
     "navy",
     "air",
-    "supply",
     "stockpile",
     "raids",
     "land",
@@ -222,7 +219,6 @@ const MOVED: &[&str] = &[
     "ideas",
     "leaders",
     "intelligence",
-    "politics_ledger",
     "occupation",
     "casualties",
 ];
@@ -490,8 +486,6 @@ fn family_lanes_match_serial_for_every_moved_family_and_detect_a_diverging_lane(
                 "navy",
                 "ideas",
                 "occupation",
-                "politics_ledger",
-                "supply",
                 "raids",
                 "intelligence",
                 "stockpile",
@@ -727,41 +721,41 @@ fn frame_changes_force_all_on_same_branch_post_publication_restore() {
 #[test]
 fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     use std::sync::mpsc;
-    // The two heaviest lane jobs, the politics ledger and stability, are
-    // always packed on different lanes.
+    // The two heaviest lane jobs, stability's parts and the leaders, are always
+    // packed on different lanes.
     let (resource_send, resource_receive) = mpsc::sync_channel(1);
-    let (ledger_send, ledger_receive) = mpsc::sync_channel(1);
+    let (leaders_send, leaders_receive) = mpsc::sync_channel(1);
     let resource_receive = Mutex::new(resource_receive);
-    let ledger_receive = Mutex::new(ledger_receive);
+    let leaders_receive = Mutex::new(leaders_receive);
     let entered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = Arc::clone(&entered);
     let resource_frame = std::sync::atomic::AtomicUsize::new(0);
-    let ledger_frame = std::sync::atomic::AtomicUsize::new(0);
+    let leaders_frame = std::sync::atomic::AtomicUsize::new(0);
     let hook: lanes::Hook = Arc::new(move |family, observed, _changes| {
-        if observed.hour == 10 && family == "stability" {
+        if observed.hour == 10 && family == "parts" {
             resource_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
             count.fetch_add(1, Ordering::SeqCst);
             resource_send.send(()).unwrap();
-            ledger_receive
+            leaders_receive
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("the politics ledger must enter while stability is active");
+                .expect("the leaders must enter while the parts are active");
             assert_eq!(
                 resource_frame.load(Ordering::SeqCst),
-                ledger_frame.load(Ordering::SeqCst),
+                leaders_frame.load(Ordering::SeqCst),
                 "lanes must share the same frame allocation"
             );
-        } else if observed.hour == 10 && family == "politics_ledger" {
-            ledger_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
+        } else if observed.hour == 10 && family == "leaders" {
+            leaders_frame.store(observed as *const DecodedFrame as usize, Ordering::SeqCst);
             count.fetch_add(1, Ordering::SeqCst);
-            ledger_send.send(()).unwrap();
+            leaders_send.send(()).unwrap();
             resource_receive
                 .lock()
                 .unwrap()
                 .recv_timeout(Duration::from_secs(2))
-                .expect("stability must enter while the politics ledger is active");
-        } else if observed.hour == 11 && matches!(family, "stability" | "politics_ledger") {
+                .expect("the parts must enter while the leaders are active");
+        } else if observed.hour == 11 && matches!(family, "parts" | "leaders") {
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 2,
@@ -772,8 +766,8 @@ fn family_lanes_enter_together_and_never_advance_to_the_next_frame() {
     });
     let mut fixture = Fixture::new(&recording());
     let source = fixture.source("lane-barrier");
-    // The politics ledger is prepared on its own; the walk's lane job for it
-    // runs only while every family is prepared hour by hour.
+    // Both are prepared on their own; the walk's lane jobs for them run only
+    // while every family is prepared hour by hour.
     independent::with_test_hourly(|| {
         lanes::with_test_lanes(4, Some(hook), || {
             run(&source, None, &AtomicBool::new(false), |_| {})

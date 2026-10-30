@@ -108,8 +108,6 @@ pub struct MeasureMarkReply {
 enum Family {
     #[serde(rename = "country-measure")]
     Balances { measure: Measure },
-    #[serde(rename = "country-stability")]
-    Stability { measure: String },
     #[serde(rename = "country-experience")]
     Experience { measure: String },
     #[serde(rename = "stability-parts")]
@@ -151,7 +149,6 @@ pub fn query(
     let params: SeriesParams = serde_json::from_value(params)?;
     let parts = matches!(params.family, Family::Parts { .. });
     let experience = matches!(params.family, Family::Experience { .. });
-    let stability = matches!(params.family, Family::Stability { .. });
     let decimals = if experience { 0 } else { MEASURE_DECIMALS };
     let (measure, balance) = match &params.family {
         Family::Balances { measure } => (
@@ -162,11 +159,6 @@ pub fn query(
             .to_owned(),
             true,
         ),
-        Family::Stability { measure }
-            if ["stability", "warSupport", "maxCommandPower"].contains(&measure.as_str()) =>
-        {
-            (measure.clone(), false)
-        }
         Family::Experience { measure }
             if measure.split_once('-').is_some_and(|(branch, mode)| {
                 ["army", "navy", "air"].contains(&branch)
@@ -188,10 +180,8 @@ pub fn query(
         "parts"
     } else if balance {
         "measure"
-    } else if experience {
-        "experience"
     } else {
-        "stability"
+        "experience"
     };
     let use_prepared = progressive.is_none_or(|(_, _, _, _, prepared)| prepared);
     let (keys, rows) = if use_prepared {
@@ -318,7 +308,7 @@ pub fn query(
                 // Stability and experience samples date their values by the
                 // same frame's supplying read.
                 let sampled_read = progressive
-                    .filter(|_| stability || experience)
+                    .filter(|_| experience)
                     .and_then(|(_, values, _, _, _)| {
                         values
                             .get(&(read.tag.clone(), READ_HOUR.to_owned()))?
@@ -412,7 +402,7 @@ pub fn query(
                     // A transient tail proves a recorded country but never its absence.
                     recorded: match progressive {
                         Some((_, _, _, identities, _))
-                            if (stability || experience) && actor(&read.tag).is_none() =>
+                            if experience && actor(&read.tag).is_none() =>
                         {
                             identities
                                 .contains_key(&(read.tag.clone(), READ_HOUR.to_owned()))

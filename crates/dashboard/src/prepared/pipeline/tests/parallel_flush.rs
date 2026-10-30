@@ -88,9 +88,15 @@ fn block_end_flushes_run_on_several_threads_and_publish_the_serial_bytes() {
     assert_eq!(parallel.refused, serial.refused);
     let steps = assert_same_steps(&serial.steps, &parallel.steps);
     // Both branches' flushes ran every family's every step: the same
-    // positions, from the first to the last with none skipped.
+    // positions, none skipped.
     assert_eq!(steps.keys().copied().collect::<Vec<_>>(), [11, 21]);
-    let every = (0..steps[&11].len()).collect::<Vec<_>>();
+    let every: Vec<usize> = steps
+        .values()
+        .flatten()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     assert!(every.len() > 40, "{every:?}");
     for positions in steps.values() {
         assert_eq!(*positions, every);
@@ -117,9 +123,9 @@ fn block_end_flushes_run_on_several_threads_and_publish_the_serial_bytes() {
 #[test]
 fn refusals_raised_by_flushes_skip_the_serial_steps_and_publish_the_serial_bytes() {
     // Each refuses a family in its flush only: identities before event_feed's
-    // and territory's flushes, which it reaches; groups and the ledger before
+    // and territory's flushes, which it reaches; groups and the parties before
     // their own later steps.
-    let refusals = [("identities", 11), ("groups", 11), ("politics_ledger", 21)];
+    let refusals = [("identities", 11), ("groups", 11), ("parties", 21)];
     flush::with_flush_refusals(&refusals, || {
         let mut fixture = Fixture::new(&recording());
         let serial = flushed(&mut fixture, 2);
@@ -131,19 +137,20 @@ fn refusals_raised_by_flushes_skip_the_serial_steps_and_publish_the_serial_bytes
         );
         assert_eq!(parallel.refused, serial.refused);
         let steps = assert_same_steps(&serial.steps, &parallel.steps);
-        // Every step position, the last of which no refusal here skips.
-        let every = 0..=steps.values().flatten().copied().max().unwrap();
+        // Every step position some hour takes.
+        let every: std::collections::BTreeSet<usize> = steps.values().flatten().copied().collect();
         let skipped = |hour: i32| {
             every
-                .clone()
+                .iter()
+                .copied()
                 .filter(|position| !steps[&hour].contains(position))
                 .collect::<Vec<_>>()
         };
         // Branch 1: event_feed (32) and territory (42) by identities (26),
         // the groups write (33) by group changes (28).
         assert_eq!(skipped(11), [32, 33, 42]);
-        // Branch 2: the ledger's state write (40) by its flush (39).
-        assert_eq!(skipped(21), [40]);
+        // Branch 2: the parties' state write (37) by their flush (36).
+        assert_eq!(skipped(21), [37]);
         let first = &serial.refused[&1].0;
         for (family, from) in [
             ("identities", None),
@@ -155,7 +162,7 @@ fn refusals_raised_by_flushes_skip_the_serial_steps_and_publish_the_serial_bytes
             assert_eq!(first[family].hour, 11, "{family}");
             assert_eq!(first[family].from.as_deref(), from, "{family}");
         }
-        assert_eq!(serial.refused[&2].0["politics_ledger"].hour, 21);
+        assert_eq!(serial.refused[&2].0["parties"].hour, 21);
     });
 }
 

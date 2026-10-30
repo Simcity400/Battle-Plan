@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
-import { forgetFlags } from './flagCache.ts';
+import { forgetFlags } from './countryFlags.ts';
 import { forgetFacts } from './sharedFacts.ts';
 import { forgetTimelines } from './countryTimeline.ts';
 import { forgetReplySizes } from './replySizes.ts';
@@ -232,7 +232,7 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
 export function forgetSettledProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSettled(sourceId);
   cache(client, true).deleteSettled(sourceId);
-  forgetFlags(client, sourceId);
+  forgetFlags(client, sourceId, true);
   forgetFacts(client, sourceId);
   forgetTimelines(client, sourceId, true);
 }

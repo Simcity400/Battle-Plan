@@ -38,7 +38,11 @@ impl Groups {
         }
     }
     /// Follows the hour's changes to `table`; empty while it is not complete.
-    pub(super) fn update(&mut self, hour: &segments::Hour<'_>, table: TableId) -> io::Result<()> {
+    pub(super) fn update<W>(
+        &mut self,
+        hour: &segments::Hour<'_, W>,
+        table: TableId,
+    ) -> io::Result<()> {
         self.touched.clear();
         let complete = columns::complete(hour.state, table);
         let whole = hour.starts || hour.opens || !self.complete;
@@ -117,7 +121,11 @@ pub(super) struct Stamps {
     hours: [BTreeMap<i32, BTreeSet<u32>>; 2],
 }
 impl Stamps {
-    pub(super) fn update(&mut self, hour: &segments::Hour<'_>, field: usize) -> io::Result<()> {
+    pub(super) fn update<W>(
+        &mut self,
+        hour: &segments::Hour<'_, W>,
+        field: usize,
+    ) -> io::Result<()> {
         let table = TableId::SliceReads;
         let complete = columns::complete(hour.state, table);
         let whole = hour.starts || hour.opens || !self.complete;

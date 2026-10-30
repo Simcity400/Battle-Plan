@@ -4,11 +4,11 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { CountryLooks } from './countryLooks';
-import type { FlagRead } from './countryFlagsAt';
+import type { FlagRead } from './countryFlags';
 import { FAILED_FACT } from './countryFacts.ts';
 
 // Drive the real sampled hook. Transport leaves are replaced; the plan, identity
-// guard, held-look merge, flag spec and current pending/failure semantics remain.
+// guard, held-look merge and current pending/failure semantics remain.
 test('visible sampled flags retain backend reasons, clear current failures and never decode the whole country inventory', async () => {
   const state = { slots: [] as { value: unknown; deps?: readonly unknown[] }[], cursor: 0, content: '',
     flags: new Map<string, FlagRead | null | typeof FAILED_FACT>(), current: undefined as CountryLooks | undefined,
@@ -30,18 +30,27 @@ test('visible sampled flags retain backend reasons, clear current failures and n
         if (path.endsWith('/dashboard/countryLooks.ts')) return source.replace(/\b(useMemo|useRef)(?:<[\s\S]*?>)?\(/g,
           (_match, kind) => `globalThis.__lookHook(${JSON.stringify(kind)}, `);
         if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => globalThis.__lookFlags.content;';
+        if (path.endsWith('/dashboard/countryFlags.ts')) return `
+          export const useCountryFlagsRead = (_client, _track, wanted) => {
+            const state = globalThis.__lookFlags;
+            state.requests.push({ product: 'country-flags', tags: wanted.map(row => row.tag), hours: wanted.map(row => row.hour), batch: 0 });
+            return new Map(wanted.flatMap(row => {
+              const value = state.flags.get(row.tag);
+              return value === undefined ? [] : [[JSON.stringify([row.hour, row.tag]), value]];
+            }));
+          };`;
         if (path.endsWith('/dashboard/countryNamesAt.ts')) return `
           export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
           export const useCountryFactsAt = () => new Map(); export const useCountryNamesAt = () => new Map();
           export const useCountryFactsRead = (_client, _track, wanted, _active, spec) => {
             const state = globalThis.__lookFlags;
             state.requests.push({ product: spec.product, tags: wanted.map(row => row.tag), hours: wanted.map(row => row.hour), batch: spec.perRequest });
-            const styles = spec.product === 'country-styles' ? spec.extract({
+            const styles = spec.extract({
               styles: wanted.map(row => ({ tag: row.tag, name: row.tag, color: [1, 2, 3] })),
               warnings: ['native_4999: Synthetic mod name refusal'],
-            }) : null;
+            });
             return new Map(wanted.flatMap(row => {
-              const value = styles ? styles.get(row.tag) : state.flags.get(row.tag);
+              const value = styles.get(row.tag);
               return value === undefined ? [] : [[nameKey(row.hour, row.tag), value]];
             }));
           };`;
@@ -49,10 +58,8 @@ test('visible sampled flags retain backend reasons, clear current failures and n
     }] });
   try {
     const { useCountryLooks } = await vite.ssrLoadModule('/ui/src/dashboard/countryLooks.ts') as typeof import('./countryLooks.ts');
-    const { flagReadSpec } = await vite.ssrLoadModule('/ui/src/dashboard/countryFlagsAt.ts') as typeof import('./countryFlagsAt.ts');
     const failed: typeof FAILED_FACT = (await vite.ssrLoadModule('/ui/src/dashboard/countryFacts.ts') as typeof import('./countryFacts.ts')).FAILED_FACT;
-    const missing = await flagReadSpec('small').extract({ flags: [], unavailable: [{ tag: 'native_4999', reason: 'Synthetic mod flag refusal' }] });
-    assert.equal(missing.get('native_4999')?.reason, 'Synthetic mod flag refusal');
+    const missing: FlagRead = { reason: 'Synthetic mod flag refusal' };
     const tags = Array.from({ length: 5000 }, (_, index) => `native_${index}`);
     const track = { source: { id: 'source', revision: '1' }, branch: { id: 'branch', firstHour: 100, lastHour: 3000, gaps: [] } };
     let client = {}, hour = 205;
@@ -67,10 +74,9 @@ test('visible sampled flags retain backend reasons, clear current failures and n
     const flags = state.requests.find(row => row.product === 'country-flags')!;
     assert.deepEqual(flags.tags, visible);
     assert.deepEqual(flags.hours, [100, 100]);
-    assert.equal(flags.batch, 32);
     assert.equal(look.flagPending('native_0', hour), true);
     state.flags.set('native_0', { url: 'data:sampled-flag' });
-    state.flags.set('native_4999', missing.get('native_4999')!);
+    state.flags.set('native_4999', missing);
     look = render();
     assert.equal(look.flag('native_0', hour), 'data:sampled-flag');
     assert.equal(look.flagReason('native_4999', hour), 'Synthetic mod flag refusal');

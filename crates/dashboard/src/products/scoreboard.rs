@@ -9,7 +9,7 @@
 //! of value coverage, so unknown amounts rank last, never zero.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force, army_size,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force,
     country_factories::{self, FactoryCount},
     country_groups::HourSpan,
     country_history::{self, CountryIdentityRun, RecordedHistories},
@@ -38,6 +38,7 @@ use {
 
 pub struct Scoreboard;
 pub(crate) mod prepared;
+pub mod served;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
@@ -547,15 +548,8 @@ fn values(
             Ok(())
         };
         match key {
-            ScoreboardColumnKey::ArmySize => army_size::visit_army_runs(
-                source,
-                branch,
-                tags,
-                army_size::ArmyMeasure::Manpower,
-                army_size::ArmyAttribution::Owner,
-                cancelled,
-                &mut visit,
-            )?,
+            // Army size is prepared only, by its series family: the oracle knows none of it.
+            ScoreboardColumnKey::ArmySize => {}
             ScoreboardColumnKey::Planes => air_force::visit_plane_runs(
                 source,
                 branch,
@@ -981,6 +975,7 @@ fn metadata(
 impl Product for Scoreboard {
     const KEY: &'static str = "scoreboard";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = ScoreboardParams;
     type Reply = ScoreboardReply;
 

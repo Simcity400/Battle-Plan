@@ -51,7 +51,7 @@ fn compatibility_real_g2_product_impact() {
         })
         .count();
     assert!(coloured > 0);
-    let flags = products::country_flags::choices(&frame).unwrap();
+    let flags = crate::flag_choices::choices(&frame).unwrap();
     assert!(!flags.is_empty());
     let appearances = frame
         .complete::<replay_data::rows::tables::CountryAppearance>()

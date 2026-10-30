@@ -581,6 +581,8 @@ pub struct EventChoices;
 impl Product for EventChoices {
     const KEY: &'static str = "event-choices";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&crate::products::event_feed::served::SCRIPT);
     type Params = ScriptPageParams;
     type Reply = ScriptOccurrencePage;
     fn types() -> Vec<String> {
@@ -607,6 +609,8 @@ pub struct Decisions;
 impl Product for Decisions {
     const KEY: &'static str = "decisions";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&crate::products::event_feed::served::SCRIPT);
     type Params = ScriptPageParams;
     type Reply = ScriptOccurrencePage;
     fn types() -> Vec<String> {

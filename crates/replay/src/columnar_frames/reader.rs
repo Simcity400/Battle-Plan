@@ -579,6 +579,21 @@ impl Recording {
             .map(|restart| restart.page)
     }
 
+    /// The hour digest chain before the page of run `run` holding ordinal `ordinal`: after the
+    /// pages before it, or at the run's start. A recording grown from this one holds the same
+    /// there, every page but a run's last being whole.
+    pub fn chain_before(&self, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
+        let pages = &self.run(run)?.pages;
+        let at = pages.partition_point(|page| page.first <= ordinal);
+        match at.checked_sub(1) {
+            Some(at) if ordinal - pages[at].first < pages[at].hours => match at.checked_sub(1) {
+                Some(before) => Ok(self.page(run, before)?.chain),
+                None => Ok(envelope::chain_start(&self.identity, run)),
+            },
+            _ => Err(invalid("No page of the run holds the ordinal")),
+        }
+    }
+
     /// The file's length through its last valid footer.
     pub fn len(&self) -> u64 {
         self.source.len()

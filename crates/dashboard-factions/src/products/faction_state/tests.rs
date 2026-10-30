@@ -653,7 +653,7 @@ fn balance_only_hours_reuse_country_joins_and_project_only_changed_account_heade
             .unwrap();
     }
     assert_eq!(state.country_rebuilds(), 1);
-    assert_eq!(state.account_projections, 1);
+    assert_eq!(state.runtime.account_projections, 1);
     let changes = tracker.observe(&third, replay_data::format::FormatVersion::CURRENT);
     state
         .observe(
@@ -664,7 +664,7 @@ fn balance_only_hours_reuse_country_joins_and_project_only_changed_account_heade
             &AtomicBool::new(false),
         )
         .unwrap();
-    assert_eq!(state.account_projections, 2);
+    assert_eq!(state.runtime.account_projections, 2);
 }
 #[test]
 fn disappeared_accounts_or_missing_identity_do_not_keep_a_stale_faction_association() {
@@ -989,7 +989,14 @@ fn programme_references_use_only_their_existing_daily_supplier_and_match_the_det
     )
     .unwrap();
     assert_eq!(detail.programmes_read_hour, Some(100));
-    assert_eq!(detail.programmes.unwrap()[0].reason, old.reason);
+    // The history's refusal names no hour; the details name the hour they show.
+    assert_eq!(
+        detail.programmes.unwrap()[0]
+            .reason
+            .clone()
+            .map(super::prepared::timeless),
+        old.reason
+    );
 }
 
 #[test]
@@ -1033,7 +1040,7 @@ fn programme_hours_walk_each_supplying_read_once_and_publish_as_read_alone_every
         // A source each, so neither finds the other's reads in its frame cache.
         let source = source(frames.clone());
         let mut state = Prepared::default();
-        state.point_seeks = alone;
+        state.runtime.point_seeks = alone;
         let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
         let mut supplying = super::prepared::Supplying::new(&source, 1);
         let seeks = dashboard_base::prepared::query::frames::reads(&source).1;
@@ -1049,7 +1056,7 @@ fn programme_hours_walk_each_supplying_read_once_and_publish_as_read_alone_every
         drop(supplying);
         let files = Fixture::new();
         publish(&mut state, &files);
-        (state.supplying_reads, seeks, files)
+        (state.runtime.supplying_reads, seeks, files)
     };
     let source = source(frames.clone());
     let (walked_reads, walked_seeks, kept) = prepare(false);
@@ -1474,7 +1481,7 @@ fn a_scripted_programme_name_reads_its_supplying_hours_world_as_the_faction_deta
     assert_eq!(shown.project.as_deref(), Some("Mod party programme"));
     for alone in [false, true] {
         let mut state = Prepared::default();
-        state.point_seeks = alone;
+        state.runtime.point_seeks = alone;
         let changes = FrameChanges::alone(&f, replay_data::format::FormatVersion::CURRENT);
         state.observe(&source, &context, &f, &changes, &flag).unwrap();
         let files = Fixture::new();
@@ -1880,6 +1887,21 @@ fn goal_blocks(first: Arc<replay::container::Replay>, revision: &str) -> Source 
     )
     .unwrap()
 }
+/// `value` with every refusal's hour removed, as the history keeps refusals.
+fn hourless(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => Value::String(super::prepared::timeless(text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(hourless).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| (name, hourless(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
 /// The only hour any faction's history may leave to its details: 11's, before founding, over an unreadable roster.
 const UNPROVEN: (&str, i32) = ("11", 102);
 /// Every hour of factions 9, 10 and 11 answered by the history, equal to that hour's own faction details.
@@ -1897,7 +1919,7 @@ fn assert_goal_parity(source: &Source, context: &LoadContext, files: &Fixture, r
             }
             let history = history.unwrap_or_else(|| panic!("the history must answer {at}"));
             match details {
-                Ok(details) => assert_eq!(history, details, "{at}"),
+                Ok(details) => assert_eq!(history, hourless(details), "{at}"),
                 Err(why) => {
                     assert!(why.contains("absent"), "{at}: {why}");
                     assert_eq!(history, serde_json::json!("absent"), "{at}");
@@ -1916,13 +1938,15 @@ fn assert_goal_parity(source: &Source, context: &LoadContext, files: &Fixture, r
     assert_eq!(
         goals_at(&nine, 103),
         goals_at(&nine, 105).map(|mut value| {
-            // The unavailable viewer's refusal names the reached hour, not the goal's sample.
+            // The unavailable viewer's refusal names no hour, so it reads alike while it lasts.
             if context.content.is_some() {
-                let reason = |hour| serde_json::json!(format!(
-                    "Faction goal artwork: group is not authored; hour {hour} LocalPlayer is unavailable: outside country fixture"
-                ));
-                assert_eq!(value["goals"][0][1][6], reason(105), "{run}");
-                value["goals"][0][1][6] = reason(103);
+                assert_eq!(
+                    value["goals"][0][1][6],
+                    serde_json::json!(
+                        "Faction goal artwork: group is not authored; LocalPlayer is unavailable: outside country fixture"
+                    ),
+                    "{run}"
+                );
             }
             value["goals"][0][3] = serde_json::json!("103000");
             value["goals"][0][4] = serde_json::json!(103.0);
@@ -1992,4 +2016,55 @@ fn a_goal_prefix_names_later_hours_pending_and_leaks_no_later_list() {
     assert_eq!(late.lists[0].completed.len(), 1);
     assert!(late.progress.is_empty());
     assert!(early.pending.is_empty() && late.pending.is_empty());
+}
+#[test]
+fn a_refused_table_keeps_one_reason_across_a_block_start() {
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
+    let mut frames: Vec<_> = (100..104).map(frame).collect();
+    for frame in &mut frames {
+        *frame.tables[TableId::FactionRules.index()] = if frame.hour == 100 {
+            TableView::Complete(TableRows::FactionRules(vec![FactionRuleRow {
+                faction: 9,
+                ordinal: 0,
+                token: 1,
+            }]))
+        } else {
+            TableView::Unavailable {
+                reason: "named refusal".into(),
+            }
+        };
+    }
+    let source = source(frames.clone());
+    let mut state = Prepared::default();
+    let mut tracker = FrameChangeTracker::new();
+    for frame in &frames {
+        // A row block starts at 102: its first hour reads every input again.
+        if frame.hour == 102 {
+            tracker.invalidate();
+        }
+        let changes = tracker.observe(frame, replay_data::format::FormatVersion::CURRENT);
+        state
+            .observe(
+                &source,
+                &LoadContext { content: None },
+                frame,
+                &changes,
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+    }
+    let files = Fixture::new();
+    publish(&mut state, &files);
+    let history = rules(&source, &files, "9", 103);
+    let refused: Vec<_> = history.rules[0]
+        .runs
+        .iter()
+        .filter(|run| run.first_hour > 100)
+        .collect();
+    assert_eq!(refused.len(), 1, "{:?}", history.rules[0].runs);
+    assert_eq!((refused[0].first_hour, refused[0].last_hour), (101, 103));
+    assert_eq!(
+        refused[0].reason.as_deref(),
+        Some("FactionRules is unavailable: named refusal")
+    );
 }

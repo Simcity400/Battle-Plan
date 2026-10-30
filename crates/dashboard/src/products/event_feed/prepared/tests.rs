@@ -2134,3 +2134,123 @@ fn retained_observations_read_back_as_made() {
     );
     assert_eq!(facts.len(), 2);
 }
+
+/// A draft's bytes, once its opener and any held roster are written, are those serde writes of
+/// its fact: with and without a script, an occurrence, a charge, an item and a strike type.
+#[test]
+fn drafts_write_what_serde_writes_of_their_facts() {
+    use replay_data::event_feed_rows::{
+        EventFeedEventIdentity, EventFeedScope, EventFeedScript, decisions::DecisionState,
+    };
+    // Text that names an opener stays inside its quotes.
+    let named = ",\"opener\":null";
+    let event = EventFeedEvent {
+        script: Some(EventFeedScript {
+            token_len: 3,
+            scope_len: 1,
+            native_event: Some(EventFeedEventIdentity { kind: 1, id: 9 }),
+            instance: Some(7),
+            option: Some(-1),
+            ..Default::default()
+        }),
+        sequence: 5,
+        generation: 9,
+        hour: 120,
+        source: EventFeedSource::EventOption,
+        actor: EventFeedCountry {
+            reference: 3,
+            id: 3,
+            instance: 1,
+        },
+        target: EventFeedCountry::default(),
+        cause: Recorded::Value(Default::default()),
+    };
+    let pack = EventFeedHistoryRow {
+        script_tokens: b"mod".to_vec(),
+        script_scopes: vec![EventFeedScope::default()],
+        events: vec![event],
+        ..Default::default()
+    };
+    let roster = || {
+        crate::products::event_feed::decision_roster::Inputs::captured(
+            &DecisionState::default(),
+            &event,
+            true,
+        )
+    };
+    let fact = |[script, occurrence, costs, item, nuke]: [bool; 5]| Fact {
+        row: EventFeedRow {
+            id: "native:9:5".into(),
+            hour: 120,
+            read_hour: 121,
+            name_hour: 120,
+            exact: true,
+            category: EventFeedKind::EventOptionSelected.category(),
+            kind: EventFeedKind::EventOptionSelected,
+            tags: vec!["mod / \"quoted\" café".into()],
+            participants: Some([Some(named.into()), None]),
+            item: item.then_some(0),
+            amount: None,
+            cause: Some(EventFeedCause {
+                how: None,
+                within: None,
+                conference: None,
+                state: Some(3),
+                ally: None,
+                reason: None,
+                notes: vec![named.into()],
+            }),
+            strike: None,
+        },
+        nuke_type: nuke.then_some(2),
+        script: script.then(|| script_effects::Inputs::captured(&pack, &event)),
+        occurrence: occurrence.then(|| Occurrence {
+            generation: 9,
+            sequence: 5,
+            token: Some(named.into()),
+            costs: costs.then(|| {
+                vec![ScriptCost {
+                    currency: ScriptCurrency::PoliticalPower,
+                    amount: "-25".into(),
+                }]
+            }),
+            ..Default::default()
+        }),
+        item: item.then(|| plain_item(Some(named.into()), None, None, None)),
+    };
+    for bits in 0..32_u32 {
+        let shape: [bool; 5] = std::array::from_fn(|bit| bits & (1 << bit) != 0);
+        let draft = Draft::new(fact(shape), false).unwrap();
+        assert_eq!(
+            draft.finish().unwrap(),
+            serde_json::to_vec(&fact(shape)).unwrap(),
+            "{bits:05b}"
+        );
+        if shape[1] {
+            let mut opened = fact(shape);
+            opened.occurrence.as_mut().unwrap().opener = Some((7, 11));
+            let mut draft = Draft::new(fact(shape), false).unwrap();
+            draft.occurrence.as_mut().unwrap().opener = Some((7, 11));
+            assert_eq!(
+                draft.finish().unwrap(),
+                serde_json::to_vec(&opened).unwrap()
+            );
+        }
+        if shape[0] {
+            let mut rostered = fact(shape);
+            rostered.script.as_mut().unwrap().roster = Some(roster());
+            let held = Draft::new(fact(shape), true).unwrap();
+            assert!(held.finish().is_err());
+            let mut held = Draft::new(fact(shape), true).unwrap();
+            held.complete(|script, hour, sequence| {
+                assert_eq!((hour, sequence), (120, if shape[1] { 5 } else { 0 }));
+                script.roster = Some(roster());
+            })
+            .unwrap();
+            assert_eq!(
+                held.finish().unwrap(),
+                serde_json::to_vec(&rostered).unwrap()
+            );
+        }
+    }
+}

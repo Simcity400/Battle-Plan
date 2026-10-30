@@ -78,6 +78,14 @@ pub(crate) struct Descriptor {
     pub sections: &'static [&'static str],
     /// Whether the hourly walk can prepare it.
     pub walk: bool,
+    /// Whether the segment driver prepares it: its operators read the shared walk world and
+    /// its emit writes its series publication ([`dashboard_base::prepared::roots`]), which
+    /// its queries read. The hourly walk never observes it.
+    pub segments: bool,
+    /// Whether a native preparation prepares it ahead of every other family, in a run of its own
+    /// over the whole recording that decodes its tables alone: a cheap family the interface
+    /// reads at any hour, whose last hours do not wait for the union run to reach them.
+    pub ahead: bool,
     /// The tables the hourly walk's stream decodes every hour for it.
     pub walk_tables: &'static [&'static [TableId]],
     pub content: Content,
@@ -96,6 +104,8 @@ pub(crate) const fn family(name: &'static str) -> Descriptor {
         private: None,
         sections: &[],
         walk: false,
+        segments: false,
+        ahead: false,
         walk_tables: &[],
         content: Content::Free,
     }
@@ -223,14 +233,22 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["country-styles"],
         queries: &["country-facts"],
         gates: &["country-styles", "country-colours", "country-facts"],
-        sections: &[products::style_runs::NAME],
-        ..family("country-styles")
+        // Flags and the country picker read each country's last observed hour.
+        ahead: true,
+        // 2: facts on the segment driver, published as a series root, each run's flag chosen in
+        // the recorded mod stack.
+        version: 2,
+        segments: true,
+        content: Content::Bound,
+        ..family(products::style_runs::NAME)
     },
     Descriptor {
         status: &["division-equipment"],
         queries: &["division-equipment-history"],
         gates: &[crate::products::division_equipment::history::QUERY],
-        sections: &[products::division_equipment::history::NAME],
+        // 2: per-division parts on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         content: Content::Bound,
         ..family("division-equipment")
     },
@@ -315,6 +333,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "unit-leaders",
             "world-tension",
             "supply-health",
+            "army-size",
             "raids",
             "scoreboard",
             "faction-totals",
@@ -338,8 +357,10 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["army-size", "volunteers-expeditionaries"],
         queries: &["army-size", "volunteers-expeditionaries", "scoreboard"],
-        sections: &["army"],
-        walk: true,
+        gates: &["volunteers-expeditionaries"],
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         ..family("army")
     },
     Descriptor {
@@ -386,8 +407,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["supply-health"],
         queries: &["supply-health"],
-        sections: &["supply"],
-        walk: true,
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         content: Content::Bound,
         ..family("supply")
     },
@@ -696,12 +718,24 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     },
     Descriptor {
         status: &["country-stability"],
-        queries: &["country-stability", "stability-parts", "scoreboard"],
-        gates: &["country-stability", "stability-parts"],
-        // Its parts are a series of their own.
-        sections: &["stability", "parts"],
-        walk: true,
+        queries: &["country-stability", "scoreboard"],
+        gates: &["country-stability"],
+        // 2: its measures as facts on the segment driver, published as a series root; its parts
+        // a family of their own.
+        version: 2,
+        segments: true,
         ..family("stability")
+    },
+    // Stability's parts name a read's characters as that read's hour named them, which a
+    // segment's operator cannot see before its first hour: they stay a walked family.
+    Descriptor {
+        status: &["stability-parts"],
+        queries: &["stability-parts"],
+        gates: &["stability-parts"],
+        sections: &["parts"],
+        version: 1,
+        walk: true,
+        ..family("parts")
     },
     // Its series queries route by the family kind `country-experience`.
     Descriptor {
@@ -716,8 +750,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["politics-ledger"],
         queries: &["politics-ledger"],
         gates: &["politics-ledger"],
-        sections: &["politics-ledger"],
-        walk: true,
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         content: Content::Bound,
         ..family("politics_ledger")
     },
@@ -927,6 +962,10 @@ pub(crate) static QUERIES: &[Query] = &[
         suppliers: &[FamilyId::new("supply"), IDENTITIES],
     },
     Query {
+        product: "army-size",
+        suppliers: &[FamilyId::new("army"), IDENTITIES],
+    },
+    Query {
         product: "equipment-losses",
         suppliers: &[FamilyId::new("equipment_losses"), IDENTITIES],
     },
@@ -1014,6 +1053,7 @@ pub(crate) static STATUS: &[(&str, &str)] = &[
     ("politics-state", "Elections, exiles and balances of power"),
     ("unit-leaders", "Generals and admirals"),
     ("country-stability", "Stability and war support"),
+    ("stability-parts", "Stability and war support parts"),
     ("country-experience", "Experience"),
     ("politics-ledger", "Political and command power accounting"),
     (
@@ -1052,7 +1092,7 @@ pub(crate) static STATUS: &[(&str, &str)] = &[
     ("intel-network-coverage", "Intel network coverage"),
     ("naval-repairs", "Naval repairs"),
     ("naval-refits", "Refits"),
-    ("country-styles", "Country names and colours"),
+    ("country-styles", "Country names, colours and flags"),
     ("division-equipment", "Division equipment"),
 ];
 
@@ -1094,11 +1134,12 @@ pub(crate) fn continuation_owner(section: &str) -> Option<&str> {
 pub(crate) const WALK: &[&str] = &["preparation-coverage-", "preparation-branch-"];
 
 /// Sections only the commit coordinator writes: the checkpoint and the
-/// versions published with it, the map binding, the side-work roster and the
-/// recording's metadata.
+/// versions published with it, a native preparation's plan mark, the map
+/// binding, the side-work roster and the recording's metadata.
 pub(crate) const COORDINATOR: &[&str] = &[
     "preparation-checkpoint-v1",
     dashboard_base::prepared::coverage::VERSIONS,
+    dashboard_base::prepared::coverage::PLAN,
     "preparation-map-progress-v1",
     "preparation-side-work-v1",
     "source-metadata-v1",

@@ -13,6 +13,7 @@ doctest = false
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+dashboard-world.workspace = true
 replay.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true

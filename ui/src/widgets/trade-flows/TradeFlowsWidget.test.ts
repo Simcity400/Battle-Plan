@@ -35,9 +35,10 @@ test('actual Trade flows selection reasons use its native census without fetchin
       };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__tradeHolderReason.hour;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({ name: tag + ' at ' + hour, known: true, flag: tag + '@' + hour }) });`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();`,
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
@@ -134,9 +135,10 @@ test('a country’s flag or name opens its whole trade, reading its own reply on
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({ name: tag + ' at ' + hour }) });`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();`,
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open(x, y, items) { globalThis.__tradeCountry.menu = items; } });',

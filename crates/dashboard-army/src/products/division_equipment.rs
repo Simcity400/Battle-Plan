@@ -272,7 +272,6 @@ impl Product for DivisionEquipment {
                         icon: &|handle| {
                             army_content::template_icon(source, &frame, handle, cat.as_ref())
                         },
-                        labels: Labels::Named,
                     },
                     &mut refusals,
                     cancelled,
@@ -398,7 +397,6 @@ pub struct Context<'a> {
     pub needs: &'a dyn NeedsOf,
     pub names: Option<Result<&'a installed_content_division_names::division_names::Database, String>>,
     pub icon: &'a dyn Fn(u64) -> Result<String, String>,
-    pub labels: Labels,
 }
 
 /// What a reply reads its templates' needs from ([`Needs`]).
@@ -438,39 +436,6 @@ impl DesignsOf for army_content::Designs<'_> {
     }
 }
 
-/// Whether a reply names templates, archetypes and designs, or leaves them to its reader.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Labels {
-    Named,
-    Kept,
-}
-
-/// What a prepared history's replies at one hour share across its countries.
-#[derive(Default)]
-pub(crate) struct Shared {
-    /// Each template's need ([`Needs::template`]).
-    pub(crate) needs: BTreeMap<u64, Result<Vec<(String, i64)>, String>>,
-    /// Each design's operands, with the notes reading them made, from the hour's designs.
-    pub(crate) designs: BTreeMap<u64, Looked>,
-    /// The same from the designs as of the stockpile's read.
-    pub(crate) stock_designs: BTreeMap<u64, Looked>,
-    /// The hour's counted divisions by attribution and canonical slot.
-    pub(crate) members: Option<Members>,
-    /// The stockpile read's rows by canonical slot; Err where they or its links were not recorded.
-    pub(crate) stock: Option<Result<Grouped, ()>>,
-    /// The stockpile read's country identities ([`army_content::read_identities`]).
-    pub(crate) stock_ids: Option<Result<BTreeMap<u32, u32>, ()>>,
-    /// The hour's holder of every tag ([`army_content::holders`]).
-    pub(crate) holders: Option<BTreeMap<Vec<u8>, Option<army_content::Holder>>>,
-}
-
-/// Row indices by their country's canonical slot, and the rows with no linked country.
-#[derive(Default)]
-pub(crate) struct Grouped {
-    pub(crate) rows: BTreeMap<u32, Vec<usize>>,
-    pub(crate) unlinked: usize,
-}
-
 /// One design's lookup: the notes it made and its operands, when read.
 #[derive(Clone)]
 pub(crate) struct Looked {
@@ -490,13 +455,6 @@ impl Looked {
     }
 }
 
-/// Counted divisions by attribution (owner, host) and slot, as [`members`] selects them.
-#[derive(Clone, Default)]
-pub(crate) struct Members {
-    pub(crate) slots: [BTreeMap<u32, BTreeSet<u64>>; 2],
-    pub(crate) unlinked: [usize; 2],
-}
-
 /// Where a counted division is listed: its slot under each attribution and its template.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Placed {
@@ -504,114 +462,47 @@ pub(crate) struct Placed {
     pub(crate) template: u64,
 }
 
-impl Members {
-    pub(crate) fn place(
-        row: &DivisionRow,
-        links: &[replay_data::rows::CountryLinkRow],
-    ) -> Option<Placed> {
-        (row.reveal_skip == 0).then(|| Placed {
-            slots: [ArmyAttribution::Owner, ArmyAttribution::Host].map(|attribution| {
-                dashboard_text::metadata::link_slot(links, attributed(row, attribution))
-            }),
-            template: row.template,
-        })
-    }
-
-    pub(crate) fn add(&mut self, id: u64, placed: Placed) {
-        for (at, slot) in placed.slots.into_iter().enumerate() {
-            match slot {
-                Some(slot) => {
-                    self.slots[at].entry(slot).or_default().insert(id);
-                }
-                None => self.unlinked[at] += 1,
-            }
-        }
-    }
-
-    pub(crate) fn remove(&mut self, id: u64, placed: Placed) {
-        for (at, slot) in placed.slots.into_iter().enumerate() {
-            match slot {
-                Some(slot) => {
-                    if let Some(ids) = self.slots[at].get_mut(&slot) {
-                        ids.remove(&id);
-                        if ids.is_empty() {
-                            self.slots[at].remove(&slot);
-                        }
-                    }
-                }
-                None => self.unlinked[at] -= 1,
-            }
-        }
-    }
-}
-
-impl Shared {
-    /// A stockpile read's rows grouped as [`stock_totals`] reads them.
-    pub(crate) fn group_stock(stock: &DecodedFrame) -> Result<Grouped, ()> {
-        let (Ok(countries), Ok(rows)) = (
-            army_content::Countries::read(stock),
-            stock.complete::<tables::Stockpiles>(),
-        ) else {
-            return Err(());
-        };
-        let mut grouped = Grouped::default();
-        for (at, row) in rows.iter().enumerate() {
-            match countries.slot(row.country) {
-                None => grouped.unlinked += 1,
-                Some(slot) => grouped.rows.entry(slot).or_default().push(at),
-            }
-        }
-        Ok(grouped)
-    }
+/// Where `row` is counted, a reveal copy nowhere: the slot `links` resolve its country to
+/// under each attribution, and its template.
+pub(crate) fn place(
+    row: &DivisionRow,
+    links: &[replay_data::rows::CountryLinkRow],
+) -> Option<Placed> {
+    (row.reveal_skip == 0).then(|| Placed {
+        slots: [ArmyAttribution::Owner, ArmyAttribution::Host].map(|attribution| {
+            dashboard_text::metadata::link_slot(links, attributed(row, attribution))
+        }),
+        template: row.template,
+    })
 }
 
 /// One reply's design lookups: each design read once, its notes counted once.
 struct Lookups<'c> {
     designs: &'c dyn DesignsOf,
-    labels: Labels,
-    shared: Option<&'c mut BTreeMap<u64, Looked>>,
     seen: BTreeMap<u64, army_content::Design>,
 }
 
 impl<'c> Lookups<'c> {
-    fn new(
-        designs: &'c dyn DesignsOf,
-        labels: Labels,
-        shared: Option<&'c mut BTreeMap<u64, Looked>>,
-    ) -> Self {
+    fn new(designs: &'c dyn DesignsOf) -> Self {
         Self {
             designs,
-            labels,
-            shared,
             seen: BTreeMap::new(),
         }
     }
 
     fn design(&mut self, variant: u64, refusals: &mut Refusals) -> &army_content::Design {
         if !self.seen.contains_key(&variant) {
-            let looked = match self.shared.as_deref_mut() {
-                Some(shared) => shared
-                    .entry(variant)
-                    .or_insert_with(|| Looked::of(self.designs, variant))
-                    .clone(),
-                None => Looked::of(self.designs, variant),
-            };
+            let looked = Looked::of(self.designs, variant);
             for (note, times) in looked.notes {
                 refusals.note_times(note, times);
             }
             let design = match looked.operand {
                 None => army_content::Design::default(),
                 Some(operand) => {
-                    let name = match self.labels {
-                        Labels::Named => {
-                            let name = self.designs.name(&operand.raw);
-                            if name.is_none() {
-                                refusals.note(army_content::UNNAMED_DESIGN);
-                            }
-                            name
-                        }
-                        Labels::Kept => Some(String::new()),
-                    };
+                    let name = self.designs.name(&operand.raw);
+                    if name.is_none() {
+                        refusals.note(army_content::UNNAMED_DESIGN);
+                    }
                     army_content::Design {
                         name,
                         archetype: operand.archetype,
@@ -622,11 +513,6 @@ impl<'c> Lookups<'c> {
             self.seen.insert(variant, design);
         }
         &self.seen[&variant]
-    }
-
-    /// The designs looked up, in handle order.
-    fn handles(&self) -> impl Iterator<Item = u64> + '_ {
-        self.seen.keys().copied()
     }
 }
 
@@ -882,8 +768,7 @@ fn members<'a>(
     frame: &'a DecodedFrame,
     p: &DivisionEquipmentParams,
     slot: u32,
-    countries: Option<&army_content::Countries<'_>>,
-    grouped: Option<&Members>,
+    countries: &army_content::Countries<'_>,
     refusals: &mut Refusals,
 ) -> io::Result<Vec<&'a DivisionRow>> {
     let template = p
@@ -896,38 +781,20 @@ fn members<'a>(
         .and_then(|handle| handle.parse::<u64>().ok());
     let rows = frame.complete::<tables::Divisions>()?;
     let mut members = Vec::new();
-    if let Some(grouped) = grouped {
-        let at = usize::from(p.count_for == ArmyAttribution::Host);
-        refusals.note_times(UNLINKED_DIVISION, grouped.unlinked[at]);
-        for &id in grouped.slots[at].get(&slot).into_iter().flatten() {
-            let row = rows
-                .binary_search_by_key(&id, |row| row.id)
-                .map(|found| &rows[found])
-                .map_err(|_| io::Error::other("Division index is not the hour's divisions"))?;
-            if template.is_none_or(|handle| row.template == handle)
-                && division.is_none_or(|handle| row.id == handle)
+    for row in rows {
+        if row.reveal_skip != 0 {
+            continue;
+        }
+        match countries.slot(attributed(row, p.count_for)) {
+            None => refusals.note(UNLINKED_DIVISION),
+            Some(owner)
+                if owner == slot
+                    && template.is_none_or(|handle| row.template == handle)
+                    && division.is_none_or(|handle| row.id == handle) =>
             {
                 members.push(row);
             }
-        }
-    } else {
-        let countries =
-            countries.ok_or_else(|| io::Error::other("Division countries were not read"))?;
-        for row in rows {
-            if row.reveal_skip != 0 {
-                continue;
-            }
-            match countries.slot(attributed(row, p.count_for)) {
-                None => refusals.note(UNLINKED_DIVISION),
-                Some(owner)
-                    if owner == slot
-                        && template.is_none_or(|handle| row.template == handle)
-                        && division.is_none_or(|handle| row.id == handle) =>
-                {
-                    members.push(row);
-                }
-                Some(_) => {}
-            }
+            Some(_) => {}
         }
     }
     if division.is_some() && members.is_empty() {
@@ -1043,62 +910,6 @@ pub fn build(
     refusals: &mut Refusals,
     cancelled: &AtomicBool,
 ) -> io::Result<DivisionEquipmentReply> {
-    Ok(build_in(frame, p, context, None, refusals, cancelled)?.reply)
-}
-
-/// A reply and the designs its stockpile context looked up.
-pub(crate) struct Built {
-    pub(crate) reply: DivisionEquipmentReply,
-    pub(crate) stock: StockPart,
-}
-
-/// What a reply reads of the national stockpile, decided by its holder and the stockpile's reads.
-#[derive(Default)]
-pub(crate) struct StockPart {
-    /// Each archetype's stock; none where it is withheld.
-    pub(crate) totals: Option<BTreeMap<String, i128>>,
-    /// The notes reading it made, counted.
-    pub(crate) notes: Vec<(String, usize)>,
-    /// The designs it looked up, by handle.
-    pub(crate) designs: Vec<u64>,
-}
-
-/// `holder`'s [`StockPart`], its designs looked up in `shared` when given.
-pub(crate) fn stock_part(
-    holder: army_content::Holder,
-    context: &Context<'_>,
-    shared: Option<&mut BTreeMap<u64, Looked>>,
-    grouped: Option<&Result<Grouped, ()>>,
-    ids: Option<&Result<BTreeMap<u32, u32>, ()>>,
-    cancelled: &AtomicBool,
-) -> io::Result<StockPart> {
-    let mut designs = Lookups::new(context.stock_designs, context.labels, shared);
-    let mut notes = Refusals::default();
-    let totals = stock_totals(
-        holder,
-        context,
-        grouped,
-        ids,
-        &mut designs,
-        &mut notes,
-        cancelled,
-    )?;
-    Ok(StockPart {
-        totals,
-        notes: notes.counted(),
-        designs: designs.handles().collect(),
-    })
-}
-
-/// [`build`], sharing what every country's reply at the hour shares when `shared` is given.
-pub(crate) fn build_in(
-    frame: &DecodedFrame,
-    p: &DivisionEquipmentParams,
-    context: &Context<'_>,
-    mut shared: Option<&mut Shared>,
-    refusals: &mut Refusals,
-    cancelled: &AtomicBool,
-) -> io::Result<Built> {
     DivisionEquipment::validate(p).map_err(io::Error::other)?;
     let pools = Pools::read(frame, context.daily);
     let mut reply = DivisionEquipmentReply {
@@ -1117,49 +928,35 @@ pub(crate) fn build_in(
         pool: None,
         warnings: Vec::new(),
     };
-    let holder = match shared.as_ref().and_then(|shared| shared.holders.as_ref()) {
-        Some(holders) => army_content::holder_in(holders, &p.tag)?,
-        None => army_content::holder(frame, &p.tag)?,
-    };
-    let Some(holder) = holder else {
+    let Some(holder) = army_content::holder(frame, &p.tag)? else {
         reply.absent = true;
-        return Ok(Built {
-            reply,
-            stock: StockPart::default(),
-        });
+        return Ok(reply);
     };
     let slot = holder.slot;
-    let grouped = shared.as_ref().and_then(|shared| shared.members.as_ref());
-    // A shared index of the hour's divisions has resolved their countries already.
-    let countries = match grouped {
-        Some(_) => None,
-        None => Some(army_content::Countries::read(frame)?),
-    };
+    let countries = army_content::Countries::read(frame)?;
     for warning in context.needs.warnings() {
         refusals.note(warning);
     }
-    let members = members(frame, p, slot, countries.as_ref(), grouped, refusals)?;
+    let members = members(frame, p, slot, &countries, refusals)?;
     reply.divisions = count(members.len())?;
     let mut types = BTreeMap::<Option<String>, TypeTotals>::new();
     let mut templates = BTreeMap::<u64, TemplateTotals>::new();
-    let mut local_needs = BTreeMap::new();
-    let (needs, designs_shared, stock_shared, stock_rows, stock_ids) = match shared.as_mut() {
-        Some(shared) => (
-            &mut shared.needs,
-            Some(&mut shared.designs),
-            Some(&mut shared.stock_designs),
-            shared.stock.as_ref(),
-            shared.stock_ids.as_ref(),
-        ),
-        None => (&mut local_needs, None, None, None, None),
-    };
-    let mut designs = Lookups::new(context.designs, context.labels, designs_shared);
+    let mut needs = BTreeMap::new();
+    let mut designs = Lookups::new(context.designs);
     // An unknown comparison can involve any type, including one first reached
     // later in this census, so it is counted against every type at the end.
     let mut unknown = BTreeSet::new();
     for row in members {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let division = division(frame, row, &pools, context, needs, &mut designs, refusals)?;
+        let division = division(
+            frame,
+            row,
+            &pools,
+            context,
+            &mut needs,
+            &mut designs,
+            refusals,
+        )?;
         // What a read pool holds counts whether or not its comparison is known.
         for (key, held) in &division.held {
             types.entry(key.clone()).or_default().hold(held)?;
@@ -1211,27 +1008,17 @@ pub(crate) fn build_in(
             reply.pool = Some(pool(frame, &division, context, refusals)?);
         }
     }
-    let stock = stock_part(
-        holder,
-        context,
-        stock_shared,
-        stock_rows,
-        stock_ids,
-        cancelled,
-    )?;
-    for (note, times) in &stock.notes {
-        refusals.note_times(note.clone(), *times);
-    }
+    let stock = stock_totals(holder, context, refusals, cancelled)?;
     for (key, mut total) in types {
         total.unknown.extend(&unknown);
         let (name, name_missing) = match &key {
-            Some(key) => match context.labels {
-                Labels::Named => refusals.keep(army_content::localised(context.cat, key)),
-                Labels::Kept => (None, None),
-            },
+            Some(key) => refusals.keep(army_content::localised(context.cat, key)),
             None => (None, Some("Equipment archetype is unclassified".into())),
         };
-        let held = stock_held(&stock, key.as_deref());
+        // An unclassified type, or a withheld stockpile, shows no stock.
+        let held = key
+            .as_deref()
+            .and_then(|key| Some(stock.as_ref()?.get(key).copied().unwrap_or(0)));
         reply.types.push(EquipmentType {
             archetype: key,
             name,
@@ -1249,13 +1036,9 @@ pub(crate) fn build_in(
     }
     for (handle, total) in templates {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let ((name, name_missing), (icon, icon_missing)) = match context.labels {
-            Labels::Named => (
-                refusals.keep(army_content::template_name(frame, handle, context.cat)),
-                refusals.keep((context.icon)(handle)),
-            ),
-            Labels::Kept => ((None, None), (None, None)),
-        };
+        let (name, name_missing) =
+            refusals.keep(army_content::template_name(frame, handle, context.cat));
+        let (icon, icon_missing) = refusals.keep((context.icon)(handle));
         reply.templates.push(EquipmentTemplate {
             template: handle.to_string(),
             name,
@@ -1273,13 +1056,7 @@ pub(crate) fn build_in(
             unknown_divisions: total.unknown,
         });
     }
-    Ok(Built { reply, stock })
-}
-
-/// The stock of an archetype a [`StockPart`] shows; none where withheld or unclassified.
-pub(crate) fn stock_held(stock: &StockPart, archetype: Option<&str>) -> Option<i128> {
-    let totals = stock.totals.as_ref()?;
-    Some(totals.get(archetype?).copied().unwrap_or(0))
+    Ok(reply)
 }
 
 /// A row of a template's divisions.
@@ -1413,9 +1190,6 @@ fn pool(
 fn stock_totals(
     holder: army_content::Holder,
     context: &Context<'_>,
-    grouped: Option<&Result<Grouped, ()>>,
-    ids: Option<&Result<BTreeMap<u32, u32>, ()>>,
-    designs: &mut Lookups<'_>,
     refusals: &mut Refusals,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<BTreeMap<String, i128>>> {
@@ -1423,10 +1197,8 @@ fn stock_totals(
         refusals.note("National equipment stockpile was not read within a day of this hour");
         return Ok(None);
     };
-    let same = match ids {
-        Some(ids) => army_content::same_holder_in(ids, holder),
-        None => army_content::same_holder(stock, holder),
-    };
+    let mut designs = Lookups::new(context.stock_designs);
+    let same = army_content::same_holder(stock, holder);
     if let Err(why) = same {
         refusals.note(format!(
             "National equipment stockpile is left out: {why} at its read"
@@ -1451,42 +1223,24 @@ fn stock_totals(
             Ok(false)
         }
     };
-    match grouped {
-        Some(grouped) => {
-            let (Ok(grouped), Ok(rows)) = (grouped, stock.complete::<tables::Stockpiles>()) else {
-                refusals.note(unread);
-                return Ok(None);
-            };
-            if grouped.unlinked > 0 {
-                refusals.note_times("Stockpile country has no recorded link", grouped.unlinked);
-                complete = false;
-            }
-            for &at in grouped.rows.get(&slot).into_iter().flatten() {
-                dashboard_text::metadata::check_cancel(cancelled)?;
-                complete &= add(&rows[at], refusals, &mut totals)?;
-            }
+    let (Ok(countries), Ok(rows)) = (
+        army_content::Countries::read(stock),
+        stock.complete::<tables::Stockpiles>(),
+    ) else {
+        refusals.note(unread);
+        return Ok(None);
+    };
+    for row in rows {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let Some(country) = countries.slot(row.country) else {
+            refusals.note("Stockpile country has no recorded link");
+            complete = false;
+            continue;
+        };
+        if country != slot {
+            continue;
         }
-        None => {
-            let (Ok(countries), Ok(rows)) = (
-                army_content::Countries::read(stock),
-                stock.complete::<tables::Stockpiles>(),
-            ) else {
-                refusals.note(unread);
-                return Ok(None);
-            };
-            for row in rows {
-                dashboard_text::metadata::check_cancel(cancelled)?;
-                let Some(country) = countries.slot(row.country) else {
-                    refusals.note("Stockpile country has no recorded link");
-                    complete = false;
-                    continue;
-                };
-                if country != slot {
-                    continue;
-                }
-                complete &= add(row, refusals, &mut totals)?;
-            }
-        }
+        complete &= add(row, refusals, &mut totals)?;
     }
     Ok(complete.then_some(totals))
 }

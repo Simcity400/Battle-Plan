@@ -36,6 +36,8 @@ const FIELDS: [&str; 8] = [
 ];
 const COVERAGE: [&str; 4] = ["stock-hours", "line-hours", "balance-hours", "ai-hours"];
 pub mod choices;
+mod emit;
+pub use emit::Emit;
 
 /// Numeric values and row presence are independent: no row inside known coverage
 /// is zero, whereas an explicit uncomputable row remains unknown.
@@ -171,6 +173,8 @@ pub struct Prepared {
     /// Built by each whole-table hour; none after restore.
     #[serde(skip)]
     rows: Option<RowIndex>,
+    #[serde(skip)]
+    catalogue: series::CatalogueWriter,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -293,12 +297,7 @@ impl Prepared {
             } else {
                 &naming_changes
             };
-            let dirty: std::collections::BTreeSet<u64> = self
-                .names
-                .observe_changed(format, frame, naming_changes)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
+            let changed = self.names.observe_changed(format, frame, naming_changes);
             self.naming_ready = changes.slot_read[TableId::VariantDefinitions.index()]
                 && [
                     TableId::Countries,
@@ -313,72 +312,7 @@ impl Prepared {
                         replay_frame::frame::TableView::Complete(_)
                     )
                 });
-            self.choices.classify(&self.names, &dirty, frame.hour)?;
-            let reclassified: BTreeSet<u64> = dirty
-                .iter()
-                .copied()
-                .filter(|&id| self.choices.reclassified(id, frame.hour))
-                .collect();
-            for id in dirty {
-                let versions = self
-                    .names
-                    .versions
-                    .get_mut(&id)
-                    .expect("changed variant naming");
-                #[cfg(test)]
-                {
-                    self.work.history_visits += 1;
-                }
-                let written = self
-                    .naming
-                    .state(id)
-                    .and_then(|state| state.last)
-                    .map(|run| run.value as i32);
-                for version in versions
-                    .iter()
-                    .filter(|version| written.is_none_or(|hour| version.first_hour > hour))
-                {
-                    self.naming.event(id, version.first_hour, version)?;
-                    if let Some(raw) = &version.raw {
-                        if let Some(design) = &raw.design {
-                            self.designs.entry(id).or_default().insert(design.clone());
-                            self.first_design
-                                .entry(id)
-                                .or_insert_with(|| (version.first_hour, design.clone()));
-                        }
-                        for (_, why) in &raw.refusals {
-                            self.refusals.note(why, id.to_string());
-                        }
-                    }
-                }
-                if let Some(version) = versions
-                    .last()
-                    .filter(|version| written.is_none_or(|hour| version.first_hour > hour))
-                {
-                    self.naming.observe(
-                        id,
-                        frame.hour,
-                        Some(i128::from(version.first_hour)),
-                        false,
-                    );
-                }
-                // The final unknown marker and the most recent nonempty token are
-                // enough for observe/current/token; dated versions live in events.
-                let known = versions.iter().rposition(|version| {
-                    version
-                        .raw
-                        .as_ref()
-                        .is_some_and(|raw| !raw.token.is_empty())
-                });
-                let last = versions.len().saturating_sub(1);
-                let mut index = 0;
-                versions.retain(|_| {
-                    let keep = index == last || Some(index) == known;
-                    index += 1;
-                    keep
-                });
-            }
-            reclassified
+            self.renamed(changed, frame.hour)?
         } else {
             self.names.advance_changed(frame, changes);
             BTreeSet::new()
@@ -398,6 +332,78 @@ impl Prepared {
             return Ok(());
         }
         self.observe_tables(format, frame, changes, previous)
+    }
+
+    /// The versions the catalogue just recorded at `hour`, published with their designs and
+    /// refusals; the variants whose group changed with them.
+    fn renamed(
+        &mut self,
+        changed: Vec<(u64, VariantVersion)>,
+        hour: i32,
+    ) -> io::Result<BTreeSet<u64>> {
+        let dirty: BTreeSet<u64> = changed.into_iter().map(|(id, _)| id).collect();
+        self.choices.classify(&self.names, &dirty, hour)?;
+        let reclassified: BTreeSet<u64> = dirty
+            .iter()
+            .copied()
+            .filter(|&id| self.choices.reclassified(id, hour))
+            .collect();
+        for id in dirty {
+            let versions = self
+                .names
+                .versions
+                .get_mut(&id)
+                .expect("changed variant naming");
+            #[cfg(test)]
+            {
+                self.work.history_visits += 1;
+            }
+            let written = self
+                .naming
+                .state(id)
+                .and_then(|state| state.last)
+                .map(|run| run.value as i32);
+            for version in versions
+                .iter()
+                .filter(|version| written.is_none_or(|hour| version.first_hour > hour))
+            {
+                self.naming.event(id, version.first_hour, version)?;
+                if let Some(raw) = &version.raw {
+                    if let Some(design) = &raw.design {
+                        self.designs.entry(id).or_default().insert(design.clone());
+                        self.first_design
+                            .entry(id)
+                            .or_insert_with(|| (version.first_hour, design.clone()));
+                    }
+                    for (_, why) in &raw.refusals {
+                        self.refusals.note(why, id.to_string());
+                    }
+                }
+            }
+            if let Some(version) = versions
+                .last()
+                .filter(|version| written.is_none_or(|hour| version.first_hour > hour))
+            {
+                self.naming
+                    .observe(id, hour, Some(i128::from(version.first_hour)), false);
+            }
+            // The final unknown marker and the most recent nonempty token are
+            // enough for observe/current/token; dated versions live in events.
+            let known = versions.iter().rposition(|version| {
+                version
+                    .raw
+                    .as_ref()
+                    .is_some_and(|raw| !raw.token.is_empty())
+            });
+            let last = versions.len().saturating_sub(1);
+            let mut index = 0;
+            versions.retain(|_| {
+                let keep = index == last || Some(index) == known;
+                index += 1;
+                keep
+            });
+        }
+        Ok(reclassified)
     }
 
     /// Hours `first..=last` that follow the last observed, at which no field
@@ -739,7 +745,7 @@ impl Prepared {
         self.choices.flush(writer, branch, cancelled)?;
         self.naming
             .flush(writer, &format!("stockpile-{branch}-names"), 0, cancelled)?;
-        series::write_catalogue(
+        self.catalogue.write(
             writer,
             "stockpile",
             branch,
@@ -755,6 +761,28 @@ impl Prepared {
             ),
         )
     }
+}
+
+/// Every section [`Prepared::flush`] writes of `branch` but its catalogue.
+pub fn sections(branch: u64) -> Vec<String> {
+    FIELDS
+        .iter()
+        .flat_map(|field| {
+            [
+                format!("stockpile-{branch}-{field}"),
+                format!("stockpile-{branch}-{field}-present"),
+            ]
+        })
+        .chain(
+            ["coverage", "reads", "classification", "names"]
+                .map(|section| format!("stockpile-{branch}-{section}")),
+        )
+        .chain(
+            choices::MEASURES
+                .iter()
+                .map(|measure| format!("stockpile-{branch}-group-{measure}")),
+        )
+        .collect()
 }
 
 fn read_counts(scanned: &ScannedStockpile) -> [usize; 11] {
@@ -2815,5 +2843,7 @@ fn read_window(
     Ok(Some(result))
 }
 
+#[cfg(test)]
+mod columnar_parity;
 #[cfg(test)]
 mod tests;

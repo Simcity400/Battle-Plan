@@ -616,48 +616,6 @@ struct OccupationBranch {
     measured: Option<Measured>,
 }
 
-pub fn occupation_row_reference(
-    source: &crate::Source,
-    context: &crate::products::LoadContext,
-    prototype: &occupied_states::prepared::Prepared,
-    writer: &mut store::Writer,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    let replay = source.replay_ref();
-    let mut states = std::collections::BTreeMap::<u64, OccupationBranch>::new();
-    for index in &replay.index {
-        let state = states
-            .entry(index.branch)
-            .or_insert_with(|| OccupationBranch {
-                prepared: Box::new(prototype.fresh()),
-                block: None,
-                held: Vec::new(),
-                failed: None,
-                measured: None,
-            });
-        let block = Block {
-            replay,
-            index,
-            source,
-            context,
-            cancelled,
-            shared: None,
-            #[cfg(test)]
-            read_hook_family: None,
-        };
-        state.begin_block();
-        state.observe_block(
-            &block,
-            &mut |_, outcome| outcome.map(|()| true),
-            &mut || crate::metadata::check_cancel(cancelled),
-        )?;
-        state.end_block(replay, index.branch);
-        state.publish(writer, index.branch, cancelled)?;
-        state.flush(writer, replay, index.branch, cancelled)?;
-    }
-    Ok(())
-}
-
 impl OccupationBranch {
     /// Bind the content, as the walk does at every block, then observe the
     /// block hour by hour with the tables its law eligibility reads.

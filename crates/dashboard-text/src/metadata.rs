@@ -11,7 +11,7 @@ use std::{
     },
 };
 
-use replay::container::Replay;
+use replay::{columnar_frames::Recording, container::Replay};
 use replay_data::{
     BranchId, format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
     rows::tables,
@@ -734,11 +734,18 @@ pub struct CountryKeys(
 
 impl CountryKeys {
     pub fn read(countries: &[CountryRow]) -> Self {
-        Self(
+        Self::from_keys(
             countries
                 .iter()
                 .map(|row| (row.id, row.canonical_slot, row.tag.clone()))
                 .collect(),
+        )
+    }
+
+    /// Each country's id, slot and tag already read, in native table order.
+    pub fn from_keys(keys: Vec<(u32, u32, Vec<u8>)>) -> Self {
+        Self(
+            keys,
             #[cfg(any(test, feature = "test-support"))]
             Default::default(),
         )
@@ -1129,6 +1136,114 @@ pub fn branch_bounds(replay: &Replay, branch: &BranchStart) -> (i32, i32) {
         last = last.max(gap.last_hour);
     }
     (first, last)
+}
+
+/// A branch's hours as a preparation reads them: those a frame of it is recorded at, read from
+/// its native runs or its row blocks, widened as [`branch_bounds`] widens them by its start and
+/// its recorded gaps, and those gaps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchExtent {
+    /// The first and last hour a frame of the branch is recorded at.
+    pub recorded: (i32, i32),
+    /// Those widened by its start and its recorded gaps.
+    pub bounds: (i32, i32),
+    /// Its recorded gaps' first and last hours, in order, those touching merged.
+    pub gaps: Vec<(i32, i32)>,
+}
+
+impl BranchExtent {
+    /// Whether a recorded gap holds `hour`.
+    pub fn in_gap(&self, hour: i32) -> bool {
+        let at = self.gaps.partition_point(|&(first, _)| first <= hour);
+        at.checked_sub(1).is_some_and(|at| hour <= self.gaps[at].1)
+    }
+}
+
+/// Every recorded branch's extent ([`BranchExtent`]), read once for a preparation.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Extents(BTreeMap<u64, BranchExtent>);
+
+impl Extents {
+    /// `replay`'s branches as its native `recording`'s runs record them: never its block index.
+    pub fn native(replay: &Replay, recording: &Recording) -> io::Result<Self> {
+        let mut recorded = BTreeMap::new();
+        for at in 0..recording.run_count() {
+            let run = recording.run(at)?;
+            let Some(last) = run.ordinals.checked_sub(1) else {
+                continue;
+            };
+            let hour = |ordinal: u32| {
+                i32::try_from(i64::from(run.first_hour) + i64::from(ordinal)).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "A run's hours pass the clock")
+                })
+            };
+            widen(&mut recorded, run.branch, (hour(0)?, hour(last)?));
+        }
+        Ok(Self::declared(replay, recorded))
+    }
+
+    /// `replay`'s branches as its row blocks record them.
+    pub fn rows(replay: &Replay) -> Self {
+        let mut recorded = BTreeMap::new();
+        for block in &replay.index {
+            widen(
+                &mut recorded,
+                block.branch,
+                (block.first_hour, block.last_hour),
+            );
+        }
+        Self::declared(replay, recorded)
+    }
+
+    /// Each branch `recorded` holds, widened by what `replay` declares of it.
+    fn declared(replay: &Replay, recorded: BTreeMap<u64, (i32, i32)>) -> Self {
+        let extents = recorded.into_iter().map(|(branch, recorded)| {
+            let mut bounds = recorded;
+            if let Some(start) = replay.branches.iter().find(|start| start.id == branch) {
+                bounds.0 = bounds.0.min(start.first_hour);
+            }
+            let mut gaps: Vec<(i32, i32)> = replay
+                .gaps
+                .iter()
+                .filter(|gap| gap.branch == branch)
+                .map(|gap| (gap.first_hour, gap.last_hour))
+                .collect();
+            gaps.sort_unstable();
+            gaps.dedup_by(|later, earlier| {
+                let touches = later.0 <= earlier.1.saturating_add(1);
+                if touches {
+                    earlier.1 = earlier.1.max(later.1);
+                }
+                touches
+            });
+            for &(first, last) in &gaps {
+                bounds = (bounds.0.min(first), bounds.1.max(last));
+            }
+            let extent = BranchExtent {
+                recorded,
+                bounds,
+                gaps,
+            };
+            (branch, extent)
+        });
+        Self(extents.collect())
+    }
+
+    pub fn branch(&self, branch: u64) -> Option<&BranchExtent> {
+        self.0.get(&branch)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (u64, &BranchExtent)> {
+        self.0.iter().map(|(&branch, extent)| (branch, extent))
+    }
+}
+
+/// `recorded` holding `branch`'s hours `first..=last` too.
+fn widen(recorded: &mut BTreeMap<u64, (i32, i32)>, branch: u64, (first, last): (i32, i32)) {
+    recorded
+        .entry(branch)
+        .and_modify(|hours| *hours = (hours.0.min(first), hours.1.max(last)))
+        .or_insert((first, last));
 }
 
 fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<BranchMetadata>> {

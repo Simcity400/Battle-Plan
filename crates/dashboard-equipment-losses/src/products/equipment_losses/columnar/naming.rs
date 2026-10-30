@@ -102,7 +102,7 @@ impl Naming {
     pub fn project(
         &mut self,
         state: &segments::State,
-        context: &Context,
+        (roster, names): (&Roster, &Names),
         fields: &Fields,
         format: FormatVersion,
         hour: i32,
@@ -252,7 +252,7 @@ impl Naming {
             } else {
                 definition.creator_link
             };
-            countries.extend(context.raw_slots.get(&raw).copied());
+            countries.extend(roster.slot_of(raw));
             let mut modules = Vec::new();
             let mut upgrades = Vec::new();
             if design_known {
@@ -298,29 +298,38 @@ impl Naming {
         countries.sort_unstable();
         countries.dedup();
         let mut rows = Vec::with_capacity(countries.len());
-        let mut appearance = context.appearance.as_ref().map(|_| Vec::new());
+        let mut appearance = names.appearances_complete().then(Vec::new);
         for country in countries {
-            if let Some(&slot) = context.countries.get(&country) {
-                rows.push(context.country(state, fields, slot, format.version(), true)?);
+            // A slot's last country by id names it.
+            if let Some(held) = roster.at_slot(country).last() {
+                rows.push(CountryRow {
+                    id: held.id,
+                    canonical_slot: held.slot,
+                    tag: roster.tag(held.tag).to_vec(),
+                    ..Default::default()
+                });
             }
-            if let (Some(index), Some(appearances)) = (&context.appearance, &mut appearance) {
-                if let Some(&slot) = index.get(&country) {
-                    let table = TableId::CountryAppearance;
-                    let held = columns::table(state, table)?;
-                    let row = if held.recorded(fields.appearance_name, slot) {
-                        CountryAppearanceRow {
-                            country: held.key(slot).expect("naming appearance") as u32,
-                            name_tag: slots::text(state, table, fields.appearance_name, slot)?,
-                            ..Default::default()
-                        }
-                    } else {
-                        columns::row(state, table, slot, format.version())?
-                    };
-                    appearances.push(row);
-                }
+            if let (Some(Some(raw)), Some(appearances)) =
+                (names.appearance(country), &mut appearance)
+            {
+                let table = TableId::CountryAppearance;
+                let held = columns::table(state, table)?;
+                let slot = held
+                    .slot(u128::from(raw))
+                    .ok_or_else(|| io::Error::other("A naming appearance holds no row"))?;
+                let row = if held.recorded(fields.appearance_name, slot) {
+                    CountryAppearanceRow {
+                        country: raw,
+                        name_tag: slots::text(state, table, fields.appearance_name, slot)?,
+                        ..Default::default()
+                    }
+                } else {
+                    columns::row(state, table, slot, format.version())?
+                };
+                appearances.push(row);
             }
         }
-        let tags = Tags::new(&rows, &context.links, appearance.as_deref());
+        let tags = Tags::new(&rows, roster.links(), appearance.as_deref());
         tokens.sort_unstable();
         tokens.dedup();
         let table = TableId::LexicalTokens;

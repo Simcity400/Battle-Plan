@@ -225,6 +225,7 @@ fn parity_in_blocks(
     let mut projector = projected.projector(&replay).unwrap();
     let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, inputs[0].hour).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     projector
         .start(Start::Run { continues: false }, 1, inputs[0].hour)
         .unwrap();
@@ -257,6 +258,18 @@ fn parity_in_blocks(
                 .map(|(_, table)| table),
         );
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &crate::products::equipment_losses::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             row.observe_changes(
                 frame,
                 &replay,
@@ -278,6 +291,7 @@ fn parity_in_blocks(
                         opens,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -700,9 +714,22 @@ fn unused_variant_change_payload_and_definition_fields_do_not_rebuild_names() {
     let mut projector = prepared.projector(&replay).unwrap();
     let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, 10).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &crate::products::equipment_losses::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -714,6 +741,7 @@ fn unused_variant_change_payload_and_definition_fields_do_not_rebuild_names() {
                         opens: starts,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -747,9 +775,22 @@ fn unchanged_combat_amounts_are_not_read_again_for_a_single_raw_owner() {
     let mut projector = Prepared::new(&replay, 1, 10).projector(&replay).unwrap();
     let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, 10).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &crate::products::equipment_losses::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -761,6 +802,7 @@ fn unchanged_combat_amounts_are_not_read_again_for_a_single_raw_owner() {
                         opens: starts,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -831,9 +873,22 @@ fn naming_changes_wait_for_the_next_supplying_read_and_refresh_token_dependencie
     let mut projector = Prepared::new(&replay, 1, first).projector(&replay).unwrap();
     let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, first).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     for (ordinal, input) in inputs[..2].iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &crate::products::equipment_losses::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -845,6 +900,7 @@ fn naming_changes_wait_for_the_next_supplying_read_and_refresh_token_dependencie
                         opens: starts,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )

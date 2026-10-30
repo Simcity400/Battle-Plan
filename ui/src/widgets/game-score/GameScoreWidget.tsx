@@ -10,8 +10,8 @@ import { jumpItem } from '../../charts/jump';
 import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { formatAxisValue } from '../../charts/valueAxis';
-import { flagReadSpec } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
+import { useCountryFlagsRead } from '../../dashboard/countryFlags';
+import { nameKey } from '../../dashboard/countryNamesAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { countryAliasesAt } from '../../dashboard/countryIdentity';
 import { groupsKnownAt, MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries } from '../../dashboard/groups';
@@ -71,7 +71,7 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const onVisible = useCallback((rows: readonly ScoreRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => (view === 'race' ? raceRows : visible).filter(row => gameScoreCountryKnown(row.identity))
     .map(row => ({ hour: row.hour, tag: row.tag })), [view, raceRows, visible]);
-  const flagReads = useCountryFactsRead(runtime.client, track, wanted, active, flagReadSpec('panel'));
+  const flagReads = useCountryFlagsRead(runtime.client, track, wanted, active);
   const columns = useMemo<readonly TableColumn<ScoreRow>[]>(() => data ? [
     { key: 'country', header: gameScoreLabel(data.labels, 'country'), label: gameScoreLabel(data.labels, 'country'), width: 'minmax(var(--table-country-min), 2fr)',
       hint: data.hints.country,

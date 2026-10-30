@@ -170,6 +170,7 @@ dashboard-equipment-losses = { path = "crates/dashboard-equipment-losses" }
 dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" }
 dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
 dashboard-stability = { path = "crates/dashboard-stability" }
+dashboard-world = { path = "crates/dashboard-world" }
 dashboard-world-tension = { path = "crates/dashboard-world-tension" }
 dashboard-keyed = { path = "crates/dashboard-keyed" }
 dashboard-air-operations = { path = "crates/dashboard-air-operations" }

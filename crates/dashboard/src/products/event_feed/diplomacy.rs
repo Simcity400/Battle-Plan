@@ -9,7 +9,10 @@ use crate::{
 };
 #[cfg(test)]
 use replay::container::Replay;
-use replay_data::{rows::RelationTupleRow, rows::SliceReadRow, rows::TableId, rows::tables};
+use replay_data::{
+    rows::CountryCounterInputRow, rows::CountryRow, rows::RelationTupleRow, rows::SliceReadRow,
+    rows::TableId, rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 use replay_frame::frame::FrameDecoder;
@@ -56,6 +59,56 @@ impl Observer {
         out: &mut Scan,
     ) -> io::Result<()> {
         let hour = decoded.hour;
+        let Some((first_observed, continuous)) = self.named(decoded, out)? else {
+            return Ok(());
+        };
+        self.existence(decoded, format, out, |observer, countries, rows, out| {
+            for row in rows {
+                observer.exist(countries, row, hour, out)?;
+            }
+            Ok(())
+        })?;
+        // Guarantee effects pass scope first and target second; relation
+        // initialization retains that direction. The owner-slice can come from
+        // either status vector and never reverses it. The relation stores
+        // first/second and start_date.
+        if let (Ok(rows), Ok(reads)) = (
+            decoded.complete::<tables::RelationTuples>(),
+            decoded.complete::<tables::SliceReads>(),
+        ) {
+            let table = TableId::RelationTuples.index() as u32;
+            let first = reads.partition_point(|read| read.table < table);
+            let last = reads.partition_point(|read| read.table <= table);
+            for read in &reads[first..last] {
+                if !reads_slice(read, hour) || self.tags.get(read.owner).is_none() {
+                    continue;
+                }
+                out.observed.insert(TableId::RelationTuples);
+                // RelationTuples is ordered by owner, target, type and
+                // ordinal. Carried owners require no row traversal.
+                let first = rows.partition_point(|row| row.owner_country < read.owner);
+                let last = rows.partition_point(|row| row.owner_country <= read.owner);
+                for row in rows[first..last].iter().filter(|row| reads_relation(row)) {
+                    self.guarantee(
+                        (row.first_country, row.second_country, row.start_hour),
+                        (first_observed, continuous),
+                        hour,
+                        out,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The names `decoded` gives its countries, read before what the hour observes: the first
+    /// hour observed and the first of the continuous names, or none when they are unresolved.
+    pub(super) fn named(
+        &mut self,
+        decoded: &DecodedFrame,
+        out: &mut Scan,
+    ) -> io::Result<Option<(i32, i32)>> {
+        let hour = decoded.hour;
         let first_observed = *self.first_observed.get_or_insert(hour);
         if self
             .previous_hour
@@ -71,7 +124,7 @@ impl Observer {
                 "Diplomacy",
                 "Country identities are unresolved.",
             )?;
-            return Ok(());
+            return Ok(None);
         };
         if rebuilt {
             self.named_since
@@ -83,148 +136,180 @@ impl Observer {
             }
         }
         let continuous = *self.since.get_or_insert(hour);
+        Ok(Some((first_observed, continuous)))
+    }
+
+    /// The hour's owned-state counters, when it read them: `read` observes the rows, which
+    /// `exist` observes one by one in their order.
+    pub(super) fn existence(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: replay_data::format::FormatVersion,
+        out: &mut Scan,
+        read: impl FnOnce(
+            &mut Self,
+            &[CountryRow],
+            &[CountryCounterInputRow],
+            &mut Scan,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
         // Countries includes every non-null canonical country slot, with no
         // owned-state filter. A country with no states can therefore remain
         // recorded after annexation; presence is not existence.
         // CountryCounterInputs supplies the unfiltered owned-state roster count.
         // A positive-to-zero transition means ceased to exist by this supplying
         // read; the cause and exact transition hour are absent.
-        if slot_read(
+        if !slot_read(
             format,
             &decoded.metrics,
             TableId::CountryCounterInputs,
-            hour,
+            decoded.hour,
         ) {
-            if let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() {
-                out.observed.insert(TableId::CountryCounterInputs);
-                let countries = decoded.complete::<tables::Countries>()?;
+            return Ok(());
+        }
+        let Ok(rows) = decoded.complete::<tables::CountryCounterInputs>() else {
+            return out.refuse(
+                "existenceRead",
+                "Country existence",
+                "Owned-state-count reads are incomplete; transitions through them are unknown.",
+            );
+        };
+        out.observed.insert(TableId::CountryCounterInputs);
+        let countries = decoded.complete::<tables::Countries>()?;
+        read(self, countries, rows, out)
+    }
 
-                for row in rows {
-                    let slot = countries
-                        .binary_search_by_key(&row.country, |country| country.id)
-                        .ok()
-                        .map(|index| countries[index].canonical_slot);
-                    let (Some(tag), Some(slot)) = (self.tags.get(row.country), slot) else {
-                        out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
-                        continue;
-                    };
-                    if row.owned_state_count < 0 {
-                        out.refuse(
-                            "existenceCount",
-                            "Country existence",
-                            "Countries have negative recorded owned-state counts.",
-                        )?;
-                        self.existence.remove(&slot);
-                        continue;
-                    }
-                    if let Some((id, old_tag, count, read_hour)) = self.existence.get(&slot)
-                        && *count > 0
-                        && row.owned_state_count == 0
-                    {
-                        if *id == row.country && old_tag == tag {
-                            out.moments.push(GroupMoment {
-                                kind: "ceasedToExist".into(),
-                                name: None,
-                                hour,
-                                read_hour: hour,
-                                name_hour: *read_hour,
-                                exact: false,
-                                tags: vec![tag.clone()],
-                                faction: None,
-                            });
-                        } else {
-                            out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
-                        }
-                    }
-                    match self.existence.get_mut(&slot) {
-                        Some((id, old_tag, count, read_hour))
-                            if *id == row.country && old_tag.as_str() == tag.as_str() =>
-                        {
-                            *count = row.owned_state_count;
-                            *read_hour = hour;
-                        }
-                        _ => {
-                            self.existence.insert(
-                                slot,
-                                (row.country, tag.clone(), row.owned_state_count, hour),
-                            );
-                        }
-                    }
-                }
+    /// The slot `row`'s country holds, with its tag, when both are known.
+    pub(super) fn holder<'a>(
+        &'a self,
+        countries: &[CountryRow],
+        row: &CountryCounterInputRow,
+    ) -> Option<(u32, &'a String)> {
+        holder(&self.tags, countries, row)
+    }
+
+    /// One owned-state counter row read at `hour`: the slot it names, when it names one.
+    pub(super) fn exist(
+        &mut self,
+        countries: &[CountryRow],
+        row: &CountryCounterInputRow,
+        hour: i32,
+        out: &mut Scan,
+    ) -> io::Result<Option<u32>> {
+        let Some((slot, tag)) = holder(&self.tags, countries, row) else {
+            out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
+            return Ok(None);
+        };
+        if row.owned_state_count < 0 {
+            out.refuse(
+                "existenceCount",
+                "Country existence",
+                "Countries have negative recorded owned-state counts.",
+            )?;
+            self.existence.remove(&slot);
+            return Ok(Some(slot));
+        }
+        if let Some((id, old_tag, count, read_hour)) = self.existence.get(&slot)
+            && *count > 0
+            && row.owned_state_count == 0
+        {
+            if *id == row.country && old_tag == tag {
+                out.moments.push(GroupMoment {
+                    kind: "ceasedToExist".into(),
+                    name: None,
+                    hour,
+                    read_hour: hour,
+                    name_hour: *read_hour,
+                    exact: false,
+                    tags: vec![tag.clone()],
+                    faction: None,
+                });
             } else {
-                out.refuse(
-                    "existenceRead",
-                    "Country existence",
-                    "Owned-state-count reads are incomplete; transitions through them are unknown.",
-                )?;
+                out.refuse("existenceIdentity", "Country existence", "Owned-state-count observations have unresolved or changed country identities; the disappeared countries are not established.")?;
             }
         }
-        // Guarantee effects pass scope first and target second; relation
-        // initialization retains that direction. The owner-slice can come from
-        // either status vector and never reverses it. The relation stores
-        // first/second and start_date.
-        if let (Ok(rows), Ok(reads)) = (
-            decoded.complete::<tables::RelationTuples>(),
-            decoded.complete::<tables::SliceReads>(),
-        ) {
-            let table = TableId::RelationTuples.index() as u32;
-            let first = reads.partition_point(|read| read.table < table);
-            let last = reads.partition_point(|read| read.table <= table);
-            for read in reads[first..last]
-                .iter()
-                .filter(|read| reads_slice(read, hour) && self.tags.get(read.owner).is_some())
+        match self.existence.get_mut(&slot) {
+            Some((id, old_tag, count, read_hour))
+                if *id == row.country && old_tag.as_str() == tag.as_str() =>
             {
-                out.observed.insert(TableId::RelationTuples);
-                // RelationTuples is ordered by owner, target, type and
-                // ordinal. Carried owners require no row traversal.
-                let first = rows.partition_point(|row| row.owner_country < read.owner);
-                let last = rows.partition_point(|row| row.owner_country <= read.owner);
-                for row in rows[first..last].iter().filter(|row| reads_relation(row)) {
-                    // An initial history-file relation is a snapshot, never an
-                    // event, including a relation published after the first frame.
-                    if row.start_hour <= first_observed || row.start_hour > hour {
-                        continue;
-                    }
-                    if !self.guarantees.insert((
-                        row.first_country,
-                        row.second_country,
-                        row.start_hour,
-                    )) {
-                        continue;
-                    }
-                    let (Some(first), Some(second)) = (
-                        self.tags.get(row.first_country),
-                        self.tags.get(row.second_country),
-                    ) else {
-                        out.refuse(
-                            "guaranteeIdentity",
-                            "Guarantees",
-                            "Guarantees have unresolved countries at their first recorded read.",
-                        )?;
-                        continue;
-                    };
-                    let exact = [row.first_country, row.second_country]
-                        .into_iter()
-                        .all(|raw| {
-                            self.named_since
-                                .get(&raw)
-                                .is_some_and(|(_, from)| continuous.max(*from) <= row.start_hour)
-                        });
-                    out.moments.push(GroupMoment {
-                        kind: "guaranteeGranted".into(),
-                        name: None,
-                        hour: if exact { row.start_hour } else { hour },
-                        read_hour: hour,
-                        name_hour: if exact { row.start_hour } else { hour },
-                        exact,
-                        tags: vec![first.clone(), second.clone()],
-                        faction: None,
-                    });
-                }
+                *count = row.owned_state_count;
+                *read_hour = hour;
+            }
+            _ => {
+                self.existence.insert(
+                    slot,
+                    (row.country, tag.clone(), row.owned_state_count, hour),
+                );
             }
         }
+        Ok(Some(slot))
+    }
+
+    /// The existence of `slot`, read last at `hour` though held as of an earlier read.
+    pub(super) fn read_at(&mut self, slot: u32, hour: i32) {
+        if let Some((_, _, _, read_hour)) = self.existence.get_mut(&slot) {
+            *read_hour = hour;
+        }
+    }
+
+    /// A guarantee relation, `(first, second, start)`, at a read of its owner at `hour`: a
+    /// moment at its first such read, unless the first hour observed already held it.
+    pub(super) fn guarantee(
+        &mut self,
+        (first, second, start): (u32, u32, i32),
+        (first_observed, continuous): (i32, i32),
+        hour: i32,
+        out: &mut Scan,
+    ) -> io::Result<()> {
+        // An initial history-file relation is a snapshot, never an
+        // event, including a relation published after the first frame.
+        if start <= first_observed || start > hour {
+            return Ok(());
+        }
+        if !self.guarantees.insert((first, second, start)) {
+            return Ok(());
+        }
+        let (Some(first_tag), Some(second_tag)) = (self.tags.get(first), self.tags.get(second))
+        else {
+            return out.refuse(
+                "guaranteeIdentity",
+                "Guarantees",
+                "Guarantees have unresolved countries at their first recorded read.",
+            );
+        };
+        let exact = [first, second].into_iter().all(|raw| {
+            self.named_since
+                .get(&raw)
+                .is_some_and(|(_, from)| continuous.max(*from) <= start)
+        });
+        out.moments.push(GroupMoment {
+            kind: "guaranteeGranted".into(),
+            name: None,
+            hour: if exact { start } else { hour },
+            read_hour: hour,
+            name_hour: if exact { start } else { hour },
+            exact,
+            tags: vec![first_tag.clone(), second_tag.clone()],
+            faction: None,
+        });
         Ok(())
     }
+}
+
+/// The slot `row`'s country holds and the tag `tags` give it, when both are known.
+fn holder<'a>(
+    tags: &'a LinkTags,
+    countries: &[CountryRow],
+    row: &CountryCounterInputRow,
+) -> Option<(u32, &'a String)> {
+    let slot = countries
+        .binary_search_by_key(&row.country, |country| country.id)
+        .ok()
+        .map(|index| countries[index].canonical_slot);
+    let (Some(tag), Some(slot)) = (tags.get(row.country), slot) else {
+        return None;
+    };
+    Some((slot, tag))
 }
 
 /// Only feed consumers decode owner-sliced guarantees and country existence.

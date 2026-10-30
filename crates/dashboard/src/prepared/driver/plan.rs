@@ -1,7 +1,10 @@
 //! The backend preparing each family, checked against the registry once, and
 //! everything that follows from it: what the hourly walk observes, what each
 //! product waits for and refuses with, which writer publishes a section, and
-//! the version stamp a family's publications are prepared under.
+//! the version stamp a family's publications are prepared under. A row
+//! recording's plan ([`rows`]) prepares families in the hourly walk or on their
+//! own; a native recording's ([`native`]) prepares each by its native backend or
+//! refuses it by name.
 
 use super::registry::{self, Descriptor, FamilyId, Runner};
 use replay_data::rows::TableId;
@@ -19,6 +22,12 @@ pub(crate) enum Backend {
     /// A row implementation of its own beside the walk, with coverage pages
     /// of its own ([`crate::prepared::pipeline::independent`]).
     Own,
+    /// The segment driver's operators and emit over a native recording's segments
+    /// ([`super::native`]).
+    Segments,
+    /// Refused by name on every branch: a family no native backend prepares, of a native
+    /// recording, or one only a native backend prepares, of a row recording.
+    Unavailable,
 }
 
 /// Who publishes a section.
@@ -56,6 +65,52 @@ fn invalid(message: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+/// Refuses `families` naming a publisher twice, referring to a family they lack, or keeping
+/// no private read they declare.
+fn checked(families: &[&'static Descriptor]) -> io::Result<()> {
+    let named = |name: &str| {
+        families
+            .iter()
+            .copied()
+            .find(|family| family.id.name() == name)
+    };
+    let mut spellings = HashSet::new();
+    let names = families
+        .iter()
+        .copied()
+        .flat_map(|family| std::iter::once(family.id.name()).chain(family.aliases.iter().copied()))
+        .chain(registry::JOBS.iter().map(|job| job.name));
+    for name in names {
+        if !spellings.insert(name) {
+            return Err(invalid(format!("{name:?} names two prepared publishers")));
+        }
+    }
+    let references = families
+        .iter()
+        .copied()
+        .flat_map(|family| {
+            family
+                .observers
+                .iter()
+                .chain(family.private.iter().flat_map(|read| read.readers))
+        })
+        .chain(registry::QUERIES.iter().flat_map(|query| query.suppliers));
+    for id in references {
+        if named(id.name()).is_none() {
+            return Err(invalid(format!("Unknown prepared family {:?}", id.name())));
+        }
+    }
+    for family in families {
+        if family.private.is_some_and(|read| read.kept.is_empty()) {
+            return Err(invalid(format!(
+                "{:?} keeps no private read",
+                family.id.name()
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl Plan {
     /// `families`, with those `own` names prepared on their own in that
     /// order and every other the walk can prepare in the walk. `rows` names
@@ -71,42 +126,7 @@ impl Plan {
                 .copied()
                 .find(|family| family.id.name() == name)
         };
-        let mut spellings = HashSet::new();
-        let names = families
-            .iter()
-            .copied()
-            .flat_map(|family| {
-                std::iter::once(family.id.name()).chain(family.aliases.iter().copied())
-            })
-            .chain(registry::JOBS.iter().map(|job| job.name));
-        for name in names {
-            if !spellings.insert(name) {
-                return Err(invalid(format!("{name:?} names two prepared publishers")));
-            }
-        }
-        let references = families
-            .iter()
-            .copied()
-            .flat_map(|family| {
-                family
-                    .observers
-                    .iter()
-                    .chain(family.private.iter().flat_map(|read| read.readers))
-            })
-            .chain(registry::QUERIES.iter().flat_map(|query| query.suppliers));
-        for id in references {
-            if named(id.name()).is_none() {
-                return Err(invalid(format!("Unknown prepared family {:?}", id.name())));
-            }
-        }
-        for family in &families {
-            if family.private.is_some_and(|read| read.kept.is_empty()) {
-                return Err(invalid(format!(
-                    "{:?} keeps no private read",
-                    family.id.name()
-                )));
-            }
-        }
+        checked(&families)?;
         for &row in rows {
             if named(row).is_none() {
                 return Err(invalid(format!(
@@ -128,20 +148,64 @@ impl Plan {
             }
             lanes.push(family.id);
         }
-        let backends: HashMap<_, _> = families
+        let backends = families
             .iter()
             .filter_map(|family| {
                 let backend = if lanes.contains(&family.id) {
                     Backend::Own
                 } else if family.walk {
                     Backend::Walk
+                } else if family.segments {
+                    Backend::Unavailable
                 } else {
                     return None;
                 };
                 Some((family.id.name(), backend))
             })
             .collect();
-        let registered = |id: FamilyId| backends.get(id.name()) == Some(&Backend::Own);
+        Self::planned(families, lanes, backends)
+    }
+
+    /// A native recording's plan of `families`: each prepared on its own by its native backend
+    /// when `native` names it, and refused by name on every branch otherwise.
+    pub(super) fn native(families: Vec<&'static Descriptor>, native: &[&str]) -> io::Result<Self> {
+        checked(&families)?;
+        for (at, &name) in native.iter().enumerate() {
+            if !families.iter().any(|family| family.id.name() == name) {
+                return Err(invalid(format!(
+                    "A native backend prepares the unknown family {name:?}"
+                )));
+            }
+            if native[..at].contains(&name) {
+                return Err(invalid(format!("{name:?} has two native backends")));
+            }
+        }
+        let lanes = families.iter().map(|family| family.id).collect();
+        let backends = families
+            .iter()
+            .map(|family| {
+                let backend = if native.contains(&family.id.name()) {
+                    Backend::Segments
+                } else {
+                    Backend::Unavailable
+                };
+                (family.id.name(), backend)
+            })
+            .collect();
+        Self::planned(families, lanes, backends)
+    }
+
+    /// `families` prepared as `backends` says, those of `lanes` on their own in that order.
+    fn planned(
+        families: Vec<&'static Descriptor>,
+        lanes: Vec<FamilyId>,
+        backends: HashMap<&'static str, Backend>,
+    ) -> io::Result<Self> {
+        let registered = |id: FamilyId| {
+            backends
+                .get(id.name())
+                .is_some_and(|backend| *backend != Backend::Walk)
+        };
         // A family prepared on its own stays in the walk, read under its
         // readers' names, until every reader makes its own read.
         let hourly = families
@@ -159,11 +223,17 @@ impl Plan {
             .iter()
             .filter(|job| job.runner == Runner::Beside)
             .flat_map(|job| job.gates.iter().map(move |&gate| (gate, job.name)))
-            .chain(lanes.iter().flat_map(|&id| {
-                named(id.name())
-                    .into_iter()
-                    .flat_map(move |family| family.gates.iter().map(move |&gate| (gate, id.name())))
-            }));
+            .chain(
+                families
+                    .iter()
+                    .filter(|family| registered(family.id))
+                    .flat_map(|family| {
+                        family
+                            .gates
+                            .iter()
+                            .map(move |&gate| (gate, family.id.name()))
+                    }),
+            );
         for (gate, publisher) in gating {
             if let Some(other) = gates.insert(gate, publisher) {
                 return Err(invalid(format!(
@@ -247,6 +317,13 @@ impl Plan {
         self.backend(family) == Some(Backend::Own)
     }
 
+    /// Whether the walk leaves `family` to another backend: its own rows or the segment driver,
+    /// or a native recording's plan refuses it on pages of its own.
+    pub(crate) fn apart(&self, family: &str) -> bool {
+        self.backend(family)
+            .is_some_and(|backend| backend != Backend::Walk)
+    }
+
     /// Whether the hourly walk observes, flushes, saves and loads `family`:
     /// it prepares it, or keeps it for a reader under that reader's names
     /// ([`Self::kept_as`]).
@@ -279,7 +356,7 @@ impl Plan {
             .iter()
             .find(|query| query.product == product)
             .map(|query| query.suppliers)
-            .filter(|suppliers| suppliers.iter().any(|id| self.registered(id.name())))
+            .filter(|suppliers| suppliers.iter().any(|id| self.apart(id.name())))
     }
 
     /// `name`'s version stamp: its own version, and those of the families
@@ -459,9 +536,26 @@ fn digest(hash: &blake3::Hasher) -> u64 {
 static ROWS: LazyLock<Plan> =
     LazyLock::new(|| Plan::rows().expect("the family registry and its backends agree"));
 
+static NATIVE: LazyLock<Plan> = LazyLock::new(|| {
+    Plan::native(registry::FAMILIES.iter().collect(), &super::native::names())
+        .expect("the family registry and its native backends agree")
+});
+
 /// The plan of ordinary preparation.
 pub(crate) fn rows() -> &'static Plan {
     &ROWS
+}
+
+/// The plan of a native recording's preparation, and of the queries of what it published:
+/// the registry's, unless a test selects another on this thread.
+pub(crate) fn native() -> &'static Plan {
+    #[cfg(test)]
+    {
+        if let Some(plan) = TEST_NATIVE.with(std::cell::Cell::get) {
+            return plan;
+        }
+    }
+    &NATIVE
 }
 
 /// The plan preparation and queries follow: ordinary preparation's, unless a
@@ -489,6 +583,8 @@ static HOURLY: LazyLock<Plan> = LazyLock::new(|| {
 thread_local! {
     static TEST_PLAN: std::cell::Cell<Option<&'static Plan>> = const { std::cell::Cell::new(None) };
     static TEST_HOURLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_NATIVE: std::cell::Cell<Option<&'static Plan>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The plan tests selected on a thread, to install on another.
@@ -558,4 +654,24 @@ pub(crate) fn test_plan(
 #[cfg(test)]
 pub(crate) fn with_test_plan<T>(plan: &'static Plan, run: impl FnOnce() -> T) -> T {
     crate::prepared::with_test_cell(&TEST_PLAN, Some(plan), run)
+}
+
+/// A native plan of the registry's families and `added`, those `native` names prepared by
+/// their native backends and every other refused by name.
+#[cfg(test)]
+pub(crate) fn test_native(
+    added: &[&'static Descriptor],
+    native: &[&'static str],
+) -> io::Result<&'static Plan> {
+    let families = registry::FAMILIES
+        .iter()
+        .chain(added.iter().copied())
+        .collect();
+    Ok(Box::leak(Box::new(Plan::native(families, native)?)))
+}
+
+/// Run `run` with `plan` as the native plan on this thread.
+#[cfg(test)]
+pub(crate) fn with_test_native<T>(plan: &'static Plan, run: impl FnOnce() -> T) -> T {
+    crate::prepared::with_test_cell(&TEST_NATIVE, Some(plan), run)
 }

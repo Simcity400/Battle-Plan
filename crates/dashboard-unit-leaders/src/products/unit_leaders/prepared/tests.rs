@@ -1470,3 +1470,95 @@ fn leader_events_parse_from_their_rows_as_their_pages_return_them() {
     }
     assert!(compared > 256, "{compared} events cross a page");
 }
+
+/// A static table read again (the lexer's tokens timed at one hour) changes the hour's reads
+/// and nothing a leader reads: the leaders are walked at that hour and the next with every
+/// read they hold, none of them read anew.
+#[test]
+fn prepared_leaders_keep_their_reads_across_a_static_table_read() {
+    let first = frame(100, 2);
+    let frames: Vec<_> = (100..=104)
+        .map(|hour| {
+            let mut frame = first.clone();
+            frame.hour = hour;
+            if hour == 102 {
+                frame.metrics.table_ns[TableId::LexicalTokens.index()] = 1;
+            }
+            frame
+        })
+        .collect();
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    let mut tracker = FrameChangeTracker::new();
+    let mut builds = Vec::new();
+    let mut visits = Vec::new();
+    for frame in &frames {
+        let (built, visited) = (super::super::progress_builds(), work(&state).row_visits);
+        let changes = tracker.observe(frame, replay.format);
+        state.observe(frame, &replay, None, &changes).unwrap();
+        builds.push(super::super::progress_builds() - built);
+        visits.push(work(&state).row_visits - visited);
+    }
+    assert!(visits[2] > 0, "the hour its reads change walks the leaders");
+    assert_eq!(builds, [2, 0, 0, 0, 0]);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &replay);
+}
+
+/// A leader renamed while the roster could not be read is read anew where the roster is read
+/// again, though its character did not change from the hour before.
+#[test]
+fn prepared_leaders_read_anew_after_a_skipped_roster() {
+    let first = frame(100, 1);
+    let mut renamed = first.clone();
+    renamed.hour = 101;
+    if let TableView::Complete(TableRows::Characters(rows)) =
+        &mut *renamed.tables[TableId::Characters.index()]
+    {
+        rows[0].token = b"Synthetic renamed while unread".to_vec();
+    }
+    let mut skipped = renamed.clone();
+    skipped.tables[TableId::UnitLeaders.index()] = TableView::Unavailable {
+        reason: "Synthetic skipped roster".into(),
+    }
+    .into();
+    let mut frames = vec![first, skipped];
+    frames.extend((102..=103).map(|hour| {
+        let mut frame = renamed.clone();
+        frame.hour = hour;
+        frame
+    }));
+    let replay = replay(&frames);
+    let mut state = Prepared::new(&replay, 1);
+    observe_recorded(&mut state, &replay, &frames);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    publish(&mut state, &fixture, &cancelled);
+    assert_parity(&fixture, &replay);
+    let result = query(
+        &fixture.store,
+        &fixture.key,
+        &full_params("1"),
+        None,
+        &cancelled,
+    )
+    .unwrap()
+    .unwrap();
+    let leader = &result.leaders[0];
+    assert_eq!(
+        leader
+            .runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour))
+            .collect::<Vec<_>>(),
+        vec![(100, 100), (102, 103)]
+    );
+    assert_ne!(leader.runs[0].value.person, leader.runs[1].value.person);
+    assert_eq!(
+        result.people[leader.runs[1].value.person as usize].portrait_hour,
+        102
+    );
+    assert_eq!(leader.partial_from, Some(102));
+}

@@ -76,6 +76,15 @@ pub struct RecordedCountry {
 }
 
 impl RecordedCountry {
+    /// A country recorded with only these identities.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn identified(identities: Vec<CountryIdentityRun>) -> Self {
+        Self {
+            identities: Arc::new(identities),
+            ..Default::default()
+        }
+    }
+
     fn observe(
         &mut self,
         row: &CountryRow,
@@ -748,6 +757,13 @@ impl HistoryScan {
         observed: impl FnMut(&str, Option<i64>, bool),
     ) {
         self.observe_with_counts(frame, true, changes, observed);
+    }
+
+    /// [`Self::observe_owned_states`] of an hour at which no country key, link, counter row
+    /// key, gain key or table availability changed, made without its rows when it can be:
+    /// false, with nothing changed, when it cannot.
+    pub fn advance_unchanged(&mut self, hour: i32, witnessed: bool) -> bool {
+        self.advance_quiet(hour, hour, witnessed)
     }
 
     fn account(&mut self) {

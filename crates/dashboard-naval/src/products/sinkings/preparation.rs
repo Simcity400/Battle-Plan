@@ -53,6 +53,24 @@ impl ShipHistory {
         frame: &DecodedFrame,
         changes: &FrameChanges,
     ) -> Vec<Change> {
+        self.prepare_by(|history| history.observe_with_changes(format, frame, Some(changes)))
+    }
+
+    /// [`Self::prepare`] of an hour a columnar walk read; `countries` Some(None) when unchanged.
+    pub(crate) fn prepare_projected(
+        &mut self,
+        hour: i32,
+        countries: Option<Option<&ProjectedCountries>>,
+        tokens: Option<&[(u32, Vec<u8>)]>,
+        ships: &ShipRead,
+        convoys: &ConvoyRead,
+    ) -> Vec<Change> {
+        self.prepare_by(|history| {
+            history.observe_projected(hour, countries, tokens, ships, convoys)
+        })
+    }
+
+    fn prepare_by(&mut self, observe: impl FnOnce(&mut Self)) -> Vec<Change> {
         let initializing = self.prepared_references.is_none();
         if initializing {
             let mut references = BTreeMap::<u32, BTreeSet<(bool, u64)>>::new();
@@ -70,7 +88,7 @@ impl ShipHistory {
         {
             self.preparing = true;
         }
-        self.observe_with_changes(format, frame, Some(changes));
+        observe(self);
         #[cfg(test)]
         {
             self.preparing = false;

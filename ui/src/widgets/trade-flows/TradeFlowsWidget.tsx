@@ -18,7 +18,8 @@ import { formatAmount } from '../../charts/valueAxis';
 import { FAILED_FACT, MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { useContentRevision } from '../../dashboard/contentRevision';
-import { flagReadMetadata, flagReadSpec, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { flagReadMetadata, useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { useCountryFlagsRead } from '../../dashboard/countryFlags';
 import { lookHour } from '../../dashboard/countryLooks';
 import { nameKey, useCountryFactsRead } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
@@ -63,7 +64,6 @@ const DESCRIBED = 24;
 type Label = CountryFlagLook & { name: string; color: readonly [number, number, number] | null };
 type TradeNode = FlowNode & { trade: { selection: TradeSelection; node: SideNode; links: readonly SideLink[]; hour: number; from: number } };
 type TradeLink = FlowLink & { trade: { selection: TradeSelection; link: SideLink; source: SideNode; target: SideNode; hour: number; from: number } };
-const FLAGS = flagReadSpec('panel');
 const ALL_CONTRIBUTORS: TradeSelection = { kind: 'all' };
 
 /** Who sells what to whom: a Sankey of sellers to buyers, one
@@ -151,7 +151,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const fixed = tokens.countryColours === 'fixed';
   const colourPlan = useMemo(() => tradeColourPlan(trade ?? null, track?.branch, moment, fixed), [trade, track?.branch, moment, fixed]);
   const styles = useCountryFactsRead(runtime.client, track, fixed ? colourPlan.wanted : looksWanted, active, STYLES, fixed ? colourPlan.maxHours : lookHours);
-  const flags = useCountryFactsRead(runtime.client, track, looksWanted, active, FLAGS, lookHours);
+  const flags = useCountryFlagsRead(runtime.client, track, looksWanted, active);
   const contentRevision = useContentRevision(runtime.client);
   const heldKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, contentRevision]);
   const held = useRef({ key: heldKey, client: runtime.client, looks: new Map<string, Look>(), segments: new Map<string, number>() });

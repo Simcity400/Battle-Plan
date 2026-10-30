@@ -51,6 +51,14 @@ impl Plan {
     pub(super) fn get(&self, at: usize) -> &Planned {
         &self.0[at]
     }
+
+    /// The first segment of `at`'s branch.
+    fn leading(&self, mut at: usize) -> usize {
+        while let Some(before) = self.0[at].before {
+            at = before;
+        }
+        at
+    }
 }
 
 /// A family's progress through a segment.
@@ -92,6 +100,8 @@ pub(super) enum Closing {
     Rest(usize),
     /// Every one from a segment on, of every branch.
     From(usize),
+    /// Those before a segment in its branch.
+    Before(usize),
 }
 
 /// What steps of the schedule let go of, dropped only once it is let go: the cells closures
@@ -690,6 +700,68 @@ impl Schedule {
         })
     }
 
+    /// `lane`'s family has nothing to do on `branches`, sorted: every cell of theirs closes
+    /// before a walk takes any.
+    pub(super) fn pass(
+        &mut self,
+        plan: &Plan,
+        lane: usize,
+        branches: &[u64],
+        gone: &mut Gone,
+    ) -> io::Result<()> {
+        if branches.is_empty() {
+            return Ok(());
+        }
+        for at in 0..self.segments {
+            let planned = plan.get(at);
+            if planned.before.is_none() && branches.binary_search(&planned.branch).is_ok() {
+                self.shut(plan, lane, Closing::Rest(at), gone)?;
+            }
+        }
+        self.advance(plan, lane, gone)
+    }
+
+    /// `lane`'s family goes on in `branch` from ordinal `ordinal` of run `run`: every cell of
+    /// the branch before the segment holding it, or of the branch when none does, closes before
+    /// a walk takes any. The segment it goes on in, and the ordinal it joins that walk at.
+    pub(super) fn resume(
+        &mut self,
+        plan: &Plan,
+        segments: &[Segment],
+        lane: usize,
+        (branch, run, ordinal): (u64, u32, u32),
+        gone: &mut Gone,
+    ) -> io::Result<Option<(usize, u32)>> {
+        let Some(leading) = (0..self.segments)
+            .find(|&at| plan.get(at).branch == branch && plan.get(at).before.is_none())
+        else {
+            return Ok(None);
+        };
+        let mut cell = Some(leading);
+        let goes = loop {
+            let Some(at) = cell else {
+                break None;
+            };
+            let segment = &segments[at];
+            if (segment.run, segment.last) >= (run, ordinal) {
+                let joins = if segment.run == run {
+                    ordinal.max(segment.first)
+                } else {
+                    segment.first
+                };
+                break Some((at, joins));
+            }
+            cell = plan.get(at).after;
+        };
+        match goes {
+            Some((at, _)) if at == leading => return Ok(goes),
+            Some((at, _)) => self.shut(plan, lane, Closing::Before(at), gone)?,
+            None => self.shut(plan, lane, Closing::Rest(leading), gone)?,
+        }
+        self.advance(plan, lane, gone)?;
+        Ok(goes)
+    }
+
     /// Closes `closing`'s cells of `lane`: nothing of them reaches its emit, and what they
     /// filed or parked goes ([`Gone`]). A cell a walk holds is abandoned to it.
     pub(super) fn close(
@@ -715,15 +787,16 @@ impl Schedule {
     ) -> io::Result<()> {
         let segments = self.segments;
         let following = |at: usize| match closing {
-            Closing::Branch(_) | Closing::Rest(_) => plan.get(at).after,
+            Closing::Branch(_) | Closing::Rest(_) | Closing::Before(_) => plan.get(at).after,
             Closing::From(_) => (at + 1 < segments).then_some(at + 1),
         };
-        let (mut cell, standing) = match closing {
-            Closing::Branch(at) => (plan.get(at).after, None),
-            Closing::Rest(at) => (Some(at), Some(at)),
-            Closing::From(at) => (Some(at), None),
+        let (mut cell, standing, until) = match closing {
+            Closing::Branch(at) => (plan.get(at).after, None, None),
+            Closing::Rest(at) => (Some(at), Some(at), None),
+            Closing::From(at) => (Some(at), None, None),
+            Closing::Before(at) => (Some(plan.leading(at)), None, Some(at)),
         };
-        while let Some(at) = cell {
+        while let Some(at) = cell.filter(|&at| Some(at) != until) {
             cell = following(at);
             if standing != Some(at)
                 && !self.pending[lane].is_empty()

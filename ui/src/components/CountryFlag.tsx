@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
+import type { CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
-import { loadProduct } from '../dashboard/products';
-import { useContentRevision } from '../dashboard/contentRevision';
+import { FAILED_FACT } from '../dashboard/countryFacts';
+import { flagReadKey, useFlagReads } from '../dashboard/countryFlags';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
-/** A flag to draw: a PNG data URL, as a flag reply carries it and the flag store keeps it, or
- * straight-alpha RGBA, as the recorder's status carries it. */
+/** A flag to draw: its picture's URL, as a flag reply carries it, or straight-alpha RGBA, as the
+ * recorder's status carries it. */
 export type FlagImage = { width: number; height: number } & ({ png: string } | { pixels: ArrayLike<number> });
 
 /** Content flags are small (82x52 in vanilla): each is drawn from its picture at its shown
@@ -79,25 +79,16 @@ export function CountryFlagUrl({ url, reason, pending, className = '' }: { url?:
   return <span className={`country-flag country-flag-unavailable ${className}`} role="img" aria-label={tooltip} data-tooltip={tooltip} />;
 }
 
-/** A country's flag from a recording's own installed content, at the hour the country
- * was observed. Without a readable flag it shows an empty frame, never a substitute.
- * The default `panel` size is app styling: the native shield with its overlay's edge
- * shading evened out. */
+/** A country's flag from a recording's own installed content, at the hour the country was observed, as
+ * preparation chose it. Without a readable flag it shows an empty frame, never a substitute.
+ * The default `panel` size is app styling: the native shield with its overlay's edge shading
+ * evened out. */
 export function SourceFlag({ client, source, tag, size = 'panel' }: { client: DashboardClient; source: DashboardSource; tag: string | null; size?: CountryFlagSize }) {
   const country = tag ? source.metadata.countries.find(item => item.tag === tag) : undefined;
   const branch = source.metadata.branches.find(item => item.id === country?.observedBranchId) ?? source.metadata.branches[0];
   const hour = country && country.observedBranchId === branch?.id ? country.observedHour : branch?.firstHour;
-  // The flag follows the content and the visual mods the source's widgets show.
-  const content = useContentRevision(client);
-  const key = `${source.id}:${source.revision}:${tag}:${branch?.id}:${hour}:${size}:${content}`;
-  const [flag, setFlag] = useState<{ key: string; image?: CountryFlagImage }>({ key: '' });
-  useEffect(() => {
-    if (!tag || !branch || hour == null) return;
-    const controller = new AbortController();
-    void loadProduct<CountryFlagReply>(client, { sourceId: source.id, revision: source.revision, product: 'country-flags', params: { branchId: branch.id, hour, tags: [tag], size } }, controller.signal)
-      .then(reply => { if (!controller.signal.aborted) setFlag({ key, image: reply.flags.find(image => image.tag === tag) }); },
-        () => { if (!controller.signal.aborted) setFlag({ key }); });
-    return () => controller.abort();
-  }, [client, source.id, source.revision, tag, branch?.id, hour, size, key, content]);
-  return <CountryFlag image={flag.key === key ? flag.image : undefined} />;
+  const read = tag && branch && hour != null ? { tag, branchId: branch.id, hour } : null;
+  const flags = useFlagReads(client, source, read ? [read] : [], true, size);
+  const flag = read ? flags.get(flagReadKey(read)) : undefined;
+  return <CountryFlag image={flag && flag !== FAILED_FACT ? flag.image : undefined} />;
 }

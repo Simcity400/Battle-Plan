@@ -21,6 +21,8 @@ pub(super) struct Owner {
     building: bool,
     cursor: Option<usize>,
     baseline_hour: Option<i32>,
+    #[serde(skip)]
+    pub(super) version: Version,
 }
 impl Owner {
     pub fn rows(&self) -> Result<&[DelayedEvent], &'static str> {
@@ -30,8 +32,13 @@ impl Owner {
     /// timers never take part in identity or removal checks. Only a new
     /// baseline or empty certificate restores the owner.
     pub fn gap(&mut self) {
+        let mut version = self.version;
+        if !self.timers.is_empty() {
+            version.change();
+        }
         *self = Self {
             country: self.country,
+            version,
             ..Self::default()
         };
     }
@@ -54,7 +61,10 @@ impl Owner {
         script: EventFeedScript,
         change: EventFeedScriptChange,
     ) -> io::Result<()> {
-        self.country = event.target;
+        if self.country != event.target {
+            self.country = event.target;
+            self.version.change();
+        }
         use EventFeedScriptChange::*;
         match change {
             DelayedEmpty => {
@@ -67,6 +77,7 @@ impl Owner {
             }
             DelayedBaseline => {
                 self.timers.clear();
+                self.version.change();
                 self.ready = false;
                 self.fault = false;
                 self.building = true;
@@ -106,6 +117,7 @@ impl Owner {
                     remaining,
                     scopes: allocation::copy_vec(scopes)?,
                 });
+                self.version.change();
             }
             DelayedAdvance { count, finished } => {
                 if !self.ready {
@@ -156,6 +168,7 @@ impl Owner {
                         }
                     }
                     self.timers.swap_remove(index);
+                    self.version.change();
                 } else if self.ready {
                     self.refuse();
                 }

@@ -548,7 +548,11 @@ export type TechnologyArtworkParams = { tokens: Array<string>,
 recorded?: { [key in string]?: Array<number | null> }, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
 export type CountryFlagSize = "full" | "medium" | "small" | "shield" | "panel";
-export type CountryFlagImage = { tag: string,
+export type CountryFlagImage = {
+/**
+ * The choice drawn: its index in the request's `flags`.
+ */
+flag: number,
 /**
  * The flag file drawn, as the content names it.
  */
@@ -563,9 +567,17 @@ key: string, width: number, height: number,
  * The flag as its artwork URL, at most 128 pixels on the longer side.
  */
 png: string, };
-export type CountryFlagUnavailable = { tag: string, reason: string, };
-export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };
-export type CountryFlagReply = { branchId: string, hour: number, size: CountryFlagSize, flags: Array<CountryFlagImage>, unavailable: Array<CountryFlagUnavailable>, warnings: Array<string>, };
+export type CountryFlagUnavailable = {
+/**
+ * The choice: its index in the request's `flags`.
+ */
+flag: number, reason: string, };
+export type CountryFlagParams = {
+/**
+ * The choices to draw, as `country-facts` gives them.
+ */
+flags: Array<CountryFlagChoice>, size: CountryFlagSize, };
+export type CountryFlagReply = { size: CountryFlagSize, flags: Array<CountryFlagImage>, unavailable: Array<CountryFlagUnavailable>, warnings: Array<string>, };
 export type DoctrineParams = { branchId: string, tag: string, hour: number, };
 export type DoctrineFact = { name: string, value: string, };
 export type DoctrineReward = { name: string, mastery: string, unlocked: boolean | null, description: string, };
@@ -1227,11 +1239,21 @@ export type CountryStyleReply = { branchId: string, hour: number, styles: Array<
 export type CountryFactsParams = { branchId: string, };
 export type CountryFactRuns = { tag: string,
 /**
- * `[hour, name, colour, reason]` from `hour` until the next run: the name's index in
- * `names`, the colour as `0xRRGGBB` and the reason's index in `reasons`, each -1 when
- * there is none. A tag that is not a country has a run with no name or colour and its reason.
+ * `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
+ * `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
+ * index in `flags`, each -1 when there is none. A tag that is not a country has a run with
+ * no name, colour or flag and its reason.
  */
-runs: Array<[number, number, number, number]>, };
+runs: Array<[number, number, number, number, number]>, };
+export type CountryFlagChoice = {
+/**
+ * Each atlas's key; null where no candidate gives it a file it draws.
+ */
+keys: [string | null, string | null, string | null],
+/**
+ * Why each atlas has no key, or what was refused on the way to its key; null when nothing.
+ */
+reasons: [string | null, string | null, string | null], };
 export type CountryFactsReply = { branchId: string,
 /**
  * The hours the runs answer, as `[first, last]` spans in order.
@@ -1244,7 +1266,11 @@ names: Array<string>,
 /**
  * Why part of a style is missing, each once; a run holds its index.
  */
-reasons: Array<string>, countries: Array<CountryFactRuns>, warnings: Array<string>, };
+reasons: Array<string>,
+/**
+ * Flag choices, each once; a run holds its index.
+ */
+flags: Array<CountryFlagChoice>, countries: Array<CountryFactRuns>, warnings: Array<string>, };
 export type CountryColourParams = { branchId: string,
 /**
  * The hours to read, in any order.
@@ -2839,14 +2865,12 @@ export type LedgerSpend = {
  */
 countryId?: number, id: string, sequence: string, ordinal: number, hour: number, readHour: number, countryTag: string, countryName: string | null, currency: string, category: string, itemId: string, chargeRaw: string | null, realizedDeltaRaw: string | null, covered: boolean, occurrences: number,
 /**
- * Upkeep has one row per country/day; each contribution remains dated
- * by its own read, so Live never reveals the rest of a day's payments.
+ * Upkeep has one row per country and day; each contribution stays dated by its own read.
  */
 changes: Array<LedgerSpendChange>, };
 export type LedgerSpendChange = {
 /**
  * Native date of this contribution, separate from its supplying read.
- * Older consumers may omit it; a filtered aggregate then stays unknown.
  */
 hour?: number | null, readHour: number, chargeRaw: string | null, realizedDeltaRaw: string | null, occurrences: number, covered: boolean, };
 export type LedgerSpendItem = { id: string,
@@ -2855,7 +2879,7 @@ export type LedgerSpendItem = { id: string,
  */
 groupId: string, name: string | null,
 /**
- * Plain display text, using only the recorded cause/item/target.
+ * Plain display text, using only the recorded cause, item and target.
  */
 action: string,
 /**

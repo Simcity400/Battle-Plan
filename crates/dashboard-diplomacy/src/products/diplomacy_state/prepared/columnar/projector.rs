@@ -2,8 +2,9 @@ use super::{
     rows::{Groups, Stamps, unrecorded},
     *,
 };
+use dashboard_world::{Needs, World};
 use replay::{
-    columnar_frames::{Views, metrics},
+    columnar_frames::metrics,
     columns,
     segments::{self, Operator, Sink, Start, State},
 };
@@ -13,16 +14,22 @@ use replay_data::{
     scope::CaptureMode,
 };
 
+/// What a projection reads of its walk's world: the countries, and their identity tables.
+pub fn needs() -> io::Result<Needs> {
+    Ok(Needs {
+        countries: true,
+        frame: dashboard_world::identity()?,
+        ..Needs::default()
+    })
+}
+
 struct Fields {
-    country_tag: usize,
-    country_slot: usize,
     opinion: usize,
     sample_hour: usize,
 }
 
 pub struct Projector {
     format: FormatVersion,
-    naming: Views,
     fields: Fields,
     shapes: [Option<columns::Status>; TABLE_COUNT],
     ids: Option<Arc<Ids>>,
@@ -40,6 +47,10 @@ pub struct Projector {
     /// Whether the emit may hold another orphan set than `orphan_tuples`.
     orphans_pending: bool,
     queue: Option<Arc<proposals::Queue>>,
+    /// The queue changed since an hour last carried it.
+    queue_changed: bool,
+    /// The bytes of the shared values made since an hour last carried them.
+    charged: usize,
     /// Whether the emit may admit a baseline at the next hour.
     baseline: bool,
 }
@@ -147,13 +158,10 @@ impl TupleRows {
 }
 
 impl Projector {
-    pub fn new(format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
+    pub fn new(format: FormatVersion, _: CaptureMode) -> io::Result<Self> {
         Ok(Self {
             format,
-            naming: Views::new(&[TableId::Countries, TableId::CountryLinks], format, mode)?,
             fields: Fields {
-                country_tag: columns::field(TableId::Countries, "tag")?,
-                country_slot: columns::field(TableId::Countries, "canonical_slot")?,
                 opinion: columns::field(TableId::RelationOpinions, "opinion")?,
                 sample_hour: columns::field(TableId::SliceReads, "sample_hour")?,
             },
@@ -171,11 +179,13 @@ impl Projector {
             orphan_slices: BTreeMap::new(),
             orphans_pending: true,
             queue: None,
+            queue_changed: false,
+            charged: 0,
             baseline: true,
         })
     }
     /// Follows the hour's tables; whether the identities may have changed.
-    fn tables(&mut self, hour: &segments::Hour<'_>) -> io::Result<bool> {
+    fn tables(&mut self, hour: &segments::Hour<'_, World>) -> io::Result<bool> {
         let state = hour.state;
         let mut changed = [false; TABLE_COUNT];
         let mut reshaped = [false; TABLE_COUNT];
@@ -194,24 +204,11 @@ impl Projector {
                 || edits.truncated;
             self.shapes[index] = Some(shape);
         }
-        let countries = columns::changes(state, TableId::Countries)?;
-        let fields = [self.fields.country_tag, self.fields.country_slot];
-        let named = |&mask: &u64| {
-            fields
-                .iter()
-                .any(|&field| field >= 64 || mask >> field & 1 != 0)
-        };
         let naming = hour.starts
             || hour.opens
             || reshaped[TableId::Countries.index()]
             || changed[TableId::CountryLinks.index()]
-            || !countries.inserted.is_empty()
-            || !countries.deleted.is_empty()
-            || countries
-                .masks
-                .iter()
-                .chain(&countries.fill_masks)
-                .any(named);
+            || hour.world.countries()?.changed();
         self.opinions.update(hour, TableId::RelationOpinions)?;
         self.tuples.update(hour, TableId::RelationTuples)?;
         self.stamps.update(hour, self.fields.sample_hour)?;
@@ -380,6 +377,9 @@ impl Projector {
             let (pairs, unresolved) =
                 opinions::project(rows, |raw| ids.index_of(raw), &mut || Ok(()))?;
             let values = Values::new(pairs, unresolved, old.as_ref());
+            if old.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &values)) {
+                self.charged += values.heap();
+            }
             self.opinion_values
                 .insert(country, (Arc::clone(&values), true));
             projected.push((country, read, values));
@@ -421,6 +421,9 @@ impl Projector {
             spellings.push(self.spelling(state, row.type_id)?);
         }
         let rows = TupleRows::new(rows, spellings, old.as_ref());
+        if old.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &rows)) {
+            self.charged += rows.heap();
+        }
         self.tuple_values.insert(raw, (Arc::clone(&rows), true));
         Ok(rows)
     }
@@ -467,7 +470,12 @@ impl Projector {
             .collect()
     }
     /// The queue's census with `ids`' roles; None while the table is not complete.
-    fn census(&mut self, hour: &segments::Hour<'_>, ids: &Ids, naming: bool) -> io::Result<()> {
+    fn census(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        ids: &Ids,
+        naming: bool,
+    ) -> io::Result<()> {
         let table = TableId::IncomingDiplomaticActions;
         let state = hour.state;
         if !columns::complete(state, table) {
@@ -490,6 +498,7 @@ impl Projector {
             {
                 return Ok(());
             }
+            self.queue_changed = true;
             let queue = Arc::make_mut(queue);
             for &key in &edits.deleted_keys {
                 queue.set(key, None);
@@ -512,11 +521,12 @@ impl Projector {
                 queue.set(key, Some(proposal));
             }
             self.queue = Some(Arc::new(queue));
+            self.queue_changed = true;
         }
         Ok(())
     }
 }
-impl Operator for Projector {
+impl Operator<World> for Projector {
     type Output = Hour;
     fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
         // The emit admits a baseline only at its branch's first hour and after a refused one.
@@ -529,7 +539,11 @@ impl Operator for Projector {
         };
         Ok(())
     }
-    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+    fn hour(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        out: &mut dyn Sink<Hour>,
+    ) -> io::Result<()> {
         let state = hour.state;
         let naming = {
             let _cpu = replay_frame::cpu::scope("project", Some("diplomacy_state.tables"));
@@ -537,13 +551,17 @@ impl Operator for Projector {
         };
         if naming {
             let _cpu = replay_frame::cpu::scope("project", Some("diplomacy_state.identities"));
-            let frame = self.naming.advance(state, hour.manifest, true)?;
+            let frame = hour.world.identity(state)?;
+            let countries = hour.world.countries()?;
             self.ids = Joins::read(&frame).map(|joins| {
-                let canonical: Vec<u32> = frame
-                    .complete::<tables::Countries>()
-                    .map(|rows| rows.iter().map(|row| row.id).collect())
-                    .unwrap_or_default();
-                Arc::new(Ids::new(joins, canonical))
+                let canonical: Vec<u32> = if countries.countries_complete() {
+                    countries.iter().map(|country| country.id).collect()
+                } else {
+                    Vec::new()
+                };
+                let ids = Arc::new(Ids::new(joins, canonical));
+                self.charged += ids.heap();
+                ids
             });
             self.opinion_values.clear();
         }
@@ -559,6 +577,7 @@ impl Operator for Projector {
                 opinions: None,
                 tuples: None,
                 queue: QueueRead::Unavailable,
+                shared: std::mem::take(&mut self.charged),
             });
         };
         for raw in &self.opinions.touched {
@@ -642,6 +661,9 @@ impl Operator for Projector {
                         hour.hour,
                     ) =>
                 {
+                    if std::mem::take(&mut self.queue_changed) {
+                        self.charged += queue.heap();
+                    }
                     QueueRead::Fresh(Arc::clone(queue))
                 }
                 Some(_) => QueueRead::Carried,
@@ -656,6 +678,7 @@ impl Operator for Projector {
             opinions,
             tuples,
             queue,
+            shared: std::mem::take(&mut self.charged),
         })
     }
 }

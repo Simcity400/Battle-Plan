@@ -69,7 +69,10 @@ fn every_flag_reply_names_a_refused_selection() {
             let reply = (flags.load)(
                 &source,
                 "lease",
-                serde_json::json!({ "branchId": "1", "hour": 100, "tags": ["GER"], "size": size }),
+                serde_json::json!({
+                    "flags": [{ "keys": ["GER", "GER", "GER"], "reasons": [null, null, null] }],
+                    "size": size,
+                }),
                 &super::LoadContext {
                     content: Some(admitted.clone()),
                 },

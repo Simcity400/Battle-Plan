@@ -28,6 +28,7 @@ use ts_rs::TS;
 
 pub mod battle_titles;
 pub mod prepared;
+pub mod served;
 pub use battle_titles::ShipsSunkBattleTitles;
 
 pub struct ShipsSunk;
@@ -306,6 +307,83 @@ fn class_icon(catalogue: &Catalogue, spelling: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Class `token` resolved from `literal`: its spelling, name, icon and refusals.
+fn class_info(
+    token: u32,
+    literal: Option<String>,
+    cat: Option<&Catalogue>,
+    units: Option<&installed_content_core::unit_leader::SubUnits>,
+) -> (ShipClassInfo, Refusals) {
+    let mut refused = Refusals::default();
+    let mut key = literal;
+    let mut name = None;
+    let mut icon = None;
+    if let (Some(cat), Some(units), Some(literal)) = (cat, units, &key) {
+        // Resolve the runtime token against the unit database;
+        // matching preserves its first registered spelling.
+        match units.token_name(&installed_content_core::tokens::Token::c_str(literal.as_bytes())) {
+            Ok(spelling) if !spelling.is_empty() => {
+                let spelling = spelling.to_owned();
+                // Distinguish a defined name from the localiser's key echo
+                // so the row can fall back to its recorded class name.
+                if cat.localisation.get(&spelling).is_some() {
+                    name = cat.localised(&spelling, View::Plain);
+                }
+                // Request the definition's medium unit icon using its registered
+                // spelling with the standard sprite prefix and suffix.
+                let sprite_name = format!("GFX_unit_{spelling}_icon_medium");
+                match cat.sprites.find(&sprite_name) {
+                    Ok(Some(sprite)) => {
+                        let result = cat
+                            .gui_decode
+                            .as_ref()
+                            .map_err(dashboard_core::invalid)
+                            .and_then(|decode| {
+                                catalogue::sprite_frame_png(
+                                    &cat.content.layers,
+                                    sprite,
+                                    *decode,
+                                    0,
+                                    ICON_EDGE,
+                                )
+                            });
+                        match result {
+                            Ok(image) => icon = Some(image),
+                            Err(reason) => refused.note(reason.to_string(), &sprite_name),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(reason) => refused.note(reason.to_string(), &sprite_name),
+                }
+                if name.is_none() {
+                    refused.note("class localisation is unavailable", &spelling);
+                }
+                key = Some(spelling);
+            }
+            Ok(_) => refused.note("recorded class is absent from common/units", literal),
+            Err(reason) => refused.note(reason, literal),
+        }
+    } else if key.is_none() {
+        refused.note(
+            "class is absent from LexicalTokens",
+            format!("token {token}"),
+        );
+    }
+    (
+        ShipClassInfo {
+            token,
+            key,
+            name,
+            icon,
+        },
+        refused,
+    )
+}
+
+/// Each class resolved once per content binding, by token and literal, with its notes.
+#[derive(Default)]
+pub struct ClassMemo(BTreeMap<(u32, Option<String>), catalogue::Drawn<(ShipClassInfo, Refusals)>>);
+
 pub fn named_with(
     scan: &sinkings::Scanned,
     ships: &[sinkings::ShipEvent],
@@ -313,6 +391,20 @@ pub fn named_with(
     content: Option<&NameContent>,
     retention: Option<&sinkings::Retention>,
     flag: &AtomicBool,
+) -> io::Result<Named> {
+    named_memo(scan, ships, cat, content, retention, flag, None)
+}
+
+/// [`named_with`] resolving each class through `memo`, when given, kept for one content binding.
+#[allow(clippy::too_many_arguments)]
+fn named_memo(
+    scan: &sinkings::Scanned,
+    ships: &[sinkings::ShipEvent],
+    cat: Option<&Catalogue>,
+    content: Option<&NameContent>,
+    retention: Option<&sinkings::Retention>,
+    flag: &AtomicBool,
+    mut memo: Option<&mut ClassMemo>,
 ) -> io::Result<Named> {
     #[cfg(test)]
     sinkings::work::WORK.with(|work| work.borrow_mut().names += ships.len());
@@ -331,67 +423,19 @@ pub fn named_with(
     }
     for token in tokens {
         cancelled(flag)?;
-        let mut key = scan.tokens.get(&token).cloned();
-        let mut name = None;
-        let mut icon = None;
-        if let (Some(cat), Some(units), Some(literal)) = (cat, units, &key) {
-            // Resolve the runtime token against the unit database;
-            // matching preserves its first registered spelling.
-            match units.token_name(&installed_content_core::tokens::Token::c_str(literal.as_bytes())) {
-                Ok(spelling) if !spelling.is_empty() => {
-                    let spelling = spelling.to_owned();
-                    // Distinguish a defined name from the localiser's key echo
-                    // so the row can fall back to its recorded class name.
-                    if cat.localisation.get(&spelling).is_some() {
-                        name = cat.localised(&spelling, View::Plain);
-                    }
-                    // Request the definition's medium unit icon using its registered
-                    // spelling with the standard sprite prefix and suffix.
-                    let sprite_name = format!("GFX_unit_{spelling}_icon_medium");
-                    match cat.sprites.find(&sprite_name) {
-                        Ok(Some(sprite)) => {
-                            let result = cat
-                                .gui_decode
-                                .as_ref()
-                                .map_err(dashboard_core::invalid)
-                                .and_then(|decode| {
-                                    catalogue::sprite_frame_png(
-                                        &cat.content.layers,
-                                        sprite,
-                                        *decode,
-                                        0,
-                                        ICON_EDGE,
-                                    )
-                                });
-                            match result {
-                                Ok(image) => icon = Some(image),
-                                Err(reason) => refused.note(reason.to_string(), &sprite_name),
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(reason) => refused.note(reason.to_string(), &sprite_name),
-                    }
-                    if name.is_none() {
-                        refused.note("class localisation is unavailable", &spelling);
-                    }
-                    key = Some(spelling);
-                }
-                Ok(_) => refused.note("recorded class is absent from common/units", literal),
-                Err(reason) => refused.note(reason, literal),
-            }
-        } else if key.is_none() {
-            refused.note(
-                "class is absent from LexicalTokens",
-                format!("token {token}"),
-            );
-        }
+        let literal = scan.tokens.get(&token).cloned();
+        let (info, noted) = match memo.as_deref_mut() {
+            Some(memo) => memo
+                .0
+                .entry((token, literal.clone()))
+                .or_insert_with(|| catalogue::Drawn::new(|| class_info(token, literal, cat, units)))
+                .get()
+                .clone(),
+            None => class_info(token, literal, cat, units),
+        };
+        refused.merge(&noted);
         out.class_indices.insert(token, out.classes.len() as u32);
-        out.classes.push(ShipClassInfo {
-            token,
-            key,
-            name,
-            icon,
-        });
+        out.classes.push(info);
     }
     let mut indices = BTreeMap::<String, u32>::new();
     for ship in ships {
@@ -654,6 +698,7 @@ pub fn cached_names(
 impl Product for ShipsSunk {
     const KEY: &'static str = "ships-sunk";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = BranchParams;
     type Reply = ShipsSunkReply;
 
@@ -693,6 +738,7 @@ impl Product for ShipsSunk {
 #[cfg(test)]
 mod tests;
 
+/// The names of `ships` under preparation's content outcome, each class resolved once.
 pub fn prepared_names(
     scan: &sinkings::Scanned,
     ships: &[sinkings::ShipEvent],
@@ -700,11 +746,20 @@ pub fn prepared_names(
     content: Option<&NameContent>,
     retention: Option<&sinkings::Retention>,
     flag: &AtomicBool,
+    classes: &mut ClassMemo,
 ) -> io::Result<Named> {
     match cat {
-        Ok(cat) => named_with(scan, ships, Some(cat), content, retention, flag),
+        Ok(cat) => named_memo(
+            scan,
+            ships,
+            Some(cat),
+            content,
+            retention,
+            flag,
+            Some(classes),
+        ),
         Err(reason) => {
-            let mut names = named_with(scan, ships, None, None, None, flag)?;
+            let mut names = named_memo(scan, ships, None, None, None, flag, Some(classes))?;
             names.refuse_content(reason);
             Ok(names)
         }

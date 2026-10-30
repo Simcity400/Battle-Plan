@@ -1,7 +1,8 @@
 import { useMemo, useRef } from 'react';
 import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { flagReadMetadata, flagReadSpec } from './countryFlagsAt.ts';
+import { flagReadMetadata } from './countryFlagsAt.ts';
+import { useCountryFlagsRead } from './countryFlags.ts';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
 import { FAILED_FACT, MAX_NAME_HOURS } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
@@ -61,7 +62,6 @@ const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
   },
   held: heldFacts(style => style),
 };
-const FLAGS = flagReadSpec('panel');
 /** What a country's name reads while its read is still answering, as other name reads say it. */
 export const NAME_LOADING = 'Loading name…';
 
@@ -107,7 +107,7 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
     return wanted.filter(item => visible.has(item.tag));
   }, [wanted, flagKey]);
   const flagKeys = useMemo(() => new Map(flagWanted.map(item => [item.tag, nameKey(item.hour, item.tag)])), [flagWanted]);
-  const flags = useCountryFactsRead(client, track, flagWanted, active, FLAGS, plan.maxHours);
+  const flags = useCountryFlagsRead(client, track, flagWanted, active);
   const heldKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : '';
   const shown = useRef<{ key: string; client: DashboardClient; looks: Map<string, Look>; segments: Map<string, number> }>({ key: heldKey, client, looks: new Map(), segments: new Map() });
   if (shown.current.key !== heldKey || shown.current.client !== client) shown.current = { key: heldKey, client, looks: new Map(), segments: new Map() };

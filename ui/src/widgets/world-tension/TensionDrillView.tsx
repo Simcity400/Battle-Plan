@@ -71,7 +71,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
   const visibleWanted = tensionVisibleParts(at?.parts ?? [], visible).flatMap(part => {
     const sample = samples.get(part.key); return sample ? [sample] : [];
   });
-  const flags = useCountryFlagsAt(runtime.client, track, visibleWanted, active, 'panel', maxHours);
+  const flags = useCountryFlagsAt(runtime.client, track, visibleWanted, active);
   const colours = useMemo(() => {
     const known = [...samples].sort(([a], [b]) => a.localeCompare(b)).flatMap(([key, sample]) => {
       const style = styles.get(nameKey(sample.hour, sample.tag));

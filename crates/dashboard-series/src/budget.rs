@@ -21,6 +21,10 @@ impl Budget {
         self.used.load(Ordering::Relaxed)
     }
 
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
     pub fn admit(&self, bytes: usize) -> io::Result<Lease<'_>> {
         self.reserve(bytes)?;
         Ok(Lease {
@@ -71,6 +75,11 @@ pub struct Slab<'a, T> {
 }
 
 impl<'a, T> Slab<'a, T> {
+    /// The bytes it holds of its budget.
+    pub fn held(&self) -> usize {
+        self.lease.bytes
+    }
+
     pub fn new(budget: &'a Budget, capacity: usize) -> io::Result<Self> {
         let bytes = capacity
             .checked_mul(size_of::<T>())

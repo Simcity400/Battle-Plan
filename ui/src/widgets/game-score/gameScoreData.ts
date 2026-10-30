@@ -2,7 +2,7 @@ import { runAt, isOrderedSpans, runIndexAt, spansCovered } from '../../charts/se
 import type { Span } from '../../charts/series';
 import type { CountryRaceEntry } from '../../charts/race/countryRace';
 import type { CountryFlagLook } from '../../components/CountryFlag';
-import type { FlagRead } from '../../dashboard/countryFlagsAt';
+import type { FlagRead } from '../../dashboard/countryFlags';
 import { flagReadMetadata } from '../../dashboard/countryFlagsAt.ts';
 import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import type { FAILED_FACT } from '../../dashboard/countryFacts';

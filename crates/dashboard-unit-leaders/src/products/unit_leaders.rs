@@ -67,7 +67,7 @@ use replay_frame::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::{Cell, OnceCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
@@ -85,8 +85,10 @@ use ts_rs::TS;
 
 pub struct UnitLeaders;
 pub mod block;
+pub mod columnar;
 pub mod portraits;
 pub mod prepared;
+pub mod served;
 pub const MAX_REPLY_BYTES: usize = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
 // Portrait tokens map army 0x289d to 1 and navy 0x289e to 2.
 const PORTRAIT_ARMY: u32 = 1;
@@ -744,7 +746,21 @@ struct HourWorld<'a> {
 /// ([`Kept::blocked`]): the hour is then observed on its whole frame.
 pub(crate) struct Kept<'a> {
     reduced: &'a dyn TableChanges,
+    /// Whether the frame holds every leader's character and the tokens spelling its template
+    /// tag as the whole frame does, although `reduced` names their tables.
+    roster: bool,
     blocked: Cell<bool>,
+    /// What a projection's frame holds too little of for the hour's verdicts; None where a
+    /// blocked hour is observed on its whole frame instead.
+    wanted: Option<RefCell<Wanted>>,
+}
+
+/// What a projection's frame held too little of: each declared read a blocked evaluation
+/// made that differs from the whole frame, and whether a verdict needs every table whole.
+#[derive(Default)]
+pub(crate) struct Wanted {
+    pub(crate) reads: Vec<TableRead>,
+    pub(crate) whole: bool,
 }
 
 /// The queries and table fields that defeat a visibility proof. Only a
@@ -812,8 +828,26 @@ impl<'a> Kept<'a> {
     pub(crate) fn new(reduced: &'a dyn TableChanges) -> Self {
         Self {
             reduced,
+            roster: false,
             blocked: Cell::new(false),
+            wanted: None,
         }
+    }
+
+    /// [`Self::new`] for a projection's frame, holding the leaders' identity rows whole where
+    /// `roster` says ([`Self::roster`]) and noting what it holds too little of
+    /// ([`Self::wanted`]).
+    pub(crate) fn projected(reduced: &'a dyn TableChanges, roster: bool) -> Self {
+        Self {
+            roster,
+            wanted: Some(RefCell::default()),
+            ..Self::new(reduced)
+        }
+    }
+
+    /// What a projection's frame held too little of for the hour's verdicts.
+    pub(crate) fn wanted(&self) -> Wanted {
+        self.wanted.as_ref().map(RefCell::take).unwrap_or_default()
     }
 
     /// Whether the hour needs its whole frame.
@@ -827,13 +861,31 @@ impl<'a> Kept<'a> {
         }
     }
 
+    /// [`Self::block`] for a verdict that needs every table whole.
+    fn block_whole(&self, reason: &'static str) {
+        if let Some(wanted) = &self.wanted {
+            wanted.borrow_mut().whole = true;
+        }
+        self.block(reason);
+    }
+
+    /// [`Self::block`] for a template visibility read on identity tables not kept whole.
+    fn block_identity(&self) {
+        if let Some(wanted) = &self.wanted {
+            wanted
+                .borrow_mut()
+                .reads
+                .extend([TableId::Characters, TableId::LexicalTokens].map(TableRead::all));
+        }
+        self.block("leaders.reject.identity");
+    }
+
     /// The first evaluation that requires the whole frame, with its
     /// differing input tables named separately in measured CPU labels.
     fn block_inputs(&self, inputs: &Inputs, frame: &DecodedFrame) {
-        if self.blocked() {
+        if self.blocked() && self.wanted.is_none() {
             return;
         }
-        self.block("leaders.reject.kept-inputs");
         let since = Since::span(
             frame.branch,
             frame.hour,
@@ -841,6 +893,21 @@ impl<'a> Kept<'a> {
             Some(frame),
             self.reduced,
         );
+        if let Some(wanted) = &self.wanted {
+            let mut wanted = wanted.borrow_mut();
+            for key in inputs.keys() {
+                match key.dependence() {
+                    Some(reads) => wanted
+                        .reads
+                        .extend(reads.into_iter().filter(|read| since.changed(read))),
+                    None => wanted.whole = true,
+                }
+            }
+        }
+        if self.blocked() {
+            return;
+        }
+        self.block("leaders.reject.kept-inputs");
         rejected_inputs(inputs, &since);
     }
 
@@ -862,9 +929,10 @@ impl<'a> Kept<'a> {
     /// (`World::decoded_leader_visibility`: its character and the tokens
     /// spelling its template tag) are kept whole.
     fn identity_whole(&self) -> bool {
-        [TableId::Characters, TableId::LexicalTokens]
-            .into_iter()
-            .all(|table| matches!(self.reduced.table(table), TableChange::Same))
+        self.roster
+            || [TableId::Characters, TableId::LexicalTokens]
+                .into_iter()
+                .all(|table| matches!(self.reduced.table(table), TableChange::Same))
     }
 }
 
@@ -1007,7 +1075,7 @@ impl Reuse<'_> {
         // observed on its whole frame.
         if let Some(kept) = hour.kept {
             if check_reuse() {
-                kept.block("leaders.reject.check-mode");
+                kept.block_whole("leaders.reject.check-mode");
             } else if !kept.reads_whole(&inputs, frame, frame.hour) {
                 kept.block_inputs(&inputs, frame);
             }
@@ -1090,7 +1158,7 @@ fn visible_reusing(
         if let Some(kept) = hour.kept
             && !kept.identity_whole()
         {
-            kept.block("leaders.reject.identity");
+            kept.block_identity();
             return Err(None);
         }
         *read = Some(VisibilityRead {
@@ -1115,7 +1183,7 @@ fn visible_reusing(
             None if hour.kept.is_some() => {
                 hour.kept
                     .expect("kept frame")
-                    .block("leaders.reject.no-reuse");
+                    .block_whole("leaders.reject.no-reuse");
                 return Err(None);
             }
             None => Evaluator::new(hour.get()?, None).decide_leader_visibility(
@@ -1140,6 +1208,37 @@ pub struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<politics_content::PoliticsContent>,
     leaders: installed_content_core::unit_leader::Leaders,
+}
+
+#[derive(Clone)]
+pub struct Binding {
+    pub content: Option<Arc<Content>>,
+    pub errors: Vec<String>,
+    pub catalogue: bool,
+}
+
+impl Binding {
+    pub fn load(source: &Source, context: &LoadContext) -> Self {
+        let catalogue = context
+            .content()
+            .and_then(|options| catalogue::catalogue(source, options));
+        let bound = catalogue.is_ok();
+        let mut errors: Vec<_> = catalogue
+            .as_ref()
+            .err()
+            .map(|error| format!("Leader content unavailable: {error}"))
+            .into_iter()
+            .collect();
+        let content = Content::for_catalogue(source, context, catalogue.ok());
+        if let Err(error) = &content {
+            errors.push(format!("Leader content unavailable: {error}"));
+        }
+        Self {
+            content: content.ok().flatten().map(Arc::new),
+            errors,
+            catalogue: bound,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1321,9 +1420,14 @@ struct IdentityChanges {
 }
 
 impl IdentityChanges {
-    fn read(changes: &FrameChanges) -> Option<Self> {
+    fn read(changes: &dyn TableChanges) -> Option<Self> {
         let keys = |table: TableId| {
-            changes.rows(table).map(|(changed, deleted)| {
+            let rows = match changes.table(table) {
+                TableChange::Same => Some((&[][..], &[][..])),
+                TableChange::Rows(changed, deleted) => Some((changed, deleted)),
+                TableChange::Fields(_) | TableChange::Any => None,
+            };
+            rows.map(|(changed, deleted)| {
                 let mut keys: Vec<u128> = changed
                     .iter()
                     .map(|row| row.key)
@@ -1347,7 +1451,10 @@ impl IdentityChanges {
     /// Carry `state`'s identity reads from epoch `before`, the hour before's
     /// tables, to this hour's when none of the rows they read changed: the
     /// leader's character, its portrait holder, and the tokens spelling its
-    /// name and template tag. Returns how many reads it carried.
+    /// name and template tag. Returns how many reads it carried. `lazy` carries
+    /// them from any earlier epoch: a projection reads a leader at every hour
+    /// one of those rows changes.
+    #[allow(clippy::too_many_arguments)]
     fn renew(
         &self,
         state: &mut LeaderState,
@@ -1356,8 +1463,12 @@ impl IdentityChanges {
         before: u64,
         epoch: u64,
         visibility_epoch: Option<u64>,
+        lazy: bool,
     ) -> usize {
         if Self::has(&self.characters, Some(row.character_id)) {
+            if lazy {
+                Self::forget(state);
+            }
             return 0;
         }
         // Unchanged this hour, so the row the earlier reads read.
@@ -1367,39 +1478,56 @@ impl IdentityChanges {
                 .map(|at| &rows[at])
         });
         let mut renewed = 0;
-        if let Some(read) = &mut state.visibility
-            && visibility_epoch.is_some()
-            && read.key
-                == (
-                    Some(before),
-                    row.character_id,
-                    row.visibility_choice,
-                    row.template_visibility,
+        if let Some(read) = &mut state.visibility {
+            if visibility_epoch.is_some()
+                && read.key.0.is_some_and(|at| at == before || lazy)
+                && (read.key.1, read.key.2, read.key.3)
+                    == (
+                        row.character_id,
+                        row.visibility_choice,
+                        row.template_visibility,
+                    )
+                && !Self::has(
+                    &self.tokens,
+                    character
+                        .filter(|character| character.template_present != 0)
+                        .map(|character| character.template_tag),
                 )
-            && !Self::has(
-                &self.tokens,
-                character
-                    .filter(|character| character.template_present != 0)
-                    .map(|character| character.template_tag),
-            )
-        {
-            read.key.0 = visibility_epoch;
-            renewed += 1;
+            {
+                read.key.0 = visibility_epoch;
+                renewed += 1;
+            } else if lazy {
+                read.key.0 = None;
+            }
         }
-        if let Some(last) = &mut state.last_read
-            && last.person_epoch == before
-            && last.row.character_id == row.character_id
-            && last.row.kind == row.kind
-            && !Self::has(&self.portraits, Some(row.character_id))
-            && !Self::has(
-                &self.tokens,
-                character.and_then(|character| u32::try_from(character.name_token_id).ok()),
-            )
-        {
-            last.person_epoch = epoch;
-            renewed += 1;
+        if let Some(last) = &mut state.last_read {
+            if (last.person_epoch == before || lazy)
+                && last.row.character_id == row.character_id
+                && last.row.kind == row.kind
+                && !Self::has(&self.portraits, Some(row.character_id))
+                && !Self::has(
+                    &self.tokens,
+                    character.and_then(|character| u32::try_from(character.name_token_id).ok()),
+                )
+            {
+                last.person_epoch = epoch;
+                renewed += 1;
+            } else if lazy {
+                last.person_epoch = u64::MAX;
+            }
         }
         renewed
+    }
+
+    /// Mark `state`'s identity reads as read before a change of their rows: the next read
+    /// makes them again.
+    fn forget(state: &mut LeaderState) {
+        if let Some(read) = &mut state.visibility {
+            read.key.0 = None;
+        }
+        if let Some(last) = &mut state.last_read {
+            last.person_epoch = u64::MAX;
+        }
     }
 }
 
@@ -1420,6 +1548,18 @@ struct LeaderState {
     admitted: bool,
     last_run: Option<usize>,
     last_known_run: Option<usize>,
+}
+
+fn invalidate_leader_reads(
+    leaders: &mut [LeaderState],
+    people: &mut HashMap<(u32, u8), PersonRead>,
+) {
+    people.clear();
+    for state in leaders {
+        state.last_read = None;
+        state.visibility = None;
+        state.evaluation = None;
+    }
 }
 
 impl LeaderState {
@@ -1525,19 +1665,10 @@ fn training_rows(
     &rows[first..last]
 }
 
-fn trait_slice<'a>(
-    rows: &'a [UnitLeaderTraitRow],
-    reference: u64,
-    cursor: &mut usize,
-) -> &'a [UnitLeaderTraitRow] {
-    while *cursor < rows.len() && rows[*cursor].leader_reference < reference {
-        *cursor += 1;
-    }
-    let first = *cursor;
-    while *cursor < rows.len() && rows[*cursor].leader_reference == reference {
-        *cursor += 1;
-    }
-    &rows[first..*cursor]
+fn trait_slice<'a>(rows: &'a [UnitLeaderTraitRow], reference: u64) -> &'a [UnitLeaderTraitRow] {
+    let first = rows.partition_point(|row| row.leader_reference < reference);
+    let last = rows.partition_point(|row| row.leader_reference <= reference);
+    &rows[first..last]
 }
 
 /// The tables a scan decodes: its own, and the trigger kit leader visibility
@@ -1610,6 +1741,13 @@ struct NavalSource {
 #[allow(clippy::type_complexity)]
 pub(crate) struct Scan {
     reply: UnitLeadersReply,
+    #[serde(skip)]
+    projection: Option<columnar::Work>,
+    #[serde(skip)]
+    validity: Option<(bool, Option<String>)>,
+    /// Kept with the scan: a columnar preparation resumed from it stitches as it would have.
+    #[serde(default)]
+    projection_break: Option<i32>,
     frontier: Option<i32>,
     materialized: Option<i32>,
     #[serde(skip)]
@@ -1657,6 +1795,9 @@ pub(crate) struct Scan {
     leader_indices: HashMap<u64, usize>,
     leaders: Vec<LeaderState>,
     stored_runs: Vec<StoredRun>,
+    /// Each stored run's progress as its event writes it, where a projection serialized it.
+    #[serde(default)]
+    run_progress: HashMap<usize, Arc<[u8]>>,
     #[serde(skip)]
     row_indices: Vec<Option<(u64, usize)>>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
@@ -1723,6 +1864,17 @@ pub(crate) struct Scan {
     /// complete), and so the battles.
     #[serde(skip)]
     walked: bool,
+}
+
+/// What a projected step changes of the scan before a kept frame can stop it
+/// ([`Scan::resume`]).
+#[derive(Clone)]
+struct Mark {
+    frontier: Option<i32>,
+    materialized: Option<i32>,
+    battle_frontier: Option<i32>,
+    validity: Option<(bool, Option<String>)>,
+    commands_continuous: bool,
 }
 
 /// One kind's combats at an hour, each with its sides' commanders.
@@ -1950,6 +2102,12 @@ impl Scan {
                 .is_some_and(|last| last.checked_add(1) == Some(hour))
         );
         self.frontier = Some(hour);
+        if let Some(work) = &mut self.projection {
+            work.lazy = true;
+            if self.walked {
+                work.advance(hour);
+            }
+        }
     }
 
     /// Current bindings only; closed leaders and commands are never visited here.
@@ -1957,6 +2115,18 @@ impl Scan {
         let (Some(at), Some(through)) = (self.materialized, self.frontier) else {
             return;
         };
+        if let Some(work) = &mut self.projection {
+            if work.lazy {
+                for &index in &work.live {
+                    let state = &mut self.leaders[index];
+                    state.visible_hour = Some(through);
+                    if let Some(run) = state.last_run {
+                        self.stored_runs[run].run.last_hour = through;
+                    }
+                }
+                work.lazy = false;
+            }
+        }
         if at == through {
             return;
         }
@@ -2016,6 +2186,10 @@ impl Scan {
             .map(|b| b.first_hour)
             .min()
             .ok_or_else(|| dashboard_core::invalid("Branch has no recorded frames"))?;
+        Ok(Self::at(replay.format, branch, start))
+    }
+
+    fn at(format: FormatVersion, branch: u64, start: i32) -> Self {
         let params = UnitLeadersParams {
             branch_id: branch.to_string(),
             selection: LeaderSelection::All,
@@ -2033,7 +2207,7 @@ impl Scan {
             selection_tags: None,
             preparing: Vec::new(),
             results_missing: RESULTS_MISSING.into(),
-            navy_commands_missing: if replay.format.field_gaps(TableId::Fleets).next().is_none() {
+            navy_commands_missing: if format.field_gaps(TableId::Fleets).next().is_none() {
                 String::new()
             } else {
                 NAVY_COMMANDS_MISSING.into()
@@ -2041,10 +2215,10 @@ impl Scan {
             warnings: Vec::new(),
         };
 
-        Ok(Self {
+        Self {
             reply,
             ..Default::default()
-        })
+        }
     }
     #[cfg(test)]
     fn observe(
@@ -2084,6 +2258,30 @@ impl Scan {
         kept: Option<&Kept<'_>>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<bool> {
+        self.observe_step(
+            decoded,
+            replay.format,
+            params,
+            content,
+            changes,
+            tables,
+            kept,
+            admit,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe_step(
+        &mut self,
+        decoded: &DecodedFrame,
+        format: FormatVersion,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+        changes: &FrameChanges,
+        tables: &dyn TableChanges,
+        kept: Option<&Kept<'_>>,
+        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+    ) -> io::Result<bool> {
         // Check mode reads every reused input again, which needs the whole
         // frame.
         if kept.is_some() && content.is_some() && check_reuse() {
@@ -2114,7 +2312,28 @@ impl Scan {
                     .any(|row| row.visibility_choice != 0 || row.template_visibility != 0)
             });
         }
-        let steady = self.commands_continuous
+        let validity = (
+            changes.slot_read[TableId::UnitLeaders.index()]
+                && decoded.complete::<tables::UnitLeaders>().is_ok()
+                && decoded.complete::<tables::Countries>().is_ok()
+                && decoded.complete::<tables::CountryLinks>().is_ok(),
+            (self.scoped_visibility && content.is_some())
+                .then(|| core_gap(decoded))
+                .flatten(),
+        );
+        // An hour a kept frame stopped is observed again: not a gap.
+        let validity_changed = self.validity.as_ref().is_some_and(|old| *old != validity)
+            || self
+                .frontier
+                .is_some_and(|at| at != decoded.hour && at.checked_add(1) != Some(decoded.hour));
+        if validity_changed {
+            invalidate_leader_reads(&mut self.leaders, &mut self.last_people);
+            self.evaluated.clear();
+            self.read_gap = None;
+        }
+        self.validity = Some(validity);
+        let steady = !validity_changed
+            && self.commands_continuous
             && !holders_changed
             && self
                 .frontier
@@ -2123,7 +2342,7 @@ impl Scan {
             && !reads.leaders.iter().any(&moved)
             && !(career && reads.commands.iter().any(&moved));
         if steady {
-            let (land, navy) = battle_tables(replay.format, decoded);
+            let (land, navy) = battle_tables(format, decoded);
             let [land_read, navy_read] = &reads.combats;
             // Only the commanders and the combats themselves are read of the
             // combat details.
@@ -2147,12 +2366,12 @@ impl Scan {
                     self.visibility_carries(decoded, content, since.as_ref(), kept)
                 })
             {
-                if !combats && !results {
+                if available && !combats && !results {
                     self.advance(decoded.hour);
                     return Ok(true);
                 }
                 if career && available {
-                    self.observe_battles(decoded, replay, land, navy);
+                    self.observe_battles(decoded, format, land, navy, tables);
                     return Ok(true);
                 }
             }
@@ -2164,12 +2383,13 @@ impl Scan {
         self.read_mask = Some(mask);
         self.observe_rows(
             decoded,
-            replay,
+            format,
             params,
             content,
-            Some(changes),
+            Some(tables),
             since.as_ref(),
             kept,
+            None,
             admit,
         )
     }
@@ -2185,9 +2405,10 @@ impl Scan {
     fn observe_battles(
         &mut self,
         decoded: &DecodedFrame,
-        replay: &Replay,
+        format: FormatVersion,
         land: Option<&[LandCombatDetailsRow]>,
         navy: Option<&[NavalCombatDetailsRow]>,
+        tables: &dyn TableChanges,
     ) {
         let _cpu = ::replay_frame::cpu::scope_phase("leaders:battles");
         let hour = decoded.hour;
@@ -2207,14 +2428,21 @@ impl Scan {
                 *at = hour.saturating_sub(1);
             }
         }
-        let visits = record_results(
-            replay.format,
-            decoded,
-            &mut self.outcomes,
-            &mut self.naval_sources,
-            &mut self.results_recorded,
-            &mut self.refusals,
-        );
+        if let Some(work) = &mut self.projection {
+            work.results(format, decoded, tables);
+        }
+        let visits = if self.projection.is_none() {
+            record_results(
+                format,
+                decoded,
+                &mut self.outcomes,
+                &mut self.naval_sources,
+                &mut self.results_recorded,
+                &mut self.refusals,
+            )
+        } else {
+            0
+        };
         #[cfg(test)]
         {
             self.work.row_visits += visits;
@@ -2222,20 +2450,27 @@ impl Scan {
         #[cfg(not(test))]
         let _ = visits;
         if self.walked {
-            let visits = record_battles(
-                replay.format,
-                decoded,
-                land,
-                navy,
-                visible_at,
-                &self.leaders,
-                &self.leader_indices,
-                &self.naval_sources,
-                &mut self.battle_hours,
-                &mut self.battle_indices,
-                &mut self.previous_combats,
-                &mut self.pending_bytes,
-            );
+            if let Some(work) = &mut self.projection {
+                work.battles(format, decoded, tables, &self.leader_indices);
+            }
+            let visits = if self.projection.is_none() {
+                record_battles(
+                    format,
+                    decoded,
+                    land,
+                    navy,
+                    visible_at,
+                    &self.leaders,
+                    &self.leader_indices,
+                    &self.naval_sources,
+                    &mut self.battle_hours,
+                    &mut self.battle_indices,
+                    &mut self.previous_combats,
+                    &mut self.pending_bytes,
+                )
+            } else {
+                0
+            };
             #[cfg(test)]
             {
                 self.work.row_visits += visits;
@@ -2243,10 +2478,18 @@ impl Scan {
             #[cfg(not(test))]
             let _ = visits;
         }
-        self.combats = [land.map(land_commanders), navy.map(naval_commanders)];
+        if self.projection.is_none() {
+            self.combats = [land.map(land_commanders), navy.map(naval_commanders)];
+        }
         // The careers, commands and coverage of the hour before go on
         // through this one; this hour's combat reads are already its own.
         self.frontier = Some(hour);
+        if let Some(work) = &mut self.projection {
+            work.lazy = true;
+            if self.walked {
+                work.advance(hour);
+            }
+        }
         if self.walked {
             self.battle_frontier = Some(hour);
         }
@@ -2422,6 +2665,27 @@ impl Scan {
         carried
     }
 
+    fn mark(&self) -> Mark {
+        Mark {
+            frontier: self.frontier,
+            materialized: self.materialized,
+            battle_frontier: self.battle_frontier,
+            validity: self.validity.clone(),
+            commands_continuous: self.commands_continuous,
+        }
+    }
+
+    /// Back at `mark`, to observe again with every leader read the hour a kept frame
+    /// stopped: what that step carried, it carried through the hour before.
+    fn resume(&mut self, mark: Mark) {
+        self.frontier = mark.frontier;
+        self.materialized = mark.materialized;
+        self.battle_frontier = mark.battle_frontier;
+        self.validity = mark.validity;
+        self.commands_continuous = mark.commands_continuous;
+        self.read_mask = None;
+    }
+
     /// The per-hour oracle's step: every hour read, every evaluation run.
     #[cfg(any(test, feature = "test-support"))]
     fn observe_read(
@@ -2432,8 +2696,18 @@ impl Scan {
         content: Option<&Content>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<()> {
-        self.observe_rows(decoded, replay, params, content, None, None, None, admit)
-            .map(drop)
+        self.observe_rows(
+            decoded,
+            replay.format,
+            params,
+            content,
+            None,
+            None,
+            None,
+            None,
+            admit,
+        )
+        .map(drop)
     }
 
     /// The per-hour oracle and changed-frame preparation share this exact
@@ -2449,17 +2723,21 @@ impl Scan {
     fn observe_rows(
         &mut self,
         decoded: &DecodedFrame,
-        replay: &Replay,
+        format: FormatVersion,
         params: &UnitLeadersParams,
         content: Option<&Content>,
-        changes: Option<&FrameChanges>,
+        changes: Option<&dyn TableChanges>,
         since: Option<&Since<'_>>,
         kept: Option<&Kept<'_>>,
+        selected: Option<&[usize]>,
         admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
     ) -> io::Result<bool> {
         let _cpu = ::replay_frame::cpu::scope_phase("leaders:rows");
-        self.active_commands.clear();
-        self.commands_continuous = true;
+        // A projection binds its commands itself ([`columnar::Work::bind_commands`]).
+        if self.projection.is_none() {
+            self.active_commands.clear();
+            self.commands_continuous = true;
+        }
         self.evaluated.clear();
         self.read_gap = None;
         let reusing = self.reuse_evaluations;
@@ -2478,9 +2756,11 @@ impl Scan {
         };
         let Self {
             reply,
+            projection,
             leader_indices,
             leaders,
             stored_runs,
+            run_progress,
             row_indices,
             people,
             last_people,
@@ -2525,14 +2805,27 @@ impl Scan {
             ..
         } = self;
         let hour = decoded.hour;
-        let visits = record_results(
-            replay.format,
-            decoded,
-            outcomes,
-            naval_sources,
-            results_recorded,
-            refusals,
-        );
+        let full = selected.is_none();
+        if let Some(work) = projection {
+            if full {
+                work.live.clear();
+                work.failing.clear();
+            }
+            work.lazy = !full;
+            work.results(format, decoded, changes.expect("projected table changes"));
+        }
+        let visits = if projection.is_none() {
+            record_results(
+                format,
+                decoded,
+                outcomes,
+                naval_sources,
+                results_recorded,
+                refusals,
+            )
+        } else {
+            0
+        };
         #[cfg(test)]
         {
             work.row_visits += visits;
@@ -2566,25 +2859,28 @@ impl Scan {
             (characters.is_some() && lexical.is_some()).then_some(*identity_epoch);
         // A changed identity table changes few rows: a leader whose own rows
         // are not among them keeps the identity it read the hour before.
+        let lazy = projection.is_some();
         let identity_changes = changes
-            .filter(|_| *identity_epoch != identity_before)
+            .filter(|_| lazy || *identity_epoch != identity_before)
             .and_then(IdentityChanges::read);
         // The hour's rereads of recorded inputs, shared by every evaluation.
         let mut rereads = Rereads::new();
-        let (land, navy) = battle_tables(replay.format, decoded);
-        *combats = [land.map(land_commanders), navy.map(naval_commanders)];
+        let (land, navy) = battle_tables(format, decoded);
+        if projection.is_none() {
+            *combats = [land.map(land_commanders), navy.map(naval_commanders)];
+        }
         for (i, known) in [land.is_some(), navy.is_some()].into_iter().enumerate() {
             if !known {
                 missing_battles[i] = Some(hour);
             }
         }
-        let land_commands = career
-            && slot_read(replay.format, &decoded.metrics, TableId::OrdersGroups, hour)
+        let mut land_commands = career
+            && slot_read(format, &decoded.metrics, TableId::OrdersGroups, hour)
             && decoded.complete::<tables::OrdersGroups>().is_ok();
         let fleet_rows = career
             .then(|| decoded.complete::<tables::Fleets>().ok())
             .flatten()
-            .filter(|_| slot_read(replay.format, &decoded.metrics, TableId::Fleets, hour));
+            .filter(|_| slot_read(format, &decoded.metrics, TableId::Fleets, hour));
         let fleet_commands = fleet_rows.filter(|rows| {
             rows.iter()
                 .all(|row| !matches!(row.leader, Recorded::NotRecorded))
@@ -2592,15 +2888,15 @@ impl Scan {
         let mut naval_commands = fleet_commands.is_some()
             || career
                 && slot_read(
-                    replay.format,
+                    format,
                     &decoded.metrics,
                     TableId::NavalMissionTaskForces,
                     hour,
                 )
-                && slot_read(replay.format, &decoded.metrics, TableId::TaskForces, hour)
+                && slot_read(format, &decoded.metrics, TableId::TaskForces, hour)
                 && decoded.complete::<tables::NavalMissionTaskForces>().is_ok()
                 && decoded.complete::<tables::TaskForces>().is_ok();
-        if !slot_read(replay.format, &decoded.metrics, TableId::UnitLeaders, hour) {
+        if !slot_read(format, &decoded.metrics, TableId::UnitLeaders, hour) {
             observe(
                 &mut reply.observed,
                 hour,
@@ -2610,6 +2906,12 @@ impl Scan {
                 land_commands,
                 naval_commands,
             );
+            if *walked {
+                invalidate_leader_reads(leaders, last_people);
+            }
+            if let Some(work) = projection {
+                work.drop_commands();
+            }
             *walked = false;
             return Ok(true);
         }
@@ -2627,6 +2929,12 @@ impl Scan {
                 land_commands,
                 naval_commands,
             );
+            if *walked {
+                invalidate_leader_reads(leaders, last_people);
+            }
+            if let Some(work) = projection {
+                work.drop_commands();
+            }
             *walked = false;
             return Ok(true);
         };
@@ -2636,6 +2944,9 @@ impl Scan {
         }
         // Owner slots and tags read only the links and each country's
         // slot and tag, which LinkTags compares; balances never bump this.
+        if let Some(work) = projection {
+            work.owner_read = true;
+        }
         if owner_tags.update(decoded)? {
             *owner_epoch += 1;
         }
@@ -2663,14 +2974,7 @@ impl Scan {
         let traits = decoded
             .complete::<tables::UnitLeaderTraits>()
             .ok()
-            .filter(|_| {
-                slot_read(
-                    replay.format,
-                    &decoded.metrics,
-                    TableId::UnitLeaderTraits,
-                    hour,
-                )
-            });
+            .filter(|_| slot_read(format, &decoded.metrics, TableId::UnitLeaderTraits, hour));
         let progress_rows = decoded.complete::<tables::UnitLeaderTraitExperience>().ok();
         let progress_tokens = decoded.complete::<tables::LexicalTokens>().ok();
         let now_progress = [TableId::UnitLeaderTraitExperience, TableId::LexicalTokens]
@@ -2684,7 +2988,6 @@ impl Scan {
             }
         }
         *progress_tables = Some(now_progress.map(SharedView::identity));
-        let mut trait_cursor = 0;
         let mut complete = true;
         let now_traits = &decoded.tables[TableId::UnitLeaderTraits.index()];
         if trait_table
@@ -2696,8 +2999,20 @@ impl Scan {
         }
         // Every leader's visibility first, so a kept frame that cannot give
         // a verdict stops the hour before any career changes.
-        let mut planned = Vec::with_capacity(rows.len());
-        for (row_index, row) in rows.iter().enumerate() {
+        let all;
+        let selected = match selected {
+            Some(selected) => selected,
+            None => {
+                all = (0..rows.len()).collect::<Vec<_>>();
+                &all
+            }
+        };
+        let mut planned = Vec::with_capacity(selected.len());
+        for &row_index in selected {
+            if let Some(work) = projection.as_mut() {
+                work.resolved += 1;
+            }
+            let row = &rows[row_index];
             #[cfg(test)]
             {
                 work.row_visits += 1;
@@ -2737,6 +3052,7 @@ impl Scan {
                     identity_before,
                     *identity_epoch,
                     visibility_epoch,
+                    lazy,
                 );
                 #[cfg(test)]
                 {
@@ -2744,6 +3060,8 @@ impl Scan {
                 }
                 #[cfg(not(test))]
                 let _ = renewed;
+            } else if lazy && *identity_epoch != identity_before {
+                IdentityChanges::forget(state);
             }
             let owner_unchanged = state.last_read.as_ref().is_some_and(|last| {
                 last.owner_epoch == *owner_epoch && last.row.owner == row.owner
@@ -2801,6 +3119,14 @@ impl Scan {
             {
                 evaluated.push(index);
             }
+            // A projection's coverage counts the leaders whose owner or visibility is unknown.
+            if let Some(work) = projection.as_mut() {
+                if owner_known && decided.is_ok() {
+                    work.failing.remove(&index);
+                } else {
+                    work.failing.insert(index);
+                }
+            }
             planned.push((row_index, index, owner_unchanged, owner_slot, decided));
         }
         if let Some(kept) = kept
@@ -2823,10 +3149,24 @@ impl Scan {
             }
             return Ok(false);
         }
+        // Each projected leader read, whether it was visible and the kind it was read with.
+        let mut commanders = Vec::new();
         for (row_index, index, owner_unchanged, owner_slot, decided) in planned {
             let row = &rows[row_index];
             let reference = handle(row);
             let state = &mut leaders[index];
+            let was_visible = projection
+                .as_ref()
+                .is_some_and(|work| work.live.contains(&index));
+            if let Some(work) = projection {
+                work.live.remove(&index);
+                work.read.push(index);
+                commanders.push((
+                    index,
+                    was_visible,
+                    state.last_read.as_ref().map(|read| read.row.kind),
+                ));
+            }
             match decided {
                 Ok(true) => {}
                 Ok(false) => {
@@ -2841,6 +3181,12 @@ impl Scan {
                 }
             }
             state.visible_hour = Some(hour);
+            if let Some(work) = projection {
+                work.live.insert(index);
+                if !was_visible {
+                    work.gained.insert(reference);
+                }
+            }
             let holder = owner_tags
                 .get(row.owner)
                 .and_then(|tag| admission_holders.as_ref()?.1.get(tag))
@@ -2906,8 +3252,13 @@ impl Scan {
                     let index = if let Some(&index) = people.get(&identity) {
                         index
                     } else {
+                        let before = reply.warnings.len();
                         let person = person(decoded, row, character, token, content, reply);
                         let index = reply.people.len() as u32;
+                        if let Some(work) = projection {
+                            work.person_warnings
+                                .insert(index, reply.warnings[before..].to_vec());
+                        }
                         reply.people.push(person);
                         people.insert(identity, index);
                         index
@@ -2934,7 +3285,7 @@ impl Scan {
             let raw_traits = (!choices)
                 .then_some(traits)
                 .flatten()
-                .map(|ts| trait_slice(ts, reference, &mut trait_cursor));
+                .map(|ts| trait_slice(ts, reference));
             // Progress is a function of these fields, the leader's training
             // rows and the tokens naming them: equal to the last read's, it
             // is the last run's.
@@ -3049,6 +3400,12 @@ impl Scan {
             let training = (!progress_same)
                 .then(|| progress_rows.map(|rows| training_rows(rows, reference).to_vec()));
             let leader = &mut state.career;
+            if state.last_run.is_none() {
+                if let Some(work) = projection {
+                    work.first_visible
+                        .insert(reference, (hour, *missing_battles, row.kind));
+                }
+            }
             let previous_run = state.last_run.map(|i| &stored_runs[i].run);
             let previous_hour = previous_run.map(|r| r.last_hour);
             let gap = previous_hour.is_some_and(|h| h.checked_add(1) != Some(hour));
@@ -3201,6 +3558,9 @@ impl Scan {
                         content.map(|content| content.catalogue.as_ref()),
                     ),
                 });
+                if let Some(work) = projection {
+                    work.role_keys.push(key.clone());
+                }
                 roles.insert(key, index);
                 index
             };
@@ -3253,151 +3613,195 @@ impl Scan {
             append_stored_run(state, stored_runs, value, hour, start, choices);
             *pending_bytes = pending_bytes
                 .saturating_add((stored_runs.len() - before) * std::mem::size_of::<StoredRun>());
+            // A projected run's progress is written on its worker, for the publication to copy.
+            if let Some(work) = projection.as_mut()
+                && stored_runs.len() > before
+            {
+                work.runs += 1;
+                let at = stored_runs.len() - 1;
+                let progress = serde_json::to_vec(&stored_runs[at].run.value.progress)?;
+                run_progress.insert(at, Arc::from(progress));
+            }
             if admission_changed {
                 admit(reference, &reply.roles[role as usize], holder);
             }
         }
+        if let Some(work) = projection.as_mut() {
+            complete = work.failing.is_empty();
+            for (index, was_visible, was_kind) in commanders {
+                let state = &leaders[index];
+                if work.live.contains(&index) != was_visible
+                    || state.last_read.as_ref().map(|read| read.row.kind) != was_kind
+                {
+                    work.relive.insert(state.reference);
+                }
+            }
+        }
         row_indices.truncate(rows.len());
         *read_gap = world.as_ref().and_then(|world| world.gap.get().cloned());
-        if land_commands {
-            let plans = decoded
-                .complete::<tables::OrdersGroupPlans>()
-                .unwrap_or_default();
-            if let Ok(groups) = decoded.complete::<tables::OrdersGroups>() {
-                for group in groups {
+        if let Some(work) = projection.as_mut() {
+            [land_commands, naval_commands] = work.bind_commands(
+                columnar::CommandHour {
+                    frame: decoded,
+                    changes: changes.expect("projected table changes"),
+                    hour,
+                    full,
+                    land: land_commands,
+                    fleets: fleet_commands,
+                    missions: fleet_commands.is_none() && naval_commands,
+                },
+                leaders,
+                leader_indices,
+                formation_names,
+                content,
+                refusals,
+            );
+        } else {
+            if land_commands {
+                let plans = decoded
+                    .complete::<tables::OrdersGroupPlans>()
+                    .unwrap_or_default();
+                if let Ok(groups) = decoded.complete::<tables::OrdersGroups>() {
+                    for group in groups {
+                        #[cfg(test)]
+                        {
+                            work.row_visits += 1;
+                        }
+                        let Some(&index) = leader_indices.get(&group.leader) else {
+                            continue;
+                        };
+                        let state = &mut leaders[index];
+                        if state.visible_hour != Some(hour) {
+                            continue;
+                        }
+                        let raw_name = match &group.name {
+                            Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
+                            Recorded::NotRecorded => plans
+                                .binary_search_by_key(&group.handle, |plan| plan.group)
+                                .ok()
+                                .map(|index| plans[index].name.as_slice()),
+                            Recorded::Value(None) => {
+                                refusals.note(
+                                    "Stored army command name capture refused",
+                                    group.handle.to_string(),
+                                );
+                                None
+                            }
+                        };
+                        let name = formation_name(
+                            formation_names,
+                            group.handle,
+                            raw_name,
+                            content,
+                            refusals,
+                        );
+                        let kind = if group.is_army_group != 0 {
+                            LeaderFormationKind::ArmyGroup
+                        } else {
+                            LeaderFormationKind::Army
+                        };
+                        let (command, repeated, bytes) =
+                            append_command(state, group.handle, kind, name, hour);
+                        *pending_bytes = pending_bytes.saturating_add(bytes);
+                        *commands_continuous &= !repeated;
+                        active_commands.push((index, command));
+                    }
+                }
+            }
+            if let Some(fleets) = fleet_commands {
+                for fleet in fleets {
                     #[cfg(test)]
                     {
                         work.row_visits += 1;
                     }
-                    let Some(&index) = leader_indices.get(&group.leader) else {
+                    let commander = match fleet.leader {
+                        Recorded::Value(Some(reference)) => reference,
+                        _ => {
+                            naval_commands = false;
+                            refusals.note(
+                                "Fleet commander reference capture refused",
+                                fleet.id.to_string(),
+                            );
+                            continue;
+                        }
+                    };
+                    let Some(&index) = leader_indices.get(&commander) else {
                         continue;
                     };
                     let state = &mut leaders[index];
-                    if state.visible_hour != Some(hour) {
+                    if state.visible_hour != Some(hour)
+                        || state.last_read.as_ref().is_none_or(|last| {
+                            last.row.kind != engine_native::cunit_leader::KIND_NAVY
+                        })
+                    {
                         continue;
                     }
-                    let raw_name = match &group.name {
+                    let raw_name = match &fleet.name {
                         Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
-                        Recorded::NotRecorded => plans
-                            .binary_search_by_key(&group.handle, |plan| plan.group)
-                            .ok()
-                            .map(|index| plans[index].name.as_slice()),
-                        Recorded::Value(None) => {
-                            refusals.note(
-                                "Stored army command name capture refused",
-                                group.handle.to_string(),
-                            );
+                        _ => {
+                            refusals.note("Stored fleet name unavailable", fleet.id.to_string());
                             None
                         }
                     };
                     let name =
-                        formation_name(formation_names, group.handle, raw_name, content, refusals);
-                    let kind = if group.is_army_group != 0 {
-                        LeaderFormationKind::ArmyGroup
-                    } else {
-                        LeaderFormationKind::Army
-                    };
+                        formation_name(formation_names, fleet.id, raw_name, content, refusals);
                     let (command, repeated, bytes) =
-                        append_command(state, group.handle, kind, name, hour);
+                        append_command(state, fleet.id, LeaderFormationKind::Fleet, name, hour);
                     *pending_bytes = pending_bytes.saturating_add(bytes);
                     *commands_continuous &= !repeated;
                     active_commands.push((index, command));
                 }
-            }
-        }
-        if let Some(fleets) = fleet_commands {
-            for fleet in fleets {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
-                }
-                let commander = match fleet.leader {
-                    Recorded::Value(Some(reference)) => reference,
-                    _ => {
+            } else if naval_commands
+                && let (Ok(missions), Ok(tasks)) = (
+                    decoded.complete::<tables::NavalMissionTaskForces>(),
+                    decoded.complete::<tables::TaskForces>(),
+                )
+            {
+                let mut fleets = BTreeMap::<u64, Option<u64>>::new();
+                for mission in missions {
+                    #[cfg(test)]
+                    {
+                        work.row_visits += 1;
+                    }
+                    let Some(task) = tasks
+                        .binary_search_by_key(&mission.task_force, |task| task.id)
+                        .ok()
+                        .map(|index| &tasks[index])
+                    else {
                         naval_commands = false;
-                        refusals.note(
-                            "Fleet commander reference capture refused",
-                            fleet.id.to_string(),
-                        );
+                        continue;
+                    };
+                    if task.fleet == 0 {
+                        naval_commands = false;
                         continue;
                     }
-                };
-                let Some(&index) = leader_indices.get(&commander) else {
-                    continue;
-                };
-                let state = &mut leaders[index];
-                if state.visible_hour != Some(hour)
-                    || state
-                        .last_read
-                        .as_ref()
-                        .is_none_or(|last| last.row.kind != engine_native::cunit_leader::KIND_NAVY)
-                {
-                    continue;
-                }
-                let raw_name = match &fleet.name {
-                    Recorded::Value(Some(bytes)) => Some(bytes.as_slice()),
-                    _ => {
-                        refusals.note("Stored fleet name unavailable", fleet.id.to_string());
-                        None
+                    let commander = fleets.entry(task.fleet).or_insert(Some(mission.leader));
+                    if *commander != Some(mission.leader) {
+                        *commander = None;
+                        naval_commands = false;
+                        refusals.note(
+                            "Conflicting recorded fleet commander references",
+                            task.fleet.to_string(),
+                        );
                     }
-                };
-                let name = formation_name(formation_names, fleet.id, raw_name, content, refusals);
-                let (command, repeated, bytes) =
-                    append_command(state, fleet.id, LeaderFormationKind::Fleet, name, hour);
-                *pending_bytes = pending_bytes.saturating_add(bytes);
-                *commands_continuous &= !repeated;
-                active_commands.push((index, command));
-            }
-        } else if naval_commands
-            && let (Ok(missions), Ok(tasks)) = (
-                decoded.complete::<tables::NavalMissionTaskForces>(),
-                decoded.complete::<tables::TaskForces>(),
-            )
-        {
-            let mut fleets = BTreeMap::<u64, Option<u64>>::new();
-            for mission in missions {
-                #[cfg(test)]
-                {
-                    work.row_visits += 1;
                 }
-                let Some(task) = tasks
-                    .binary_search_by_key(&mission.task_force, |task| task.id)
-                    .ok()
-                    .map(|index| &tasks[index])
-                else {
-                    naval_commands = false;
-                    continue;
-                };
-                if task.fleet == 0 {
-                    naval_commands = false;
-                    continue;
-                }
-                let commander = fleets.entry(task.fleet).or_insert(Some(mission.leader));
-                if *commander != Some(mission.leader) {
-                    *commander = None;
-                    naval_commands = false;
-                    refusals.note(
-                        "Conflicting recorded fleet commander references",
-                        task.fleet.to_string(),
-                    );
-                }
-            }
-            for (fleet, commander) in fleets {
-                let Some(index) = commander.and_then(|c| leader_indices.get(&c).copied()) else {
-                    continue;
-                };
-                let state = &mut leaders[index];
-                if state.visible_hour == Some(hour)
-                    && state
-                        .last_read
-                        .as_ref()
-                        .is_some_and(|last| last.row.kind == engine_native::cunit_leader::KIND_NAVY)
-                {
-                    let (command, repeated, bytes) =
-                        append_command(state, fleet, LeaderFormationKind::Fleet, None, hour);
-                    *pending_bytes = pending_bytes.saturating_add(bytes);
-                    *commands_continuous &= !repeated;
-                    active_commands.push((index, command));
+                for (fleet, commander) in fleets {
+                    let Some(index) = commander.and_then(|c| leader_indices.get(&c).copied())
+                    else {
+                        continue;
+                    };
+                    let state = &mut leaders[index];
+                    if state.visible_hour == Some(hour)
+                        && state.last_read.as_ref().is_some_and(|last| {
+                            last.row.kind == engine_native::cunit_leader::KIND_NAVY
+                        })
+                    {
+                        let (command, repeated, bytes) =
+                            append_command(state, fleet, LeaderFormationKind::Fleet, None, hour);
+                        *pending_bytes = pending_bytes.saturating_add(bytes);
+                        *commands_continuous &= !repeated;
+                        active_commands.push((index, command));
+                    }
                 }
             }
         }
@@ -3411,20 +3815,32 @@ impl Scan {
             naval_commands,
         );
         if !choices {
-            let visits = record_battles(
-                replay.format,
-                decoded,
-                land,
-                navy,
-                hour,
-                leaders,
-                leader_indices,
-                naval_sources,
-                battle_hours,
-                battle_indices,
-                previous_combats,
-                pending_bytes,
-            );
+            if let Some(work) = projection {
+                work.battles(
+                    format,
+                    decoded,
+                    changes.expect("projected table changes"),
+                    leader_indices,
+                );
+            }
+            let visits = if projection.is_none() {
+                record_battles(
+                    format,
+                    decoded,
+                    land,
+                    navy,
+                    hour,
+                    leaders,
+                    leader_indices,
+                    naval_sources,
+                    battle_hours,
+                    battle_indices,
+                    previous_combats,
+                    pending_bytes,
+                )
+            } else {
+                0
+            };
             #[cfg(test)]
             {
                 work.row_visits += visits;
@@ -4653,6 +5069,7 @@ pub fn leaderboard_from(careers: &UnitLeadersReply, hour: i32) -> UnitLeadersRep
 impl Product for UnitLeaders {
     const KEY: &'static str = "unit-leaders";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = UnitLeadersParams;
     type Reply = UnitLeadersResponse;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

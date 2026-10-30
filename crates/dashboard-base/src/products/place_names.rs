@@ -520,16 +520,24 @@ impl Product for PlaceNames {
         if !replay.branches.iter().any(|entry| entry.id == branch) {
             return Err(crate::invalid("Unknown place names branch"));
         }
-        checked(resolve(source, params, context, |cat, names, regions| {
-            read_names(replay, branch, params, cat, names, regions, cancelled)
-        })?)
+        checked(resolve(
+            source,
+            params,
+            context,
+            true,
+            |cat, names, regions| {
+                read_names(replay, branch, params, cat, names, regions, cancelled)
+            },
+        )?)
     }
 }
 
+/// The reply `read` resolves, with the catalogue's refusal lines when `reported`.
 fn resolve(
     source: &Source,
     params: &PlaceNamesParams,
     context: &LoadContext,
+    reported: bool,
     read: impl FnOnce(
         &Catalogue,
         Result<&StateNames, &str>,
@@ -572,7 +580,9 @@ fn resolve(
                     .map(|regions| &regions.provinces)
                     .map_err(String::as_str),
             )?;
-            warnings.extend(cat.refusal_lines());
+            if reported {
+                warnings.extend(cat.refusal_lines());
+            }
             resolved
         }
         Err(reason) => {
@@ -607,8 +617,30 @@ pub fn at_frame(
     frame: &DecodedFrame,
     flag: &AtomicBool,
 ) -> io::Result<PlaceNamesReply> {
+    named_at_frame(source, params, context, frame, flag, true)
+}
+
+/// [`at_frame`] without the refusal lines, for a caller naming apart from its consumer scope.
+pub fn at_frame_unreported(
+    source: &Source,
+    params: &PlaceNamesParams,
+    context: &LoadContext,
+    frame: &DecodedFrame,
+    flag: &AtomicBool,
+) -> io::Result<PlaceNamesReply> {
+    named_at_frame(source, params, context, frame, flag, false)
+}
+
+fn named_at_frame(
+    source: &Source,
+    params: &PlaceNamesParams,
+    context: &LoadContext,
+    frame: &DecodedFrame,
+    flag: &AtomicBool,
+    reported: bool,
+) -> io::Result<PlaceNamesReply> {
     check_cancel(flag)?;
-    resolve(source, params, context, |cat, names, regions| {
+    resolve(source, params, context, reported, |cat, names, regions| {
         let text = ScriptedText::new(
             frame,
             &cat.localisation,

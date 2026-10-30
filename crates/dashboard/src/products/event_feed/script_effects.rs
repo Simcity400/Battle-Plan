@@ -20,6 +20,28 @@ pub(crate) struct Inputs {
     scopes: Vec<ScopeInput>,
     pub(super) roster: Option<super::decision_roster::Inputs>,
 }
+impl Inputs {
+    /// The bytes it owns, itself included.
+    pub(crate) fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.scopes.capacity() * size_of::<ScopeInput>()
+            + self
+                .scopes
+                .iter()
+                .map(|scope| {
+                    scope.opaque.as_ref().map_or(0, String::capacity)
+                        + scope
+                            .names
+                            .as_ref()
+                            .map_or(0, |names| names.iter().map(Vec::capacity).sum::<usize>())
+                })
+                .sum::<usize>()
+            + self
+                .roster
+                .as_ref()
+                .map_or(0, super::decision_roster::Inputs::heap)
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 struct DecisionTarget {
     country: Option<u32>,

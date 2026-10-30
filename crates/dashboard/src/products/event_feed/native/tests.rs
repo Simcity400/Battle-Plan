@@ -1364,3 +1364,249 @@ fn retained_observations_list_only_the_parts_their_read_changed() {
     assert!(!second.contains("delayed"));
     assert!(!second.contains("Pending event instances"));
 }
+
+/// Digesting a retained part only when its version or availability moved observes, and
+/// continues with, exactly what digesting every part seen does, from fewer digests.
+#[test]
+fn retained_versions_observe_what_digesting_every_part_observes() {
+    use replay_data::event_feed_rows::{
+        DECISION_FAMILY_REFUSALS, EventFeedEventIdentity, EventFeedScope, EventFeedScript,
+        EventFeedScriptChange as C,
+        decisions::{DecisionChange, IGNORED, Operation, REMOVE_REQUESTED, TAKEN, TIMED},
+    };
+    let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+    let mut draw = move |bound: u32| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % u64::from(bound)) as u32
+    };
+    let decision = |operation, container| C::Decision(DecisionChange::new(operation, container));
+    // A change with its operands: definition `90 + instance % 3`, or a refusal's reason.
+    let script = |change: C, instance: u32, days: i32, lifecycle: Option<i32>| {
+        let stored = matches!(change, C::PendingStored { .. } | C::DelayedStored { .. });
+        let named = stored || matches!(change, C::FiredMember | C::FiredRemoved);
+        let refused = matches!(
+            change,
+            C::DelayedRefused
+                | C::Decision(DecisionChange {
+                    operation: Operation::Refused,
+                    ..
+                })
+        );
+        let (decided, member) = match change {
+            C::Decision(change) => (
+                true,
+                matches!(
+                    change.operation,
+                    Operation::Store | Operation::Erase | Operation::Update
+                ),
+            ),
+            _ => (false, false),
+        };
+        let removed = matches!(change, C::PendingRemoved | C::DelayedRemoved { .. });
+        EventFeedScript {
+            change: Some(change),
+            native_event: named.then_some(EventFeedEventIdentity {
+                kind: 7,
+                id: 90 + instance % 3,
+            }),
+            token_start: if refused { 3 } else { 0 },
+            token_len: if refused {
+                17
+            } else if named || decided {
+                3
+            } else {
+                0
+            },
+            instance: (stored || member || removed).then_some(instance),
+            scope_len: u32::from(stored),
+            days: decided.then_some(days),
+            lifecycle,
+            ..Default::default()
+        }
+    };
+    let flag = AtomicBool::new(false);
+    let (mut live, mut reference) = (Projection::default(), Projection::default());
+    let (mut versioned, mut everything, mut observed) = (0, 0, 0);
+    let (mut sequence, mut instance, mut hour, mut generation) = (0_u64, 0_u32, 120, 9_u64);
+    for _ in 0..800 {
+        hour += if draw(40) == 0 { 2 } else { 1 };
+        if draw(200) == 0 {
+            generation += 1;
+        }
+        let mut changes = Vec::new();
+        for _ in 0..draw(4) {
+            let owner = identity(draw(3));
+            let key = (owner.id, owner.instance);
+            let timers = live
+                .script_state
+                .delayed_owner(key)
+                .and_then(|(_, _, rows)| rows.ok())
+                .map_or(0, <[_]>::len) as u32;
+            let timed = live
+                .script_state
+                .decision_owner(key)
+                .and_then(|state| state.members(TIMED).ok())
+                .map_or(0, <[_]>::len) as u32;
+            instance += 1;
+            let recent = instance.saturating_sub(draw(6)).max(1);
+            let days = draw(60) as i32 - 5;
+            let ops = match draw(30) {
+                0 => {
+                    let mut census = vec![(C::DelayedBaseline, 0, 0, None)];
+                    for _ in 0..draw(3) {
+                        instance += 1;
+                        census.push((C::DelayedStored { remaining: days }, instance, 0, None));
+                    }
+                    census.push((C::DelayedReady, 0, 0, None));
+                    census
+                }
+                1 => vec![(C::DelayedEmpty, 0, 0, None)],
+                2..=7 => {
+                    let count = if draw(6) == 0 { draw(3) } else { timers };
+                    let finished = true;
+                    vec![(C::DelayedAdvance { count, finished }, 0, 0, None)]
+                }
+                8 => vec![(C::DelayedStored { remaining: days }, instance, 0, None)],
+                9 => {
+                    let (iteration, visited) = (false, false);
+                    vec![(C::DelayedRemoved { iteration, visited }, recent, 0, None)]
+                }
+                10 => vec![(C::DelayedRefused, 0, 0, None)],
+                11 => {
+                    let mut census = vec![(decision(Operation::Baseline, 0), 0, 0, None)];
+                    for _ in 0..draw(3) {
+                        instance += 1;
+                        let lifecycle = Some(draw(3) as i32);
+                        census.push((decision(Operation::Store, TIMED), instance, days, lifecycle));
+                    }
+                    census.push((decision(Operation::Ready, 0), 0, 0, None));
+                    census
+                }
+                12..=16 => {
+                    let begin = DecisionChange {
+                        ordinal: timed,
+                        ..DecisionChange::new(Operation::PassBegin, TIMED)
+                    };
+                    vec![
+                        (C::Decision(begin), 0, 0, None),
+                        (decision(Operation::PassEnd, TIMED), 0, 0, None),
+                    ]
+                }
+                17 => vec![(decision(Operation::Update, TIMED), recent, days, None)],
+                18 => {
+                    let lifecycle = Some(draw(3) as i32);
+                    vec![(decision(Operation::Update, TIMED), recent, days, lifecycle)]
+                }
+                19 => vec![(decision(Operation::Store, TAKEN), instance, days, Some(0))],
+                20 => vec![(decision(Operation::Erase, TIMED), recent, 0, None)],
+                21 => vec![(decision(Operation::RandomIncrement, 0), 0, 0, None)],
+                22 => {
+                    let flags = if draw(2) == 0 { REMOVE_REQUESTED } else { 0 };
+                    let candidate = DecisionChange {
+                        flags,
+                        ordinal: draw(3),
+                        ..DecisionChange::new(Operation::Candidate, 0)
+                    };
+                    vec![(C::Decision(candidate), 0, 0, None)]
+                }
+                23 => {
+                    let flags = if draw(2) == 0 { IGNORED } else { 0 };
+                    let ignore = DecisionChange {
+                        flags,
+                        ..DecisionChange::new(Operation::Ignore, 0)
+                    };
+                    vec![(C::Decision(ignore), 0, 0, None)]
+                }
+                24 => vec![(decision(Operation::Rebuild, 3), 0, 0, None)],
+                25 => vec![(decision(Operation::Refused, 0), 0, 0, None)],
+                26 => match draw(3) {
+                    0 => {
+                        let mut census = vec![(C::PendingBaseline, 0, 0, None)];
+                        for _ in 0..draw(3) {
+                            instance += 1;
+                            census.push((C::PendingStored { due_hour: days }, instance, 0, None));
+                        }
+                        census.push((C::PendingReady, 0, 0, None));
+                        census
+                    }
+                    1 => vec![(C::PendingStored { due_hour: days }, instance, 0, None)],
+                    _ => vec![(C::PendingRemoved, recent, 0, None)],
+                },
+                27 => match draw(3) {
+                    0 => {
+                        let mut census = vec![(C::FiredBaseline, 0, 0, None)];
+                        for _ in 0..draw(3) {
+                            instance += 1;
+                            census.push((C::FiredMember, instance, 0, None));
+                        }
+                        census.push((C::FiredReady, 0, 0, None));
+                        census
+                    }
+                    1 => vec![(C::FiredMember, instance, 0, None)],
+                    _ => vec![(C::FiredRemoved, recent, 0, None)],
+                },
+                // Completions with nothing to complete end the reduction mid-packet.
+                28 => vec![(C::DelayedReady, 0, 0, None)],
+                _ => vec![(decision(Operation::Ready, 0), 0, 0, None)],
+            };
+            changes.extend(ops.into_iter().map(|op| (owner, op)));
+        }
+        let events = changes
+            .into_iter()
+            .map(|(owner, (change, instance, days, lifecycle))| {
+                sequence += 1;
+                let mut value = event(sequence, EventFeedSource::ScriptState, hour);
+                value.generation = generation;
+                value.actor = owner;
+                value.target = owner;
+                value.script = Some(script(change, instance, days, lifecycle));
+                value
+            })
+            .collect();
+        let mut read = pack(events);
+        read.generation = generation;
+        read.read_hour = hour;
+        read.script_tokens = b"modsynthetic refusal".to_vec();
+        read.script_scopes = vec![EventFeedScope::default()];
+        match draw(40) {
+            0 => read.coverage = EventFeedCoverage::Partial,
+            1 => {
+                read.coverage = EventFeedCoverage::Unavailable;
+                read.failure = Some(b"synthetic loss".to_vec());
+            }
+            _ => {}
+        }
+        if draw(30) == 0 {
+            read.script_refusals = DECISION_FAMILY_REFUSALS;
+        }
+        let observe = |projection: &mut Projection, forget: bool| {
+            if forget {
+                projection.sections.forget_versions();
+            }
+            let mut builder = Builder::new(100, 10_000);
+            let digested = super::retained::digests();
+            let result = projection
+                .append_named(&mut builder, &read, |_, _| Some("SYN".into()), &flag)
+                .map_err(|error| error.to_string());
+            let rows = serde_json::to_value(&builder.feed.rows).unwrap();
+            (result, rows, super::retained::digests() - digested)
+        };
+        let (result, rows, digests) = observe(&mut live, false);
+        let expected = observe(&mut reference, true);
+        assert_eq!((&result, &rows), (&expected.0, &expected.1), "read {hour}");
+        versioned += digests;
+        everything += expected.2;
+        observed += rows.as_array().unwrap().len();
+    }
+    assert_eq!(
+        serde_json::to_vec(&live).unwrap(),
+        serde_json::to_vec(&reference).unwrap()
+    );
+    assert!(observed > 100, "{observed} rows observed");
+    assert!(
+        versioned < everything,
+        "{versioned} digests against {everything}"
+    );
+}

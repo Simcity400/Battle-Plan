@@ -134,6 +134,7 @@ pub struct CivilWars;
 impl Product for CivilWars {
     const KEY: &'static str = QUERY;
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CivilWarsParams;
     type Reply = CivilWarsReply;
     fn types() -> Vec<String> {
@@ -470,5 +471,6 @@ fn held<'a>(runs: impl Iterator<Item = &'a Run>, first: i32, last: i32) -> Vec<H
     joined
 }
 
+pub mod served;
 #[cfg(test)]
 mod tests;

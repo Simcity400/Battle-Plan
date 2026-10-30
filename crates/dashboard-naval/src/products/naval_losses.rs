@@ -27,6 +27,7 @@ use sinkings::{month, month_start};
 
 pub struct NavalLosses;
 pub mod prepared;
+pub mod served;
 
 const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
@@ -941,6 +942,7 @@ pub fn retention(
 impl Product for NavalLosses {
     const KEY: &'static str = "naval-losses";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NavalLossesParams;
     type Reply = NavalLossesReply;
     fn types() -> Vec<String> {

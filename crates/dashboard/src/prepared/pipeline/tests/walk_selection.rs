@@ -83,11 +83,8 @@ fn walk_decodes_only_its_union_once_per_block_and_preserves_every_selected_hour(
         TableId::Divisions,
     ] {
         assert!(!selected().contains(&table), "folded input {table:?}");
-        assert!(
-            block_selected(true, true).contains(&table),
-            "fallback input {table:?}"
-        );
     }
+    assert!(block_selected(true).contains(&TableId::ResourceExchanges));
     for table in [
         TableId::LandCombatProgress,
         TableId::LandCombatResults,
@@ -100,9 +97,9 @@ fn walk_decodes_only_its_union_once_per_block_and_preserves_every_selected_hour(
         assert!(selected().contains(&table), "walk input {table:?}");
     }
     assert_eq!(independent::with_test_hourly(selected), &TableId::ALL);
-    assert!(!block_selected(false, false).contains(&TableId::Divisions));
-    assert!(!block_selected(true, false).contains(&TableId::Divisions));
-    assert!(!block_selected(false, true).contains(&TableId::ResourceExchanges));
+    assert!(!block_selected(false).contains(&TableId::Divisions));
+    assert!(!block_selected(true).contains(&TableId::Divisions));
+    assert!(!block_selected(false).contains(&TableId::ResourceExchanges));
     assert_eq!(
         independent::with_test_only(&["groups"], selected),
         &TableId::ALL
@@ -293,7 +290,6 @@ fn selected_walk_matches_hourly_preparation_and_saves_the_same_domain_state() {
         [
             "map.",
             "measure-",
-            "army-",
             "resource-",
             "land-battle",
             "land-owners",
@@ -321,14 +317,7 @@ fn selected_walk_matches_hourly_preparation_and_saves_the_same_domain_state() {
         };
         let expected = decoded(bytes);
         let actual = decoded(&actual[&(name.clone(), *range)]);
-        for field in [
-            "schema",
-            "measure",
-            "land",
-            "army",
-            "resources",
-            "game_score",
-        ] {
+        for field in ["schema", "measure", "land", "resources", "game_score"] {
             assert_eq!(actual[field], expected[field], "{name}: {field}");
         }
     }

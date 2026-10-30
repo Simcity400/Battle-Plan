@@ -94,6 +94,8 @@ pub struct Published {
     snapshot: store::Snapshot,
     versions_id: Option<[u64; 3]>,
     versions: Decoded<Option<Arc<Versions>>>,
+    plan_id: Option<[u64; 3]>,
+    plan: Option<Arc<Vec<u8>>>,
     branches: BTreeMap<u64, Branch>,
 }
 
@@ -104,6 +106,8 @@ impl Published {
             snapshot: store::Snapshot::empty(folder, key.clone()),
             versions_id: None,
             versions: Ok(None),
+            plan_id: None,
+            plan: None,
             branches: BTreeMap::new(),
         }
     }
@@ -138,6 +142,12 @@ impl Published {
         }
     }
 
+    /// The mark of the plan a native recording's preparation published under
+    /// ([`coverage::PLAN`]); None for a store prepared from the row recording.
+    pub fn plan(&self) -> Option<&[u8]> {
+        self.plan.as_deref().map(Vec::as_slice)
+    }
+
     /// The identity of `branch`'s country identity history page.
     pub fn identities(&self, branch: u64) -> Option<[u64; 3]> {
         self.branches.get(&branch)?.identities
@@ -158,8 +168,25 @@ pub fn decode(store: &store::Store, held: Option<&Published>) -> io::Result<Opti
 fn build(snapshot: store::Snapshot, held: Option<&Published>) -> io::Result<Published> {
     let mut versions_id = None;
     let mut versions = Ok(None);
+    let mut plan_id = None;
+    let mut plan = None;
     let mut built: BTreeMap<u64, Branch> = BTreeMap::new();
     for section in snapshot.section_names() {
+        if section == coverage::PLAN {
+            plan_id = snapshot.range_id(section, 0)?.map(|id| id.cache_key());
+            plan = match held {
+                Some(held) if held.plan_id == plan_id => held.plan.clone(),
+                _ => match snapshot.read(section, 0)? {
+                    Some(mut range) => {
+                        let mut bytes = Vec::new();
+                        range.read_to_end(&mut bytes)?;
+                        Some(Arc::new(bytes))
+                    }
+                    None => None,
+                },
+            };
+            continue;
+        }
         if section == coverage::VERSIONS {
             versions_id = snapshot.range_id(section, 0)?.map(|id| id.cache_key());
             versions = match held {
@@ -198,6 +225,8 @@ fn build(snapshot: store::Snapshot, held: Option<&Published>) -> io::Result<Publ
         snapshot,
         versions_id,
         versions,
+        plan_id,
+        plan,
         branches: built,
     })
 }

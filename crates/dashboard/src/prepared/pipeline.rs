@@ -30,6 +30,8 @@ use std::{
 };
 
 pub use independent::economy::FuelReference;
+pub use independent::event_feed::FeedReference;
+pub(crate) use independent::event_feed::{save_feed, write_feed_identities};
 
 const CHECKPOINT: &str = "preparation-checkpoint-v1";
 #[cfg(test)]
@@ -364,8 +366,7 @@ unsaved_while_own!(
     own_divisions => "divisions",
     own_air => "air",
     own_navy => "navy",
-    own_supply => "supply",
-    own_stability => "stability",
+    own_parts => "parts",
     own_fuel => "fuel",
     own_equipment_losses => "equipment_losses",
     own_trade => "trade",
@@ -426,7 +427,6 @@ struct BranchState {
     divisions: Box<crate::products::division_log::Scan>,
     #[serde(skip)]
     identities: Box<crate::products::country_history::HistoryScan>,
-    army: Box<crate::products::army_size::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_air")]
     air: Box<crate::products::air_force::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_navy")]
@@ -437,8 +437,6 @@ struct BranchState {
     factories: Box<crate::products::country_factories::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_repairs")]
     repairs: Box<crate::products::dockyard_repairs::Prepared>,
-    #[serde(default, skip_serializing_if = "own_supply")]
-    supply: Box<crate::products::supply_health::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_construction")]
     construction: Box<crate::products::construction_log::prepared::Prepared>,
     resources: Box<crate::products::resource_balance::prepared::Prepared>,
@@ -479,12 +477,10 @@ struct BranchState {
     parties: Box<crate::products::party_history::prepared::Prepared>,
     #[serde(skip)]
     intelligence: Box<crate::products::intelligence_prepared::Observer>,
-    #[serde(default, skip_serializing_if = "own_stability")]
-    stability: Box<crate::prepared_stability::StabilityAccumulator>,
+    #[serde(default, skip_serializing_if = "own_parts")]
+    parts: Box<crate::products::stability_parts::Prepared>,
     #[serde(default, skip_serializing_if = "own_experience")]
     experience: Box<crate::prepared_stability::ExperienceAccumulator>,
-    #[serde(skip)]
-    ledger: Box<crate::products::politics_ledger::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_fuel")]
     fuel: Box<crate::products::country_fuel::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_territory")]
@@ -519,9 +515,6 @@ impl BranchState {
             if refused.live("divisions") {
                 self.divisions.resume(frame);
             }
-            if refused.live("politics_ledger") {
-                self.ledger.resume(frame);
-            }
             if refused.live("projects") {
                 self.projects.restore_views(frame);
             }
@@ -546,13 +539,11 @@ impl BranchState {
                 false,
                 &[],
             )),
-            army: Default::default(),
             air: Default::default(),
             navy: Default::default(),
             nukes: Default::default(),
             factories: Default::default(),
             repairs: Default::default(),
-            supply: Default::default(),
             construction: Default::default(),
             resources: Default::default(),
             trade: Default::default(),
@@ -574,9 +565,8 @@ impl BranchState {
             raids: Default::default(),
             air_superiority: Default::default(),
             intelligence: Default::default(),
-            stability: Default::default(),
+            parts: Default::default(),
             experience: Default::default(),
-            ledger: Default::default(),
             fuel: Default::default(),
             territory: Default::default(),
             occupation: Default::default(),
@@ -790,12 +780,22 @@ fn current_gates(
     let (store, key) = super::files(source, content)?;
     Ok(gates::current(&store, &key))
 }
+/// The plan the publication `published` follows: a native preparation's when
+/// it marked the store ([`coverage::PLAN`](super::coverage::PLAN)), else the
+/// one preparation follows.
+fn plan_of(published: &gates::Published) -> &'static plan::Plan {
+    if published.plan().is_some() {
+        plan::native()
+    } else {
+        plan::current()
+    }
+}
 /// Whether `gate`, `name`'s on its branch, was published under the stamp the
 /// plan gives `name` now: by its root's identity, else by the versions the row
 /// preparation published with it. A store no row preparation published to
 /// holds no row versions to compare; a job keeps versions of its own.
 fn stamped(published: &gates::Published, gate: &gates::Gate, name: &str) -> io::Result<bool> {
-    let plan = plan::current();
+    let plan = plan_of(published);
     if let Some(root) = gate.publication()? {
         return Ok(Some(root.identity.schema) == plan.stamp(name));
     }
@@ -827,7 +827,7 @@ fn walk_page(published: &gates::Published, branch: u64) -> io::Result<Option<&Co
         return Ok(None);
     };
     Ok(match published.versions()? {
-        Some(versions) => (versions.walk == plan::current().walk_stamp()).then_some(page),
+        Some(versions) => (versions.walk == plan_of(published).walk_stamp()).then_some(page),
         None => Some(page),
     })
 }
@@ -838,7 +838,7 @@ fn family_page<'p>(
     branch: u64,
     query: &str,
 ) -> io::Result<Option<(&'static str, &'p CoveragePage)>> {
-    let Some(family) = independent::gating(query) else {
+    let Some(family) = plan_of(published).gating(query) else {
         return Ok(None);
     };
     Ok(own_published(published, family, branch)?.map(|page| (family, page)))
@@ -869,7 +869,7 @@ fn walked(published: &gates::Published, branch: u64) -> io::Result<Option<Covera
     Ok(coverage)
 }
 /// The coverage every one of `families` has on `branch`
-/// ([`independent::joint`]): its own of each prepared on its own, the
+/// ([`plan::Plan::joint`]): its own of each the walk leaves to another backend, the
 /// branch's of any other; through the least of their last hours, complete
 /// when every one is. None until every one has accepted some.
 fn joint_coverage(
@@ -877,10 +877,11 @@ fn joint_coverage(
     branch: u64,
     families: &[registry::FamilyId],
 ) -> io::Result<Option<Coverage>> {
+    let plan = plan_of(published);
     let mut walk = None;
     let mut joint: Option<Coverage> = None;
     for (position, family) in families.iter().map(|family| family.name()).enumerate() {
-        let extent = if independent::registered(family) {
+        let extent = if plan.apart(family) {
             own_short(
                 family,
                 own_published(published, family, branch)?.map(|page| page.coverage.clone()),
@@ -894,7 +895,7 @@ fn joint_coverage(
         let Some(extent) = extent else {
             // The families after it wait too, as far as this reply knows.
             for family in &families[position + 1..] {
-                super::coverage::note_short(gate_entry(family.name()));
+                super::coverage::note_short(gate_entry(plan, family.name()));
             }
             return Ok(None);
         };
@@ -912,8 +913,8 @@ fn joint_coverage(
 }
 /// The coverage `product`'s queries wait for on `branch`: that of the
 /// families whose pages its replies read together, while any is prepared on
-/// its own ([`independent::joint`]); that of the family prepared on its own
-/// whose registry entry gates the product ([`independent::gating`]); the
+/// its own ([`plan::Plan::joint`]); that of the family prepared on its own
+/// whose registry entry gates the product ([`plan::Plan::gating`]); the
 /// branch's otherwise; None before any is accepted. A product gated so is
 /// answered while the hourly walk prepares. Read from the gates the query
 /// pinned, for the hours it declared ([`super::coverage::product_coverage`]).
@@ -933,18 +934,17 @@ pub(crate) fn published_coverage(
     branch: u64,
     product: &str,
 ) -> io::Result<Option<Coverage>> {
-    if let Some(families) = independent::joint(product) {
+    let plan = plan_of(published);
+    if let Some(families) = plan.joint(product) {
         return joint_coverage(published, branch, families);
     }
-    if independent::gating(product).is_none() {
+    let Some(gating) = plan.gating(product) else {
         return walked(published, branch);
-    }
+    };
     Ok(match family_page(published, branch, product)? {
         Some((family, page)) => own_short(family, Some(page.coverage.clone())),
         None => {
-            if let Some(family) = independent::gating(product) {
-                super::coverage::note_short(family);
-            }
+            super::coverage::note_short(gating);
             None
         }
     })
@@ -959,15 +959,14 @@ pub(crate) fn published_holes(
     product: &str,
     through: Option<i32>,
 ) -> io::Result<Vec<super::coverage::Hole>> {
-    let mut suppliers: Vec<&'static str> =
-        match (independent::joint(product), independent::gating(product)) {
-            (Some(families), _) => families.iter().map(|family| family.name()).collect(),
-            (None, Some(family)) => vec![family],
-            (None, None) => Vec::new(),
-        };
+    let plan = plan_of(published);
+    let mut suppliers: Vec<&'static str> = match (plan.joint(product), plan.gating(product)) {
+        (Some(families), _) => families.iter().map(|family| family.name()).collect(),
+        (None, Some(family)) => vec![family],
+        (None, None) => Vec::new(),
+    };
     suppliers.extend(
-        plan::current()
-            .families()
+        plan.families()
             .iter()
             .filter(|family| family.queries.contains(&product))
             .map(|family| family.id.name()),
@@ -1028,10 +1027,10 @@ fn own_short(family: &'static str, extent: Option<Coverage>) -> Option<Coverage>
     }
     extent
 }
-/// The status entry `family`'s coverage is listed under: its own while it
-/// is prepared on its own, the hourly walk's otherwise.
-fn gate_entry(family: &'static str) -> &'static str {
-    if independent::registered(family) {
+/// The status entry `family`'s coverage is listed under in `plan`: its own
+/// while the walk leaves it to another backend, the hourly walk's otherwise.
+fn gate_entry(plan: &plan::Plan, family: &'static str) -> &'static str {
+    if plan.apart(family) {
         family
     } else {
         super::coverage::WALK
@@ -1042,10 +1041,17 @@ fn gate_entry(family: &'static str) -> &'static str {
 /// it, or the hourly walk. A pending reply that consulted no coverage names
 /// these.
 pub(crate) fn gate(product: &str) -> Vec<&'static str> {
-    let mut entries: Vec<_> = match (independent::joint(product), independent::gating(product)) {
+    gate_in(plan::current(), product)
+}
+/// [`gate`] under the plan the publication `published` follows.
+pub(crate) fn published_gate(published: &gates::Published, product: &str) -> Vec<&'static str> {
+    gate_in(plan_of(published), product)
+}
+fn gate_in(plan: &plan::Plan, product: &str) -> Vec<&'static str> {
+    let mut entries: Vec<_> = match (plan.joint(product), plan.gating(product)) {
         (Some(families), _) => families
             .iter()
-            .map(|family| gate_entry(family.name()))
+            .map(|family| gate_entry(plan, family.name()))
             .collect(),
         (None, Some(family)) => vec![family],
         (None, None) => vec![super::coverage::WALK],
@@ -1064,13 +1070,15 @@ pub(crate) fn query_pages(
     branch: u64,
     product: &str,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    let mut gates: std::collections::BTreeSet<_> = gate(product).into_iter().collect();
-    for family in plan::current()
+    let plan = plan_of(published);
+    let mut gates: std::collections::BTreeSet<_> =
+        published_gate(published, product).into_iter().collect();
+    for family in plan
         .families()
         .iter()
         .filter(|family| family.queries.contains(&product))
     {
-        gates.insert(gate_entry(family.id.name()));
+        gates.insert(gate_entry(plan, family.id.name()));
     }
     pages_of(published, branch, gates)
 }
@@ -1082,7 +1090,7 @@ pub(crate) fn gate_pages(
     branch: u64,
     product: &str,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    pages_of(published, branch, gate(product))
+    pages_of(published, branch, published_gate(published, product))
 }
 
 /// The publication identity of each of `entries` on `branch`.
@@ -1113,12 +1121,12 @@ pub(crate) fn published_pages(
     pages_of(
         published,
         branch,
-        std::iter::once(super::coverage::WALK).chain(gate_names()),
+        std::iter::once(super::coverage::WALK).chain(gate_names(plan_of(published))),
     )
 }
-/// Every family and job beside them the plan lets publish a gate of its own.
-fn gate_names() -> Vec<&'static str> {
-    let mut names: Vec<&'static str> = plan::current()
+/// Every family and job beside them `plan` lets publish a gate of its own.
+fn gate_names(plan: &plan::Plan) -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = plan
         .families()
         .iter()
         .map(|family| family.id.name())
@@ -1238,18 +1246,17 @@ pub(crate) fn refusal_from(
     branch: u64,
     query: &str,
 ) -> io::Result<Option<(i32, String)>> {
-    let families: Vec<&registry::Descriptor> = plan::current()
+    let plan = plan_of(published);
+    let families: Vec<&registry::Descriptor> = plan
         .families()
         .iter()
         .copied()
         .filter(|family| family.queries.contains(&query))
         .collect();
-    if families.is_empty()
-        && independent::gating(query).is_none()
-        && independent::joint(query).is_none()
-    {
+    if families.is_empty() && plan.gating(query).is_none() && plan.joint(query).is_none() {
         return Ok(None);
     }
+    let rows = published.plan().is_none();
     let mut found: Option<(i32, String)> = None;
     let mut note = |refusal: &Refusal| {
         found = Some(match found.take() {
@@ -1265,7 +1272,15 @@ pub(crate) fn refusal_from(
     let walk = walk_page(published, branch)?;
     // In registry order, as the hourly walk's page alone answers.
     for family in families.into_iter().map(|family| family.id.name()) {
-        let own = if independent::registered(family) {
+        if rows && plan.backend(family) == Some(plan::Backend::Unavailable) {
+            note(&Refusal {
+                hour: i32::MIN,
+                error: NATIVE_ONLY.to_owned(),
+                from: None,
+            });
+            continue;
+        }
+        let own = if plan.apart(family) {
             own_published(published, family, branch)?
         } else {
             None
@@ -1347,7 +1362,7 @@ fn selected() -> &'static [TableId] {
 
 /// The walk reads a block-prepared family's rows only when that block's
 /// extract could not be folded. Every block starts at its own keyframe.
-fn block_selected(resources_hourly: bool, army_hourly: bool) -> Vec<TableId> {
+fn block_selected(resources_hourly: bool) -> Vec<TableId> {
     let selected = selected();
     TableId::ALL
         .into_iter()
@@ -1357,7 +1372,6 @@ fn block_selected(resources_hourly: bool, army_hourly: bool) -> Vec<TableId> {
                     && crate::products::resource_balance::prepared::FAMILY
                         .tables
                         .contains(table))
-                || (army_hourly && crate::products::army_size::prepared::TABLES.contains(table))
         })
         .collect()
 }
@@ -1679,8 +1693,8 @@ fn load_branch(
     if state.schema != SCHEMA {
         return Err(invalid("Unsupported prepared branch schema"));
     }
-    if restores(refused, "stability") {
-        state.stability.restore(replay, branch)?;
+    if restores(refused, "parts") {
+        state.parts.restore(replay, branch)?;
     }
     if independent::hourly("production") && state.production.schema != 1 {
         return Err(invalid("Unsupported prepared production state schema"));
@@ -1773,17 +1787,6 @@ fn load_branch(
         }
         .ok_or_else(|| invalid("Prepared idea history is missing"))?;
         state.ideas = Box::new(crate::products::idea_history::Scan::read(
-            io::BufReader::new(file),
-        )?);
-    }
-    if restores(refused, "politics_ledger") {
-        let section = format!("politics-ledger-state-{branch}");
-        let file = match saved {
-            Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
-            _ => store.read(key, &section, 0)?,
-        }
-        .ok_or_else(|| invalid("Prepared politics ledger is missing"))?;
-        state.ledger = Box::new(crate::products::politics_ledger::prepared::Prepared::read(
             io::BufReader::new(file),
         )?);
     }
@@ -2104,7 +2107,6 @@ pub mod cost;
 pub mod external;
 mod flush;
 pub(crate) mod independent;
-pub use independent::evaluated::occupation_row_reference;
 mod lanes;
 pub(crate) use lanes::parallelism;
 mod production_scans;
@@ -2664,12 +2666,6 @@ fn run_planned(
         observe,
         crate::products::ships_sunk::prepared_content(source, &context)
     );
-    let ledger_content = time_family!(
-        family_timings,
-        "content.politics_ledger",
-        observe,
-        crate::products::politics_ledger::prepared::prepared_content(source, content)
-    );
     let raid_content = time_family!(
         family_timings,
         "content.raids",
@@ -3102,10 +3098,6 @@ fn run_planned(
             let mut frame_count = 0usize;
             if let Some(domain) = &mut branch {
                 let refused = state.refused.entry(replay.index[block].branch).or_default();
-                if refused.live("politics_ledger") {
-                    domain.ledger.configure(&ledger_content);
-                    domain.ledger.decode_previous_from(source.replay());
-                }
                 if refused.live("territory") {
                     time_family!(
                         family_timings,
@@ -3121,14 +3113,6 @@ fn run_planned(
                         observe,
                         domain.occupation.configure(source, &context)
                     );
-                }
-                if refused.live("supply") {
-                    time_family!(
-                        family_timings,
-                        "supply.configure",
-                        observe,
-                        domain.supply.configure(source, content)
-                    )?;
                 }
                 if let Some(index) = replay.index.get(block) {
                     if refused.live("naval") {
@@ -3239,8 +3223,8 @@ fn run_planned(
             // folds and block-end pages. Pre-pass waits are not its measured cost.
             let walk_work_started = Instant::now();
             let hourly = |name: &str| !folds.iter().any(|(family, _)| family.name == name);
-            let (resources_hourly, army_hourly) = (hourly("resources"), hourly("army"));
-            let block_tables = block_selected(resources_hourly, army_hourly);
+            let resources_hourly = hourly("resources");
+            let block_tables = block_selected(resources_hourly);
             section_consumer.declare(replay, &block_tables);
             if block_tables != stream_tables {
                 stream = ReplayStream::resume(
@@ -3274,13 +3258,11 @@ fn run_planned(
                         naval,
                         divisions,
                         identities,
-                        army,
                         air,
                         navy,
                         nukes,
                         factories,
                         repairs,
-                        supply,
                         construction,
                         resources,
                         trade,
@@ -3302,9 +3284,8 @@ fn run_planned(
                         feed,
                         parties,
                         intelligence,
-                        stability,
+                        parts,
                         experience,
-                        ledger,
                         fuel,
                         territory,
                         occupation,
@@ -3488,19 +3469,6 @@ fn run_planned(
                                         cancelled,
                                         changes,
                                     )
-                                )?;
-                                Ok(())
-                            },
-                        ),
-                        lanes::Job::new(
-                            &[("supply", 17)],
-                            500,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "supply",
-                                    observe,
-                                    supply.observe(frame, changes)
                                 )?;
                                 Ok(())
                             },
@@ -3775,14 +3743,14 @@ fn run_planned(
                             },
                         ),
                         lanes::Job::new(
-                            &[("stability", 40)],
+                            &[("parts", 40)],
                             5048,
                             move |_family, frame, changes, mut family_timings| {
                                 time_family!(
                                     family_timings,
-                                    "stability",
+                                    "parts",
                                     observe,
-                                    stability.observe_timed(frame, changes, family_timings)
+                                    parts.observe_changes(frame, changes)
                                 )?;
                                 Ok(())
                             },
@@ -3796,19 +3764,6 @@ fn run_planned(
                                     "experience",
                                     observe,
                                     experience.observe_changes(frame, replay.format, changes)
-                                )?;
-                                Ok(())
-                            },
-                        ),
-                        lanes::Job::new(
-                            &[("politics_ledger", 42)],
-                            7100,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "politics_ledger",
-                                    observe,
-                                    ledger.observe(frame, changes, cancelled)
                                 )?;
                                 Ok(())
                             },
@@ -3892,21 +3847,6 @@ fn run_planned(
                                     "resources",
                                     observe,
                                     resources.observe_changed(frame, changes)
-                                )?;
-                                Ok(())
-                            },
-                        ));
-                    }
-                    if army_hourly {
-                        jobs.push(lanes::Job::new(
-                            &[("army", 14)],
-                            2070,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "army",
-                                    observe,
-                                    army.observe(frame, replay, changes)
                                 )?;
                                 Ok(())
                             },
@@ -4057,12 +3997,8 @@ fn run_planned(
                                     )
                                 )
                             );
-                            if army_hourly {
-                                lanes.serial("army", frame, changes, &mut family_timings)?;
-                            }
                             lanes.serial("navy", frame, changes, &mut family_timings)?;
                             lanes.serial("air", frame, changes, &mut family_timings)?;
-                            lanes.serial("supply", frame, changes, &mut family_timings)?;
                             lanes.serial("stockpile", frame, changes, &mut family_timings)?;
                             coordinator_order = 20;
                             family!(
@@ -4116,9 +4052,8 @@ fn run_planned(
                             lanes.serial("parties", frame, changes, &mut family_timings)?;
                             lanes.serial("leaders", frame, changes, &mut family_timings)?;
                             lanes.serial("intelligence", frame, changes, &mut family_timings)?;
-                            lanes.serial("stability", frame, changes, &mut family_timings)?;
+                            lanes.serial("parts", frame, changes, &mut family_timings)?;
                             lanes.serial("experience", frame, changes, &mut family_timings)?;
-                            lanes.serial("politics_ledger", frame, changes, &mut family_timings)?;
                             lanes.serial("fuel", frame, changes, &mut family_timings)?;
                             coordinator_order = 44;
                             family!(
@@ -4251,7 +4186,6 @@ fn run_planned(
                         "resources" => domain
                             .resources
                             .fold(facts, replay, index, &inject, &mut check),
-                        "army" => domain.army.fold(facts, replay, index, &inject, &mut check),
                         name => {
                             return Err(io::Error::other(format!(
                                 "No block fold for the {name} family"
@@ -4537,17 +4471,14 @@ fn run_planned(
                         + branch.autonomy.buffered_bytes()
                         + branch.tension.buffered_bytes()
                         + branch.wars.bytes()
-                        + branch.army.bytes()
                         + branch.air.bytes()
                         + branch.navy.bytes()
                         + branch.nukes.bytes()
                         + branch.factories.bytes()
                         + branch.repairs.bytes()
-                        + branch.supply.bytes()
                         + branch.stockpile.bytes()
-                        + branch.stability.buffered_bytes()
+                        + branch.parts.bytes()
                         + branch.experience.buffered_bytes()
-                        + branch.ledger.bytes()
                         + branch.fuel.buffered_bytes()
                         + branch.territory.bytes()
                         + branch.occupation.bytes()
@@ -4604,13 +4535,11 @@ fn run_planned(
                         autonomy,
                         tension,
                         wars,
-                        army,
                         factories,
                         repairs,
                         nukes,
                         navy,
                         air,
-                        supply,
                         leaders,
                         construction,
                         resources,
@@ -4626,9 +4555,8 @@ fn run_planned(
                         idea_changes,
                         feed,
                         parties,
-                        stability,
+                        parts,
                         experience,
-                        ledger,
                         fuel,
                         territory,
                         occupation,
@@ -4816,14 +4744,6 @@ fn run_planned(
                                 wars.flush(writer, branch, cancelled)
                             )))
                         }),
-                        flush::Task::new(&[(15, "army")], move |_, writer, mut family_timings| {
-                            Ok(Some(time_family!(
-                                family_timings,
-                                "army",
-                                flush,
-                                army.flush(writer, branch, cancelled)
-                            )))
-                        }),
                         flush::Task::new(
                             &[(16, "factories")],
                             move |_, writer, mut family_timings| {
@@ -4859,17 +4779,6 @@ fn run_planned(
                                 air.flush(writer, branch, cancelled)
                             )))
                         }),
-                        flush::Task::new(
-                            &[(20, "supply")],
-                            move |_, writer, mut family_timings| {
-                                Ok(Some(time_family!(
-                                    family_timings,
-                                    "supply",
-                                    flush,
-                                    supply.flush(writer, branch, cancelled)
-                                )))
-                            },
-                        ),
                         flush::Task::new(
                             &[(21, "leaders")],
                             move |_, writer, mut family_timings| {
@@ -5123,46 +5032,14 @@ fn run_planned(
                                 }))
                             },
                         ),
-                        flush::Task::new(
-                            &[(38, "stability")],
-                            move |_, writer, mut family_timings| {
-                                Ok(Some(time_family!(
-                                    family_timings,
-                                    "stability",
-                                    flush,
-                                    stability.flush_timed(
-                                        writer,
-                                        branch,
-                                        cancelled,
-                                        family_timings
-                                    )
-                                )))
-                            },
-                        ),
-                        flush::Task::new(
-                            &[(39, "politics_ledger"), (40, "politics_ledger")],
-                            move |step, writer, mut family_timings| {
-                                Ok(Some(if step == 0 {
-                                    time_family!(
-                                        family_timings,
-                                        "politics_ledger",
-                                        flush,
-                                        ledger.flush(writer, branch, cancelled)
-                                    )
-                                } else {
-                                    time_family!(
-                                        family_timings,
-                                        "politics_ledger",
-                                        flush,
-                                        writer.write_at(
-                                            &format!("politics-ledger-state-{branch}"),
-                                            0,
-                                            ledger.saved_bytes()?.as_slice()
-                                        )
-                                    )
-                                }))
-                            },
-                        ),
+                        flush::Task::new(&[(38, "parts")], move |_, writer, mut family_timings| {
+                            Ok(Some(time_family!(
+                                family_timings,
+                                "parts",
+                                flush,
+                                parts.flush(writer, branch, cancelled)
+                            )))
+                        }),
                         flush::Task::new(&[(41, "fuel")], move |_, writer, mut family_timings| {
                             Ok(Some(time_family!(
                                 family_timings,
@@ -5622,6 +5499,7 @@ fn final_sections(state: &Checkpoint, total: usize) -> Vec<Section> {
         ));
     }
     refused_sections(&mut result, &all_refused(state));
+    native_only_sections(&mut result);
     result
 }
 /// Status rows while preparing, at `done` of `total` blocks: a family
@@ -5630,7 +5508,27 @@ fn preparing_sections(state: &Checkpoint, done: usize, total: usize) -> Vec<Sect
     let mut result = sections(State::Preparing, done, Some(total));
     independent::sections(&mut result, state, total);
     refused_sections(&mut result, &all_refused(state));
+    native_only_sections(&mut result);
     result
+}
+/// Why a family only a native recording prepares refuses every hour of a row recording.
+const NATIVE_ONLY: &str = "It is prepared only from a native columnar recording, and this recording has none beside it";
+/// Fails the status rows of each family only a native recording prepares, which the plan
+/// refuses on every branch of a row recording.
+fn native_only_sections(sections: &mut [Section]) {
+    let plan = plan::current();
+    for family in plan.families() {
+        if plan.backend(family.id.name()) != Some(plan::Backend::Unavailable) {
+            continue;
+        }
+        for section in sections
+            .iter_mut()
+            .filter(|section| family.status.contains(&section.id.as_str()))
+        {
+            section.state = State::Failed;
+            section.error = Some(NATIVE_ONLY.to_owned());
+        }
+    }
 }
 /// Every family refusal, by branch: the hourly walk's, and those of families
 /// prepared on their own that the walk has not reached yet.

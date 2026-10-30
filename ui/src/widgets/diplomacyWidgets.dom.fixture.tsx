@@ -104,7 +104,7 @@ const client: DashboardClient = { available: true,
   async product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>> {
     requests.push(request);
     await later();
-    const params = request.params as { hour: number; tags: string[]; size?: string; faction?: string; view?: string; reads?: { hour: number }[] };
+    const params = request.params as { hour: number; tags: string[]; size?: string; faction?: string; view?: string; reads?: { hour: number }[]; flags?: unknown[] };
     if (request.product === 'country-groups') return reply(request, groupsByRevision[request.revision] as T);
     if (request.product === 'faction-details') return reply(request, details(params.hour, params.faction!) as T);
     if (request.product === 'diplomacy-state') return reply(request, (params.view === 'pair'
@@ -113,8 +113,8 @@ const client: DashboardClient = { available: true,
     if (request.product === 'wars') return reply(request, wars(params.reads) as T);
     if (request.product === 'volunteers-expeditionaries') return reply(request, { tallies: [], unobserved: [], warnings: [],
       links: [aidLink('old', 'RRR', 5, 0, 23), aidLink('renamed', 'QQQ', 5, 24, 200), aidLink('new', 'RRR', 6, 24, 200)] } as T);
-    if (request.product === 'country-flags') return reply(request, { branchId: '1', hour: params.hour, size: params.size, flags: [],
-      unavailable: params.tags.map(tag => ({ tag, reason: 'No synthetic flag.' })), warnings: [] } as T);
+    if (request.product === 'country-flags') return reply(request, { size: params.size, flags: [],
+      unavailable: (params.flags ?? []).map((_, flag) => ({ flag, reason: 'No synthetic flag.' })), warnings: [] } as T);
     if (request.product === 'country-styles') {
       const styles = { branchId: '1', hour: params.hour, warnings: [], styles: params.tags.flatMap(tag => { const style = styleOf(tag, params.hour); return style ? [style] : []; }) };
       if (holding) await new Promise<void>((resolve, reject) => { held.push(resolve); signal.addEventListener('abort', () => reject(new DOMException('Request cancelled', 'AbortError')), { once: true }); });

@@ -1,26 +1,62 @@
-//! Recorded per-country mutations. Prices are native evaluated operands,
-//! never reconstructed content prices or balance falls. Spending presentation
-//! shares the prepared native accounting with the raw ledger.
-mod spending;
+//! Recorded per-country political and command power: every native mutation, government change,
+//! daily application and cost, as the capture recorded them, and the spending they make. Prices
+//! are native evaluated operands, never reconstructed content prices or balance falls.
+//!
+//! A segment operator reads each hour's changed native rows and, at an item's own hour, what
+//! only that hour's frame says of it ([`facts`]); the emit accounts them into the family's series
+//! publication ([`emit`]); a reply reads them back and names them with the recorded content
+//! ([`query`], [`present`]).
+
+pub mod emit;
+pub mod facts;
+mod items;
+mod present;
+pub mod query;
+mod rows;
+pub mod served;
+mod tally;
+#[cfg(test)]
+mod tests;
+
+use dashboard_base::products::idea_format::{LocalisedText, ModifierFormat};
+use dashboard_base::products::idea_history::IdeaInfo;
+use dashboard_base::products::politics_content::{PoliticsContent, recorded_politics_content};
 use dashboard_base::products::{CountryParams, Product};
 use dashboard_base::source::Source;
-#[cfg(any(test, feature = "test-support"))]
-use dashboard_core::config::LoadContext;
+pub use present::{LedgerArt, present_icons};
 use replay_data::rows::*;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-pub use spending::{prepared, present_icons};
-pub use spending::{
-    LedgerCommandHold, LedgerCommandHolder, LedgerIdeaTooltips, LedgerSpend, LedgerSpendCategory,
-    LedgerSpendChange, LedgerSpendCoverage, LedgerSpendItem,
-};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ts_rs::TS;
+
+/// The recorded content a preparation names items with, or why it cannot.
+pub type PreparedContent = Result<Option<Arc<PoliticsContent>>, String>;
+
+/// The recorded mod stack's politics content, as preparation and replies name items with it.
+pub fn prepared_content(
+    source: &Source,
+    options: Option<&dashboard_core::config::ContentOptions>,
+) -> PreparedContent {
+    let content = options
+        .map(|options| recorded_politics_content(source, options))
+        .transpose()
+        .map_err(|reason| reason.to_string())?;
+    if let Some(content) = &content {
+        let _ = content.prepare_power_content();
+    }
+    Ok(content)
+}
+
 pub struct PoliticsLedger;
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum LedgerView {
@@ -30,6 +66,7 @@ pub enum LedgerView {
     Balance,
     Governments,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PoliticsLedgerParams {
@@ -39,6 +76,7 @@ pub struct PoliticsLedgerParams {
     #[ts(optional, as = "Option<_>")]
     pub view: LedgerView,
 }
+
 impl PoliticsLedgerParams {
     fn country(&self) -> CountryParams {
         CountryParams {
@@ -46,11 +84,8 @@ impl PoliticsLedgerParams {
             tag: self.tag.clone(),
         }
     }
-    #[cfg(any(test, feature = "test-support"))]
-    fn branch(&self) -> u64 {
-        self.branch_id.parse().expect("validated branch id")
-    }
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerItem {
@@ -68,6 +103,7 @@ pub struct LedgerItem {
     pub origin_token: Option<u32>,
     pub origin_key: Vec<u8>,
 }
+
 impl From<&PowerIdentity> for LedgerItem {
     fn from(item: &PowerIdentity) -> Self {
         Self {
@@ -87,6 +123,7 @@ impl From<&PowerIdentity> for LedgerItem {
         }
     }
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerMutation {
@@ -107,6 +144,7 @@ pub struct LedgerMutation {
     pub item: LedgerItem,
     pub covered: bool,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerGovernment {
@@ -134,6 +172,7 @@ pub struct LedgerGovernment {
     pub origin_key: Vec<u8>,
     pub covered: bool,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerCoverage {
@@ -146,6 +185,7 @@ pub struct LedgerCoverage {
     pub streams: u8,
     pub reason: Option<String>,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerDaily {
@@ -170,6 +210,7 @@ pub struct LedgerDaily {
     pub cp_realized_raw: Option<String>,
     pub cp_sequence: Option<String>,
 }
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerDailyCost {
@@ -186,6 +227,7 @@ pub struct LedgerDailyCost {
     pub cause: String,
     pub item: LedgerItem,
 }
+
 /// A native application, distinct from its evaluated charge and daily rate.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +244,116 @@ pub struct LedgerBalanceChange {
     pub covered: bool,
     pub reason: Option<String>,
 }
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerIdeaTooltips {
+    pub ideas: Vec<IdeaInfo>,
+    pub artwork: Vec<dashboard_core::dto::Artwork>,
+    pub modifiers: Vec<ModifierFormat>,
+    pub texts: Vec<LocalisedText>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpendChange {
+    /// Native date of this contribution, separate from its supplying read.
+    #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
+    pub hour: Option<i32>,
+    pub read_hour: i32,
+    pub charge_raw: Option<String>,
+    pub realized_delta_raw: Option<String>,
+    pub occurrences: u32,
+    pub covered: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpend {
+    /// Recorded country link identity, also CountryRow.id.
+    #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
+    pub country_id: u32,
+    pub id: String,
+    pub sequence: String,
+    pub ordinal: u32,
+    pub hour: i32,
+    pub read_hour: i32,
+    pub country_tag: String,
+    pub country_name: Option<String>,
+    pub currency: String,
+    pub category: String,
+    pub item_id: String,
+    pub charge_raw: Option<String>,
+    pub realized_delta_raw: Option<String>,
+    pub covered: bool,
+    pub occurrences: u32,
+    /// Upkeep has one row per country and day; each contribution stays dated by its own read.
+    pub changes: Vec<LedgerSpendChange>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpendItem {
+    pub id: String,
+    /// Specific-item identity includes the recorded target and template.
+    pub group_id: String,
+    pub name: Option<String>,
+    /// Plain display text, using only the recorded cause, item and target.
+    pub action: String,
+    /// Drawn when a reply is served, from the request's selection ([`Self::icon_art`]).
+    pub icon: Option<String>,
+    /// What the icon is drawn from, taken when a reply is served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub icon_art: Option<LedgerArt>,
+    pub tooltip_token: Option<String>,
+    pub character: Option<u32>,
+    pub target_tag: Option<String>,
+    pub target_name: Option<String>,
+    pub unknown: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpendCategory {
+    pub id: String,
+    pub name: String,
+    pub identified: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpendCoverage {
+    pub read_hour: i32,
+    pub since_hour: Option<i32>,
+    pub through_hour: Option<i32>,
+    pub political: bool,
+    pub command: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerCommandHolder {
+    pub id: String,
+    /// Recorded object domain, cause or writer site; never a guessed holder.
+    pub kind: String,
+    pub name: Option<String>,
+    pub amount_raw: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerCommandHold {
+    pub read_hour: i32,
+    pub through_hour: i32,
+    pub total_raw: Option<String>,
+    pub holders: Vec<LedgerCommandHolder>,
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PoliticsLedgerReply {
@@ -258,8 +410,8 @@ pub struct LedgerPartSummary {
     pub summary: dashboard_base::prepared_chart::ChartSummary,
 }
 
-/// A prepared recurring subtotal for one item within a game month or a
-/// requested membership interval. It has no list of individual paid days.
+/// A recurring subtotal for one item within a game month or a requested membership interval.
+/// It has no list of individual paid days.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LedgerRecurringSpend {
@@ -289,9 +441,11 @@ pub struct LedgerGain {
     pub lost_raw: String,
     pub complete: bool,
 }
+
 impl Product for PoliticsLedger {
     const KEY: &'static str = "politics-ledger";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = PoliticsLedgerParams;
     type Reply = PoliticsLedgerReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -323,27 +477,4 @@ impl Product for PoliticsLedger {
             LedgerPartSummary::decl(),
         ]
     }
-    #[cfg(any(test, feature = "test-support"))]
-    fn load(
-        source: &Source,
-        params: &Self::Params,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        spending::load(source, params, context, cancelled)
-    }
 }
-fn coverage(row: &PoliticsCaptureCoverageRow, read_hour: i32) -> LedgerCoverage {
-    LedgerCoverage {
-        country: Some(row.country),
-        instance: Some(row.instance),
-        read_hour,
-        since_hour: Some(row.since_hour),
-        through_hour: Some(row.through_hour),
-        epoch: Some(row.epoch.to_string()),
-        streams: row.streams,
-        reason: None,
-    }
-}
-#[cfg(test)]
-mod tests;

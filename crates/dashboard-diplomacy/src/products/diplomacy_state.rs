@@ -10,6 +10,7 @@ pub use prepared::columnar;
 mod evidence;
 pub mod prepared;
 pub mod query;
+pub mod served;
 
 pub struct DiplomacyState;
 
@@ -220,6 +221,7 @@ impl ReplyWarnings for DiplomacyReply {
 impl Product for DiplomacyState {
     const KEY: &'static str = "diplomacy-state";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = DiplomacyParams;
     type Reply = DiplomacyReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

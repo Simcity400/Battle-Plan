@@ -204,6 +204,7 @@ fn merge_reply(
     prior
 }
 impl Prepared {
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         scan: &sinkings::Scanned,
@@ -212,9 +213,10 @@ impl Prepared {
         cat: Result<&Catalogue, &str>,
         content: Option<&NameContent>,
         retention: Option<&sinkings::Retention>,
+        classes: &mut ClassMemo,
     ) -> io::Result<()> {
         self.observe_with(scan, indices, flag, |page| {
-            prepared_names(scan, &page.ships, cat, content, retention, flag)
+            prepared_names(scan, &page.ships, cat, content, retention, flag, classes)
         })
     }
     fn observe_with(
@@ -222,7 +224,7 @@ impl Prepared {
         scan: &sinkings::Scanned,
         indices: &[u32],
         flag: &AtomicBool,
-        names: impl Fn(&sinkings::Scanned) -> io::Result<Named>,
+        mut names: impl FnMut(&sinkings::Scanned) -> io::Result<Named>,
     ) -> io::Result<()> {
         check_cancel(flag)?;
         let mut changed = sinkings::Scanned::default();
@@ -273,7 +275,7 @@ impl Prepared {
         Ok(())
     }
     /// The block `ordinal` of `branch` in `replay`, whose windows its pages
-    /// are dated by.
+    /// are dated by. The content warnings its manifest names.
     #[allow(clippy::too_many_arguments)]
     pub fn publish<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
@@ -286,7 +288,8 @@ impl Prepared {
         cat: Result<&Catalogue, &str>,
         content: Option<&NameContent>,
         retention: Option<&sinkings::Retention>,
-    ) -> io::Result<()> {
+        classes: &mut ClassMemo,
+    ) -> io::Result<Vec<String>> {
         let windows: Vec<_> = replay
             .index
             .iter()
@@ -297,7 +300,7 @@ impl Prepared {
             })
             .collect();
         self.publish_with(writer, branch, ordinal, scan, &windows, flag, |page| {
-            prepared_names(page, &page.ships, cat, content, retention, flag)
+            prepared_names(page, &page.ships, cat, content, retention, flag, classes)
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -309,8 +312,8 @@ impl Prepared {
         scan: &sinkings::Scanned,
         windows: &[HourSpan],
         flag: &AtomicBool,
-        names: impl Fn(&sinkings::Scanned) -> io::Result<Named>,
-    ) -> io::Result<()> {
+        mut names: impl FnMut(&sinkings::Scanned) -> io::Result<Named>,
+    ) -> io::Result<Vec<String>> {
         let boundary = if ordinal == 0 {
             i32::MIN
         } else {
@@ -403,7 +406,8 @@ impl Prepared {
         self.events
             .flush(writer, &format!("sinking-events-{branch}"), 0, flag)?;
         self.windows
-            .flush(writer, &format!("sinking-windows-{branch}"), 0, flag)
+            .flush(writer, &format!("sinking-windows-{branch}"), 0, flag)?;
+        Ok(resolved.warnings)
     }
 }
 /// Before the first commit there are no sinking facts or class choices.

@@ -240,6 +240,7 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
         .start(Start::Run { continues: false }, 1, inputs[0].0.hour)
         .unwrap();
     let mut walk = Synthetic::new(columnar::TABLES, 1, inputs[0].0.hour).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let mut handed = Vec::new();
     for (ordinal, (input, read)) in inputs.iter().enumerate() {
         let run = ordinal > 0 && inputs[ordinal - 1].0.hour.checked_add(1) != Some(input.hour);
@@ -264,6 +265,18 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
         }
         write_hour(&mut walk, input, *read);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &dashboard_country_fuel::products::country_fuel::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             projector
                 .hour(
                     &segments::Hour {
@@ -275,6 +288,7 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
                         opens: starts || block_start,
                         state,
                         manifest,
+                        world,
                     },
                     &mut hours,
                 )
@@ -773,6 +787,7 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
             .start(start, block.branch, block.first_hour)
             .unwrap();
         let mut walk = Synthetic::new(columnar::TABLES, block.branch, block.first_hour).unwrap();
+        let mut world_held: Option<dashboard_world::World> = None;
         let mut at = 0;
         replay
             .read_block_alone(
@@ -785,6 +800,18 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
                         input.metrics.table_ns[TableId::CountryFuel.index()] != 0,
                     );
                     walk.end(|state, manifest, frame, starts| {
+                        let world = dashboard_world::World::at(
+                            &mut world_held,
+                            starts,
+                            &dashboard_country_fuel::products::country_fuel::columnar::needs(),
+                            (
+                                replay_data::format::FormatVersion::CURRENT,
+                                replay_data::scope::CaptureMode::Full,
+                            ),
+                            state,
+                            manifest,
+                        )
+                        .unwrap();
                         projector
                             .hour(
                                 &segments::Hour {
@@ -796,6 +823,7 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
                                     opens: starts,
                                     state,
                                     manifest,
+                                    world,
                                 },
                                 &mut hours,
                             )

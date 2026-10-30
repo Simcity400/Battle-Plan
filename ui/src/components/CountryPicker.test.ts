@@ -21,7 +21,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined,
     search: undefined as ((event: { currentTarget: { value: string } }) => void) | undefined,
     changed: [] as (string | null)[], rosterLoads: 0, rosterError: null as string | null,
-    rosterReply: null as unknown, flagsError: null as string | null, retryAction: undefined as (() => void) | undefined };
+    rosterReply: null as unknown, retryAction: undefined as (() => void) | undefined, flagCall: 0, drawn: new WeakMap<object, Set<string>>() };
   const globals = globalThis as typeof globalThis & { __pickerWitness?: typeof state };
   globals.__pickerWitness = state;
   // Retain the real component's hook cells and effect cleanup between SSR draws.
@@ -55,21 +55,22 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
       export const useCountryNamesAt = (_client, _track, wanted) => { const s = globalThis.__pickerWitness; s.wanted = wanted;
         return new Map(wanted.flatMap(({ tag, hour }) => { const key = nameKey(hour, tag); return s.names.has(key) ? [[key, s.names.get(key)]] : []; })); };
       export const useCountryNamesRead = () => new Map();`,
-    '/dashboard/products.ts': `export const forgetSettledProducts = () => {};
-      export const loadProduct = (_client, request) => {
+    '/dashboard/products.ts': `export const loadProduct = (_client, request) => {
         const s = globalThis.__pickerWitness;
-        if (request.product === 'country-flags') return Promise.resolve({ flags: [] });
         s.rosterLoads++;
         if (s.rosterError) return Promise.reject(Error(s.rosterError));
         if (!s.rosterReply) throw Error('authoritative choices must not request metadata fallback');
         return Promise.resolve(s.rosterReply);
-      };
-      export const loadTransientProduct = (_client, request) => { const s = globalThis.__pickerWitness, p = request.params;
-        s.headerReads.push({ tag: p.tags[0], hour: p.hour }); return Promise.resolve({ flags: [{ tag: p.tags[0] }] }); };`,
-    '/dashboard/flagCache.ts': `export class FlagStore { static key(...args) { return JSON.stringify(args); } }
-      export const flagStore = () => ({ get: () => undefined });
-      export const loadListFlags = (_client, _source, targets) => { const s = globalThis.__pickerWitness; s.listReads.push(targets);
-        return s.flagsError ? Promise.reject(Error(s.flagsError)) : Promise.resolve(); };`,
+      };`,
+    // The list reads first, then the header. A client's flags are drawn once an effect has asked, per content revision.
+    '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
+      export const retryFlags = () => {};
+      export const useFlagReads = (client, _source, reads) => { const s = globalThis.__pickerWitness, header = s.flagCall++ === 1;
+        if (!header) { s.listReads.push(reads); return new Map(); }
+        for (const read of reads) if (!s.headerReads.some(seen => seen.tag === read.tag && seen.hour === read.hour)) s.headerReads.push({ tag: read.tag, hour: read.hour });
+        const drawn = s.drawn.get(client) ?? new Set();
+        if (!drawn.has(s.content)) s.effects.push(() => { s.drawn.set(client, drawn.add(s.content)); });
+        return new Map(drawn.has(s.content) ? reads.map(read => [flagReadKey(read), { image: { tag: read.tag } }]) : []); };`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-witness-fixture', enforce: 'pre',
@@ -88,7 +89,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
       source: { id: 'synthetic', revision: '1', metadata: { countries, branches: [{ id: '1', firstHour: 100, lastHour: 120 }] } },
       client: {}, flagAt: { branchId: '1', hour: 110 }, choiceReads: reads, onChange: (tag: string | null) => state.changed.push(tag),
     } as unknown as ComponentProps<typeof CountryPicker>;
-    const render = () => { state.cursor = 0; state.rows = []; return renderToStaticMarkup(createElement(Picker, props)); };
+    const render = () => { state.cursor = 0; state.flagCall = 0; state.rows = []; return renderToStaticMarkup(createElement(Picker, props)); };
     const flush = async () => { const effects = state.effects.splice(0); effects.forEach(effect => effect()); await Promise.resolve(); await Promise.resolve(); };
     let html = render(); await flush(); html = render();
     assert.ok(state.rows.length < 30, '5000 choices draw only the viewport');
@@ -135,11 +136,10 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     assert.doesNotMatch(html, /Synthetic native roster request failed/);
     const failedLoads = state.rosterLoads;
     state.rosterError = null; state.rosterReply = { countries: props.countries, warnings: ['Synthetic ownership diagnostic'] };
-    state.flagsError = 'Synthetic decorative flag failure';
     assert.ok(state.retryAction); state.retryAction(); render(); await flush(); html = render(); await flush(); html = render();
     assert.equal(state.rosterLoads, failedLoads + 1, 'Retry actually reloads the countries');
     assert.match(html, /Metadata belongs to another holder/);
-    assert.doesNotMatch(html, /Couldn’t load countries|Synthetic ownership diagnostic|Flags unavailable|Some ownership history is unavailable|Synthetic decorative flag failure|class="pill"/);
+    assert.doesNotMatch(html, /Couldn’t load countries|Couldn’t load flags|Synthetic ownership diagnostic|Flags unavailable|Some ownership history is unavailable|class="pill"/);
   } finally { await vite.close(); delete globals.__pickerWitness; }
 });
 
@@ -170,10 +170,9 @@ test('the listbox names its active option only while that row is drawn, and is m
     '/components/Icons.tsx': `import { createElement } from 'react'; export const Icon = ({ name }) => createElement('i', { 'data-icon': name });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map(); export const useCountryNamesRead = () => new Map();',
-    '/dashboard/products.ts': `export const forgetSettledProducts = () => {}; export const loadProduct = () => new Promise(() => {});
-      export const loadTransientProduct = loadProduct;`,
-    '/dashboard/flagCache.ts': `export class FlagStore { static key(...args) { return JSON.stringify(args); } }
-      export const flagStore = () => ({ get: () => undefined }); export const loadListFlags = () => new Promise(() => {});`,
+    '/dashboard/products.ts': 'export const loadProduct = () => new Promise(() => {});',
+    '/dashboard/countryFlags.ts': `export const flagReadKey = read => JSON.stringify([read.branchId, read.hour, read.tag]);
+      export const retryFlags = () => {}; export const useFlagReads = () => new Map();`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-list-fixture', enforce: 'pre',

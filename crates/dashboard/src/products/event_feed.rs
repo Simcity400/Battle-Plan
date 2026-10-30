@@ -36,8 +36,10 @@ mod decision_roster;
 mod native;
 mod script_effects;
 
+pub mod columnar;
 mod nuclear;
 pub mod prepared;
+pub mod served;
 
 pub struct EventFeed;
 
@@ -455,8 +457,23 @@ struct Feed {
     unavailable: Vec<EventFeedUnavailable>,
     warnings: Vec<String>,
 }
+/// A notice a capturing builder held back, for the builder it is merged into in order.
+struct Notice {
+    key: UnavailableKey,
+    reason: String,
+    count: Option<u32>,
+    samples: Vec<String>,
+}
+impl Notice {
+    fn apply(self, builder: &mut Builder) {
+        builder.merge_unavailable(self.key, self.reason, self.count, self.samples);
+    }
+}
 #[derive(Serialize, Deserialize)]
 struct Builder {
+    /// Notices held back, when another builder merges them ([`Notice`]).
+    #[serde(skip)]
+    captured: Option<Vec<Notice>>,
     feed: Feed,
     /// Every recorded native war end of the branch, by its hour and the two
     /// countries' tags, so a derived peace row the native row already shows
@@ -525,6 +542,7 @@ impl RowDate {
 impl Builder {
     fn new(first: i32, last: i32) -> Self {
         Self {
+            captured: None,
             war_ends: BTreeSet::new(),
             script_inputs: BTreeMap::new(),
             occurrences: BTreeMap::new(),
@@ -630,6 +648,15 @@ impl Builder {
         count: Option<u32>,
         samples: Vec<String>,
     ) {
+        if let Some(captured) = &mut self.captured {
+            captured.push(Notice {
+                key,
+                reason,
+                count,
+                samples,
+            });
+            return;
+        }
         if let Some((index, retained)) = self.unavailable_keys.get_mut(&key) {
             let existing = &mut self.feed.unavailable[*index];
             if key.3 {
@@ -2242,6 +2269,7 @@ fn windows(feed: &Feed, budget: usize) -> io::Result<Vec<EventFeedWindow>> {
 impl Product for EventFeed {
     const KEY: &'static str = "event-feed";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::FEED);
     type Params = EventFeedParams;
     type Reply = EventFeedReply;
     fn types() -> Vec<String> {

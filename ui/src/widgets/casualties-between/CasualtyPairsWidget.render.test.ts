@@ -22,7 +22,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity) => ({ data: identity ? new Map([[0, ${JSON.stringify(reply)}]]) : new Map(), errors: new Map(), retry() {} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__pairsPending.groups, retry() {} });',
     '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;`,
-    '/dashboard/countryFlagsAt.ts': 'export const flagReadSpec = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsAt = () => new Map();',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777777";',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], muted: "#777777", surface: "#000000", countryColours: "raw" }); export const useViewportHeight = () => 1000;',

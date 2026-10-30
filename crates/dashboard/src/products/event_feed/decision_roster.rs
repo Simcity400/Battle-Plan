@@ -110,6 +110,71 @@ struct Member {
     country: Option<u32>,
     numeric: Option<i32>,
 }
+/// A final roster rebuild's owner as its reduction left it there: what its owner holds, as
+/// kept, with the members' days and target countries of that moment, for another thread to
+/// make the rebuild's [`Inputs`] of.
+pub(super) struct Captured {
+    /// The owner's native id.
+    pub(super) owner: u32,
+    sequence: u64,
+    complete: bool,
+    seed: Option<i32>,
+    political_power: Option<i64>,
+    override_admission: Option<bool>,
+    kept: std::sync::Arc<super::native::retained::Kept>,
+    days: Vec<i32>,
+    /// The owner's target countries, with their slots once resolved.
+    pub(super) countries: Vec<([u32; 3], Option<u32>)>,
+}
+impl Captured {
+    /// The bytes it owns, itself and its kept copy included.
+    pub(super) fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.kept.heap()
+            + self.days.capacity() * size_of::<i32>()
+            + self.countries.capacity() * size_of::<([u32; 3], Option<u32>)>()
+    }
+    /// `state` at the rebuild `event` of a read `covered` whole, with `kept` its copy.
+    pub(super) fn of(
+        state: &DecisionState,
+        event: &EventFeedEvent,
+        covered: bool,
+        kept: std::sync::Arc<super::native::retained::Kept>,
+    ) -> Self {
+        Self {
+            owner: event.actor.id,
+            sequence: event.sequence,
+            complete: covered && state.complete(),
+            seed: event.script.and_then(|script| script.days),
+            political_power: event.script.and_then(|script| match script.change {
+                Some(replay_data::event_feed_rows::EventFeedScriptChange::Decision(change)) => {
+                    change.political_power
+                }
+                _ => None,
+            }),
+            override_admission: event
+                .script
+                .and_then(|script| script.lifecycle)
+                .map(|value| value != 0),
+            kept,
+            days: (0..CONTAINERS as u8)
+                .filter_map(|container| state.members(container).ok())
+                .flatten()
+                .map(|member| member.days)
+                .collect(),
+            countries: state
+                .target_countries
+                .values()
+                .map(|country| ([country.reference, country.id, country.instance], None))
+                .collect(),
+        }
+    }
+    /// Its inputs, as [`Inputs::captured`] takes them at the rebuild.
+    pub(super) fn inputs(&self) -> Inputs {
+        Inputs::of(self)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Inputs {
     sequence: u64,
@@ -125,6 +190,24 @@ pub(super) struct Inputs {
     countries: Vec<([u32; 3], Option<u32>)>,
 }
 impl Inputs {
+    /// The bytes it owns on the heap.
+    pub(super) fn heap(&self) -> usize {
+        self.members.capacity() * size_of::<Member>()
+            + self
+                .members
+                .iter()
+                .map(|member| member.token.capacity())
+                .sum::<usize>()
+            + self.ignored.capacity() * size_of::<Vec<u8>>()
+            + self.ignored.iter().map(Vec::capacity).sum::<usize>()
+            + self.random.capacity() * size_of::<(Vec<u8>, i32, i32)>()
+            + self
+                .random
+                .iter()
+                .map(|(token, _, _)| token.capacity())
+                .sum::<usize>()
+            + self.countries.capacity() * size_of::<([u32; 3], Option<u32>)>()
+    }
     pub fn captured(state: &DecisionState, event: &EventFeedEvent, covered: bool) -> Self {
         let mut members = Vec::new();
         for container in 0..CONTAINERS as u8 {
@@ -166,6 +249,44 @@ impl Inputs {
                 .values()
                 .map(|country| ([country.reference, country.id, country.instance], None))
                 .collect(),
+        }
+    }
+    /// The inputs of the final rebuild `captured` holds, as [`Self::captured`] takes them.
+    fn of(captured: &Captured) -> Self {
+        let decided = captured.kept.decided();
+        let members = decided
+            .into_iter()
+            .flat_map(|decided| decided.members.iter().enumerate())
+            .flat_map(|(container, rows)| rows.iter().map(move |row| (container as u8, row)))
+            .zip(&captured.days)
+            .map(|((container, row), &days)| Member {
+                container,
+                token: row.token.clone(),
+                state: row.lifecycle,
+                days,
+                flags: row.flags,
+                country: row.country_target,
+                numeric: row.numeric_target,
+            })
+            .collect();
+        Self {
+            sequence: captured.sequence,
+            complete: captured.complete,
+            seed: captured.seed,
+            political_power: captured.political_power,
+            override_admission: captured.override_admission,
+            members,
+            ignored: decided.map_or_else(Vec::new, |decided| {
+                decided.ignored.iter().cloned().collect()
+            }),
+            random: decided.map_or_else(Vec::new, |decided| {
+                decided
+                    .random_counts
+                    .iter()
+                    .map(|value| (value.token.clone(), value.target, value.count))
+                    .collect()
+            }),
+            countries: captured.countries.clone(),
         }
     }
     pub fn resolve(&mut self, slot: &mut impl FnMut(EventFeedCountry) -> Option<u32>) {

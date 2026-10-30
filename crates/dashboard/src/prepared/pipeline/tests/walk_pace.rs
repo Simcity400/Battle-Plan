@@ -427,8 +427,6 @@ const PENDING_UNDER_COUNTED: &[&str] = &[
     "navy",
     // Flush replaces uncharged snapshots and missing-input/gap continuation records.
     "peace",
-    // Flush seals constant accepted/census runs outside the batch charge.
-    "politics_ledger",
     // Flush publishes an open endpoint and its TimeEntry outside the spent/held charge.
     "production",
     // A rename adds catalogue keys and parts without numeric repair rates.

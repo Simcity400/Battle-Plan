@@ -1,7 +1,8 @@
 //! Observation-time group runs, corrected only over changed classification windows.
+use super::emit::Value;
 use super::*;
 
-const MEASURES: [&str; 4] = ["stock", "balance", "need", "drawable"];
+pub(super) const MEASURES: [&str; 4] = ["stock", "balance", "need", "drawable"];
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +47,28 @@ impl Content {
         Self {
             database: Some(database),
             kinds: Some(kinds),
+        }
+    }
+
+    /// A binding whose authored kinds are those given, by token: every other token is
+    /// unresolved.
+    #[cfg(test)]
+    pub(crate) fn resolved(kinds: &[(&str, &str, Domain, bool)]) -> Self {
+        let results = catalogue::KeyedResults::default();
+        for &(token, key, domain, requires_available) in kinds {
+            results
+                .get_or_init(&token.to_owned(), |_| {
+                    Ok(Kind {
+                        key: key.into(),
+                        domain,
+                        requires_available,
+                    })
+                })
+                .unwrap();
+        }
+        Self {
+            database: Some(Arc::new(Database::default())),
+            kinds: Some(Arc::new(results)),
         }
     }
 }
@@ -125,9 +148,87 @@ pub(super) struct Choices {
     /// Holder spellings only accumulate; variant reclassification clears this map.
     #[serde(skip)]
     projections: BTreeMap<String, ([Option<i32>; 5], usize)>,
+    /// Every group the compact step measured, numbered as first seen: the numbers its holders'
+    /// saved groups name.
+    names: GroupNames,
+    /// Each classified variant's groups by number, kept until it is classified again.
+    #[serde(skip)]
+    classes: HashMap<u64, Class>,
+    /// Counts the clears of `projections`, which the compact step's projections follow.
+    generation: u64,
     #[cfg(test)]
     #[serde(skip)]
     pub(super) whole_projection: bool,
+}
+
+/// Groups by number, as first seen.
+#[derive(Default, Serialize, Deserialize)]
+struct GroupNames {
+    numbers: HashMap<String, u32>,
+    names: Vec<String>,
+    /// Whether each is a resolved domain's, whose totals unresolved logistics leave unknown.
+    domain: Vec<bool>,
+}
+
+impl GroupNames {
+    fn number(&mut self, name: &str) -> io::Result<u32> {
+        if let Some(&number) = self.numbers.get(name) {
+            return Ok(number);
+        }
+        let (grouping, key): (String, String) = serde_json::from_str(name)?;
+        let number = u32::try_from(self.names.len())
+            .map_err(|_| dashboard_core::invalid("Too many stockpile groups"))?;
+        self.numbers.insert(name.to_owned(), number);
+        self.names.push(name.to_owned());
+        self.domain
+            .push(grouping == "domain" && key != "unresolved");
+        Ok(number)
+    }
+
+    fn numbers(&mut self, names: &[String; 2]) -> io::Result<[u32; 2]> {
+        Ok([self.number(&names[0])?, self.number(&names[1])?])
+    }
+
+    fn name(&self, number: u32) -> &str {
+        &self.names[number as usize]
+    }
+}
+
+/// A classified variant's two groups, and whether content resolves its type.
+#[derive(Clone, Copy)]
+struct Class {
+    groups: [u32; 2],
+    unresolved: bool,
+}
+
+/// What the compact step keeps of one holder's groups.
+#[derive(Default, Serialize, Deserialize)]
+pub(super) struct Grouped {
+    completeness: Option<[bool; 3]>,
+    /// The groups its members were in at its last step, ascending.
+    active: Vec<u32>,
+    /// Every group it was measured in, with its four keys.
+    groups: HashMap<u32, [u64; 4]>,
+    complete: Option<[u64; 3]>,
+    logistics: Logistics,
+    /// Its coverage and spellings counted at its last step, and the classification
+    /// generation they were measured in.
+    projection: Option<([Option<i32>; 5], usize, u64)>,
+}
+
+/// One holder's open values as the compact step reads them, by key.
+pub(super) struct Held<'a> {
+    pub(super) tag: &'a str,
+    pub(super) stock: &'a [(u64, [Value; 1])],
+    pub(super) lines: &'a [(u64, [Value; 4])],
+    pub(super) logistics: &'a [(u32, [Value; 3])],
+    /// The last stock, line and logistics spans: their first hour, and whether they are
+    /// carried.
+    pub(super) spans: [Option<(i32, bool)>; 3],
+    /// The variants whose stock or line values started a run at this step.
+    pub(super) started: &'a [u64],
+    /// Each field's keys whose run started or ended at this step.
+    pub(super) changes: &'a [Vec<u64>; 8],
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -655,6 +756,19 @@ impl Choices {
         }
         Ok(())
     }
+    /// Takes up the state [`Self`] was saved with: its classified variants' groups again, and
+    /// none of the projections its holders measured before.
+    pub(super) fn restored(&mut self) {
+        self.projections.clear();
+        self.classes.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.variant_groups = self
+            .metadata
+            .current
+            .iter()
+            .map(|(&id, span)| (id, span.classification.groups(Some(id))))
+            .collect();
+    }
     pub(super) fn bind_content(&mut self, content: &Content) -> bool {
         fn same<T>(old: &Option<Arc<T>>, new: &Option<Arc<T>>) -> bool {
             match (old, new) {
@@ -668,6 +782,8 @@ impl Choices {
         if changed {
             self.variant_groups.clear();
             self.projections.clear();
+            self.classes.clear();
+            self.generation = self.generation.wrapping_add(1);
         }
         self.content = content.clone();
         changed
@@ -747,6 +863,8 @@ impl Choices {
             current.last = hour;
         }
         self.projections.clear();
+        self.generation = self.generation.wrapping_add(1);
+        self.classes.remove(&id);
         self.variant_groups
             .insert(id, current.classification.groups(Some(id)));
         Ok(())
@@ -1137,6 +1255,521 @@ impl Choices {
         }
         Ok(())
     }
+}
+
+/// A variant member of a holder's groups, with its stock operand.
+struct GroupMember {
+    #[cfg(test)]
+    id: u64,
+    class: Class,
+    stock: Operand,
+}
+
+/// A logistics member, with its balance, stock and available operands.
+struct Archetype {
+    id: u32,
+    classification: Classification,
+    groups: [u32; 2],
+    operands: [Operand; 3],
+}
+
+impl Choices {
+    /// A classified variant's groups by number.
+    fn class(&mut self, id: u64) -> io::Result<Class> {
+        if let Some(&class) = self.classes.get(&id) {
+            return Ok(class);
+        }
+        let (Some(span), Some(groups)) =
+            (self.metadata.current.get(&id), self.variant_groups.get(&id))
+        else {
+            return Err(dashboard_core::invalid(
+                "A held stockpile variant is not classified",
+            ));
+        };
+        let class = Class {
+            groups: self.names.numbers(groups)?,
+            unresolved: span.classification.kind.is_none(),
+        };
+        self.classes.insert(id, class);
+        Ok(class)
+    }
+
+    /// [`Self::observe`] of a holder's compact open values, measuring the groups it does:
+    /// those of the members that changed, where their coverage, completeness and
+    /// classifications held since the holder's last step, else every group its members are
+    /// in, were in at its last step or whose logistics evidence changed, and every group it
+    /// was measured in where its completeness changed or a span starts.
+    pub(super) fn observe_ledger(
+        &mut self,
+        holder: &mut Holder,
+        grouped: &mut Grouped,
+        held: &Held<'_>,
+        names: &VariantCatalogue,
+        hour: i32,
+        numbers: &mut Numbers,
+    ) -> io::Result<()> {
+        let cpu = ::replay_frame::cpu::scope_phase("stockpile:group_inputs");
+        let tag = held.tag;
+        let [stock_span, line_span, balance_span] = held.spans;
+        let current_first = |span: Option<(i32, bool)>| {
+            span.filter(|&(_, carried)| carried).map(|(first, _)| first)
+        };
+        let projection = (
+            [
+                current_first(stock_span),
+                current_first(line_span),
+                current_first(balance_span),
+                current_first(balance_span),
+                current_first(balance_span),
+            ],
+            holder.tokens.len(),
+            self.generation,
+        );
+        #[cfg(not(test))]
+        let incremental = grouped.projection == Some(projection);
+        #[cfg(test)]
+        let incremental = !self.whole_projection && grouped.projection == Some(projection);
+        // The fields Choices reads: stock, daily, balance, logistics stock and available.
+        let fields = [0, 1, 5, 6, 7];
+        if incremental && fields.iter().all(|&field| held.changes[field].is_empty()) {
+            return Ok(());
+        }
+        for &id in held.started {
+            if !self.variant_groups.contains_key(&id) {
+                let classification = self.classification(names.token(id));
+                if self
+                    .metadata
+                    .current
+                    .get(&id)
+                    .is_none_or(|span| span.classification != classification)
+                {
+                    self.classify_one(id, names.token(id), hour)?;
+                } else {
+                    self.variant_groups
+                        .insert(id, classification.groups(Some(id)));
+                }
+            }
+        }
+        let [stock_known, balance_known] =
+            [stock_span, balance_span].map(|span| span.is_some_and(|(_, carried)| carried));
+        let [stock_starts, balance_starts] =
+            [stock_span, balance_span].map(|span| span.is_some_and(|(first, _)| first == hour));
+        grouped.logistics.dirty.clear();
+        let mut archetypes = Vec::with_capacity(held.logistics.len());
+        for &(id, values) in held.logistics {
+            let classification = self.classify_logistics(holder, id);
+            grouped.logistics.observe(id, classification.clone());
+            let groups = self.names.numbers(&classification.groups(None))?;
+            archetypes.push(Archetype {
+                id,
+                classification,
+                groups,
+                operands: values.map(|value| Operand {
+                    value: balance_known
+                        .then(|| value.amount.map(i128::from))
+                        .flatten(),
+                    present: true,
+                }),
+            });
+        }
+        // Each variant with a stock or line run, in id order.
+        let mut members = Vec::with_capacity(held.stock.len().max(held.lines.len()));
+        let (mut stock, mut lines) = (held.stock.iter().peekable(), held.lines.iter().peekable());
+        loop {
+            let id = match (stock.peek(), lines.peek()) {
+                (None, None) => break,
+                (Some(&&(id, _)), None) | (None, Some(&&(id, _))) => id,
+                (Some(&&(a, _)), Some(&&(b, _))) => a.min(b),
+            };
+            let held_stock = stock
+                .next_if(|&&(at, _)| at == id)
+                .map(|&(_, [value])| value);
+            lines.next_if(|&&(at, _)| at == id);
+            members.push(GroupMember {
+                #[cfg(test)]
+                id,
+                class: self.class(id)?,
+                stock: Operand {
+                    present: held_stock.is_some(),
+                    value: if stock_known {
+                        held_stock.map_or(Some(0), |value| value.amount.map(i128::from))
+                    } else {
+                        None
+                    },
+                },
+            });
+        }
+        let mut current: Vec<u32> = members
+            .iter()
+            .flat_map(|member| member.class.groups)
+            .chain(archetypes.iter().flat_map(|archetype| archetype.groups))
+            .collect();
+        current.sort_unstable();
+        current.dedup();
+        let mut groups = current.clone();
+        groups.extend_from_slice(&grouped.active);
+        for name in &grouped.logistics.dirty {
+            groups.push(self.names.number(name)?);
+        }
+        let complete = stock_known
+            && !members.iter().any(|member| {
+                member.class.unresolved && member.stock.present && member.stock.value != Some(0)
+            });
+        let complete_keys = *grouped.complete.get_or_insert_with(|| {
+            std::array::from_fn(|slot| {
+                allocate(
+                    &mut numbers.keys,
+                    tag,
+                    &group_key(&series::field_key("complete", ""), MEASURES[slot]),
+                )
+            })
+        });
+        self.values[0].observe_if_changed(
+            complete_keys[0],
+            hour,
+            complete.then_some(0),
+            stock_starts,
+            false,
+        );
+        let (mut complete_balance, mut complete_need) = (balance_known, balance_known);
+        for archetype in archetypes
+            .iter()
+            .filter(|archetype| archetype.classification.kind.is_none())
+        {
+            let [b, v, _] = archetype.operands;
+            if (b.present && b.value != Some(0)) || (v.present && v.value != Some(0)) {
+                complete_balance = false;
+            }
+            if b.present || v.present {
+                complete_need = false;
+            }
+        }
+        for (slot, complete) in [
+            (1, complete_balance),
+            (2, complete_balance && complete_need),
+        ] {
+            self.values[slot].observe_if_changed(
+                complete_keys[slot],
+                hour,
+                complete.then_some(0),
+                balance_starts,
+                false,
+            );
+        }
+        let completeness = [
+            complete,
+            complete_balance,
+            complete_balance && complete_need,
+        ];
+        let completeness_changed = grouped.completeness.replace(completeness) != Some(completeness);
+        if completeness_changed
+            || [stock_span, balance_span]
+                .iter()
+                .any(|span| span.is_none_or(|(first, _)| first == hour))
+        {
+            groups.extend(grouped.groups.keys().copied());
+        }
+        groups.sort_unstable();
+        groups.dedup();
+        if incremental && !completeness_changed {
+            // Only the changed members' groups need their totals again, unless an unresolved
+            // one changed, which can change every group.
+            let mut dirty: Vec<u32> = Vec::new();
+            for name in &grouped.logistics.dirty {
+                dirty.push(self.names.number(name)?);
+            }
+            dirty.extend(
+                grouped
+                    .active
+                    .iter()
+                    .filter(|group| current.binary_search(group).is_err()),
+            );
+            dirty.extend(
+                current
+                    .iter()
+                    .filter(|group| grouped.active.binary_search(group).is_err()),
+            );
+            let mut all = false;
+            let mut changed: Vec<u64> = held.changes[0]
+                .iter()
+                .chain(&held.changes[1])
+                .copied()
+                .collect();
+            changed.sort_unstable();
+            changed.dedup();
+            for id in changed {
+                if self.metadata.current.contains_key(&id) {
+                    let class = self.class(id)?;
+                    all |= class.unresolved;
+                    dirty.extend(class.groups);
+                }
+            }
+            let mut changed: Vec<u64> = held.changes[5..8].iter().flatten().copied().collect();
+            changed.sort_unstable();
+            changed.dedup();
+            for id in changed {
+                let Ok(id) = u32::try_from(id) else {
+                    continue;
+                };
+                let retained = &grouped.logistics;
+                if let Some(group) = retained.by_id.get(&id)
+                    && let Some(classification) =
+                        retained.witnesses.get(group).and_then(|rows| rows.get(&id))
+                {
+                    all |= classification.kind.is_none();
+                    let groups = classification.groups(None);
+                    dirty.extend(self.names.numbers(&groups)?);
+                }
+            }
+            if !all {
+                dirty.sort_unstable();
+                groups.retain(|group| dirty.binary_search(group).is_ok());
+            }
+        }
+        drop(cpu);
+        let _cpu = ::replay_frame::cpu::scope_phase("stockpile:group_projection");
+        let measured = evaluate_ledger(
+            &self.names,
+            &groups,
+            &members,
+            &archetypes,
+            [stock_known, balance_known],
+            &grouped.logistics,
+        );
+        #[cfg(test)]
+        {
+            let variants: BTreeMap<u64, Classification> = members
+                .iter()
+                .map(|member| {
+                    (
+                        member.id,
+                        self.metadata.current[&member.id].classification.clone(),
+                    )
+                })
+                .collect();
+            let logistics: BTreeMap<u32, Classification> = archetypes
+                .iter()
+                .map(|archetype| (archetype.id, archetype.classification.clone()))
+                .collect();
+            let read = |field: usize, id: u64| -> io::Result<Operand> {
+                Ok(if field == 0 {
+                    members.iter().find(|member| member.id == id).map_or(
+                        Operand {
+                            present: false,
+                            value: stock_known.then_some(0),
+                        },
+                        |member| member.stock,
+                    )
+                } else {
+                    archetypes
+                        .iter()
+                        .find(|archetype| u64::from(archetype.id) == id)
+                        .map_or(
+                            Operand {
+                                present: false,
+                                value: balance_known.then_some(0),
+                            },
+                            |archetype| archetype.operands[field - 5],
+                        )
+                })
+            };
+            for (&group, values) in groups.iter().zip(&measured) {
+                let expected = evaluate(
+                    self.names.name(group),
+                    &variants,
+                    &logistics,
+                    stock_known,
+                    balance_known,
+                    Some(&grouped.logistics),
+                    read,
+                )?;
+                assert_eq!(
+                    *values,
+                    expected,
+                    "{tag} {} at {hour}",
+                    self.names.name(group)
+                );
+            }
+        }
+        // New groups take their keys in name order, as hourly observation meets them.
+        let mut new: Vec<u32> = groups
+            .iter()
+            .copied()
+            .filter(|group| !grouped.groups.contains_key(group))
+            .collect();
+        new.sort_unstable_by(|a, b| self.names.name(*a).cmp(self.names.name(*b)));
+        for group in new {
+            let name = self.names.name(group);
+            if !holder.groups.contains_key(name) {
+                holder.groups.insert(name.to_owned(), hour);
+            }
+            let keys = std::array::from_fn(|measure| {
+                allocate(&mut numbers.keys, tag, &group_key(name, MEASURES[measure]))
+            });
+            grouped.groups.insert(group, keys);
+        }
+        for (group, values) in groups.iter().zip(&measured) {
+            let keys = grouped.groups[group];
+            for (measure, value) in values.iter().enumerate() {
+                self.values[measure].observe_if_changed(
+                    keys[measure],
+                    hour,
+                    *value,
+                    if measure == 0 {
+                        stock_starts
+                    } else {
+                        balance_starts
+                    },
+                    false,
+                );
+            }
+        }
+        grouped.active = current;
+        for values in &mut self.values {
+            values.through(hour);
+        }
+        grouped.projection = Some(projection);
+        Ok(())
+    }
+}
+
+/// [`evaluate_groups`] of a holder's compact members, by group number.
+fn evaluate_ledger(
+    names: &GroupNames,
+    groups: &[u32],
+    members: &[GroupMember],
+    archetypes: &[Archetype],
+    [stock_known, balance_known]: [bool; 2],
+    retained: &Logistics,
+) -> Vec<[Option<i128>; 4]> {
+    struct Sums {
+        stock: Option<i128>,
+        balance: Option<i128>,
+        need: Option<i128>,
+        recorded_required: usize,
+        evidence: LogisticsEvidence,
+    }
+    let mut sums: Vec<Sums> = groups
+        .iter()
+        .map(|&group| {
+            let evidence = retained
+                .groups
+                .get(names.name(group))
+                .copied()
+                .unwrap_or_default();
+            let balance = (balance_known && evidence.own > 0).then_some(0_i128);
+            Sums {
+                stock: stock_known.then_some(0_i128),
+                balance,
+                need: balance,
+                recorded_required: 0,
+                evidence,
+            }
+        })
+        .collect();
+    // An unresolved variant holding stock leaves every group's stock unknown.
+    let mut unresolved_stock = false;
+    for member in members {
+        let value = member.stock;
+        if member.class.unresolved && value.present && value.value != Some(0) {
+            unresolved_stock = true;
+        }
+        for group in member.class.groups {
+            if let Ok(at) = groups.binary_search(&group) {
+                sums[at].stock = sums[at]
+                    .stock
+                    .and_then(|sum| value.value.map(|value| sum + value));
+            }
+        }
+    }
+    // The UI key map uses the last logistics token for a duplicate archetype.
+    for archetype in archetypes.iter().filter(|archetype| {
+        retained
+            .representatives
+            .get(names.name(archetype.groups[0]))
+            .is_some_and(|(representative, _)| *representative == archetype.id)
+    }) {
+        let [balance, stock, available] = archetype.operands;
+        let (b, s) = (balance.value, stock.value);
+        let kind = archetype.classification.kind.as_ref();
+        let required = kind.is_none_or(|kind| kind.requires_available)
+            && available.present
+            && available.value.is_some();
+        let derived = b.zip(s).and_then(|(b, s)| {
+            let available = available
+                .present
+                .then_some(available.value)
+                .flatten()
+                .or_else(|| {
+                    kind.filter(|kind| !kind.requires_available)
+                        .map(|_| s.max(0))
+                })?;
+            let value = (available as i64).wrapping_sub(b as i64);
+            (value.unsigned_abs() < NEED_BOUND_RAW as u64).then_some(i128::from(value))
+        });
+        for group in archetype.groups {
+            if let Ok(at) = groups.binary_search(&group) {
+                let sums = &mut sums[at];
+                sums.balance = sums
+                    .balance
+                    .and_then(|sum| b.zip(s).map(|(value, _)| sum + value));
+                sums.recorded_required += usize::from(required);
+                sums.need = sums.need.and_then(|sum| derived.map(|value| sum + value));
+            }
+        }
+    }
+    // Unresolved logistics rows leave every resolved domain's totals unknown.
+    let (mut unresolved_balance, mut unresolved_need) = (false, false);
+    for archetype in archetypes
+        .iter()
+        .filter(|archetype| archetype.classification.kind.is_none())
+    {
+        let [b, s, _] = archetype.operands;
+        if (b.present && b.value != Some(0)) || (s.present && s.value != Some(0)) {
+            unresolved_balance = true;
+        }
+        if b.present || s.present {
+            unresolved_need = true;
+        }
+    }
+    groups
+        .iter()
+        .zip(sums)
+        .map(|(&group, sums)| {
+            let Sums {
+                mut stock,
+                mut balance,
+                mut need,
+                recorded_required,
+                evidence,
+            } = sums;
+            if unresolved_stock || evidence.unresolved > 0 {
+                stock = None;
+            }
+            if recorded_required < evidence.required {
+                need = None;
+            }
+            if names.domain[group as usize] {
+                if unresolved_balance {
+                    balance = None;
+                }
+                if unresolved_need {
+                    need = None;
+                }
+            }
+            if balance.is_none() {
+                need = None;
+            }
+            [
+                stock,
+                balance,
+                need,
+                (stock_known || balance_known).then_some(i128::from(
+                    balance.is_some() && need.is_some_and(|need| need > 0),
+                )),
+            ]
+        })
+        .collect()
 }
 
 /// A classification window of a variant whose final classification differs,

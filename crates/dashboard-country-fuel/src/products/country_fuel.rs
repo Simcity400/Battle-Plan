@@ -97,6 +97,7 @@ use oracle::{Cache, scan, scan_branch};
 pub mod columnar;
 mod detail;
 pub mod prepared;
+pub mod served;
 pub use detail::{CountryFuelAwardHistory, FuelAwardHistoryReply};
 mod demand;
 pub use demand::{
@@ -1288,6 +1289,7 @@ fn keep_days(format: replay_data::format::FormatVersion, reads: &mut [RawRead]) 
 impl Product for CountryFuel {
     const KEY: &'static str = "country-fuel";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryParams;
     type Reply = FuelReply;
 

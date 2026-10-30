@@ -1,8 +1,9 @@
-//! Flag asset candidates per recorded country, read from one decoded hour:
-//! shared by the country flag product and the map's combat and raid tooltips.
+//! Flag asset candidates per recorded country: one chain from a country's recorded operands
+//! ([`Operands::chain`]), which preparation reads from the walk's flag inputs and the map's
+//! combat and raid tooltips from one decoded hour ([`choices`]).
 
 use crate::metadata::recorded_rows;
-use replay_data::rows::tables;
+use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedSource;
 use std::{collections::BTreeMap, io};
 
@@ -29,42 +30,148 @@ impl FlagChoice {
     }
 }
 
+/// The candidates the game searches a country's flag file by, in order, and why they are not
+/// the whole chain.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Chain {
+    pub candidates: Vec<String>,
+    /// As [`FlagChoice::refusal`].
+    pub refusal: Option<String>,
+}
+
+/// A country object's CountryAppearance operands of its flag, as recorded.
+#[derive(Clone, Copy, Debug)]
+pub struct Appearance<'a> {
+    pub cosmetic: &'a [u8],
+    /// Positive: `original` is the original tag; otherwise the country's own tag is.
+    pub reference: Recorded<Option<i32>>,
+    pub original: Recorded<Option<&'a [u8]>>,
+}
+
+/// One country's flag operands, each its text or why it is unknown.
+pub struct Operands<'a> {
+    /// Empty without a cosmetic tag.
+    pub cosmetic: Result<&'a str, String>,
+    /// The original-or-own tag: unknown, it withholds only the chain's tag tail.
+    pub original: Result<&'a str, String>,
+    /// The ruling party's ideology group token.
+    pub group: Result<Option<&'a str>, String>,
+}
+
+impl<'a> Operands<'a> {
+    /// Country object `owner`'s operands from its own tag, its appearance, its
+    /// `Politics.ruling_party` (the inner None a null pointer) and the ruling party's token;
+    /// a part it has no row of is None.
+    pub fn of(
+        owner: u32,
+        own: &'a [u8],
+        appearance: Option<Appearance<'a>>,
+        ruling: Option<Option<u32>>,
+        token: Option<&'a [u8]>,
+    ) -> Self {
+        let missing = || format!("country {owner} flag needs its CountryAppearance row");
+        Self {
+            cosmetic: appearance.ok_or_else(missing).and_then(|appearance| {
+                std::str::from_utf8(appearance.cosmetic)
+                    .map_err(|_| "country cosmetic tag is not UTF-8".to_owned())
+            }),
+            original: appearance
+                .ok_or_else(missing)
+                .and_then(|appearance| original(own, appearance)),
+            group: group(owner, ruling, token),
+        }
+    }
+
+    /// The chain every reader searches.
+    pub fn chain(self) -> Chain {
+        let candidates = match (&self.cosmetic, &self.group) {
+            (Ok(cosmetic), Ok(group)) => installed_content_country_names::country_names::flag_keys(
+                self.original.as_ref().ok().copied(),
+                cosmetic,
+                *group,
+            ),
+            _ => Vec::new(),
+        };
+        let refusal = self
+            .cosmetic
+            .err()
+            .or_else(|| self.group.err())
+            .or_else(|| self.original.err());
+        Chain {
+            candidates,
+            refusal,
+        }
+    }
+}
+
+/// The original-or-own tag: the positive reference's original tag, else `own`. An unread or
+/// historically absent original cannot be inferred from the name tag.
+fn original<'a>(own: &'a [u8], appearance: Appearance<'a>) -> Result<&'a str, String> {
+    let reference = (*appearance
+        .reference
+        .require("CountryAppearance.original_tag_reference")?)
+    .ok_or("CountryAppearance.original_tag_reference capture refused")?;
+    let bytes = if reference > 0 {
+        (*appearance
+            .original
+            .require("CountryAppearance.original_tag")?)
+        .ok_or("CountryAppearance.original_tag capture refused")?
+    } else {
+        own
+    };
+    std::str::from_utf8(bytes).map_err(|_| "country original-or-own tag is not UTF-8".into())
+}
+
+/// The ruling ideology group: the capture authenticates the ordinary group, whose active flag is
+/// initialized to 1 and never changed by authored content, and refuses the null group. Even an
+/// empty accepted token is an active group, so the qualified candidate still appends its
+/// underscore.
+fn group(
+    owner: u32,
+    ruling: Option<Option<u32>>,
+    token: Option<&[u8]>,
+) -> Result<Option<&str>, String> {
+    let ruling = ruling.ok_or_else(|| format!("country {owner} flag needs its Politics row"))?;
+    let ruling =
+        ruling.ok_or_else(|| format!("country {owner} flag has a null ruling-party pointer"))?;
+    let token = token.ok_or_else(|| {
+        format!("country {owner} flag needs PoliticalParties ruling group {ruling}")
+    })?;
+    std::str::from_utf8(token)
+        .map(Some)
+        .map_err(|_| format!("country {owner} flag ruling group is not UTF-8"))
+}
+
+/// Each country's `Politics.ruling_party` and the party's token, by country object.
+fn ruling_rows(
+    frame: &dyn DecodedSource,
+) -> io::Result<(BTreeMap<u32, Option<u32>>, BTreeMap<(u32, u32), &[u8]>)> {
+    let parties = recorded_rows::<tables::PoliticalParties>(frame)?
+        .iter()
+        .map(|row| ((row.country, row.id), row.token.as_slice()))
+        .collect();
+    let politics = recorded_rows::<tables::Politics>(frame)?
+        .iter()
+        .map(|row| (row.country, row.ruling_party))
+        .collect();
+    Ok((politics, parties))
+}
+
 /// The flag's ruling ideology group, retaining a missing or unsupported join
 /// instead of skipping the group-qualified candidate.
 pub fn ruling_groups(
     frame: &dyn DecodedSource,
 ) -> io::Result<BTreeMap<u32, Result<Option<String>, String>>> {
-    let parties: BTreeMap<_, _> = recorded_rows::<tables::PoliticalParties>(frame)?
-        .iter()
-        .map(|row| ((row.country, row.id), row.token.as_slice()))
-        .collect();
-    let politics: BTreeMap<_, _> = recorded_rows::<tables::Politics>(frame)?
-        .iter()
-        .map(|row| (row.country, row.ruling_party))
-        .collect();
+    let (politics, parties) = ruling_rows(frame)?;
     Ok(recorded_rows::<tables::Countries>(frame)?
         .iter()
         .map(|row| {
-            let country = row.id;
-            let group = (|| {
-                let ruling = politics
-                    .get(&country)
-                    .ok_or_else(|| format!("country {country} flag needs its Politics row"))?;
-                let ruling = ruling.as_ref().ok_or_else(|| {
-                    format!("country {country} flag has a null ruling-party pointer")
-                })?;
-                let token = parties.get(&(country, *ruling)).ok_or_else(|| {
-                    format!("country {country} flag needs PoliticalParties ruling group {ruling}")
-                })?;
-                let token = std::str::from_utf8(token)
-                    .map_err(|_| format!("country {country} flag ruling group is not UTF-8"))?;
-                // Capture authenticates the ordinary group, whose active flag is
-                // initialized to 1 and never changed by authored content. The null
-                // group is refused. Even an empty accepted token is an active group,
-                // so the qualified candidate still appends its underscore.
-                Ok(Some(token.to_owned()))
-            })();
-            (country, group)
+            let ruling = politics.get(&row.id).copied();
+            let token = ruling
+                .flatten()
+                .and_then(|party| parties.get(&(row.id, party)).copied());
+            let group = group(row.id, ruling, token).map(|group| group.map(str::to_owned));
+            (row.id, group)
         })
         .collect())
 }
@@ -79,7 +186,7 @@ pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
         .iter()
         .map(|r| (r.canonical_slot, r))
         .collect();
-    let groups = ruling_groups(frame)?;
+    let (politics, parties) = ruling_rows(frame)?;
     let appearances: BTreeMap<_, _> = recorded_rows::<tables::CountryAppearance>(frame)?
         .iter()
         .map(|r| (r.country, r))
@@ -98,39 +205,28 @@ pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
             if (country.id as i32) <= 0 {
                 return None;
             }
-            let tag = String::from_utf8_lossy(&country.tag).into_owned();
             // Atlas cells belong to the resolved country object. An alias link
             // supplies the same object's captured appearance and party.
             let owner = country.id;
-            let appearance = appearances.get(&owner);
-            let cosmetic = appearance
-                .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))
-                .and_then(|row| {
-                    std::str::from_utf8(&row.cosmetic_tag)
-                        .map_err(|_| "country cosmetic tag is not UTF-8".to_owned())
-                });
-            let original = appearance
-                .ok_or_else(|| format!("country {owner} flag needs its CountryAppearance row"))
-                .and_then(|row| installed_content_country_names::country_names::original_tag(country, row));
-            let group = groups
-                .get(&owner)
-                .cloned()
-                .unwrap_or_else(|| Err(format!("country {owner} flag needs its ruling group")));
-            let candidates = match (&cosmetic, &group) {
-                (Ok(cosmetic), Ok(group)) => installed_content_country_names::country_names::flag_keys(
-                    original.as_ref().ok().copied(),
-                    cosmetic,
-                    group.as_deref(),
-                ),
-                _ => Vec::new(),
-            };
-            let refusal = cosmetic
-                .err()
-                .or_else(|| group.err())
-                .or_else(|| original.err());
+            let appearance = appearances.get(&owner).map(|row| Appearance {
+                cosmetic: &row.cosmetic_tag,
+                reference: row.original_tag_reference,
+                original: match &row.original_tag {
+                    Recorded::NotRecorded => Recorded::NotRecorded,
+                    Recorded::Value(original) => Recorded::Value(original.as_deref()),
+                },
+            });
+            let ruling = politics.get(&owner).copied();
+            let token = ruling
+                .flatten()
+                .and_then(|party| parties.get(&(owner, party)).copied());
+            let Chain {
+                candidates,
+                refusal,
+            } = Operands::of(owner, &country.tag, appearance, ruling, token).chain();
             Some(FlagChoice {
                 raw,
-                tag,
+                tag: String::from_utf8_lossy(&country.tag).into_owned(),
                 candidates,
                 refusal,
             })
@@ -139,88 +235,4 @@ pub fn choices(frame: &dyn DecodedSource) -> io::Result<Vec<FlagChoice>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use replay_data::rows::{
-        CountryAppearanceRow, CountryLinkRow, CountryRow, PoliticalPartyRow, PoliticsRow, Recorded,
-        TableId, TableRows,
-    };
-    use replay_frame::frame::{DecodedFrame, Metrics, TableView};
-
-    #[test]
-    fn decoded_source_keeps_mod_art_candidates_aliases_and_unknown_tail() {
-        let mut frame = DecodedFrame {
-            branch: 1,
-            hour: 17,
-            metrics: Metrics::default(),
-            tables: std::array::from_fn(|index| {
-                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
-            }),
-        };
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                [100, 150]
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: 1,
-                    })
-                    .into(),
-            ));
-        *frame.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(vec![CountryRow {
-                id: 100,
-                canonical_slot: 1,
-                tag: b"D01".to_vec(),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::CountryAppearance.index()] =
-            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
-                country: 100,
-                cosmetic_tag: b"MOD_COS".to_vec(),
-                original_tag_reference: Recorded::Value(Some(200)),
-                original_tag: Recorded::Value(Some(b"ORG".to_vec())),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::Politics.index()] =
-            TableView::Complete(TableRows::Politics(vec![PoliticsRow {
-                country: 100,
-                ruling_party: Some(7),
-                ..Default::default()
-            }]));
-        *frame.tables[TableId::PoliticalParties.index()] =
-            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
-                country: 100,
-                id: 7,
-                token: b"mod_group".to_vec(),
-                ..Default::default()
-            }]));
-        let source: &dyn DecodedSource = &frame;
-        let flags = choices(source).unwrap();
-        assert_eq!(
-            flags.iter().map(|flag| flag.raw).collect::<Vec<_>>(),
-            [100, 150]
-        );
-        for flag in &flags {
-            assert_eq!(flag.tag, "D01");
-            assert_eq!(
-                flag.candidates,
-                ["MOD_COS_mod_group", "MOD_COS", "ORG_mod_group", "ORG"]
-            );
-            assert_eq!(flag.key(|key| key == "ORG_mod_group"), Ok("ORG_mod_group"));
-            assert_eq!(flag.refusal, None);
-        }
-        if let TableView::Complete(TableRows::CountryAppearance(rows)) =
-            &mut *frame.tables[TableId::CountryAppearance.index()]
-        {
-            rows[0].original_tag_reference = Recorded::Value(None);
-        }
-        for flag in choices(&frame).unwrap() {
-            assert_eq!(flag.candidates, ["MOD_COS_mod_group", "MOD_COS"]);
-            assert_eq!(flag.key(|key| key == "MOD_COS"), Ok("MOD_COS"));
-            assert_eq!(
-                flag.key(|_| false).unwrap_err(),
-                "CountryAppearance.original_tag_reference capture refused"
-            );
-        }
-    }
-}
+mod tests;

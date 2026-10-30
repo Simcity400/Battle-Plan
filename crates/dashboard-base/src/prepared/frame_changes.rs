@@ -82,6 +82,29 @@ impl FrameChanges {
         self.updates.as_ref().map(|updates| &updates.frame)
     }
 
+    /// The facts of an hour another reader observed: its tables' change, read and slot-read
+    /// flags, and its recorded updates with the tables each changed exactly by (`exact`).
+    pub fn observed(
+        rows_changed: [bool; TABLE_COUNT],
+        table_read: [bool; TABLE_COUNT],
+        slot_read: [bool; TABLE_COUNT],
+        updates: Option<(Arc<RecordedFrame>, [bool; TABLE_COUNT])>,
+    ) -> Self {
+        Self {
+            rows_changed,
+            table_read,
+            slot_read,
+            updates: updates.map(|(frame, exact)| RowUpdates { frame, exact }),
+        }
+    }
+
+    /// Whether `table` changed exactly by its recorded delta this hour.
+    pub fn exact(&self, table: TableId) -> bool {
+        self.updates
+            .as_ref()
+            .is_some_and(|updates| updates.exact[table.index()])
+    }
+
     /// The facts of an hour observed with no hour before it, as preparation
     /// observes the first hour of every block: any row may have changed.
     pub fn alone(frame: &DecodedFrame, format: FormatVersion) -> Self {

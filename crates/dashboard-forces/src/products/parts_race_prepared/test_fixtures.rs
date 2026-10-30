@@ -142,9 +142,9 @@ pub fn frame(hour: i32, count: u32) -> DecodedFrame {
                 literal: b"synthetic ship".to_vec(),
             },
         ]));
-    for &table in crate::products::army_size::prepared::TABLES
+    for &table in crate::products::army_size::facts::TABLES
         .iter()
-        .chain(crate::products::supply_health::prepared::TABLES)
+        .chain(crate::products::supply_health::facts::TABLES)
         .chain(crate::products::navy::prepared::Navy::SAMPLE_TABLES)
         .chain(crate::products::air_force::prepared::Air::SAMPLE_TABLES)
     {

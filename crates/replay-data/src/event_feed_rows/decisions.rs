@@ -194,8 +194,15 @@ pub struct DecisionState {
     building: bool,
     baseline_hour: Option<i32>,
     passes: [Vec<Pass>; CONTAINERS],
+    #[serde(skip)]
+    pub(super) version: super::state::Version,
 }
 impl DecisionState {
+    /// The owner's version: it holds the same, but its days and completeness, while it stays
+    /// the same.
+    pub fn version(&self) -> Option<u64> {
+        self.version.get()
+    }
     pub fn members(&self, container: u8) -> Result<&[RetainedDecision], &'static str> {
         if !self.ready || self.passes.iter().any(|passes| !passes.is_empty()) {
             return Err("decision owner has no completed baseline and writer/pass certificate");
@@ -265,6 +272,7 @@ impl DecisionState {
         Ok(())
     }
     fn erase_at(&mut self, n: usize, at: usize, swap: bool, iteration: bool) {
+        self.version.change();
         if swap {
             self.members[n].swap_remove(at);
         } else {
@@ -286,19 +294,33 @@ impl DecisionState {
         script: EventFeedScript,
         change: DecisionChange,
     ) -> io::Result<()> {
+        self.apply(row, event, script, change, true, false)
+    }
+    /// [`Self::observe`] of a planned change: `write` whether to write its target country,
+    /// which the owner may hold already, and `cancelled` whether a later clear or baseline of
+    /// the owner in the same pack cancels its candidate change.
+    pub(super) fn apply(
+        &mut self,
+        row: &EventFeedHistoryRow,
+        event: &EventFeedEvent,
+        script: EventFeedScript,
+        change: DecisionChange,
+        write: bool,
+        cancelled: bool,
+    ) -> io::Result<()> {
         use Operation::*;
         let n = change.container as usize;
-        let token = || {
-            row.script_tokens[script.token_start as usize
-                ..script.token_start as usize + script.token_len as usize]
-                .to_vec()
-        };
-        self.country = event.actor;
+        let token = &row.script_tokens
+            [script.token_start as usize..script.token_start as usize + script.token_len as usize];
+        if self.country != event.actor {
+            self.country = event.actor;
+            self.version.change();
+        }
         if script.token_unrecorded {
             self.gap();
             return Ok(());
         }
-        if event.target.reference as i32 > 0 {
+        if write && event.target.reference as i32 > 0 {
             self.target_countries
                 .insert(event.target.reference, event.target);
         }
@@ -325,8 +347,9 @@ impl DecisionState {
                 self.building = false;
             }
             RandomSet => {
+                self.version.change();
                 self.random_counts.push(RetainedRandomCount {
-                    token: token(),
+                    token: token.to_vec(),
                     target: change.ordinal as i32,
                     count: script
                         .days
@@ -334,46 +357,33 @@ impl DecisionState {
                 });
             }
             RandomIncrement => {
-                let token = token();
+                self.version.change();
                 let target = change.ordinal as i32;
-                if let Some(value) = self.random_counts.iter_mut().find(|value| {
-                    value.token.eq_ignore_ascii_case(&token) && value.target == target
-                }) {
+                if let Some(value) = self
+                    .random_counts
+                    .iter_mut()
+                    .find(|value| value.token.eq_ignore_ascii_case(token) && value.target == target)
+                {
                     value.count = value.count.wrapping_add(1);
                 } else {
                     self.random_counts.push(RetainedRandomCount {
-                        token,
+                        token: token.to_vec(),
                         target,
                         count: 1,
                     });
                 }
             }
             Rebuild => {}
-            Candidate => {
-                let key = (
-                    change.container,
-                    token(),
-                    change.ordinal,
-                    script.country_target.unwrap_or(event.actor.reference),
-                );
-                if change.flags & ALL != 0 {
-                    if change.flags & CLEAR_ALL_CANDIDATES != 0 {
-                        self.candidates.clear();
-                    } else {
-                        self.candidates
-                            .retain(|(kind, _, _, _)| *kind != change.container);
-                    }
-                } else if change.flags & REMOVE_REQUESTED != 0 {
-                    self.candidates.remove(&key);
-                } else {
-                    self.candidates.insert(key);
-                }
-            }
+            Candidate if !cancelled => self.candidate(token, event, script, change),
+            Candidate => {}
             Ignore if script.instance.is_none() => {
-                if change.flags & IGNORED != 0 {
-                    self.ignored.insert(token());
+                let changed = if change.flags & IGNORED != 0 {
+                    self.ignored.insert(token.to_vec())
                 } else {
-                    self.ignored.remove(&token());
+                    self.ignored.remove(token)
+                };
+                if changed {
+                    self.version.change();
                 }
             }
             PassBegin => {
@@ -420,9 +430,10 @@ impl DecisionState {
                             }
                         }
                     }
+                    self.version.change();
                     self.members[n].push(RetainedDecision {
                         instance: id,
-                        token: token(),
+                        token: token.to_vec(),
                         days: script.days.unwrap_or(0),
                         lifecycle: script.lifecycle.unwrap_or(0),
                         flags: change.flags & !(SWAP | ALL | MOVED | ORDINAL | ITERATION),
@@ -433,8 +444,10 @@ impl DecisionState {
                     && n == TAKEN as usize
                     && change.flags & ALL != 0
                 {
-                    let key = token();
-                    while let Some(at) = self.members[n].iter().position(|r| r.token == key) {
+                    while let Some(at) = self.members[n]
+                        .iter()
+                        .position(|r| r.token.as_slice() == token)
+                    {
                         self.erase_at(
                             n,
                             at,
@@ -463,6 +476,7 @@ impl DecisionState {
                         );
                     } else {
                         let value = &mut self.members[n][at];
+                        let held = (value.lifecycle, value.flags);
                         if let Some(days) = script.days {
                             value.days = days;
                         }
@@ -474,6 +488,9 @@ impl DecisionState {
                         } else if change.flags & REMOVE_REQUESTED != 0 {
                             value.flags |= REMOVE_REQUESTED;
                         }
+                        if (value.lifecycle, value.flags) != held {
+                            self.version.change();
+                        }
                     }
                 } else if self.ready {
                     self.gap();
@@ -481,6 +498,43 @@ impl DecisionState {
             }
         }
         Ok(())
+    }
+    /// A candidate change: a clear of one kind or every kind, or one candidate's removal or
+    /// addition. Only a change of what the owner holds moves its version.
+    pub(super) fn candidate(
+        &mut self,
+        token: &[u8],
+        event: &EventFeedEvent,
+        script: EventFeedScript,
+        change: DecisionChange,
+    ) {
+        let held = self.candidates.len();
+        if change.flags & ALL != 0 {
+            if change.flags & CLEAR_ALL_CANDIDATES != 0 {
+                self.candidates.clear();
+            } else {
+                self.candidates
+                    .retain(|(kind, _, _, _)| *kind != change.container);
+            }
+            if self.candidates.len() != held {
+                self.version.change();
+            }
+            return;
+        }
+        let key = (
+            change.container,
+            token.to_vec(),
+            change.ordinal,
+            script.country_target.unwrap_or(event.actor.reference),
+        );
+        let changed = if change.flags & REMOVE_REQUESTED != 0 {
+            self.candidates.remove(&key)
+        } else {
+            self.candidates.insert(key)
+        };
+        if changed {
+            self.version.change();
+        }
     }
 }
 use std::collections::{BTreeMap, BTreeSet};

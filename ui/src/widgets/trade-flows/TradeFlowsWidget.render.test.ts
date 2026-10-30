@@ -27,9 +27,10 @@ test('trade of a group counted at an hour still being prepared is loading, not n
       };`,
     '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
@@ -72,9 +73,10 @@ test('one scale all campaign never fits the moment while its scale is unread or 
       };`,
     '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
@@ -140,9 +142,10 @@ test('trade of a group with no member found yet says what the moment was once re
       };`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__tradeGap.hour;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
@@ -184,9 +187,10 @@ test('while playback reads its newest hour, the hour last read stays drawn with 
       };`,
     '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
-    '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
+    '/dashboard/countryFlagsAt.ts': `export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], surface: '#000000', text: '#ffffff', muted: '#777777', countryColours: 'raw' });
       export const useViewportHeight = () => 1000;`,
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',

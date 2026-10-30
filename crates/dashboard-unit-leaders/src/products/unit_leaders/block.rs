@@ -1461,7 +1461,7 @@ pub fn fold(
         match hour {
             Hour::Whole { changes } => {
                 // A frame the fold no longer holds is changed in place.
-                base = None;
+                drop(base.take());
                 let frame = next_frame(&mut kept)?;
                 // A frame that lacks tables the read left out gives its
                 // verdicts as a kept frame does: only where they read none
@@ -1498,7 +1498,7 @@ pub fn fold(
                 base = Some((frame, false));
             }
             Hour::Kept { changes, since } => {
-                base = None;
+                drop(base.take());
                 let frame = next_frame(&mut kept)?;
                 let result = {
                     let _cpu = ::replay_frame::cpu::scope("fold observe", None);

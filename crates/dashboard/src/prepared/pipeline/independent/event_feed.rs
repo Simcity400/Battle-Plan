@@ -40,7 +40,7 @@ use crate::{
     },
 };
 use dashboard_base::prepared::kept::{kept_changes, observe_hours};
-use replay::container::Replay;
+use replay::container::{BlockIndex, Replay};
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{any::Any, fmt, io, sync::atomic::AtomicBool};
@@ -126,6 +126,29 @@ impl Extract for FeedExtract {
 /// The history's section of one branch, which is also its continuation.
 fn identities_section(branch: u64) -> String {
     format!("event-feed-identities-{branch}")
+}
+
+/// The history sealed and written whole, as hourly preparation's flush writes its read.
+pub(crate) fn write_feed_identities(
+    writer: &mut store::Writer,
+    branch: u64,
+    identities: &mut HistoryScan,
+) -> io::Result<()> {
+    identities.seal();
+    writer.write_at(
+        &identities_section(branch),
+        0,
+        serde_json::to_vec(&*identities)?.as_slice(),
+    )
+}
+
+/// The feed's continuation, saved as hourly preparation's branch state holds it.
+pub(crate) fn save_feed(
+    writer: &mut store::Writer,
+    branch: u64,
+    feed: &Observer,
+) -> io::Result<()> {
+    save(writer, &continuation(FAMILY.name, branch), feed)
 }
 
 /// A refusal of a family's own read of the identity history (the feed's or
@@ -277,17 +300,75 @@ impl Branch for FeedBranch {
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.identities.seal();
-        writer.write_at(
-            &identities_section(branch),
-            0,
-            serde_json::to_vec(&*self.identities)?.as_slice(),
-        )?;
+        write_feed_identities(writer, branch, &mut self.identities)?;
         self.feed.flush(writer, branch, cancelled)
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        save(writer, &continuation(FAMILY.name, branch), &*self.feed)
+        save_feed(writer, branch, &self.feed)
+    }
+}
+
+/// One branch's feed folded as hourly preparation folds it, for another preparation of the
+/// same recording to be compared with.
+pub struct FeedReference(FeedBranch);
+
+impl Default for FeedReference {
+    fn default() -> Self {
+        Self::from_parts(HistoryScan::new(false, &[]), Observer::default())
+    }
+}
+
+impl FeedReference {
+    /// The fold its saved sections continue: the identity history and the feed.
+    pub(crate) fn from_parts(identities: HistoryScan, feed: Observer) -> Self {
+        Self(FeedBranch {
+            identities: Box::new(identities),
+            feed: Box::new(feed),
+        })
+    }
+
+    /// One hour, with its change facts.
+    pub(crate) fn observe(
+        &mut self,
+        replay: &Replay,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+    ) -> io::Result<()> {
+        self.0.observe(replay, frame, changes)
+    }
+
+    /// Every hour of `index`, read alone.
+    pub fn block(
+        &mut self,
+        replay: &Replay,
+        index: &BlockIndex,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let mut observed = |_: i32, result: io::Result<()>| result.map(|()| true);
+        let mut check = || crate::metadata::check_cancel(cancelled);
+        observe_hours(
+            replay,
+            index,
+            TABLES,
+            None,
+            &mut observed,
+            &mut check,
+            |frame, changes| self.observe(replay, frame, changes),
+        )?;
+        Ok(())
+    }
+
+    /// The flush and continuation a fold writes at the end of a block.
+    pub fn flush(
+        &mut self,
+        writer: &mut store::Writer,
+        replay: &Replay,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.0.flush(writer, replay, branch, cancelled)?;
+        self.0.save_state(writer, branch)
     }
 }
 

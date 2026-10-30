@@ -12,7 +12,7 @@ use super::{Block, Branch, Load, Observed, Own};
 use crate::{
     prepared::prepass::{self, Folded},
     products::unit_leaders::{
-        Content, block,
+        Binding, Content, block,
         prepared::{Metadata, Prepared},
     },
 };
@@ -83,50 +83,20 @@ impl Own for Leaders {
     }
 }
 
-/// The leader content hourly preparation reads, and why any of it is
-/// unavailable.
-struct LeaderContent {
-    content: Option<Content>,
-    errors: Vec<String>,
-}
-
-impl LeaderContent {
-    fn read(block: &Block<'_>) -> Self {
-        let catalogue = block
-            .context
-            .content()
-            .and_then(|options| crate::catalogue::catalogue(block.source, options));
-        let mut errors: Vec<_> = catalogue
-            .as_ref()
-            .err()
-            .map(|error| format!("Leader content unavailable: {error}"))
-            .into_iter()
-            .collect();
-        let content = Content::for_catalogue(block.source, block.context, catalogue.ok());
-        if let Err(error) = &content {
-            errors.push(format!("Leader content unavailable: {error}"));
-        }
-        Self {
-            content: content.ok().flatten(),
-            errors,
-        }
-    }
-}
-
 /// One branch's leaders and the content they read.
 struct LeadersBranch {
     prepared: Box<Prepared>,
     /// Read at the first block the branch goes through.
-    content: Option<LeaderContent>,
+    content: Option<Binding>,
 }
 
 impl LeadersBranch {
     fn content(&mut self, block: &Block<'_>) -> Option<&Content> {
         let _cpu = ::replay_frame::cpu::scope("fold binds", None);
         self.content
-            .get_or_insert_with(|| LeaderContent::read(block))
+            .get_or_insert_with(|| Binding::load(block.source, block.context))
             .content
-            .as_ref()
+            .as_deref()
     }
 }
 
@@ -139,7 +109,10 @@ impl Branch for LeadersBranch {
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<(Folded, Option<i32>)> {
         self.content(block);
-        let content = self.content.as_ref().and_then(|read| read.content.as_ref());
+        let content = self
+            .content
+            .as_ref()
+            .and_then(|read| read.content.as_deref());
         block::fold(
             &mut self.prepared,
             facts,
@@ -158,7 +131,10 @@ impl Branch for LeadersBranch {
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<Option<i32>> {
         self.content(block);
-        let content = self.content.as_ref().and_then(|read| read.content.as_ref());
+        let content = self
+            .content
+            .as_ref()
+            .and_then(|read| read.content.as_deref());
         block::observe_block(
             &mut self.prepared,
             block.replay,
@@ -190,7 +166,7 @@ impl Branch for LeadersBranch {
         self.prepared.flush(
             writer,
             branch,
-            read.content.as_ref(),
+            read.content.as_deref(),
             &read.errors,
             cancelled,
         )

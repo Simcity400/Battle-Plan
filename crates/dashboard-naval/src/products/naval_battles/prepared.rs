@@ -53,6 +53,8 @@ pub(super) struct DetailPreparation {
     configured: bool,
     #[serde(skip)]
     fleet_inputs: Option<[Option<usize>; 4]>,
+    #[serde(skip)]
+    classes: ships_sunk::ClassMemo,
 }
 impl DetailPreparation {
     /// Fleet labels read combat province and unit references, task-force
@@ -125,6 +127,122 @@ impl DetailPreparation {
         }
         Ok(())
     }
+
+    /// The steps after the sinking scan's hour: losses, titles, the log and named ships.
+    fn observe_sunk(
+        &mut self,
+        hour: i32,
+        changes: &[sinkings::Change],
+        reads: usize,
+        cancelled: &AtomicBool,
+        title: impl FnOnce(
+            &mut ships_sunk::battle_titles::Prepared,
+            &[sinkings::ShipEvent],
+            &[u32],
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let cpu = ::replay_frame::cpu::scope_phase("naval:losses_projection_series");
+        let changed = !changes.is_empty();
+        let unavailable;
+        let retention = if let Some(retention) = &mut self.retention {
+            retention.update(&self.ships.scan)
+        } else {
+            unavailable = super::super::naval_losses::retention(
+                &self.ships.scan,
+                Err(self
+                    .catalogue_error
+                    .clone()
+                    .expect("configured content outcome")),
+            );
+            &unavailable
+        };
+        self.losses.observe_changes(
+            &self.ships.scan,
+            changes,
+            self.ships.prepared_holders(),
+            self.ships.prepared_scope_changed(),
+            retention,
+            cancelled,
+        )?;
+        drop(cpu);
+        let cpu = ::replay_frame::cpu::scope_phase("naval:presentation_projection_series");
+        let (ships, indices): (&[sinkings::ShipEvent], &[u32]) = if changed {
+            (
+                self.ships.scan.ships.as_slice(),
+                self.ships.ship_indices.as_slice(),
+            )
+        } else {
+            (&[][..], &[][..])
+        };
+        title(&mut self.sinking_titles, ships, indices)?;
+        self.sinking_log.observe(
+            &self.ships.scan,
+            if changed {
+                &self.ships.ship_indices
+            } else {
+                &[]
+            },
+            cancelled,
+            self.cat.as_deref().ok_or_else(|| {
+                self.catalogue_error
+                    .as_deref()
+                    .expect("configured content outcome")
+            }),
+            self.naming.as_deref(),
+            Some(retention),
+            &mut self.classes,
+        )?;
+        let first_new = self
+            .ships
+            .ship_indices
+            .partition_point(|index| *index < self.ship_count);
+        let new_ships = if changed {
+            &self.ships.scan.ships[first_new..]
+        } else {
+            &[]
+        };
+        let names = if new_ships.is_empty() {
+            None
+        } else {
+            Some(ships_sunk::prepared_names(
+                &self.ships.scan,
+                new_ships,
+                self.cat.as_deref().ok_or_else(|| {
+                    self.catalogue_error
+                        .as_deref()
+                        .expect("configured content outcome")
+                }),
+                self.naming.as_deref(),
+                Some(retention),
+                cancelled,
+                &mut self.classes,
+            )?)
+        };
+        for (&index, ship) in self.ships.ship_indices[first_new..].iter().zip(new_ships) {
+            let (name, class_name) = names.as_ref().expect("new ship names").ship(ship);
+            self.pending_named
+                .entry(ship.entry.battle)
+                .or_default()
+                .push(PreparedShip {
+                    row: NavalBattleNamedShip {
+                        sink_hour: ship.entry.sink_hour,
+                        known_at: ship.read_hour,
+                        name,
+                        class_name,
+                    },
+                    class_token: ship.entry.class_token,
+                });
+            self.ship_count = self.ship_count.max(index.saturating_add(1));
+        }
+        if self.ships.scan.ship_reads.len() != reads {
+            self.ship_reads.event(0, hour, &hour)?;
+        }
+        drop(cpu);
+        let _cpu = ::replay_frame::cpu::scope_phase("naval:pruning");
+        self.ships.scan.ship_reads.clear();
+        self.ships.scan.convoy_reads.clear();
+        Ok(())
+    }
 }
 impl Scan {
     pub fn configure(
@@ -141,6 +259,12 @@ impl Scan {
         self.result_inputs.clear();
         self.result_views.clear();
         self.details.ships.resume(frame);
+    }
+
+    /// Forgets its views, as a block read alone with a new decoder holds none.
+    pub fn forget_views(&mut self) {
+        self.result_views.clear();
+        self.details.ships.forget_views();
     }
 
     /// Observes as one consumer of the shared content: what it publishes
@@ -187,142 +311,26 @@ impl Scan {
         places: bool,
     ) -> io::Result<()> {
         let cpu = ::replay_frame::cpu::scope_phase("naval:series_observe");
-        let details = &mut self.details;
-        details.fleet_reads.through(frame.hour);
-        details.ship_reads.through(frame.hour);
-        details.census_reads.through(frame.hour);
-        if self
-            .combat_hours
-            .last()
-            .is_some_and(|span| span.last_hour == frame.hour)
-            && self
-                .result_hours
-                .last()
-                .is_some_and(|span| span.last_hour == frame.hour)
-        {
-            details.census_reads.event(0, frame.hour, &frame.hour)?;
-        }
+        self.observe_reads(frame.hour)?;
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope_phase("naval:sinkings_apply");
-        let reads = details.ships.scan.ship_reads.len();
-        let changes = details
+        let reads = self.details.ships.scan.ship_reads.len();
+        let changes = self
+            .details
             .ships
             .prepare(source.replay_ref().format, frame, frame_changes);
         drop(cpu);
-        let cpu = ::replay_frame::cpu::scope_phase("naval:losses_projection_series");
-        let changed = !changes.is_empty();
-        let unavailable;
-        let retention = if let Some(retention) = &mut details.retention {
-            retention.update(&details.ships.scan)
-        } else {
-            unavailable = super::super::naval_losses::retention(
-                &details.ships.scan,
-                Err(details
-                    .catalogue_error
-                    .clone()
-                    .expect("configured content outcome")),
-            );
-            &unavailable
-        };
-        details.losses.observe_changes(
-            &details.ships.scan,
+        self.details.observe_sunk(
+            frame.hour,
             &changes,
-            details.ships.prepared_holders(),
-            details.ships.prepared_scope_changed(),
-            retention,
+            reads,
             cancelled,
-        )?;
-        drop(cpu);
-        let cpu = ::replay_frame::cpu::scope_phase("naval:presentation_projection_series");
-        details.sinking_titles.observe_read(
-            source,
-            context,
-            frame,
-            if changed {
-                &details.ships.scan.ships
-            } else {
-                &[]
+            |titles, ships, indices| {
+                titles.observe_read(source, context, frame, ships, indices, cancelled, places)
             },
-            if changed {
-                &details.ships.ship_indices
-            } else {
-                &[]
-            },
-            cancelled,
-            places,
         )?;
-        details.sinking_log.observe(
-            &details.ships.scan,
-            if changed {
-                &details.ships.ship_indices
-            } else {
-                &[]
-            },
-            cancelled,
-            details.cat.as_deref().ok_or_else(|| {
-                details
-                    .catalogue_error
-                    .as_deref()
-                    .expect("configured content outcome")
-            }),
-            details.naming.as_deref(),
-            Some(retention),
-        )?;
-        let first_new = details
-            .ships
-            .ship_indices
-            .partition_point(|index| *index < details.ship_count);
-        let new_ships = if changed {
-            &details.ships.scan.ships[first_new..]
-        } else {
-            &[]
-        };
-        let names = if new_ships.is_empty() {
-            None
-        } else {
-            Some(ships_sunk::prepared_names(
-                &details.ships.scan,
-                new_ships,
-                details.cat.as_deref().ok_or_else(|| {
-                    details
-                        .catalogue_error
-                        .as_deref()
-                        .expect("configured content outcome")
-                }),
-                details.naming.as_deref(),
-                Some(retention),
-                cancelled,
-            )?)
-        };
-        for (&index, ship) in details.ships.ship_indices[first_new..]
-            .iter()
-            .zip(new_ships)
-        {
-            let (name, class_name) = names.as_ref().expect("new ship names").ship(ship);
-            details
-                .pending_named
-                .entry(ship.entry.battle)
-                .or_default()
-                .push(PreparedShip {
-                    row: NavalBattleNamedShip {
-                        sink_hour: ship.entry.sink_hour,
-                        known_at: ship.read_hour,
-                        name,
-                        class_name,
-                    },
-                    class_token: ship.entry.class_token,
-                });
-            details.ship_count = details.ship_count.max(index.saturating_add(1));
-        }
-        if details.ships.scan.ship_reads.len() != reads {
-            details.ship_reads.event(0, frame.hour, &frame.hour)?;
-        }
-        drop(cpu);
-        let cpu = ::replay_frame::cpu::scope_phase("naval:pruning");
-        details.ships.scan.ship_reads.clear();
-        details.ships.scan.convoy_reads.clear();
-        drop(cpu);
         let _cpu = ::replay_frame::cpu::scope_phase("naval:fleet_projection_series");
+        let details = &mut self.details;
         // Equal acquisitions still supply census/read proof above, but cannot
         // change this fixed-content name projection. Rebuild only changed rows.
         if !details.fleet_inputs_changed(frame, frame_changes) {
@@ -352,6 +360,97 @@ impl Scan {
         }
         Ok(())
     }
+
+    /// The read series moved to `hour`, and the census read there when both were complete.
+    fn observe_reads(&mut self, hour: i32) -> io::Result<()> {
+        let details = &mut self.details;
+        details.fleet_reads.through(hour);
+        details.ship_reads.through(hour);
+        details.census_reads.through(hour);
+        if self
+            .combat_hours
+            .last()
+            .is_some_and(|span| span.last_hour == hour)
+            && self
+                .result_hours
+                .last()
+                .is_some_and(|span| span.last_hour == hour)
+        {
+            details.census_reads.event(0, hour, &hour)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::observe_details_read`] of a projected hour; its notes join where the row path's do.
+    pub(super) fn observe_projected_details(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        hour: &mut columnar::Hour,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let mut own = std::mem::take(&mut self.details.refusals);
+        let observed = catalogue::own_refusals(&mut own, || {
+            self.observe_own_projected(source, context, hour, cancelled)
+        });
+        self.details.refusals = own;
+        observed
+    }
+
+    fn observe_own_projected(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        hour: &mut columnar::Hour,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let at = hour.hour;
+        let cpu = ::replay_frame::cpu::scope_phase("naval:series_observe");
+        self.observe_reads(at)?;
+        drop(cpu);
+        let cpu = ::replay_frame::cpu::scope_phase("naval:sinkings_apply");
+        if let Some(seeded) = hour.seeded
+            && self.details.ships.scan.last_ship_read != seeded
+        {
+            return Err(io::Error::other(format!(
+                "The sunk ships a walk compares from at hour {at} are not those the naval scan read last"
+            )));
+        }
+        let reads = self.details.ships.scan.ship_reads.len();
+        let changes = self.details.ships.prepare_projected(
+            at,
+            hour.countries.tables(),
+            hour.tokens.as_deref(),
+            &hour.ships,
+            &hour.convoys,
+        );
+        if let Some(base) = hour.base.take() {
+            self.details.ships.continue_from(*base);
+        }
+        drop(cpu);
+        let sighted = hour.sighting.take();
+        self.details
+            .observe_sunk(at, &changes, reads, cancelled, |titles, ships, indices| {
+                titles.observe_sighted(source, context, at, ships, indices, cancelled, sighted)
+            })?;
+        let _cpu = ::replay_frame::cpu::scope_phase("naval:fleet_projection_series");
+        if let Some((labels, noted)) = hour.fleets.take() {
+            catalogue::credit(&noted);
+            let details = &mut self.details;
+            for (combat, province, fleets, refused) in labels {
+                let value = FleetRead {
+                    province,
+                    fleets,
+                    refused,
+                };
+                if details.fleets.get(&combat) != Some(&value) {
+                    details.fleet_reads.event(combat, at, &value)?;
+                    details.fleets.insert(combat, value);
+                }
+            }
+        }
+        Ok(())
+    }
     pub(super) fn window_records(&self, window: &BattleWindow) -> Self {
         let episodes = self
             .episodes
@@ -368,7 +467,15 @@ impl Scan {
                         .runs
                         .iter()
                         .any(|run| run.first <= window.last_hour && run.last >= window.first_hour);
-                    return (native || observed).then(|| episode.clone());
+                    // Runs through the window's end alone: later reads leave its page as written.
+                    return (native || observed).then(|| {
+                        let mut row = episode.clone();
+                        row.runs.retain(|run| run.first <= window.last_hour);
+                        for run in &mut row.runs {
+                            run.last = run.last.min(window.last_hour);
+                        }
+                        row
+                    });
                 }
                 let mut row = episode.clone();
                 row.runs = episode
@@ -488,18 +595,9 @@ impl Scan {
         )?;
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope_phase("naval:window_projection_series");
-        let mut changed = BTreeSet::from([ordinal]);
         for &index in &self.dirty {
             check_cancel(cancelled)?;
             let episode = &self.episodes[index];
-            if episode.kind == Kind::Result {
-                for hour in episode.runs.iter().filter_map(|run| run.sample.end) {
-                    let at = windows.partition_point(|window| window.last_hour < hour);
-                    if at <= ordinal && at < windows.len() {
-                        changed.insert(at);
-                    }
-                }
-            }
             let next = self.pages.len() as u64;
             let page = *self.pages.entry(episode.id.clone()).or_insert(next);
             series::write_reply(
@@ -511,31 +609,25 @@ impl Scan {
         }
         self.dirty.clear();
         series::write_catalogue(writer, "naval-battle-keys", branch, &self.pages, &())?;
-        for at in changed {
-            check_cancel(cancelled)?;
-            let first = if at == 0 {
-                i32::MIN
-            } else {
-                windows[at - 1].last_hour.saturating_add(1)
-            };
-            let interval = BattleWindow {
-                first_hour: first,
-                last_hour: windows[at].last_hour,
-            };
-            series::write_reply(
-                writer,
-                &format!("naval-battle-ranking-{branch}"),
-                at as u64,
-                &self.window_records(&interval),
-            )?;
-            let window = &windows[at];
-            series::write_reply(
-                writer,
-                &format!("naval-battles-{branch}"),
-                at as u64,
-                &self.window_records(window).reply_window(at, window)?,
-            )?;
-        }
+        // A closed window's pages hold nothing a later read changes: its result runs end
+        // with it, and its reply's rows are clipped to it.
+        check_cancel(cancelled)?;
+        let interval = BattleWindow {
+            first_hour: boundary,
+            last_hour: window.last_hour,
+        };
+        series::write_reply(
+            writer,
+            &format!("naval-battle-ranking-{branch}"),
+            ordinal as u64,
+            &self.window_records(&interval),
+        )?;
+        series::write_reply(
+            writer,
+            &format!("naval-battles-{branch}"),
+            ordinal as u64,
+            &self.window_records(window).reply_window(ordinal, window)?,
+        )?;
         drop(cpu);
         let _cpu = ::replay_frame::cpu::scope_phase("naval:series_flush");
         let details = &mut self.details;
@@ -563,7 +655,7 @@ impl Scan {
             cancelled,
         )?;
         let cpu = ::replay_frame::cpu::scope_phase("naval:sinking_log_projection_series");
-        details.sinking_log.publish(
+        let name_warnings = details.sinking_log.publish(
             replay,
             writer,
             branch,
@@ -581,6 +673,7 @@ impl Scan {
                 .retention
                 .as_mut()
                 .map(|retention| retention.update(&details.ships.scan)),
+            &mut details.classes,
         )?;
         drop(cpu);
         for (combat, mut rows) in std::mem::take(&mut details.pending_named) {
@@ -608,18 +701,11 @@ impl Scan {
             0,
             &self.available,
         )?;
-        let manifest: ships_sunk::prepared::ShipsSunkManifestReply =
-            serde_json::from_reader(zstd::stream::Decoder::new(
-                writer
-                    .read_at(&format!("ships-sunk-manifest-{branch}"), 0)?
-                    .ok_or_else(|| dashboard_core::invalid("Prepared sinking manifest is missing"))?
-                    .as_slice(),
-            )?)?;
         series::write_reply(
             writer,
             &format!("naval-battle-name-warnings-{branch}"),
             0,
-            &manifest.content_warnings,
+            &name_warnings,
         )
     }
 }
@@ -939,6 +1025,9 @@ fn missing_fleets(reason: &str) -> [NavalBattleFleetNames; 2] {
         unknown: Some(reason.into()),
     })
 }
+
+#[cfg(test)]
+mod columnar_parity;
 
 #[cfg(test)]
 mod input_tests {

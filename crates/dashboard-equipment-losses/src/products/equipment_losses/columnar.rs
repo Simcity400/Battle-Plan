@@ -1,6 +1,7 @@
 use super::*;
 use dashboard_base::products::equipment::{RawVariant, VariantHour};
 use dashboard_text::metadata::slot_read;
+use dashboard_world::{Naming as Names, Needs, Roster, World};
 use replay::{
     columnar_frames::metrics,
     columns,
@@ -12,6 +13,15 @@ use std::{collections::HashSet, mem::size_of, sync::Arc};
 
 mod naming;
 mod slots;
+
+/// What a projection reads of its walk's world: the countries and their cosmetic tags.
+pub fn needs() -> Needs {
+    Needs {
+        countries: true,
+        naming: true,
+        ..Needs::default()
+    }
+}
 
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
@@ -77,11 +87,38 @@ pub(super) struct Input {
     pub lend_read: bool,
     pub names: VariantHour,
     pub variants: Vec<(u64, RawVariant)>,
+    /// The bytes of the metadata, drains and their inputs made since an item last carried
+    /// them: the first to carry them counts them.
+    pub shared: usize,
+}
+
+/// The bytes `drain` owns, itself included.
+fn drain_heap(drain: &DestructionInputs) -> usize {
+    size_of::<DestructionInputs>()
+        + drain.supplemental.as_ref().map_or(0, String::capacity)
+        + drain.unresolved.len() * size_of::<u32>()
+        + drain
+            .by_slot
+            .values()
+            .map(|slots| size_of::<(u32, Vec<usize>)>() + slots.capacity() * size_of::<usize>())
+            .sum::<usize>()
+}
+
+/// The bytes `drains` own, themselves included.
+fn drains_heap(drains: &Vec<(u32, Amounts)>) -> usize {
+    size_of::<Vec<(u32, Amounts)>>()
+        + drains.capacity() * size_of::<(u32, Amounts)>()
+        + drains
+            .iter()
+            .map(|(_, amounts)| {
+                amounts.events.capacity() * size_of::<(LeafKey, i128)>()
+                    + amounts.error.as_ref().map_or(0, String::capacity)
+            })
+            .sum::<usize>()
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        // Metadata and drains are Arcs the projector holds too.
         self.input.as_ref().map_or(0, |input| {
             let identities = input.identities.as_ref().map_or(0, |identities| {
                 identities.capacity() * size_of::<((u32, u32), bool)>()
@@ -115,7 +152,8 @@ impl Item for Hour {
                             .sum::<usize>()
                 })
                 .sum();
-            identities
+            input.shared
+                + identities
                 + input.memberships.capacity() * size_of::<(u32, Option<census::Membership>)>()
                 + input.records.capacity() * size_of::<(u32, Records)>()
                 + records
@@ -179,113 +217,6 @@ impl Fields {
 }
 
 #[derive(Default)]
-struct Context {
-    links: Vec<CountryLinkRow>,
-    raw_slots: HashMap<u32, u32>,
-    aliases: HashMap<u32, Vec<u32>>,
-    countries: HashMap<u32, u32>,
-    appearance: Option<HashMap<u32, u32>>,
-}
-
-impl Context {
-    fn links(&mut self, state: &segments::State, format: u16) -> io::Result<()> {
-        self.links.clear();
-        self.raw_slots.clear();
-        self.aliases.clear();
-        if columns::complete(state, TableId::CountryLinks) {
-            let held = columns::table(state, TableId::CountryLinks)?;
-            for slot in held.live().ones() {
-                self.links
-                    .push(columns::row(state, TableId::CountryLinks, slot, format)?);
-            }
-            self.links.sort_unstable_by_key(RowCodec::key);
-            for link in &self.links {
-                self.raw_slots.insert(link.id, link.canonical_slot);
-                self.aliases
-                    .entry(link.canonical_slot)
-                    .or_default()
-                    .push(link.id);
-            }
-        }
-        Ok(())
-    }
-
-    fn country(
-        &self,
-        state: &segments::State,
-        fields: &Fields,
-        slot: u32,
-        format: u16,
-        name: bool,
-    ) -> io::Result<CountryRow> {
-        let held = columns::table(state, TableId::Countries)?;
-        if !held.recorded(fields.country_slot, slot)
-            || (name && !held.recorded(fields.country_tag, slot))
-        {
-            return columns::row(state, TableId::Countries, slot, format);
-        }
-        Ok(CountryRow {
-            id: held.key(slot).expect("current country") as u32,
-            canonical_slot: columns::plain::<u32>(held, fields.country_slot)?[slot as usize],
-            tag: if name {
-                slots::text(state, TableId::Countries, fields.country_tag, slot)?
-            } else {
-                Vec::new()
-            },
-            ..Default::default()
-        })
-    }
-
-    fn countries(
-        &mut self,
-        state: &segments::State,
-        fields: &Fields,
-        format: u16,
-    ) -> io::Result<Vec<((u32, u32), bool)>> {
-        self.countries.clear();
-        let mut identities = Vec::new();
-        if columns::complete(state, TableId::Countries) {
-            let held = columns::table(state, TableId::Countries)?;
-            let mut slots: Vec<_> = held.live().ones().collect();
-            slots.sort_unstable_by_key(|&slot| held.key(slot));
-            for slot in slots {
-                let row = self.country(state, fields, slot, format, false)?;
-                self.countries.insert(row.canonical_slot, slot);
-                if columns::complete(state, TableId::CountryLinks) {
-                    identities.push((
-                        (row.canonical_slot, row.id),
-                        mapped_slot(&row, &self.links).is_ok(),
-                    ));
-                }
-            }
-        }
-        Ok(identities)
-    }
-
-    fn appearance(&mut self, state: &segments::State) -> io::Result<()> {
-        self.appearance = if columns::complete(state, TableId::CountryAppearance)
-            && columns::complete(state, TableId::CountryLinks)
-        {
-            let held = columns::table(state, TableId::CountryAppearance)?;
-            let mut slots: Vec<_> = held.live().ones().collect();
-            slots.sort_unstable_by_key(|&slot| held.key(slot));
-            Some(
-                slots
-                    .into_iter()
-                    .filter_map(|slot| {
-                        let raw = held.key(slot)? as u32;
-                        self.raw_slots.get(&raw).map(|&country| (country, slot))
-                    })
-                    .collect(),
-            )
-        } else {
-            None
-        };
-        Ok(())
-    }
-}
-
-#[derive(Default)]
 struct Census {
     unresolved: HashSet<u32>,
 }
@@ -312,7 +243,7 @@ impl Census {
     fn project(
         &mut self,
         state: &segments::State,
-        context: &Context,
+        roster: &Roster,
         fields: &Fields,
         format: u16,
         reset: bool,
@@ -335,13 +266,13 @@ impl Census {
             let edits = columns::changes(state, TableId::DivisionCensus)?;
             for (&slot, &key) in edits.deleted.iter().zip(&edits.deleted_keys) {
                 self.unresolved.remove(&slot);
-                countries.extend(context.raw_slots.get(&(key as u32)).copied());
+                countries.extend(roster.slot_of(key as u32));
             }
             slots::edits(state, TableId::DivisionCensus, u64::MAX)?
         };
         for slot in visit {
             let raw = held.key(slot).expect("current division census") as u32;
-            if let Some(&country) = context.raw_slots.get(&raw) {
+            if let Some(country) = roster.slot_of(raw) {
                 self.unresolved.remove(&slot);
                 countries.push(country);
             } else {
@@ -354,14 +285,14 @@ impl Census {
             }
         }
         if reset || before != !self.unresolved.is_empty() {
-            countries.extend(context.aliases.keys().copied());
+            countries.extend(roster.links().iter().map(|link| link.canonical_slot));
         }
         countries.sort_unstable();
         countries.dedup();
         let mut values = Vec::with_capacity(countries.len());
         for country in countries {
             let (mut grouped, mut ungrouped, mut found) = (0_u64, 0_u64, false);
-            for raw in context.aliases.get(&country).into_iter().flatten() {
+            for raw in roster.aliases(country) {
                 if let Some(slot) = held.slot(u128::from(*raw)) {
                     let counts = Self::counts(state, fields, slot, format)?;
                     grouped += u64::from(counts.0);
@@ -386,7 +317,6 @@ pub struct Projector {
     mode: replay_data::scope::CaptureMode,
     shapes: [Option<columns::Status>; TABLE_COUNT],
     fields: Fields,
-    context: Context,
     census: Census,
     naming: naming::Naming,
     log: slots::Index<u32>,
@@ -398,6 +328,8 @@ pub struct Projector {
     drains: Arc<Vec<(u32, Amounts)>>,
     land: Arc<CoverageInputs>,
     metadata: Option<Arc<Metadata>>,
+    /// The bytes of the shared inputs made since an item last carried them.
+    charged: usize,
     cold: bool,
     #[cfg(test)]
     log_reads: usize,
@@ -411,7 +343,6 @@ impl Projector {
             mode: replay.capture_mode,
             shapes: [None; TABLE_COUNT],
             fields: Fields::new()?,
-            context: Context::default(),
             census: Census::default(),
             naming: naming::Naming::new()?,
             log: slots::Index::default(),
@@ -423,6 +354,7 @@ impl Projector {
             drains: Arc::default(),
             land: Arc::default(),
             metadata: None,
+            charged: 0,
             cold: true,
             #[cfg(test)]
             log_reads: 0,
@@ -463,7 +395,7 @@ impl Projector {
         )
     }
 
-    fn coverage(&self, state: &segments::State) -> io::Result<CoverageInputs> {
+    fn coverage(&self, state: &segments::State, roster: &Roster) -> io::Result<CoverageInputs> {
         if !columns::complete(state, TableId::CountryLinks) {
             return Ok(CoverageInputs::default());
         }
@@ -500,7 +432,7 @@ impl Projector {
                     columns::row::<PlayerRow>(state, TableId::Players, slot, self.format.version())?
                         .country
                 };
-                if let Some(&country) = self.context.raw_slots.get(&raw) {
+                if let Some(country) = roster.slot_of(raw) {
                     inputs.players.insert(country);
                 } else {
                     inputs.unresolved = true;
@@ -527,7 +459,7 @@ impl Projector {
         Ok(inputs)
     }
 
-    fn destruction(&mut self, state: &segments::State) -> io::Result<()> {
+    fn destruction(&mut self, state: &segments::State, roster: &Roster) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.drains", None);
         let mut inputs = DestructionInputs::default();
         let mut countries: HashMap<u32, (Vec<(LeafKey, i128)>, Option<(u128, String)>)> =
@@ -555,7 +487,7 @@ impl Projector {
                 let row: EquipmentDestructionRow =
                     columns::row(state, table, slot, self.format.version())?;
                 missing |= row.not_recorded_fields() != 0;
-                let Some(&country) = self.context.raw_slots.get(&row.country) else {
+                let Some(country) = roster.slot_of(row.country) else {
                     inputs.unresolved.insert(row.country);
                     continue;
                 };
@@ -621,15 +553,16 @@ impl Projector {
         drains.sort_unstable_by_key(|item| item.0);
         self.drain = Arc::new(inputs);
         self.drains = Arc::new(drains);
+        self.charged += drain_heap(&self.drain) + drains_heap(&self.drains);
         Ok(())
     }
 
-    fn collision(&mut self, state: &segments::State, key: u128) -> io::Result<()> {
+    fn collision(&mut self, state: &segments::State, roster: &Roster, key: u128) -> io::Result<()> {
         let raw = (key >> 88) as u32;
-        let Some(country) = self.context.raw_slots.get(&raw) else {
+        let Some(country) = roster.slot_of(raw) else {
             return Ok(());
         };
-        let aliases = &self.context.aliases[country];
+        let aliases = roster.aliases(country);
         if aliases.len() < 2 {
             return Ok(());
         }
@@ -658,6 +591,7 @@ impl Projector {
     fn indexes(
         &mut self,
         state: &segments::State,
+        roster: &Roster,
         whole: bool,
         mapping: bool,
         shapes: &[bool; TABLE_COUNT],
@@ -698,10 +632,14 @@ impl Projector {
         if reset {
             self.collisions.clear();
             let held = columns::table(state, table)?;
-            for aliases in self
-                .context
-                .aliases
-                .values()
+            let linked: BTreeSet<u32> = roster
+                .links()
+                .iter()
+                .map(|link| link.canonical_slot)
+                .collect();
+            for aliases in linked
+                .into_iter()
+                .map(|slot| roster.aliases(slot))
                 .filter(|aliases| aliases.len() > 1)
             {
                 for &raw in aliases {
@@ -718,7 +656,7 @@ impl Projector {
             collision_keys.extend(changes.inserted.iter().filter_map(|&slot| held.key(slot)));
         }
         for key in collision_keys {
-            self.collision(state, key)?;
+            self.collision(state, roster, key)?;
         }
         let table = TableId::SliceReads;
         if !columns::complete(state, table) {
@@ -757,6 +695,7 @@ impl Projector {
     fn combat(
         &mut self,
         state: &segments::State,
+        roster: &Roster,
         hour: i32,
         records: &mut HashMap<u32, Records>,
         unresolved: &mut BTreeSet<u32>,
@@ -772,7 +711,7 @@ impl Projector {
         owners.sort_unstable();
         owners.dedup();
         for raw in owners {
-            let Some(&country) = self.context.raw_slots.get(&raw) else {
+            let Some(country) = roster.slot_of(raw) else {
                 if self.log.contains(raw) {
                     unresolved.insert(raw);
                 }
@@ -818,6 +757,7 @@ impl Projector {
     fn ships(
         &self,
         state: &segments::State,
+        roster: &Roster,
         records: &mut HashMap<u32, Records>,
         unresolved: &mut BTreeSet<u32>,
     ) -> io::Result<()> {
@@ -826,7 +766,7 @@ impl Projector {
         let row: SunkShipsRow =
             columns::row(state, TableId::SunkShips, slot, self.format.version())?;
         for entry in row.entries {
-            if let Some(&country) = self.context.raw_slots.get(&entry.victim_country) {
+            if let Some(country) = roster.slot_of(entry.victim_country) {
                 let counts = records
                     .entry(country)
                     .or_default()
@@ -854,6 +794,7 @@ impl Projector {
     fn convoys(
         &self,
         state: &segments::State,
+        roster: &Roster,
         records: &mut HashMap<u32, Records>,
         unresolved: &mut BTreeSet<u32>,
     ) -> io::Result<()> {
@@ -861,7 +802,7 @@ impl Projector {
         let table = TableId::SunkConvoys;
         for slot in columns::table(state, table)?.live().ones() {
             let row: SunkConvoyRow = columns::row(state, table, slot, self.format.version())?;
-            if let Some(&country) = self.context.raw_slots.get(&row.owner_country) {
+            if let Some(country) = roster.slot_of(row.owner_country) {
                 records.entry(country).or_default().convoys.push(row);
             } else {
                 unresolved.insert(row.owner_country);
@@ -873,6 +814,7 @@ impl Projector {
     fn lend(
         &self,
         state: &segments::State,
+        roster: &Roster,
         records: &mut HashMap<u32, Records>,
         unresolved: &mut BTreeSet<u32>,
     ) -> io::Result<()> {
@@ -881,7 +823,7 @@ impl Projector {
         for slot in columns::table(state, table)?.live().ones() {
             let row: LendLeaseEquipmentRow =
                 columns::row(state, table, slot, self.format.version())?;
-            if let Some(&country) = self.context.raw_slots.get(&row.giver) {
+            if let Some(country) = roster.slot_of(row.giver) {
                 records.entry(country).or_default().lend.push(row);
             } else {
                 unresolved.insert(row.giver);
@@ -894,12 +836,17 @@ impl Projector {
     }
 }
 
-impl Operator for Projector {
+impl Operator<World> for Projector {
     type Output = Hour;
 
-    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+    fn hour(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        out: &mut dyn Sink<Hour>,
+    ) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar", Some("equipment_losses"));
         let state = hour.state;
+        let (roster, names) = (hour.world.countries()?, hour.world.naming()?);
         let whole = hour.opens || self.cold;
         let mut changed = [false; TABLE_COUNT];
         let mut shaped = [false; TABLE_COUNT];
@@ -953,27 +900,14 @@ impl Operator for Projector {
             || shaped[TableId::Countries.index()]
             || changed[TableId::CountryLinks.index()]
             || relevant(state, TableId::Countries, 1_u64 << self.fields.country_slot)?;
-        let identities;
-        {
-            let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.identities", None);
-            if whole || changed[TableId::CountryLinks.index()] {
-                self.context.links(state, self.format.version())?;
-            }
-            identities = if mapping {
-                Some(
-                    self.context
-                        .countries(state, &self.fields, self.format.version())?,
-                )
-            } else {
-                None
-            };
-            if mapping
-                || shaped[TableId::CountryAppearance.index()]
-                || structural(state, TableId::CountryAppearance)?
-            {
-                self.context.appearance(state)?;
-            }
-        }
+        // Each country's identity in id order, and whether the links resolve it.
+        let identities = mapping.then(|| {
+            roster
+                .iter()
+                .filter(|_| roster.complete())
+                .map(|country| ((country.slot, country.id), country.resolved))
+                .collect()
+        });
         let complete = columns::complete(state, TableId::Countries)
             && columns::complete(state, TableId::CountryLinks);
         let memberships_whole = mapping || shaped[TableId::DivisionCensus.index()];
@@ -982,7 +916,7 @@ impl Operator for Projector {
             let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.census", None);
             memberships = self.census.project(
                 state,
-                &self.context,
+                roster,
                 &self.fields,
                 self.format.version(),
                 memberships_whole,
@@ -1006,12 +940,13 @@ impl Operator for Projector {
             )?;
         if land_changed {
             let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.coverage", None);
-            self.land = Arc::new(self.coverage(state)?);
+            self.land = Arc::new(self.coverage(state, roster)?);
+            self.charged += size_of::<CoverageInputs>() + self.land.players.len() * size_of::<u32>();
         }
         if mapping || changed[TableId::EquipmentDestruction.index()] {
-            self.destruction(state)?;
+            self.destruction(state, roster)?;
         }
-        self.indexes(state, whole, mapping, &shaped)?;
+        self.indexes(state, roster, whole, mapping, &shaped)?;
         let evidence = metrics(hour.manifest);
         let reads = [
             columns::complete(state, TableId::CombatLogEquipment)
@@ -1036,8 +971,14 @@ impl Operator for Projector {
                 .as_ref()
                 .is_some_and(|old| Arc::ptr_eq(&old.drain, &self.drain))
         {
+            let table = self.status(state)?;
+            self.charged += size_of::<Metadata>()
+                + match &table {
+                    TableView::Unavailable { reason } => reason.capacity(),
+                    _ => 0,
+                };
             Arc::new(Metadata {
-                table: self.status(state)?,
+                table,
                 drain: Arc::clone(&self.drain),
                 reads,
                 land: Arc::clone(&self.land),
@@ -1066,26 +1007,26 @@ impl Operator for Projector {
         let mut records = HashMap::new();
         let mut unresolved: [BTreeSet<u32>; 4] = Default::default();
         if process[0] {
-            self.ships(state, &mut records, &mut unresolved[0])?;
+            self.ships(state, roster, &mut records, &mut unresolved[0])?;
         }
         if process[1] {
-            self.convoys(state, &mut records, &mut unresolved[1])?;
+            self.convoys(state, roster, &mut records, &mut unresolved[1])?;
         }
         if process[2] {
-            self.lend(state, &mut records, &mut unresolved[2])?;
+            self.lend(state, roster, &mut records, &mut unresolved[2])?;
         }
         if mapping
             || changed[TableId::SliceReads.index()]
             || evidence.table_ns[TableId::SliceReads.index()] != 0
         {
-            self.combat(state, hour.hour, &mut records, &mut unresolved[3])?;
+            self.combat(state, roster, hour.hour, &mut records, &mut unresolved[3])?;
         }
         for (pending, processed) in self.pending.iter_mut().zip(process) {
             *pending &= !processed;
         }
         let (names, variants) = self.naming.project(
             state,
-            &self.context,
+            (roster, names),
             &self.fields,
             self.format,
             hour.hour,
@@ -1128,17 +1069,13 @@ impl Operator for Projector {
                         ),
                     names,
                     variants,
+                    shared: std::mem::take(&mut self.charged),
                 }),
             })?;
         }
         self.cold = false;
         Ok(())
     }
-}
-
-fn structural(state: &segments::State, table: TableId) -> io::Result<bool> {
-    let edits = columns::changes(state, table)?;
-    Ok(edits.truncated || !edits.inserted.is_empty() || !edits.deleted.is_empty())
 }
 
 fn relevant(state: &segments::State, table: TableId, mask: u64) -> io::Result<bool> {

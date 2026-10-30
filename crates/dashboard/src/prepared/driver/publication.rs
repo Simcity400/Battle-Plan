@@ -21,7 +21,7 @@ use crate::prepared::pipeline;
 use dashboard_base::prepared::roots::{self, Binding, Cursor, End, Held, Interval, Published};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, btree_map::Entry},
+    collections::BTreeMap,
     io,
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
@@ -152,6 +152,7 @@ pub(crate) struct Progress {
 }
 
 /// Where a family's publication stands as a whole.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     /// No hour of it is queryable yet.
@@ -162,6 +163,7 @@ pub(crate) enum Phase {
     Terminal,
 }
 
+#[cfg(test)]
 impl Progress {
     pub(crate) fn phase(&self) -> Phase {
         if self.branches > 0 && self.terminal == self.branches {
@@ -175,6 +177,7 @@ impl Progress {
 }
 
 /// How a family takes a segment, as its committed publication leaves it ([`Resume::attach`]).
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Attach {
     /// It committed all of it, or its branch ended for it.
@@ -189,9 +192,13 @@ pub(crate) enum Attach {
 pub(crate) struct Resume {
     pub families: BTreeMap<FamilyId, BTreeMap<u64, roots::Frontier>>,
     /// Families prepared again from the start: their version, binding or accepted input changed.
+    #[cfg(test)]
     pub again: Vec<FamilyId>,
+    /// The store was replaced under the new key: nothing of what it held before is kept.
+    pub replaced: bool,
 }
 
+#[cfg(test)]
 impl Resume {
     /// How `family` takes the segment of run `run`, ordinals `first..=last`, on `branch`.
     pub(crate) fn attach(
@@ -289,12 +296,12 @@ impl<'s> Publisher<'s> {
         families: &[Family],
         accepts: &dyn Fn(FamilyId, u64, &roots::Frontier) -> bool,
     ) -> io::Result<(Self, Resume)> {
-        let mut writer = match store.saved_key()? {
-            Some(saved) if saved == key => store.extend(&key)?,
+        let (mut writer, replaced) = match store.saved_key()? {
+            Some(saved) if saved == key => (store.extend(&key)?, false),
             Some(saved) if saved.recording_size() < key.recording_size() || key.renames(&saved) => {
-                store.append(&saved, key.clone())?
+                (store.append(&saved, key.clone())?, false)
             }
-            _ => store.replace(key.clone())?,
+            _ => (store.replace(key.clone())?, true),
         };
         let found: Vec<(String, u64)> = writer
             .section_names()
@@ -344,7 +351,9 @@ impl<'s> Publisher<'s> {
         }
         let mut progress: BTreeMap<FamilyId, Progress> = BTreeMap::new();
         let mut resume = Resume {
+            #[cfg(test)]
             again,
+            replaced,
             ..Resume::default()
         };
         for ((family, branch), published) in &kept {
@@ -428,6 +437,7 @@ impl<'s> Publisher<'s> {
     }
 
     /// Each family's progress.
+    #[cfg(test)]
     pub(crate) fn progress(&self) -> BTreeMap<FamilyId, Progress> {
         let inner = self.lock();
         let mut all = inner.progress.clone();
@@ -440,6 +450,7 @@ impl<'s> Publisher<'s> {
     }
 
     /// Why publication stopped; None while it goes on.
+    #[cfg(test)]
     pub(crate) fn stopped(&self) -> Option<Stopped> {
         self.lock().stopped.clone()
     }
@@ -459,6 +470,49 @@ impl<'s> Publisher<'s> {
         inner.writer = None;
         drop(inner);
         self.changed.notify_all();
+    }
+
+    /// Writes what the coordinator itself publishes, as `write` does, with the root writer and
+    /// commits it once no group commit is under way. Its failure stops publication.
+    pub(crate) fn coordinate(
+        &self,
+        write: impl FnOnce(&mut store::Writer) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut inner = self.lock();
+        let mut writer = loop {
+            if let Some(stopped) = &inner.stopped {
+                return Err(stopped.error());
+            }
+            if !inner.committing
+                && let Some(writer) = inner.writer.take()
+            {
+                break writer;
+            }
+            inner = self.wait_changed(inner);
+        };
+        inner.committing = true;
+        drop(inner);
+        let mut leading = Leading(self, true);
+        let committed = write(&mut writer).and_then(|()| self.commit_writer(writer));
+        leading.1 = false;
+        let mut inner = self.lock();
+        inner.committing = false;
+        let done = match committed {
+            Ok(next) => {
+                inner.writer = Some(next);
+                Ok(())
+            }
+            Err(error) => {
+                inner
+                    .stopped
+                    .get_or_insert(Stopped::Failed(Arc::from(error.to_string())));
+                inner.queue.clear();
+                Err(error)
+            }
+        };
+        drop(inner);
+        self.changed.notify_all();
+        done
     }
 
     fn fork(&self, family: FamilyId) -> io::Result<store::Writer> {
@@ -721,6 +775,8 @@ struct Step {
     intervals: Vec<Interval>,
     state: Option<Vec<u8>>,
     carry: Option<Vec<u8>>,
+    /// The family's output on the series engine this batch, once it wrote any.
+    series: Option<roots::Series>,
     segments: u64,
     prepared: u64,
 }
@@ -754,6 +810,71 @@ impl Stage<'_, '_> {
         self.writer()
     }
 
+    /// The name of the family whose lane it is.
+    pub(crate) fn family(&self) -> &'static str {
+        self.family.id.name()
+    }
+
+    /// The family's open batch on `branch`, following its committed publication there: the
+    /// batch the lane queued before is committed first, so the step goes on from it.
+    fn step(&mut self, branch: u64) -> io::Result<&mut Step> {
+        if let Some(ticket) = self.pending.take() {
+            self.publisher.wait(ticket)?;
+        }
+        let publisher = self.publisher;
+        let family = self.family;
+        Ok(self.steps.entry(branch).or_insert_with(|| {
+            let previous = publisher.committed(family.id, branch);
+            Step {
+                frontier: previous.as_ref().map(|previous| previous.frontier.clone()),
+                previous,
+                intervals: Vec::new(),
+                state: None,
+                carry: None,
+                series: None,
+                segments: 0,
+                prepared: 0,
+            }
+        }))
+    }
+
+    /// The series writer the family's output on `branch` goes into this batch, its hours
+    /// starting at `first_hour` when the branch has no publication yet; the batch's root cuts
+    /// it once the family's emit appended what is open through its last hour.
+    /// The rows its series writers hold, appended since its batch began.
+    pub(crate) fn series_held(&self) -> usize {
+        self.steps
+            .values()
+            .filter_map(|step| step.series.as_ref())
+            .map(roots::Series::held_bytes)
+            .fold(0, usize::saturating_add)
+    }
+
+    pub(crate) fn series(
+        &mut self,
+        branch: u64,
+        first_hour: i32,
+    ) -> io::Result<&mut roots::Series> {
+        if self.step(branch)?.series.is_none() {
+            let previous = self.step(branch)?.previous.clone();
+            let identity = self.publisher.binding.identity(branch, self.family.stamp);
+            let name = self.family.id.name();
+            let series = roots::writer(
+                self.writer()?,
+                name,
+                branch,
+                identity,
+                previous.as_ref(),
+                first_hour,
+            )?;
+            self.step(branch)?.series = Some(series);
+        }
+        self.step(branch)?
+            .series
+            .as_mut()
+            .ok_or_else(|| io::Error::other("A stage lost its series writer"))
+    }
+
     /// Records `hours`, which follow the family's last on their branch, as `made`, with the
     /// emit state and projector carry it goes on with after them; whether the batch ends
     /// after them.
@@ -779,21 +900,7 @@ impl Stage<'_, '_> {
         let bytes = self.writer()?.bytes_written();
         let publisher = self.publisher;
         let family = self.family;
-        let step = match self.steps.entry(hours.branch) {
-            Entry::Occupied(step) => step.into_mut(),
-            Entry::Vacant(vacant) => {
-                let previous = publisher.committed(family.id, hours.branch);
-                vacant.insert(Step {
-                    frontier: previous.as_ref().map(|previous| previous.frontier.clone()),
-                    previous,
-                    intervals: Vec::new(),
-                    state: None,
-                    carry: None,
-                    segments: 0,
-                    prepared: 0,
-                })
-            }
-        };
+        let step = self.step(hours.branch)?;
         if let Some(frontier) = &step.frontier {
             if frontier.end.is_some() {
                 return Err(refused("A family's branch goes on after it ended"));
@@ -892,16 +999,36 @@ impl Stage<'_, '_> {
         let segments = frontier.segments;
         step.state = state;
         step.carry = carry;
+        let series = self.series_held();
         self.ends |= boundary
             || !hours.ends_segment
             || hours.ends_branch
             || (hours.ends_segment && ends_batch(segments, BATCH_SEGMENTS))
-            || bytes >= BATCH_BYTES;
+            || bytes >= BATCH_BYTES
+            || series >= roots::SERIES_BATCH_BYTES
+            || (series > 0 && roots::series_pressed());
         if hours.ends_segment {
             let mut inner = publisher.lock();
             inner.progress.entry(family.id).or_default().emitted += 1;
         }
         Ok(self.ends)
+    }
+
+    /// The emit state and projector carry the family goes on with on `branch` after the open
+    /// batch's hours there, in place of those [`Self::processed`] recorded with them.
+    pub(crate) fn keep(
+        &mut self,
+        branch: u64,
+        state: Option<Vec<u8>>,
+        carry: Option<Vec<u8>>,
+    ) -> io::Result<()> {
+        let step = self
+            .steps
+            .get_mut(&branch)
+            .ok_or_else(|| refused("A branch the open batch holds no hours of"))?;
+        step.state = state;
+        step.carry = carry;
+        Ok(())
     }
 
     /// Whether the open batch ends by the recording: the lane submits it.
@@ -942,13 +1069,19 @@ impl Stage<'_, '_> {
         Ok(ticket)
     }
 
-    /// Queues the open batch and waits for it to be committed.
-    pub(crate) fn submit(&mut self) -> io::Result<()> {
-        self.queue()?;
+    /// Waits for the batch the lane queued last to be committed.
+    pub(crate) fn settle(&mut self) -> io::Result<()> {
         match self.pending.take() {
             Some(ticket) => self.publisher.wait(ticket),
             None => Ok(()),
         }
+    }
+
+    /// Queues the open batch and waits for it to be committed.
+    #[cfg(test)]
+    pub(crate) fn submit(&mut self) -> io::Result<()> {
+        self.queue()?;
+        self.settle()
     }
 
     fn seal(&self, writer: &mut store::Writer, steps: BTreeMap<u64, Step>) -> io::Result<Sealed> {
@@ -970,6 +1103,7 @@ impl Stage<'_, '_> {
                     intervals: &step.intervals,
                     state: step.state.as_deref(),
                     carry: step.carry.as_deref(),
+                    series: step.series,
                 },
             )?;
             pipeline::write_family_page(writer, name, branch, &published.frontier)?;

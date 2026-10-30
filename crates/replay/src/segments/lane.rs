@@ -2,7 +2,7 @@
 //! file for its emit.
 
 use super::{
-    Chunk, Ending, Fault, Hour, Item, Operation, Operator, Scratch, Settings, Signal, Sink,
+    Carry, Chunk, Ending, Fault, Hour, Item, Operation, Operator, Scratch, Settings, Signal, Sink,
     Spilled, Start, caught, invalid, lock,
 };
 use crate::columnar_frames::Segment;
@@ -10,6 +10,7 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, VecDeque},
     io,
+    marker::PhantomData,
     mem::size_of,
     sync::{
         Mutex,
@@ -177,14 +178,14 @@ pub(super) enum Emitted {
 }
 
 /// A family, its operator's and items' types erased.
-pub(super) trait Erased: Sync {
+pub(super) trait Erased<W>: Sync {
     fn name(&self) -> &str;
 
     /// Whether its items spill.
     fn spills(&self) -> bool;
 
     /// A new operator for `segment`.
-    fn fresh<'s>(&'s self, segment: &Segment) -> io::Result<Box<dyn Walking + 's>>;
+    fn fresh<'s>(&'s self, segment: &Segment) -> io::Result<Box<dyn Walking<W> + 's>>;
 
     /// Hands segment `at`'s filed chunks to the emit, in order, from the first not yet
     /// handed, the last with why the segment ended short: a spilled one is read back into
@@ -205,17 +206,18 @@ pub(super) trait Erased: Sync {
 }
 
 /// A family's operator as a walk holds it, with what it projected of the segment.
-pub(super) trait Walking: Send {
+pub(super) trait Walking<W>: Send {
     fn starts_at(&self, start: Start<'_>) -> bool;
     fn start(&mut self, start: Start<'_>, branch: u64, first: i32) -> io::Result<()>;
     fn cross(&mut self, first: i32) -> io::Result<()>;
-    fn hour(&mut self, hour: &Hour<'_>, context: &Context<'_>) -> io::Result<()>;
+    fn hour(&mut self, hour: &Hour<'_, W>, context: &Context<'_>) -> io::Result<()>;
     fn end(&mut self, context: &Context<'_>) -> io::Result<()>;
     /// Closes what it projected of `context`'s segment: the bytes it projected there, spilled
     /// or not. A failure its items' sink met is its [`Self::fault`].
     fn close(&mut self, context: &Context<'_>) -> io::Result<usize>;
-    /// Files what it closed as segment `at`'s, for its family's emit, with why it ended short.
-    fn file(&mut self, at: usize, ending: Option<Ending>);
+    /// Files what it closed as segment `at`'s, for its family's emit, with why it ended short
+    /// and what it would hand on past the last segment of its branch.
+    fn file(&mut self, at: usize, ending: Option<Ending>, kept: Option<Kept>);
     /// Drops what it projected and has not filed, giving its resident bytes back to `credit`.
     fn discard(&mut self, credit: &Credit);
     /// The failure its items' sink met, which is not its operator's own: the run's, or its
@@ -251,28 +253,47 @@ fn release<T>(chunks: impl IntoIterator<Item = Stored<T>>, credit: &Credit) {
     }
 }
 
-/// A segment's chunks not yet emitted, and why the segment ended short.
+/// What a family's operator would hand on past the last segment of its branch.
+pub(super) enum Kept {
+    Saved(Vec<u8>),
+    Unsaved,
+}
+
+impl Kept {
+    fn carry(&self) -> Carry<'_> {
+        match self {
+            Self::Saved(bytes) => Carry::Saved(bytes),
+            Self::Unsaved => Carry::Unsaved,
+        }
+    }
+}
+
+/// A segment's chunks not yet emitted, why the segment ended short, and what its operator
+/// would hand on past it.
 struct Filed<T> {
     chunks: VecDeque<Stored<T>>,
     ending: Option<Ending>,
+    kept: Option<Kept>,
 }
 
-pub(super) struct Typed<'a, O: Operator> {
+pub(super) struct Typed<'a, O: Operator<W>, W> {
     name: &'a str,
     make: Make<'a, O>,
     /// The emit, taken out while a worker calls it: no lock is held around a family's code.
     emit: Mutex<Option<Emit<'a, O::Output>>>,
     /// Each filed segment's chunks not yet emitted.
     filed: Mutex<BTreeMap<usize, Filed<O::Output>>>,
+    world: PhantomData<fn(&W)>,
 }
 
-impl<'a, O: Operator> Typed<'a, O> {
+impl<'a, O: Operator<W>, W> Typed<'a, O, W> {
     pub(super) fn new(name: &'a str, make: Make<'a, O>, emit: Emit<'a, O::Output>) -> Self {
         Self {
             name,
             make,
             emit: Mutex::new(Some(emit)),
             filed: Mutex::new(BTreeMap::new()),
+            world: PhantomData,
         }
     }
 
@@ -293,7 +314,11 @@ impl<'a, O: Operator> Typed<'a, O> {
         mut restore: Option<Taken<'_>>,
         filed: Filed<O::Output>,
     ) -> Result<Emitted, Fault> {
-        let Filed { mut chunks, ending } = filed;
+        let Filed {
+            mut chunks,
+            ending,
+            kept,
+        } = filed;
         if chunks.is_empty() {
             // A segment that projected nothing still ends.
             caught(Operation::Emit, || {
@@ -302,6 +327,7 @@ impl<'a, O: Operator> Typed<'a, O> {
                     items: Vec::new(),
                     last: true,
                     ending: ending.as_ref(),
+                    carry: kept.as_ref().map(Kept::carry),
                 })
             })?;
             return Ok(Emitted::Ended(ending));
@@ -312,7 +338,14 @@ impl<'a, O: Operator> Typed<'a, O> {
                 Stored::Spilled(spilled, need) => {
                     let Some(mut taken) = restore.take() else {
                         chunks.push_front(Stored::Spilled(spilled, need));
-                        self.put(at, Filed { chunks, ending });
+                        self.put(
+                            at,
+                            Filed {
+                                chunks,
+                                ending,
+                                kept,
+                            },
+                        );
                         return Ok(Emitted::Spilled(need));
                     };
                     let mut raw = Vec::new();
@@ -348,12 +381,18 @@ impl<'a, O: Operator> Typed<'a, O> {
             };
             let last = chunks.is_empty();
             let closing = if last { ending.as_ref() } else { None };
+            let carry = if last {
+                kept.as_ref().map(Kept::carry)
+            } else {
+                None
+            };
             let emitted = caught(Operation::Emit, || {
                 emit(Chunk {
                     segment,
                     items,
                     last,
                     ending: closing,
+                    carry,
                 })
             });
             drop(held);
@@ -366,7 +405,7 @@ impl<'a, O: Operator> Typed<'a, O> {
     }
 }
 
-impl<'a, O: Operator + 'a> Erased for Typed<'a, O> {
+impl<'a, O: Operator<W> + 'a, W> Erased<W> for Typed<'a, O, W> {
     fn name(&self) -> &str {
         self.name
     }
@@ -375,7 +414,7 @@ impl<'a, O: Operator + 'a> Erased for Typed<'a, O> {
         O::Output::SPILLS
     }
 
-    fn fresh<'s>(&'s self, segment: &Segment) -> io::Result<Box<dyn Walking + 's>> {
+    fn fresh<'s>(&'s self, segment: &Segment) -> io::Result<Box<dyn Walking<W> + 's>> {
         Ok(Box::new(Walk {
             lane: self,
             operator: (self.make)(segment)?,
@@ -425,6 +464,7 @@ impl<'a, O: Operator + 'a> Erased for Typed<'a, O> {
         let filed = Filed {
             chunks: VecDeque::new(),
             ending: Some(ending),
+            kept: None,
         };
         self.put(at, filed);
     }
@@ -549,13 +589,13 @@ impl<T: Item> Sink<T> for Filling<'_, '_, T> {
 }
 
 /// A family's operator in a walk, with the chunks it projected of the segment.
-struct Walk<'s, 'a, O: Operator> {
-    lane: &'s Typed<'a, O>,
+struct Walk<'s, 'a, O: Operator<W>, W> {
+    lane: &'s Typed<'a, O, W>,
     operator: O,
     chunks: Chunks<O::Output>,
 }
 
-impl<O: Operator> Walking for Walk<'_, '_, O> {
+impl<O: Operator<W>, W> Walking<W> for Walk<'_, '_, O, W> {
     fn starts_at(&self, start: Start<'_>) -> bool {
         self.operator.starts_at(start)
     }
@@ -568,7 +608,7 @@ impl<O: Operator> Walking for Walk<'_, '_, O> {
         self.operator.cross(first)
     }
 
-    fn hour(&mut self, hour: &Hour<'_>, context: &Context<'_>) -> io::Result<()> {
+    fn hour(&mut self, hour: &Hour<'_, W>, context: &Context<'_>) -> io::Result<()> {
         self.operator.hour(
             hour,
             &mut Filling {
@@ -598,10 +638,11 @@ impl<O: Operator> Walking for Walk<'_, '_, O> {
         Ok(std::mem::take(&mut self.chunks.produced))
     }
 
-    fn file(&mut self, at: usize, ending: Option<Ending>) {
+    fn file(&mut self, at: usize, ending: Option<Ending>, kept: Option<Kept>) {
         let filed = Filed {
             chunks: VecDeque::from(std::mem::take(&mut self.chunks.closed)),
             ending,
+            kept,
         };
         self.lane.put(at, filed);
     }

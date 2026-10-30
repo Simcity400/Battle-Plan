@@ -245,7 +245,8 @@ impl Prepared {
             self.tags.entry(tag.clone()).or_insert(next);
         }
         let live = self.live.as_ref().expect("configured holders");
-        let live_tags: BTreeSet<&str> = live.values().flatten().map(String::as_str).collect();
+        // Read only where a channel writes every live tag's rank again.
+        let mut live_tags: Option<BTreeSet<&str>> = None;
         for index in 0..12 {
             check_cancel(flag)?;
             let params = selection(0, index);
@@ -370,6 +371,8 @@ impl Prepared {
                 }
                 // Every live tag's rank is written again below, continuing its
                 // tail when unchanged, as an observer that kept its holders would.
+                let live_tags = live_tags
+                    .get_or_insert_with(|| live.values().flatten().map(String::as_str).collect());
                 state
                     .rank_tail
                     .retain(|tag, _| live_tags.contains(tag.as_str()));

@@ -2,11 +2,14 @@
 
 pub mod budget;
 pub mod cache;
+pub mod carry;
 pub mod codec;
 mod events;
+pub mod family;
 mod format;
 mod hierarchy;
 mod layout;
+pub mod memory;
 pub mod pages;
 pub mod query;
 pub mod rank;
@@ -36,5 +39,7 @@ pub(crate) fn add(a: u64, b: u64) -> io::Result<u64> {
         .ok_or_else(|| invalid("series integer overflow"))
 }
 
+#[cfg(test)]
+mod family_tests;
 #[cfg(test)]
 mod tests;

@@ -1,10 +1,12 @@
 //! The prepared store's shared pages: published coverage and the gates decoded
 //! from it, each family's publication roots and ledgers, binary series and event batches, frame
 //! changes, group sums, the hours a family prepared on its own keeps from a
-//! block, progressive queries and replies answered from a prepared prefix. The
-//! dashboard's pipeline writes them; products read them.
+//! block, progressive queries, replies answered from a prepared prefix, and the replies a family
+//! answers from its series-engine publication. The dashboard's pipeline writes them; products
+//! read them.
 
 pub mod coverage;
+pub mod engine;
 pub mod entries;
 pub mod facts;
 pub mod frame_changes;
@@ -19,6 +21,7 @@ pub mod prepass;
 pub use job_priority as priority;
 pub mod roots;
 pub mod series;
+pub mod served;
 pub mod state_census;
 mod store;
 pub mod timing;

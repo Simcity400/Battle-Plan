@@ -181,6 +181,15 @@ fn pick(
     points: &BTreeMap<u32, i32>,
     province: u32,
 ) -> Result<(u32, Option<u32>), String> {
+    pick_from(geo, &|id| points.get(&id).copied(), province)
+}
+
+/// [`pick`] through a lookup of each province's recorded victory points.
+fn pick_from(
+    geo: &Geography,
+    points: &dyn Fn(u32) -> Option<i32>,
+    province: u32,
+) -> Result<(u32, Option<u32>), String> {
     if !geo.geometry.centroids.contains_key(&province) {
         return Err(format!("province {province} has no content map definition"));
     }
@@ -191,12 +200,8 @@ fn pick(
         .as_ref()
         .map_err(Clone::clone)?;
     let position = |id| geo.geometry.centroids.get(&id).copied().unwrap_or([0, 0]);
-    let victory_points = |id| {
-        points
-            .get(&id)
-            .copied()
-            .ok_or_else(|| format!("province {id} has no recorded victory points"))
-    };
+    let victory_points =
+        |id| points(id).ok_or_else(|| format!("province {id} has no recorded victory points"));
     let picker = Picker {
         width: geo.geometry.width,
         factor: geo.factor,
@@ -283,6 +288,8 @@ fn checked(mut reply: ShipsSunkBattleTitlesReply) -> io::Result<ShipsSunkBattleT
 impl Product for ShipsSunkBattleTitles {
     const KEY: &'static str = "ships-sunk-battle-titles";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::served::PLAN);
     type Params = ShipsSunkBattleTitlesParams;
     type Reply = ShipsSunkBattleTitlesReply;
 
@@ -526,6 +533,99 @@ impl Prepared {
         flag: &AtomicBool,
         places: bool,
     ) -> io::Result<()> {
+        self.observe_titled(
+            source,
+            context,
+            frame.hour,
+            ships,
+            indices,
+            flag,
+            |new| {
+                if !places && !new.is_empty() {
+                    return Err(io::Error::other(format!(
+                        "A sunk ship was first read at hour {}, which was read without the tables its place name reads",
+                        frame.hour
+                    )));
+                }
+                Ok(())
+            },
+            |geo, wanted| {
+                let points = recorded_rows::<tables::Provinces>(frame)
+                    .map(|rows| {
+                        rows.iter()
+                            .map(|row| (row.id, row.victory_points))
+                            .collect::<BTreeMap<_, _>>()
+                    })
+                    .map_err(|error| error.to_string());
+                let lookup =
+                    |id: u32| points.as_ref().ok().and_then(|points| points.get(&id).copied());
+                let sighting = sight(
+                    geo,
+                    wanted,
+                    points
+                        .as_ref()
+                        .map(|_| &lookup as &dyn Fn(u32) -> Option<i32>)
+                        .map_err(Clone::clone),
+                    |requests| {
+                        place_names::at_frame_unreported(
+                            source,
+                            &requested(frame.branch, frame.hour, requests),
+                            context,
+                            frame,
+                            flag,
+                        )
+                    },
+                );
+                Ok(sighting)
+            },
+        )
+    }
+
+    /// [`Self::observe_read`] of an hour whose title operands were read apart ([`sighting`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn observe_sighted(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        hour: i32,
+        ships: &[sinkings::ShipEvent],
+        indices: &[u32],
+        flag: &AtomicBool,
+        sighted: Option<(Sighting, catalogue::OwnRefusals)>,
+    ) -> io::Result<()> {
+        let mut sighted = sighted;
+        self.observe_titled(
+            source,
+            context,
+            hour,
+            ships,
+            indices,
+            flag,
+            |_| Ok(()),
+            |_, _| {
+                let (sighting, noted) = sighted.take().ok_or_else(|| {
+                    io::Error::other(format!(
+                        "A sunk ship first read at hour {hour} was not titled at its read"
+                    ))
+                })?;
+                catalogue::credit(&noted);
+                Ok(sighting)
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe_titled(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        hour: i32,
+        ships: &[sinkings::ShipEvent],
+        indices: &[u32],
+        flag: &AtomicBool,
+        admit: impl FnOnce(&[(u32, &sinkings::ShipEvent)]) -> io::Result<()>,
+        sight: impl FnOnce(&Geography, &[&sinkings::ShipEvent]) -> io::Result<Sighting>,
+    ) -> io::Result<()> {
         check_cancel(flag)?;
         // Global immutable scan indices; the shared scan alone discovers occurrences.
         let first = indices.partition_point(|index| (*index as usize) < self.published);
@@ -534,12 +634,7 @@ impl Prepared {
             .copied()
             .zip(&ships[first..])
             .collect();
-        if !places && !new.is_empty() {
-            return Err(io::Error::other(format!(
-                "A sunk ship was first read at hour {}, which was read without the tables its place name reads",
-                frame.hour
-            )));
-        }
+        admit(new.as_slice())?;
         let mut rows: Vec<_> = new
             .iter()
             .map(|(index, ship)| PreparedTitle {
@@ -567,50 +662,17 @@ impl Prepared {
             match (content, geo) {
                 (Ok(cat), Ok(geo)) => {
                     notes.geography = geo.warnings.clone();
-                    match recorded_rows::<tables::Provinces>(frame) {
-                        Ok(provinces) => {
-                            let points = provinces
-                                .iter()
-                                .map(|row| (row.id, row.victory_points))
-                                .collect();
-                            let selections: BTreeMap<_, _> = wanted
-                                .iter()
-                                .map(|(at, ship)| (*at, pick(&geo, &points, ship.entry.province)))
-                                .collect();
-                            let requests: BTreeSet<_> = selections
-                                .values()
-                                .filter_map(|value| {
-                                    value.as_ref().ok().and_then(|(_, province)| *province)
-                                })
-                                .collect();
-                            let places = if requests.is_empty() {
-                                Ok(place_names::PlaceNamesReply {
-                                    places: vec![],
-                                    states: vec![],
-                                    warnings: vec![],
-                                })
-                            } else {
-                                place_names::at_frame(
-                                    source,
-                                    &place_names::PlaceNamesParams {
-                                        branch_id: frame.branch.to_string(),
-                                        land: false,
-                                        places: requests
-                                            .into_iter()
-                                            .map(|province_id| place_names::PlaceNameRequest {
-                                                province_id,
-                                                hour: frame.hour,
-                                            })
-                                            .collect(),
-                                        states: vec![],
-                                    },
-                                    context,
-                                    frame,
-                                    flag,
-                                )
-                            };
-                            match places {
-                                Ok(places) => {
+                    let ships: Vec<_> = wanted.iter().map(|(_, ship)| *ship).collect();
+                    let sighting = sight(&*geo, ships.as_slice())?;
+                    match sighting.picks {
+                        Ok(picks) => {
+                            let selections: BTreeMap<_, _> =
+                                wanted.iter().map(|(at, _)| *at).zip(picks).collect();
+                            match sighting.places {
+                                Ok(mut places) => {
+                                    if !sighting.requested.is_empty() {
+                                        places.warnings.extend(cat.refusal_lines());
+                                    }
                                     notes.places = places.warnings;
                                     for (at, selection) in selections {
                                         rows[at].place = selection
@@ -655,7 +717,7 @@ impl Prepared {
                                                 Err(reason) => rows[at].row.missing = Some(reason),
                                             },
                                             Ok((_, Some(_))) => {
-                                                rows[at].error = Some(error.to_string())
+                                                rows[at].error = Some(error.clone())
                                             }
                                             Err(reason) => rows[at].row.missing = Some(reason),
                                         }
@@ -665,7 +727,7 @@ impl Prepared {
                         }
                         Err(error) => {
                             for (at, _) in &wanted {
-                                rows[*at].error = Some(error.to_string());
+                                rows[*at].error = Some(error.clone());
                             }
                         }
                     }
@@ -683,13 +745,13 @@ impl Prepared {
             }
         }
         if !rows.is_empty() {
-            self.metadata.event(0, frame.hour, &notes)?;
+            self.metadata.event(0, hour, &notes)?;
         }
         for row in rows {
-            self.rows.event(0, frame.hour, &row)?;
+            self.rows.event(0, hour, &row)?;
         }
-        self.rows.through(frame.hour);
-        self.metadata.through(frame.hour);
+        self.rows.through(hour);
+        self.metadata.through(hour);
         if let Some(index) = indices.last() {
             self.published = self.published.max(*index as usize + 1);
         }
@@ -707,6 +769,152 @@ impl Prepared {
             .flush(writer, &format!("sinking-title-warnings-{branch}"), 0, flag)
     }
 }
+/// What an hour's new ships' titles read: their picks and the picked places' names.
+pub(crate) struct Sighting {
+    picks: Result<Vec<Result<(u32, Option<u32>), String>>, String>,
+    requested: BTreeSet<u32>,
+    places: Result<place_names::PlaceNamesReply, String>,
+}
+
+/// The place names of `requests` at `hour` of `branch`, as a sunk ship's title asks them.
+fn requested(branch: u64, hour: i32, requests: &BTreeSet<u32>) -> place_names::PlaceNamesParams {
+    place_names::PlaceNamesParams {
+        branch_id: branch.to_string(),
+        land: false,
+        places: requests
+            .iter()
+            .map(|&province_id| place_names::PlaceNameRequest { province_id, hour })
+            .collect(),
+        states: vec![],
+    }
+}
+
+fn sight(
+    geo: &Geography,
+    wanted: &[&sinkings::ShipEvent],
+    points: Result<&dyn Fn(u32) -> Option<i32>, String>,
+    name: impl FnOnce(&BTreeSet<u32>) -> io::Result<place_names::PlaceNamesReply>,
+) -> Sighting {
+    let points = match points {
+        Ok(points) => points,
+        Err(error) => {
+            return Sighting {
+                picks: Err(error),
+                requested: BTreeSet::new(),
+                places: Ok(place_names::PlaceNamesReply {
+                    places: vec![],
+                    states: vec![],
+                    warnings: vec![],
+                }),
+            };
+        }
+    };
+    let picks: Vec<_> = wanted
+        .iter()
+        .map(|ship| pick_from(geo, points, ship.entry.province))
+        .collect();
+    let requested: BTreeSet<_> = picks
+        .iter()
+        .filter_map(|value| value.as_ref().ok().and_then(|(_, province)| *province))
+        .collect();
+    let places = if requested.is_empty() {
+        Ok(place_names::PlaceNamesReply {
+            places: vec![],
+            states: vec![],
+            warnings: vec![],
+        })
+    } else {
+        name(&requested).map_err(|error| error.to_string())
+    };
+    Sighting {
+        picks: Ok(picks),
+        requested,
+        places,
+    }
+}
+
+impl Sighting {
+    /// The bytes it holds on the heap, about.
+    pub(crate) fn heap(&self) -> usize {
+        let picks = match &self.picks {
+            Ok(picks) => {
+                picks.capacity() * size_of::<Result<(u32, Option<u32>), String>>()
+                    + picks
+                        .iter()
+                        .filter_map(|pick| pick.as_ref().err())
+                        .map(String::capacity)
+                        .sum::<usize>()
+            }
+            Err(error) => error.capacity(),
+        };
+        let places = match &self.places {
+            Ok(reply) => {
+                reply.places.capacity() * size_of::<place_names::PlaceName>()
+                    + reply.states.capacity() * size_of::<place_names::PlaceStateName>()
+                    + reply.warnings.capacity() * size_of::<String>()
+                    + reply
+                        .places
+                        .iter()
+                        .flat_map(|place| place.name.iter().chain(&place.missing))
+                        .chain(&reply.warnings)
+                        .map(String::capacity)
+                        .sum::<usize>()
+            }
+            Err(error) => error.capacity(),
+        };
+        picks + self.requested.len() * size_of::<u32>() + places
+    }
+}
+
+/// The title operands of `wanted`, read apart; `frame` is built only when a pick names a province.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sighting(
+    source: &Source,
+    context: &LoadContext,
+    (branch, hour): (u64, i32),
+    wanted: &[&sinkings::ShipEvent],
+    points: Result<&dyn Fn(u32) -> Option<i32>, String>,
+    frame: impl FnOnce() -> io::Result<DecodedFrame>,
+    flag: &AtomicBool,
+) -> io::Result<Option<(Sighting, catalogue::OwnRefusals)>> {
+    let (sighted, noted) = catalogue::capture_isolated(|| {
+        let Ok(cat) = context
+            .content()
+            .and_then(|content| catalogue::catalogue(source, content))
+        else {
+            return Ok(None);
+        };
+        let Ok(geo) = geography(source, &cat) else {
+            return Ok(None);
+        };
+        check_cancel(flag)?;
+        // A frame that cannot be built stops preparation, never titles a ship.
+        let mut failed = None;
+        let sighting = sight(&geo, wanted, points, |requests| {
+            let frame = frame().inspect_err(|error| {
+                failed = Some(io::Error::new(error.kind(), error.to_string()));
+            })?;
+            place_names::at_frame_unreported(
+                source,
+                &requested(branch, hour, requests),
+                context,
+                &frame,
+                flag,
+            )
+        });
+        match failed {
+            Some(error) => Err(error),
+            None => Ok(Some(sighting)),
+        }
+    });
+    Ok(sighted?.map(|sighting| (sighting, noted)))
+}
+
+/// Whether a sunk ship first found needs its title's operands read at its hour.
+pub(crate) fn wanted(ship: &sinkings::ShipEvent) -> bool {
+    initial(0, ship).missing.is_some() && ship.entry.province_present != 0
+}
+
 pub fn prepared_query(
     params: &ShipsSunkBattleTitlesParams,
     store: &store::Store,

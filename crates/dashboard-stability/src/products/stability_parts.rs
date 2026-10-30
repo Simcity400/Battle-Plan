@@ -41,6 +41,7 @@ use ts_rs::TS;
 
 pub struct StabilityParts;
 mod progressive;
+pub mod served;
 
 /// Runs kept per country before the scan refuses.
 const MAX_RUNS: usize = 400_000;
@@ -1098,6 +1099,7 @@ struct Cache {
 impl Product for StabilityParts {
     const KEY: &'static str = "stability-parts";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryParams;
     type Reply = StabilityPartsReply;
 
@@ -1400,7 +1402,7 @@ impl Prepared {
         Ok(())
     }
     /// Read again from the recording what a restored state saved by hour.
-    pub(crate) fn restore(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
+    pub fn restore(&mut self, replay: &Replay, branch: u64) -> io::Result<()> {
         self.scan.restore_names(replay, branch)
     }
     pub fn flush(

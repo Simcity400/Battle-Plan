@@ -189,6 +189,9 @@ struct Probes {
     crossed: Mutex<Vec<i32>>,
     /// Each segment that reached its emit short, and how.
     ends: Mutex<Vec<(Segment, &'static str)>>,
+    /// What each segment its operator went on past handed its emit, by run: None when not
+    /// saved.
+    carries: Mutex<Vec<(u32, Option<Vec<u8>>)>>,
 }
 
 impl Probes {
@@ -204,6 +207,7 @@ impl Probes {
             started: Mutex::default(),
             crossed: Mutex::default(),
             ends: Mutex::default(),
+            carries: Mutex::default(),
         }
     }
 
@@ -358,6 +362,14 @@ fn probing<'a>(name: &'a str, probes: &'a Probes, seen: &'a mut Vec<Saw>) -> Lan
             }
             open = (!chunk.last).then_some(*chunk.segment);
             seen.extend(chunk.items.iter().map(|item| item.saw));
+            assert!(chunk.last || chunk.carry.is_none());
+            if let Some(carry) = chunk.carry {
+                let saved = match carry {
+                    Carry::Saved(bytes) => Some(bytes.to_vec()),
+                    Carry::Unsaved => None,
+                };
+                lock(&probes.carries).push((chunk.segment.run, saved));
+            }
             if let Some(ending) = chunk.ending {
                 let how = match ending {
                     Ending::Refused { .. } => "refused",
@@ -556,6 +568,200 @@ fn segments_reach_their_family_in_order_with_their_own_hours() {
     }
     let file = opened(&many);
     assert_eq!((file.run_count(), file.segments().len()), (6, 20));
+}
+
+/// A family passing a branch is handed none of its segments, alone or beside one walking
+/// every segment, whether it starts anywhere or goes on through its branch; segments no family
+/// needs are never walked.
+#[test]
+fn a_family_passing_a_branch_walks_and_emits_none_of_its_segments() {
+    let file = opened(&alternating(2, 3));
+    let own = file
+        .segments()
+        .iter()
+        .filter(|segment| file.run(segment.run).unwrap().branch == 2)
+        .count();
+    for (starts, cold) in [
+        (anywhere as fn(Start<'_>) -> bool, true),
+        (branch_start, false),
+    ] {
+        let saw = expected(&file, starts);
+        let second: Vec<Saw> = saw.iter().copied().filter(|saw| saw.0 == 2).collect();
+        for (threads, window) in [(1, 1), (4, 8)] {
+            let alone = Probes::new(starts);
+            let mut seen = Vec::new();
+            let stats = whole(
+                run(
+                    &file,
+                    &settings(threads, window),
+                    &Memory::default(),
+                    &Cancellation::default(),
+                    vec![probing("alone", &alone, &mut seen).passes(&[1])],
+                )
+                .unwrap(),
+            );
+            assert_eq!(seen, second);
+            if cold {
+                assert_eq!(stats.walks, own);
+            }
+            let (beside, every) = (Probes::new(starts), Probes::new(starts));
+            let (mut passing, mut walking) = (Vec::new(), Vec::new());
+            whole(
+                run(
+                    &file,
+                    &settings(threads, window),
+                    &Memory::default(),
+                    &Cancellation::default(),
+                    vec![
+                        probing("beside", &beside, &mut passing).passes(&[1]),
+                        probing("every", &every, &mut walking),
+                    ],
+                )
+                .unwrap(),
+            );
+            assert_eq!(passing, second);
+            assert_eq!(walking, saw);
+        }
+    }
+}
+
+/// What a probe carries having seen `walked` hours.
+fn carry(walked: u64) -> Vec<u8> {
+    [walked.to_le_bytes(), 0_u64.to_le_bytes()].concat()
+}
+
+/// A family going on in a branch from where an earlier run left it is handed none of the hours
+/// before, nor walked any segment before: one starting anywhere starts again where it goes on,
+/// past its segment's first hour as at a restart there, and one going on through its branch
+/// takes up its carry there and sees the rest as one walk of the whole recording does. The
+/// last segment of each branch hands its emit what an operator that cannot start past it
+/// carries, saved, and every other it goes on past says it carries what is not; one that
+/// starts anywhere carries nothing.
+#[test]
+fn a_family_goes_on_from_its_carry_where_an_earlier_run_left_it() {
+    let units = UNIT_ORDINALS;
+    let file = opened(&[
+        (1, 0, 3 * units + 9),
+        (2, 50_000, 2 * units),
+        (1, 90_000, units + 5),
+    ]);
+    // Branch 1 goes on past its third segment's first hour, branch 2 at its second segment.
+    let joins = [(1, 0, 2 * units + 100), (2, 1, units)];
+    let after = |saw: &Saw| {
+        joins
+            .iter()
+            .any(|&(branch, run, ordinal)| saw.0 == branch && (saw.2, saw.3) >= (run, ordinal))
+    };
+    let walks = file
+        .segments()
+        .iter()
+        .filter(|segment| {
+            let branch = file.run(segment.run).unwrap().branch;
+            joins.iter().any(|&(of, run, ordinal)| {
+                of == branch && (segment.run, segment.last) >= (run, ordinal)
+            })
+        })
+        .count();
+    assert_eq!(walks, 5);
+    for (starts, carried) in [
+        (anywhere as fn(Start<'_>) -> bool, false),
+        (branch_start, true),
+    ] {
+        let mut saw: Vec<Saw> = expected(&file, starts).into_iter().filter(after).collect();
+        if !carried {
+            // Started anew where it goes on, it has seen nothing of its segment before.
+            let first = saw.iter().position(|saw| saw.0 == 1).unwrap();
+            for (at, saw) in saw[first..].iter_mut().enumerate() {
+                if saw.3 >= 3 * units {
+                    break;
+                }
+                (saw.4, saw.5) = (at == 0, at as u64);
+            }
+        }
+        let carries = [carry(u64::from(2 * units + 100)), carry(u64::from(units))];
+        let resumes = [
+            Resume {
+                branch: 1,
+                run: 0,
+                ordinal: 2 * units + 100,
+                carry: carried.then_some(&carries[0][..]),
+            },
+            Resume {
+                branch: 2,
+                run: 1,
+                ordinal: units,
+                carry: carried.then_some(&carries[1][..]),
+            },
+        ];
+        for (threads, window) in [(1, 1), (4, 2)] {
+            let probes = Probes::new(starts);
+            let mut seen = Vec::new();
+            let stats = whole(
+                run(
+                    &file,
+                    &settings(threads, window),
+                    &Memory::default(),
+                    &Cancellation::default(),
+                    vec![probing("going on", &probes, &mut seen).resumes(&resumes)],
+                )
+                .unwrap(),
+            );
+            assert_eq!(seen, saw);
+            if !carried {
+                assert_eq!(stats.walks, walks);
+            }
+            let mut kept = lock(&probes.carries).clone();
+            kept.sort_unstable();
+            let ends = if carried {
+                vec![
+                    (0, None),
+                    (0, None),
+                    (1, Some(carry(u64::from(2 * units)))),
+                    (2, None),
+                    (2, Some(carry(u64::from(4 * units + 14)))),
+                ]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(kept, ends);
+        }
+    }
+    // One that cannot start where it goes on, and carries nothing there, fails there.
+    let probes = Probes::new(branch_start);
+    let mut seen = Vec::new();
+    let resumes = [Resume {
+        branch: 2,
+        run: 1,
+        ordinal: units,
+        carry: None,
+    }];
+    let ran = run(
+        &file,
+        &settings(2, 2),
+        &Memory::default(),
+        &Cancellation::default(),
+        vec![probing("going on", &probes, &mut seen).resumes(&resumes)],
+    )
+    .unwrap();
+    let failure = ran.outcomes[0].failure.as_ref().unwrap();
+    assert_eq!(failure.operation, Operation::Decide);
+    // Resumes out of order are refused before any walk.
+    let backwards = [
+        resumes[0],
+        Resume {
+            branch: 1,
+            ..resumes[0]
+        },
+    ];
+    let error = run(
+        &file,
+        &settings(1, 1),
+        &Memory::default(),
+        &Cancellation::default(),
+        vec![probing("going on", &probes, &mut Vec::new()).resumes(&backwards)],
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 }
 
 /// The dictionary size of the state each segment starts from.
@@ -1247,7 +1453,7 @@ fn chunks_close_at_their_size_and_spill_past_the_budget() {
         };
         walking.end(&context).unwrap();
         assert!(walking.close(&context).unwrap() >= 3 * 16);
-        walking.file(at, None);
+        walking.file(at, None, None);
     }
     assert_eq!(scratch.spills.load(Ordering::SeqCst), 6);
     assert_eq!(shared.chunks_spilled.load(Ordering::SeqCst), 6);
@@ -2170,10 +2376,12 @@ fn a_failed_write_out_fails_its_family_before_its_segment_can_be_taken() {
         segments,
         plan: Plan::new(&file, segments).unwrap(),
         lanes: &lanes,
+        worlds: &worldless,
         signal: &signal,
         budget: Arc::new(Budget::new(usize::MAX)),
         store: Store::new(0),
         resumed: Mutex::new(Vec::new()),
+        joins: std::collections::BTreeMap::new(),
         shared: Shared::new(settings, &scratch, &signal),
         cancellation: &cancellation,
     };
@@ -2277,10 +2485,12 @@ fn a_walk_holding_a_segment_finds_its_failed_write_out_being_written() {
         segments,
         plan: Plan::new(&file, segments).unwrap(),
         lanes: &lanes,
+        worlds: &worldless,
         signal: &signal,
         budget: Arc::new(Budget::new(usize::MAX)),
         store: Store::new(10),
         resumed: Mutex::new(Vec::new()),
+        joins: std::collections::BTreeMap::new(),
         shared: Shared::new(settings, &scratch, &signal),
         cancellation: &cancellation,
     };
@@ -3556,4 +3766,109 @@ fn a_folder_reads_back_its_spills_and_removes_them() {
     drop((carried, empty));
     assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
     std::fs::remove_dir(&path).unwrap();
+}
+
+/// A world keeping the hours it was advanced to, with the segment and lanes it was built for.
+struct Hours {
+    segment: Segment,
+    lanes: Vec<usize>,
+    seen: Vec<i32>,
+}
+
+impl World for Hours {
+    fn hour(&mut self, _: &State, manifest: &Manifest<'_>) -> io::Result<()> {
+        self.seen.push(manifest.hour);
+        Ok(())
+    }
+}
+
+/// What an operator read of its walk's world at an hour.
+struct Read {
+    segment: Segment,
+    lanes: Vec<usize>,
+    hours: usize,
+}
+
+impl Item for Read {
+    fn heap(&self) -> usize {
+        self.lanes.capacity() * size_of::<usize>()
+    }
+}
+
+struct Reading;
+
+impl Operator<Hours> for Reading {
+    type Output = Read;
+
+    fn hour(&mut self, hour: &Hour<'_, Hours>, out: &mut dyn Sink<Read>) -> io::Result<()> {
+        assert_eq!(
+            hour.world.seen.last(),
+            Some(&hour.hour),
+            "advanced before the lanes"
+        );
+        out.push(Read {
+            segment: hour.world.segment,
+            lanes: hour.world.lanes.clone(),
+            hours: hour.world.seen.len(),
+        })
+    }
+}
+
+/// A lane of [`Reading`] whose emit keeps what each hour read of its world.
+fn reading<'a>(name: &'a str, seen: &'a mut Vec<(Segment, Vec<usize>, usize)>) -> Lane<'a, Hours> {
+    Lane::new(
+        name,
+        |_: &Segment| -> io::Result<Reading> { Ok(Reading) },
+        move |chunk: Chunk<'_, Read>| {
+            for read in chunk.items {
+                assert_eq!(read.segment, *chunk.segment);
+                seen.push((read.segment, read.lanes, read.hours));
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Every walk builds one world for its segment and the lanes it carries, both lanes read it,
+/// and it starts at the walk's first hour: advanced once an hour, before the lanes.
+#[test]
+fn a_walk_s_lanes_share_one_world_built_for_the_walk() {
+    let file = opened(&[
+        (1, 0, 3 * UNIT_ORDINALS + 5),
+        (2, 50_000, 2 * UNIT_ORDINALS),
+    ]);
+    let built = AtomicUsize::new(0);
+    let worlds = |segment: &Segment, lanes: &[usize]| -> io::Result<Hours> {
+        built.fetch_add(1, Ordering::SeqCst);
+        Ok(Hours {
+            segment: *segment,
+            lanes: lanes.to_vec(),
+            seen: Vec::new(),
+        })
+    };
+    let (mut first, mut second) = (Vec::new(), Vec::new());
+    let stats = whole(
+        run_in(
+            &file,
+            &settings(3, 4),
+            &Memory::default(),
+            &Cancellation::default(),
+            &worlds,
+            vec![reading("first", &mut first), reading("second", &mut second)],
+        )
+        .unwrap(),
+    );
+    assert_eq!(stats.walks, file.segments().len());
+    assert_eq!(built.load(Ordering::SeqCst), file.segments().len());
+    assert_eq!(first, second);
+    let mut at = 0;
+    for segment in file.segments() {
+        for ordinal in segment.first..=segment.last {
+            let (read, lanes, hours) = &first[at];
+            assert_eq!((read, lanes.as_slice()), (segment, &[0, 1][..]));
+            assert_eq!(*hours, (ordinal - segment.first) as usize + 1);
+            at += 1;
+        }
+    }
+    assert_eq!(at, first.len());
 }

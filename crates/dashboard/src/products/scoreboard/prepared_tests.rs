@@ -550,7 +550,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
     }
     let resumed = fixture.run(0);
     let (store, key) = crate::prepared::files(&resumed, None).unwrap();
-    assert!(store.range_count(&key, "army-coverage-1").unwrap().unwrap() >= 2);
+    assert!(store.range_count(&key, "measure-pp-1").unwrap().unwrap() >= 2);
     let grown = second
         .append(&[continuation_records(
             &second,
@@ -621,7 +621,8 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
 }
 
 #[test]
-fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_in_both_directions() {
+fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_in_both_directions()
+{
     let mut first_frame = countries(100, 24);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *first_frame.tables[TableId::Countries.index()]

@@ -1,5 +1,6 @@
 //! A moment index and visible cells composed from the existing prepared suppliers.
 use super::*;
+use crate::products::army_size;
 use crate::products::parts_race_prepared::Family;
 use crate::{
     metadata::check_cancel,
@@ -160,18 +161,6 @@ fn binding(column: ScoreboardColumnKey, branch: u64) -> io::Result<Binding> {
         )
     } else {
         match column {
-            ArmySize => {
-                let index = army_size::channel(
-                    army_size::ArmyMeasure::Manpower,
-                    army_size::ArmyAttribution::Owner,
-                );
-                (
-                    "army",
-                    format!("army-values-{branch}-{index}"),
-                    None,
-                    Some(format!("army-coverage-{branch}")),
-                )
-            }
             Planes => {
                 let selection = air_force::prepared::Air::selection(
                     json!({"branchId":branch.to_string(),"tags":[],"top":null,"measure":"planes","ownership":"roster"}),
@@ -204,18 +193,6 @@ fn binding(column: ScoreboardColumnKey, branch: u64) -> io::Result<Binding> {
                 "measure",
                 format!("measure-cp-{branch}"),
                 Some("commandPower"),
-                None,
-            ),
-            Stability => (
-                "stability",
-                format!("stability-{branch}"),
-                Some("stability"),
-                None,
-            ),
-            WarSupport => (
-                "stability",
-                format!("stability-{branch}"),
-                Some("warSupport"),
                 None,
             ),
             Nukes => (
@@ -445,15 +422,6 @@ fn cells(
     let values = amounts(&mut reader, &selected, hour)?;
     let reads = if !with_reads {
         vec![None; values.len()]
-    } else if matches!(column, Stability | WarSupport) {
-        amounts(
-            &mut reader,
-            &rows
-                .iter()
-                .map(|row| keys.get(&series::field_key(&row.0, "readHour")).copied())
-                .collect::<Vec<_>>(),
-            hour,
-        )?
     } else if let Some(section) = binding.coverage {
         amounts(
             &mut Reader::new(store, source_key, section, cancelled)?,
@@ -475,9 +443,83 @@ fn cells(
             .zip(reads)
             .map(|(amount, read)| Cell {
                 amount,
+                read_hour: read.map(|hour| hour as i32),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Stability or war support at `hour` from the stability family's publication, dated by
+/// each value's supplying read; none before the family publishes the branch.
+fn stability_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    column: ScoreboardColumnKey,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    use crate::products::country_stability;
+    let measure = if column == ScoreboardColumnKey::Stability {
+        "stability"
+    } else {
+        "warSupport"
+    };
+    let Some(opened) = crate::prepared::families::open(
+        source,
+        content,
+        "stability",
+        country_stability::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let found = opened.read(cancelled, |snapshot, directory| {
+        country_stability::query::cells(snapshot, directory, &tags, measure, hour)
+    })?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|(amount, read)| Cell {
+                amount,
                 read_hour: read
-                    .filter(|_| !matches!(column, Stability | WarSupport) || amount.is_some())
-                    .map(|hour| hour as i32),
+                    .filter(|_| with_reads && amount.is_some())
+                    .map(|read| read as i32),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Owner manpower at `hour` from the army family's publication, dated `hour` where the
+/// country's army was known then; none before the family publishes the branch.
+fn army_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    let Some(opened) =
+        crate::prepared::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let found = opened.read(cancelled, |snapshot, directory| {
+        army_size::query::cells(snapshot, directory, &tags, hour)
+    })?;
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|(amount, known)| Cell {
+                amount,
+                read_hour: (with_reads && known).then_some(hour),
                 at_least: false,
             })
             .collect(),
@@ -722,6 +764,29 @@ pub(crate) fn query(
                 Some((_, samples)) if column.factory_count().is_some() => {
                     sampled_cells(samples, column, rows, params.hour, with_reads).map(Some)
                 }
+                _ if matches!(
+                    column,
+                    ScoreboardColumnKey::Stability | ScoreboardColumnKey::WarSupport
+                ) =>
+                {
+                    stability_cells(
+                        source,
+                        context.content.as_ref(),
+                        branch,
+                        column,
+                        rows,
+                        (params.hour, with_reads),
+                        cancelled,
+                    )
+                }
+                _ if column == ScoreboardColumnKey::ArmySize => army_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    rows,
+                    (params.hour, with_reads),
+                    cancelled,
+                ),
                 _ => cells(
                     store,
                     source_key,

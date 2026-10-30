@@ -75,7 +75,7 @@ fn put<R: Clone>(rows: &mut Buckets<R>, key: Option<StateKey>, raw: u128, value:
 impl Joins {
     pub(super) fn update(
         &mut self,
-        hour: &segments::Hour<'_>,
+        hour: &segments::Hour<'_, World>,
         format: u16,
         names: &Countries,
         reset: bool,

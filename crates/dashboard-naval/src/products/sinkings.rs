@@ -32,7 +32,8 @@ use dashboard_text::metadata::{
 };
 use replay::container::Replay;
 use replay_data::{
-    rows::SunkConvoyRow, rows::SunkShipEntry, rows::TableId, rows::TableRows, rows::tables,
+    rows::CountryLinkRow, rows::CountryRow, rows::SunkConvoyRow, rows::SunkShipEntry,
+    rows::TableId, rows::TableRows, rows::tables,
 };
 use replay_frame::{
     frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::TableView,
@@ -233,7 +234,7 @@ impl<'a> From<&'a SunkShipEntry> for ShipKey<'a> {
     }
 }
 
-type RefusedShipKey = ([Vec<u8>; 4], [u64; 14]);
+pub(crate) type RefusedShipKey = ([Vec<u8>; 4], [u64; 14]);
 
 #[derive(Default, Serialize, Deserialize)]
 struct Tracker {
@@ -250,6 +251,334 @@ struct Tracker {
     #[serde(with = "dashboard_core::map_pairs")]
     convoys: BTreeMap<(i32, u32, u32), i32>,
     convoy_open: bool,
+    /// Whether the convoy rows changed since the last read: an equal read confirms only then.
+    #[serde(skip)]
+    convoys_changed: bool,
+}
+
+/// One hour's sunk ships, as a columnar walk reads them.
+pub(crate) enum ShipRead {
+    /// No slot read of the table's one row: whether it held exactly one row.
+    Skipped { single: bool },
+    /// A slot read: the entries first found, in order, and the new refusals by reason.
+    Read {
+        found: Vec<SunkShipEntry>,
+        refused: Vec<(String, usize)>,
+    },
+}
+
+/// One hour's sunk convoys as a walk of the recording's columns reads them.
+pub(crate) enum ConvoyRead {
+    /// No read of the complete rows: whether they were complete.
+    Skipped { complete: bool },
+    /// A read of rows equal to the last read's.
+    Confirmed,
+    /// The rows changed since the last read, or every row at a walk's first read.
+    Read(Vec<SunkConvoyRow>),
+}
+
+/// The read compared last: its entries in order, counts taken and refused, and future dates.
+#[derive(Clone, Default)]
+pub(crate) struct ShipBase {
+    entries: Vec<SunkShipEntry>,
+    counts: HashMap<RefusedShipKey, usize>,
+    refused: HashMap<RefusedShipKey, usize>,
+    futures: BTreeMap<i32, usize>,
+    /// The hour the read compared last refused its entries at.
+    hour: Option<i32>,
+}
+
+/// An entry's count change among those taken, and the first position it gained at.
+type Gained = (isize, Option<usize>);
+
+impl ShipBase {
+    /// Whether a read at `hour` refuses the entries last compared as that read did.
+    pub(crate) fn settled(&self, hour: i32) -> bool {
+        self.futures
+            .first_key_value()
+            .is_none_or(|(&future, _)| hour < future)
+    }
+
+    /// Compares a read at `hour`: the entries it first finds, in order, and new refusals.
+    pub(crate) fn compare(
+        &mut self,
+        entries: Vec<SunkShipEntry>,
+        hour: i32,
+    ) -> (Vec<SunkShipEntry>, Vec<(String, usize)>) {
+        let mut out = Scanned::default();
+        let held = std::mem::take(&mut self.entries);
+        if self.settled(hour) {
+            self.compare_changed(&mut out, &held, &entries, hour);
+        } else {
+            let mut future = None;
+            compare(
+                &mut self.counts,
+                &mut self.refused,
+                &mut future,
+                &mut out,
+                &entries,
+                hour,
+            );
+            self.futures.clear();
+            for entry in entries.iter().filter(|entry| entry.sink_hour > hour) {
+                *self.futures.entry(entry.sink_hour).or_default() += 1;
+            }
+        }
+        self.entries = entries;
+        self.hour = Some(hour);
+        (
+            out.ships.into_iter().map(|ship| ship.entry).collect(),
+            out.refused_entries.into_iter().collect(),
+        )
+    }
+
+    /// [`compare`] through the positions where `entries` differ from `held`, once settled.
+    fn compare_changed(
+        &mut self,
+        out: &mut Scanned,
+        held: &[SunkShipEntry],
+        entries: &[SunkShipEntry],
+        hour: i32,
+    ) {
+        let mut counted = HashMap::<ShipKey<'_>, Gained>::new();
+        let mut refused = HashMap::<ShipKey<'_>, (isize, &'static str)>::new();
+        for at in 0..held.len().max(entries.len()) {
+            let (old, new) = (held.get(at), entries.get(at));
+            if old == new {
+                continue;
+            }
+            for (entry, step) in [(old, -1), (new, 1)] {
+                let Some(entry) = entry else {
+                    continue;
+                };
+                let key = ShipKey::from(entry);
+                let Some(reason) = ship_refusal(entry, hour) else {
+                    let gained = counted.entry(key).or_insert((0, None));
+                    gained.0 += step;
+                    if step > 0 && gained.1.is_none() {
+                        gained.1 = Some(at);
+                    }
+                    continue;
+                };
+                refused.entry(key).or_insert((0, reason)).0 += step;
+                if entry.sink_hour > hour {
+                    let count = self.futures.entry(entry.sink_hour).or_default();
+                    *count = count.saturating_add_signed(step);
+                    if *count == 0 {
+                        self.futures.remove(&entry.sink_hour);
+                    }
+                }
+            }
+        }
+        // An entry held more often is first found as often more, at its first position.
+        let mut found: Vec<(usize, &SunkShipEntry, usize)> = Vec::new();
+        let mut earlier = Vec::new();
+        for (key, (change, first)) in counted {
+            let before = shift(&mut self.counts, owned(&key), change);
+            if let (Ok(added @ 1..), Some(first)) = (usize::try_from(change), first) {
+                // A copy held before may sit at a position left alone, ahead of it.
+                if before > 0 {
+                    earlier.push(found.len());
+                }
+                found.push((first, &entries[first], added));
+            }
+        }
+        if let Some(end) = earlier.iter().map(|&at| found[at].0).max() {
+            let wanted: HashMap<ShipKey<'_>, usize> = earlier
+                .iter()
+                .map(|&at| (ShipKey::from(found[at].1), at))
+                .collect();
+            for (position, entry) in entries[..end].iter().enumerate() {
+                if let Some(&at) = wanted.get(&ShipKey::from(entry)) {
+                    found[at].0 = found[at].0.min(position);
+                }
+            }
+        }
+        found.sort_unstable_by_key(|&(first, ..)| first);
+        for (_, entry, added) in found {
+            for _ in 0..added {
+                out.ships.push(ShipEvent {
+                    entry: entry.clone(),
+                    read_hour: hour,
+                    victim: None,
+                    attacker: None,
+                    victim_as_of: None,
+                    attacker_as_of: None,
+                });
+            }
+        }
+        for (key, (change, reason)) in refused {
+            shift(&mut self.refused, owned(&key), change);
+            if let Ok(added @ 1..) = usize::try_from(change) {
+                *out.refused_entries.entry(reason.into()).or_default() += added;
+            }
+        }
+    }
+
+    /// The bytes it holds on the heap, about.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let key = |(text, _): &RefusedShipKey| text.iter().map(Vec::capacity).sum::<usize>();
+        // A hash table's buckets: at most seven eighths full, a control byte each.
+        let table = |capacity: usize| capacity * 8 / 7 * (size_of::<(RefusedShipKey, usize)>() + 1);
+        self.entries.capacity() * size_of::<SunkShipEntry>()
+            + self
+                .entries
+                .iter()
+                .map(|entry| {
+                    [
+                        &entry.ship_name,
+                        &entry.attribution_name,
+                        &entry.class_name,
+                        &entry.attribution_class_name,
+                    ]
+                    .into_iter()
+                    .map(Vec::capacity)
+                    .sum::<usize>()
+                })
+                .sum::<usize>()
+            + table(self.counts.capacity())
+            + table(self.refused.capacity())
+            + self
+                .counts
+                .keys()
+                .chain(self.refused.keys())
+                .map(key)
+                .sum::<usize>()
+            + self.futures.len() * size_of::<(i32, usize)>()
+    }
+
+    /// The entries compared last and their hour, for [`Self::restored`].
+    pub(crate) fn saved(&self) -> SavedBase {
+        SavedBase {
+            entries: self
+                .entries
+                .iter()
+                .map(|entry| {
+                    let key = ShipKey::from(entry);
+                    (key.text.map(<[u8]>::to_vec), key.fields)
+                })
+                .collect(),
+            hour: self.hour,
+        }
+    }
+
+    /// The base [`Self::saved`] wrote, its counts taken again from its entries.
+    pub(crate) fn restored(saved: SavedBase) -> Self {
+        let entries: Vec<SunkShipEntry> = saved
+            .entries
+            .into_iter()
+            .map(|signature| {
+                ShipEvent::from(SavedShip {
+                    signature,
+                    read_hour: 0,
+                    victim: None,
+                    attacker: None,
+                    victim_as_of: None,
+                    attacker_as_of: None,
+                })
+                .entry
+            })
+            .collect();
+        let mut base = Self::default();
+        if let Some(hour) = saved.hour {
+            base.compare(entries, hour);
+        }
+        base
+    }
+}
+
+/// A [`ShipBase`] as an operator's carry writes it.
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SavedBase {
+    entries: Vec<RefusedShipKey>,
+    hour: Option<i32>,
+}
+
+/// `key`'s whole entry, owned.
+fn owned(key: &ShipKey<'_>) -> RefusedShipKey {
+    (key.text.map(<[u8]>::to_vec), key.fields)
+}
+
+/// Moves `key`'s count by `change`, dropping it at zero: the count before.
+fn shift(counts: &mut HashMap<RefusedShipKey, usize>, key: RefusedShipKey, change: isize) -> usize {
+    let before = counts.get(&key).copied().unwrap_or(0);
+    match before.checked_add_signed(change).filter(|&after| after > 0) {
+        Some(after) => {
+            counts.insert(key, after);
+        }
+        None => {
+            counts.remove(&key);
+        }
+    }
+    before
+}
+
+/// Compares a whole read at `hour` with the counts of the read compared last.
+fn compare(
+    counts: &mut HashMap<RefusedShipKey, usize>,
+    refused_before: &mut HashMap<RefusedShipKey, usize>,
+    future: &mut Option<i32>,
+    out: &mut Scanned,
+    entries: &[SunkShipEntry],
+    hour: i32,
+) {
+    let previous: HashMap<ShipKey<'_>, usize> = counts
+        .iter()
+        .map(|((text, fields), count)| {
+            (
+                ShipKey {
+                    text: text.each_ref().map(|bytes| bytes.as_slice()),
+                    fields: *fields,
+                },
+                *count,
+            )
+        })
+        .collect();
+    let mut now = HashMap::<ShipKey<'_>, (usize, &SunkShipEntry)>::new();
+    *future = None;
+    let mut refused = HashMap::<RefusedShipKey, usize>::new();
+    for entry in entries {
+        if let Some(reason) = ship_refusal(entry, hour) {
+            let key = ShipKey::from(entry);
+            let key = (key.text.map(|bytes| bytes.to_vec()), key.fields);
+            let count = refused.entry(key.clone()).or_default();
+            *count += 1;
+            if *count > refused_before.get(&key).copied().unwrap_or(0) {
+                *out.refused_entries.entry(reason.into()).or_default() += 1;
+            }
+            if entry.sink_hour > hour {
+                *future =
+                    Some(future.map_or(entry.sink_hour, |future| future.min(entry.sink_hour)));
+            }
+            continue;
+        }
+        now.entry(entry.into()).or_insert((0, entry)).0 += 1;
+    }
+    let held = now
+        .iter()
+        .map(|(key, (count, _))| ((key.text.map(|bytes| bytes.to_vec()), key.fields), *count))
+        .collect();
+    for entry in entries {
+        let key = ShipKey::from(entry);
+        let Some((count, entry)) = now.remove(&key) else {
+            continue;
+        };
+        let added = count.saturating_sub(previous.get(&key).copied().unwrap_or(0));
+        for _ in 0..added {
+            out.ships.push(ShipEvent {
+                entry: entry.clone(),
+                read_hour: hour,
+                victim: None,
+                attacker: None,
+                victim_as_of: None,
+                attacker_as_of: None,
+            });
+        }
+    }
+    drop(now);
+    drop(previous);
+    *counts = held;
+    *refused_before = refused;
 }
 
 fn append_span(spans: &mut Vec<HourSpan>, first: i32, last: i32) {
@@ -292,13 +621,7 @@ impl Scanned {
         ) && let Ok(rows) = frame.complete::<tables::LexicalTokens>()
         {
             track.dictionary = Some(view.identity());
-            for row in rows {
-                if let Ok(text) = std::str::from_utf8(&row.literal) {
-                    self.tokens
-                        .entry(row.token)
-                        .or_insert_with(|| text.to_owned());
-                }
-            }
+            self.read_tokens(rows.iter().map(|row| (row.token, row.literal.as_slice())));
         }
         let ships = frame.complete::<tables::SunkShips>();
         if let Ok([_]) = ships
@@ -308,16 +631,13 @@ impl Scanned {
             )
         {
             track.ships(self, &frame.tables[TableId::SunkShips.index()], hour);
-        } else if !matches!(ships, Ok([_])) || !track.ship_open {
-            append_span(&mut self.ship_unread, hour, hour);
-            append_span(
-                &mut self.ship_breaks,
-                self.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
-                hour,
-            );
-            track.ship_open = false;
+        } else {
+            self.ships_unread(track, matches!(ships, Ok([_])), hour);
         }
         let convoys = frame.complete::<tables::SunkConvoys>();
+        if let Some(changes) = changes {
+            track.convoys_changed |= changes.rows_changed[TableId::SunkConvoys.index()];
+        }
         if let Ok(rows) = convoys
             && changes.map_or_else(
                 || slot_read(format, &frame.metrics, TableId::SunkConvoys, hour),
@@ -329,15 +649,80 @@ impl Scanned {
         {
             // Supplying reads use the oracle's accepted-frame/cadence date.
             // Equal acquired rows advance that proof without another bucket walk.
-            if self.first_convoy_read.is_some()
-                && changes
-                    .is_some_and(|changes| !changes.rows_changed[TableId::SunkConvoys.index()])
-            {
+            if self.first_convoy_read.is_some() && changes.is_some() && !track.convoys_changed {
                 track.confirm_convoy_read(self, hour);
             } else {
                 track.convoys(self, rows, hour, tags);
             }
-        } else if convoys.is_err() || !track.convoy_open {
+        } else {
+            self.convoys_unread(track, convoys.is_ok(), hour);
+        }
+    }
+
+    /// [`Self::observe_tables`] of an hour a columnar walk read.
+    fn observe_projected_tables(
+        &mut self,
+        track: &mut Tracker,
+        hour: i32,
+        tags: &HashMap<u32, String>,
+        tokens: Option<&[(u32, Vec<u8>)]>,
+        ships: &ShipRead,
+        convoys: &ConvoyRead,
+    ) {
+        if let Some(rows) = tokens {
+            self.read_tokens(
+                rows.iter()
+                    .map(|(token, literal)| (*token, literal.as_slice())),
+            );
+        }
+        match ships {
+            ShipRead::Read { found, refused } => {
+                track.ship_read(self, hour);
+                self.ships.extend(found.iter().map(|entry| ShipEvent {
+                    entry: entry.clone(),
+                    read_hour: hour,
+                    victim: None,
+                    attacker: None,
+                    victim_as_of: None,
+                    attacker_as_of: None,
+                }));
+                for (reason, count) in refused {
+                    *self.refused_entries.entry(reason.clone()).or_default() += count;
+                }
+            }
+            &ShipRead::Skipped { single } => self.ships_unread(track, single, hour),
+        }
+        match convoys {
+            ConvoyRead::Read(rows) => track.convoys(self, rows, hour, tags),
+            ConvoyRead::Confirmed => track.confirm_convoy_read(self, hour),
+            &ConvoyRead::Skipped { complete } => self.convoys_unread(track, complete, hour),
+        }
+    }
+
+    fn read_tokens<'a>(&mut self, rows: impl Iterator<Item = (u32, &'a [u8])>) {
+        for (token, literal) in rows {
+            if let Ok(text) = std::str::from_utf8(literal) {
+                self.tokens.entry(token).or_insert_with(|| text.to_owned());
+            }
+        }
+    }
+
+    /// An hour without a slot read of the sunk ships' one row (`single`: the table held one).
+    fn ships_unread(&mut self, track: &mut Tracker, single: bool, hour: i32) {
+        if !single || !track.ship_open {
+            append_span(&mut self.ship_unread, hour, hour);
+            append_span(
+                &mut self.ship_breaks,
+                self.last_ship_read.map_or(hour, |h| h.saturating_add(1)),
+                hour,
+            );
+            track.ship_open = false;
+        }
+    }
+
+    /// An hour without a read of the complete sunk convoys (`complete`: they were complete).
+    fn convoys_unread(&mut self, track: &mut Tracker, complete: bool, hour: i32) {
+        if !complete || !track.convoy_open {
             append_span(&mut self.convoy_unread, hour, hour);
             append_span(
                 &mut self.convoy_breaks,
@@ -417,14 +802,7 @@ impl Scanned {
 
 impl Tracker {
     fn ships(&mut self, out: &mut Scanned, view: &SharedView, hour: i32) {
-        let last_read = out.last_ship_read;
-        if !self.ship_open && last_read.is_some() {
-            out.gap_recoveries += 1;
-        }
-        self.ship_open = true;
-        out.first_ship_read.get_or_insert(hour);
-        out.last_ship_read = Some(hour);
-        out.ship_reads.push(hour);
+        self.ship_read(out, hour);
         if self
             .ships
             .as_ref()
@@ -433,67 +811,27 @@ impl Tracker {
         {
             return;
         }
-        let previous: HashMap<ShipKey<'_>, usize> = self
-            .ship_counts
-            .iter()
-            .map(|((text, fields), count)| {
-                (
-                    ShipKey {
-                        text: text.each_ref().map(|bytes| bytes.as_slice()),
-                        fields: *fields,
-                    },
-                    *count,
-                )
-            })
-            .collect();
-        let mut now = HashMap::<ShipKey<'_>, (usize, &SunkShipEntry)>::new();
-        self.ship_future = None;
-        let mut refused = HashMap::<RefusedShipKey, usize>::new();
-        for entry in ship_entries(view) {
-            if let Some(reason) = ship_refusal(entry, hour) {
-                let key = ShipKey::from(entry);
-                let key = (key.text.map(|bytes| bytes.to_vec()), key.fields);
-                let count = refused.entry(key.clone()).or_default();
-                *count += 1;
-                if *count > self.refused_ships.get(&key).copied().unwrap_or(0) {
-                    *out.refused_entries.entry(reason.into()).or_default() += 1;
-                }
-                if entry.sink_hour > hour {
-                    self.ship_future = Some(
-                        self.ship_future
-                            .map_or(entry.sink_hour, |future| future.min(entry.sink_hour)),
-                    );
-                }
-                continue;
-            }
-            now.entry(entry.into()).or_insert((0, entry)).0 += 1;
-        }
-        let counts = now
-            .iter()
-            .map(|(key, (count, _))| ((key.text.map(|bytes| bytes.to_vec()), key.fields), *count))
-            .collect();
-        for entry in ship_entries(view) {
-            let key = ShipKey::from(entry);
-            let Some((count, entry)) = now.remove(&key) else {
-                continue;
-            };
-            let added = count.saturating_sub(previous.get(&key).copied().unwrap_or(0));
-            for _ in 0..added {
-                out.ships.push(ShipEvent {
-                    entry: entry.clone(),
-                    read_hour: hour,
-                    victim: None,
-                    attacker: None,
-                    victim_as_of: None,
-                    attacker_as_of: None,
-                });
-            }
-        }
-        drop(now);
-        drop(previous);
-        self.ship_counts = counts;
-        self.refused_ships = refused;
+        compare(
+            &mut self.ship_counts,
+            &mut self.refused_ships,
+            &mut self.ship_future,
+            out,
+            ship_entries(view),
+            hour,
+        );
         self.ships = Some(view.clone());
+    }
+
+    /// A slot read of the sunk ships' one row at `hour`, whatever it finds.
+    fn ship_read(&mut self, out: &mut Scanned, hour: i32) {
+        let last_read = out.last_ship_read;
+        if !self.ship_open && last_read.is_some() {
+            out.gap_recoveries += 1;
+        }
+        self.ship_open = true;
+        out.first_ship_read.get_or_insert(hour);
+        out.last_ship_read = Some(hour);
+        out.ship_reads.push(hour);
     }
 
     fn convoys(
@@ -532,6 +870,7 @@ impl Tracker {
         self.confirm_convoy_read(out, hour);
     }
     fn confirm_convoy_read(&mut self, out: &mut Scanned, hour: i32) {
+        self.convoys_changed = false;
         self.convoy_open = true;
         out.first_convoy_read.get_or_insert(hour);
         out.last_convoy_read = Some(hour);
@@ -539,14 +878,14 @@ impl Tracker {
     }
 }
 
-fn ship_entries(view: &SharedView) -> &[SunkShipEntry] {
+pub(crate) fn ship_entries(view: &SharedView) -> &[SunkShipEntry] {
     match &**view {
         TableView::Complete(TableRows::SunkShips(rows)) if rows.len() == 1 => &rows[0].entries,
         _ => &[],
     }
 }
 
-fn ship_refusal(entry: &SunkShipEntry, hour: i32) -> Option<&'static str> {
+pub(crate) fn ship_refusal(entry: &SunkShipEntry, hour: i32) -> Option<&'static str> {
     if entry.sink_hour > hour {
         Some("SunkShips event hour is after its read")
     } else if entry.cause_record > 1
@@ -699,13 +1038,44 @@ fn countries<'a>(
     identities: &mut HashMap<String, IdentityTrack>,
     cache: &'a mut CountryCache,
 ) -> &'a HashMap<u32, String> {
-    cache.changed = cache.hour.and_then(|last| last.checked_add(1)) != Some(decoded.hour);
-    let Ok(changed) = cache.links.update(decoded) else {
+    let update = cache.links.update(decoded);
+    countries_with(
+        decoded.hour,
+        update,
+        || {
+            (
+                decoded
+                    .complete::<tables::Countries>()
+                    .expect("LinkTags complete countries"),
+                decoded
+                    .complete::<tables::CountryLinks>()
+                    .expect("LinkTags complete links"),
+            )
+        },
+        out,
+        history,
+        identities,
+        cache,
+    )
+}
+
+/// The country holders at `hour` once the link tags took `update`; `tables` gives the rows.
+#[allow(clippy::too_many_arguments)]
+fn countries_with<'a, 't>(
+    hour: i32,
+    update: io::Result<bool>,
+    tables: impl FnOnce() -> (&'t [CountryRow], &'t [CountryLinkRow]),
+    out: &mut Scanned,
+    history: &mut HashMap<u32, Vec<TagRun>>,
+    identities: &mut HashMap<String, IdentityTrack>,
+    cache: &'a mut CountryCache,
+) -> &'a HashMap<u32, String> {
+    cache.changed = cache.hour.and_then(|last| last.checked_add(1)) != Some(hour);
+    let Ok(changed) = update else {
         cache.changed |= cache.hour.is_some();
         return &cache.empty;
     };
     cache.changed |= changed;
-    let hour = decoded.hour;
     // The same holders an hour later continue every identity and tag run they
     // reached. Write that once, when the holders change, a break comes or the scan ends.
     if !changed && cache.hour.and_then(|last| last.checked_add(1)) == Some(hour) {
@@ -716,12 +1086,7 @@ fn countries<'a>(
     cache.extend(out, history, identities);
     cache.hour = Some(hour);
     if changed {
-        let rows = decoded
-            .complete::<tables::Countries>()
-            .expect("LinkTags complete countries");
-        let links = decoded
-            .complete::<tables::CountryLinks>()
-            .expect("LinkTags complete links");
+        let (rows, links) = tables();
         cache.holders.clear();
         let mut possible = HashMap::<u32, BTreeSet<Identity>>::new();
         for row in rows {
@@ -1478,22 +1843,7 @@ impl ShipHistory {
         frame: &DecodedFrame,
         changes: Option<&FrameChanges>,
     ) {
-        self.scan.new_candidates.clear();
-        self.scan.new_tags.clear();
-        self.scan.changed_references.clear();
-        #[cfg(test)]
-        if !self.preparing {
-            self.restore_open();
-        }
-        if self.next.is_none() {
-            self.scan.first_hour = frame.hour;
-        }
-        let first = *self.next.get_or_insert(i64::from(frame.hour));
-        if first < i64::from(frame.hour) {
-            self.scan
-                .missing(&mut self.track, first as i32, frame.hour - 1);
-        }
-        self.scan.last_hour = frame.hour;
+        self.begin_hour(frame.hour);
         let tags = countries(
             frame,
             &mut self.scan,
@@ -1504,6 +1854,67 @@ impl ShipHistory {
         let ships = self.scan.ships.len();
         self.scan
             .observe_tables(&mut self.track, format, frame, tags, changes);
+        self.end_hour(frame.hour, ships);
+    }
+
+    /// [`Self::observe_with_changes`] of an hour a columnar walk read.
+    fn observe_projected(
+        &mut self,
+        hour: i32,
+        countries: Option<Option<&ProjectedCountries>>,
+        tokens: Option<&[(u32, Vec<u8>)]>,
+        ships: &ShipRead,
+        convoys: &ConvoyRead,
+    ) {
+        self.begin_hour(hour);
+        let update = match countries {
+            None => self.countries.links.update_projected(None, None),
+            Some(None) => Ok(false),
+            Some(Some(read)) => self
+                .countries
+                .links
+                .update_projected(Some(&read.keys), Some(&read.links)),
+        };
+        let tags = countries_with(
+            hour,
+            update,
+            || {
+                let read = countries
+                    .flatten()
+                    .expect("rebuilt link tags read their country tables");
+                (read.countries.as_slice(), read.link_rows.as_slice())
+            },
+            &mut self.scan,
+            &mut self.raw_history,
+            &mut self.identities,
+            &mut self.countries,
+        );
+        let ships_before = self.scan.ships.len();
+        self.scan
+            .observe_projected_tables(&mut self.track, hour, tags, tokens, ships, convoys);
+        self.end_hour(hour, ships_before);
+    }
+
+    fn begin_hour(&mut self, hour: i32) {
+        self.scan.new_candidates.clear();
+        self.scan.new_tags.clear();
+        self.scan.changed_references.clear();
+        #[cfg(test)]
+        if !self.preparing {
+            self.restore_open();
+        }
+        if self.next.is_none() {
+            self.scan.first_hour = hour;
+        }
+        let first = *self.next.get_or_insert(i64::from(hour));
+        if first < i64::from(hour) {
+            self.scan.missing(&mut self.track, first as i32, hour - 1);
+        }
+        self.scan.last_hour = hour;
+    }
+
+    /// Numbers the ships the hour found past the first `ships`.
+    fn end_hour(&mut self, hour: i32, ships: usize) {
         for _ in ships..self.scan.ships.len() {
             self.ship_indices.push(self.next_ship_index);
             self.next_ship_index = self
@@ -1511,6 +1922,63 @@ impl ShipHistory {
                 .checked_add(1)
                 .expect("ship indices exceed the product's u32 row contract");
         }
-        self.next = Some(i64::from(frame.hour) + 1);
+        self.next = Some(i64::from(hour) + 1);
+    }
+
+    /// The entries a walk compared last become those the next read compares with.
+    pub(crate) fn continue_from(&mut self, base: ShipBase) {
+        self.track.ships = None;
+        self.track.ship_future = base.futures.first_key_value().map(|(&hour, _)| hour);
+        self.track.ship_counts = base.counts;
+        self.track.refused_ships = base.refused;
+    }
+
+    /// Forgets its views, as a block read alone with a new decoder holds none.
+    pub fn forget_views(&mut self) {
+        self.track.ships = None;
+        self.track.dictionary = None;
+    }
+}
+
+/// A columnar walk's country tables, as the link tags and holders take them.
+pub(crate) struct ProjectedCountries {
+    pub(crate) keys: dashboard_text::metadata::CountryKeys,
+    pub(crate) links: HashMap<u32, u32>,
+    pub(crate) countries: Vec<CountryRow>,
+    pub(crate) link_rows: Vec<CountryLinkRow>,
+}
+
+impl ProjectedCountries {
+    /// The bytes it holds on the heap, about: each country's key and row, and each link.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let tags: usize = self.countries.iter().map(|row| row.tag.capacity()).sum();
+        self.countries.capacity() * size_of::<CountryRow>()
+            + self.countries.len() * size_of::<(u32, u32, Vec<u8>)>()
+            + 2 * tags
+            + self.links.capacity() * 8 / 7 * (size_of::<(u32, u32)>() + 1)
+            + self.link_rows.capacity() * size_of::<CountryLinkRow>()
+    }
+
+    /// `countries` as (id, slot, tag) and `links` as (id, slot), each ascending by id.
+    pub(crate) fn new(countries: Vec<(u32, u32, Vec<u8>)>, links: Vec<(u32, u32)>) -> Self {
+        let rows = countries
+            .iter()
+            .map(|(id, slot, tag)| CountryRow {
+                id: *id,
+                canonical_slot: *slot,
+                tag: tag.clone(),
+                ..CountryRow::default()
+            })
+            .collect();
+        let link_rows: Vec<CountryLinkRow> = links
+            .iter()
+            .map(|&(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect();
+        Self {
+            keys: dashboard_text::metadata::CountryKeys::from_keys(countries),
+            links: dashboard_text::metadata::link_slots(&link_rows),
+            countries: rows,
+            link_rows,
+        }
     }
 }

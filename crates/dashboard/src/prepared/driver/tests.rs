@@ -35,15 +35,22 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
             family.id.name()
         );
     }
-    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 6);
-    for walked in [
+    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 11);
+    for segments in [
+        "stability",
+        "supply",
         "army",
-        "resources",
-        "land",
-        "game_score",
-        "autonomy",
-        "measure",
+        "division-equipment",
+        "country-styles",
+        "politics_ledger",
     ] {
+        assert_eq!(
+            rows.backend(segments),
+            Some(Backend::Unavailable),
+            "{segments}"
+        );
+    }
+    for walked in ["resources", "land", "game_score", "autonomy", "measure"] {
         assert_eq!(rows.backend(walked), Some(Backend::Walk), "{walked}");
     }
     for &(row, _) in registry::STATUS {
@@ -222,10 +229,6 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             registry::continuation_section(products::faction_state::prepared::FAMILY, 1),
             family("faction_state"),
         ),
-        (
-            registry::continuation_section(products::division_equipment::history::NAME, 1),
-            family("division-equipment"),
-        ),
         (registry::continuation_section(air, 1), family("air")),
         // Series and catalogues.
         (catalogue_section(air, 1), family("air")),
@@ -266,12 +269,8 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             family("regional-weather"),
         ),
         (
-            dashboard_keyed::series_section(products::style_runs::NAME, 1),
+            dashboard_base::prepared::roots::root_section(products::style_runs::NAME, 1),
             family("country-styles"),
-        ),
-        (
-            products::division_equipment::history::catalogue_section(1),
-            family("division-equipment"),
         ),
         (
             catalogue_section("military-air-losses", 1),
@@ -317,9 +316,9 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
             family("diplomacy_state"),
         ),
         // Stability's parts and each faction's goals.
-        ("parts-1".to_owned(), family("stability")),
-        ("parts-1-names".to_owned(), family("stability")),
-        (catalogue_section("parts", 1), family("stability")),
+        ("parts-1".to_owned(), family("parts")),
+        ("parts-1-names".to_owned(), family("parts")),
+        (catalogue_section("parts", 1), family("parts")),
         (catalogue_section(&goals, 1), family("faction_state")),
         // Pages kept by name and branch.
         (
@@ -401,7 +400,7 @@ fn a_writer_refuses_every_section_another_publisher_owns() {
             })
     };
     for section in [
-        "army-values-1-0",
+        "measure-pp-1",
         "preparation-branch-1",
         "preparation-coverage-1",
         "land-owners",
@@ -423,7 +422,7 @@ fn a_writer_refuses_every_section_another_publisher_owns() {
     // A name no publisher registers is refused from every lane.
     for lane in [
         Lane::Walk,
-        Lane::Own("stability"),
+        Lane::Own("parts"),
         Lane::Own("production-lines"),
     ] {
         for section in [
@@ -435,18 +434,19 @@ fn a_writer_refuses_every_section_another_publisher_owns() {
             assert!(refused(lane, section), "{lane:?} {section}");
         }
     }
-    let stability = Lane::Own("stability");
+    let parts = Lane::Own("parts");
     for section in [
-        "stability-1",
+        "parts-1",
         "parts-1-names",
         "parts-1-catalogue",
-        "preparation-family-stability-1",
-        "stability-continuation-1",
+        "preparation-family-parts-1",
+        "parts-continuation-1",
     ] {
-        assert!(!refused(stability, section), "{section}");
+        assert!(!refused(parts, section), "{section}");
     }
     for section in [
-        "supply-runs-1",
+        "stability-1",
+        "preparation-family-stability-1",
         "faction-goals-7-1-catalogue",
         "experience-1",
         "preparation-family-supply-1",
@@ -454,7 +454,7 @@ fn a_writer_refuses_every_section_another_publisher_owns() {
         "preparation-checkpoint-v1",
         "land-owners",
     ] {
-        assert!(refused(stability, section), "{section}");
+        assert!(refused(parts, section), "{section}");
     }
     let lines = Lane::Own("production-lines");
     assert!(!refused(lines, "preparation-family-production-lines-1"));
@@ -541,7 +541,9 @@ fn shared_queries_name_every_supplier_of_their_coverage_and_refusals() {
     );
     plan::with_test_hourly(|| {
         let hourly = plan::current();
-        assert!(hourly.joint("event-feed").is_none() && hourly.joint("supply-health").is_none());
+        // Supply health still joins the segment-prepared supply with the walk's identities.
+        assert!(hourly.joint("event-feed").is_none());
+        assert_eq!(names(hourly.joint("supply-health").unwrap()), supply);
         assert_eq!(hourly.gating("event-choices"), None);
         assert_eq!(
             hourly.gating("production-line-detail"),
@@ -549,7 +551,10 @@ fn shared_queries_name_every_supplier_of_their_coverage_and_refusals() {
         );
         let walk = vec![crate::prepared::coverage::WALK];
         assert_eq!(crate::prepared::pipeline::gate("event-feed"), walk);
-        assert_eq!(crate::prepared::pipeline::gate("supply-health"), walk);
+        assert_eq!(
+            crate::prepared::pipeline::gate("supply-health"),
+            vec!["identities", "supply"]
+        );
     });
 }
 
@@ -574,10 +579,12 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("fuel-branches", Some("fuel_branches")),
         ("market-ledger", Some("market")),
         ("politics-state-history", Some("politics_state")),
-        ("stability-parts", Some("stability")),
+        ("stability-parts", Some("parts")),
+        ("country-stability", Some("stability")),
         ("casualty-pairs", Some("casualties")),
         ("occupation-trend", Some("occupation")),
         ("production-line-breakdown", Some("production-lines")),
+        ("volunteers-expeditionaries", Some("army")),
         ("army-size", None),
         ("country-measure", None),
         ("game-score", None),
@@ -621,7 +628,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         ("dockyard-spending", Some(vec!["production", "repairs"])),
         ("supply-health", Some(vec!["supply", "identities"])),
         ("country-nukes", Some(vec!["nukes", "identities"])),
-        ("army-size", None),
+        ("army-size", Some(vec!["army", "identities"])),
         ("country-stability", None),
     ] {
         assert_eq!(joint(product), suppliers, "suppliers of {product}");
@@ -671,14 +678,7 @@ fn ordinary_preparation_plans_exactly_these_policies() {
         );
     }
 
-    let walked = [
-        "army",
-        "resources",
-        "land",
-        "game_score",
-        "autonomy",
-        "measure",
-    ];
+    let walked = ["resources", "land", "game_score", "autonomy", "measure"];
     for family in registry::FAMILIES {
         let name = family.id.name();
         let observers: &[&str] = match name {
@@ -829,7 +829,7 @@ fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
     assert_ne!(plan.stamp("air_superiority"), rows.stamp("air_superiority"));
     assert_eq!(plan.stamp("identities"), rows.stamp("identities"));
     // A family the walk prepares moves the walk's stamp, and no other family's.
-    let plan = plan::test_plan(&[bumped("army", 2)], &own).unwrap();
+    let plan = plan::test_plan(&[bumped("resources", 2)], &own).unwrap();
     assert_ne!(plan.walk_stamp(), rows.walk_stamp());
     assert_eq!(plan.stamp("stability"), rows.stamp("stability"));
     assert_eq!(rows.stamp("nonexistent"), None);

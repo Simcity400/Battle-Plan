@@ -77,104 +77,6 @@ impl Kind {
 fn group_key(owner: u64, kind: Kind) -> String {
     serde_json::to_string(&(owner, kind)).expect("lane group identity")
 }
-trait SelectionTable: TableSchema {
-    const KIND: Kind;
-    fn owner(row: &Self::Row) -> u64;
-    fn ordinal(row: &Self::Row) -> u32;
-}
-macro_rules! selection_tables {
-    ($($table:ident => $kind:ident),+ $(,)?) => { $(
-        impl SelectionTable for tables::$table {
-            const KIND: Kind = Kind::$kind;
-            fn owner(row: &Self::Row) -> u64 { row.faction }
-            fn ordinal(row: &Self::Row) -> u32 { row.ordinal }
-        }
-    )+ };
-}
-selection_tables!(
-    FactionRules => Rule,
-    FactionPrograms => Programme,
-    FactionMinimumUpgrades => Minimum,
-    FactionDoctrine => Doctrine,
-    FactionManpower => Manpower,
-);
-struct Selected<'a, T: SelectionTable> {
-    rows: &'a [T::Row],
-    invalid: BTreeSet<usize>,
-    failure: Option<String>,
-}
-impl<T: SelectionTable> Selected<'_, T> {
-    fn available(&self) -> bool {
-        self.failure.is_none() && self.invalid.is_empty()
-    }
-}
-fn selected<T: SelectionTable>(
-    frame: &DecodedFrame,
-    faction: u64,
-    owner_known: bool,
-) -> Selected<'_, T> {
-    let rows = frame.complete::<T>().map_err(|why| why.to_string());
-    let failure = rows.as_ref().err().cloned().or_else(|| {
-        (!owner_known).then(|| format!("Faction {} owner is unavailable", T::KIND.selection_name()))
-    });
-    let rows = rows
-        .map(|rows| selectors::selected(rows, faction, T::owner))
-        .unwrap_or_default();
-    let invalid = rows
-        .iter()
-        .enumerate()
-        .filter_map(|(ordinal, row)| (T::ordinal(row) as usize != ordinal).then_some(ordinal))
-        .collect();
-    Selected {
-        rows,
-        invalid,
-        failure,
-    }
-}
-const DIFF_TABLES: [TableId; 8] = [
-    TableId::FactionAccounts,
-    TableId::FactionRules,
-    TableId::FactionPrograms,
-    TableId::FactionMinimumUpgrades,
-    TableId::FactionDoctrine,
-    TableId::FactionManpower,
-    TableId::FactionGoalStatus,
-    TableId::FactionGoalEntries,
-];
-struct Previous {
-    tables: [SharedView; DIFF_TABLES.len()],
-}
-impl Previous {
-    fn read(frame: &DecodedFrame) -> Self {
-        Self {
-            tables: DIFF_TABLES.map(|table| frame.tables[table.index()].clone()),
-        }
-    }
-    fn complete<T: TableSchema>(&self) -> Option<&[T::Row]> {
-        let index = DIFF_TABLES.iter().position(|table| *table == T::ID)?;
-        match &*self.tables[index] {
-            TableView::Complete(rows) => T::borrow(rows),
-            _ => None,
-        }
-    }
-}
-struct Changed {
-    accounts: Option<BTreeSet<u128>>,
-    owners: BTreeMap<Kind, Option<BTreeSet<u64>>>,
-    /// Owners witnessed now but not the hour before: an unchanged table may hold their rows.
-    rewitnessed: BTreeSet<u64>,
-    refresh: bool,
-    programme_operands: bool,
-}
-impl Changed {
-    fn affects(&self, kind: Kind, faction: u64) -> bool {
-        self.refresh
-            || self.rewitnessed.contains(&faction)
-            || self.owners[&kind]
-                .as_ref()
-                .is_none_or(|keys| keys.contains(&faction))
-    }
-}
 /// One branch's programme supplying reads, each sought in rising hours.
 pub struct Supplying<'a> {
     hours: Walk<'a>,
@@ -187,151 +89,44 @@ impl<'a> Supplying<'a> {
             frames: Walk::new(source, branch),
         }
     }
-}
-impl Prepared {
-    /// The programmes' supplying read, kept while later hours read the same one.
-    fn supplying(
+    /// The hour of `frame`'s latest supplying read of programme operands.
+    pub(super) fn read_hour(
         &mut self,
-        dirty: &Changed,
         frame: &DecodedFrame,
-        walks: &mut Supplying<'_>,
-        cat: Option<&catalogue::Catalogue>,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<Arc<DecodedFrame>>> {
-        let changed = dirty.programme_operands
-            || !dirty.rewitnessed.is_empty()
-            || dirty.owners[&Kind::Programme]
-                .as_ref()
-                .is_none_or(|keys| !keys.is_empty());
-        if !changed
-            || !frame
-                .complete::<tables::FactionPrograms>()
-                .is_ok_and(|rows| !rows.is_empty())
-        {
-            return Ok(None);
+    ) -> io::Result<Option<i32>> {
+        if self.hours.branch() != frame.branch {
+            *self = Supplying::new(self.hours.source(), frame.branch);
         }
-        if walks.hours.branch() != frame.branch {
-            *walks = Supplying::new(walks.hours.source(), frame.branch);
-        }
-        // A scripted project name reads its supplying hour's world, as the faction details do.
-        let scripted = |read: &DecodedFrame| {
-            cat.is_some_and(|cat| selectors::programmes_need_environment(frame, read, cat))
-        };
-        #[cfg(test)]
-        if self.point_seeks {
-            self.supplying_reads += 1;
-            let source = walks.hours.source();
-            let Some(read) = progressive::latest_read(
-                source,
-                frame.branch,
-                frame.hour,
-                TableId::ProjectPrograms,
-                replay_data::cadence::STAGGER_PERIOD,
-                selectors::PROGRAMME_TABLES,
-                cancelled,
-            )?
-            else {
-                return Ok(None);
-            };
-            if !scripted(&*read) {
-                return Ok(Some(Arc::from(read)));
-            }
-            let tables = selectors::programme_text_tables();
-            return Ok(
-                progressive::frame_at(source, frame.branch, read.hour, &tables, cancelled)?
-                    .map(Arc::from),
-            );
-        }
-        let Some(hour) = progressive::walked_read_hour(
-            &mut walks.hours,
+        progressive::walked_read_hour(
+            &mut self.hours,
             frame.hour,
             TableId::ProjectPrograms,
             replay_data::cadence::STAGGER_PERIOD,
             cancelled,
-        )?
-        else {
-            return Ok(None);
-        };
-        let mut wide = false;
-        if let Some((branch, at, held_wide, held)) = &self.supplying
-            && (*branch, *at) == (frame.branch, hour)
-        {
-            if *held_wide || !scripted(&**held) {
-                return Ok(Some(Arc::clone(held)));
-            }
-            wide = true;
-        }
-        #[cfg(test)]
-        {
-            self.supplying_reads += 1;
-        }
-        let mut read = None;
-        if !wide {
-            read = progressive::walked_supplying_frame(
-                &mut walks.frames,
-                hour,
-                TableId::ProjectPrograms,
-                selectors::PROGRAMME_TABLES,
-                cancelled,
-            )?;
-            wide = read.as_deref().is_some_and(scripted);
-        }
-        if wide {
-            read = progressive::walked_supplying_frame(
-                &mut walks.frames,
-                hour,
-                TableId::ProjectPrograms,
-                &selectors::programme_text_tables(),
-                cancelled,
-            )?;
-        }
-        let read = read.map(Arc::from);
-        self.supplying = read
-            .as_ref()
-            .map(|read| (frame.branch, hour, wide, Arc::clone(read)));
-        Ok(read)
+        )
     }
-}
-struct Joins {
-    identities_changed: bool,
-    identity_known: bool,
-    membership_changed: bool,
-    previous_members: BTreeMap<u32, Option<u64>>,
-    joined: bool,
-    accounts_joined: bool,
-}
-fn narrow_accounts(
-    keys: &mut Option<BTreeSet<u128>>,
-    previous: Option<&Previous>,
-    frame: &DecodedFrame,
-) {
-    if let Some(keys) = keys
-        && let Some(before) = previous.and_then(Previous::complete::<tables::FactionAccounts>)
-        && let Ok(now) = frame.complete::<tables::FactionAccounts>()
-    {
-        keys.retain(|key| {
-            if (*key >> 32) as u32 != 0 {
-                return false;
-            }
-            let old = before
-                .binary_search_by_key(key, RowCodec::key)
-                .ok()
-                .map(|index| &before[index]);
-            let new = now
-                .binary_search_by_key(key, RowCodec::key)
-                .ok()
-                .map(|index| &now[index]);
-            match (old, new) {
-                (Some(a), Some(b)) => {
-                    a.country != b.country
-                        || a.influence_faction != b.influence_faction
-                        || selectors::influence_share(a) != selectors::influence_share(b)
-                        || a.upgrade_groups != b.upgrade_groups
-                        || a.upgrade_tokens != b.upgrade_tokens
-                }
-                _ => true,
-            }
-        });
+    /// The supplying read at `hour`: the programme tables, and every scripted-text table
+    /// when `wide`.
+    pub(super) fn frame(
+        &mut self,
+        hour: i32,
+        wide: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Arc<DecodedFrame>>> {
+        let tables = if wide {
+            selectors::programme_text_tables()
+        } else {
+            selectors::PROGRAMME_TABLES.to_vec()
+        };
+        Ok(progressive::walked_supplying_frame(
+            &mut self.frames,
+            hour,
+            TableId::ProjectPrograms,
+            &tables,
+            cancelled,
+        )?
+        .map(Arc::from))
     }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -343,7 +138,7 @@ struct Choice {
 impl Choice {
     fn unknown(reason: String) -> Self {
         Self {
-            reason: Some(reason),
+            reason: Some(projection::timeless(reason)),
             ..Default::default()
         }
     }
@@ -353,7 +148,7 @@ impl From<dashboard_base::products::faction_details::FactionRuleDetail> for Choi
         Self {
             token: detail.token,
             name: detail.name,
-            reason: detail.reason,
+            reason: detail.reason.map(projection::timeless),
         }
     }
 }
@@ -362,7 +157,7 @@ impl From<dashboard_base::products::faction_details::FactionUpgradeDetail> for C
         Self {
             token: detail.token,
             name: detail.name,
-            reason: detail.reason,
+            reason: detail.reason.map(projection::timeless),
         }
     }
 }
@@ -371,7 +166,7 @@ impl From<dashboard_base::products::faction_details::FactionProgramDetail> for C
         Self {
             token: Some(detail.reference),
             name: detail.project,
-            reason: detail.reason,
+            reason: detail.reason.map(projection::timeless),
         }
     }
 }
@@ -388,7 +183,17 @@ struct Lane {
     choices: Vec<Choice>,
 }
 mod goals;
+mod projection;
 use goals::{GoalList, GoalPages};
+pub(super) use projection::{ACCOUNT_FIELDS, Edits, Frames, Projected, Runtime};
+#[cfg(test)]
+pub(super) use projection::timeless;
+use projection::{
+    AccountOp, AccountRow, Accounts, ChannelOp, FactionOps, Ghost, GoalsOp, ManpowerEntry,
+    ManpowerOp, Owner,
+};
+#[cfg(test)]
+mod columnar_parity;
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Catalogue {
     lanes: BTreeMap<u64, Lane>,
@@ -403,54 +208,39 @@ pub struct Prepared {
     previous_owners: BTreeMap<u32, (String, u64)>,
     live: BTreeMap<String, BTreeSet<u64>>,
     read_keys: BTreeMap<u64, (usize, bool)>,
-    #[serde(skip)]
-    countries: selectors::Countries,
-    #[serde(skip)]
-    memberships: BTreeMap<u32, Option<u64>>,
-    /// The owners the hour before witnessed.
-    #[serde(skip)]
-    witnessed: BTreeSet<u64>,
-    #[serde(skip)]
-    ready: bool,
     unknown_keys: BTreeSet<u64>,
     unknown_choices: BTreeSet<u64>,
     #[serde(skip)]
-    previous: Option<Previous>,
-    #[cfg(test)]
-    #[serde(skip)]
-    pub(super) account_projections: usize,
-    #[serde(skip)]
     publisher: CatalogueWriter,
-    /// Cached dynamic-name inputs require whole frames while any expansion is held.
-    #[serde(skip)]
-    labels: BTreeMap<(u64, Kind, u32), reuse::Inputs>,
-    #[serde(skip)]
-    dynamic: BTreeMap<u32, bool>,
     /// Each faction's goal lists and labels, each published as its own page.
     goal_pages: GoalPages,
-    /// Labels of goals whose texts read only the goal tables, for `goal_dictionary`.
-    #[serde(skip)]
-    goal_labels: BTreeMap<Option<u32>, GoalLabel>,
-    #[serde(skip)]
-    goal_expands: BTreeMap<u32, bool>,
-    #[serde(skip)]
-    goal_dictionary: Option<replay_frame::frame::ViewIdentity>,
-    /// Scripted goal texts' inputs, by faction; held, they need whole frames.
-    #[serde(skip)]
-    goal_inputs: BTreeMap<u64, reuse::Inputs>,
     #[serde(skip)]
     index: Index,
-    /// The last supplying read of programme operands: its branch, hour, whether it holds the
-    /// scripted-text tables, and frame.
+    /// The block fold's projection of the hours it observes.
     #[serde(skip)]
-    supplying: Option<(u64, i32, bool, Arc<DecodedFrame>)>,
-    #[cfg(test)]
+    pub(super) runtime: Runtime,
+    /// The factions the last hour witnessed, and what one it lists nowhere reads: a
+    /// projection sends them only when they change.
+    witnessed: BTreeSet<u64>,
+    ghost: Option<Ghost>,
+    /// The factions the catalogue held that the last hour listed nowhere; None until read.
     #[serde(skip)]
-    pub(super) supplying_reads: usize,
-    /// Tests: each hour reads its supplying read on its own, as before reads were walked.
-    #[cfg(test)]
+    ghosts: Option<BTreeSet<u64>>,
+    /// The catalogue may hold a new faction, or the witnessed changed, since `ghosts` were read.
     #[serde(skip)]
-    pub(super) point_seeks: bool,
+    grew: bool,
+    /// Every account a share lane names; None until read.
+    #[serde(skip)]
+    share_slots: Option<BTreeSet<u32>>,
+    /// Each account's share lane, and each faction's total and manpower lanes by entry and
+    /// goal progress lanes by ordinal, as their last whole projection observed them: the
+    /// lanes a projection's later values name.
+    share_keys: BTreeMap<u32, u64>,
+    manpower_keys: BTreeMap<u64, (u64, Vec<Option<u64>>)>,
+    progress_keys: BTreeMap<u64, Vec<(u32, u64)>>,
+    /// The channels' reads the last hour published; None until an hour does.
+    #[serde(skip)]
+    reads: Option<[bool; CHANNELS.len()]>,
 }
 
 fn digest(value: &impl Hash) -> u64 {
@@ -636,44 +426,12 @@ impl Index {
     }
 }
 impl Prepared {
-    fn dynamic_name(
-        &mut self,
-        frame: &DecodedFrame,
-        token: u32,
-        cat: Option<&catalogue::Catalogue>,
-    ) -> bool {
-        let Some(cat) = cat else {
-            return false;
-        };
-        if let Some(&dynamic) = self.dynamic.get(&token) {
-            return dynamic;
-        }
-        let Ok(Some(spelling)) = dashboard_base::faction_names::template_spelling(frame, Some(token))
-        else {
-            return false;
-        };
-        let dynamic = cat
-            .localisation
-            .localise(spelling.as_bytes())
-            .is_ok_and(|text| text.contains('['));
-        self.dynamic.insert(token, dynamic);
-        dynamic
+    #[cfg(test)]
+    pub fn country_rebuilds(&self) -> usize {
+        self.runtime.country_rebuilds()
     }
-    fn label(
-        &mut self,
-        frame: &DecodedFrame,
-        kind: Kind,
-        (faction, ordinal): (u64, u32),
-        token: u32,
-        cat: Option<&catalogue::Catalogue>,
-        name: impl FnOnce() -> FactionRuleDetail,
-    ) -> FactionRuleDetail {
-        if !self.dynamic_name(frame, token, cat) {
-            return name();
-        }
-        let (detail, inputs) = reuse::capture(frame, name);
-        self.labels.insert((faction, kind, ordinal), inputs);
-        detail
+    pub fn bytes(&self) -> usize {
+        self.series.bytes() + self.goal_pages.pending()
     }
     /// Dynamic names need whole frames because kept frames may hold stale trigger-kit rows.
     pub fn needs_whole(
@@ -682,78 +440,7 @@ impl Prepared {
         context: &LoadContext,
         frame: &DecodedFrame,
     ) -> bool {
-        self.goal_dictionary(frame);
-        if !self.labels.is_empty() || !self.goal_inputs.is_empty() {
-            return true;
-        }
-        let Some(cat) = context
-            .content
-            .as_ref()
-            .and_then(|options| catalogue::catalogue(source, options).ok())
-        else {
-            return false;
-        };
-        let tokens: Vec<u32> = frame
-            .complete::<tables::FactionRules>()
-            .into_iter()
-            .flatten()
-            .map(|row| row.token)
-            .chain(
-                frame
-                    .complete::<tables::FactionDoctrine>()
-                    .into_iter()
-                    .flatten()
-                    .map(|row| row.token),
-            )
-            .collect();
-        let goals: Vec<u32> = frame
-            .complete::<tables::FactionGoalEntries>()
-            .into_iter()
-            .flatten()
-            .filter(|row| row.kind <= 2)
-            .filter_map(|row| row.token)
-            .collect();
-        tokens
-            .into_iter()
-            .any(|token| self.dynamic_name(frame, token, Some(&*cat)))
-            || goals
-                .into_iter()
-                .any(|token| self.goal_expands(frame, token, &cat))
-    }
-    /// Goal label caches hold for one dictionary read; another read clears them.
-    fn goal_dictionary(&mut self, frame: &DecodedFrame) {
-        let table = &frame.tables[TableId::LexicalTokens.index()];
-        if !self
-            .goal_dictionary
-            .as_ref()
-            .is_some_and(|held| held.is(table))
-        {
-            self.goal_expands.clear();
-            self.goal_labels.clear();
-            self.goal_dictionary = Some(table.identity());
-        }
-    }
-    fn goal_expands(
-        &mut self,
-        frame: &DecodedFrame,
-        token: u32,
-        cat: &catalogue::Catalogue,
-    ) -> bool {
-        if let Some(&expands) = self.goal_expands.get(&token) {
-            return expands;
-        }
-        // An unresolved spelling or definition is asked again, never held as static.
-        match faction_details::goal_label_expands(frame, cat, token) {
-            Some(expands) => *self.goal_expands.entry(token).or_insert(expands),
-            None => false,
-        }
-    }
-    #[cfg(test)]
-    pub fn country_rebuilds(&self) -> usize {
-        self.countries.rebuilds
-    }
-    pub fn bytes(&self) -> usize {
-        self.series.bytes() + self.goal_pages.pending()
+        self.runtime.needs_whole(source, context, frame)
     }
     pub fn quiet(
         &mut self,
@@ -761,7 +448,7 @@ impl Prepared {
         last: i32,
         reads: [bool; CHANNELS.len()],
     ) -> io::Result<()> {
-        if !self.labels.is_empty() || !self.goal_inputs.is_empty() {
+        if self.runtime.holds_dynamic() {
             return Err(io::Error::other(
                 "Faction dynamic names are observed on whole frames",
             ));
@@ -783,6 +470,8 @@ impl Prepared {
         }
         self.series.advance_span(first, last)?;
         self.last = Some(last);
+        self.reads = Some(reads);
+        self.runtime.quiet(last);
         Ok(())
     }
     fn lane(
@@ -812,7 +501,18 @@ impl Prepared {
             }
         };
         if let btree_map::Entry::Vacant(entry) = self.catalogue.lanes.entry(key) {
+            // A faction the catalogue did not hold may be one an hour lists nowhere.
+            self.grew |= faction != 0
+                && self
+                    .index
+                    .factions()
+                    .is_none_or(|factions| !factions.contains(&faction));
             self.index.add_lane(digest, key, faction);
+            if kind == Kind::Share
+                && let Some(slots) = &mut self.share_slots
+            {
+                slots.insert(slot);
+            }
             entry.insert(Lane {
                 faction,
                 kind,
@@ -945,375 +645,393 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         check_cancel(cancelled)?;
-        let continues = self.last.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
-        self.series.advance(frame.hour)?;
-        let joins = self.refresh_joins(frame, changes, continues);
         let cat = context
             .content
             .as_ref()
             .and_then(|options| catalogue::catalogue(source, options).ok());
-        let witnessed = selectors::owners(frame);
+        let projected = self.runtime.project(
+            &projection::Whole::new(frame, supplying),
+            changes,
+            cat.as_deref(),
+            cancelled,
+        )?;
+        self.apply(frame.hour, projected)
+    }
+    /// [`Self::observe`] of an hour the columnar walk projected ([`super::columnar`]).
+    pub fn observe_projected(&mut self, hour: super::columnar::Hour) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope("faction emit", None);
+        self.apply(hour.hour, hour.projected)
+    }
+    /// The ordered emit of one projected hour: lanes, choices and goal books numbered in the
+    /// order the hour observes them, retained owners, and every faction the catalogue holds
+    /// that the hour lists nowhere.
+    pub(super) fn apply(&mut self, hour: i32, projected: Projected) -> io::Result<()> {
+        let starts = self.last.and_then(|last| last.checked_add(1)) != Some(hour);
+        self.series.advance(hour)?;
+        let Projected {
+            joined,
+            roster,
+            witnessed,
+            ghost,
+            accounts,
+            factions,
+            reads,
+        } = projected;
+        if starts || !joined {
+            self.previous_owners.clear();
+        }
+        if let Some(witnessed) = witnessed {
+            self.witnessed = Arc::unwrap_or_clone(witnessed);
+            self.grew = true;
+        }
+        let renewed = ghost.is_some();
+        if let Some(ghost) = ghost {
+            self.ghost = Some(Arc::unwrap_or_clone(ghost));
+        }
         self.index.build(&self.catalogue);
-        let owners: BTreeSet<u64> = match self.index.factions() {
-            Some(factions) => witnessed.iter().chain(factions).copied().collect(),
-            None => witnessed
-                .iter()
-                .copied()
-                .chain(
-                    self.catalogue
-                        .lanes
-                        .values()
-                        .filter(|lane| lane.faction != 0)
-                        .map(|lane| lane.faction),
-                )
-                .collect(),
+        // The hour's owners are the factions the catalogue held before its accounts.
+        let before = if self.grew || self.ghosts.is_none() {
+            self.grew = false;
+            let mut now = self.catalogue_factions();
+            now.retain(|faction| !self.witnessed.contains(faction));
+            Some(self.ghosts.replace(now))
+        } else {
+            None
         };
-        let dirty = self.changed(frame, changes, continues, &witnessed);
-        self.goal_dictionary(frame);
-        if dirty.refresh {
-            self.goal_labels.clear();
-        }
+        let ghosts = self.ghosts.as_ref().expect("factions listed nowhere");
+        // One read as absent the hour before, for the same reasons, reads alike.
+        let due: Vec<u64> = match before {
+            Some(Some(before)) if !starts && !renewed => {
+                ghosts.difference(&before).copied().collect()
+            }
+            None if !starts && !renewed => Vec::new(),
+            _ => ghosts.iter().copied().collect(),
+        };
         // Absence before a faction's first lane is proven only by a complete roster.
-        let roster = self.lane(0, Kind::Roster, "", "", None, (0, 0));
-        let complete = frame.complete::<tables::Factions>().is_ok();
-        self.value(roster, frame.hour, i128::from(complete), !continues);
-        let supplying = self.supplying(&dirty, frame, supplying, cat.as_deref(), cancelled)?;
-        let accounts = self.changed_accounts(frame, &dirty, &joins);
-        self.accounts(frame, accounts, joins.joined, !continues, cat.as_deref());
-        // Dynamic names use the viewing country; changing its identity or link invalidates them.
-        let viewer_changed = [TableId::LocalPlayer, TableId::CountryLinks]
-            .iter()
-            .any(|table| changes.rows_changed[table.index()]);
-        // Re-expand when a previous input changes or becomes a gap; otherwise the value holds.
-        self.labels
-            .retain(|&(faction, _, _), _| owners.contains(&faction));
-        let since = reuse::Since::hour_before(frame, changes);
-        let mut stale = BTreeSet::new();
-        for (&(faction, _, _), inputs) in &mut self.labels {
-            if !since.as_ref().is_some_and(|since| inputs.advance(since)) {
-                stale.insert(faction);
+        let key = self.lane(0, Kind::Roster, "", "", None, (0, 0));
+        self.value(key, hour, i128::from(roster), starts);
+        self.accounts(hour, starts, accounts)?;
+        // The factions whose every known lane the hour observes.
+        let mut visited: BTreeSet<u64> = due.iter().copied().collect();
+        let mut due = due.into_iter().peekable();
+        for ops in factions {
+            while let Some(faction) = due.next_if(|faction| *faction < ops.faction) {
+                self.absent(hour, faction, starts);
+            }
+            if ops.known.is_some() {
+                visited.insert(ops.faction);
+            }
+            self.faction(hour, ops, reads, starts)?;
+        }
+        for faction in due {
+            self.absent(hour, faction, starts);
+        }
+        // Every other faction keeps what it knows; only the channels read anew move.
+        let previous = self.reads.replace(reads);
+        if !starts && previous != Some(reads) {
+            for (&key, &(index, known)) in &self.read_keys {
+                if previous.is_none_or(|previous| previous[index] != reads[index])
+                    && !visited.contains(&self.catalogue.lanes[&key].faction)
+                {
+                    self.series.observe_if_changed(
+                        key,
+                        hour,
+                        Some(i128::from(known && reads[index])),
+                        false,
+                        false,
+                    );
+                }
             }
         }
-        self.goal_inputs
-            .retain(|faction, _| owners.contains(faction));
-        let mut stale_goals = BTreeSet::new();
-        for (&faction, inputs) in &mut self.goal_inputs {
-            if viewer_changed || !since.as_ref().is_some_and(|since| inputs.advance(since)) {
-                stale_goals.insert(faction);
-            }
-        }
-        for faction in owners {
-            check_cancel(cancelled)?;
-            let owner_known = witnessed.contains(&faction);
-            let rules = selected::<tables::FactionRules>(frame, faction, owner_known);
-            let programmes = selected::<tables::FactionPrograms>(frame, faction, owner_known);
-            let minimums = selected::<tables::FactionMinimumUpgrades>(frame, faction, owner_known);
-            let doctrines = selected::<tables::FactionDoctrine>(frame, faction, owner_known);
-            let manpower = selected::<tables::FactionManpower>(frame, faction, owner_known);
-            let accounts_known = owner_known && joins.joined && joins.accounts_joined;
-            let goals_absent = goal_absent(frame, faction);
-            let available = [
-                accounts_known,
-                rules.available(),
-                programmes.available(),
-                minimums.available(),
-                accounts_known,
-                doctrines.available(),
-                manpower.available(),
-                !goals_absent && faction_details::held_goals(frame, faction).is_ok(),
-            ];
-            for (index, (channel, table)) in CHANNELS.iter().enumerate() {
-                self.known(
-                    faction,
-                    channel,
-                    frame.hour,
-                    available[index],
-                    changes.slot_read[table.index()],
-                    !continues,
-                );
-            }
-            let renamed = viewer_changed || stale.contains(&faction);
-            if dirty.affects(Kind::Rule, faction) || renamed || !owner_known {
-                self.labels
-                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Rule);
-                self.channel(frame, faction, &rules, !continues, |state, row| {
-                    let detail = state.label(frame, Kind::Rule, (faction, row.ordinal), row.token, cat.as_deref(), || {
-                        selectors::rule(frame, faction, row, cat.as_deref())
-                    });
-                    (row.ordinal, 0, detail.into())
-                });
-            }
-            if dirty.programme_operands || dirty.affects(Kind::Programme, faction) || !owner_known {
-                self.channel(frame, faction, &programmes, !continues, |_, row| {
-                    (
-                        row.ordinal,
-                        0,
-                        selectors::programme_detail(
-                            supplying.as_deref(),
-                            row.ordinal,
-                            row.reference,
-                            cat.as_deref(),
-                        )
-                        .into(),
-                    )
-                });
-            }
-            if dirty.affects(Kind::Minimum, faction) || !owner_known {
-                self.channel(frame, faction, &minimums, !continues, |state, row| {
-                    let detail = selectors::upgrade(frame, row.group, row.token, cat.as_deref());
-                    state.group(frame, faction, row.group, cat.as_deref(), !continues);
-                    (row.ordinal, row.group, detail.into())
-                });
-            }
-            if dirty.affects(Kind::Doctrine, faction) || renamed || !owner_known {
-                self.labels
-                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Doctrine);
-                self.channel(frame, faction, &doctrines, !continues, |state, row| {
-                    let detail = state.label(frame, Kind::Doctrine, (faction, row.ordinal), row.token, cat.as_deref(), || {
-                        selectors::doctrine(frame, faction, row, cat.as_deref())
-                    });
-                    (row.ordinal, 0, detail.into())
-                });
-            }
-            // Country zero's member is named by its own reserved naming read.
-            let reserved_renamed = changes.rows_changed[TableId::ReservedCountryNaming.index()]
-                && manpower.rows.iter().any(|row| row.country == 0);
-            if dirty.affects(Kind::Manpower, faction)
-                || joins.identities_changed
-                || reserved_renamed
-                || !joins.joined
-                || !owner_known
-            {
-                self.manpower(frame, faction, !continues, owner_known);
-            }
-            if dirty.affects(Kind::GoalList, faction)
-                || stale_goals.contains(&faction)
-                || !owner_known
-            {
-                self.goals(frame, faction, goals_absent, cat.as_deref(), !continues);
-            }
-        }
-        self.witnessed = witnessed;
-        self.previous = Some(Previous::read(frame));
-        self.ready = true;
-        self.last = Some(frame.hour);
+        self.last = Some(hour);
         Ok(())
     }
-    fn refresh_joins(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        continues: bool,
-    ) -> Joins {
-        if !continues {
-            self.previous_owners.clear();
+    fn catalogue_factions(&self) -> BTreeSet<u64> {
+        match self.index.factions() {
+            Some(factions) => factions.clone(),
+            None => self
+                .catalogue
+                .lanes
+                .values()
+                .filter(|lane| lane.faction != 0)
+                .map(|lane| lane.faction)
+                .collect(),
         }
-        let identity = self.countries.refresh(frame, changes, continues);
-        let identities_changed = identity.as_ref().is_ok_and(|changed| *changed);
-        let membership_changed = identities_changed
-            || !self.ready
-            || !continues
-            || changes.rows_changed[TableId::FactionMembers.index()];
-        let previous_members = if membership_changed {
-            self.memberships.clone()
-        } else {
-            BTreeMap::new()
-        };
-        if membership_changed {
-            self.memberships = selectors::membership(frame, &self.countries).unwrap_or_default();
-        }
-        let joined = identity.is_ok()
-            && frame
-                .complete::<tables::FactionMembers>()
-                .is_ok_and(|rows| {
-                    rows.iter()
-                        .all(|row| self.countries.get(row.country).is_some())
-                });
-        if !joined {
-            self.previous_owners.clear();
-        }
-        let accounts_joined = frame
-            .complete::<tables::FactionAccounts>()
-            .is_ok_and(|rows| {
-                rows.iter()
-                    .filter(|row| row.kind == 0)
-                    .all(|row| self.countries.get(row.country).is_some())
+    }
+    fn accounts(&mut self, hour: i32, starts: bool, accounts: Accounts) -> io::Result<()> {
+        let failure = accounts
+            .unavailable
+            .then_some("Faction account inputs are unavailable");
+        // A full hour also reads again every account a share lane names.
+        let extra: Vec<u32> = if accounts.full {
+            let present: BTreeSet<u32> = accounts.ops.iter().map(AccountOp::account).collect();
+            let slots = self.share_slots.get_or_insert_with(|| {
+                self.catalogue
+                    .lanes
+                    .values()
+                    .filter(|lane| lane.kind == Kind::Share)
+                    .map(|lane| lane.slot)
+                    .collect()
             });
-        Joins {
-            identities_changed,
-            identity_known: identity.is_ok(),
-            membership_changed,
-            previous_members,
-            joined,
-            accounts_joined,
-        }
-    }
-    fn changed(
-        &self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        continues: bool,
-        witnessed: &BTreeSet<u64>,
-    ) -> Changed {
-        macro_rules! dirty {
-            ($table:ident) => {
-                self.dirty::<tables::$table>(frame, changes, TableId::$table, continues)
-            };
-        }
-        let mut accounts = dirty!(FactionAccounts);
-        narrow_accounts(&mut accounts, self.previous.as_ref(), frame);
-        let owner_keys = |keys: BTreeSet<u128>| {
-            keys.into_iter()
-                .map(|key| (key >> 32) as u64)
-                .collect::<BTreeSet<_>>()
-        };
-        let owners = BTreeMap::from([
-            (Kind::Rule, dirty!(FactionRules).map(owner_keys)),
-            (Kind::Programme, dirty!(FactionPrograms).map(owner_keys)),
-            (
-                Kind::Minimum,
-                dirty!(FactionMinimumUpgrades).map(owner_keys),
-            ),
-            (Kind::Doctrine, dirty!(FactionDoctrine).map(owner_keys)),
-            (Kind::Manpower, dirty!(FactionManpower).map(owner_keys)),
-            (Kind::GoalList, self.goal_owners(frame, changes, continues)),
-        ]);
-        let refresh =
-            !self.ready || !continues || changes.rows_changed[TableId::LexicalTokens.index()];
-        let programme_operands = refresh
-            || changes.slot_read[TableId::ProjectPrograms.index()]
-            || [TableId::ProjectPrograms, TableId::Projects]
-                .iter()
-                .any(|table| changes.rows_changed[table.index()]);
-        Changed {
-            accounts,
-            owners,
-            rewitnessed: witnessed.difference(&self.witnessed).copied().collect(),
-            refresh,
-            programme_operands,
-        }
-    }
-    fn changed_accounts(
-        &self,
-        frame: &DecodedFrame,
-        dirty: &Changed,
-        joins: &Joins,
-    ) -> BTreeSet<u32> {
-        let full_accounts =
-            dirty.refresh || joins.identities_changed || !joins.identity_known || !joins.joined;
-        let mut accounts: BTreeSet<u32> = if !full_accounts && let Some(changed) = &dirty.accounts {
-            changed
+            slots
                 .iter()
                 .copied()
-                .filter(|key| (*key >> 32) as u32 == 0)
-                .map(|key| (key >> 64) as u32)
+                .filter(|slot| !present.contains(slot))
                 .collect()
         } else {
-            frame
-                .complete::<tables::FactionAccounts>()
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter(|row| row.kind == 0)
-                .map(|row| row.account)
-                .chain(
-                    self.catalogue
-                        .lanes
-                        .values()
-                        .filter(|lane| lane.kind == Kind::Share)
-                        .map(|lane| lane.slot),
-                )
-                .collect()
+            Vec::new()
         };
-        if joins.membership_changed && !full_accounts {
-            let changed_slots: BTreeSet<_> = joins
-                .previous_members
-                .keys()
-                .chain(self.memberships.keys())
-                .filter(|slot| joins.previous_members.get(slot) != self.memberships.get(slot))
-                .copied()
-                .collect();
-            if let Ok(rows) = frame.complete::<tables::FactionAccounts>() {
-                accounts.extend(
-                    rows.iter()
-                        .filter(|row| {
-                            row.kind == 0
-                                && self
-                                    .countries
-                                    .get(row.country)
-                                    .is_some_and(|country| changed_slots.contains(&country.slot))
-                        })
-                        .map(|row| row.account),
-                );
+        let mut extra = extra.into_iter().peekable();
+        for op in accounts.ops {
+            let next = op.account();
+            while let Some(slot) = extra.next_if(|slot| *slot < next) {
+                self.account(hour, starts, slot, None, failure);
+            }
+            match op {
+                AccountOp::Whole { account, row } => {
+                    self.account(hour, starts, account, row, failure)
+                }
+                AccountOp::Share { account, share } => {
+                    let key = *self
+                        .share_keys
+                        .get(&account)
+                        .ok_or_else(|| io::Error::other("A faction account share has no lane"))?;
+                    self.value(key, hour, i128::from(share), starts);
+                }
             }
         }
-        accounts
+        for slot in extra {
+            self.account(hour, starts, slot, None, failure);
+        }
+        Ok(())
     }
-    fn channel<T: SelectionTable>(
+    fn account(
         &mut self,
-        frame: &DecodedFrame,
-        faction: u64,
-        selected: &Selected<'_, T>,
+        hour: i32,
         starts: bool,
-        mut map: impl FnMut(&mut Self, &T::Row) -> (u32, u32, Choice),
+        account: u32,
+        row: Option<AccountRow>,
+        mut failure: Option<&'static str>,
     ) {
-        let values = selected
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(ordinal, row)| {
-                let (slot, group, mut choice) = map(self, row);
-                if selected.invalid.contains(&ordinal) {
-                    choice.reason = Some(format!(
-                        "Faction {} ordinals are not contiguous",
-                        T::KIND.selection_name()
-                    ));
+        let (mut shares, mut associations, mut upgrades) =
+            (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        self.share_keys.remove(&account);
+        match row {
+            None => {}
+            Some(AccountRow::Unidentified) => {
+                failure = Some("Faction account country identity is unavailable");
+            }
+            Some(AccountRow::Identified {
+                identity,
+                tag,
+                holder,
+                share,
+                owner,
+            }) => {
+                if self
+                    .previous_owners
+                    .get(&account)
+                    .is_some_and(|(before, _)| before != &identity)
+                {
+                    self.previous_owners.remove(&account);
                 }
-                (slot, group, choice)
-            })
-            .collect();
-        self.selections(
-            faction,
-            T::KIND,
-            values,
-            frame.hour,
-            selected.failure.as_deref(),
+                let key = self.lane(0, Kind::Share, &identity, &tag, Some(holder), (account, 0));
+                shares.insert(key);
+                self.value(key, hour, i128::from(share), starts);
+                self.share_keys.insert(account, key);
+                let (faction, member) = match owner {
+                    Owner::Unjoined => {
+                        failure = Some("Faction account membership inputs are unavailable");
+                        (None, None)
+                    }
+                    Owner::Member {
+                        faction,
+                        upgrades: held,
+                    } => {
+                        self.previous_owners
+                            .insert(account, (identity.clone(), faction));
+                        (Some(faction), Some(held))
+                    }
+                    Owner::Ambiguous => {
+                        failure = Some("Faction account country has ambiguous membership");
+                        (None, None)
+                    }
+                    Owner::Influence(faction) => (Some(faction), None),
+                    Owner::Retained => (
+                        self.previous_owners
+                            .get(&account)
+                            .map(|(_, faction)| *faction),
+                        None,
+                    ),
+                };
+                if let Some(faction) = faction {
+                    let key = self.lane(
+                        faction,
+                        Kind::Association,
+                        &identity,
+                        &tag,
+                        Some(holder),
+                        (account, 0),
+                    );
+                    associations.insert(key);
+                    self.value(key, hour, if member.is_some() { 1 } else { 2 }, starts);
+                    for (ordinal, upgrade) in member.into_iter().flatten().enumerate() {
+                        self.group(hour, faction, upgrade.group, upgrade.name, starts);
+                        let key = self.lane(
+                            faction,
+                            Kind::Upgrade,
+                            &format!("{identity}:{ordinal}:{}", upgrade.group),
+                            &tag,
+                            Some(holder),
+                            (account, upgrade.group),
+                        );
+                        upgrades.insert(key);
+                        self.choice(key, hour, upgrade.choice, starts);
+                    }
+                }
+            }
+        }
+        if shares.is_empty() || failure.is_some() {
+            self.previous_owners.remove(&account);
+        }
+        self.finish_group(
+            group_key(account.into(), Kind::Share),
+            shares,
+            hour,
+            failure,
+            false,
+            starts,
+        );
+        self.finish_group(
+            group_key(account.into(), Kind::Association),
+            associations,
+            hour,
+            failure,
+            false,
+            starts,
+        );
+        self.finish_group(
+            group_key(account.into(), Kind::Upgrade),
+            upgrades,
+            hour,
+            failure,
+            true,
             starts,
         );
     }
-    fn dirty<T: replay_data::rows::TableSchema>(
-        &self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        table: TableId,
-        continues: bool,
-    ) -> Option<BTreeSet<u128>> {
-        if !self.ready || !continues {
-            return None;
+    fn faction(
+        &mut self,
+        hour: i32,
+        ops: FactionOps,
+        reads: [bool; CHANNELS.len()],
+        starts: bool,
+    ) -> io::Result<()> {
+        let FactionOps {
+            faction,
+            known,
+            channels,
+        } = ops;
+        if let Some(known) = known {
+            for (index, (channel, _)) in CHANNELS.iter().enumerate() {
+                self.known(faction, channel, hour, known[index], reads[index], starts);
+            }
         }
-        if let Some((changed, deleted)) = changes.rows(table) {
-            return Some(
-                changed
-                    .iter()
-                    .map(|row| row.key)
-                    .chain(deleted.iter().copied())
-                    .collect(),
+        for channel in channels {
+            match channel {
+                ChannelOp::Selections {
+                    kind,
+                    values,
+                    failure,
+                } => self.selections(faction, kind, values, hour, failure.as_deref(), starts),
+                ChannelOp::Group { group, choice } => {
+                    self.group(hour, faction, group, choice, starts)
+                }
+                ChannelOp::Manpower(op) => self.manpower(hour, faction, op, starts),
+                ChannelOp::ManpowerValues { total, values } => {
+                    let (total_key, keys) = self
+                        .manpower_keys
+                        .get(&faction)
+                        .ok_or_else(|| io::Error::other("Faction manpower values have no lanes"))?;
+                    let total_key = *total_key;
+                    let changed: Vec<(u64, i32)> = values
+                        .into_iter()
+                        .filter_map(|(at, value)| {
+                            keys.get(at as usize)
+                                .copied()
+                                .flatten()
+                                .map(|key| (key, value))
+                        })
+                        .collect();
+                    self.value(total_key, hour, total, starts);
+                    for (key, value) in changed {
+                        self.value(key, hour, i128::from(value), starts);
+                    }
+                }
+                ChannelOp::Goals(op) => self.goals(hour, faction, op, starts),
+                ChannelOp::GoalProgress(values) => {
+                    let keys = self
+                        .progress_keys
+                        .get(&faction)
+                        .ok_or_else(|| io::Error::other("Faction goal progress has no lanes"))?;
+                    let changed: Vec<(u64, i64)> = values
+                        .into_iter()
+                        .filter_map(|(ordinal, raw)| {
+                            keys.iter()
+                                .find(|(held, _)| *held == ordinal)
+                                .map(|&(_, key)| (key, raw))
+                        })
+                        .collect();
+                    for (key, raw) in changed {
+                        self.value(key, hour, i128::from(raw), starts);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    /// A faction the catalogue holds that the hour lists nowhere: it has no rows anywhere.
+    fn absent(&mut self, hour: i32, faction: u64, starts: bool) {
+        let Some(ghost) = self.ghost.clone() else {
+            return;
+        };
+        for (channel, _) in CHANNELS {
+            self.known(faction, channel, hour, false, false, starts);
+        }
+        for (kind, failure) in [Kind::Rule, Kind::Programme, Kind::Minimum, Kind::Doctrine]
+            .into_iter()
+            .zip(&ghost.selections)
+        {
+            self.selections(
+                faction,
+                kind,
+                Vec::new(),
+                hour,
+                Some(failure.as_str()),
+                starts,
             );
         }
-        let before = self.previous.as_ref()?.complete::<T>()?;
-        let now = frame.complete::<T>().ok()?;
-        Some(dashboard_base::prepared::frame_changes::differing_keys(
-            before, now,
-        ))
+        self.manpower(
+            hour,
+            faction,
+            ManpowerOp {
+                total: NULL,
+                entries: Vec::new(),
+                failure: Some(ghost.manpower.clone()),
+            },
+            starts,
+        );
+        self.goals(
+            hour,
+            faction,
+            GoalsOp {
+                absent: ghost.goals.absent,
+                reason: ghost.goals.reason.clone(),
+                entries: Vec::new(),
+            },
+            starts,
+        );
     }
-    fn group(
-        &mut self,
-        frame: &DecodedFrame,
-        faction: u64,
-        group: u32,
-        cat: Option<&catalogue::Catalogue>,
-        starts: bool,
-    ) {
+    fn group(&mut self, hour: i32, faction: u64, group: u32, choice: Choice, starts: bool) {
         let key = self.lane(
             faction,
             Kind::Group,
@@ -1322,14 +1040,7 @@ impl Prepared {
             None,
             (group, group),
         );
-        let choice = match selectors::group_name(frame, group, cat) {
-            Ok(name) => Choice {
-                name,
-                ..Default::default()
-            },
-            Err(reason) => Choice::unknown(reason),
-        };
-        self.choice(key, frame.hour, choice, starts);
+        self.choice(key, hour, choice, starts);
     }
     fn selections(
         &mut self,
@@ -1355,237 +1066,54 @@ impl Prepared {
         }
         self.finish_group(group_key(faction, kind), now, hour, failure, true, starts);
     }
-    fn accounts(
-        &mut self,
-        frame: &DecodedFrame,
-        dirty: BTreeSet<u32>,
-        joined: bool,
-        starts: bool,
-        cat: Option<&catalogue::Catalogue>,
-    ) {
-        let rows = frame.complete::<tables::FactionAccounts>();
-        for account in dirty {
-            #[cfg(test)]
-            {
-                self.account_projections += 1;
-            }
-            let (mut shares, mut associations, mut upgrades) =
-                (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-            let mut failure = rows
-                .is_err()
-                .then_some("Faction account inputs are unavailable");
-            if let Ok(rows) = &rows
-                && let Ok(index) =
-                    rows.binary_search_by_key(&((account as u128) << 64), RowCodec::key)
-            {
-                let row = &rows[index];
-                if let Some(country) = self.countries.get(row.country).cloned() {
-                    let identity = format!(
-                        "{}:{}:{}:{}",
-                        row.account, country.slot, country.id, country.tag
-                    );
-                    if self
-                        .previous_owners
-                        .get(&account)
-                        .is_some_and(|(before, _)| before != &identity)
-                    {
-                        self.previous_owners.remove(&account);
-                    }
-                    let key = self.lane(
-                        0,
-                        Kind::Share,
-                        &identity,
-                        &country.tag,
-                        Some((country.slot, country.id)),
-                        (row.account, 0),
-                    );
-                    shares.insert(key);
-                    self.value(
-                        key,
-                        frame.hour,
-                        selectors::influence_share(row) as i128,
-                        starts,
-                    );
-                    let owner = self.memberships.get(&country.slot).copied();
-                    // An explicit membership witness remains usable when an
-                    // unrelated country's member reference cannot be joined.
-                    if joined || matches!(owner, Some(Some(_))) {
-                        let faction = match owner {
-                            Some(Some(faction)) => {
-                                self.previous_owners
-                                    .insert(account, (identity.clone(), faction));
-                                Some(faction)
-                            }
-                            Some(None) => {
-                                failure = Some("Faction account country has ambiguous membership");
-                                None
-                            }
-                            None if row.influence_faction != 0 => Some(row.influence_faction),
-                            None => self
-                                .previous_owners
-                                .get(&account)
-                                .map(|(_, faction)| *faction),
-                        };
-                        if let Some(faction) = faction {
-                            let member = owner == Some(Some(faction));
-                            let key = self.lane(
-                                faction,
-                                Kind::Association,
-                                &identity,
-                                &country.tag,
-                                Some((country.slot, country.id)),
-                                (row.account, 0),
-                            );
-                            associations.insert(key);
-                            self.value(key, frame.hour, if member { 1 } else { 2 }, starts);
-                            if member {
-                                for (ordinal, (&group, &token)) in row
-                                    .upgrade_groups
-                                    .iter()
-                                    .zip(&row.upgrade_tokens)
-                                    .enumerate()
-                                {
-                                    let detail = selectors::upgrade(frame, group, token, cat);
-                                    self.group(frame, faction, group, cat, starts);
-                                    let key = self.lane(
-                                        faction,
-                                        Kind::Upgrade,
-                                        &format!("{identity}:{ordinal}:{group}"),
-                                        &country.tag,
-                                        Some((country.slot, country.id)),
-                                        (row.account, group),
-                                    );
-                                    upgrades.insert(key);
-                                    self.choice(
-                                        key,
-                                        frame.hour,
-                                        Choice {
-                                            token: detail.token,
-                                            name: detail.name,
-                                            reason: detail.reason,
-                                        },
-                                        starts,
-                                    );
-                                }
-                            }
-                        }
-                    } else {
-                        failure = Some("Faction account membership inputs are unavailable");
-                    }
-                } else {
-                    failure = Some("Faction account country identity is unavailable");
-                }
-            }
-            if shares.is_empty() || failure.is_some() {
-                self.previous_owners.remove(&account);
-            }
-            self.finish_group(
-                group_key(account.into(), Kind::Share),
-                shares,
-                frame.hour,
-                failure,
-                false,
-                starts,
-            );
-            self.finish_group(
-                group_key(account.into(), Kind::Association),
-                associations,
-                frame.hour,
-                failure,
-                false,
-                starts,
-            );
-            self.finish_group(
-                group_key(account.into(), Kind::Upgrade),
-                upgrades,
-                frame.hour,
-                failure,
-                true,
-                starts,
-            );
-        }
-    }
-    fn manpower(&mut self, frame: &DecodedFrame, faction: u64, starts: bool, owner_known: bool) {
-        let rows = frame
-            .complete::<tables::FactionManpower>()
-            .map_err(|why| why.to_string());
+    fn manpower(&mut self, hour: i32, faction: u64, op: ManpowerOp, starts: bool) {
+        let total_key = self.lane(faction, Kind::Total, "", "", None, (0, 0));
+        self.value(total_key, hour, op.total, starts);
         let mut now = BTreeSet::new();
         let mut diagnostics = BTreeSet::new();
-        let mut failure = rows.as_ref().err().cloned().or_else(|| {
-            (!owner_known).then(|| {
-                "Faction manpower owner is unavailable; empty pool is not certified".into()
-            })
-        });
-        let total_key = self.lane(faction, Kind::Total, "", "", None, (0, 0));
-        if let Ok(rows) = rows
-            && owner_known
-        {
-            let rows = selectors::selected(rows, faction, |row| row.faction);
-            match selectors::manpower_total(rows) {
-                Ok(total) => self.value(total_key, frame.hour, total as i128, starts),
-                Err(why) => {
-                    failure = Some(why);
-                    self.value(total_key, frame.hour, NULL, starts);
-                }
-            }
-            for row in rows {
-                let identity = if row.country == 0 {
-                    Some((
-                        "reserved".into(),
-                        selectors::country_tag(frame, 0).ok(),
-                        None,
-                    ))
-                } else {
-                    self.countries.get(row.country).map(|country| {
-                        (
-                            format!("{}:{}:{}", country.slot, country.id, country.tag),
-                            Some(country.tag.clone()),
-                            Some((country.slot, country.id)),
-                        )
-                    })
-                };
-                let Some((identity, Some(tag), holder)) = identity else {
+        let mut keys = Vec::with_capacity(op.entries.len());
+        for entry in op.entries {
+            match entry {
+                ManpowerEntry::Unidentified { ordinal, reason } => {
                     let key = self.lane(
                         faction,
                         Kind::ManpowerDiagnostic,
-                        &format!("country:{}", row.ordinal),
+                        &format!("country:{ordinal}"),
                         "",
                         None,
-                        (row.ordinal, 0),
+                        (ordinal, 0),
                     );
                     diagnostics.insert(key);
-                    self.choice(
-                        key,
-                        frame.hour,
-                        Choice::unknown(format!(
-                            "Faction manpower entry {} country {} identity is unavailable",
-                            row.ordinal, row.country
-                        )),
-                        starts,
-                    );
-                    failure = Some("Faction manpower country identity is unavailable".into());
-                    continue;
-                };
-                let key = self.lane(
-                    faction,
-                    Kind::Manpower,
-                    &format!("{}:{identity}", row.ordinal),
-                    &tag,
+                    self.choice(key, hour, Choice::unknown(reason), starts);
+                    keys.push(None);
+                }
+                ManpowerEntry::Member {
+                    ordinal,
+                    identity,
+                    tag,
                     holder,
-                    (row.ordinal, 0),
-                );
-                now.insert(key);
-                self.value(key, frame.hour, row.value as i128, starts);
+                    value,
+                } => {
+                    let key = self.lane(
+                        faction,
+                        Kind::Manpower,
+                        &identity,
+                        &tag,
+                        holder,
+                        (ordinal, 0),
+                    );
+                    now.insert(key);
+                    self.value(key, hour, i128::from(value), starts);
+                    keys.push(Some(key));
+                }
             }
-        } else {
-            self.value(total_key, frame.hour, NULL, starts);
         }
         let key = self.lane(faction, Kind::ManpowerDiagnostic, "pool", "", None, (0, 0));
         diagnostics.insert(key);
         self.choice(
             key,
-            frame.hour,
-            failure
+            hour,
+            op.failure
                 .clone()
                 .map_or_else(Choice::default, Choice::unknown),
             starts,
@@ -1593,7 +1121,7 @@ impl Prepared {
         self.finish_group(
             group_key(faction, Kind::ManpowerDiagnostic),
             diagnostics,
-            frame.hour,
+            hour,
             None,
             true,
             starts,
@@ -1601,126 +1129,36 @@ impl Prepared {
         self.finish_group(
             group_key(faction, Kind::Manpower),
             now,
-            frame.hour,
-            failure.as_deref(),
+            hour,
+            op.failure.as_deref(),
             false,
             starts,
         );
+        self.manpower_keys.insert(faction, (total_key, keys));
     }
-    /// Factions whose goal lists may differ from the hour before; None for all.
-    fn goal_owners(
-        &self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        continues: bool,
-    ) -> Option<BTreeSet<u64>> {
-        if changes.rows_changed[TableId::Factions.index()] {
-            return None;
-        }
-        let entries = self.dirty::<tables::FactionGoalEntries>(
-            frame,
-            changes,
-            TableId::FactionGoalEntries,
-            continues,
-        )?;
-        let status = self.dirty::<tables::FactionGoalStatus>(
-            frame,
-            changes,
-            TableId::FactionGoalStatus,
-            continues,
-        )?;
-        Some(
-            entries
-                .into_iter()
-                .map(|key| (key >> 40) as u64)
-                .chain(status.into_iter().map(|key| key as u64))
-                .collect(),
-        )
-    }
-    fn goal_labels(
-        &mut self,
-        frame: &DecodedFrame,
-        faction: u64,
-        cat: Option<&catalogue::Catalogue>,
-        tokens: &[Option<u32>],
-    ) -> Vec<GoalLabel> {
-        self.goal_inputs.remove(&faction);
-        let mut expands = false;
-        if let Some(cat) = cat {
-            for token in tokens.iter().flatten() {
-                expands |= self.goal_expands(frame, *token, cat);
-            }
-        }
-        if expands {
-            let (labels, inputs) = reuse::capture(frame, || {
-                faction_details::goal_labels(frame, faction, cat, tokens.iter().copied())
-            });
-            self.goal_inputs.insert(faction, inputs);
-            return labels;
-        }
-        let missing: BTreeSet<Option<u32>> = tokens
-            .iter()
-            .filter(|token| !self.goal_labels.contains_key(token))
-            .copied()
-            .collect();
-        if !missing.is_empty() {
-            let labels = faction_details::goal_labels(frame, faction, cat, missing.iter().copied());
-            self.goal_labels.extend(missing.into_iter().zip(labels));
-        }
-        tokens
-            .iter()
-            .map(|token| self.goal_labels[token].clone())
-            .collect()
-    }
-    fn goals(
-        &mut self,
-        frame: &DecodedFrame,
-        faction: u64,
-        absent: bool,
-        cat: Option<&catalogue::Catalogue>,
-        starts: bool,
-    ) {
+    fn goals(&mut self, hour: i32, faction: u64, op: GoalsOp, starts: bool) {
         let key = self.lane(faction, Kind::GoalList, "", "", None, (0, 0));
         let mut list = GoalList {
-            absent,
+            absent: op.absent,
+            reason: op.reason,
             ..Default::default()
         };
         let mut progress = Vec::new();
-        let held = if absent {
-            None
-        } else {
-            match faction_details::held_goals(frame, faction) {
-                Ok(held) => Some(held),
-                Err(why) => {
-                    list.reason = Some(why.to_string());
-                    None
+        for entry in op.entries {
+            let label = self.goal_pages.label(faction, entry.label);
+            match entry.kind {
+                0 => {
+                    list.goals.push((entry.ordinal, label, entry.status));
+                    progress.push((entry.ordinal, entry.progress));
                 }
-            }
-        };
-        match held {
-            None => {
-                self.goal_inputs.remove(&faction);
-            }
-            Some(held) => {
-                let rows: Vec<_> = held.entries.iter().filter(|row| row.kind <= 2).collect();
-                let tokens: Vec<_> = rows.iter().map(|row| row.token).collect();
-                let labels = self.goal_labels(frame, faction, cat, &tokens);
-                for (row, label) in rows.into_iter().zip(labels) {
-                    let label = self.goal_pages.label(faction, label);
-                    match row.kind {
-                        0 => {
-                            list.goals.push((row.ordinal, label, row.status));
-                            progress.push((row.ordinal, row.progress_raw));
-                        }
-                        1 => list.completed.push(label),
-                        _ => list.cancelled.push(label),
-                    }
-                }
+                1 => list.completed.push(label),
+                _ => list.cancelled.push(label),
             }
         }
         let value = self.goal_pages.list(faction, list);
-        self.value(key, frame.hour, value as i128, starts);
+        self.value(key, hour, value as i128, starts);
         let mut now = BTreeSet::new();
+        let mut keys = Vec::with_capacity(progress.len());
         for (ordinal, raw) in progress {
             let key = self.lane(
                 faction,
@@ -1731,16 +1169,18 @@ impl Prepared {
                 (ordinal, 0),
             );
             now.insert(key);
-            self.value(key, frame.hour, i128::from(raw), starts);
+            self.value(key, hour, i128::from(raw), starts);
+            keys.push((ordinal, key));
         }
         self.finish_group(
             group_key(faction, Kind::GoalProgress),
             now,
-            frame.hour,
+            hour,
             None,
             false,
             starts,
         );
+        self.progress_keys.insert(faction, keys);
     }
     pub fn flush(
         &mut self,
@@ -1761,12 +1201,6 @@ impl Prepared {
     }
 }
 
-/// The hour's complete faction roster does not list `faction`.
-fn goal_absent(frame: &DecodedFrame, faction: u64) -> bool {
-    frame
-        .complete::<tables::Factions>()
-        .is_ok_and(|rows| !rows.iter().any(|row| row.id == faction))
-}
 fn spans(runs: &[series::Run], value: i128) -> Vec<HourSpan> {
     let mut result: Vec<HourSpan> = Vec::new();
     for run in runs.iter().filter(|run| run.value == value) {

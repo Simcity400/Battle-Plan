@@ -105,7 +105,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__pinnedCountries.clock; export const usePlaybackMotion = () => 24;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({revision: 0,
       labelAt: hour => tag => ({known: true, name: tag + '@' + hour, flag: 'flag:' + tag + '@' + hour})});
-      export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});`,
+      export const flagReadMetadata = () => ({});`,
     '/dashboard/DatedCountryChip.tsx': 'export default props => {globalThis.__pinnedCountries.header = props; return null;};',
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({campaigns: {}});',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({name: tag => tag, color: () => [20, 50, 80], flag() {}, flagPending() {}, flagReason() {}, revision: 0});`,

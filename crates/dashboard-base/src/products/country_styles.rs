@@ -134,8 +134,8 @@ pub struct CountryFactsParams {
     pub branch_id: String,
 }
 
-/// Every country's style ([`CountryStyle`]) at every hour preparation read, as runs, so an
-/// hour is looked up rather than asked for. An hour no `known` span holds is `country-styles`'.
+/// Every country's style ([`CountryStyle`]) and flag at every hour preparation read, as runs, so
+/// an hour is looked up rather than asked for. An hour no `known` span holds is `country-styles`'.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactsReply {
@@ -146,6 +146,8 @@ pub struct CountryFactsReply {
     pub names: Vec<String>,
     /// Why part of a style is missing, each once; a run holds its index.
     pub reasons: Vec<String>,
+    /// Flag choices, each once; a run holds its index.
+    pub flags: Vec<CountryFlagChoice>,
     pub countries: Vec<CountryFactRuns>,
     pub warnings: Vec<String>,
 }
@@ -154,10 +156,23 @@ pub struct CountryFactsReply {
 #[serde(rename_all = "camelCase")]
 pub struct CountryFactRuns {
     pub tag: String,
-    /// `[hour, name, colour, reason]` from `hour` until the next run: the name's index in
-    /// `names`, the colour as `0xRRGGBB` and the reason's index in `reasons`, each -1 when
-    /// there is none. A tag that is not a country has a run with no name or colour and its reason.
-    pub runs: Vec<[i32; 4]>,
+    /// `[hour, name, colour, reason, flag]` from `hour` until the next run: the name's index in
+    /// `names`, the colour as `0xRRGGBB`, the reason's index in `reasons` and the flag choice's
+    /// index in `flags`, each -1 when there is none. A tag that is not a country has a run with
+    /// no name, colour or flag and its reason.
+    pub runs: Vec<[i32; 5]>,
+}
+
+/// What a country's flag is drawn from: the file key each of the game's flag atlases resolves
+/// its candidates to in the recorded mod stack, as preparation chose it. The atlases are the
+/// normal (`gfx/flags/`), medium and small ones, in that order.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountryFlagChoice {
+    /// Each atlas's key; null where no candidate gives it a file it draws.
+    pub keys: [Option<String>; 3],
+    /// Why each atlas has no key, or what was refused on the way to its key; null when nothing.
+    pub reasons: [Option<String>; 3],
 }
 
 impl HourStyles {
@@ -182,6 +197,7 @@ impl Product for CountryStyles {
             CountryStyleReply::decl(),
             CountryFactsParams::decl(),
             CountryFactRuns::decl(),
+            CountryFlagChoice::decl(),
             CountryFactsReply::decl(),
         ]
     }

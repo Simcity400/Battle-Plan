@@ -85,6 +85,271 @@ pub(crate) struct Fact {
 /// A prepared fact's address: its stream key and ordinal.
 pub(crate) type FactRef = (u64, u64);
 
+/// A fact's stream key: its kind, and whether its read came after its date.
+fn fact_key(kind: EventFeedKind, hour: i32, read_hour: i32) -> u64 {
+    (kind as u64) | (u64::from(read_hour > hour) << 63)
+}
+
+/// Where an encoded occurrence names the fact it continues, written null until publication.
+const OPENER: &[u8] = b",\"opener\":";
+
+/// A fact encoded before its publication: the bytes before its occurrence's opener and those
+/// after, which publication joins with the opener it links.
+pub(super) struct Draft {
+    hour: i32,
+    read_hour: i32,
+    kind: EventFeedKind,
+    occurrence: Option<Occurrence>,
+    head: Vec<u8>,
+    /// A roster rebuild's script, written into `head` at its offset once its reduction is known.
+    roster: Option<(usize, Box<script_effects::Inputs>)>,
+    tail: Vec<u8>,
+    /// What another thread writes of it ([`Self::write`]).
+    later: Option<Later>,
+}
+
+/// What a draft leaves to be written when its fact's bytes are: a roster rebuild's reduction,
+/// or a whole retained observation.
+pub(super) enum Later {
+    Roster(Option<Box<decision_roster::Captured>>),
+    Retained(Box<native::retained::Observed>),
+}
+
+impl Draft {
+    /// `fact` as serde writes it, but for the opener and, when `roster`, the script.
+    pub(super) fn new(fact: Fact, roster: bool) -> io::Result<Self> {
+        let Fact {
+            row,
+            nuke_type,
+            script,
+            occurrence,
+            item,
+        } = fact;
+        let mut head = b"{\"row\":".to_vec();
+        serde_json::to_writer(&mut head, &row)?;
+        head.extend_from_slice(b",\"nuke_type\":");
+        serde_json::to_writer(&mut head, &nuke_type)?;
+        let mut held = None;
+        if let Some(script) = script {
+            head.extend_from_slice(b",\"script\":");
+            if roster {
+                held = Some((head.len(), Box::new(script)));
+            } else {
+                serde_json::to_writer(&mut head, &script)?;
+            }
+        }
+        let mut tail = Vec::new();
+        if let Some(occurrence) = &occurrence {
+            head.extend_from_slice(b",\"occurrence\":");
+            let start = head.len();
+            serde_json::to_writer(&mut head, occurrence)?;
+            let opener = head[start..]
+                .windows(OPENER.len() + 4)
+                .rposition(|bytes| bytes.starts_with(OPENER) && bytes.ends_with(b"null"))
+                .ok_or_else(|| crate::invalid("An encoded occurrence has no opener"))?
+                + start
+                + OPENER.len();
+            tail = head.split_off(opener + 4);
+            head.truncate(opener);
+        }
+        let end = if occurrence.is_some() {
+            &mut tail
+        } else {
+            &mut head
+        };
+        if let Some(item) = &item {
+            end.extend_from_slice(b",\"item\":");
+            serde_json::to_writer(&mut *end, item)?;
+        }
+        end.push(b'}');
+        Ok(Self {
+            hour: row.hour,
+            read_hour: row.read_hour,
+            kind: row.kind,
+            occurrence,
+            head,
+            roster: held,
+            tail,
+            later: None,
+        })
+    }
+
+    /// A retained observation's fact, written whole by [`Self::write`].
+    pub(super) fn observed(observed: native::retained::Observed) -> Self {
+        let read_hour = observed.read_hour();
+        Self {
+            hour: read_hour,
+            read_hour,
+            kind: EventFeedKind::ScriptStateObserved,
+            occurrence: None,
+            head: Vec::new(),
+            roster: None,
+            tail: Vec::new(),
+            later: Some(Later::Retained(Box::new(observed))),
+        }
+    }
+
+    /// What orders the fact among others of the hour but for its tags and identity.
+    pub(super) fn order(&self) -> (i32, i32, EventFeedKind) {
+        (self.hour, self.read_hour, self.kind)
+    }
+
+    pub(super) fn read_hour(&self) -> i32 {
+        self.read_hour
+    }
+
+    /// The bytes it owns on the heap: its encoded parts, and what is left to write.
+    pub(super) fn heap(&self) -> usize {
+        let later = match &self.later {
+            Some(Later::Roster(Some(captured))) => captured.heap(),
+            Some(Later::Retained(observed)) => observed.heap(),
+            Some(Later::Roster(None)) | None => 0,
+        };
+        let occurrence = self.occurrence.as_ref().map_or(0, |occurrence| {
+            occurrence.token.as_ref().map_or(0, String::capacity)
+                + occurrence.costs.as_ref().map_or(0, |costs| {
+                    costs.capacity() * size_of::<ScriptCost>()
+                        + costs.iter().map(|cost| cost.amount.capacity()).sum::<usize>()
+                })
+        });
+        self.head.capacity()
+            + self.tail.capacity()
+            + occurrence
+            + self
+                .roster
+                .as_ref()
+                .map_or(0, |(_, inputs)| inputs.heap())
+            + later
+    }
+
+    /// The occurrence and hour of a roster rebuild whose script waits for its reduction.
+    pub(super) fn held_roster(&self) -> Option<(u64, i32)> {
+        self.roster.as_ref()?;
+        let sequence = self
+            .occurrence
+            .as_ref()
+            .map_or(0, |occurrence| occurrence.sequence);
+        Some((sequence, self.hour))
+    }
+
+    /// Leaves a held roster rebuild's script to [`Self::write`], with what its reduction
+    /// `captured`, its target countries' slots resolved.
+    pub(super) fn hold(&mut self, captured: Option<decision_roster::Captured>) {
+        self.later = Some(Later::Roster(captured.map(Box::new)));
+    }
+
+    /// The fact's bytes, with what it left to be written, on whichever thread writes them.
+    pub(super) fn write(mut self) -> io::Result<Vec<u8>> {
+        match self.later.take() {
+            Some(Later::Retained(observed)) => Self::new(
+                Fact {
+                    row: observed.row(true)?,
+                    nuke_type: None,
+                    script: None,
+                    occurrence: None,
+                    item: None,
+                },
+                false,
+            )?
+            .finish(),
+            Some(Later::Roster(captured)) => {
+                self.complete(|script, _, _| {
+                    script.roster = captured.map(|captured| captured.inputs());
+                })?;
+                self.finish()
+            }
+            None => self.finish(),
+        }
+    }
+
+    /// Writes a held roster rebuild's script, once `fill` gives it its roster and names from
+    /// the fact's hour and occurrence.
+    pub(super) fn complete(
+        &mut self,
+        fill: impl FnOnce(&mut script_effects::Inputs, i32, u64),
+    ) -> io::Result<()> {
+        let Some((at, mut script)) = self.roster.take() else {
+            return Ok(());
+        };
+        let sequence = self
+            .occurrence
+            .as_ref()
+            .map_or(0, |occurrence| occurrence.sequence);
+        fill(&mut *script, self.hour, sequence);
+        let rest = self.head.split_off(at);
+        serde_json::to_writer(&mut self.head, &*script)?;
+        self.head.extend_from_slice(&rest);
+        Ok(())
+    }
+
+    /// The fact's bytes, with the opener its occurrence joined.
+    fn finish(self) -> io::Result<Vec<u8>> {
+        if self.roster.is_some() || self.later.is_some() {
+            return Err(crate::invalid(
+                "A roster rebuild's script was never written",
+            ));
+        }
+        let mut bytes = self.head;
+        if let Some(occurrence) = &self.occurrence {
+            serde_json::to_writer(&mut bytes, &occurrence.opener)?;
+            bytes.extend_from_slice(&self.tail);
+        }
+        Ok(bytes)
+    }
+}
+
+impl Builder {
+    /// The hour's rows as facts in row order, encoded but for their openers, with their script
+    /// inputs named by `slot_at`; a charge is kept by the one execution of the read it is
+    /// proven for. A roster rebuild's script is held for its reduction unless `rosters`, all
+    /// but its roster named.
+    pub(super) fn drafts(
+        &mut self,
+        charges: &mut BTreeMap<ChargeKey, Vec<ScriptCost>>,
+        mut slot_at: impl FnMut(i32, replay_data::event_feed_rows::EventFeedCountry) -> Option<u32>,
+        rosters: bool,
+    ) -> io::Result<Vec<Draft>> {
+        self.feed.rows.sort_by(row_order);
+        // An execution shares its charge key with no other of this read, or
+        // the charge stays unattributed.
+        let mut executions = BTreeMap::<ChargeKey, u32>::new();
+        for row in &self.feed.rows {
+            if let Some(key) = self
+                .occurrences
+                .get(&row.id)
+                .and_then(|occurrence| charge_key(row, occurrence))
+            {
+                *executions.entry(key).or_default() += 1;
+            }
+        }
+        let rows: Vec<EventFeedRow> = self.feed.rows.drain(..).collect();
+        let mut drafts = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut occurrence = self.occurrences.remove(&row.id);
+            if let Some(occurrence) = &mut occurrence
+                && let Some(charge) = charge_key(&row, occurrence)
+                && executions.get(&charge) == Some(&1)
+            {
+                occurrence.costs = charges.remove(&charge);
+            }
+            let held = !rosters && row.kind == EventFeedKind::DecisionRosterRebuilt;
+            let script = self.script_inputs.remove(&row.id).map(|mut inputs| {
+                inputs.resolve(|country| slot_at(row.hour, country));
+                inputs
+            });
+            let fact = Fact {
+                item: item_of(&self.feed.items, &row)?,
+                occurrence,
+                script,
+                row,
+                nuke_type: None,
+            };
+            drafts.push(Draft::new(fact, held)?);
+        }
+        Ok(drafts)
+    }
+}
+
 /// What a continuing occurrence is matched by. A choice continues the
 /// dispatch of the same world, native event, instance and receiving country
 /// (the dispatch's target, the choosing command's actor);
@@ -283,7 +548,7 @@ impl Links {
 }
 
 /// Charges join by hour, published country link, token and selection/timeout.
-type ChargeKey = (i32, u32, String, bool);
+pub(super) type ChargeKey = (i32, u32, String, bool);
 
 fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> {
     let timeout = match row.kind {
@@ -306,13 +571,21 @@ fn charge_key(row: &EventFeedRow, occurrence: &Occurrence) -> Option<ChargeKey> 
 /// Anything else proves nothing, so its execution keeps no cost; a currency
 /// with no attributed change is not listed.
 pub(crate) fn charges(frame: &DecodedFrame) -> BTreeMap<ChargeKey, Vec<ScriptCost>> {
-    use replay_data::rows::{PoliticsCaptureCoverageRow, PowerAction, PowerCause, PowerCurrency};
     let (Ok(changes), Ok(coverage)) = (
         frame.complete::<tables::CountryPowerChanges>(),
         frame.complete::<tables::PoliticsCaptureCoverage>(),
     ) else {
         return BTreeMap::new();
     };
+    charges_of(changes, coverage)
+}
+
+/// [`charges`] of a read's complete power changes and capture coverage.
+pub(crate) fn charges_of(
+    changes: &[replay_data::rows::CountryPowerChangeRow],
+    coverage: &[replay_data::rows::PoliticsCaptureCoverageRow],
+) -> BTreeMap<ChargeKey, Vec<ScriptCost>> {
+    use replay_data::rows::{PoliticsCaptureCoverageRow, PowerAction, PowerCause, PowerCurrency};
     let streams = PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::CP;
     let mut sums = BTreeMap::<ChargeKey, BTreeMap<ScriptCurrency, i128>>::new();
     for row in changes {
@@ -449,16 +722,54 @@ impl KeptFrames {
     }
 }
 
+/// The strike types' native ordinals, each its own operand: the type is not an item identity,
+/// and its family names it at query time.
+pub(super) fn strike_types() -> BTreeMap<u32, u32> {
+    country_nukes::native_type_info(&country_nukes::ScannedNukes::default(), |_| None)
+        .into_iter()
+        .map(|info| (info.ordinal, info.ordinal))
+        .collect()
+}
+
+/// The facts of a read's `strikes`, named by `tag_at`, in row order.
+pub(super) fn strike_facts(
+    read_hour: i32,
+    strikes: &[replay_data::rows::NuclearStrikeRow],
+    mut tag_at: impl FnMut(i32, replay_data::event_feed_rows::EventFeedCountry) -> Option<String>,
+    builder: &mut Builder,
+    types: &BTreeMap<u32, u32>,
+) -> Vec<Fact> {
+    let mut facts = Vec::new();
+    for strike in strikes {
+        nuclear::project(read_hour, strike, &mut tag_at, builder, types);
+        for mut row in builder.feed.rows.drain(..) {
+            row.item = None;
+            facts.push(Fact {
+                row,
+                nuke_type: Some(strike.nuke_type),
+                script: None,
+                occurrence: None,
+                item: None,
+            });
+        }
+    }
+    facts.sort_by(|a, b| row_order(&a.row, &b.row));
+    facts
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Observer {
-    native: native::Projection,
-    diplomacy: diplomacy::Observer,
-    events: Accumulator,
+    pub(super) native: native::Projection,
+    pub(super) diplomacy: diplomacy::Observer,
+    pub(super) events: Accumulator,
     late: crate::prepared::series::LateIndex,
-    diagnostics: Builder,
+    pub(super) diagnostics: Builder,
     observed: BTreeSet<String>,
     #[serde(default)]
     links: Links,
+    /// Facts published but not yet written ([`Draft::write`]), by key.
+    #[serde(skip)]
+    held: BTreeMap<u64, u64>,
 }
 impl Default for Observer {
     fn default() -> Self {
@@ -470,6 +781,7 @@ impl Default for Observer {
             diagnostics: Builder::new(0, 0),
             observed: BTreeSet::new(),
             links: Links::default(),
+            held: BTreeMap::new(),
         }
     }
 }
@@ -518,92 +830,121 @@ impl Observer {
                 1,
             );
         }
-        self.diagnostics.feed.rows.sort_by(row_order);
-        let mut charges = charges(frame);
-        // An execution shares its charge key with no other of this read, or
-        // the charge stays unattributed.
-        let mut executions = BTreeMap::<ChargeKey, u32>::new();
-        for row in &self.diagnostics.feed.rows {
-            if let Some(key) = self
-                .diagnostics
-                .occurrences
-                .get(&row.id)
-                .and_then(|occurrence| charge_key(row, occurrence))
-            {
-                *executions.entry(key).or_default() += 1;
-            }
+        let drafts = self.diagnostics.drafts(
+            &mut charges(frame),
+            |hour, country| identities.native_scope_slot(hour, country),
+            true,
+        )?;
+        if !self.publish(drafts, frame.hour, complete)?.is_empty() {
+            return Err(crate::invalid(
+                "The row path left a fact to be written later",
+            ));
         }
-        // Facts publish in row order; their joins follow the native order,
-        // so an edge continues the occurrence open when it ran.
-        let rows: Vec<EventFeedRow> = self.diagnostics.feed.rows.drain(..).collect();
-        let mut next = BTreeMap::<u64, u64>::new();
-        let at: Vec<FactRef> = rows
-            .iter()
-            .map(|row| {
-                let key = (row.kind as u64) | (u64::from(row.read_hour > row.hour) << 63);
-                let ordinal = next
-                    .entry(key)
-                    .or_insert_with(|| self.events.state(key).map_or(0, |state| state.events));
-                let at = (key, *ordinal);
-                *ordinal += 1;
-                at
-            })
-            .collect();
-        let mut occurrences: Vec<Option<Occurrence>> = rows
-            .iter()
-            .map(|row| self.diagnostics.occurrences.remove(&row.id))
-            .collect();
-        let mut native: Vec<usize> = (0..rows.len())
-            .filter(|&index| occurrences[index].is_some())
-            .collect();
-        native.sort_by_key(|&index| {
-            occurrences[index]
-                .as_ref()
-                .map(|occurrence| (occurrence.generation, occurrence.sequence))
-        });
-        self.links.observe_read(frame.hour, complete);
-        for index in native {
-            let row = &rows[index];
-            let Some(occurrence) = occurrences[index].as_mut() else {
-                continue;
-            };
-            if let Some(charge) = charge_key(row, occurrence)
-                && executions.get(&charge) == Some(&1)
-            {
-                occurrence.costs = charges.remove(&charge);
-            }
-            self.links.link(row.kind, occurrence, at[index]);
-        }
-        for ((row, occurrence), (key, ordinal)) in rows.into_iter().zip(occurrences).zip(at) {
-            self.late.insert(row.hour, row.read_hour, key, ordinal);
-            let item = item_of(&self.diagnostics.feed.items, &row)?;
-            self.events.event(
-                key,
-                row.read_hour,
-                &Fact {
-                    item,
-                    occurrence,
-                    script: self
-                        .diagnostics
-                        .script_inputs
-                        .remove(&row.id)
-                        .map(|mut inputs| {
-                            inputs
-                                .resolve(|country| identities.native_scope_slot(row.hour, country));
-                            inputs
-                        }),
-                    row,
-                    nuke_type: None,
-                },
-            )?;
-        }
-        self.diagnostics.war_ends.clear();
         let mut changes = country_groups::changes::Scan {
             moments: Vec::new(),
             observed: BTreeSet::new(),
             unavailable: Vec::new(),
         };
         self.diplomacy.observe(frame, replay.format, &mut changes)?;
+        self.publish_diplomacy(changes)?;
+        let strikes = nuclear::read(frame, &mut self.diagnostics, cancelled)?;
+        let types = strike_types();
+        for strike in strike_facts(frame.hour, &strikes, tag_at, &mut self.diagnostics, &types) {
+            self.publish_one(Draft::new(strike, false)?)?;
+        }
+        self.end_hour();
+        Ok(())
+    }
+    /// The hour's native facts, published in row order once each is joined, in native order,
+    /// to the occurrence it continues. Those with bytes still to be written, and every later
+    /// one of their keys, are held for [`Self::written`], in order, with their keys.
+    pub(super) fn publish(
+        &mut self,
+        mut drafts: Vec<Draft>,
+        hour: i32,
+        complete: bool,
+    ) -> io::Result<Vec<(u64, Draft)>> {
+        // Facts publish in row order; their joins follow the native order,
+        // so an edge continues the occurrence open when it ran.
+        let mut next = BTreeMap::<u64, u64>::new();
+        let at: Vec<FactRef> = drafts
+            .iter()
+            .map(|draft| {
+                let key = fact_key(draft.kind, draft.hour, draft.read_hour);
+                let ordinal = next.entry(key).or_insert_with(|| self.ordinal(key));
+                let at = (key, *ordinal);
+                *ordinal += 1;
+                at
+            })
+            .collect();
+        let mut native: Vec<usize> = (0..drafts.len())
+            .filter(|&index| drafts[index].occurrence.is_some())
+            .collect();
+        native.sort_by_key(|&index| {
+            drafts[index]
+                .occurrence
+                .as_ref()
+                .map(|occurrence| (occurrence.generation, occurrence.sequence))
+        });
+        self.links.observe_read(hour, complete);
+        for index in native {
+            let draft = &mut drafts[index];
+            if let Some(occurrence) = &mut draft.occurrence {
+                self.links.link(draft.kind, occurrence, at[index]);
+            }
+        }
+        let mut later = Vec::new();
+        for (draft, (key, ordinal)) in drafts.into_iter().zip(at) {
+            self.late.insert(draft.hour, draft.read_hour, key, ordinal);
+            if draft.later.is_some() || self.held.contains_key(&key) {
+                *self.held.entry(key).or_default() += 1;
+                later.push((key, draft));
+                continue;
+            }
+            let read_hour = draft.read_hour;
+            self.events.event_raw(key, read_hour, draft.finish()?)?;
+        }
+        self.diagnostics.war_ends.clear();
+        Ok(later)
+    }
+    /// The next ordinal of `key`, after the facts it holds.
+    fn ordinal(&self, key: u64) -> u64 {
+        self.events.state(key).map_or(0, |state| state.events)
+            + self.held.get(&key).copied().unwrap_or(0)
+    }
+    /// The bytes of the oldest fact `key` holds, written ([`Self::publish`]).
+    pub(super) fn written(&mut self, key: u64, read_hour: i32, bytes: Vec<u8>) -> io::Result<()> {
+        match self.held.get_mut(&key) {
+            Some(held) if *held > 1 => *held -= 1,
+            Some(_) => {
+                self.held.remove(&key);
+            }
+            None => {
+                return Err(crate::invalid(
+                    "An event-feed fact was written but never held",
+                ));
+            }
+        }
+        self.events.event_raw(key, read_hour, bytes)
+    }
+    /// A fact after the hour's native ones, at its key's next ordinal.
+    pub(super) fn publish_one(&mut self, draft: Draft) -> io::Result<()> {
+        let key = fact_key(draft.kind, draft.hour, draft.read_hour);
+        if self.held.contains_key(&key) {
+            return Err(crate::invalid(
+                "An event-feed fact would pass one held before it",
+            ));
+        }
+        let ordinal = self.ordinal(key);
+        self.late.insert(draft.hour, draft.read_hour, key, ordinal);
+        let read_hour = draft.read_hour;
+        self.events.event_raw(key, read_hour, draft.finish()?)
+    }
+    /// The hour's diplomacy observation: the tables it read, its refusals and its moments.
+    pub(super) fn publish_diplomacy(
+        &mut self,
+        changes: country_groups::changes::Scan,
+    ) -> io::Result<()> {
         self.observed.extend(
             changes
                 .observed
@@ -625,63 +966,25 @@ impl Observer {
             group_row(&mut self.diagnostics, &change, None)?;
         }
         self.diagnostics.feed.rows.sort_by(row_order);
-        for mut row in self.diagnostics.feed.rows.drain(..) {
+        let rows: Vec<EventFeedRow> = self.diagnostics.feed.rows.drain(..).collect();
+        for mut row in rows {
             row.id.clear(); // The shared reader's ordinal owns non-native row identities.
-            let key = (row.kind as u64) | (u64::from(row.read_hour > row.hour) << 63);
-            let ordinal = self.events.state(key).map_or(0, |state| state.events);
-            self.late.insert(row.hour, row.read_hour, key, ordinal);
             let item = item_of(&self.diagnostics.feed.items, &row)?;
-            self.events.event(
-                key,
-                row.read_hour,
-                &Fact {
-                    row,
-                    nuke_type: None,
-                    script: None,
-                    occurrence: None,
-                    item,
-                },
-            )?;
+            let fact = Fact {
+                nuke_type: None,
+                script: None,
+                occurrence: None,
+                item,
+                row,
+            };
+            self.publish_one(Draft::new(fact, false)?)?;
         }
-        let mut strikes = Vec::new();
-        let type_operands =
-            country_nukes::native_type_info(&country_nukes::ScannedNukes::default(), |_| None)
-                .into_iter()
-                .map(|info| (info.ordinal, info.ordinal))
-                .collect();
-        for strike in nuclear::read(frame, &mut self.diagnostics, cancelled)? {
-            // The type is an operand, not an item identity; its family names it at query time.
-            nuclear::project(
-                frame.hour,
-                &strike,
-                tag_at,
-                &mut self.diagnostics,
-                &type_operands,
-            );
-            for mut row in self.diagnostics.feed.rows.drain(..) {
-                row.item = None;
-                strikes.push(Fact {
-                    row,
-                    nuke_type: Some(strike.nuke_type),
-                    script: None,
-                    occurrence: None,
-                    item: None,
-                });
-            }
-        }
-        strikes.sort_by(|a, b| row_order(&a.row, &b.row));
-        for strike in strikes {
-            let key = (strike.row.kind as u64)
-                | (u64::from(strike.row.read_hour > strike.row.hour) << 63);
-            let ordinal = self.events.state(key).map_or(0, |state| state.events);
-            self.late
-                .insert(strike.row.hour, strike.row.read_hour, key, ordinal);
-            self.events.event(key, strike.row.read_hour, &strike)?;
-        }
-        // Every row of the hour keeps its item: none is named again.
+        Ok(())
+    }
+    /// Every row of the hour keeps its item: none is named again.
+    pub(super) fn end_hour(&mut self) {
         self.diagnostics.feed.items.clear();
         self.diagnostics.item_keys.clear();
-        Ok(())
     }
     pub(crate) fn bytes(&self) -> usize {
         self.events.bytes()

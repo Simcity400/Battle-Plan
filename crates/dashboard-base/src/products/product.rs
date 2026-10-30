@@ -81,6 +81,9 @@ pub trait Product: 'static {
     /// Whether a reply depends on this machine (its displays, settings outside the content, its
     /// GPU), which no kept reply's identity captures: such a reply is never kept on disk.
     const MACHINE_DEPENDENT: bool = false;
+    /// How its served replies are checked between two preparations of a
+    /// recording; none checks them by the generic plan.
+    const SERVED: Option<&'static crate::prepared::served::Plan> = None;
     type Params: DeserializeOwned + TS + 'static;
     type Reply: Serialize + TS + ReplyWarnings + 'static;
 

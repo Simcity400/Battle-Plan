@@ -167,3 +167,47 @@ pub fn row<R: RowCodec>(state: &State, table: TableId, slot: u32, format: u16) -
         crate::columnar_frames::wire(held, state.dictionary(), slot, column, format)
     })
 }
+
+/// The live `slots` of `table`, built from their columns and sorted by key.
+pub fn rows_at(
+    state: &State,
+    table: TableId,
+    slots: &[u32],
+    format: u16,
+) -> io::Result<crate::rows::TableRows> {
+    let held = self::table(state, table)?;
+    let mut keyed = slots
+        .iter()
+        .map(|&slot| {
+            held.key(slot)
+                .map(|key| (key, slot))
+                .ok_or_else(|| invalid(format!("{table:?} slot {slot} holds no row")))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    keyed.sort_unstable();
+    keyed.dedup();
+    let keys: Vec<_> = keyed.iter().map(|&(key, _)| key).collect();
+    table.rows_from_wire(&keys, &mut |row, column| {
+        crate::columnar_frames::wire(held, state.dictionary(), keyed[row].1, column, format)
+    })
+}
+
+/// Sets, in `rows` (`table`'s rows by key), the fields each of `patches` names from its
+/// columns, as [`row`] builds them: a row's key, the live slot holding it and the fields as
+/// change-mask bits, in key order.
+pub fn patch(
+    state: &State,
+    table: TableId,
+    rows: &mut crate::rows::TableRows,
+    patches: &[(u128, u32, u64)],
+    format: u16,
+) -> io::Result<()> {
+    let held = self::table(state, table)?;
+    let fields: Vec<_> = patches
+        .iter()
+        .map(|&(key, _, fields)| (key, fields))
+        .collect();
+    rows.patch_from_wire(&fields, &mut |at, column| {
+        crate::columnar_frames::wire(held, state.dictionary(), patches[at].1, column, format)
+    })
+}

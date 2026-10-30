@@ -13,7 +13,11 @@
 //! nor before it holds the share of the walkers' budget its reads need, and none but that
 //! first starts while the output it is taken to need, beside what is held and what walks
 //! reserved, would overdraw the output budget, nor while a family's slots are spent. No task
-//! waits for credit: one that cannot have it is not handed out.
+//! waits for credit: one that cannot have it is not handed out. A walk's operators share a
+//! [`World`] built for the walk and advanced once an hour before them ([`run_in`]). A family
+//! goes on in a branch from where an earlier run of the recording, as it stood then, left it:
+//! no walk takes it to the segments before, and its operator takes up there what it carried
+//! past the last segment that run held ([`Lane::resumes`], [`Chunk::carry`]).
 //!
 //! What fails a family is its own ([`Outcome`]). A refusal of the recorded data
 //! (`InvalidData`) ends its branch at that hour, as the row path's families do; any other
@@ -30,11 +34,11 @@ use crate::{
     columnar_frames::{Budget, Damage, DamageScope, Recording, Segment, Walker, schema},
     rows::TableId,
 };
-use replay_columnar::manifest::Manifest;
-pub use replay_columnar::walk::State;
+pub use replay_columnar::{manifest::Manifest, walk::State};
 use std::{
     any::Any,
     cell::Cell,
+    collections::BTreeMap,
     fmt, io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
@@ -51,25 +55,45 @@ mod tests;
 
 pub use store::{Folder, Scratch, Spilled};
 
-use lane::{Context, Emitted, Erased, Reserved, Shared, Taken, Walking};
+use lane::{Context, Emitted, Erased, Kept, Reserved, Shared, Taken, Walking};
 use schedule::{Closing, Gone, Plan, Schedule, Status, Task};
 use store::{Parked, Store};
 
+/// What a walk's operators share, built for each walk ([`run_in`]) and advanced once an hour,
+/// before them, to the state the walker holds. It is a function of that state alone: an
+/// operator going on from the segment before meets a world built anew, never one parked. It is
+/// the run's own: its failure stops the run, but for damage it names, which loses the segment
+/// to every family walking it.
+pub trait World {
+    fn hour(&mut self, state: &State, manifest: &Manifest<'_>) -> io::Result<()>;
+}
+
+impl World for () {
+    fn hour(&mut self, _: &State, _: &Manifest<'_>) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// One hour of a segment's walk.
-pub struct Hour<'a> {
+pub struct Hour<'a, W = ()> {
     pub branch: u64,
     pub hour: i32,
     pub run: u32,
     /// The hour's ordinal in its run.
     pub ordinal: u32,
-    /// The walker holds what its restart restored, or empty tables at its run's start, and
-    /// this hour: nothing of the hours before. False at the first hour of a segment whose
-    /// operator goes on from the segment before in its run.
+    /// The walker holds what its restart restored, or empty tables at its run's start, or,
+    /// where a family going on past its segment's first hour starts anew, what a restart
+    /// before the hour would ([`Resume`]), and this hour: nothing of the hours before. False at
+    /// the first hour of a segment whose operator goes on from the segment before in its run,
+    /// and where a family goes on from its carry.
     pub starts: bool,
-    /// The hour starts a segment, a unit the recording can restart at.
+    /// The hour starts a segment, a unit the recording can restart at, or is the first a family
+    /// going on past its segment's first hour walks ([`Resume`]).
     pub opens: bool,
     pub state: &'a State,
     pub manifest: &'a Manifest<'a>,
+    /// The walk's world at this hour.
+    pub world: &'a W,
 }
 
 /// Where a walk starts.
@@ -130,7 +154,7 @@ impl Item for () {
 }
 
 /// A family's work on a segment, and on the segments after it in its branch that it cannot
-/// start.
+/// start, reading the walk's world `W`.
 ///
 /// An `InvalidData` error from [`Self::start`], [`Self::cross`], [`Self::hour`] or
 /// [`Self::end`] refuses the branch's data from that hour on: what the operator pushed before
@@ -138,7 +162,7 @@ impl Item for () {
 /// fail. An error naming recorded damage ([`Damage`]) loses the segment; one [`fatal`] made
 /// stops the run; any other error, or a panic, ends the family. Its operators are never used
 /// again after any of them.
-pub trait Operator: Send {
+pub trait Operator<W = ()>: Send {
     type Output: Item;
 
     /// Whether it can start at `start`. When it cannot, the operator that walked the segment
@@ -163,7 +187,7 @@ pub trait Operator: Send {
         Ok(())
     }
 
-    fn hour(&mut self, hour: &Hour<'_>, out: &mut dyn Sink<Self::Output>) -> io::Result<()>;
+    fn hour(&mut self, hour: &Hour<'_, W>, out: &mut dyn Sink<Self::Output>) -> io::Result<()>;
 
     /// The segment's end, after its last hour; it may go on into the segment after.
     fn end(&mut self, out: &mut dyn Sink<Self::Output>) -> io::Result<()> {
@@ -202,6 +226,33 @@ pub struct Chunk<'a, T> {
     pub last: bool,
     /// On the segment's last chunk, why the family's walk of it ended short, when it did.
     pub ending: Option<&'a Ending>,
+    /// On the segment's last chunk, what the family's operator would hand on past it, which it
+    /// cannot start: saved past the last segment the recording holds of its branch, for a later
+    /// run of the recording grown to go on with ([`Resume::carry`]). None when it starts there
+    /// anew, and when the walk of the segment ended short.
+    pub carry: Option<Carry<'a>>,
+}
+
+/// What a family's operator would hand on past a segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Carry<'a> {
+    /// What [`Operator::save`] wrote of it.
+    Saved(&'a [u8]),
+    /// Not saved, as within its branch, or because its operator cannot: no later run goes on
+    /// from it.
+    Unsaved,
+}
+
+/// Where a family goes on in a branch whose hours before ordinal `ordinal` of run `run` reached
+/// its emit in an earlier run ([`Lane::resumes`]). Its operator starts there anew when it can,
+/// as at a restart when that is past its segment's first hour; else it takes up `carry`
+/// ([`Operator::load`]), what it would have handed on there ([`Chunk::carry`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Resume<'a> {
+    pub branch: u64,
+    pub run: u32,
+    pub ordinal: u32,
+    pub carry: Option<&'a [u8]>,
 }
 
 /// Why a family's segment reached its emit short.
@@ -377,15 +428,19 @@ fn unfatal(error: io::Error) -> Result<io::Error, io::Error> {
 /// segment's chunks in segment order, one call at a time. Operators and emits run as tasks
 /// of the run's workers, and must never wait for another task of the run: it may need
 /// their worker.
-pub struct Lane<'a> {
-    erased: Box<dyn Erased + 'a>,
+pub struct Lane<'a, W = ()> {
+    erased: Box<dyn Erased<W> + 'a>,
     /// The tables its operators read; None for every one.
     reads: Option<&'a [TableId]>,
+    /// The branches it has nothing left to do on, in ascending order.
+    passes: &'a [u64],
+    /// Where it goes on in branches an earlier run left, in ascending order of branch.
+    resumes: &'a [Resume<'a>],
     recovery: Recovery,
 }
 
-impl<'a> Lane<'a> {
-    pub fn new<O: Operator + 'a>(
+impl<'a, W: 'a> Lane<'a, W> {
+    pub fn new<O: Operator<W> + 'a>(
         name: &'a str,
         make: impl Fn(&Segment) -> io::Result<O> + Sync + 'a,
         emit: impl FnMut(Chunk<'_, O::Output>) -> io::Result<()> + Send + 'a,
@@ -393,6 +448,8 @@ impl<'a> Lane<'a> {
         Self {
             erased: Box::new(lane::Typed::new(name, Box::new(make), Box::new(emit))),
             reads: None,
+            passes: &[],
+            resumes: &[],
             recovery: Recovery::Ends,
         }
     }
@@ -408,6 +465,22 @@ impl<'a> Lane<'a> {
     /// What it does once it lost a segment of a branch; its branch ends there unless told.
     pub fn recovers(self, recovery: Recovery) -> Self {
         Self { recovery, ..self }
+    }
+
+    /// Its family has nothing left to do on `branches`, in ascending order: no walk takes it
+    /// there, and its emit is handed none of their segments.
+    pub fn passes(self, branches: &'a [u64]) -> Self {
+        Self {
+            passes: branches,
+            ..self
+        }
+    }
+
+    /// Its family goes on in each branch of `resumes`, in ascending order and none it passes,
+    /// from where an earlier run of the recording as it stood then left it: no walk takes it to
+    /// the segments before, and its emit is handed none of the hours before.
+    pub fn resumes(self, resumes: &'a [Resume<'a>]) -> Self {
+        Self { resumes, ..self }
     }
 
     /// Whether its operators read table `table`.
@@ -744,20 +817,20 @@ impl Drop for Unwinding<'_> {
 
 /// A segment's walk: the families it carries, each with the operator the walk before handed
 /// on, if any, and what it reserved of the output budget.
-struct Job<'r, 'c> {
+struct Job<'r, 'c, W> {
     at: usize,
     /// The segment its walk begins at, as its share was measured.
     from: usize,
-    lanes: Vec<(usize, Option<Box<dyn Walking + 'r>>)>,
+    lanes: Vec<(usize, Option<Box<dyn Walking<W> + 'r>>)>,
     /// The state holds the tables the walk of the segment before, of the same run, left.
     hot: bool,
     reserved: Reserved<'c>,
 }
 
 /// A family's operator in a walk: `cold` when it started at the walk's first hour.
-struct Attached<'r> {
+struct Attached<'r, W> {
     lane: usize,
-    operator: Box<dyn Walking + 'r>,
+    operator: Box<dyn Walking<W> + 'r>,
     cold: bool,
     /// Its walk of the segment began: it started, or crossed into its run.
     begun: bool,
@@ -765,11 +838,19 @@ struct Attached<'r> {
     seen: u32,
     /// It goes on into the segment after, which it cannot start.
     hands: bool,
+    /// The ordinal it joins the walk at, past the segment's first hour where its family goes on
+    /// there ([`Resume`]).
+    joins: u32,
+    /// Joining past the segment's first hour: what its family carries there, kept until the walk
+    /// holds the hour before, where it decides ([`Run::decide`]).
+    pending: Option<Option<Vec<u8>>>,
+    /// What it would hand on past the last segment of its branch, which it cannot start.
+    kept: Option<Kept>,
     fate: Option<Fate>,
 }
 
-impl<'r> Attached<'r> {
-    fn new(lane: usize, operator: Box<dyn Walking + 'r>, cold: bool) -> Self {
+impl<'r, W> Attached<'r, W> {
+    fn new(lane: usize, operator: Box<dyn Walking<W> + 'r>, cold: bool) -> Self {
         Self {
             lane,
             operator,
@@ -777,6 +858,9 @@ impl<'r> Attached<'r> {
             begun: false,
             seen: 0,
             hands: false,
+            joins: 0,
+            pending: None,
+            kept: None,
             fate: None,
         }
     }
@@ -865,27 +949,34 @@ enum Begun {
     Stopped,
 }
 
+/// Builds a walk's world for its segment and the lanes whose operators it visits.
+pub type Worlds<'w, W> = dyn Fn(&Segment, &[usize]) -> io::Result<W> + Sync + 'w;
+
 /// What a run's workers share.
-struct Run<'r, 'a> {
+struct Run<'r, 'a, W> {
     recording: &'r Recording,
     segments: &'r [Segment],
     plan: Plan,
-    lanes: &'r [Lane<'a>],
+    lanes: &'r [Lane<'a, W>],
+    worlds: &'r Worlds<'r, W>,
     signal: &'r Signal,
     /// The walkers' budget, the run's alone: no walker waits for it.
     budget: Arc<Budget>,
-    store: Store<'r>,
+    store: Store<'r, W>,
     /// What the families of walks given back after a panic did of their segment, by segment,
     /// for the walk of it handed out again.
-    resumed: Mutex<Vec<(usize, Attached<'r>)>>,
+    resumed: Mutex<Vec<(usize, Attached<'r, W>)>>,
+    /// Where each family going on in a branch an earlier run left goes on, by segment then
+    /// family: the ordinal it joins the walk at, and its carry.
+    joins: BTreeMap<(usize, usize), (u32, Option<&'a [u8]>)>,
     shared: Shared<'r>,
     #[cfg(test)]
     cancellation: &'r Cancellation,
 }
 
-impl<'r, 'a> Run<'r, 'a> {
-    fn erased(&self, lane: usize) -> &'r (dyn Erased + 'r) {
-        let lanes: &'r [Lane<'a>] = self.lanes;
+impl<'r, 'a, W: World> Run<'r, 'a, W> {
+    fn erased(&self, lane: usize) -> &'r (dyn Erased<W> + 'r) {
+        let lanes: &'r [Lane<'a, W>] = self.lanes;
         &*lanes[lane].erased
     }
 
@@ -1087,7 +1178,7 @@ impl<'r, 'a> Run<'r, 'a> {
         &self,
         at: usize,
         lane: usize,
-        operator: Box<dyn Walking + 'r>,
+        operator: Box<dyn Walking<W> + 'r>,
         bytes: usize,
     ) -> io::Result<()> {
         let mut out = self.store.park(at, lane, operator, bytes, self.lanes)?;
@@ -1124,7 +1215,7 @@ impl<'r, 'a> Run<'r, 'a> {
     }
 
     /// What is parked for `lane` of segment `at`, if anything.
-    fn parked(&self, at: usize, lane: usize) -> Result<Option<Parked<'r>>, Fault> {
+    fn parked(&self, at: usize, lane: usize) -> Result<Option<Parked<'r, W>>, Fault> {
         self.store
             .take(at, lane, &self.segments[at], self.erased(lane))
     }
@@ -1137,7 +1228,7 @@ impl<'r, 'a> Run<'r, 'a> {
         lane: usize,
         start: Start<'_>,
         leads: bool,
-    ) -> Result<Option<Box<dyn Walking + 'r>>, Fault> {
+    ) -> Result<Option<Box<dyn Walking<W> + 'r>>, Fault> {
         let erased = self.erased(lane);
         let operator = caught(Operation::Make, || erased.fresh(&self.segments[at]))?;
         if caught(Operation::Decide, || Ok(operator.starts_at(start)))? {
@@ -1153,6 +1244,76 @@ impl<'r, 'a> Run<'r, 'a> {
             ));
         }
         Ok(None)
+    }
+
+    /// The operator of `lane` for segment `at`, where its family goes on from ordinal `joins`
+    /// with `carry` ([`Resume`]): a new one when it can start there at `start`, else one taking
+    /// up its carry. One that can do neither fails: no segment before is walked for it. One
+    /// joining past the segment's first hour decides once the walk holds the hour before.
+    fn joined(
+        &self,
+        at: usize,
+        lane: usize,
+        (joins, carry): (u32, Option<&[u8]>),
+        start: Start<'_>,
+    ) -> Result<Attached<'r, W>, Fault> {
+        let segment = &self.segments[at];
+        let erased = self.erased(lane);
+        let mut operator = caught(Operation::Make, || erased.fresh(segment))?;
+        if joins > segment.first {
+            let kept = caught(Operation::Make, || {
+                carry.map(engine_allocation::copy_vec).transpose()
+            })?;
+            let mut attached = Attached::new(lane, operator, false);
+            attached.joins = joins;
+            attached.pending = Some(kept);
+            return Ok(attached);
+        }
+        let cold = caught(Operation::Decide, || Ok(operator.starts_at(start)))?;
+        if !cold {
+            let Some(carry) = carry else {
+                return Err(Fault::Error(
+                    Operation::Decide,
+                    invalid(format!(
+                        "{} cannot start segment {at}, where it goes on, and carries nothing there",
+                        erased.name()
+                    )),
+                ));
+            };
+            caught(Operation::Load, || operator.load(carry))?;
+        }
+        let mut attached = Attached::new(lane, operator, cold);
+        attached.joins = joins;
+        Ok(attached)
+    }
+
+    /// Decides for `attached`, once the walk holds in `state` the hour before it joins, whether
+    /// its operator starts anew there or takes up `carry`, what its family would have handed on
+    /// there. One that can do neither fails.
+    fn decide(
+        &self,
+        attached: &mut Attached<'r, W>,
+        carry: Option<Vec<u8>>,
+        state: &State,
+    ) -> Result<(), Fault> {
+        let operator = &mut attached.operator;
+        let cold = caught(Operation::Decide, || {
+            Ok(operator.starts_at(Start::Restart(state)))
+        })?;
+        if !cold {
+            let Some(carry) = carry else {
+                return Err(Fault::Error(
+                    Operation::Decide,
+                    invalid(format!(
+                        "{} cannot start where it goes on, and carries nothing there",
+                        self.erased(attached.lane).name()
+                    )),
+                ));
+            };
+            caught(Operation::Load, || operator.load(&carry))?;
+        }
+        attached.cold = cold;
+        Ok(())
     }
 
     /// Puts into `state` what segment `at`'s first hour applies to, from `from`, the segment
@@ -1201,7 +1362,7 @@ impl<'r, 'a> Run<'r, 'a> {
         &self,
         at: usize,
         from: usize,
-        lanes: Vec<(usize, Option<Box<dyn Walking + 'r>>)>,
+        lanes: Vec<(usize, Option<Box<dyn Walking<W> + 'r>>)>,
     ) -> io::Result<()> {
         let mut held = engine_allocation::vec(lanes.len())?;
         // Families failing to park their operator, and whether the walk holds the segment.
@@ -1258,7 +1419,7 @@ impl<'r, 'a> Run<'r, 'a> {
         &self,
         at: usize,
         from: usize,
-        mut walking: Vec<Attached<'r>>,
+        mut walking: Vec<Attached<'r, W>>,
         mut failures: Vec<(usize, Failure)>,
         (derived, rewalked): (usize, usize),
     ) -> io::Result<()> {
@@ -1298,8 +1459,8 @@ impl<'r, 'a> Run<'r, 'a> {
     fn resumed(
         &self,
         at: usize,
-        lanes: &[(usize, Option<Box<dyn Walking + 'r>>)],
-    ) -> io::Result<Vec<Attached<'r>>> {
+        lanes: &[(usize, Option<Box<dyn Walking<W> + 'r>>)],
+    ) -> io::Result<Vec<Attached<'r, W>>> {
         // Before the lock, so what it took drops after it, should taking more fail.
         let mut taken = Vec::new();
         let mut resumed = lock(&self.resumed);
@@ -1334,7 +1495,7 @@ impl<'r, 'a> Run<'r, 'a> {
 
     /// The tables a walk lost to their own damage, `tables`, are lost to the families of
     /// `walking` reading them.
-    fn lose_tables(&self, walking: &mut [Attached<'_>], tables: Vec<(usize, io::Error)>) {
+    fn lose_tables(&self, walking: &mut [Attached<'_, W>], tables: Vec<(usize, io::Error)>) {
         for (table, error) in tables {
             let from = damaged_from(&error);
             let loss = Loss::Damaged(Arc::new(error));
@@ -1351,7 +1512,7 @@ impl<'r, 'a> Run<'r, 'a> {
     fn fate(
         &self,
         fault: Fault,
-        attached: &mut Attached<'_>,
+        attached: &mut Attached<'_, W>,
         (hour, ordinal): (i32, u32),
     ) -> io::Result<Fate> {
         // What its items' sink met is not the operator's own.
@@ -1475,8 +1636,8 @@ impl<'r, 'a> Run<'r, 'a> {
         &'c self,
         walker: &mut Walker<'_>,
         state: &mut State,
-        job: Job<'r, 'c>,
-    ) -> io::Result<Option<Job<'r, 'c>>> {
+        job: Job<'r, 'c, W>,
+    ) -> io::Result<Option<Job<'r, 'c, W>>> {
         let Job {
             at,
             from,
@@ -1526,7 +1687,7 @@ impl<'r, 'a> Run<'r, 'a> {
                 continues: planned.before.is_some(),
             },
         };
-        let mut walking: Vec<Attached<'r>> = engine_allocation::vec(lanes.len())?;
+        let mut walking: Vec<Attached<'r, W>> = engine_allocation::vec(lanes.len())?;
         let mut refusing = Vec::new();
         // Families whose parked operator is being written out, left until it lands.
         let mut landing = Vec::new();
@@ -1536,6 +1697,16 @@ impl<'r, 'a> Run<'r, 'a> {
         for (lane, handed) in lanes {
             if let Some(index) = resumed.iter().position(|attached| attached.lane == lane) {
                 walking.push(resumed.swap_remove(index));
+                continue;
+            }
+            if let Some(&join) = self.joins.get(&(at, lane)) {
+                match self.joined(at, lane, join, start) {
+                    Ok(attached) => walking.push(attached),
+                    Err(fault) => {
+                        engine_allocation::reserve(&mut failures, 1)?;
+                        failures.push((lane, failure_at(at, fault)?));
+                    }
+                }
                 continue;
             }
             let carried = match handed {
@@ -1568,7 +1739,7 @@ impl<'r, 'a> Run<'r, 'a> {
             }
         }
         let mut gone = Gone::default();
-        let mut closed: Vec<Attached<'r>> = Vec::new();
+        let mut closed: Vec<Attached<'r, W>> = Vec::new();
         let ready = {
             let mut schedule = self.signal.lock();
             if self.stopped() {
@@ -1639,10 +1810,14 @@ impl<'r, 'a> Run<'r, 'a> {
             self.drop_gone(gone);
         }
         walking.sort_unstable_by_key(|attached| attached.lane);
-        // Families starting here start; those going on into a later run cross into it.
+        // Families starting here start; those going on into a later run cross into it. One
+        // joining the walk past its first hour starts there, or goes on from its carry.
         let run_start = segment.restart.is_none();
         for attached in walking.iter_mut().filter(|attached| !attached.begun) {
             attached.begun = true;
+            if attached.joins > segment.first {
+                continue;
+            }
             let operator = &mut attached.operator;
             let begun = if attached.cold {
                 caught(Operation::Start, || {
@@ -1673,12 +1848,23 @@ impl<'r, 'a> Run<'r, 'a> {
             if !walking.iter().any(Attached::walks) {
                 break Ok(true);
             }
+            // The world of this walk of the segment, for the families it visits: a walk begun
+            // again after a panic builds its own.
+            let visited = engine_allocation::collect_vec(
+                walking
+                    .iter()
+                    .filter(|attached| attached.live())
+                    .map(|attached| attached.lane),
+            )?;
+            let mut world = (self.worlds)(segment, &visited)?;
             let (mut ordinal, mut hours, mut noted) = (segment.first, 0_u32, 0);
-            // The hour being walked, for a panic there.
-            let mut now = planned.first;
+            // The hour being walked, and what of a family's code, for a panic there.
+            let (mut now, mut doing) = (planned.first, Operation::Hour);
             let attempt = catch_unwind(AssertUnwindSafe(|| {
                 walker.walk_isolated(segment, state, |state, manifest, first, lost| {
                     now = manifest.hour;
+                    // The run's own, before any family: no family is blamed for it.
+                    world.hour(state, manifest)?;
                     // A table lost to its own damage is lost to the families reading it.
                     if lost.len() != noted {
                         for (table, error) in &lost[noted..] {
@@ -1697,15 +1883,47 @@ impl<'r, 'a> Run<'r, 'a> {
                             going |= attached.walks();
                             continue;
                         }
+                        if ordinal < attached.joins {
+                            if ordinal + 1 == attached.joins
+                                && let Some(carry) = attached.pending.take()
+                                && let Err(fault) = self.decide(attached, carry, state)
+                            {
+                                let when = (manifest.hour + 1, ordinal + 1);
+                                attached.fate = Some(self.fate(fault, attached, when)?);
+                                going |= attached.walks();
+                                continue;
+                            }
+                            // One starting anew where it joins starts once the hour before is.
+                            if attached.cold && ordinal + 1 == attached.joins {
+                                let next = manifest.hour + 1;
+                                culprit.set(Some(index));
+                                doing = Operation::Start;
+                                let restart = Start::Restart(state);
+                                let result = attached.operator.start(restart, planned.branch, next);
+                                culprit.set(None);
+                                doing = Operation::Hour;
+                                let called =
+                                    result.map_err(|error| Fault::of(Operation::Start, error));
+                                if let Some(fault) = attached.met(called) {
+                                    let when = (next, ordinal + 1);
+                                    attached.fate = Some(self.fate(fault, attached, when)?);
+                                }
+                            }
+                            going |= attached.walks();
+                            continue;
+                        }
+                        let joining = ordinal == attached.joins && ordinal > segment.first;
                         let hour = Hour {
                             branch: planned.branch,
                             hour: manifest.hour,
                             run: segment.run,
                             ordinal,
-                            starts: first && (attached.cold || run_start),
-                            opens: ordinal == segment.first,
+                            starts: (first && (attached.cold || run_start))
+                                || (joining && attached.cold),
+                            opens: ordinal == segment.first || joining,
                             state,
                             manifest,
+                            world: &world,
                         };
                         culprit.set(Some(index));
                         let result = attached.operator.hour(&hour, &context);
@@ -1733,7 +1951,7 @@ impl<'r, 'a> Run<'r, 'a> {
                         resume_unwind(payload)
                     };
                     // What its items' sink met first stands, the run's own failure stopping it.
-                    let fault = Fault::Panic(Operation::Hour, said(&*payload));
+                    let fault = Fault::Panic(doing, said(&*payload));
                     let attached = &mut walking[index];
                     attached.fate = Some(self.fate(fault, attached, (now, ordinal))?);
                     // The others walk the segment again from where each was.
@@ -1806,7 +2024,35 @@ impl<'r, 'a> Run<'r, 'a> {
             for attached in walking.iter_mut().filter(|attached| attached.live()) {
                 let operator = &attached.operator;
                 match caught(Operation::Decide, || Ok(operator.starts_at(start))) {
-                    Ok(starts) => attached.hands = !starts,
+                    Ok(starts) => {
+                        attached.hands = !starts;
+                        attached.kept = attached.hands.then_some(Kept::Unsaved);
+                    }
+                    Err(fault) => attached.fate = Some(self.fate(fault, attached, last)?),
+                }
+            }
+        } else {
+            // The recording holds no more of the branch: what each family would hand on past it,
+            // to a restart or a later run, is kept for a run of the recording grown.
+            for (index, attached) in walking.iter_mut().enumerate() {
+                if !attached.live() {
+                    continue;
+                }
+                let operator = &attached.operator;
+                let kept = marked(&culprit, index, Operation::Save, || {
+                    let starts = operator.starts_at(Start::Restart(&*state))
+                        && operator.starts_at(Start::Run { continues: true });
+                    if starts {
+                        return Ok(None);
+                    }
+                    let mut out = Vec::new();
+                    Ok(Some(match operator.save(&mut out)? {
+                        true => Kept::Saved(out),
+                        false => Kept::Unsaved,
+                    }))
+                });
+                match kept {
+                    Ok(kept) => attached.kept = kept,
                     Err(fault) => attached.fate = Some(self.fate(fault, attached, last)?),
                 }
             }
@@ -1844,8 +2090,8 @@ impl<'r, 'a> Run<'r, 'a> {
             }
         }
         let mut gone = Gone::default();
-        let mut dropped: Vec<Attached<'r>> = engine_allocation::vec(walking.len())?;
-        let mut kept: Vec<Attached<'r>> = engine_allocation::vec(walking.len())?;
+        let mut dropped: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
+        let mut kept: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
         let (chained, begins, reserved, next) = {
             let mut schedule = self.signal.lock();
             // Faults its families met as it ended, the run stopped, are none of theirs.
@@ -1900,7 +2146,7 @@ impl<'r, 'a> Run<'r, 'a> {
                     Some(Fate::Refused { hour, error, .. }) => {
                         attached
                             .operator
-                            .file(at, Some(Ending::Refused { hour, error }));
+                            .file(at, Some(Ending::Refused { hour, error }), None);
                         schedule.settle(at, lane, Status::Refused);
                         schedule.close(&self.plan, lane, Closing::Branch(at), &mut gone)?;
                     }
@@ -1926,7 +2172,8 @@ impl<'r, 'a> Run<'r, 'a> {
             let Some(next) = next else {
                 let lanes = engine_allocation::collect_vec(kept.iter().map(|kept| kept.lane))?;
                 for attached in &mut kept {
-                    attached.operator.file(at, None);
+                    let carried = attached.kept.take();
+                    attached.operator.file(at, None, carried);
                 }
                 schedule.sealed(at, &lanes);
                 drop(schedule);
@@ -1966,7 +2213,8 @@ impl<'r, 'a> Run<'r, 'a> {
                         schedule.status(next, attached.lane),
                         Status::Closed | Status::Abandoned | Status::Lost
                     );
-                attached.operator.file(at, None);
+                let carried = attached.kept.take();
+                attached.operator.file(at, None, carried);
             }
             // Every family but those to park is sealed now: a chained one goes on with its walk.
             let unparked = engine_allocation::collect_vec(
@@ -2117,10 +2365,50 @@ pub fn run(
     cancellation: &Cancellation,
     lanes: Vec<Lane<'_>>,
 ) -> io::Result<Ran> {
+    run_in(
+        recording,
+        settings,
+        scratch,
+        cancellation,
+        &worldless,
+        lanes,
+    )
+}
+
+/// The world of a run whose walks share none.
+fn worldless(_: &Segment, _: &[usize]) -> io::Result<()> {
+    Ok(())
+}
+
+/// [`run`], each walk's operators sharing the world `worlds` builds for the walk's segment and
+/// the lanes whose operators it visits, by their places in `lanes`.
+pub fn run_in<W: World>(
+    recording: &Recording,
+    settings: &Settings,
+    scratch: &dyn Scratch,
+    cancellation: &Cancellation,
+    worlds: &Worlds<'_, W>,
+    lanes: Vec<Lane<'_, W>>,
+) -> io::Result<Ran> {
     if lanes.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "A run needs a family",
+        ));
+    }
+    let ordered = |lane: &Lane<'_, W>| {
+        lane.resumes
+            .windows(2)
+            .all(|pair| pair[0].branch < pair[1].branch)
+            && lane
+                .resumes
+                .iter()
+                .all(|resume| lane.passes.binary_search(&resume.branch).is_err())
+    };
+    if !lanes.iter().all(ordered) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "A lane goes on in branches out of order, or in one it passes",
         ));
     }
     if let Some(damage) = recording.unlocated() {
@@ -2148,15 +2436,38 @@ pub fn run(
         cancelled: AtomicBool::new(false),
     });
     let _entered = cancellation.enter(&signal)?;
+    let plan = Plan::new(recording, segments)?;
+    // What closing the passed cells lets go of drops once the lock is let go.
+    let mut gone = Gone::default();
+    let passed = lanes
+        .iter()
+        .enumerate()
+        .try_for_each(|(lane, held)| signal.lock().pass(&plan, lane, held.passes, &mut gone));
+    drop(gone);
+    passed?;
+    let mut joins = BTreeMap::new();
+    for (lane, held) in lanes.iter().enumerate() {
+        for resume in held.resumes {
+            let mut gone = Gone::default();
+            let at = (resume.branch, resume.run, resume.ordinal);
+            let goes = signal.lock().resume(&plan, segments, lane, at, &mut gone);
+            drop(gone);
+            if let Some((at, ordinal)) = goes? {
+                joins.insert((at, lane), (ordinal, resume.carry));
+            }
+        }
+    }
     let run = Run {
         recording,
         segments,
-        plan: Plan::new(recording, segments)?,
+        plan,
         lanes: &lanes,
+        worlds,
         signal: &signal,
         budget: Arc::new(Budget::new(settings.walker_bytes)),
         store: Store::new(settings.carry_bytes),
         resumed: Mutex::new(Vec::new()),
+        joins,
         shared: Shared::new(settings, scratch, &signal),
         #[cfg(test)]
         cancellation,

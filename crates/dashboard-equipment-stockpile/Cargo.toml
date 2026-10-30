@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+dashboard-world.workspace = true
 replay.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true

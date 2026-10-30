@@ -1,8 +1,11 @@
 //! Demand-driven retained script state reduced from the existing event feed.
 //! Baselines prove membership at attachment; they never create past fires.
+use super::decisions::{ALL, CLEAR_ALL_CANDIDATES, Operation};
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 mod delayed;
+#[cfg(test)]
+mod plans;
 pub use delayed::DelayedEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -34,6 +37,211 @@ pub struct Touched {
     pub decisions: std::collections::BTreeSet<(u32, u32)>,
 }
 
+/// A part's version: what the part holds, but its countdowns and its availability, changes
+/// only with it, and the state never gives one twice. 0 is a change not yet stamped.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct Version(u64);
+impl Version {
+    pub(super) fn change(&mut self) {
+        self.0 = 0;
+    }
+    fn stamp(&mut self, clock: &mut u64) {
+        if self.0 == 0 {
+            *clock += 1;
+            self.0 = *clock;
+        }
+    }
+    pub(super) fn get(self) -> Option<u64> {
+        (self.0 != 0).then_some(self.0)
+    }
+}
+
+/// An event pack validated once, for a reduction that need not validate it again, with what
+/// that reduction leaves out ([`Plan`]).
+pub struct PreparedHistory {
+    row: EventFeedHistoryRow,
+    plan: Plan,
+}
+impl PreparedHistory {
+    pub fn new(row: EventFeedHistoryRow) -> io::Result<Self> {
+        row.validate()?;
+        let plan = Plan::of(&row, None);
+        Ok(Self { row, plan })
+    }
+    /// [`Self::new`] of a walk's next pack, knowing what the walk's earlier packs wrote.
+    pub fn following(row: EventFeedHistoryRow, walk: &mut Written) -> io::Result<Self> {
+        row.validate()?;
+        let plan = Plan::of(&row, Some(walk));
+        Ok(Self { row, plan })
+    }
+    pub fn row(&self) -> &EventFeedHistoryRow {
+        &self.row
+    }
+    /// The bytes it owns on the heap: its row's and its plan's.
+    pub fn heap_bytes(&self) -> usize {
+        crate::value::Value::heap_bytes(&self.row)
+            + self.plan.steps.capacity() * std::mem::size_of::<Step>()
+    }
+}
+
+/// The decision owners' target countries a walk's packs wrote since it began, each with the
+/// pack that last wrote it. They hold while every one of those packs was reduced to its end.
+#[derive(Default)]
+pub struct Written {
+    generation: Option<u64>,
+    packs: u64,
+    targets: HashMap<(u32, u32), (EventFeedCountry, u64)>,
+}
+
+/// A pack's retained-state changes in order, each with the work its reduction leaves out
+/// because the pack, or the walk before it, already shows that work's effect.
+#[derive(Default)]
+struct Plan {
+    steps: Vec<Step>,
+}
+#[derive(Clone, Copy)]
+struct Step {
+    event: u32,
+    flags: u8,
+    /// The event whose clear or baseline cancels this candidate change ([`CANCELLED`]).
+    cancelled: u32,
+}
+/// The change writes a target country.
+const TARGETED: u8 = 1;
+/// An earlier change of the pack wrote the same target country for the same owner.
+const REWRITE: u8 = 2;
+/// An earlier pack of the walk wrote it.
+const WRITTEN: u8 = 4;
+/// A candidate change a later clear or baseline of the same owner in the pack cancels.
+const CANCELLED: u8 = 8;
+/// A candidate change whose owner country and touch an earlier change of the pack made.
+const QUIET: u8 = 16;
+
+impl Plan {
+    fn of(row: &EventFeedHistoryRow, walk: Option<&mut Written>) -> Self {
+        let mut alone = Written::default();
+        let walk = walk.unwrap_or(&mut alone);
+        if walk.generation != Some(row.generation) {
+            walk.generation = Some(row.generation);
+            walk.targets.clear();
+        }
+        walk.packs += 1;
+        let pack = walk.packs;
+        let mut steps = Vec::with_capacity(row.events.len());
+        // Each decision owner so far: its id, its last change's actor, and whether it is touched.
+        let mut owners: Vec<(u32, EventFeedCountry, bool)> = Vec::new();
+        for (index, event) in row.events.iter().enumerate() {
+            let Some(script) = event.script else {
+                continue;
+            };
+            let Some(change) = script.change else {
+                continue;
+            };
+            let mut flags = 0;
+            if let EventFeedScriptChange::Decision(decision) = change {
+                let id = event.actor.id;
+                let at = match owners.last() {
+                    Some(owner) if owner.0 == id => Some(owners.len() - 1),
+                    _ => owners.iter().position(|owner| owner.0 == id),
+                };
+                if decision.operation == Operation::Candidate
+                    && !script.token_unrecorded
+                    && at.is_some_and(|at| owners[at].1 == event.actor && owners[at].2)
+                {
+                    flags |= QUIET;
+                }
+                if !script.token_unrecorded && event.target.reference as i32 > 0 {
+                    flags |= TARGETED;
+                    match walk.targets.entry((id, event.target.reference)) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            let (held, by) = entry.get_mut();
+                            if *held == event.target {
+                                flags |= if *by == pack { REWRITE } else { WRITTEN };
+                            }
+                            *held = event.target;
+                            *by = pack;
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert((event.target, pack));
+                        }
+                    }
+                }
+                // A baseline makes its owner anew, after its own target write.
+                if decision.operation == Operation::Baseline && !script.token_unrecorded {
+                    walk.targets.retain(|(owner, _), _| *owner != id);
+                }
+                let touches = decision.operation != Operation::Rebuild;
+                match at {
+                    Some(at) => {
+                        owners[at].1 = event.actor;
+                        owners[at].2 |= touches;
+                    }
+                    None => owners.push((id, event.actor, touches)),
+                }
+            }
+            steps.push(Step {
+                event: index as u32,
+                flags,
+                cancelled: 0,
+            });
+        }
+        // Walked back, each owner's nearest later clear of every kind and of each kind.
+        let mut clears: Vec<(u32, Option<u32>, [Option<u32>; 4])> = Vec::new();
+        for step in steps.iter_mut().rev() {
+            let event = &row.events[step.event as usize];
+            let Some(script) = event.script.filter(|script| !script.token_unrecorded) else {
+                continue;
+            };
+            let Some(EventFeedScriptChange::Decision(decision)) = script.change else {
+                continue;
+            };
+            if !matches!(
+                decision.operation,
+                Operation::Baseline | Operation::Candidate
+            ) {
+                continue;
+            }
+            let id = event.actor.id;
+            let at = match clears.last() {
+                Some(clear) if clear.0 == id => clears.len() - 1,
+                _ => match clears.iter().position(|clear| clear.0 == id) {
+                    Some(at) => at,
+                    None => {
+                        clears.push((id, None, [None; 4]));
+                        clears.len() - 1
+                    }
+                },
+            };
+            let (_, every, kinds) = &mut clears[at];
+            if decision.operation == Operation::Baseline
+                || (decision.flags & ALL != 0 && decision.flags & CLEAR_ALL_CANDIDATES != 0)
+            {
+                *every = Some(step.event);
+                continue;
+            }
+            // Validation keeps candidate kinds below four.
+            let kind = decision.container as usize;
+            if decision.flags & ALL != 0 {
+                kinds[kind] = Some(step.event);
+            } else if let Some(cancelled) = [*every, kinds[kind]].into_iter().flatten().min() {
+                step.flags |= CANCELLED;
+                step.cancelled = cancelled;
+            }
+        }
+        Self { steps }
+    }
+}
+
+/// The decision owner a run of a pack's changes reduces.
+struct Run<'a> {
+    key: (u32, u32),
+    /// The run made the owner, and has not reduced a change of it yet.
+    made: bool,
+    /// The run touched it.
+    touched: bool,
+    owner: &'a mut super::decisions::DecisionState,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScriptEventState {
     #[serde(with = "owner_pairs")]
@@ -53,11 +261,27 @@ pub struct ScriptEventState {
     fired_building: bool,
     #[serde(skip)]
     touched: Touched,
+    #[serde(skip)]
+    pending_version: Version,
+    #[serde(skip)]
+    fired_version: Version,
+    /// The last version given.
+    #[serde(skip)]
+    clock: u64,
 }
 impl ScriptEventState {
     /// What the last observed row may have changed.
     pub fn touched(&self) -> &Touched {
         &self.touched
+    }
+    /// The pending instances' version: they hold the same, but their availability, while it
+    /// stays the same.
+    pub fn pending_version(&self) -> Option<u64> {
+        self.pending_version.get()
+    }
+    /// The fired set's version, as [`Self::pending_version`].
+    pub fn fired_version(&self) -> Option<u64> {
+        self.fired_version.get()
     }
     /// Each decision owner's key, in order.
     pub fn decision_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
@@ -70,13 +294,18 @@ impl ScriptEventState {
     pub fn delayed_keys(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.delayed.keys().copied()
     }
+    /// The owner, its version (as [`Self::pending_version`], countdowns aside) and its timers.
     pub fn delayed_owner(
         &self,
         key: (u32, u32),
-    ) -> Option<(EventFeedCountry, Result<&[DelayedEvent], &'static str>)> {
+    ) -> Option<(
+        EventFeedCountry,
+        Option<u64>,
+        Result<&[DelayedEvent], &'static str>,
+    )> {
         self.delayed
             .get(&key)
-            .map(|owner| (owner.country, owner.rows()))
+            .map(|owner| (owner.country, owner.version.get(), owner.rows()))
     }
     pub fn decisions(
         &self,
@@ -126,17 +355,38 @@ impl ScriptEventState {
     pub fn observe(&mut self, row: &EventFeedHistoryRow) -> io::Result<()> {
         self.observe_decisions(row, |_, _| Ok(()))
     }
-    /// Visit each decision boundary after reducing its preceding changes.
+    /// Visit each decision boundary after reducing its preceding changes; a candidate change
+    /// that leaves its owner as the change before it left it is no boundary.
     pub fn observe_decisions(
         &mut self,
         row: &EventFeedHistoryRow,
         mut visit: impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
     ) -> io::Result<()> {
         row.validate()?;
+        self.reduce(row, &Plan::of(row, None), true, &mut visit)
+    }
+    /// [`Self::observe_decisions`] of a pack validated when it was prepared. `sure`: every
+    /// earlier pack of its walk was reduced to its end, so what they wrote holds.
+    pub fn observe_prepared(
+        &mut self,
+        prepared: &PreparedHistory,
+        sure: bool,
+        mut visit: impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.reduce(&prepared.row, &prepared.plan, sure, &mut visit)
+    }
+    fn reduce(
+        &mut self,
+        row: &EventFeedHistoryRow,
+        plan: &Plan,
+        sure: bool,
+        visit: &mut impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+    ) -> io::Result<()> {
         self.touched = Touched::default();
         if self.generation != Some(row.generation) {
             *self = Self {
                 generation: Some(row.generation),
+                clock: self.clock,
                 ..Self::default()
             };
             self.touched.all = true;
@@ -163,149 +413,22 @@ impl ScriptEventState {
                 owner.gap();
             }
         }
-        let mut pending_baseline = false;
-        let mut fired_baseline = false;
-        for event in &row.events {
-            if self.sequence.is_some_and(|last| event.sequence <= last) {
-                return Err(invalid("script state occurrence order differs"));
-            }
-            self.sequence = Some(event.sequence);
-            let Some(script) = event.script else {
-                continue;
-            };
-            let Some(change) = script.change else {
-                continue;
-            };
-            use EventFeedScriptChange::*;
-            match change {
-                PendingBaseline | PendingStored { .. } | PendingReady | PendingRemoved => {
-                    self.touched.pending = true;
-                }
-                FiredBaseline | FiredMember | FiredRemoved | FiredReady => {
-                    self.touched.fired = true;
-                }
-                _ => {}
-            }
-            match change {
-                Decision(change) => {
-                    let key = owner_key(&self.decisions, event.actor);
-                    let before = self
-                        .decisions
-                        .get(&key)
-                        .map(|owner| (owner.country, owner.complete()));
-                    let owner = self.decisions.entry(key).or_default();
-                    owner.observe(row, event, script, change)?;
-                    // A rebuild's roster is its own occurrence: it changes the retained state
-                    // only when it makes, renames or loses its owner.
-                    if change.operation != super::decisions::Operation::Rebuild
-                        || before != Some((owner.country, owner.complete()))
-                    {
-                        self.touched.decisions.insert(key);
-                    }
-                    visit(owner, event)?;
-                }
-                PendingBaseline => {
-                    self.pending.clear();
-                    self.pending_ready = false;
-                    self.pending_fault = false;
-                    self.pending_building = true;
-                }
-                PendingStored { due_hour } => {
-                    if script.token_unrecorded || script.scope_unrecorded || script.scope_len == 0 {
-                        self.pending_fault = true;
-                        self.pending_ready = false;
-                        continue;
-                    }
-                    let start = script.scope_start as usize;
-                    let scopes = &row.script_scopes[start..start + script.scope_len as usize];
-                    allocation::reserve_exact(&mut self.pending, 1)?;
-                    self.pending.push(PendingEvent {
-                        instance: script
-                            .instance
-                            .ok_or_else(|| invalid("pending event has no instance"))?,
-                        definition: identity(row, script)?,
-                        originator: event.actor,
-                        due_hour,
-                        scopes: allocation::copy_vec(scopes)?,
-                    });
-                }
-                PendingReady => {
-                    if !self.pending_building {
-                        return Err(invalid("pending registry completion has no baseline"));
-                    }
-                    self.pending_building = false;
-                    self.pending_ready = !self.pending_fault;
-                    pending_baseline = true;
-                }
-                PendingRemoved => {
-                    let instance = script
-                        .instance
-                        .ok_or_else(|| invalid("pending removal has no instance"))?;
-                    if let Some(index) =
-                        self.pending.iter().position(|row| row.instance == instance)
-                    {
-                        // Both native removal writers replace with the last entry.
-                        self.pending.swap_remove(index);
-                    } else if self.pending_ready {
-                        self.pending_fault = true;
-                        self.pending_ready = false;
-                    }
-                }
-                FiredBaseline => {
-                    self.fired.clear();
-                    self.fired_ready = false;
-                    self.fired_fault = false;
-                    self.fired_building = true;
-                }
-                FiredMember => {
-                    if script.token_unrecorded {
-                        self.fired_fault = true;
-                        self.fired_ready = false;
-                        continue;
-                    }
-                    allocation::reserve_exact(&mut self.fired, 1)?;
-                    self.fired.push(identity(row, script)?);
-                }
-                FiredRemoved => {
-                    if script.token_unrecorded {
-                        self.fired_fault = true;
-                        self.fired_ready = false;
-                        continue;
-                    }
-                    let removed = identity(row, script)?;
-                    if let Some(index) = self.fired.iter().position(|member| *member == removed) {
-                        // Native replacement erases one matched definition, not every
-                        // equal identity. Initial duplicates retain multiplicity.
-                        self.fired.remove(index);
-                    } else if self.fired_ready {
-                        self.fired_fault = true;
-                        self.fired_ready = false;
-                    }
-                }
-                FiredReady => {
-                    if !self.fired_building {
-                        return Err(invalid("fired registry completion has no baseline"));
-                    }
-                    self.fired_building = false;
-                    self.fired_ready = !self.fired_fault;
-                    fired_baseline = true;
-                }
-                DelayedBaseline
-                | DelayedReady
-                | DelayedEmpty
-                | DelayedStored { .. }
-                | DelayedAdvance { .. }
-                | DelayedRemoved { .. }
-                | DelayedRefused => {
-                    let key = owner_key(&self.delayed, event.target);
-                    self.touched.delayed.insert(key);
-                    self.delayed
-                        .entry(key)
-                        .or_default()
-                        .observe(row, event, script, change)?;
-                }
-            }
+        // Validation keeps a pack's occurrences in order: only its first can repeat one seen.
+        if let Some(first) = row.events.first()
+            && self.sequence.is_some_and(|last| first.sequence <= last)
+        {
+            return Err(invalid("script state occurrence order differs"));
         }
+        let mut baselines = (false, false);
+        if let Err((at, error)) = self.steps(row, plan, sure, visit, &mut baselines) {
+            self.sequence = Some(row.events[at].sequence);
+            self.restore_cancelled(row, plan, at);
+            return Err(error);
+        }
+        if let Some(last) = row.events.last() {
+            self.sequence = Some(last.sequence);
+        }
+        let (pending_baseline, fired_baseline) = baselines;
         if row.coverage == EventFeedCoverage::Unavailable
             || row.failure.is_some()
             || row.script_refusals != 0
@@ -339,7 +462,242 @@ impl ScriptEventState {
             }
         }
         self.hour = Some(row.read_hour);
+        self.stamp();
         Ok(())
+    }
+    /// The plan's steps in order, or the event a failing one stopped at.
+    fn steps(
+        &mut self,
+        row: &EventFeedHistoryRow,
+        plan: &Plan,
+        sure: bool,
+        visit: &mut impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+        (pending_baseline, fired_baseline): &mut (bool, bool),
+    ) -> Result<(), (usize, io::Error)> {
+        let mut decided: Option<Run<'_>> = None;
+        let mut timed: Option<((u32, u32), &mut delayed::Owner)> = None;
+        for step in &plan.steps {
+            let at = step.event as usize;
+            let fail = |error| (at, error);
+            let event = &row.events[at];
+            let Some(script) = event.script else {
+                continue;
+            };
+            let Some(change) = script.change else {
+                continue;
+            };
+            use EventFeedScriptChange::*;
+            match change {
+                PendingBaseline | PendingStored { .. } | PendingReady | PendingRemoved => {
+                    self.touched.pending = true;
+                }
+                FiredBaseline | FiredMember | FiredRemoved | FiredReady => {
+                    self.touched.fired = true;
+                }
+                _ => {}
+            }
+            match change {
+                Decision(change) => {
+                    let write = step.flags & TARGETED != 0
+                        && step.flags & REWRITE == 0
+                        && !(sure && step.flags & WRITTEN != 0);
+                    if step.flags & (QUIET | CANCELLED) == QUIET | CANCELLED && !write {
+                        continue;
+                    }
+                    if decided
+                        .as_ref()
+                        .is_none_or(|run| run.key.0 != event.actor.id)
+                    {
+                        let key = owner_key(&self.decisions, event.actor);
+                        let made = !self.decisions.contains_key(&key);
+                        decided = Some(Run {
+                            key,
+                            made,
+                            touched: false,
+                            owner: self.decisions.entry(key).or_default(),
+                        });
+                    }
+                    let run = decided.as_mut().expect("a reduced decision owner");
+                    let before = (!run.made).then(|| (run.owner.country, run.owner.complete()));
+                    run.made = false;
+                    let cancelled = step.flags & CANCELLED != 0;
+                    run.owner
+                        .apply(row, event, script, change, write, cancelled)
+                        .map_err(fail)?;
+                    // A rebuild's roster is its own occurrence: it changes the retained state
+                    // only when it makes, renames or loses its owner.
+                    if !run.touched
+                        && (change.operation != Operation::Rebuild
+                            || before != Some((run.owner.country, run.owner.complete())))
+                    {
+                        self.touched.decisions.insert(run.key);
+                        run.touched = true;
+                    }
+                    visit(&*run.owner, event).map_err(fail)?;
+                }
+                PendingBaseline => {
+                    self.pending.clear();
+                    self.pending_version.change();
+                    self.pending_ready = false;
+                    self.pending_fault = false;
+                    self.pending_building = true;
+                }
+                PendingStored { due_hour } => {
+                    if script.token_unrecorded || script.scope_unrecorded || script.scope_len == 0 {
+                        self.pending_fault = true;
+                        self.pending_ready = false;
+                        continue;
+                    }
+                    let start = script.scope_start as usize;
+                    let scopes = &row.script_scopes[start..start + script.scope_len as usize];
+                    allocation::reserve_exact(&mut self.pending, 1).map_err(fail)?;
+                    self.pending.push(PendingEvent {
+                        instance: script
+                            .instance
+                            .ok_or_else(|| fail(invalid("pending event has no instance")))?,
+                        definition: identity(row, script).map_err(fail)?,
+                        originator: event.actor,
+                        due_hour,
+                        scopes: allocation::copy_vec(scopes).map_err(fail)?,
+                    });
+                    self.pending_version.change();
+                }
+                PendingReady => {
+                    if !self.pending_building {
+                        return Err(fail(invalid("pending registry completion has no baseline")));
+                    }
+                    self.pending_building = false;
+                    self.pending_ready = !self.pending_fault;
+                    *pending_baseline = true;
+                }
+                PendingRemoved => {
+                    let instance = script
+                        .instance
+                        .ok_or_else(|| fail(invalid("pending removal has no instance")))?;
+                    if let Some(index) =
+                        self.pending.iter().position(|row| row.instance == instance)
+                    {
+                        // Both native removal writers replace with the last entry.
+                        self.pending.swap_remove(index);
+                        self.pending_version.change();
+                    } else if self.pending_ready {
+                        self.pending_fault = true;
+                        self.pending_ready = false;
+                    }
+                }
+                FiredBaseline => {
+                    self.fired.clear();
+                    self.fired_version.change();
+                    self.fired_ready = false;
+                    self.fired_fault = false;
+                    self.fired_building = true;
+                }
+                FiredMember => {
+                    if script.token_unrecorded {
+                        self.fired_fault = true;
+                        self.fired_ready = false;
+                        continue;
+                    }
+                    allocation::reserve_exact(&mut self.fired, 1).map_err(fail)?;
+                    self.fired.push(identity(row, script).map_err(fail)?);
+                    self.fired_version.change();
+                }
+                FiredRemoved => {
+                    if script.token_unrecorded {
+                        self.fired_fault = true;
+                        self.fired_ready = false;
+                        continue;
+                    }
+                    let removed = identity(row, script).map_err(fail)?;
+                    if let Some(index) = self.fired.iter().position(|member| *member == removed) {
+                        // Native replacement erases one matched definition, not every
+                        // equal identity. Initial duplicates retain multiplicity.
+                        self.fired.remove(index);
+                        self.fired_version.change();
+                    } else if self.fired_ready {
+                        self.fired_fault = true;
+                        self.fired_ready = false;
+                    }
+                }
+                FiredReady => {
+                    if !self.fired_building {
+                        return Err(fail(invalid("fired registry completion has no baseline")));
+                    }
+                    self.fired_building = false;
+                    self.fired_ready = !self.fired_fault;
+                    *fired_baseline = true;
+                }
+                DelayedBaseline
+                | DelayedReady
+                | DelayedEmpty
+                | DelayedStored { .. }
+                | DelayedAdvance { .. }
+                | DelayedRemoved { .. }
+                | DelayedRefused => {
+                    if timed
+                        .as_ref()
+                        .is_none_or(|(key, _)| key.0 != event.target.id)
+                    {
+                        let key = owner_key(&self.delayed, event.target);
+                        self.touched.delayed.insert(key);
+                        timed = Some((key, self.delayed.entry(key).or_default()));
+                    }
+                    let (_, owner) = timed.as_mut().expect("a reduced delayed-event owner");
+                    owner.observe(row, event, script, change).map_err(fail)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// The candidate changes the plan left to a clear or baseline of the pack that the
+    /// reduction, stopping at `at`, never reached.
+    fn restore_cancelled(&mut self, row: &EventFeedHistoryRow, plan: &Plan, at: usize) {
+        for step in &plan.steps {
+            if step.event as usize >= at {
+                break;
+            }
+            if step.flags & CANCELLED == 0 || step.cancelled as usize <= at {
+                continue;
+            }
+            let event = &row.events[step.event as usize];
+            let Some(script) = event.script else {
+                continue;
+            };
+            let Some(EventFeedScriptChange::Decision(change)) = script.change else {
+                continue;
+            };
+            let token = &row.script_tokens[script.token_start as usize
+                ..script.token_start as usize + script.token_len as usize];
+            let key = owner_key(&self.decisions, event.actor);
+            if let Some(owner) = self.decisions.get_mut(&key) {
+                owner.candidate(token, event, script, change);
+            }
+        }
+    }
+    /// Gives each part the row may have changed a version of its own.
+    fn stamp(&mut self) {
+        let clock = &mut self.clock;
+        self.pending_version.stamp(clock);
+        self.fired_version.stamp(clock);
+        if self.touched.all {
+            for owner in self.decisions.values_mut() {
+                owner.version.stamp(clock);
+            }
+            for owner in self.delayed.values_mut() {
+                owner.version.stamp(clock);
+            }
+            return;
+        }
+        for key in &self.touched.decisions {
+            if let Some(owner) = self.decisions.get_mut(key) {
+                owner.version.stamp(clock);
+            }
+        }
+        for key in &self.touched.delayed {
+            if let Some(owner) = self.delayed.get_mut(key) {
+                owner.version.stamp(clock);
+            }
+        }
     }
 }
 // Continuations retain the first raw witness; only the published link identifies its owner.
@@ -1558,7 +1916,7 @@ mod tests {
         assert!(
             state
                 .delayed_owner((5, 7))
-                .is_some_and(|(_, rows)| rows.is_ok())
+                .is_some_and(|(_, _, rows)| rows.is_ok())
         );
         state
             .observe(&row(12, 3, &[(FiredBaseline, None, None)]))
@@ -1612,6 +1970,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(24, 0)]
         );
+    }
+    /// A part's version moves with what it holds, never with its countdowns alone, and no
+    /// part of a later generation takes an earlier part's version.
+    #[test]
+    fn versions_move_with_what_a_part_holds_and_never_repeat() {
+        let version = |state: &ScriptEventState| {
+            state
+                .delayed_owner((5, 7))
+                .and_then(|(_, version, _)| version)
+                .unwrap()
+        };
+        let census = |hour, first| {
+            row(
+                hour,
+                first,
+                &[
+                    (DelayedBaseline, None, None),
+                    store(9, 1, 90),
+                    (DelayedReady, None, None),
+                ],
+            )
+        };
+        let mut state = ScriptEventState::default();
+        state.observe(&census(1, 0)).unwrap();
+        let first = version(&state);
+        state.observe(&row(2, 3, &[advance(1, true)])).unwrap();
+        assert_eq!(version(&state), first);
+        state.observe(&row(3, 4, &[store(5, 2, 91)])).unwrap();
+        let stored = version(&state);
+        assert_ne!(stored, first);
+        // A gap retires the timers; a later loss finds nothing left to change.
+        state.observe(&row(5, 5, &[])).unwrap();
+        let gapped = version(&state);
+        assert_ne!(gapped, stored);
+        state
+            .observe(&lost(row(6, 5, &[]), EventFeedCoverage::Unavailable))
+            .unwrap();
+        assert_eq!(version(&state), gapped);
+        let mut next = census(7, 0);
+        next.generation = 8;
+        for event in &mut next.events {
+            event.generation = 8;
+        }
+        state.observe(&next).unwrap();
+        assert!(version(&state) > gapped);
     }
 }
 

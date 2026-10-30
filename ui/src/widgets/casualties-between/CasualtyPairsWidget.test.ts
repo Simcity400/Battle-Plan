@@ -69,7 +69,7 @@ async function fixture(state: State, module: string, realCareer = false) {
       return { data: active ? state.groups : undefined, error: state.groupsError, retry() { state.groupRetries = (state.groupRetries ?? 0) + 1; } };
     };`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({ name: tag + ' at ' + hour, flagPending: true }) });
-      export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});`,
+      export const flagReadMetadata = () => ({});`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]);
       export const useCountryFactsAt = () => new Map(); export const useCountryFactsRead = () => new Map(); export const useCountryNamesAt = () => new Map();`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456', '#654321'], muted: '#777777', surface: '#000000', countryColours: 'raw' });

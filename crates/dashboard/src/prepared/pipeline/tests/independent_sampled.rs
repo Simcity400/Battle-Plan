@@ -1,5 +1,5 @@
-//! The sampled families (air force and navy size, stability and its parts,
-//! fuel, equipment losses, supply health and the party history) prepared on
+//! The sampled families (air force and navy size, stability's parts, fuel,
+//! equipment losses and the party history) prepared on
 //! their own, before the hourly walk, publish and save exactly what hourly
 //! preparation does, across commits, resume, reload, append, a gap and a
 //! second branch, with one and several workers; refuse where hourly
@@ -300,11 +300,11 @@ const NAVY: Sampled = Sampled {
     applied: Some(independent::sampled::NAVY_APPLIED),
     own_read: None,
 };
-const STABILITY: Sampled = Sampled {
-    name: "stability",
-    field: Some("stability"),
-    gated: "country-stability",
-    observed: "stability.observed",
+const PARTS: Sampled = Sampled {
+    name: "parts",
+    field: Some("parts"),
+    gated: "stability-parts",
+    observed: "parts.observed",
     applied: None,
     own_read: None,
 };
@@ -321,14 +321,6 @@ const EQUIPMENT_LOSSES: Sampled = Sampled {
     field: Some("equipment_losses"),
     gated: "equipment-losses",
     observed: "equipment_losses.observed",
-    applied: None,
-    own_read: None,
-};
-const SUPPLY: Sampled = Sampled {
-    name: "supply",
-    field: Some("supply"),
-    gated: "supply-health",
-    observed: "supply.observed",
     applied: None,
     own_read: None,
 };
@@ -716,14 +708,7 @@ fn observed_on_its_own(family: Sampled) {
 /// and it publishes and covers what hourly preparation does.
 #[test]
 fn sampled_families_observing_every_block_have_no_prepass_lane() {
-    for family in [
-        STABILITY,
-        EQUIPMENT_LOSSES,
-        SUPPLY,
-        TRADE,
-        TERRITORY,
-        PARTIES,
-    ] {
+    for family in [PARTS, EQUIPMENT_LOSSES, TRADE, TERRITORY, PARTIES] {
         let replay = scenario(3, true);
         let mut fixture = Fixture::new(&replay);
         let revision = format!("{}-unlaned", family.name);
@@ -797,11 +782,11 @@ sampled_tests!(
     navy_size_is_observed_every_hour_on_its_own_thread_and_skipped_by_the_walk
 );
 sampled_tests!(
-    STABILITY,
-    stability_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does,
-    stability_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation,
-    stability_prepared_on_its_own_refuses_where_hourly_preparation_does,
-    stability_is_observed_every_hour_on_its_own_thread_and_skipped_by_the_walk
+    PARTS,
+    stability_parts_prepared_on_their_own_publish_and_save_what_hourly_preparation_does,
+    stability_parts_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation,
+    stability_parts_prepared_on_their_own_refuse_where_hourly_preparation_does,
+    stability_parts_are_observed_every_hour_on_their_own_thread_and_skipped_by_the_walk
 );
 // Fuel is read by its changes with the economy ledgers, whose tests count its
 // frames and quiet hours (`independent_ledgers`). Here its fuel moves every
@@ -826,13 +811,6 @@ sampled_tests!(
     equipment_losses_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation,
     equipment_losses_prepared_on_their_own_refuse_where_hourly_preparation_does,
     equipment_losses_are_observed_every_hour_on_their_own_thread_and_skipped_by_the_walk
-);
-sampled_tests!(
-    SUPPLY,
-    supply_health_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does,
-    supply_health_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation,
-    supply_health_prepared_on_its_own_refuses_where_hourly_preparation_does,
-    supply_health_is_observed_every_hour_on_its_own_thread_and_skipped_by_the_walk
 );
 sampled_tests!(
     PARTIES,
@@ -1388,10 +1366,9 @@ fn sampled_families_answer_from_their_own_coverage_while_the_hourly_walk_accepts
     let families = [
         "air",
         "navy",
-        "stability",
+        "parts",
         "fuel",
         "equipment_losses",
-        "supply",
         "parties",
         "trade",
         "territory",
@@ -1429,7 +1406,6 @@ fn sampled_families_answer_from_their_own_coverage_while_the_hourly_walk_accepts
             for product in [
                 "air-force-size",
                 "navy-size",
-                "country-stability",
                 "stability-parts",
                 "country-fuel",
                 "party-history",

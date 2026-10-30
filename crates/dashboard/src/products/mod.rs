@@ -118,6 +118,8 @@ pub struct Registered {
     /// Answered only by prepared queries: its product route refuses, while its
     /// types, content dependence and lane stay registered.
     pub prepared_only: bool,
+    /// How its served replies are checked ([`Product::SERVED`]).
+    pub served: Option<&'static dashboard_base::prepared::served::Plan>,
 }
 
 const fn register<P: Product>() -> Registered {
@@ -129,6 +131,7 @@ const fn register<P: Product>() -> Registered {
         #[cfg(any(test, feature = "export-types"))]
         types: types::<P>,
         prepared_only: false,
+        served: P::SERVED,
     }
 }
 

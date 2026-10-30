@@ -4,8 +4,9 @@ use crate::products::occupation_trend::{
 };
 use dashboard_base::products::country_history::Identity;
 use dashboard_text::triggers::inputs::{TableChange, TableChanges};
+use dashboard_world::{Hold, Needs, Roster, World};
 use replay::{
-    columnar_frames::{Views, metrics},
+    columnar_frames::metrics,
     columns,
     segments::{self, Item, Operator, Sink, State},
 };
@@ -16,7 +17,7 @@ use replay_data::{
     scope::CaptureMode,
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     collections::BTreeMap,
     mem::size_of,
     sync::{Mutex, PoisonError},
@@ -26,6 +27,19 @@ mod emit;
 mod joins;
 
 pub use emit::Emit;
+
+/// What a projection reads of its walk's world: the countries, and its own tables whole. The
+/// trigger tables a law reads are asked for at the hours it reads them.
+pub fn needs() -> Needs {
+    Needs {
+        countries: true,
+        frame: super::super::prepared::observed_tables(false)
+            .into_iter()
+            .map(|table| (table, Hold::Whole))
+            .collect(),
+        ..Needs::default()
+    }
+}
 
 /// Every text the projections' values name, each once, by an id the
 /// projections and their ordered emits share.
@@ -275,12 +289,21 @@ pub struct Hour {
     states: Vec<(u32, Option<Shipped>)>,
     read: Option<Read>,
     collaboration: Option<Collaboration>,
+    /// The bytes of the naming made since an hour last carried it: the first to carry it
+    /// counts it.
+    shared: usize,
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        // The naming, the progress and the samples' occupied countries are Arcs the projector
-        // holds too; refusals are not counted.
+        // A read's progress goes to its hour alone; samples count the occupied countries they
+        // share. Refusals are not counted.
+        let progress = match &self.collaboration {
+            Some(Collaboration::Read(progress, _)) => {
+                progress.len() * size_of::<((Identity, Identity), (i64, i32))>()
+            }
+            _ => 0,
+        };
         let states: usize = self
             .states
             .iter()
@@ -296,6 +319,7 @@ impl Item for Hour {
                 .map(|sample| {
                     let collaboration = sample.collaboration.as_ref().map_or(0, |held| held.len());
                     collaboration * size_of::<Collab>()
+                        + sample.occupied.len() * size_of::<Identity>()
                         + sample.fact.as_ref().map_or(0, |fact| fact.bytes.capacity())
                 })
                 .sum();
@@ -303,7 +327,11 @@ impl Item for Hour {
                 + read.samples.capacity() * size_of::<Sample>()
                 + samples
         });
-        self.states.capacity() * size_of::<(u32, Option<Shipped>)>() + states + read
+        self.shared
+            + progress
+            + self.states.capacity() * size_of::<(u32, Option<Shipped>)>()
+            + states
+            + read
     }
 }
 
@@ -334,7 +362,7 @@ struct Changes<'h> {
 
 impl<'h> Changes<'h> {
     fn new(
-        hour: &segments::Hour<'h>,
+        hour: &segments::Hour<'h, World>,
         format: FormatVersion,
         tables: &[TableId],
         shapes: &mut [Option<columns::Status>; TABLE_COUNT],
@@ -562,41 +590,12 @@ struct Total {
     held_complete: bool,
 }
 
-/// The trigger tables no law of this walk has read, built at an hour a law
-/// reads the trigger world.
-struct Rest {
-    tables: Vec<TableId>,
-    views: Views,
-    at: Option<i32>,
-}
-
-impl Rest {
-    /// `own` with the rest of the trigger tables at `hour`.
-    fn frame(&mut self, hour: &segments::Hour<'_>, own: &DecodedFrame) -> io::Result<DecodedFrame> {
-        let _cpu = ::replay_frame::cpu::scope("occupation world frame", None);
-        let restart = hour.starts
-            || hour.opens
-            || self.at.and_then(|at| at.checked_add(1)) != Some(hour.hour);
-        let rest = self.views.advance(hour.state, hour.manifest, restart)?;
-        self.at = Some(hour.hour);
-        let mut frame = own.clone();
-        for table in &self.tables {
-            frame.tables[table.index()] = rest.tables[table.index()].clone();
-        }
-        Ok(frame)
-    }
-}
-
 pub struct Projector {
     format: FormatVersion,
-    mode: CaptureMode,
     catalogue: Option<Arc<Catalogue>>,
     scan: Scan<'static>,
     named: Named,
-    countries: Rows<CountryRow>,
-    links: Rows<CountryLinkRow>,
     naming: Option<Arc<Countries>>,
-    country_mask: u64,
     state_mask: u64,
     resistance_mask: u64,
     state_fields: [usize; 4],
@@ -604,14 +603,11 @@ pub struct Projector {
     states: Rows<StateRow>,
     resistance: Rows<StateResistanceRow>,
     pending: BTreeSet<u128>,
-    /// Every table it reads; its frame holds its own, and the trigger tables a
-    /// law of this walk read, every hour.
+    /// Every table it reads; the hour's frame holds its own, and the trigger tables a law
+    /// of this walk read. The others are asked for at an hour a law reads them.
     observed: Vec<TableId>,
     tables: Vec<TableId>,
-    views: Views,
-    /// Whether the next hour builds every view of the frame anew.
-    rebuild: bool,
-    rest: Rest,
+    /// The hour's frame, dropped as the hour ends.
     frame: Option<DecodedFrame>,
     joins: joins::Joins,
     inventory_dirty: BTreeSet<u32>,
@@ -637,6 +633,8 @@ pub struct Projector {
     /// The collaboration progress, once this walk read it or knows there is
     /// none; until then the emit's carries on.
     progress: Option<Arc<Progress>>,
+    /// The bytes of the naming made since an hour last carried it.
+    charged: usize,
 }
 
 fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
@@ -757,33 +755,20 @@ fn shipped(
 impl Projector {
     pub(in crate::products::occupied_states) fn new(
         format: FormatVersion,
-        mode: CaptureMode,
+        _: CaptureMode,
         catalogue: Option<Arc<Catalogue>>,
         scan: Scan<'static>,
         texts: Arc<Texts>,
     ) -> io::Result<Self> {
         let tables = super::super::prepared::observed_tables(false);
         let observed = super::super::prepared::observed_tables(scan.reads_trigger_world());
-        let rest: Vec<_> = observed
-            .iter()
-            .copied()
-            .filter(|table| !tables.contains(table))
-            .collect();
         Ok(Self {
             format,
-            mode,
             catalogue,
             scan,
             named: Named {
                 shared: texts,
                 ids: HashMap::new(),
-            },
-            views: Views::new(&tables, format, mode)?,
-            rebuild: false,
-            rest: Rest {
-                views: Views::new(&rest, format, mode)?,
-                tables: rest,
-                at: None,
             },
             observed,
             tables,
@@ -792,10 +777,7 @@ impl Projector {
             inventory_dirty: BTreeSet::new(),
             inventory_all: true,
             last: None,
-            countries: Rows::default(),
-            links: Rows::default(),
             naming: None,
-            country_mask: mask(TableId::Countries, &["tag", "canonical_slot"])?,
             state_mask: mask(
                 TableId::States,
                 &["owner", "controller", "custom_name", "owner_name"],
@@ -847,34 +829,26 @@ impl Projector {
             evaluated: false,
             garrisons_read: None,
             progress: None,
+            charged: 0,
         })
     }
 
-    /// Moves the trigger tables a law read since into the frame every hour
-    /// holds, which the next hour builds anew.
-    fn grow(&mut self) -> io::Result<()> {
-        let read: BTreeSet<_> = self
-            .scan
-            .eligibility
-            .watched()
-            .filter(|table| self.rest.tables.contains(table))
-            .collect();
-        if read.is_empty() {
-            return Ok(());
+    /// Moves the trigger tables a law read since into the frame every hour holds.
+    fn grow(&mut self) {
+        let observed = &self.observed;
+        let tables = &mut self.tables;
+        for table in self.scan.eligibility.watched() {
+            if observed.binary_search(&table).is_ok() && !tables.contains(&table) {
+                tables.push(table);
+            }
         }
-        self.tables.extend(read.iter().copied());
-        self.tables.sort_unstable();
-        self.rest.tables.retain(|table| !read.contains(table));
-        self.views = Views::new(&self.tables, self.format, self.mode)?;
-        self.rest.views = Views::new(&self.rest.tables, self.format, self.mode)?;
-        self.rest.at = None;
-        self.rebuild = true;
-        Ok(())
+        tables.sort_unstable();
     }
 
-    fn countries(&mut self) -> Arc<Countries> {
-        let countries: Vec<_> = self.countries.rows.values().cloned().collect();
-        let links: Vec<_> = self.links.rows.values().cloned().collect();
+    /// The countries as the walk's roster holds them: their index, links and naming.
+    fn countries(&mut self, roster: &Roster) -> io::Result<Arc<Countries>> {
+        let countries = roster.country_rows()?;
+        let links = roster.links().to_vec();
         let mut refused = Refusals::default();
         let index = Arc::new(country_index(&countries, &links, &mut refused));
         let tags = index
@@ -882,7 +856,7 @@ impl Projector {
             .iter()
             .map(|(&identity, tag)| (identity, self.named.id(tag)))
             .collect();
-        Arc::new(Countries {
+        Ok(Arc::new(Countries {
             naming: Arc::new(Naming {
                 stamp: country_stamp(&countries, &links),
                 refused,
@@ -890,7 +864,7 @@ impl Projector {
             }),
             index,
             links,
-        })
+        }))
     }
 
     fn identity(&self, raw: u32) -> Option<Identity> {
@@ -1148,7 +1122,11 @@ impl Projector {
         Ok(samples)
     }
 
-    fn read(&mut self, hour: &segments::Hour<'_>, countries: &Countries) -> io::Result<Read> {
+    fn read(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        countries: &Countries,
+    ) -> io::Result<Read> {
         let _cpu = ::replay_frame::cpu::scope("occupation projection read", None);
         let reset = !self.evaluated;
         let garrisons = slot_read(
@@ -1229,18 +1207,18 @@ impl Projector {
         scan.countries = Arc::clone(&countries.index);
         scan.result.states.clear();
         scan.positions.clear();
-        // A law reading a table the hour's frame lacks reads every trigger table, built once.
+        // A law reading a table the hour's frame lacks reads every trigger table, asked once.
         let (tables, observed) = (&self.tables, &self.observed);
         let holds = |table: TableId| {
             tables.binary_search(&table).is_ok() || observed.binary_search(&table).is_err()
         };
-        let rest = RefCell::new(&mut self.rest);
         let failed = Cell::new(None);
-        let world = OnceCell::new();
+        let whole = OnceCell::new();
         let every = || {
-            world
+            whole
                 .get_or_init(|| {
-                    rest.borrow_mut().frame(hour, own).map_err(|error| {
+                    let _cpu = ::replay_frame::cpu::scope("occupation world frame", None);
+                    hour.world.frame(hour.state, observed).map_err(|error| {
                         let reason = error.to_string();
                         failed.set(Some(error));
                         reason
@@ -1249,7 +1227,7 @@ impl Projector {
                 .as_ref()
                 .map_err(Clone::clone)
         };
-        let built = || world.get().is_some();
+        let built = || whole.get().is_some();
         scan.read_values(
             eligibility::Frames {
                 hour: own,
@@ -1316,7 +1294,7 @@ impl Projector {
     /// The hour's collaboration read, if it reads it or finds it unavailable.
     fn collaboration(
         &mut self,
-        hour: &segments::Hour<'_>,
+        hour: &segments::Hour<'_, World>,
         timing: &replay_frame::frame::Metrics,
         names: &Countries,
     ) -> io::Result<Option<Collaboration>> {
@@ -1356,30 +1334,25 @@ impl Projector {
     }
 }
 
-impl Operator for Projector {
+impl Operator<World> for Projector {
     type Output = Hour;
 
-    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+    fn hour(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        out: &mut dyn Sink<Hour>,
+    ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("occupation projection", None);
         let version = self.format.version();
         let whole = hour.starts || hour.opens;
-        self.grow()?;
-        let country_edits = self.countries.update(
-            hour.state,
-            TableId::Countries,
-            whole,
-            self.country_mask,
-            |slot| columns::row(hour.state, TableId::Countries, slot, version),
-        )?;
-        let link_edits =
-            self.links
-                .update(hour.state, TableId::CountryLinks, whole, u64::MAX, |slot| {
-                    columns::row(hour.state, TableId::CountryLinks, slot, version)
-                })?;
-        let naming_changed =
-            self.naming.is_none() || !country_edits.is_empty() || !link_edits.is_empty();
+        self.grow();
+        let roster = hour.world.countries()?;
+        let naming_changed = self.naming.is_none() || whole || roster.changed();
         if naming_changed {
-            self.naming = Some(self.countries());
+            let countries = self.countries(roster)?;
+            self.charged +=
+                size_of::<Naming>() + countries.naming.tags.len() * size_of::<(Identity, u32)>();
+            self.naming = Some(countries);
         }
         let names = Arc::clone(self.naming.as_ref().expect("country inputs"));
         let state_fields = self.state_fields;
@@ -1417,9 +1390,7 @@ impl Operator for Projector {
         }
         self.last = Some((hour.branch, hour.hour, valid));
         let edits = Changes::new(hour, self.format, &self.observed, &mut self.shapes);
-        drop(self.frame.take());
-        let rebuild = whole || std::mem::take(&mut self.rebuild);
-        self.frame = Some(self.views.advance(hour.state, hour.manifest, rebuild)?);
+        self.frame = Some(hour.world.frame(hour.state, &self.tables)?);
         let changed = self.joins.update(hour, version, &names, naming_changed)?;
         self.pending.extend(changed.states);
         if changed.all || naming_changed || interrupted {
@@ -1486,6 +1457,8 @@ impl Operator for Projector {
                     (key as u32, row)
                 })
                 .collect();
+        // A frame held into the next hour would have its views copied.
+        self.frame = None;
         out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
@@ -1495,6 +1468,7 @@ impl Operator for Projector {
             states,
             read,
             collaboration,
+            shared: std::mem::take(&mut self.charged),
         })
     }
 }

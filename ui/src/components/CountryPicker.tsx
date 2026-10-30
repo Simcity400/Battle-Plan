@@ -4,12 +4,13 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { CountryMetadata } from '../shell/api';
 import { Icon } from './Icons';
 import { CountryFlag } from './CountryFlag';
-import { forgetSettledProducts, loadProduct, loadTransientProduct } from '../dashboard/products';
-import { FlagStore, flagStore, loadListFlags } from '../dashboard/flagCache';
+import { loadProduct } from '../dashboard/products';
+import { FAILED_FACT } from '../dashboard/countryFacts';
+import { flagReadKey, retryFlags, useFlagReads } from '../dashboard/countryFlags';
 import { useContentRevision } from '../dashboard/contentRevision';
 import { nameKey, useCountryNamesAt, useCountryNamesRead } from '../dashboard/countryNamesAt';
-import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
-import type { CountryFlagImage, CountryFlagParams, CountryFlagReply, CountryFlagSize, LandOwners } from '../generated/dashboard';
+import type { DashboardClient, DashboardSource } from '../dashboard/client';
+import type { CountryFlagImage, CountryFlagSize, LandOwners } from '../generated/dashboard';
 import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, nameAskHour, revealRow, visibleRange } from './countryList';
 import type { CountryOption } from './countryList';
 
@@ -23,15 +24,11 @@ const listView = (scrollTop: number, height: number) => (before: { scrollTop: nu
 
 export interface CountryPickerRead { tag: string; branchId: string; hour: number }
 
-function flagsRequest(context: { sourceId: string; revision: string; branchId: string; hour: number }, size: CountryFlagSize, tags: string[]): ProductRequest<CountryFlagParams> {
-  return { sourceId: context.sourceId, revision: context.revision, product: 'country-flags', params: { branchId: context.branchId, hour: context.hour, tags, size } };
-}
-
-/** Flags are always the game's own files from the recording's content stack. The
- * header shows the country as the game's top bar does (`shield`) at `flagAt`, the
- * playback day; lists use the same styled flags at each country's observed hour.
- * The list renders only the rows in view and loads only their flags, so it costs
- * the same at any country count. */
+/** Flags are always the game's own files from the recording's content stack, as preparation
+ * chose them. The header shows the country as the game's top bar does (`shield`) at `flagAt`,
+ * the playback day; lists use the same styled flags at each country's observed hour. The list
+ * renders only the rows in view and reads only their flags, so it costs the same at any
+ * country count. */
 export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
@@ -119,20 +116,21 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   }, [names, nameContext, allowedTags]);
   const countryName = (country: CountryOption) => choiceReads !== undefined || allowedTags && flagAt
     ? heldNames.get(country.tag) ?? 'Country name unavailable' : country.name;
-  const [flagState, setFlagState] = useState<{ context: typeof nameContext | null; loads: number; error: string | null }>({ context: null, loads: 0, error: null });
-  const [headerFlag, setHeaderFlag] = useState<{ client: DashboardClient | null; identity: string; key: string; image?: CountryFlagImage; error: string | null }>({ client: null, identity: '', key: '', error: null });
   const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
   const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
   const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
   // Only the top bar's own country button keeps the game's shading; flags in panels use it evened out.
   const headerSize: CountryFlagSize = field ? 'panel' : 'shield';
-  const flags = flagStore(client);
   const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
     : allowedTags && flagAt ? { tag: country.tag, ...flagAt }
     : country.observedBranchId != null && country.observedHour != null ? { tag: country.tag, branchId: country.observedBranchId, hour: country.observedHour } : null;
+  // Only the rows in view read flags; each distinct flag is drawn once.
+  const listReads = source ? visible.flatMap(({ country }) => { const at = countryAt(country); return at ? [at] : []; }) : [];
+  const listFlags = useFlagReads(client, source ?? undefined, listReads, true, 'panel');
   const flagOf = (country: CountryOption) => {
     const at = countryAt(country);
-    return source && at ? flags.get(FlagStore.key(source.id, source.revision, at.branchId, at.hour, at.tag)) ?? undefined : undefined;
+    const flag = at ? listFlags.get(flagReadKey(at)) : undefined;
+    return flag && flag !== FAILED_FACT ? flag.image : undefined;
   };
   const flagContext = useMemo(() => {
     if (!source?.metadata.branches.length) return null;
@@ -148,7 +146,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     [choiceReads !== undefined, source?.id, source?.revision, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]); // eslint-disable-line react-hooks/exhaustive-deps
   const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
     : `${sourceKey}:${headerTag}:${headerSize}`;
-  const headerKey = `${headerIdentity}:${headerContext?.branchId}:${headerContext?.hour}`;
   // Whose flag the header shows: another branch is another country history.
   const flagOwner = `${headerIdentity}:${headerContext?.branchId}`;
   // The top bar names its country at the playback day its flag shows; the shown name
@@ -167,32 +164,15 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   }, [headerNameRead, headerIdentity, wantedNameHour, askedName]);
   const datedHeaderName = !headerNameAt.length ? undefined
     : headerName?.identity === headerIdentity ? headerName.name ?? 'Country name unavailable' : headerTag;
-  // A new playback day keeps the current flag on screen until its own flag arrives.
-  const headerImage = headerFlag.client === client && headerFlag.identity === flagOwner ? headerFlag.image : undefined;
-  const flagError = [flagState.context === nameContext ? flagState.error : null, headerFlag.client === client && headerFlag.key === headerKey ? headerFlag.error : null].filter(Boolean).join('\n') || null;
-  // As the name does, a flag read in flight finishes before the newest playback day is
-  // asked, so a slow reply still shows; a change of country, source, branch or size cancels it.
-  const [askedFlag, setAskedFlag] = useState<{ identity: string; client: DashboardClient; context: NonNullable<typeof headerContext> } | null>(null);
-  const flagAsk = askedFlag?.identity === flagOwner && askedFlag.client === client ? askedFlag.context : headerContext;
-  const flagAskKey = `${headerIdentity}:${flagAsk?.branchId}:${flagAsk?.hour}`;
-  useEffect(() => {
-    if (!flagAsk || !headerTag) return;
-    const controller = new AbortController();
-    const request = flagsRequest(flagAsk, headerSize, [headerTag]);
-    // Per-day requests bypass the shared cache so they cannot evict full-branch products.
-    void (live ? loadTransientProduct<CountryFlagReply>(client, request, controller.signal) : loadProduct<CountryFlagReply>(client, request, controller.signal)).then(result => {
-      if (!controller.signal.aborted) setHeaderFlag({ client, identity: flagOwner, key: flagAskKey, image: result.flags.find(image => image.tag === headerTag), error: null });
-    }).catch(error => {
-      // An unreadable hour shows no flag rather than carrying one across it.
-      if (!controller.signal.aborted) setHeaderFlag({ client, identity: flagOwner, key: flagAskKey, image: undefined, error: String(error) });
-    });
-    return () => controller.abort();
-  }, [flagAskKey, client, headerTag, flagOwner, headerSize, live, retry]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    const answered = headerFlag.client === client && headerFlag.key === flagAskKey;
-    if (headerContext && (askedFlag?.identity !== flagOwner || askedFlag.client !== client || answered && askedFlag.context !== headerContext))
-      setAskedFlag({ identity: flagOwner, client, context: headerContext });
-  }, [headerFlag, flagAskKey, headerContext, flagOwner, client, askedFlag]);
+  const headerFlagAt = headerContext && headerTag ? { tag: headerTag, branchId: headerContext.branchId, hour: headerContext.hour } : null;
+  const headerFlags = useFlagReads(client, source ?? undefined, headerFlagAt ? [headerFlagAt] : [], !!headerFlagAt, headerSize);
+  const headerFlag = headerFlagAt ? headerFlags.get(flagReadKey(headerFlagAt)) : undefined;
+  // A new playback day keeps the current flag on screen until its own flag is read; another client, country, branch or size does not.
+  const shownHeader = useRef<{ owner: string; client: DashboardClient | null; image?: CountryFlagImage }>({ owner: '', client: null });
+  if (headerFlag !== undefined || shownHeader.current.owner !== flagOwner || shownHeader.current.client !== client)
+    shownHeader.current = { owner: flagOwner, client, image: headerFlag && headerFlag !== FAILED_FACT ? headerFlag.image : undefined };
+  const headerImage = shownHeader.current.image;
+  const flagFailed = headerFlag === FAILED_FACT || [...listFlags.values()].some(flag => flag === FAILED_FACT);
   useEffect(() => {
     if (!source || allowedTags) return;
     const controller = new AbortController();
@@ -206,28 +186,6 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     });
     return () => controller.abort();
   }, [sourceKey, client, onCountries, retry, allowedTags]);
-  // Only the rows in view ask for flags; stored flags are never requested again.
-  // JSON escapes line breaks, so one line per row keeps the key exact.
-  const visibleTargets = visible.flatMap(({ country }) => {
-    const at = countryAt(country);
-    return at ? [JSON.stringify([at.branchId, at.hour, at.tag])] : [];
-  }).join('\n');
-  useEffect(() => {
-    if (!source || !visibleTargets) return;
-    const targets = visibleTargets.split('\n').map(line => {
-      const [branchId, hour, tag] = JSON.parse(line) as [string, number, string];
-      return { branchId, hour, tag };
-    });
-    const controller = new AbortController();
-    // Reply warnings describe the recording (such as its content coverage), not
-    // a failed flag; only a failed request counts as a flag error.
-    void loadListFlags(client, source, targets, controller.signal).then(() => {
-      if (!controller.signal.aborted) setFlagState(previous => ({ context: nameContext, loads: (previous.context === nameContext ? previous.loads : 0) + 1, error: null }));
-    }).catch(error => {
-      if (!controller.signal.aborted) setFlagState(previous => ({ context: nameContext, loads: previous.context === nameContext ? previous.loads : 0, error: String(error) }));
-    });
-    return () => controller.abort();
-  }, [sourceKey, client, visibleTargets, retry, nameContext]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     if (open && list.current) setView(listView(list.current.scrollTop, list.current.clientHeight || LIST_HEIGHT));
   }, [open]);
@@ -241,8 +199,8 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     scrollTo(revealRow(index, list.current?.scrollTop ?? view.scrollTop, list.current?.clientHeight || view.height));
   };
   const retryCountries = () => {
-    if (onReconnect && [roster.error, flagError].some(error => error?.includes('source is unavailable or changed'))) onReconnect();
-    else { if (source && flagError) forgetSettledProducts(client, source.id); setRetry(value => value + 1); }
+    if (onReconnect && roster.error?.includes('source is unavailable or changed')) onReconnect();
+    else { if (source && flagFailed) retryFlags(client, source.id); setRetry(value => value + 1); }
   };
   const choose = (tag: string | null) => { onChange(tag); if (!inline) menu.close(); };
   const body = <>
@@ -282,7 +240,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
           </div>
           {loading && <p className="country-picker-empty" role="status"><span className="spinner" />Loading countries…</p>}
           {!allowedTags && !loading && roster.error ? <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load countries.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>
-            : flagError && <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load flags.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
+            : flagFailed && <div className="country-picker-note"><Icon name="alert" /><span>Couldn’t load flags.</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
           {!loading && (allowedTags || !roster.error) && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : 'No countries available'}</p>}
         </div>
   </>;

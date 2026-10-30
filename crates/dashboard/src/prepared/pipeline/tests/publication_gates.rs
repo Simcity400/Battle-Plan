@@ -1,6 +1,6 @@
 //! Real queries answer from the one publication they pinned, as its decoded gates hold it: a
-//! series, by any family's reader, stops before its suppliers' first hole and answers before a
-//! refusal, no query reads publication metadata, nor any reader the manifest, a family of
+//! series, by any family's reader (a segment family's from its root), stops before its suppliers'
+//! first hole and answers before a refusal, no query reads publication metadata, nor any reader the manifest, a family of
 //! another version is pending, and a query whose files a later publication removed starts again
 //! on that one. Each store folder's publication is decoded as it was committed, whichever key
 //! binds the folder. Every product's request, point and series alike, answers for the hours it
@@ -12,11 +12,12 @@ use crate::prepared::driver::{
     publication::{Family, Hours, Made, Publisher},
     registry::{self, Descriptor},
 };
-use crate::{
-    prepared_stability::StabilityAccumulator,
-    test_fixtures::{stability_frame, stability_inputs},
+use crate::test_fixtures::{stability_frame, stability_inputs};
+use dashboard_base::prepared::{
+    gates,
+    roots::{self, Binding},
 };
-use dashboard_base::prepared::{gates, roots::Binding};
+use dashboard_forces::products::{army_size, supply_health};
 use serde_json::{Value, json};
 use std::{cell::Cell, collections::BTreeSet, io::Read, path::Path, rc::Rc, sync::Mutex};
 
@@ -42,33 +43,140 @@ fn recording(frames: &[DecodedFrame]) -> Replay {
     replay
 }
 
-/// Writes the stability pages of `frames` and the stability family's coverage of them.
-fn stability_pages(writer: &mut store::Writer, frames: &[DecodedFrame], complete: bool) {
-    let mut accumulator = StabilityAccumulator::default();
+/// Writes the fuel family's pages of `frames` and the identities its replies name countries by.
+fn fuel_pages(
+    writer: &mut store::Writer,
+    format: replay_data::format::FormatVersion,
+    frames: &[DecodedFrame],
+) {
+    let flag = AtomicBool::new(false);
+    let mut fuel = crate::products::country_fuel::prepared::Prepared::default();
+    let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
     for frame in frames {
-        accumulator.observe(frame).unwrap();
+        fuel.observe(frame, format, &flag).unwrap();
+        identities.observe(frame);
     }
-    accumulator
-        .flush(writer, 1, &AtomicBool::new(false))
-        .unwrap();
+    fuel.flush(writer, 1, format, &flag).unwrap();
+    json(writer, &gates::identities_section(1), &identities).unwrap();
+}
+
+/// Publishes the fuel pages of `frames` and the fuel family's coverage of them alone, replacing
+/// whatever `store` published.
+fn publish_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    format: replay_data::format::FormatVersion,
+    frames: &[DecodedFrame],
+) {
+    let mut writer = store.replace(key.clone()).unwrap();
+    fuel_pages(&mut writer, format, frames);
     json(
-        writer,
-        &independent::coverage_section("stability", 1),
+        &mut writer,
+        &independent::coverage_section("fuel", 1),
         &Coverage {
             schema: SCHEMA,
             first_hour: frames[0].hour,
             last_hour: frames[frames.len() - 1].hour,
-            complete,
+            complete: frames.len() == 30,
         },
     )
     .unwrap();
+    writer.commit().unwrap();
 }
 
-/// Publishes the stability pages of `frames` alone, replacing whatever `store` published.
-fn publish_pages(store: &store::Store, key: &store::SourceKey, frames: &[DecodedFrame]) {
-    let mut writer = store.replace(key.clone()).unwrap();
-    stability_pages(&mut writer, frames, frames.len() == 30);
-    writer.commit().unwrap();
+/// The fuel summary of `tag` over `from..=to`.
+fn fuel_summary(tag: &str, from: i32, to: i32) -> Value {
+    json!({"branchId":"1","family":{"kind":"country-fuel"},"tags":[tag],"from":from,"to":to,
+        "width":100})
+}
+
+fn fuel_tag() -> String {
+    String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap()
+}
+
+/// The stability family's facts of GER at `hour`: its stability another value every hour, read
+/// at that hour; a segment's first hour names it again.
+fn stability_hour(hour: i32, first: bool) -> crate::products::country_stability::facts::Hour {
+    use crate::products::country_stability::facts::{Country, Hour};
+    Hour {
+        branch: 1,
+        hour,
+        named: if first {
+            vec![(0, Arc::from("GER"))]
+        } else {
+            Vec::new()
+        },
+        valid: first.then(|| vec![0]),
+        countries: vec![Country {
+            index: 0,
+            holder: (1, 1),
+            read: hour,
+            values: [Some(50_000 + i64::from(hour) * 100), Some(0), Some(0)],
+        }],
+    }
+}
+
+/// Publishes the stability family's root, ten hours a segment from hour 0, each made as
+/// `segments` says: its emit writes the hours each prepared into the root, as the segment driver
+/// does, a refused segment's hours before its refusal. Each segment is a batch; one `queued` is
+/// left uncommitted as the next begins, as a lane leaves it while no other lane commits.
+fn publish_stability(
+    store: &store::Store,
+    key: &store::SourceKey,
+    segments: &[Made],
+    queued: bool,
+) {
+    let family = Family::planned(plan::rows(), &["stability"]).unwrap()[0];
+    let (publisher, _) = Publisher::open(
+        store,
+        key.clone(),
+        Binding::new(b"publication gates", b"no content"),
+        plan::rows(),
+        &[family],
+        &|_, _, _| true,
+    )
+    .unwrap();
+    let mut stage = publisher.stage(family.id).unwrap();
+    let mut emit = crate::products::country_stability::emit::Emit::new();
+    for (index, made) in (0_u32..).zip(segments) {
+        let first = index * 10;
+        let (first_hour, last_hour) = (first as i32, first as i32 + 9);
+        let emitted = match made {
+            Made::Prepared => Some(last_hour),
+            Made::Refused { hour, .. } => (*hour > first_hour).then(|| hour - 1),
+            _ => None,
+        };
+        if let Some(emitted) = emitted {
+            let writer = stage.series(1, 0).unwrap();
+            for hour in first_hour..=emitted {
+                emit.hour(writer, stability_hour(hour, hour == first_hour))
+                    .unwrap();
+            }
+            emit.cut(writer, emitted).unwrap();
+        }
+        let mut state = Vec::new();
+        emit.save(&mut state).unwrap();
+        let hours = Hours {
+            branch: 1,
+            run: 0,
+            first,
+            last: first + 9,
+            first_hour,
+            last_hour,
+            ends_segment: true,
+            ends_branch: false,
+            proof: [index as u8; 32],
+        };
+        stage
+            .processed(hours, made.clone(), Some(state), None)
+            .unwrap();
+        if queued {
+            stage.queue().unwrap();
+        } else {
+            stage.submit().unwrap();
+        }
+    }
+    stage.settle().unwrap();
 }
 
 /// Publishes `family`'s own root over its pages, ten hours a segment from hour `start`, each made
@@ -159,17 +267,42 @@ fn lost() -> Made {
 
 /// A fixture whose stability family prepared hours 0 to 29 as `segments` say.
 fn published(name: &str, segments: &[Made]) -> (Fixture, Arc<Source>) {
+    published_as(name, segments, false)
+}
+
+/// [`published`], each batch `queued` behind the next as it begins.
+fn published_as(name: &str, segments: &[Made], queued: bool) -> (Fixture, Arc<Source>) {
     assert_eq!(
         plan::current().gating("country-stability"),
         Some("stability")
     );
-    let frames = frames();
-    let mut fixture = Fixture::new(&recording(&frames));
+    let mut fixture = Fixture::new(&recording(&frames()));
     let source = fixture.source(name);
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, &frames);
-    publish_root(&store, &key, "stability", 0, segments);
+    publish_stability(&store, &key, segments, queued);
     (fixture, source)
+}
+
+/// A family's batch goes on from the batch its lane queued before, though that batch was not yet
+/// committed as the next began: the series its emit writes into resumes that batch's root, whose
+/// keys are the ones the emit holds, and every reply equals one of batches committed one by one.
+#[test]
+fn a_batch_goes_on_from_the_batch_queued_before_it() {
+    let segments = [Made::Prepared, Made::Prepared, Made::Prepared];
+    let (_committed, one_by_one) = published_as("committed", &segments, false);
+    let (_queued, behind) = published_as("queued", &segments, true);
+    for (product, params) in [
+        ("series-summary", summary(0, 29)),
+        ("series-state", states(&[5, 15, 25])),
+    ] {
+        let replies = [&one_by_one, &behind].map(|source| {
+            let mut reply = reply(source, product, params.clone()).unwrap();
+            reply["data"].take()
+        });
+        assert_eq!(replies[0], replies[1], "{product}");
+    }
+    let reply = reply(&behind, "series-summary", summary(0, 29)).unwrap();
+    assert_eq!(runs(&reply).last().map(|run| run.1), Some(29));
 }
 
 #[test]
@@ -228,11 +361,13 @@ fn a_series_state_before_a_refusal_answers_and_one_across_it_refuses() {
 
 #[test]
 fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
-    let frames = frames();
+    let frames = fuel_frames();
     let mut fixture = Fixture::new(&recording(&frames));
     let source = fixture.source("metadata");
+    let format = source.replay_ref().format;
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, &frames[..10]);
+    publish_pages(&store, &key, format, &frames[..10]);
+    let summary = |from, to| fuel_summary(&fuel_tag(), from, to);
     let read = |params| {
         let before = store::counters::now();
         let answered = reply(&source, "series-summary", params).unwrap();
@@ -244,7 +379,7 @@ fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
     // The committing thread decodes the publication it makes, before its next writer can remove
     // anything an earlier one read.
     let held = gates::current(&store, &key).unwrap();
-    publish_pages(&store, &key, &frames);
+    publish_pages(&store, &key, format, &frames);
     let current = gates::current(&store, &key).unwrap();
     assert!(!Arc::ptr_eq(&held, &current));
     let (second, work) = read(summary(0, 29));
@@ -258,11 +393,12 @@ fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
 
 #[test]
 fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
-    let frames = frames();
+    let frames = fuel_frames();
     let mut fixture = Fixture::new(&recording(&frames));
     let source = fixture.source("restart");
+    let format = source.replay_ref().format;
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, &frames[..10]);
+    publish_pages(&store, &key, format, &frames[..10]);
     let attempts = Rc::new(Cell::new(0));
     let mut later = Some({
         let (store, key) = (Arc::clone(&store), key.clone());
@@ -272,7 +408,7 @@ fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
-                        publish_pages(&store, &key, &frames);
+                        publish_pages(&store, &key, format, &frames);
                         drop(store.extend(&key).unwrap());
                     })
                     .join()
@@ -288,7 +424,7 @@ fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
         }
     });
     crate::prepared::query::ON_PINNED.with(|on| *on.borrow_mut() = Some(hook));
-    let answered = reply(&source, "series-summary", summary(0, 29));
+    let answered = reply(&source, "series-summary", fuel_summary(&fuel_tag(), 0, 29));
     crate::prepared::query::ON_PINNED.with(|on| on.borrow_mut().take());
     let answered = answered.unwrap();
     assert_eq!(attempts.get(), 2, "the query started again once");
@@ -309,9 +445,9 @@ fn bumped(name: &str) -> &'static Descriptor {
     }))
 }
 
-/// Prepares GER's stability recording through the production pipeline.
+/// Prepares the fuel recording through the production pipeline.
 fn prepared(name: &str) -> (Fixture, Arc<Source>) {
-    let frames = frames();
+    let frames = fuel_frames();
     let mut fixture = Fixture::new(&recording(&frames));
     let source = fixture.source(name);
     run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
@@ -322,12 +458,12 @@ fn prepared(name: &str) -> (Fixture, Arc<Source>) {
 fn a_family_published_under_another_version_is_pending_through_every_gate() {
     let (_fixture, source) = prepared("versions");
     let flag = AtomicBool::new(false);
-    let bumped = plan::test_plan(&[bumped("stability")], &independent::row_names()).unwrap();
+    let bumped = plan::test_plan(&[bumped("fuel")], &independent::row_names()).unwrap();
     assert_eq!(bumped.stamp("groups"), plan::rows().stamp("groups"));
     assert_eq!(bumped.gating("country-groups"), Some("groups"));
     plan::with_test_plan(bumped, || {
-        let pending = reply(&source, "series-summary", summary(0, 29)).unwrap();
-        assert_eq!(pending["gate"], json!(["stability"]), "{pending}");
+        let pending = reply(&source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap();
+        assert_eq!(pending["gate"], json!(["fuel"]), "{pending}");
         let coverage = &pending["data"]["coverage"];
         assert_eq!(
             coverage["lastHour"].as_i64(),
@@ -335,11 +471,11 @@ fn a_family_published_under_another_version_is_pending_through_every_gate() {
             "nothing of the old version answers: {pending}"
         );
         let (ranges, short) = crate::prepared::coverage::waiting(|| {
-            crate::prepared::coverage::ranges(&source, None, 1, "country-stability", None, &flag)
+            crate::prepared::coverage::ranges(&source, None, 1, "country-fuel", None, &flag)
                 .unwrap()
         });
         assert_eq!(ranges, Default::default());
-        assert_eq!(short.into_iter().collect::<Vec<_>>(), ["stability"]);
+        assert_eq!(short.into_iter().collect::<Vec<_>>(), ["fuel"]);
         assert!(
             product_coverage(&source, None, 1, "country-groups", &flag)
                 .unwrap()
@@ -347,7 +483,7 @@ fn a_family_published_under_another_version_is_pending_through_every_gate() {
             "a family whose version holds answers"
         );
     });
-    let current = product_coverage(&source, None, 1, "country-stability", &flag).unwrap();
+    let current = product_coverage(&source, None, 1, "country-fuel", &flag).unwrap();
     assert!(current.is_some_and(|coverage| coverage.complete));
 }
 
@@ -390,19 +526,19 @@ fn a_walk_version_change_prepares_the_walk_and_its_dependents_again_alone() {
     let (_fixture, source) = prepared("walk-version");
     let (store, key) = crate::prepared::files(&source, None).unwrap();
     let own = independent::row_names();
-    let army = plan::test_plan(&[bumped("army")], &own).unwrap();
-    assert_ne!(army.walk_stamp(), plan::rows().walk_stamp());
+    let walked = plan::test_plan(&[bumped("resources")], &own).unwrap();
+    assert_ne!(walked.walk_stamp(), plan::rows().walk_stamp());
     let moved: BTreeSet<&str> = own
         .iter()
         .copied()
-        .filter(|name| army.stamp(name) != plan::rows().stamp(name))
+        .filter(|name| walked.stamp(name) != plan::rows().stamp(name))
         .collect();
-    assert!(!moved.contains("stability"));
-    let kept = owned(&store, &key, "stability");
+    assert!(!moved.contains("fuel"));
+    let kept = owned(&store, &key, "fuel");
     assert!(!kept.is_empty());
     let republished = Arc::new(Mutex::new(BTreeSet::new()));
     let seen = Arc::clone(&republished);
-    plan::with_test_plan(army, || {
+    plan::with_test_plan(walked, || {
         independent::with_test_on_publish(
             move |family, _| {
                 seen.lock().unwrap().insert(family.to_owned());
@@ -418,20 +554,27 @@ fn a_walk_version_change_prepares_the_walk_and_its_dependents_again_alone() {
             .all(|family| moved.contains(family.as_str())),
         "only families whose stamp moved publish again: {republished:?}, moved {moved:?}"
     );
-    assert_eq!(owned(&store, &key, "stability"), kept);
+    assert_eq!(owned(&store, &key, "fuel"), kept);
     let current = gates::current(&store, &key).unwrap();
     let versions = current.versions().unwrap().unwrap();
-    assert_eq!(versions.walk, army.walk_stamp(), "the walk published again");
+    assert_eq!(
+        versions.walk,
+        walked.walk_stamp(),
+        "the walk published again"
+    );
 }
 
 #[test]
 fn a_publication_under_a_grown_recording_s_key_is_decoded_as_it_was_committed() {
-    let frames = frames();
+    let frames = fuel_frames();
     let mut fixture = Fixture::new(&recording(&frames[..10]));
     let first = fixture.source("first");
+    let format = first.replay_ref().format;
     let (store, key) = crate::prepared::files(&first, None).unwrap();
-    publish_pages(&store, &key, &frames[..10]);
-    let read = |source: &Source| reply(source, "series-summary", summary(0, 29)).unwrap();
+    publish_pages(&store, &key, format, &frames[..10]);
+    let read = |source: &Source| {
+        reply(source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap()
+    };
     assert_eq!(read(&first)["data"]["coverage"]["lastHour"], 9);
     // Binding the grown recording checks its key against the shorter one's manifest, which
     // refuses it until its own first commit.
@@ -447,7 +590,7 @@ fn a_publication_under_a_grown_recording_s_key_is_decoded_as_it_was_committed() 
         "nothing is published to the grown recording yet: {cold}"
     );
     // Its one commit, with none after it.
-    publish_pages(&store, &key, &frames);
+    publish_pages(&store, &key, format, &frames);
     let answered = read(&grown);
     assert!(answered.get("gate").is_none(), "{answered}");
     let coverage = &answered["data"]["coverage"];
@@ -475,14 +618,14 @@ fn open(path: &Path, name: &str) -> Arc<Source> {
 
 #[test]
 fn binding_another_key_of_a_store_leaves_its_publication_current() {
-    let frames = frames();
+    let frames = fuel_frames();
     let replay = recording(&frames);
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("published");
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, &frames);
+    publish_pages(&store, &key, replay.format, &frames);
     let complete = |source: &Source| {
-        let answered = reply(source, "series-summary", summary(0, 29)).unwrap();
+        let answered = reply(source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap();
         answered["data"]["coverage"]["complete"].clone()
     };
     assert_eq!(complete(&source), true);
@@ -565,20 +708,11 @@ fn fuel_published(name: &str, segments: &[Made]) -> (Fixture, Arc<Source>, Strin
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source(name);
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    let flag = AtomicBool::new(false);
-    let mut fuel = crate::products::country_fuel::prepared::Prepared::default();
-    let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
-    for frame in &frames {
-        fuel.observe(frame, replay.format, &flag).unwrap();
-        identities.observe(frame);
-    }
     let mut writer = store.replace(key.clone()).unwrap();
-    fuel.flush(&mut writer, 1, replay.format, &flag).unwrap();
-    json(&mut writer, &gates::identities_section(1), &identities).unwrap();
+    fuel_pages(&mut writer, replay.format, &frames);
     writer.commit().unwrap();
     publish_root(&store, &key, "fuel", 0, segments);
-    let tag = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
-    (fixture, source, tag)
+    (fixture, source, fuel_tag())
 }
 
 fn fuel_states(tag: &str, hours: &[i32]) -> Value {
@@ -848,5 +982,173 @@ fn an_intelligence_range_from_its_first_hole_on_answers_nothing_before_dispatch(
         let answered = reply(&source, product, params).unwrap();
         assert!(answered["data"].is_null(), "{product}: {answered}");
         assert_eq!(answered["holes"][0]["firstHour"], 10, "{product}");
+    }
+}
+
+/// A series family's emit, writing GER's hours: a segment's first names it again.
+trait Writes {
+    fn hour(&mut self, series: &mut roots::Series, hour: i32, first: bool) -> io::Result<()>;
+    fn cut(&mut self, series: &mut roots::Series, last: i32) -> io::Result<()>;
+}
+
+impl Writes for crate::products::country_stability::emit::Emit {
+    fn hour(&mut self, series: &mut roots::Series, hour: i32, first: bool) -> io::Result<()> {
+        crate::products::country_stability::emit::Emit::hour(
+            self,
+            series,
+            stability_hour(hour, first),
+        )
+    }
+
+    fn cut(&mut self, series: &mut roots::Series, last: i32) -> io::Result<()> {
+        crate::products::country_stability::emit::Emit::cut(self, series, last)
+    }
+}
+
+impl Writes for army_size::emit::Emit {
+    fn hour(&mut self, series: &mut roots::Series, hour: i32, first: bool) -> io::Result<()> {
+        let divisions = i128::from(hour) + 1;
+        let fact = army_size::facts::Hour {
+            branch: 1,
+            hour,
+            named: if first {
+                vec![(0, Arc::from("GER"))]
+            } else {
+                Vec::new()
+            },
+            live: first.then(|| vec![0]),
+            countries: vec![army_size::facts::Country {
+                index: 0,
+                holder: (1, 1),
+                totals: Some([Some(divisions); 8]),
+                mix: None,
+            }],
+            divisions: true,
+            strength: true,
+            manpower: true,
+            battalions: true,
+            fallback: false,
+            unreadable: 0,
+            composition_unreadable: 0,
+            invalid: Vec::new(),
+            aid: army_size::aid::Projection::default(),
+        };
+        army_size::emit::Emit::hour(self, series, fact)
+    }
+
+    fn cut(&mut self, series: &mut roots::Series, last: i32) -> io::Result<()> {
+        army_size::emit::Emit::cut(self, series, last)
+    }
+}
+
+impl Writes for supply_health::emit::Emit {
+    fn hour(&mut self, series: &mut roots::Series, hour: i32, first: bool) -> io::Result<()> {
+        let fact = supply_health::facts::Hour {
+            branch: 1,
+            hour,
+            named: if first {
+                vec![(0, Arc::from("GER"))]
+            } else {
+                Vec::new()
+            },
+            whole: first,
+            countries: vec![supply_health::facts::Country {
+                index: 0,
+                holder: Some((1, 1)),
+                counts: Some([1, 2, hour as u32]),
+            }],
+            land_present: true,
+        };
+        supply_health::emit::Emit::hour(self, series, fact)
+    }
+
+    fn cut(&mut self, series: &mut roots::Series, last: i32) -> io::Result<()> {
+        supply_health::emit::Emit::cut(self, series, last)
+    }
+}
+
+/// Publishes `family`'s root through its stage, ten hours a segment from hour 0 over `segments`
+/// segments of one branch, each a batch, `emit` writing every hour; each batch `queued` is left
+/// uncommitted as the next begins. What the store then publishes of the family.
+fn publish_series(
+    source: &Source,
+    family: &str,
+    emit: &mut dyn Writes,
+    segments: u32,
+    queued: bool,
+) -> roots::Published {
+    let (store, key) = crate::prepared::files(source, None).unwrap();
+    let family = Family::planned(plan::rows(), &[family]).unwrap()[0];
+    let (publisher, _) = Publisher::open(
+        &store,
+        key.clone(),
+        Binding::new(b"publication gates", b"no content"),
+        plan::rows(),
+        &[family],
+        &|_, _, _| true,
+    )
+    .unwrap();
+    let mut stage = publisher.stage(family.id).unwrap();
+    for index in 0..segments {
+        let first = index * 10;
+        let (first_hour, last_hour) = (first as i32, first as i32 + 9);
+        let writer = stage.series(1, 0).unwrap();
+        for hour in first_hour..=last_hour {
+            emit.hour(writer, hour, hour == first_hour).unwrap();
+        }
+        emit.cut(writer, last_hour).unwrap();
+        let hours = Hours {
+            branch: 1,
+            run: 0,
+            first,
+            last: first + 9,
+            first_hour,
+            last_hour,
+            ends_segment: true,
+            ends_branch: index + 1 == segments,
+            proof: [index as u8; 32],
+        };
+        stage.processed(hours, Made::Prepared, None, None).unwrap();
+        if queued {
+            stage.queue().unwrap();
+        } else {
+            stage.submit().unwrap();
+        }
+    }
+    stage.settle().unwrap();
+    drop(stage);
+    drop(publisher);
+    let snapshot = store.current().unwrap().unwrap();
+    roots::read(&mut &snapshot, family.id.name(), 1)
+        .unwrap()
+        .unwrap()
+}
+
+/// Every family on the series engine goes on through four segments of one branch, each batch
+/// from the one before though that one was not yet committed as it began: no key its emit holds
+/// is unknown to the series it writes, and what it publishes equals what batches committed one
+/// by one publish.
+#[test]
+fn every_series_family_goes_on_from_its_queued_batch_through_its_segments() {
+    let mut fixture = Fixture::new(&recording(&frames()));
+    let configured = supply_health::Configured::read(&fixture.source("content"), None).unwrap();
+    for family in ["stability", "army", "supply"] {
+        let published = [false, true].map(|queued| {
+            let source = fixture.source(&format!("{family}-{queued}"));
+            let mut emit: Box<dyn Writes> = match family {
+                "stability" => Box::new(crate::products::country_stability::emit::Emit::new()),
+                "army" => Box::new(army_size::emit::Emit::new()),
+                _ => Box::new(configured.emit()),
+            };
+            publish_series(&source, family, &mut *emit, 4, queued)
+        });
+        let frontier = &published[1].frontier;
+        assert_eq!(
+            (frontier.first_hour, frontier.last_hour, frontier.segments),
+            (0, 39, 4),
+            "{family}"
+        );
+        assert!(frontier.complete, "{family}");
+        assert_eq!(published[0], published[1], "{family}");
     }
 }

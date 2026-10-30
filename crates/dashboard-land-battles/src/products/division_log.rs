@@ -40,6 +40,7 @@ pub mod block;
 pub mod columnar;
 mod newest;
 pub mod prepared;
+pub mod served;
 
 pub struct DivisionLog;
 pub struct DivisionLogManifest;
@@ -1434,6 +1435,7 @@ impl Scan {
 impl Product for DivisionLog {
     const KEY: &'static str = "division-log";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = DivisionLogParams;
     type Reply = DivisionLogReply;
     fn types() -> Vec<String> {
@@ -1459,6 +1461,7 @@ impl Product for DivisionLog {
 impl Product for DivisionLogManifest {
     const KEY: &'static str = "division-log-manifest";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = BranchParams;
     type Reply = DivisionLogManifestReply;
     fn types() -> Vec<String> {
@@ -1482,6 +1485,7 @@ impl Product for DivisionLogManifest {
 impl Product for DivisionLogTotals {
     const KEY: &'static str = "division-log-totals";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = DivisionLogTotalsParams;
     type Reply = DivisionLogTotalsReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

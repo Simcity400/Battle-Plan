@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ContentRevision, contentRevision } from './contentRevision.ts';
 import { loadProduct, productKey } from './products.ts';
-import { FlagStore, flagStore } from './flagCache.ts';
 import type { DashboardClient, ProductRequest } from './client';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 
@@ -125,16 +124,10 @@ test('content becoming available re-requests successful but empty replies at the
   assert.deepEqual(await loadProduct(client, request, signal()), { name: null });
   assert.deepEqual(await loadProduct(client, request, signal()), { name: null });
   assert.equal(calls, 1);
-  // The flag list's answered empty result depends on this same configuration.
-  const oldFlags = flagStore(client);
-  const key = FlagStore.key('same', 'same', '1', 200, 'ABC');
-  oldFlags.set(key, null);
   ready = true;
   revision.observe({ game: 'game', user: 'user', contentReady: true });
   assert.deepEqual(await loadProduct(client, request, signal()), { name: 'Current country' });
   assert.equal(calls, 2);
-  assert.equal(flagStore(client).get(key), undefined);
-  assert.notEqual(flagStore(client), oldFlags);
   // Another client has an independent content scope.
   assert.equal(contentRevision({} as DashboardClient).snapshot(), 0);
 });

@@ -491,6 +491,7 @@ mod scan;
 pub use scan::columnar;
 #[cfg(test)]
 pub(super) use scan::scan_history;
+pub mod served;
 mod trend;
 
 #[cfg(test)]
@@ -727,6 +728,7 @@ fn window_reply_of<'a>(
 impl Product for OccupiedStates {
     const KEY: &'static str = "occupied-states";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = OccupiedStatesParams;
     type Reply = OccupiedStatesReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -770,6 +772,7 @@ impl Product for OccupiedStates {
 impl Product for OccupiedStatesManifest {
     const KEY: &'static str = "occupied-states-manifest";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = BranchParams;
     type Reply = OccupiedStatesManifestReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

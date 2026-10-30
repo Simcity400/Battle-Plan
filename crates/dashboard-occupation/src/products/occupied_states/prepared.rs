@@ -125,6 +125,11 @@ impl Prepared {
         )
     }
 
+    /// What a projection reads of its walk's world.
+    pub fn needs(&self) -> dashboard_world::Needs {
+        columnar::needs()
+    }
+
     /// The ordered emit of one branch's projected hours.
     pub fn emit(&self) -> columnar::Emit {
         columnar::Emit::new(

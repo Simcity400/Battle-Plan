@@ -24,8 +24,20 @@ const CARRY: &str = "preparation-carry-";
 pub const PAGE_INTERVALS: usize = 256;
 
 // Root, node and heap pages of publications read and written; frontiers are small.
-static BUDGET: Budget = Budget::new(64 << 20);
-static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&BUDGET));
+static PAGES: Budget = Budget::new(128 << 20);
+// The rows every family's open writer appended before its batch publishes, apart from the pages
+// so that cached pages, which a writer cannot evict, never starve one.
+static WRITERS: Budget = Budget::new(512 << 20);
+
+/// The rows a family's open writers may hold before its batch ends and publishes them.
+pub const SERIES_BATCH_BYTES: usize = 32 << 20;
+
+/// Whether open writers hold half of what every writer may: a family holding rows ends its
+/// batch, so the next appends of every family still fit.
+pub fn series_pressed() -> bool {
+    WRITERS.used() >= WRITERS.limit() / 2
+}
+static CACHE: LazyLock<Cache<'static>> = LazyLock::new(|| Cache::new(&PAGES));
 
 fn cache() -> &'static Cache<'static> {
     &CACHE
@@ -441,6 +453,50 @@ fn named_bytes(
     Ok(Some(bytes))
 }
 
+/// The directory of `published`, `family`'s publication on `branch` as `writer` holds it, its
+/// keys spelled under `schema`: what an emit going on from it takes its actors and keys up from.
+pub fn directory(
+    writer: &mut store::Writer,
+    family: &str,
+    branch: u64,
+    published: &Published,
+    schema: u64,
+) -> io::Result<series::family::Directory> {
+    let section = root_section(family, branch);
+    let io = StoreWrite {
+        writer,
+        section: &section,
+    };
+    let mut snapshot = series::Snapshot::open(io, cache(), published.root, published.identity)?;
+    series::family::Directory::read(&mut snapshot, schema)
+}
+
+/// The series writer a family's step appends its output to.
+pub type Series = series::Writer<'static>;
+
+/// The series writer a step of `family` on `branch` appends the family's output to: `previous`'s
+/// publication resumed, or a new one from `first_hour`. [`publish`] cuts it with the step.
+pub fn writer(
+    writer: &mut store::Writer,
+    family: &str,
+    branch: u64,
+    identity: series::Identity,
+    previous: Option<&Published>,
+    first_hour: i32,
+) -> io::Result<Series> {
+    let section = root_section(family, branch);
+    let mut io = StoreWrite {
+        writer,
+        section: &section,
+    };
+    match previous {
+        Some(previous) => {
+            series::Writer::resume(&mut io, cache(), &WRITERS, previous.root, identity)
+        }
+        None => series::Writer::new(&WRITERS, identity, first_hour),
+    }
+}
+
 /// What one batch of a family did on a branch.
 pub struct Step<'a> {
     /// Where it leaves the family; its ledger pages, prepared hours, first hole and state
@@ -450,6 +506,9 @@ pub struct Step<'a> {
     pub intervals: &'a [Interval],
     pub state: Option<&'a [u8]>,
     pub carry: Option<&'a [u8]>,
+    /// The family's output on the series engine ([`writer`]), appended through the frontier's
+    /// last hour; None when the step writes none.
+    pub series: Option<Series>,
 }
 
 /// Publishes `step` of `family` on `branch` into `writer` after `previous`, the family's last
@@ -555,9 +614,14 @@ pub fn publish(
         writer,
         section: &section,
     };
-    let mut series = match previous {
-        Some(previous) => series::Writer::resume(&mut io, cache(), previous.root, identity)?,
-        None => series::Writer::new(&BUDGET, identity, frontier.first_hour)?,
+    let mut series = match step.series.take() {
+        Some(series) => series,
+        None => match previous {
+            Some(previous) => {
+                series::Writer::resume(&mut io, cache(), &WRITERS, previous.root, identity)?
+            }
+            None => series::Writer::new(&WRITERS, identity, frontier.first_hour)?,
+        },
     };
     let checkpoint = series.blob(&mut bytes.as_slice(), bytes.len() as u64)?;
     let pending = series.cut(publication, checkpoint)?;

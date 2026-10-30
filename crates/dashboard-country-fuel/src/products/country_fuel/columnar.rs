@@ -1,6 +1,7 @@
 use super::*;
+use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
-    columnar_frames::{Views, metrics},
+    columnar_frames::metrics,
     columns,
     container::Replay,
     segments::{self, Item, Operator, Sink, State},
@@ -10,7 +11,16 @@ use replay_data::{
     rows::{FuelDemandPartRow, RowCodec, TABLE_COUNT, TableRows},
 };
 use replay_frame::frame::TableView;
-use std::{collections::HashMap, mem::size_of};
+use std::mem::size_of;
+
+/// What a projection reads of its walk's world: the countries and the states' owners.
+pub fn needs() -> Needs {
+    Needs {
+        countries: true,
+        owners: true,
+        ..Needs::default()
+    }
+}
 
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
@@ -138,20 +148,13 @@ struct Summary {
 
 pub struct Projector {
     format: FormatVersion,
-    naming: Views,
-    country_fields: [usize; 2],
-    owner_field: usize,
     shapes: [Option<columns::Status>; TABLE_COUNT],
     frontier: Option<i32>,
+    /// Each tag's holder, as the walk's countries give it, and each slot's tags.
     identities: BTreeMap<String, Option<Identity>>,
     tags: BTreeMap<u32, BTreeSet<String>>,
-    slots: HashMap<u32, u32>,
-    countries_complete: bool,
-    links_complete: bool,
-    states_complete: bool,
-    owners: Cells<u32>,
-    owner_counts: BTreeMap<u32, usize>,
-    unresolved: usize,
+    /// Whether the owners were valid the hour before, and some state's owner unresolved.
+    owned: (bool, bool),
     fuel: Cells<Arc<CountryFuelRow>>,
     by_slot: BTreeMap<u32, BTreeMap<u128, Arc<CountryFuelRow>>>,
     parts: Cells<Arc<FuelDemandPartRow>>,
@@ -167,27 +170,15 @@ impl Projector {
 
     pub fn with_format(
         format: FormatVersion,
-        mode: replay_data::scope::CaptureMode,
+        _: replay_data::scope::CaptureMode,
     ) -> io::Result<Self> {
         Ok(Self {
             format,
-            naming: Views::new(&[TableId::Countries, TableId::CountryLinks], format, mode)?,
-            country_fields: [
-                columns::field(TableId::Countries, "tag")?,
-                columns::field(TableId::Countries, "canonical_slot")?,
-            ],
-            owner_field: columns::field(TableId::States, "owner")?,
             shapes: [None; TABLE_COUNT],
             frontier: None,
             identities: BTreeMap::new(),
             tags: BTreeMap::new(),
-            slots: HashMap::new(),
-            countries_complete: false,
-            links_complete: false,
-            states_complete: false,
-            owners: Cells::default(),
-            owner_counts: BTreeMap::new(),
-            unresolved: 0,
+            owned: (false, false),
             fuel: Cells::default(),
             by_slot: BTreeMap::new(),
             parts: Cells::default(),
@@ -197,33 +188,14 @@ impl Projector {
         })
     }
 
-    fn owner(&mut self, raw: u32, add: bool, reached: &mut BTreeSet<u32>) {
-        if let Some(&slot) = self.slots.get(&raw) {
-            let before = self.owner_counts.get(&slot).copied().unwrap_or(0);
-            let after = if add { before + 1 } else { before - 1 };
-            if after == 0 {
-                self.owner_counts.remove(&slot);
-            } else {
-                self.owner_counts.insert(slot, after);
-            }
-            if (before == 0) != (after == 0) {
-                reached.insert(slot);
-            }
-        } else if add {
-            self.unresolved += 1;
-        } else {
-            self.unresolved -= 1;
-        }
-    }
-
     fn index_fuel(
         &mut self,
-        key: u128,
-        row: Arc<CountryFuelRow>,
+        countries: &Roster,
+        (key, row): (u128, Arc<CountryFuelRow>),
         add: bool,
         reached: &mut BTreeSet<u32>,
     ) {
-        if let Some(&slot) = self.slots.get(&row.country) {
+        if let Some(slot) = countries.slot_of(row.country) {
             reached.insert(slot);
             if add {
                 self.by_slot.entry(slot).or_default().insert(key, row);
@@ -304,11 +276,17 @@ impl Projector {
     }
 }
 
-impl Operator for Projector {
+impl Operator<World> for Projector {
     type Output = Hour;
 
-    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+    fn hour(
+        &mut self,
+        hour: &segments::Hour<'_, World>,
+        out: &mut dyn Sink<Hour>,
+    ) -> io::Result<()> {
         let state = hour.state;
+        let (countries, owners) = (hour.world.countries()?, hour.world.owners()?);
+        let countries_complete = countries.countries_complete();
         let continuous = self.frontier.and_then(|at| at.checked_add(1)) == Some(hour.hour);
         let mut changed = [false; TABLE_COUNT];
         let mut whole = [false; TABLE_COUNT];
@@ -326,99 +304,42 @@ impl Operator for Projector {
                 || !edits.deleted.is_empty();
             self.shapes[index] = Some(status);
         }
-        let edits = columns::changes(state, TableId::Countries)?;
-        let mask = self
-            .country_fields
-            .iter()
-            .fold(0_u64, |mask, &field| mask | (1_u64 << field));
         let identities_changed = whole[TableId::Countries.index()]
             || changed[TableId::CountryLinks.index()]
-            || !edits.inserted.is_empty()
-            || !edits.deleted.is_empty()
-            || edits
-                .masks
-                .iter()
-                .chain(&edits.fill_masks)
-                .any(|value| value & mask != 0);
+            || countries.changed();
         let mut reached = BTreeSet::new();
         let mut unnamed = BTreeSet::new();
         if identities_changed {
             reached.extend(self.identities.keys().cloned());
-            let frame = self.naming.advance(state, hour.manifest, true)?;
-            self.countries_complete = columns::complete(state, TableId::Countries);
-            self.links_complete = columns::complete(state, TableId::CountryLinks);
-            self.slots = frame
-                .complete::<tables::CountryLinks>()
-                .map(resolved_slots)
-                .unwrap_or_default();
             self.identities.clear();
             self.tags.clear();
-            if let Ok(countries) = frame.complete::<tables::Countries>() {
-                if self.links_complete {
-                    let keys = dashboard_text::metadata::CountryKeys::read(countries);
-                    for (tag, identity) in tagged_identities(keys.iter(), &self.slots) {
-                        if let Ok(tag) = std::str::from_utf8(tag) {
-                            let tag = tag.to_owned();
-                            if let Some((slot, _)) = identity {
-                                self.tags.entry(slot).or_default().insert(tag.clone());
-                            }
-                            self.identities.insert(tag.clone(), identity);
-                            reached.insert(tag);
-                        } else if let Some((_, id)) = identity {
-                            unnamed.insert(id);
-                        }
+            // Each tag's first holder by id whose identity the links resolve.
+            for tag in countries.held().filter(|_| countries.complete()) {
+                let identity = match countries.tagged(tag) {
+                    Tagged::Found(country) => Some((country.slot, country.id)),
+                    Tagged::Absent | Tagged::Unresolved => None,
+                };
+                if let Ok(tag) = std::str::from_utf8(countries.tag(tag)) {
+                    let tag = tag.to_owned();
+                    if let Some((slot, _)) = identity {
+                        self.tags.entry(slot).or_default().insert(tag.clone());
                     }
+                    self.identities.insert(tag.clone(), identity);
+                    reached.insert(tag);
+                } else if let Some((_, id)) = identity {
+                    unnamed.insert(id);
                 }
             }
         }
-        let mut owner_reached = BTreeSet::new();
-        let unresolved_before = self.unresolved != 0;
-        let states_complete = columns::complete(state, TableId::States);
-        let owner_valid_before =
-            self.states_complete && self.countries_complete && self.links_complete;
-        if changed[TableId::States.index()] {
-            let owner_field = self.owner_field;
-            let edits = self.owners.update(
-                state,
-                TableId::States,
-                whole[TableId::States.index()],
-                Some(1_u64 << owner_field),
-                |slot| {
-                    columns::plain::<u32>(columns::table(state, TableId::States)?, owner_field)?
-                        .get(slot as usize)
-                        .copied()
-                        .ok_or_else(|| io::Error::other("State owner outside column"))
-                },
-            )?;
-            if !identities_changed {
-                for (_, old, now) in edits {
-                    if old == now {
-                        continue;
-                    }
-                    if let Some(old) = old {
-                        self.owner(old, false, &mut owner_reached);
-                    }
-                    if let Some(now) = now {
-                        self.owner(now, true, &mut owner_reached);
-                    }
-                }
-            }
-        }
-        if identities_changed {
-            self.owner_counts.clear();
-            self.unresolved = 0;
-            let owners: Vec<_> = self.owners.rows.values().copied().collect();
-            for owner in owners {
-                self.owner(owner, true, &mut owner_reached);
-            }
-        }
-        self.states_complete = states_complete;
-        let owner_valid = states_complete && self.countries_complete && self.links_complete;
-        if owner_valid_before != owner_valid || unresolved_before != (self.unresolved != 0) {
+        let owner_valid = owners.complete() && countries.complete();
+        let unresolved = owners.unresolved() != 0;
+        if std::mem::replace(&mut self.owned, (owner_valid, unresolved))
+            != (owner_valid, unresolved)
+        {
             reached.extend(self.identities.keys().cloned());
         } else {
-            for slot in owner_reached {
-                reached.extend(self.tags.get(&slot).into_iter().flatten().cloned());
+            for slot in owners.reached() {
+                reached.extend(self.tags.get(slot).into_iter().flatten().cloned());
             }
         }
         let mut fuel_reached = BTreeSet::new();
@@ -441,10 +362,10 @@ impl Operator for Projector {
             if !identities_changed {
                 for (key, old, now) in edits {
                     if let Some(old) = old {
-                        self.index_fuel(key, old, false, &mut fuel_reached);
+                        self.index_fuel(countries, (key, old), false, &mut fuel_reached);
                     }
                     if let Some(now) = now {
-                        self.index_fuel(key, now, true, &mut fuel_reached);
+                        self.index_fuel(countries, (key, now), true, &mut fuel_reached);
                     }
                 }
             }
@@ -457,8 +378,8 @@ impl Operator for Projector {
                 .iter()
                 .map(|(&key, row)| (key, Arc::clone(row)))
                 .collect();
-            for (key, row) in fuel {
-                self.index_fuel(key, row, true, &mut fuel_reached);
+            for row in fuel {
+                self.index_fuel(countries, row, true, &mut fuel_reached);
             }
         }
         for slot in &fuel_reached {
@@ -514,10 +435,8 @@ impl Operator for Projector {
             let identity = self.identities.get(&tag).copied().flatten();
             let seen = if owner_valid {
                 match identity {
-                    Some(identity) if self.owner_counts.contains_key(&identity.0) => {
-                        Some((Some(identity), true))
-                    }
-                    Some(identity) if self.unresolved == 0 => Some((Some(identity), false)),
+                    Some(identity) if owners.owned(identity.0) > 0 => Some((Some(identity), true)),
+                    Some(identity) if !unresolved => Some((Some(identity), false)),
                     None if !present => Some((None, false)),
                     _ => None,
                 }
@@ -563,7 +482,7 @@ impl Operator for Projector {
             available,
             refresh_levels: changed[TableId::CountryFuel.index()]
                 || changed[TableId::CountryLinks.index()],
-            countries_complete: self.countries_complete,
+            countries_complete,
         })?;
         self.frontier = Some(hour.hour);
         Ok(())

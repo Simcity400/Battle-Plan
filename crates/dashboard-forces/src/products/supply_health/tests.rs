@@ -1,14 +1,27 @@
 use super::*;
-use dashboard_base::{
-    source::SourceKey,
-    test_fixtures::{CAMPAIGN, records, source},
+use dashboard_base::products::country_history::{
+    CountryIdentityRun, RecordedCountry, RecordedHistories,
+};
+use dashboard_series::{
+    Blob, Budget, Cache, Publication, Snapshot, Span, Writer,
+    family::Directory,
+    memory::{Memory, publish},
+};
+use facts::{Country, Hour};
+use replay::{
+    columnar_frames::synthetic::{Input, Sample, Synthetic},
+    segments::{self, Operator},
 };
 use replay_data::{
-    rows::CountryLinkRow, rows::CountryRow, rows::DivisionManpowerContributor, rows::DivisionRow,
-    rows::DivisionStatusRow, rows::Recorded, rows::TableRows,
+    format::FormatVersion,
+    rows::{
+        CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionRow, DivisionStatusRow,
+        Recorded, RowCodec, TableId,
+    },
+    scope::CaptureMode,
 };
-use replay_frame::frame::TableView;
-use std::path::PathBuf;
+use serde_json::json;
+use std::{sync::Arc, sync::atomic::AtomicBool};
 
 fn defines() -> Defines {
     // Synthetic content, deliberately different from shipped thresholds.
@@ -19,667 +32,576 @@ fn defines() -> Defines {
         low_icon: 40_000,
     }
 }
-fn supply(received: i64, remaining_grace: i64) -> Supply {
-    Supply {
-        received,
-        maximum_grace: 1_000_000,
-        remaining_grace,
-        naval_transfer: false,
+
+fn identity() -> dashboard_series::Identity {
+    dashboard_series::Identity {
+        source: [1; 32],
+        content: [2; 32],
+        branch: [3; 32],
+        schema: 4,
     }
-}
-fn land(division: u64) -> DivisionLandInputsRow {
-    DivisionLandInputsRow {
-        division,
-        ..Default::default()
-    }
-}
-fn status(division: u64, received: i64, remaining_grace: i64) -> DivisionStatusRow {
-    DivisionStatusRow {
-        division,
-        supply_ratio: received,
-        supply_grace_maximum: Recorded::Value(1_000_000),
-        supply_grace_remaining: Recorded::Value(remaining_grace),
-        ..Default::default()
-    }
-}
-pub fn frame(hour: i32) -> DecodedFrame {
-    let mut frame = source(1, hour, None);
-    *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(vec![
-        DivisionRow {
-            id: 1,
-            roster_owner: 11,
-            ..Default::default()
-        },
-        DivisionRow {
-            id: 2,
-            roster_owner: 11,
-            ..Default::default()
-        },
-        DivisionRow {
-            id: 3,
-            roster_owner: 11,
-            ..Default::default()
-        },
-        DivisionRow {
-            id: 4,
-            roster_owner: 11,
-            ..Default::default()
-        },
-    ]));
-    *frame.tables[TableId::DivisionLandInputs.index()] =
-        TableView::Complete(TableRows::DivisionLandInputs(vec![
-            land(1),
-            land(2),
-            land(3),
-            land(4),
-        ]));
-    *frame.tables[TableId::DivisionStatus.index()] =
-        TableView::Complete(TableRows::DivisionStatus(vec![
-            status(1, 0, 1_000_000),
-            status(2, 14_999, 0),
-            status(3, 15_000, 0),
-            status(4, 40_000, 0),
-        ]));
-    frame
-}
-fn tags() -> Vec<String> {
-    vec!["GER".into()]
-}
-fn counts(run: &SupplyHealthRun) -> [u32; 3] {
-    [run.no_supply, run.strained, run.in_supply]
 }
 
+/// A publication built hour by hour from facts, cut after each of `cuts`' hours.
+struct Built {
+    pages: Memory,
+    root: u64,
+}
+
+fn build(configured: &Configured, hours: Vec<Hour>, cuts: &[i32], budget: &Budget) -> Built {
+    let cache = Cache::new(budget);
+    let mut pages = Memory::default();
+    let first = hours[0].hour;
+    let mut writer = Writer::new(budget, identity(), first).unwrap();
+    let mut emit = configured.emit();
+    let mut root = 0;
+    let mut generation = 0;
+    let mut hours = hours.into_iter().peekable();
+    for &cut in cuts {
+        while let Some(hour) = hours.next_if(|hour| hour.hour <= cut) {
+            emit.hour(&mut writer, hour).unwrap();
+        }
+        emit.cut(&mut writer, cut).unwrap();
+        generation += 1;
+        root = publish(
+            &mut writer,
+            &mut pages,
+            &cache,
+            Publication {
+                generation,
+                segment: generation - 1,
+                accepted: Span::new(first, cut).unwrap(),
+                reached: cut,
+                refusal: None,
+            },
+            Blob::EMPTY,
+        )
+        .unwrap();
+    }
+    assert!(hours.next().is_none());
+    Built { pages, root }
+}
+
+fn hour(at: i32, whole: bool, named: &[(u32, &str)], countries: &[Country]) -> Hour {
+    Hour {
+        branch: 1,
+        hour: at,
+        named: named
+            .iter()
+            .map(|&(index, tag)| (index, Arc::from(tag)))
+            .collect(),
+        whole,
+        countries: countries.to_vec(),
+        land_present: true,
+    }
+}
+
+fn country(index: u32, holder: Option<(u32, u32)>, counts: Option<[u32; 3]>) -> Country {
+    Country {
+        index,
+        holder,
+        counts,
+    }
+}
+
+fn history(countries: &[(&str, &[(i32, i32, u32, u32)])]) -> RecordedHistories {
+    let mut history = RecordedHistories::default();
+    for (tag, runs) in countries {
+        history.countries.insert(
+            (*tag).to_owned(),
+            RecordedCountry::identified(
+                runs.iter()
+                    .map(
+                        |&(first_hour, last_hour, slot, country_id)| CountryIdentityRun {
+                            first_hour,
+                            last_hour,
+                            slot,
+                            country_id,
+                        },
+                    )
+                    .collect(),
+            ),
+        );
+    }
+    history
+}
+
+fn run(first: i32, last: i32, starts: bool, [no, strained, supplied]: [u32; 3]) -> SupplyHealthRun {
+    SupplyHealthRun {
+        first_hour: first,
+        last_hour: last,
+        starts_segment: starts,
+        no_supply: no,
+        strained,
+        in_supply: supplied,
+    }
+}
+
+/// GER's holder changes at 103, its counts are unread at 107, a new segment's projector
+/// numbers the countries afresh at 106, and 109 is not recorded: each run and its segment
+/// start as hand-built, pieced by the selected holders' hours, and the summaries' edges name
+/// the same runs.
 #[test]
-fn manual_supply_selection_keeps_both_dated_tags_of_the_same_native_country() {
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+fn replies_follow_holders_counts_cuts_and_gaps() {
+    let configured = Configured::with(Ok(defines()), vec!["A standing note".into()]);
+    let (ger, zzz) = (Some((1, 10)), Some((5, 5)));
+    let hours = vec![
+        hour(
+            100,
+            true,
+            &[(0, "GER"), (1, "ZZZ")],
+            &[
+                country(0, ger, Some([0, 1, 3])),
+                country(1, zzz, Some([0, 0, 0])),
+            ],
+        ),
+        hour(101, false, &[], &[]),
+        hour(102, false, &[], &[country(0, ger, Some([1, 1, 2]))]),
+        hour(
+            103,
+            false,
+            &[],
+            &[country(0, Some((1, 11)), Some([1, 1, 2]))],
+        ),
+        hour(104, false, &[], &[]),
+        hour(105, false, &[], &[]),
+        hour(
+            106,
+            true,
+            &[(0, "ZZZ"), (1, "GER")],
+            &[
+                country(0, zzz, Some([0, 0, 0])),
+                country(1, Some((1, 11)), Some([1, 1, 2])),
+            ],
+        ),
+        hour(107, false, &[], &[country(1, Some((1, 11)), None)]),
+        hour(
+            108,
+            false,
+            &[],
+            &[country(1, Some((1, 11)), Some([1, 1, 2]))],
+        ),
+        hour(
+            110,
+            true,
+            &[],
+            &[
+                country(0, zzz, Some([0, 0, 0])),
+                country(1, Some((1, 11)), Some([1, 1, 2])),
+            ],
+        ),
+        hour(111, false, &[], &[]),
+    ];
+    let budget = Budget::new(64 << 20);
+    let built = build(&configured, hours, &[105, 111], &budget);
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+    let history = history(&[
+        ("GER", &[(100, 102, 1, 10), (103, 111, 1, 11)]),
+        ("ZZZ", &[(100, 111, 5, 5)]),
+    ]);
+    let cancelled = AtomicBool::new(false);
+    let expected = vec![
+        run(100, 101, true, [0, 1, 3]),
+        run(102, 102, false, [1, 1, 2]),
+        run(103, 106, true, [1, 1, 2]),
+        run(108, 108, true, [1, 1, 2]),
+        run(110, 111, true, [1, 1, 2]),
+    ];
+    let params = json!({ "branchId": "1", "tags": ["GER"], "from": 100, "to": 111 });
+    let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
+    assert!(reply.available);
+    assert_eq!(reply.warnings, vec!["A standing note".to_owned()]);
+    assert_eq!(reply.series.len(), 1);
+    assert_eq!(reply.series[0].tag, "GER");
+    assert_eq!(reply.series[0].runs, expected);
+    assert_eq!(reply.series[0].identities.as_ref().unwrap().len(), 2);
+    assert!(reply.summaries.is_none());
+
+    let params = json!({ "branchId": "1", "tags": ["GER"], "from": 100, "to": 111, "width": 4 });
+    let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
+    assert_eq!(reply.series[0].runs, expected);
+    let summaries = reply.summaries.unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].values.len(), 3);
+    // Twelve hours over four pixels: bins of two hours.
+    for summary in &summaries[0].values {
+        assert_eq!(summary.buckets.len(), 6);
+        assert!(summary.runs.is_none());
+    }
+    // In supply is three in four of GER's divisions over hours 100 and 101.
+    let first = summaries[0].values[2].buckets[0].unwrap();
+    assert_eq!((first.first_hour, first.max_value), (100, 75.0));
+
+    let params = json!({ "branchId": "1", "tags": ["GER"], "from": 103, "to": 103 });
+    let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
+    assert_eq!(reply.series[0].runs, vec![run(103, 103, true, [1, 1, 2])]);
+
+    let navigation = |key: &str, from: Option<f64>| {
+        json!({
+            "branchId": "1", "tags": ["GER"], "key": key, "from": from,
+            "firstHour": 100, "lastHour": 111,
+        })
+    };
+    let step = |snapshot: &mut Snapshot<'_, Memory>, key: &str, from: Option<f64>| {
+        query::next_change(
+            snapshot,
+            &directory,
+            &navigation(key, from),
+            &history,
+            &cancelled,
+        )
+        .unwrap()["hour"]
+            .as_f64()
+    };
+    assert_eq!(step(&mut snapshot, "ArrowRight", Some(100.5)), Some(102.0));
+    assert_eq!(step(&mut snapshot, "ArrowRight", Some(106.0)), Some(107.0));
+    assert_eq!(step(&mut snapshot, "ArrowLeft", Some(110.0)), Some(109.0));
+    assert_eq!(step(&mut snapshot, "Home", None), Some(100.0));
+}
+
+/// Without land inputs the family is unavailable, whatever its content says; a refused
+/// content is the reply's refusal once inputs exist.
+#[test]
+fn unavailable_and_refused_content_reply_as_before() {
+    let budget = Budget::new(16 << 20);
+    let cache = Cache::new(&budget);
+    let history = history(&[("GER", &[(0, 3, 1, 10)])]);
+    let cancelled = AtomicBool::new(false);
+    let params = json!({ "branchId": "1", "tags": ["GER", "GER"], "from": 0, "to": 3 });
+    let configured = Configured::with(Ok(defines()), vec!["Unverified".into()]);
+    let mut hours: Vec<Hour> = (0..4)
+        .map(|at| hour(at, at == 0, &[(0, "GER")], &[]))
+        .collect();
+    for hour in &mut hours {
+        hour.land_present = false;
+    }
+    let built = build(&configured, hours, &[3], &budget);
+    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+    let reply = query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap();
+    assert!(!reply.available);
+    assert_eq!(reply.missing_inputs, vec!["DivisionLandInputs".to_owned()]);
+    assert!(reply.warnings.is_empty());
+    assert_eq!(reply.series.len(), 1);
+    assert!(reply.series[0].identities.is_none());
+
+    let refused = Configured::with(Err("Supply health refused 1 define(s): x".into()), vec![]);
+    let hours = (0..4).map(|at| hour(at, at == 0, &[], &[])).collect();
+    let built = build(&refused, hours, &[1, 3], &budget);
+    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+    let error =
+        query::reply_to(&mut snapshot, &directory, &params, &history, &cancelled).unwrap_err();
+    assert_eq!(error.to_string(), "Supply health refused 1 define(s): x");
+}
+
+/// 1,500 countries over 200 hours, 25 changing each hour and every 24th hour a cut: the emit
+/// keeps only open edges, and every country's runs read back equal to the model.
+#[test]
+fn fifteen_hundred_countries_keep_their_runs_through_cuts() {
+    let configured = Configured::with(Ok(defines()), vec![]);
+    let count = 1500_u32;
+    let mut model: Vec<Vec<SupplyHealthRun>> = vec![Vec::new(); count as usize];
+    let mut held = vec![[0_u32, 0, 1]; count as usize];
+    let mut hours = Vec::new();
+    let named: Vec<(u32, String)> = (0..count)
+        .map(|index| (index, format!("C{index:04}")))
+        .collect();
+    for at in 0..200 {
+        let mut countries = Vec::new();
+        if at == 0 {
+            for index in 0..count {
+                countries.push(country(
+                    index,
+                    Some((index, index)),
+                    Some(held[index as usize]),
+                ));
+            }
+        } else {
+            for change in 0..25 {
+                let index = (at as u32 * 61 + change * 7) % count;
+                let counts = &mut held[index as usize];
+                counts[(at as usize + change as usize) % 3] += 1;
+                countries.push(country(index, Some((index, index)), Some(*counts)));
+            }
+            countries.sort_by_key(|country| country.index);
+        }
+        for country in &countries {
+            let runs = &mut model[country.index as usize];
+            let counts = country.counts.unwrap();
+            match runs.last_mut() {
+                Some(last) if [last.no_supply, last.strained, last.in_supply] == counts => {}
+                last => {
+                    let starts = last.is_none();
+                    runs.push(run(at, at, starts, counts));
+                }
+            }
+        }
+        hours.push(Hour {
+            branch: 1,
+            hour: at,
+            named: if at == 0 {
+                named
+                    .iter()
+                    .map(|(index, tag)| (*index, Arc::from(tag.as_str())))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            whole: at == 0,
+            countries,
+            land_present: true,
+        });
+    }
+    for runs in &mut model {
+        for at in 0..runs.len() {
+            runs[at].last_hour = runs.get(at + 1).map_or(199, |next| next.first_hour - 1);
         }
     }
-    let root =
-        Scratch(std::env::temp_dir().join(format!("supply_aliases_{}", uuid::Uuid::new_v4())));
-    let folder = root.0.join("common/defines");
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(folder.join("synthetic.lua"), "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}").unwrap();
-    std::fs::write(root.0.join("hoi4.exe"), b"test").unwrap();
-    std::fs::create_dir_all(root.0.join("user")).unwrap();
-    std::fs::write(
-        root.0.join("user/dlc_load.json"),
-        r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        root.0.join("user/settings.txt"),
-        "language=l_english force_pow2_textures=no",
-    )
-    .unwrap();
-    let (options, identity) = dashboard_base::test_fixtures::content_identity(&root.0);
-    let first = frame(100);
-    let mut renamed = first.clone();
-    renamed.hour = 101;
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *renamed.tables[TableId::Countries.index()]
-    {
-        rows[0].tag = b"native rename".to_vec();
-    }
-    let mut reused = renamed.clone();
-    reused.hour = 102;
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *reused.tables[TableId::Countries.index()]
-    {
-        rows[0].tag = b"next rename".to_vec();
-        rows.push(CountryRow {
-            id: 10001,
-            canonical_slot: 8,
-            tag: b"native rename".to_vec(),
-            ..Default::default()
-        });
-    }
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *reused.tables[TableId::CountryLinks.index()]
-    {
-        rows.push(CountryLinkRow {
-            id: 10001,
-            canonical_slot: 8,
-        });
-    }
-    let mut wire = records(1, vec![first, renamed, reused]);
-    if let replay::spool::Record::SessionStart(session) = &mut wire[0] {
-        session.identity = identity;
-    }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap();
-    let src = Source::from_replay(
-        SourceKey {
-            source_id: "renamed supply".into(),
-            revision: "1".into(),
-        },
-        PathBuf::from("synthetic.battleplan"),
-        Arc::new(replay),
+    let cuts: Vec<i32> = (23..200).step_by(24).chain([199]).collect();
+    let budget = Budget::new(512 << 20);
+    let built = build(&configured, hours, &cuts, &budget);
+    let cache = Cache::new(&budget);
+    let mut snapshot = Snapshot::open(built.pages, &cache, built.root, identity()).unwrap();
+    let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+    assert_eq!(directory.actors.len(), count as usize);
+    let tags: Vec<String> = (0..count)
+        .step_by(23)
+        .map(|index| format!("C{index:04}"))
+        .collect();
+    let countries: Vec<(&str, Vec<(i32, i32, u32, u32)>)> = tags
+        .iter()
+        .zip((0..count).step_by(23))
+        .map(|(tag, index)| (tag.as_str(), vec![(0, 199, index, index)]))
+        .collect();
+    let history = history(
+        &countries
+            .iter()
+            .map(|(tag, runs)| (*tag, runs.as_slice()))
+            .collect::<Vec<_>>(),
+    );
+    let params = json!({ "branchId": "1", "tags": tags, "from": 0, "to": 199 });
+    let reply = query::reply_to(
+        &mut snapshot,
+        &directory,
+        &params,
+        &history,
         &AtomicBool::new(false),
     )
     .unwrap();
-    for tag in ["GER", "native rename"] {
-        let params = SupplyHealthParams {
-            branch_id: "1".into(),
-            tags: vec![tag.into()],
-        };
-        let got = SupplyHealth::load(
-            &src,
-            &params,
-            &LoadContext {
-                content: Some(options.clone()),
+    for series in &reply.series {
+        let index: usize = series.tag[1..].parse().unwrap();
+        assert_eq!(series.runs, model[index], "{}", series.tag);
+    }
+}
+
+/// The projector on a synthetic walk: the first hour hands every country, then only the
+/// countries a division change reached; an hour without DivisionStatus unknows them all; a
+/// segment's first hour hands every country again.
+#[test]
+fn the_projector_hands_only_what_changed() {
+    let tables = [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::Divisions,
+        TableId::DivisionLandInputs,
+        TableId::DivisionStatus,
+    ];
+    fn write<R: RowCodec>(walk: &mut Synthetic, table: TableId, rows: Option<&[R]>) {
+        let (read, sample) = (true, Sample::FromReadBit);
+        let input = match rows {
+            Some(rows) => Input::Snapshot {
+                rows,
+                partial: None,
+                read,
+                sample,
             },
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let old = got
-            .series
-            .iter()
-            .find(|series| series.tag == "GER")
-            .unwrap();
-        let new = got
-            .series
-            .iter()
-            .find(|series| series.tag == "native rename")
-            .unwrap();
-        assert_eq!((old.runs[0].first_hour, old.runs[0].last_hour), (100, 100));
-        assert_eq!((new.runs[0].first_hour, new.runs[0].last_hour), (101, 101));
-        assert_eq!(counts(&old.runs[0]), counts(&new.runs[0]));
-        let last = if tag == "GER" { 101 } else { 102 };
-        assert_eq!(new.runs.last().unwrap().last_hour, last);
-        assert_eq!(
-            new.identities.as_ref().unwrap().last().unwrap().last_hour,
-            last
-        );
+            None => Input::Unavailable {
+                reason: "synthetic refusal",
+                read,
+                sample,
+            },
+        };
+        walk.table(table, input).unwrap();
     }
-}
-
-#[test]
-fn supply_health_native_icon_gate_frames_and_fixed_arithmetic() {
-    let d = defines();
-    for (received, grace, expected) in [
-        (0, 1_000_000, 0),
-        (0, 0, 3),
-        (14_999, 0, 3),
-        (15_000, 0, 2),
-        (39_999, 0, 2),
-        (40_000, 0, 1),
-        (59_999, 0, 1),
-        (60_000, 0, 0),
-        (-1, -1, 3),
-    ] {
-        assert_eq!(d.frame(&supply(received, grace)), expected);
-    }
-    let mut row = supply(0, 0);
-    row.naval_transfer = true;
-    assert_eq!(d.frame(&row), 0);
-    row.naval_transfer = false;
-    row.maximum_grace = 0;
-    row.remaining_grace = 1_000_000;
-    assert_eq!(d.effective(&row), 0);
-    row.received = 100_000;
-    assert_eq!(d.frame(&row), 1);
-    row.received = 0;
-    row.maximum_grace = 1;
-    for sentinel in [i64::MIN, i64::MIN + 1, i64::MAX] {
-        row.remaining_grace = sentinel;
-        assert_eq!(d.effective(&row), 100_000);
-    }
-    row.remaining_grace = i64::MAX / 100_000 + 1;
-    assert_eq!(d.effective(&row), 0); // native multiplication wraps before division
-    let mut odd = d;
-    odd.grace = 0;
-    assert_eq!(odd.effective(&supply(0, 0)), 100_000);
-    odd = d;
-    odd.very_low_icon = 110_000;
-    assert_eq!(odd.frame(&supply(100_000, 0)), 3); // native compares substituted one too
-}
-
-#[test]
-fn supply_health_reads_mod_defines_and_refuses_missing_forms_by_name() {
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+    let countries = [("GER", 1_u32), ("ZZZ", 5)].map(|(tag, id)| CountryRow {
+        id,
+        canonical_slot: id,
+        tag: tag.as_bytes().to_vec(),
+        ..Default::default()
+    });
+    let links = [1_u32, 5].map(|id| CountryLinkRow {
+        id,
+        canonical_slot: id,
+    });
+    let division = |id: u64, expeditionary: u32| DivisionRow {
+        id,
+        roster_owner: 1,
+        expeditionary_owner: expeditionary,
+        ..Default::default()
+    };
+    let land = |division: u64, naval_transfer: bool| DivisionLandInputsRow {
+        division,
+        naval_transfer,
+        ..Default::default()
+    };
+    let status = |division: u64, received: i64, remaining: i64| DivisionStatusRow {
+        division,
+        supply_ratio: received,
+        supply_grace_maximum: Recorded::Value(1_000_000),
+        supply_grace_remaining: Recorded::Value(remaining),
+        ..Default::default()
+    };
+    // In supply, no supply, strained (frame 2), strained (frame 1).
+    let statuses = |second: i64| {
+        vec![
+            status(1, 0, 1_000_000),
+            status(2, second, 0),
+            status(3, 15_000, 0),
+            status(4, 40_000, 0),
+        ]
+    };
+    let lands: Vec<_> = (1..=4).map(|id| land(id, false)).collect();
+    let script: Vec<(Vec<DivisionRow>, Option<Vec<DivisionStatusRow>>)> = vec![
+        (
+            (1..=4).map(|id| division(id, 0)).collect(),
+            Some(statuses(14_999)),
+        ),
+        (
+            (1..=4).map(|id| division(id, 0)).collect(),
+            Some(statuses(100_000)),
+        ),
+        (
+            [
+                division(1, 5),
+                division(2, 0),
+                division(3, 0),
+                division(4, 0),
+            ]
+            .to_vec(),
+            Some(statuses(100_000)),
+        ),
+        (
+            [
+                division(1, 5),
+                division(2, 0),
+                division(3, 0),
+                division(4, 0),
+            ]
+            .to_vec(),
+            None,
+        ),
+        (
+            [
+                division(1, 5),
+                division(2, 0),
+                division(3, 0),
+                division(4, 0),
+            ]
+            .to_vec(),
+            Some(statuses(100_000)),
+        ),
+        (
+            [
+                division(1, 5),
+                division(2, 0),
+                division(3, 0),
+                division(4, 0),
+            ]
+            .to_vec(),
+            Some(statuses(100_000)),
+        ),
+    ];
+    let configured = Configured::with(Ok(defines()), vec![]);
+    let mut walk = Synthetic::new(&tables, 1, 100).unwrap();
+    let mut held: Option<dashboard_world::World> = None;
+    let mut projector = configured.projector(FormatVersion::CURRENT).unwrap();
+    let mut out: Vec<Hour> = Vec::new();
+    for (ordinal, (divisions, statuses)) in (0..).zip(script) {
+        write(&mut walk, TableId::Countries, Some(&countries[..]));
+        write(&mut walk, TableId::CountryLinks, Some(&links[..]));
+        write(&mut walk, TableId::Divisions, Some(&divisions[..]));
+        write(&mut walk, TableId::DivisionLandInputs, Some(&lands[..]));
+        write(&mut walk, TableId::DivisionStatus, statuses.as_deref());
+        // The last hour starts a segment: a new projector over a new world.
+        let segment = ordinal == 5;
+        if segment {
+            projector = configured.projector(FormatVersion::CURRENT).unwrap();
+            held = None;
         }
-    }
-    let scratch = Scratch(
-        std::env::temp_dir().join(format!("supply_health_defines_{}", uuid::Uuid::new_v4())),
-    );
-    let root = &scratch.0;
-    let base = root.join("base");
-    let addon = root.join("mod");
-    for layer in [&base, &addon] {
-        std::fs::create_dir_all(layer.join("common/defines")).unwrap();
-    }
-    std::fs::write(base.join("common/defines/00_base.lua"),
-        "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}").unwrap();
-    std::fs::write(addon.join("common/defines/01_mod.lua"),
-        "local x=2; NDefines.NMilitary.SUPPLY_GRACE=x*7; NDefines.NMilitary.LOW_SUPPLY=.73; NDefines.NGraphics.SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.123456789; NDefines.NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.52").unwrap();
-    let layers =
-        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-    let got = Defines::read(&installed_content_core::defines::read(&layers).unwrap()).unwrap();
-    assert_eq!(
-        got,
-        Defines {
-            grace: 14,
-            low: 73_000,
-            very_low_icon: 12_346,
-            low_icon: 52_000
-        }
-    );
-    assert_eq!(got.frame(&supply(50_000, 0)), 2);
-    std::fs::write(
-        addon.join("common/defines/01_mod.lua"),
-        "NDefines.NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD={unsupported=1}",
-    )
-    .unwrap();
-    let layers =
-        installed_content_core::ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
-    assert!(
-        Defines::read(&installed_content_core::defines::read(&layers).unwrap())
-            .unwrap_err()
-            .to_string()
-            .contains("NGraphics.SUPPLY_UNIT_COUNTER_LOW_THRESHOLD")
-    );
-}
-
-#[test]
-fn supply_health_counts_owner_not_host_and_missing_rows_break_only_the_owner() {
-    let mut f = frame(100);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *f.tables[TableId::Countries.index()]
-    {
-        rows.push(CountryRow {
-            id: 9002,
-            canonical_slot: 8,
-            tag: b"opaque host".to_vec(),
-            ..Default::default()
-        });
-    }
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *f.tables[TableId::CountryLinks.index()]
-    {
-        rows.push(CountryLinkRow {
-            id: 9002,
-            canonical_slot: 8,
-        });
-    }
-    if let TableView::Complete(TableRows::Divisions(rows)) =
-        &mut *f.tables[TableId::Divisions.index()]
-    {
-        rows[0].roster_owner = 9002;
-        rows[0].expeditionary_owner = 11;
-        rows[1].expeditionary_owner = u32::MAX; // native signed negative: fall back to roster
-    }
-    let mut scan = Scan::new(&["GER".into(), "opaque host".into()]);
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(counts(&scan.series[0].runs[0]), [1, 2, 1]);
-    assert_eq!(counts(&scan.series[1].runs[0]), [0; 3]);
-    f.hour += 1;
-    *f.tables[TableId::DivisionLandInputs.index()] = TableView::Truncated {
-        rows: TableRows::DivisionLandInputs(vec![land(2), land(3), land(4)]),
-        missing: 1,
-    };
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs[0].last_hour, 100);
-    assert_eq!(scan.series[1].runs[0].last_hour, 101);
-    f.hour += 1;
-    f.tables[TableId::DivisionLandInputs.index()] =
-        frame(102).tables[TableId::DivisionLandInputs.index()].clone();
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs.len(), 2);
-    assert!(scan.series[0].runs[1].starts_segment);
-    // Equal fresh reads retain their actual last read hour.
-    f.hour += 1;
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs[1].last_hour, 103);
-}
-
-#[test]
-fn supply_health_classifies_from_division_status_and_needs_its_grace() {
-    // DivisionStatus is the record of the received fraction and grace; the
-    // land inputs supply only naval transfer.
-    let mut f = frame(100);
-    if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
-        &mut *f.tables[TableId::DivisionLandInputs.index()]
-    {
-        rows[1].naval_transfer = true;
-    }
-    let mut scan = Scan::new(&tags());
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(counts(&scan.series[0].runs[0]), [0, 2, 2]);
-    // An unavailable status table withholds the hour.
-    f.hour += 1;
-    let complete = f.tables[TableId::DivisionStatus.index()].clone();
-    *f.tables[TableId::DivisionStatus.index()] = TableView::Unavailable {
-        reason: "read failed".into(),
-    };
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs.len(), 1);
-    assert_eq!(scan.series[0].runs[0].last_hour, 100);
-    // Unrecorded grace cannot classify its division, so the owner breaks.
-    f.hour += 1;
-    f.tables[TableId::DivisionStatus.index()] = complete.clone();
-    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
-        &mut *f.tables[TableId::DivisionStatus.index()]
-    {
-        rows[0].supply_grace_remaining = Recorded::NotRecorded;
-    }
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs.len(), 1);
-    // A changed status row alone recounts the hour.
-    f.hour += 1;
-    f.tables[TableId::DivisionStatus.index()] = complete;
-    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
-        &mut *f.tables[TableId::DivisionStatus.index()]
-    {
-        rows[3].supply_ratio = 100_000;
-    }
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs.len(), 2);
-    assert!(scan.series[0].runs[1].starts_segment);
-    assert_eq!(counts(&scan.series[0].runs[1]), [0, 1, 3]);
-}
-
-#[test]
-fn supply_health_replay_scan_preserves_gaps_failures_identity_and_zero_denominators() {
-    let a = frame(100);
-    let mut failed = a.clone();
-    failed.hour = 102;
-    *failed.tables[TableId::Divisions.index()] = TableView::Unavailable {
-        reason: "read failed".into(),
-    };
-    let b = frame(103);
-    let mut changed = frame(104);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *changed.tables[TableId::Countries.index()]
-    {
-        rows[0].id = 11;
-    }
-    let mut empty = changed.clone();
-    empty.hour = 105;
-    *empty.tables[TableId::Divisions.index()] =
-        TableView::Complete(TableRows::Divisions(Vec::new()));
-    let replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(1, vec![a, failed, b, changed, empty])],
-    )
-    .unwrap();
-    let scanned = scan(&replay, 1, &tags(), defines(), &AtomicBool::new(false)).unwrap();
-    let runs = &scanned.series[0].runs;
-    assert_eq!(
-        runs.iter()
-            .map(|r| (r.first_hour, r.last_hour))
-            .collect::<Vec<_>>(),
-        [(100, 100), (103, 103), (104, 104), (105, 105)]
-    );
-    assert!(runs[..3].iter().all(|r| r.starts_segment));
-    assert!(!runs[3].starts_segment);
-    assert_eq!(counts(&runs[3]), [0; 3]);
-    let mut absent = frame(106);
-    *absent.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
-        reason: "missing".into(),
-    };
-    let mut scan = Scan::new(&tags());
-    scan.observe(&absent, defines()).unwrap();
-    scan.observe(&frame(107), defines()).unwrap();
-    assert_eq!(scan.series[0].runs[0].first_hour, 107);
-}
-
-#[test]
-fn supply_health_cached_joins_follow_owner_and_link_changes_not_other_columns() {
-    let mut f = frame(100);
-    let mut scan = Scan::new(&tags());
-    scan.observe(&f, defines()).unwrap();
-    f.hour += 1;
-    if let TableView::Complete(TableRows::Divisions(rows)) =
-        &mut *f.tables[TableId::Divisions.index()]
-    {
-        rows[0].province = 50;
-    }
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *f.tables[TableId::Countries.index()]
-    {
-        rows[0].political_power_raw = Some(42);
-    }
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs.len(), 1);
-    assert_eq!(scan.series[0].runs[0].last_hour, 101);
-    f.hour += 1;
-    if let TableView::Complete(TableRows::Divisions(rows)) =
-        &mut *f.tables[TableId::Divisions.index()]
-    {
-        rows[0].roster_owner = 88;
-    }
-    scan.observe(&f, defines()).unwrap(); // unresolved owner might be this country
-    assert_eq!(scan.series[0].runs[0].last_hour, 101);
-    f.hour += 1;
-    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-        &mut *f.tables[TableId::CountryLinks.index()]
-    {
-        rows.push(CountryLinkRow {
-            id: 88,
-            canonical_slot: 7,
-        });
-        rows.sort_by_key(|row| row.id);
-    }
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(counts(&scan.series[0].runs[1]), [1, 2, 1]);
-    assert_eq!(scan.series[0].runs[1].first_hour, 103);
-    assert!(scan.series[0].runs[1].starts_segment);
-    f.hour += 1;
-    *f.tables[TableId::DivisionLandInputs.index()] = TableView::Unavailable {
-        reason: "unread".into(),
-    };
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(scan.series[0].runs[1].last_hour, 103);
-}
-
-#[test]
-fn supply_health_reply_counts_bytes_and_refuses_instead_of_truncating() {
-    let mut scan = Scan::new(&tags());
-    scan.observe(&frame(100), defines()).unwrap();
-    let got = reply("1".into(), scan, Vec::new()).unwrap();
-    let bytes = json_len(&got, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    assert_eq!(json_len(&got, bytes), Some(bytes));
-    assert_eq!(json_len(&got, bytes - 1), None);
-    let mut oversized = Scan::new(&["x".repeat(MAX_PRODUCT_REPLY_BYTES)]);
-    oversized.available = true;
-    assert!(
-        reply("1".into(), oversized, Vec::new())
-            .unwrap_err()
-            .to_string()
-            .contains("nothing was omitted")
-    );
-}
-
-#[test]
-fn supply_health_bad_country_identity_gaps_only_its_own_series() {
-    let mut f = frame(100);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *f.tables[TableId::Countries.index()]
-    {
-        rows.push(CountryRow {
-            id: 9002,
-            canonical_slot: 8,
-            tag: b"unresolved".to_vec(),
-            ..Default::default()
-        });
-    }
-    let mut scan = Scan::new(&["GER".into(), "unresolved".into()]);
-    scan.observe(&f, defines()).unwrap();
-    assert_eq!(counts(&scan.series[0].runs[0]), [1, 2, 1]);
-    assert!(scan.series[1].runs.is_empty());
-}
-
-#[test]
-fn supply_health_cache_reuses_countries_and_retains_only_current_branch() {
-    let state = Mutex::new(Cache::default());
-    let cancelled = AtomicBool::new(false);
-    let mut scanned = Vec::new();
-    for (branch, chosen) in [
-        (1, vec!["GER"]),
-        (1, vec!["GER", "new"]),
-        (1, vec!["new"]),
-        (2, vec!["GER"]),
-    ] {
-        let chosen: Vec<String> = chosen.into_iter().map(str::to_owned).collect();
-        let built = cached_scan(&state, branch, &chosen, defines(), &cancelled, |missing| {
-            assert!(state.try_lock().is_ok());
-            scanned.push((branch, missing.to_vec()));
-            let mut scan = Scan::new(missing);
-            scan.observe(&frame(100), defines())?;
-            Ok(scan)
+        walk.end(|state, manifest, frame, starts| {
+            let starts = starts || segment;
+            let world = dashboard_world::World::at(
+                &mut held,
+                starts,
+                &facts::needs(),
+                (FormatVersion::CURRENT, CaptureMode::Full),
+                state,
+                manifest,
+            )
+            .unwrap();
+            projector
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                        world,
+                    },
+                    &mut out,
+                )
+                .unwrap();
         })
         .unwrap();
-        assert_eq!(built.series.len(), chosen.len());
-        assert!(
-            state
-                .lock()
-                .unwrap()
-                .entries
-                .keys()
-                .all(|(from, _)| *from == branch)
-        );
     }
+    let (ger, zzz) = (Some((1, 1)), Some((5, 5)));
+    let handed: Vec<(bool, Vec<Country>)> = out
+        .iter()
+        .map(|hour| (hour.whole, hour.countries.clone()))
+        .collect();
     assert_eq!(
-        scanned,
-        [
-            (1, vec!["GER".to_owned()]),
-            (1, vec!["new".to_owned()]),
-            (2, vec!["GER".to_owned()])
+        handed,
+        vec![
+            (
+                true,
+                vec![
+                    country(0, ger, Some([1, 2, 1])),
+                    country(1, zzz, Some([0, 0, 0]))
+                ]
+            ),
+            (false, vec![country(0, ger, Some([0, 2, 2]))]),
+            (
+                false,
+                vec![
+                    country(0, ger, Some([0, 2, 1])),
+                    country(1, zzz, Some([0, 0, 1]))
+                ]
+            ),
+            (false, vec![country(0, ger, None), country(1, zzz, None)]),
+            (
+                false,
+                vec![
+                    country(0, ger, Some([0, 2, 1])),
+                    country(1, zzz, Some([0, 0, 1]))
+                ]
+            ),
+            (
+                true,
+                vec![
+                    country(0, ger, Some([0, 2, 1])),
+                    country(1, zzz, Some([0, 0, 1]))
+                ]
+            ),
         ]
     );
-    let mut changed = defines();
-    changed.low = 100_001;
-    cached_scan(&state, 2, &tags(), changed, &cancelled, |missing| {
-        assert_eq!(missing, tags());
-        let mut scan = Scan::new(missing);
-        scan.observe(&frame(100), changed)?;
-        Ok(scan)
-    })
-    .unwrap();
-}
-
-#[test]
-fn supply_health_cached_hit_can_finish_during_another_country_scan() {
-    let state = Arc::new(Mutex::new(Cache::default()));
-    let cancelled = AtomicBool::new(false);
-    cached_scan(&state, 1, &tags(), defines(), &cancelled, |missing| {
-        let mut scan = Scan::new(missing);
-        scan.observe(&frame(100), defines())?;
-        Ok(scan)
-    })
-    .unwrap();
-    let (entered, waiting) = std::sync::mpsc::channel();
-    let (release, resumed) = std::sync::mpsc::channel();
-    let worker_state = Arc::clone(&state);
-    let worker = std::thread::spawn(move || {
-        cached_scan(
-            &worker_state,
-            1,
-            &["new".into()],
-            defines(),
-            &AtomicBool::new(false),
-            |missing| {
-                entered.send(()).unwrap();
-                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
-                let mut scan = Scan::new(missing);
-                scan.observe(&frame(100), defines())?;
-                Ok(scan)
-            },
-        )
-    });
-    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
-    let hit = cached_scan(&state, 1, &tags(), defines(), &cancelled, |_| {
-        panic!("cached country rescanned")
-    })
-    .unwrap();
-    assert_eq!(counts(&hit.series[0].runs[0]), [1, 2, 1]);
-    release.send(()).unwrap();
-    worker.join().unwrap().unwrap();
-}
-
-fn scale_frame(divisions: u64) -> DecodedFrame {
-    let mut f = source(1, 1_000_000, None);
-    *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5_000)
-            .map(|i| CountryRow {
-                id: i,
-                canonical_slot: i,
-                tag: format!("opaque {i}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5_000)
-            .map(|i| CountryLinkRow {
-                id: i,
-                canonical_slot: i,
-            })
-            .collect(),
-    ));
-    *f.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
-        (1..=divisions)
-            .map(|i| DivisionRow {
-                id: i,
-                roster_owner: ((i - 1) % 5_000 + 1) as u32,
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *f.tables[TableId::DivisionLandInputs.index()] =
-        TableView::Complete(TableRows::DivisionLandInputs(
-            (1..=divisions)
-                .map(|i| {
-                    let mut row = land(i);
-                    row.manpower = vec![DivisionManpowerContributor {
-                        country: ((i - 1) % 5_000 + 1) as u32,
-                        amount: 10_000,
-                    }];
-                    row
-                })
-                .collect(),
-        ));
-    *f.tables[TableId::DivisionStatus.index()] = TableView::Complete(TableRows::DivisionStatus(
-        (1..=divisions)
-            .map(|i| status(i, 100_000, 1_000_000))
-            .collect(),
-    ));
-    f
-}
-
-#[test]
-fn supply_health_large_selection_refuses_only_the_measured_reply_budget() {
-    let selected: Vec<String> = (1..=5_000).map(|i| format!("opaque {i}")).collect();
-    let mut scan = Scan::new(&selected);
-    let mut f = scale_frame(5_000);
-    // Enough synthetic changes to exceed the transport reply; no production
-    // run-count limit. This loop's extent is only the test fixture size.
-    for hour in 0..100 {
-        f.hour += 1;
-        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
-            &mut *f.tables[TableId::DivisionStatus.index()]
-        {
-            for row in rows {
-                row.supply_ratio = if hour % 2 == 0 { 0 } else { 100_000 };
-                row.supply_grace_remaining = Recorded::Value(0);
-            }
-        }
-        scan.observe(&f, defines()).unwrap();
-        assert!(
-            scan.series
-                .iter()
-                .all(|s| s.runs.last().unwrap().last_hour == f.hour)
-        );
-    }
-    assert!(
-        reply("1".into(), scan, Vec::new())
-            .unwrap_err()
-            .to_string()
-            .contains("MAX_PRODUCT_REPLY_BYTES")
-    );
+    assert_eq!(out[0].named.len(), 2);
+    assert!(out[1..5].iter().all(|hour| hour.named.is_empty()));
+    assert_eq!(out[5].named.len(), 2);
 }

@@ -22,6 +22,7 @@ test('game scores of a group at an hour still being prepared are loading, not mi
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/widgets/game-score/usePreparedScore.ts': `export const usePreparedScore = (_runtime, _track, hour) => ({ data: { reply: ${JSON.stringify(reply)}, stretches: {} }, hour, pending: false, retry() {} });`,
     '/charts/table/Table.tsx': 'export default () => "score table"; export const CountryCell = () => null;',
   });
@@ -51,6 +52,7 @@ test('game scores of a group with no member found yet say what the hour was once
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__scoreGap.hour;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/widgets/game-score/usePreparedScore.ts': `export const usePreparedScore = (_runtime, track, hour) => ({ data: track ? { reply: globalThis.__scoreGap.reply, stretches: {} } : undefined,
       hour, pending: false, retry() {} });`,
     '/charts/table/Table.tsx': 'export default () => "score table"; export const CountryCell = () => null;',

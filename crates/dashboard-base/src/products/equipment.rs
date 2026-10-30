@@ -1309,25 +1309,37 @@ impl VariantCatalogue {
         read: VariantHour,
         build: impl FnOnce(bool) -> Vec<(u64, RawVariant)>,
     ) {
+        let _ = self.observe_hour_changed(hour, read, build);
+    }
+
+    /// [`Self::observe_hour`], returning the versions it recorded, forgotten names
+    /// included, as [`Self::observe_changed`] returns them.
+    pub fn observe_hour_changed(
+        &mut self,
+        hour: i32,
+        read: VariantHour,
+        build: impl FnOnce(bool) -> Vec<(u64, RawVariant)>,
+    ) -> Vec<(u64, VariantVersion)> {
+        let mut changed = Vec::new();
         if let Some(last) = self.last_hour
             && last.checked_add(1) != Some(hour)
         {
-            self.forget_versions(last.saturating_add(1));
+            changed.extend(self.forget_versions(last.saturating_add(1)));
         }
         self.last_hour = Some(hour);
         match read {
             VariantHour::Carried { complete: true } => {}
             VariantHour::Carried { complete: false } | VariantHour::Incomplete => {
-                self.forget_versions(hour);
+                changed.extend(self.forget_versions(hour));
             }
             VariantHour::Read => {
-                let mut changed = Vec::new();
                 for (id, raw) in build(!self.settled) {
                     self.apply(id, raw, hour, &mut changed);
                 }
                 self.settled = true;
             }
         }
+        changed
     }
 
     /// Names are not known from `hour` until the next complete read.

@@ -1342,7 +1342,8 @@ fn dockyard_repairs_fold_matches_hourly_through_daily_reads_gaps_holders_resume_
 #[test]
 fn dockyard_repairs_joint_gate_and_refusals_name_both_suppliers() {
     assert_eq!(
-        independent::joint("dockyard-spending")
+        plan::current()
+            .joint("dockyard-spending")
             .map(|suppliers| suppliers.iter().map(|id| id.name()).collect::<Vec<_>>()),
         Some(vec!["production", "repairs"])
     );

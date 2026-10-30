@@ -34,8 +34,10 @@ use {
     std::collections::VecDeque,
 };
 
+pub mod columnar;
 mod details;
 pub mod prepared;
+pub mod served;
 pub use details::NavalBattleDetails;
 
 pub struct NavalBattles;
@@ -212,7 +214,7 @@ struct Episode {
     runs: Vec<Run>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ResultInput {
     row: NavalResultRow,
     members: Option<Vec<NavalResultMemberRow>>,
@@ -221,6 +223,20 @@ struct ResultInput {
 }
 
 impl ResultInput {
+    /// The bytes its rows hold on the heap.
+    fn heap_bytes(&self) -> usize {
+        self.members.as_ref().map_or(0, |rows| {
+            rows.capacity() * size_of::<NavalResultMemberRow>()
+        }) + self.countries.as_ref().map_or(0, |rows| {
+            rows.capacity() * size_of::<NavalResultCountryRow>()
+        }) + self.classification.as_ref().map_or(0, |sides| {
+            sides
+                .iter()
+                .map(|side| side.capacity() * size_of::<(u64, u8)>())
+                .sum()
+        })
+    }
+
     fn matches(
         &self,
         row: &NavalResultRow,
@@ -298,6 +314,9 @@ pub struct Scan {
     available: bool,
     #[serde(skip)]
     dirty: BTreeSet<usize>,
+    /// What the scan keeps of the hours it is given projected ([`columnar::Hour`]).
+    #[serde(skip)]
+    projected: columnar::Carried,
 }
 
 fn span(spans: &mut Vec<HourSpan>, hour: i32) {
@@ -322,6 +341,35 @@ fn grouped<'a, T: 'a>(
         groups.entry(key(row)).or_default().push(row);
     }
     groups
+}
+/// A side's countries: the tags `raws` name through `tags` when the links are known.
+fn side_countries(
+    tags: &LinkTags,
+    links_known: bool,
+    raws: impl Iterator<Item = u32>,
+    complete: bool,
+    side: &mut SideSample,
+) {
+    let mut named = BTreeSet::new();
+    let mut known = links_known && complete;
+    for raw in raws {
+        if links_known
+            && let Some(tag) = tags.get(raw)
+            && !tag.contains('\0')
+        {
+            named.insert(tag.clone());
+        } else {
+            known = false;
+        }
+    }
+    side.countries = named.into_iter().collect();
+    side.countries_unknown = (!known).then(|| "Countries not recorded or unresolved".into());
+}
+/// Whether a sample lacks a side's quantities or countries.
+fn incomplete(sides: &[SideSample; 2]) -> bool {
+    sides
+        .iter()
+        .any(|s| s.quantities.is_none() || s.countries_unknown.is_some())
 }
 fn highest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) {
@@ -369,20 +417,7 @@ impl Scan {
         *self.refusals.entry((self.hour, reason.into())).or_default() += n;
     }
     fn countries(&self, raws: impl Iterator<Item = u32>, complete: bool, side: &mut SideSample) {
-        let mut tags = BTreeSet::new();
-        let mut known = self.links_known && complete;
-        for raw in raws {
-            if self.links_known
-                && let Some(tag) = self.tags.get(raw)
-                && !tag.contains('\0')
-            {
-                tags.insert(tag.clone());
-            } else {
-                known = false;
-            }
-        }
-        side.countries = tags.into_iter().collect();
-        side.countries_unknown = (!known).then(|| "Countries not recorded or unresolved".into());
+        side_countries(&self.tags, self.links_known, raws, complete, side);
     }
     fn push(&mut self, index: usize, hour: i32, sample: Snapshot) {
         self.dirty.insert(index);
@@ -398,6 +433,97 @@ impl Scan {
                 last: hour,
                 sample,
             });
+        }
+    }
+    /// A combat's sample at `hour` from its sides read then, on its episode's last sample.
+    fn combat_sample(&self, index: usize, mut sides: [SideSample; 2], hour: i32) -> Snapshot {
+        let current_peak = sides[0]
+            .quantities
+            .zip(sides[1].quantities)
+            .map(|(a, b)| a.ships + b.ships);
+        let previous = self.episodes[index].runs.last().map(|run| &run.sample);
+        let peak = highest(previous.and_then(|p| p.peak), current_peak);
+        let peak_hour = current_peak
+            .filter(|peak| previous.and_then(|p| p.peak).is_none_or(|old| *peak > old))
+            .map(|_| hour)
+            .or_else(|| previous.and_then(|p| p.peak_hour));
+        if let Some(previous) = previous {
+            // Groups can be detached; no cumulative roster is promised.
+            // Keep maxima as floors, never sum samples.
+            for (side, old) in sides.iter_mut().zip(&previous.sides) {
+                side.sunk = highest(side.sunk, old.sunk);
+                side.convoys_sunk = highest(side.convoys_sunk, old.convoys_sunk);
+            }
+        }
+        Snapshot {
+            sides,
+            winner: None,
+            end: None,
+            peak,
+            peak_hour,
+            observed: None,
+        }
+    }
+    /// A result's sample from its recorded inputs.
+    fn result_sample(&self, input: &ResultInput) -> Snapshot {
+        let row = &input.row;
+        let mut sides = [SideSample::default(), SideSample::default()];
+        for (which, side) in sides.iter_mut().enumerate() {
+            let classification: Option<HashMap<_, _>> = input
+                .classification
+                .as_ref()
+                .map(|c| c[which].iter().copied().collect());
+            let mut quantities = Quantities::default();
+            side.quantities = input.members.as_ref().and_then(|members| {
+                let classification = classification.as_ref()?;
+                for member in members.iter().filter(|m| usize::from(m.side) == which) {
+                    // Convoys also have nonzero references. The sunk_by vector supplies
+                    // its own length; the presence test checks nonzero, not a ship count.
+                    quantities.add(
+                        *classification.get(&member.member)? != 0,
+                        member.presence_value != 0,
+                    );
+                }
+                Some(quantities)
+            });
+            side.sunk = side.quantities.map(|q| q.sunk);
+            side.convoys_sunk = side.quantities.map(|q| q.convoys_sunk);
+            // Lists 0/1 are sides, 2 is admitted/viewer.
+            // Merging sides appends encounters without a leader rank.
+            self.countries(
+                input
+                    .countries
+                    .iter()
+                    .flatten()
+                    .filter(|r| usize::from(r.list) == which)
+                    .map(|r| r.country),
+                input.countries.is_some(),
+                side,
+            );
+        }
+        // Read the recorded winner selector, never recompute it.
+        let winner = match row.winning_side {
+            1 => Some(0),
+            2 => Some(1),
+            _ => None,
+        };
+        let observed = self
+            .result_observations
+            .get(&row.id)
+            .cloned()
+            .flatten()
+            .filter(|observed| {
+                observed.last <= row.result_hour
+                    && observed.first <= row.result_hour
+                    && observed.province == row.province
+            });
+        Snapshot {
+            sides,
+            winner,
+            end: Some(row.result_hour),
+            peak: None,
+            peak_hour: None,
+            observed,
         }
     }
     fn episode(&mut self, reference: u64, province: u32, kind: Kind, hour: i32) -> usize {
@@ -574,41 +700,9 @@ impl Scan {
                             side,
                         );
                     }
-                    let current_peak = sides[0]
-                        .quantities
-                        .zip(sides[1].quantities)
-                        .map(|(a, b)| a.ships + b.ships);
-                    let previous = self.episodes[index].runs.last().map(|run| &run.sample);
-                    let peak = highest(previous.and_then(|p| p.peak), current_peak);
-                    let peak_hour = current_peak
-                        .filter(|peak| previous.and_then(|p| p.peak).is_none_or(|old| *peak > old))
-                        .map(|_| hour)
-                        .or_else(|| previous.and_then(|p| p.peak_hour));
-                    if let Some(previous) = previous {
-                        // Groups can be detached; no cumulative roster is promised.
-                        // Keep maxima as floors, never sum samples.
-                        for (side, old) in sides.iter_mut().zip(&previous.sides) {
-                            side.sunk = highest(side.sunk, old.sunk);
-                            side.convoys_sunk = highest(side.convoys_sunk, old.convoys_sunk);
-                        }
-                    }
-                    missing += usize::from(
-                        sides
-                            .iter()
-                            .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
-                    );
-                    self.push(
-                        index,
-                        hour,
-                        Snapshot {
-                            sides,
-                            winner: None,
-                            end: None,
-                            peak,
-                            peak_hour,
-                            observed: None,
-                        },
-                    );
+                    let sample = self.combat_sample(index, sides, hour);
+                    missing += usize::from(incomplete(&sample.sides));
+                    self.push(index, hour, sample);
                 }
                 self.combat_incomplete = missing;
                 if missing != 0 {
@@ -766,12 +860,7 @@ impl Scan {
             if continuing.is_some() && !links_changed && !input_changed {
                 self.dirty.insert(index);
                 let last = self.episodes[index].runs.last_mut().expect("result read");
-                incomplete += usize::from(
-                    last.sample
-                        .sides
-                        .iter()
-                        .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
-                );
+                incomplete += usize::from(self::incomplete(&last.sample.sides));
                 if last.last.checked_add(1) == Some(hour) {
                     last.last = hour;
                 } else {
@@ -801,73 +890,9 @@ impl Scan {
                 .as_ref()
                 .or_else(|| self.result_inputs.get(&row.id))
                 .expect("result input");
-            let mut sides = [SideSample::default(), SideSample::default()];
-            for (which, side) in sides.iter_mut().enumerate() {
-                let classification: Option<HashMap<_, _>> = input
-                    .classification
-                    .as_ref()
-                    .map(|c| c[which].iter().copied().collect());
-                let mut quantities = Quantities::default();
-                side.quantities = input.members.as_ref().and_then(|members| {
-                    let classification = classification.as_ref()?;
-                    for member in members.iter().filter(|m| usize::from(m.side) == which) {
-                        // Convoys also have nonzero references. The sunk_by vector supplies
-                        // its own length; the presence test checks nonzero, not a ship count.
-                        quantities.add(
-                            *classification.get(&member.member)? != 0,
-                            member.presence_value != 0,
-                        );
-                    }
-                    Some(quantities)
-                });
-                side.sunk = side.quantities.map(|q| q.sunk);
-                side.convoys_sunk = side.quantities.map(|q| q.convoys_sunk);
-                // Lists 0/1 are sides, 2 is admitted/viewer.
-                // Merging sides appends encounters without a leader rank.
-                self.countries(
-                    input
-                        .countries
-                        .iter()
-                        .flatten()
-                        .filter(|r| usize::from(r.list) == which)
-                        .map(|r| r.country),
-                    input.countries.is_some(),
-                    side,
-                );
-            }
-            incomplete += usize::from(
-                sides
-                    .iter()
-                    .any(|s| s.quantities.is_none() || s.countries_unknown.is_some()),
-            );
-            // Read the recorded winner selector, never recompute it.
-            let winner = match row.winning_side {
-                1 => Some(0),
-                2 => Some(1),
-                _ => None,
-            };
-            let observed = self
-                .result_observations
-                .get(&row.id)
-                .cloned()
-                .flatten()
-                .filter(|observed| {
-                    observed.last <= row.result_hour
-                        && observed.first <= row.result_hour
-                        && observed.province == row.province
-                });
-            self.push(
-                index,
-                hour,
-                Snapshot {
-                    sides,
-                    winner,
-                    end: Some(row.result_hour),
-                    peak: None,
-                    peak_hour: None,
-                    observed,
-                },
-            );
+            let sample = self.result_sample(input);
+            incomplete += usize::from(self::incomplete(&sample.sides));
+            self.push(index, hour, sample);
             if let Some(input) = new_input {
                 self.result_inputs.insert(row.id, input);
             }
@@ -888,9 +913,26 @@ impl Scan {
         previous: &HashMap<u64, usize>,
         previous_hour: Option<i32>,
     ) {
-        let Ok(rows) = frame.complete::<tables::NavalResultSources>() else {
+        self.observe_source_rows(
+            frame.complete::<tables::NavalResultSources>().ok(),
+            frame.hour,
+            previous,
+            previous_hour,
+        );
+    }
+
+    /// The hour's result sources, when complete. The results whose observation they set.
+    fn observe_source_rows(
+        &mut self,
+        rows: Option<&[replay_data::rows::NavalResultSourceRow]>,
+        hour: i32,
+        previous: &HashMap<u64, usize>,
+        previous_hour: Option<i32>,
+    ) -> Vec<u64> {
+        let mut observed = Vec::new();
+        let Some(rows) = rows else {
             self.refuse("Naval result source interval not recorded or incomplete");
-            return;
+            return observed;
         };
         let mut ordered: Vec<_> = rows.iter().collect();
         ordered.sort_unstable_by_key(|row| row.id);
@@ -899,7 +941,7 @@ impl Scan {
                 && self
                     .last_source
                     .is_none_or(|(id, hour)| row.id > id && row.game_hour >= hour)
-                && row.game_hour <= frame.hour
+                && row.game_hour <= hour
                 && previous_hour.is_none_or(|hour| row.game_hour >= hour)
                 && row
                     .combat_created_hour
@@ -907,6 +949,7 @@ impl Scan {
                 && (!row.merged || row.transient);
             if !valid {
                 self.result_observations.insert(row.result, None);
+                observed.push(row.result);
                 self.result_links_dirty = true;
                 self.refuse("Invalid naval result source identity, hour or persistent merge");
                 continue;
@@ -930,6 +973,7 @@ impl Scan {
                 || self.results.contains_key(&row.result)
             {
                 self.result_observations.insert(row.result, None);
+                observed.push(row.result);
                 self.result_views.clear();
                 self.result_links_dirty = true;
                 self.refuse("Duplicate persistent naval combat/result link");
@@ -942,7 +986,7 @@ impl Scan {
                 .get(&row.combat)
                 .or_else(|| previous.get(&row.combat))
                 .copied();
-            let observed = index.and_then(|index| {
+            let observation = index.and_then(|index| {
                 let episode = &self.episodes[index];
                 let at = episode
                     .runs
@@ -966,17 +1010,19 @@ impl Scan {
                 })
             });
             if let Some(index) = index {
-                if observed.is_some() {
+                if observation.is_some() {
                     self.dirty.insert(index);
-                    self.episodes[index].resolved_read = Some(frame.hour);
+                    self.episodes[index].resolved_read = Some(hour);
                 } else {
                     self.refuse("Naval source constructor does not match the recorded episode");
                 }
             }
-            self.result_observations.insert(row.result, observed);
+            self.result_observations.insert(row.result, observation);
+            observed.push(row.result);
             self.result_views.clear();
             self.result_links_dirty = true;
         }
+        observed
     }
 
     fn place(&self, episode: &Episode, run: &Run) -> BattlePlace {
@@ -1533,6 +1579,7 @@ fn census(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<Ar
 impl Product for NavalBattles {
     const KEY: &'static str = "naval-battles";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NavalBattlesParams;
     type Reply = NavalBattlesReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1566,6 +1613,7 @@ impl Product for NavalBattles {
 impl Product for NavalBattlesManifest {
     const KEY: &'static str = "naval-battles-manifest";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NavalBattlesManifestParams;
     type Reply = NavalBattlesManifestReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -1601,6 +1649,7 @@ impl Product for NavalBattlesManifest {
 impl Product for NavalBattlesRanking {
     const KEY: &'static str = "naval-battles-ranking";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NavalBattlesRankingParams;
     type Reply = NavalBattlesRankingReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

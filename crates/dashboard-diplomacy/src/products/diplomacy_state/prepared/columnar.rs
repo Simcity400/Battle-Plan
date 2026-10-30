@@ -2,7 +2,7 @@ use super::{evidence::Joins, proposals, tuples::TupleRead, *};
 
 mod projector;
 mod rows;
-pub use projector::Projector;
+pub use projector::{Projector, needs};
 
 #[cfg(test)]
 mod parity;
@@ -21,6 +21,50 @@ pub(super) struct Ids {
     canonical: Vec<u32>,
 }
 impl Ids {
+    /// The bytes it owns, itself included.
+    fn heap(&self) -> usize {
+        let country =
+            |country: &DiplomacyCountry| size_of::<DiplomacyCountry>() + country.tag.capacity();
+        let joins = &self.joins;
+        size_of::<Self>()
+            + joins
+                .countries
+                .iter()
+                .map(|(tag, held)| size_of::<String>() + tag.capacity() + country(held))
+                .sum::<usize>()
+            + joins
+                .raw
+                .values()
+                .map(|held| size_of::<u32>() + country(held))
+                .sum::<usize>()
+            + joins
+                .aliases
+                .iter()
+                .map(|(held, raws)| {
+                    country(held) + size_of::<Vec<u32>>() + raws.capacity() * size_of::<u32>()
+                })
+                .sum::<usize>()
+            + self.countries.capacity() * size_of::<DiplomacyCountry>()
+            + self
+                .countries
+                .iter()
+                .map(|held| held.tag.capacity())
+                .sum::<usize>()
+            + self.index.capacity() * size_of::<(u32, u32)>()
+            + self.aliases.capacity() * size_of::<Box<[u32]>>()
+            + self
+                .aliases
+                .iter()
+                .map(|raws| raws.len() * size_of::<u32>())
+                .sum::<usize>()
+            + self.slices.capacity() * size_of::<Vec<u32>>()
+            + self
+                .slices
+                .iter()
+                .map(|slice| slice.capacity() * size_of::<u32>())
+                .sum::<usize>()
+            + self.canonical.capacity() * size_of::<u32>()
+    }
     fn index_of(&self, raw: u32) -> Option<u32> {
         self.index
             .binary_search_by_key(&raw, |&(raw, _)| raw)
@@ -41,11 +85,25 @@ pub(super) struct Values {
     values: Box<[i32]>,
     unresolved: usize,
 }
+impl Values {
+    /// The bytes it owns, itself and its targets included.
+    fn heap(&self) -> usize {
+        size_of::<Self>() + (self.targets.len() + self.values.len()) * size_of::<u32>()
+    }
+}
 /// A raw tuple owner's rows, in key order.
 pub(super) struct TupleRows {
     /// Each row's spelling; shared while no row's key, endpoints, start or spelling changes.
     identity: Arc<[Option<Arc<str>>]>,
     rows: Box<[RelationTupleRow]>,
+}
+impl TupleRows {
+    /// The bytes it owns, itself and its spellings' slots included.
+    fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.identity.len() * size_of::<Option<Arc<str>>>()
+            + self.rows.len() * size_of::<RelationTupleRow>()
+    }
 }
 /// The pacts a raw owner's rows were observed as, and at which read.
 pub(super) struct TupleMemo {
@@ -86,12 +144,13 @@ pub struct Hour {
     opinions: Option<Opinions>,
     tuples: Option<Tuples>,
     queue: QueueRead,
+    /// The bytes of the identities, values, rows and queues made since an hour last carried
+    /// them: the first to carry them counts them.
+    shared: usize,
 }
 
 impl replay::segments::Item for Hour {
     fn heap(&self) -> usize {
-        use std::mem::size_of;
-        // Identities, values, rows and queues are Arcs the projection holds too.
         let opinions = self.opinions.as_ref().map_or(0, |opinions| {
             (opinions.current.capacity() + opinions.baseline.capacity()) * size_of::<Opinion>()
         });
@@ -105,7 +164,7 @@ impl replay::segments::Item for Hour {
                     .as_ref()
                     .map_or(0, |orphans| orphans.len() * size_of::<u32>())
         });
-        opinions + tuples
+        self.shared + opinions + tuples
     }
 }
 

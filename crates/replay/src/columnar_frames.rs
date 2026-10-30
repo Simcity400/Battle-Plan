@@ -26,7 +26,7 @@ use crate::{
     scope::CaptureMode,
 };
 use engine_allocation::credit::{Credit, MemoryBudget};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay_columnar::{
     envelope::{self, Extent, IndexPage, Kind, Root, RunDirectory},
     framing,
@@ -52,8 +52,8 @@ pub use input::{Budget, Limits};
 pub(crate) use reader::Reads;
 pub use reader::{Damage, DamageScope, Recording, Run, Timings, Walker};
 
-#[cfg(test)]
-pub(crate) mod fixtures;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 #[cfg(any(test, feature = "test-support"))]
 pub mod synthetic;
 #[cfg(test)]
@@ -154,8 +154,9 @@ pub fn metrics(manifest: &Manifest<'_>) -> Metrics {
     }
 }
 
-/// The bytes `view`'s rows, or its reason, hold.
-fn view_bytes(view: &TableView) -> usize {
+/// The bytes `view`'s rows, or its reason, hold: what an item keeping a walk's view alive holds
+/// once the walk's next build of it copies it.
+pub fn view_heap_bytes(view: &TableView) -> usize {
     match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.heap_bytes(),
         TableView::Unavailable { reason } => reason.capacity(),
@@ -165,7 +166,7 @@ fn view_bytes(view: &TableView) -> usize {
 
 /// The bytes `frame`'s views hold, each counted though another frame shares it.
 pub fn frame_heap_bytes(frame: &DecodedFrame) -> usize {
-    frame.tables.iter().map(|view| view_bytes(view)).sum()
+    frame.tables.iter().map(|view| view_heap_bytes(view)).sum()
 }
 
 /// One table's hours noted since its view was built ([`Views::note`]).
@@ -318,7 +319,7 @@ impl Views {
         self.views
             .iter()
             .flatten()
-            .map(|view| view_bytes(view))
+            .map(|view| view_heap_bytes(view))
             .sum::<usize>()
             + self.slots.capacity() * size_of::<(u128, u32)>()
             + (self.keys.capacity() + self.deleted.capacity()) * size_of::<u128>()
@@ -490,6 +491,41 @@ impl Views {
             metrics(manifest),
             None,
         )
+    }
+
+    /// The views as built for the hour they were built for last, dated `branch`: the hour
+    /// before's while the walker's next hour is not yet applied to them; none before a build.
+    /// Once the frame is dropped the views are unshared again, so the next build changes them
+    /// in place.
+    pub fn frame(&self, branch: u64) -> Option<DecodedFrame> {
+        let hour = self.built?;
+        let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
+        for table in &self.selected {
+            tables[table.index()] = self.views[table.index()].clone()?;
+        }
+        Some(DecodedFrame {
+            branch,
+            hour,
+            tables,
+            metrics: Metrics::default(),
+        })
+    }
+
+    /// Takes up the selected tables' views of `frame`, a frame [`Self::frame`] gave, as built
+    /// for its hour, in place of those held: the next build goes on from them as it would
+    /// have from the views that frame was taken of.
+    pub fn load(&mut self, frame: &DecodedFrame) {
+        for pending in &mut self.pending {
+            pending.edits.clear();
+            *pending = Pending {
+                edits: std::mem::take(&mut pending.edits),
+                ..Pending::default()
+            };
+        }
+        for table in &self.selected {
+            self.views[table.index()] = Some(frame.tables[table.index()].clone());
+        }
+        self.built = Some(frame.hour);
     }
 
     /// The frame of `state` as a restart restored it, before the walk's first hour, dated

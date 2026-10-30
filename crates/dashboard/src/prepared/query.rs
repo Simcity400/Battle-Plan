@@ -356,6 +356,313 @@ fn waits(data: &Value) -> bool {
     }
 }
 
+/// Supply health's reply from its family's publication, joined with the identity histories;
+/// null before the family publishes the branch.
+fn supply_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::supply_health;
+    let branch = params["branchId"]
+        .as_str()
+        .and_then(|id| id.parse::<u64>().ok())
+        .ok_or_else(|| crate::invalid("Invalid supply branch"))?;
+    let Some(opened) = super::families::open(
+        source,
+        content,
+        "supply",
+        supply_health::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "supply-health",
+        cancelled,
+    )?;
+    let tags: Vec<String> = serde_json::from_value(params["tags"].clone()).unwrap_or_default();
+    let history = dashboard_base::prepared::query::progressive::histories(
+        &store,
+        &key,
+        branch,
+        coverage.as_ref(),
+        &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
+        source.replay_ref(),
+        &tags,
+        cancelled,
+    )?;
+    let reply = opened.read(cancelled, |snapshot, directory| {
+        supply_health::query::reply_to(snapshot, directory, params, &history, cancelled)
+    })?;
+    Ok(serde_json::to_value(reply)?)
+}
+
+/// Keyboard navigation over supply health's runs; null before the identity histories or the
+/// family publish the branch.
+fn supply_next_change(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::supply_health;
+    let branch = params["branchId"]
+        .as_str()
+        .and_then(|id| id.parse::<u64>().ok())
+        .ok_or_else(|| crate::invalid("Invalid branch"))?;
+    let Some(history) = crate::products::country_history::prepared_branch_histories(
+        source, branch, content, cancelled,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let Some(opened) = super::families::open(
+        source,
+        content,
+        "supply",
+        supply_health::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        supply_health::query::next_change(snapshot, directory, params, &history, cancelled)
+    })
+}
+
+/// The politics ledger from its family's publication, named through the recorded mod stack;
+/// pending before the family publishes the branch.
+fn ledger_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::politics_ledger;
+    let Some(opened) = super::families::open(
+        source,
+        content,
+        "politics_ledger",
+        politics_ledger::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return politics_ledger::query::unpublished(params);
+    };
+    let recorded = politics_ledger::prepared_content(source, content);
+    let recorded = recorded.as_ref().ok().and_then(Option::as_ref);
+    opened.read(cancelled, |snapshot, directory| {
+        politics_ledger::query::query(params, snapshot, directory, recorded, cancelled)
+    })
+}
+
+/// Army size from the army family's publication, a template roster from the recording; null
+/// before the family publishes the branch.
+fn army_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::army_size;
+    let params: army_size::ArmySizeParams = serde_json::from_value(params.clone())?;
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    if params.template_at.is_some() {
+        return Ok(serde_json::to_value(army_size::template_roster(
+            source, &params, &context, cancelled,
+        )?)?);
+    }
+    let branch = branch(source, &params.branch_id)?;
+    let Some(opened) =
+        super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "army-size",
+        cancelled,
+    )?;
+    let history = dashboard_base::prepared::query::progressive::histories(
+        &store,
+        &key,
+        branch,
+        coverage.as_ref(),
+        &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
+        source.replay_ref(),
+        &params.tags,
+        cancelled,
+    )?;
+    let preparing = !coverage.as_ref().is_some_and(|coverage| coverage.complete);
+    let reply = opened.read(cancelled, |snapshot, directory| {
+        army_size::query::reply(
+            source, &context, &params, snapshot, directory, &history, preparing, cancelled,
+        )
+    })?;
+    Ok(serde_json::to_value(reply)?)
+}
+
+/// An `army-size` series request (charts or navigation) answered from the army family's
+/// publication; null before it publishes the branch.
+fn army_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::army_size;
+    let Some(opened) =
+        super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    else {
+        return Ok(Value::Null);
+    };
+    let tags: Vec<String> = serde_json::from_value(params["tags"].clone()).unwrap_or_default();
+    let (store, key) = super::files(source, content)?;
+    let coverage = dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "army-size",
+        cancelled,
+    )?;
+    let history = dashboard_base::prepared::query::progressive::histories(
+        &store,
+        &key,
+        branch,
+        coverage.as_ref(),
+        &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
+        source.replay_ref(),
+        &tags,
+        cancelled,
+    )?;
+    match product {
+        "series-summary" => {
+            let start = source
+                .replay_ref()
+                .branches
+                .iter()
+                .find(|start| start.id == branch)
+                .ok_or_else(|| crate::invalid("Unknown army branch"))?;
+            let bounds = crate::metadata::branch_bounds(source.replay_ref(), start);
+            opened.read(cancelled, |snapshot, directory| {
+                army_size::query::summary(params, snapshot, directory, &history, bounds, cancelled)
+            })
+        }
+        "series-next-change" => opened.read(cancelled, |snapshot, directory| {
+            army_size::query::next_change(params, snapshot, directory, &history, cancelled)
+        }),
+        _ => Err(crate::invalid("Unknown prepared series family")),
+    }
+}
+
+/// A country's division equipment history from its family's publication, marked with its
+/// gate's prefix; null before the family publishes the branch.
+fn division_equipment_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::division_equipment::history;
+    let id = params
+        .get("branchId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| crate::invalid("Missing prepared query branch"))?;
+    let branch = branch(source, id)?;
+    let Some(opened) = super::families::open(
+        source,
+        content,
+        history::NAME,
+        history::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let reply = opened.read(cancelled, |snapshot, directory| {
+        history::query::reply(source, content, params, snapshot, directory, cancelled)
+    })?;
+    dashboard_base::products::check_reply_budget(&reply)?;
+    let mut data = serde_json::to_value(reply)?;
+    super::prefix::read_or_empty(source, content, history::QUERY, branch, None, cancelled)?
+        .mark(&mut data)?;
+    Ok(data)
+}
+
+/// Volunteers and expeditionaries from the army family's publication through the gate's
+/// prefix; every accepted hour unobserved before the family publishes the branch.
+fn volunteers_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::{army_size, volunteers_expeditionaries as aid};
+    let params: aid::VolunteersExpeditionariesParams = serde_json::from_value(params.clone())?;
+    let branch = aid::branch(&params)?;
+    let prefix = super::prefix::read_or_empty(
+        source,
+        content,
+        "volunteers-expeditionaries",
+        branch,
+        None,
+        cancelled,
+    )?;
+    let reply =
+        match super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)? {
+            Some(opened) => opened.read(cancelled, |snapshot, directory| {
+                aid::read(snapshot, directory, &params, prefix, cancelled)
+            })?,
+            None => aid::unpublished(prefix),
+        };
+    Ok(serde_json::to_value(aid::finish(source, branch, reply)?)?)
+}
+
+/// A `country-stability` series request answered from the stability family's publication;
+/// null before it publishes the branch.
+fn stability_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::country_stability;
+    let Some(opened) = super::families::open(
+        source,
+        content,
+        "stability",
+        country_stability::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        country_stability::query::query(product, params.clone(), snapshot, directory, cancelled)
+    })
+}
+
 fn branch(source: &Source, value: &str) -> io::Result<u64> {
     let id = value
         .parse()
@@ -508,6 +815,7 @@ impl Hours {
             | "event-choices"
             | "decisions"
             | "division-log-totals"
+            | "division-equipment-history"
             | "decryption"
             | "operative-placements"
             | "agency-comparison"
@@ -585,7 +893,6 @@ impl Hours {
             | "intel-network-coverage"
             | "naval-repairs"
             | "naval-refits"
-            | "division-equipment-history"
             | "air-superiority"
             | "raids"
             | "air-aces"
@@ -819,7 +1126,6 @@ fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::
         "intel-network-coverage" => intel_coverage::query(query),
         "naval-repairs" => naval_repairs::query(query),
         "naval-refits" => naval_refits::query(query),
-        "division-equipment-history" => crate::products::division_equipment::history::query(query),
         _ => Err(crate::invalid("Unknown keyed product")),
     }
 }
@@ -1427,33 +1733,16 @@ fn query_data(
             cancelled,
         )?,
         "volunteers-expeditionaries" => {
-            serde_json::to_value(crate::products::volunteers_expeditionaries::query(
-                source,
-                &serde_json::from_value(request.params.clone())?,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                cancelled,
-            )?)?
+            volunteers_reply(source, content, &request.params, cancelled)?
+        }
+        "division-equipment-history" => {
+            division_equipment_reply(source, content, &request.params, cancelled)?
         }
         "army-size" | "supply-health" => {
-            let context = crate::products::LoadContext {
-                content: content.cloned(),
-            };
             let mut data = if request.product == "army-size" {
-                serde_json::to_value(crate::products::army_size::prepared::query(
-                    source,
-                    &serde_json::from_value(request.params.clone())?,
-                    &context,
-                    cancelled,
-                )?)?
+                army_reply(source, content, &request.params, cancelled)?
             } else {
-                serde_json::to_value(crate::products::supply_health::prepared::query(
-                    source,
-                    &request.params,
-                    &context,
-                    cancelled,
-                )?)?
+                supply_reply(source, content, &request.params, cancelled)?
             };
             let id = request.params["branchId"]
                 .as_str()
@@ -1595,7 +1884,14 @@ fn query_data(
             use dashboard_base::products::country_styles::{CountryFactsParams, CountryFactsReply};
             let params: CountryFactsParams = serde_json::from_value(request.params.clone())?;
             let branch = branch(source, &params.branch_id)?;
-            let prefix = super::prefix::read_or_empty(source, content, &request.product, branch, None, cancelled)?;
+            let prefix = super::prefix::read_or_empty(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                cancelled,
+            )?;
             let localisation = dashboard_base::content::name_localisation(source, content);
             let mut warnings = Vec::new();
             match (&localisation, content) {
@@ -1610,7 +1906,7 @@ fn query_data(
             }
             let mut reply = crate::products::style_runs::country_facts(
                 source,
-                (&store, &key),
+                content,
                 branch,
                 [prefix.coverage.first_hour, prefix.coverage.last_hour],
                 localisation.as_deref().ok(),
@@ -1673,8 +1969,7 @@ fn query_data(
         | "occupation-reserve-manpower"
         | "intel-network-coverage"
         | "naval-repairs"
-        | "naval-refits"
-        | "division-equipment-history") => {
+        | "naval-refits") => {
             let id = request
                 .params
                 .get("branchId")
@@ -2186,7 +2481,11 @@ fn query_data(
                     .map(|careers| careers.answer(&params, history.as_deref(), hour))
                     .transpose()?;
                 if let Some(reply) = &mut reply {
-                    crate::products::unit_leaders::present_traits(source, content, &mut reply.traits)?;
+                    crate::products::unit_leaders::present_traits(
+                        source,
+                        content,
+                        &mut reply.traits,
+                    )?;
                 }
                 let mut data = serde_json::to_value(reply)?;
                 prefix.mark(&mut data)?;
@@ -2423,10 +2722,8 @@ fn query_data(
             if let Some(through) = prefix.through(hour) {
                 params["hour"] = Value::from(through);
             }
-            let mut data = crate::products::politics_ledger::prepared::query(
-                &params, &store, &key, cancelled,
-            )?;
-            // The icons preparation kept as recipes, drawn as this request shows them.
+            let mut data = ledger_reply(source, content, &params, branch, cancelled)?;
+            // The icons the reply names as recipes, drawn as this request shows them.
             crate::products::politics_ledger::present_icons(source, content, &mut data)?;
             prefix.mark(&mut data)?;
             data
@@ -2802,10 +3099,6 @@ fn query_data(
                         crate::prepared_measure::TABLES,
                         &crate::prepared_measure::sample,
                     )),
-                    Some("country-stability") => Some((
-                        crate::prepared_stability::TABLES,
-                        &crate::prepared_stability::sample,
-                    )),
                     Some("country-experience") if experience.is_some() => Some((
                         crate::products::country_experience::SAMPLE_TABLES,
                         &experience_sample,
@@ -2937,7 +3230,7 @@ fn query_data(
                     crate::products::validate_tag(tag).map_err(crate::invalid)?;
                 }
                 let mut sampled_requested = requested.clone();
-                if matches!(family, Some("country-stability" | "country-experience")) {
+                if family == Some("country-experience") {
                     sampled_requested.extend(requested.iter().map(|(tag, _)| {
                         (
                             tag.clone(),
@@ -2947,16 +3240,7 @@ fn query_data(
                     sampled_requested.sort();
                     sampled_requested.dedup();
                 }
-                let channels: &[&str] = if family == Some("country-stability") {
-                    &[
-                        "stability",
-                        "warSupport",
-                        "maxCommandPower",
-                        crate::prepared_measure::query::READ_HOUR,
-                    ]
-                } else {
-                    &["politicalPower", "commandPower"]
-                };
+                let channels: &[&str] = &["politicalPower", "commandPower"];
                 let mut cached_requested: Vec<_> = requested
                     .iter()
                     .flat_map(|(tag, _)| {
@@ -2985,11 +3269,7 @@ fn query_data(
                     } else {
                         progressive::state_tail_cached(
                             source,
-                            if family == Some("country-stability") {
-                                "country-stability:series"
-                            } else {
-                                "country-measure:series"
-                            },
+                            "country-measure:series",
                             branch,
                             accepted.as_ref(),
                             tables,
@@ -3048,11 +3328,7 @@ fn query_data(
                     } else {
                         progressive::tail_cached(
                             source,
-                            if family == Some("country-stability") {
-                                "country-stability:series"
-                            } else {
-                                "country-measure:series"
-                            },
+                            "country-measure:series",
                             branch,
                             accepted.as_ref(),
                             tables,
@@ -3081,7 +3357,10 @@ fn query_data(
                 )
             });
             let mut data = match family {
-                Some("country-measure" | "country-stability" | "country-experience") => {
+                Some("country-stability") => {
+                    stability_series(source, content, product, &request.params, branch, cancelled)?
+                }
+                Some("country-measure" | "country-experience") => {
                     crate::prepared_measure::query::query(
                         product,
                         request.params.clone(),
@@ -3220,15 +3499,8 @@ fn query_data(
                     accepted.as_ref(),
                     cancelled,
                 )?,
-                Some("army-size") if product == "series-summary" => {
-                    crate::products::army_size::prepared::summary(
-                        source,
-                        &request.params,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        cancelled,
-                    )?
+                Some("army-size") => {
+                    army_series(source, content, product, &request.params, branch, cancelled)?
                 }
                 Some("navy-size") => crate::products::navy::prepared::query(
                     source,
@@ -3248,25 +3520,8 @@ fn query_data(
                     },
                     cancelled,
                 )?,
-                Some("army-size") if product == "series-next-change" => {
-                    crate::products::army_size::prepared::next_change(
-                        source,
-                        &request.params,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        cancelled,
-                    )?
-                }
                 Some("supply-health") if product == "series-next-change" => {
-                    crate::products::supply_health::prepared::next_change(
-                        source,
-                        &request.params,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        cancelled,
-                    )?
+                    supply_next_change(source, content, &request.params, cancelled)?
                 }
                 Some("game-score") => crate::products::game_score::prepared::query(
                     product,
@@ -3579,7 +3834,7 @@ fn answer(
     request: &ProductRequest,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
-    (store, key): (Arc<store::Store>, store::SourceKey),
+    (_store, key): (Arc<store::Store>, store::SourceKey),
     published: Arc<gates::Published>,
     name: &str,
 ) -> io::Result<String> {
@@ -3644,18 +3899,16 @@ fn answer(
         let settled = |readers: &std::collections::BTreeSet<dashboard_text::catalogue::Reader>| {
             readers.is_empty()
                 || content
-                    .and_then(|content| {
-                        dashboard_base::catalogue::catalogue(source, content).ok()
-                    })
+                    .and_then(|content| dashboard_base::catalogue::catalogue(source, content).ok())
                     .is_some_and(|catalogue| catalogue.reports_settled(readers))
         };
         let stored = stored_answer(source, request, content, &published, &key, &publication)?;
         // Served whatever the session read outside the recorded coverage: a kept answer read
         // none, and those reads join its reply as it is served, as they join a fresh one's.
         if let Some((kept, stored)) = stored
-                .as_ref()
-                .and_then(crate::reply_cache::Entry::get)
-                .and_then(served::Answer::kept::<StoredQuery>)
+            .as_ref()
+            .and_then(crate::reply_cache::Entry::get)
+            .and_then(served::Answer::kept::<StoredQuery>)
             && settled(&stored.readers)
         {
             return Ok(CachedQuery {
@@ -3749,7 +4002,7 @@ fn answer(
     // or, when it consulted none, the coverage its product waits for.
     let gate = answer.waits.then(|| {
         if answer.short.is_empty() {
-            super::pipeline::gate(name)
+            super::pipeline::published_gate(&published, name)
         } else {
             answer.short.iter().copied().collect()
         }

@@ -1,12 +1,12 @@
 //! The sampled families prepared on their own: air force size, navy size,
-//! country stability and its parts, equipment losses, supply health, the
-//! party history and trade flows. Their widgets answer at open through
-//! samplers; their exact history is this preparation. (Fuel, sampled too, is
+//! stability's parts, equipment losses, the party history and trade flows.
+//! Their widgets answer at open through samplers; their exact history is this
+//! preparation. (Fuel, sampled too, is
 //! read daily and prepared with the economy ledgers.)
 //!
 //! Each observer reads tables that move nearly every hour while countries
 //! fight or produce (wing equipment, ship strength, sliced stability and
-//! command-power reads, division supply, combat-log losses, resource
+//! command-power reads, combat-log losses, resource
 //! exchanges), and carries state from one hour to the next that
 //! decides what the next adds (open runs and their parts, composition
 //! versions, sliced read dates, open loss days, open deals). An hour's observation already does nothing where nothing it
@@ -36,7 +36,7 @@
 //!
 //! What hourly preparation does around a block's hours is done at the same
 //! points: it binds an observer's content at every block (air and navy part
-//! content, supply defines), and resumes the air and navy censuses at every
+//! content), and resumes the air and navy censuses at every
 //! block from the frame its stream last accepted (the last frame of the
 //! recording's block before, when that block is on the same branch). The
 //! family keeps that frame from its own read of the block before, or reads
@@ -64,12 +64,10 @@ use crate::{
         frame_changes::{FrameChangeTracker, FrameChanges},
         prepass::{self, Extract, Folded},
     },
-    prepared_stability::StabilityAccumulator,
     products::{
-        air_force, convoy_health, country_history::HistoryScan, division_equipment,
-        equipment_losses, fuel_branches,
+        air_force, convoy_health, country_history::HistoryScan, equipment_losses, fuel_branches,
         lend_lease_balance, market, navy, politics_state, production_catalogue,
-        parts_race_prepared::Family as _, party_history, supply_health, territory, trade_flows,
+        parts_race_prepared::Family as _, party_history, stability_parts, territory, trade_flows,
     },
 };
 use dashboard_base::prepared::timing::FamilyTimings;
@@ -390,16 +388,16 @@ impl Sampled for navy::prepared::Prepared {
     }
 }
 
-// --- Country stability and its parts --------------------------------------
+// --- Stability's parts ----------------------------------------------------
 
-impl Sampled for StabilityAccumulator {
+impl Sampled for stability_parts::Prepared {
     fn family() -> &'static prepass::Family {
-        &STABILITY_FAMILY
+        &PARTS_FAMILY
     }
 
-    const TIMING: &'static str = "independent.stability";
+    const TIMING: &'static str = "independent.parts";
     #[cfg(test)]
-    const OBSERVED: &'static str = "stability.observed";
+    const OBSERVED: &'static str = "parts.observed";
 
     /// The stability inputs, lines and slice reads, the command power, the
     /// modifier, character and token tables naming parts, and the tables a
@@ -452,13 +450,13 @@ impl Sampled for StabilityAccumulator {
         _: &Block<'_>,
         changes: &FrameChanges,
         _: &AtomicBool,
-        timings: &mut Timings,
+        _: &mut Timings,
     ) -> io::Result<()> {
-        self.observe_timed(frame, changes, timings)
+        self.observe_changes(frame, changes)
     }
 
     fn bytes(&self) -> usize {
-        self.buffered_bytes()
+        Self::bytes(self)
     }
 
     fn flush(
@@ -467,9 +465,9 @@ impl Sampled for StabilityAccumulator {
         _: FormatVersion,
         branch: u64,
         cancelled: &AtomicBool,
-        timings: &mut Timings,
+        _: &mut Timings,
     ) -> io::Result<()> {
-        self.flush_timed(writer, branch, cancelled, timings)
+        Self::flush(self, writer, branch, cancelled)
     }
 }
 
@@ -543,61 +541,6 @@ impl Sampled for equipment_losses::prepared::Prepared {
                 crate::metadata::branch_bounds(replay, start).1
             });
         Self::finish_block(self, last);
-    }
-
-    fn bytes(&self) -> usize {
-        Self::bytes(self)
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: FormatVersion,
-        branch: u64,
-        cancelled: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, cancelled)
-    }
-}
-
-// --- Supply health ---------------------------------------------------------
-
-impl Sampled for supply_health::prepared::Prepared {
-    fn family() -> &'static prepass::Family {
-        &SUPPLY_FAMILY
-    }
-
-    const TIMING: &'static str = "independent.supply";
-    #[cfg(test)]
-    const OBSERVED: &'static str = "supply.observed";
-
-    fn tables() -> &'static [TableId] {
-        static TABLES: LazyLock<Vec<TableId>> =
-            LazyLock::new(|| union(&[supply_health::prepared::TABLES]));
-        &TABLES
-    }
-
-    fn new(_: &Block<'_>) -> Self {
-        Self::default()
-    }
-
-    /// Its defines, read once from the content, as the walk binds them at
-    /// every block.
-    fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        Self::configure(self, block.source, block.context.content.as_ref())
-    }
-
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        _: &Block<'_>,
-        changes: &FrameChanges,
-        _: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        Self::observe(self, frame, changes)
     }
 
     fn bytes(&self) -> usize {
@@ -926,77 +869,6 @@ impl Sampled for Trade {
             .as_ref()
             .ok_or_else(|| io::Error::other("Trade flows flushed before observing a block"))?;
         self.prepared.flush_named(writer, naming, branch, cancelled)
-    }
-}
-
-// --- Division equipment -----------------------------------------------------
-
-/// Every country's division equipment reply at every hour.
-impl Sampled for division_equipment::history::Prepared {
-    fn family() -> &'static prepass::Family {
-        &DIVISION_EQUIPMENT_FAMILY
-    }
-
-    const TIMING: &'static str = "independent.division-equipment";
-    #[cfg(test)]
-    const OBSERVED: &'static str = "division-equipment.observed";
-
-    fn tables() -> &'static [TableId] {
-        division_equipment::history::tables()
-    }
-
-    fn new(_: &Block<'_>) -> Self {
-        Self::new()
-    }
-
-    fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        Self::configure(self, block.source, block.context);
-        Ok(())
-    }
-
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        block: &Block<'_>,
-        changes: &FrameChanges,
-        _: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        Self::observe(self, frame, changes, block.replay)
-    }
-
-    fn bytes(&self) -> usize {
-        Self::bytes(self)
-    }
-
-    /// Its continuation is its open state; its catalogue is read back from the pages it appended.
-    fn load(load: &Load<'_>, branch: u64) -> io::Result<Option<Self>> {
-        let Some(mut state) =
-            census::read::<Self>(load, &census::continuation(Self::family().name, branch))?
-        else {
-            return Ok(None);
-        };
-        let section = division_equipment::history::catalogue_section(branch);
-        state.restore(|at| match load.saved {
-            None => Ok(None),
-            Some(previous) if previous != load.key => {
-                load.store.read_prefix(previous, load.key, &section, at)
-            }
-            Some(_) => load.store.read(load.key, &section, at),
-        })?;
-        Ok(Some(state))
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: FormatVersion,
-        branch: u64,
-        cancelled: &AtomicBool,
-        _: &mut Timings,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, cancelled)
     }
 }
 
@@ -1394,9 +1266,8 @@ where
     };
     Ok((Folded::Fast, reached.or(Some(hour)), last))
 }
-family!(STABILITY_FAMILY, "stability");
+family!(PARTS_FAMILY, "parts");
 family!(LOSSES_FAMILY, "equipment_losses");
-family!(SUPPLY_FAMILY, "supply");
 family!(PARTIES_FAMILY, "parties");
 family!(FUEL_BRANCHES_FAMILY, "fuel_branches");
 family!(MARKET_FAMILY, "market");
@@ -1406,7 +1277,6 @@ family!(CONVOYS_FAMILY, "convoys");
 family!(POLITICS_FAMILY, "politics_state");
 family!(TRADE_FAMILY, "trade");
 family!(TERRITORY_FAMILY, "territory");
-family!(DIVISION_EQUIPMENT_FAMILY, "division-equipment");
 
 /// A block a pre-pass worker read for a sampled family.
 struct BlockRead;
@@ -1437,16 +1307,13 @@ pub(in crate::prepared::pipeline) static AIR: Entry<air_force::prepared::Prepare
     Entry(PhantomData);
 /// Navy size.
 pub(in crate::prepared::pipeline) static NAVY: Entry<navy::prepared::Prepared> = Entry(PhantomData);
-/// Country stability and its parts.
-pub(in crate::prepared::pipeline) static STABILITY: Entry<StabilityAccumulator> =
+/// Stability's parts.
+pub(in crate::prepared::pipeline) static PARTS: Entry<stability_parts::Prepared> =
     Entry(PhantomData);
 /// Equipment losses.
 pub(in crate::prepared::pipeline) static EQUIPMENT_LOSSES: Entry<
     equipment_losses::prepared::Prepared,
 > = Entry(PhantomData);
-/// Supply health.
-pub(in crate::prepared::pipeline) static SUPPLY: Entry<supply_health::prepared::Prepared> =
-    Entry(PhantomData);
 /// Parties and leaders.
 pub(in crate::prepared::pipeline) static PARTIES: Entry<party_history::prepared::Prepared> =
     Entry(PhantomData);
@@ -1472,9 +1339,6 @@ pub(in crate::prepared::pipeline) static POLITICS: Entry<politics_state::history
 pub(in crate::prepared::pipeline) static TRADE: Entry<Trade> = Entry(PhantomData);
 /// Territory, with its own read of the identity history.
 pub(in crate::prepared::pipeline) static TERRITORY: Entry<Territory> = Entry(PhantomData);
-pub(in crate::prepared::pipeline) static DIVISION_EQUIPMENT: Entry<
-    division_equipment::history::Prepared,
-> = Entry(PhantomData);
 
 impl<S: Sampled> Own for Entry<S> {
     fn family(&self) -> &'static prepass::Family {

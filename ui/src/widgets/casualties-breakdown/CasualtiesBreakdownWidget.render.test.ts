@@ -21,6 +21,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
       return { data: new Map(), errors: new Map(), retry() {} }; }`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryNamesAt = () => new Map(); export const useCountryFactsRead = () => new Map();',
+    '/dashboard/countryFlags.ts': 'export const useCountryFlagsRead = () => new Map();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123"] }); export const useViewportHeight = () => 1000;',
   };

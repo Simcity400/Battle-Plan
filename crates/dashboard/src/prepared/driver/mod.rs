@@ -1,13 +1,14 @@
 //! The preparation driver: the one family registry, the plan selecting the
-//! backend of every family ([`plan::current`]), the publication every family
-//! commits through ([`publication`]), and the entry ordinary preparation and
-//! its restoration go through. Every backend is a row backend: the hourly
-//! walk, or a family's row implementation of its own. A recording with a native
-//! columnar recording also has its change-run index prepared ([`super::change_runs`]).
+//! backend of every family ([`plan`]), the publication every family commits
+//! through ([`publication`]), and the entry ordinary preparation and its
+//! restoration go through. A recording's change-run index is prepared first
+//! ([`super::change_runs`]). A recording with a native columnar recording beside
+//! it is then prepared from that, every family by its native backend or refused
+//! by name ([`native`]); any other is prepared from its rows, in the hourly walk
+//! or by a family's row implementation of its own.
 
+pub mod native;
 pub(crate) mod plan;
-// The segment driver commits through it; ordinary preparation is still the row walk's.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod publication;
 pub mod registry;
 
@@ -28,16 +29,31 @@ pub fn prepare(
     source: &Source,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
-    accepted: impl FnMut(&Accepted),
+    mut accepted: impl FnMut(&Accepted),
 ) -> io::Result<Accepted> {
     // The index first: the viewer serves the map from it while the families prepare. Native
-    // recordings refused for it are the campaign map's refusal alone, named in its status.
+    // recordings refused for it are the campaign map's refusal alone, named in its status, from
+    // the first progress the families report on.
     let refused = change_runs::prepare(source, cancelled)?;
-    let mut accepted = pipeline::prepare_rows(source, content, cancelled, accepted)?;
+    let mut forward = |done: &Accepted| match &refused {
+        Some(reason) => {
+            let mut done = done.clone();
+            map_refused(&mut done.sections, reason);
+            accepted(&done);
+        }
+        None => accepted(done),
+    };
+    let mut done = match native::recording(source)? {
+        Some(recording) => native::prepare(source, content, recording, cancelled, &mut forward)?,
+        None => {
+            native::release(source, content)?;
+            pipeline::prepare_rows(source, content, cancelled, forward)?
+        }
+    };
     if let Some(reason) = refused {
-        map_refused(&mut accepted.sections, &reason);
+        map_refused(&mut done.sections, &reason);
     }
-    Ok(accepted)
+    Ok(done)
 }
 
 /// What a complete preparation of `source` accepted, read from its store,
@@ -55,7 +71,11 @@ pub fn restore(
         Outcome::Indexed => None,
         Outcome::Refused(reason) => Some(reason),
     };
-    let mut restored = pipeline::restore_rows(source, content, cancelled)?;
+    let mut restored = match native::recording(source)? {
+        Some(recording) => native::restore(source, content, &recording, cancelled)?,
+        None if native::published(source, content)? => None,
+        None => pipeline::restore_rows(source, content, cancelled)?,
+    };
     if let (Some(accepted), Some(reason)) = (&mut restored, refused) {
         map_refused(&mut accepted.sections, &reason);
     }

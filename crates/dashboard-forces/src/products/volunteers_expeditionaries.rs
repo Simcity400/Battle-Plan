@@ -1,13 +1,16 @@
-//! Observed land deployments, not dispatch transactions or integrated lifetime totals.
-use super::army_size::aid::Catalogue;
+//! Observed land deployments, not dispatch transactions or integrated lifetime totals, read
+//! from the army family's publication ([`super::army_size::emit`]): its aid links, each
+//! sender's resolved channels and each party's presence.
+use super::army_size::{
+    emit::{AID_PROOF, AID_READ, AID_VALUE, AID_WARNINGS, FAMILY, LINKS, party_of},
+    query::reasons,
+};
 use dashboard_base::{
     Source,
-    prepared::{
-        self, prefix,
-        series::{self, Reader, Run},
-    },
-    products::{LoadContext, Product, check_reply_budget, country_groups::HourSpan},
+    prepared::{engine, prefix},
+    products::{Product, check_reply_budget, country_groups::HourSpan},
 };
+use dashboard_series::{PageRead, Snapshot, family::Directory};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
@@ -63,6 +66,7 @@ pub struct VolunteersExpeditionariesReply {
 impl Product for VolunteersExpeditionaries {
     const KEY: &'static str = "volunteers-expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = VolunteersExpeditionariesParams;
     type Reply = VolunteersExpeditionariesReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -86,6 +90,15 @@ impl Product for VolunteersExpeditionaries {
     }
 }
 
+/// A run of a key as the reply reads it.
+#[derive(Clone, Copy)]
+struct Run {
+    first_hour: i32,
+    last_hour: i32,
+    value: i128,
+    break_before: bool,
+}
+
 fn value(runs: &[Run], hour: i32) -> Option<&Run> {
     runs.get(
         runs.partition_point(|run| run.first_hour <= hour)
@@ -93,6 +106,7 @@ fn value(runs: &[Run], hour: i32) -> Option<&Run> {
     )
     .filter(|run| run.last_hour >= hour)
 }
+
 fn project(values: &[Run], proofs: [&[Run]; 3], first: i32, last: i32) -> Vec<MilitaryAidRun> {
     if first > last {
         return Vec::new();
@@ -134,6 +148,7 @@ fn project(values: &[Run], proofs: [&[Run]; 3], first: i32, last: i32) -> Vec<Mi
     }
     result
 }
+
 fn merge_spans(spans: &mut Vec<HourSpan>) {
     spans.sort_unstable_by_key(|span| span.first_hour);
     let mut end = 0;
@@ -148,31 +163,65 @@ fn merge_spans(spans: &mut Vec<HourSpan>) {
     }
     spans.truncate(end);
 }
-pub fn query(
-    source: &Source,
-    params: &VolunteersExpeditionariesParams,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<VolunteersExpeditionariesReply> {
+
+/// `key`'s runs over `first..=last`; none of a key the family never wrote.
+fn runs<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    key: Option<u64>,
+    first: i32,
+    last: i32,
+) -> io::Result<Vec<Run>> {
+    let Some(key) = key else {
+        return Ok(Vec::new());
+    };
+    Ok(engine::runs(snapshot, key, first, last)?
+        .into_iter()
+        .map(|run| Run {
+            first_hour: run.span.first,
+            last_hour: run.span.last,
+            value: run.value,
+            break_before: run.break_before,
+        })
+        .collect())
+}
+
+/// The branch a request names.
+pub fn branch(params: &VolunteersExpeditionariesParams) -> io::Result<u64> {
     VolunteersExpeditionaries::validate(params).map_err(dashboard_core::invalid)?;
-    let branch = params
+    params
         .branch_id
         .parse::<u64>()
-        .map_err(|_| dashboard_core::invalid("Invalid aid branch"))?;
-    let prefix = prefix::read_or_empty(
-        source,
-        context.content.as_ref(),
-        VolunteersExpeditionaries::KEY,
-        branch,
-        None,
-        cancelled,
-    )?;
-    let (store, key) = prepared::files(source, context.content.as_ref())?;
-    let catalogue = series::read_catalogue::<Catalogue>(&store, &key, "army-aid", branch)?
-        .map(|(_, catalogue)| catalogue)
-        .unwrap_or_default();
-    let through = prefix.coverage.last_hour;
-    let mut reply = read(&store, &key, branch, params, catalogue, prefix, cancelled)?;
+        .map_err(|_| dashboard_core::invalid("Invalid aid branch"))
+}
+
+/// The reply before the army family publishes the branch: every hour the prefix accepts is
+/// unobserved.
+pub fn unpublished(prefix: prefix::Prefix) -> VolunteersExpeditionariesReply {
+    let (first, last) = (prefix.coverage.first_hour, prefix.coverage.last_hour);
+    VolunteersExpeditionariesReply {
+        links: Vec::new(),
+        tallies: Vec::new(),
+        unobserved: if first <= last {
+            vec![HourSpan {
+                first_hour: first,
+                last_hour: last,
+            }]
+        } else {
+            Vec::new()
+        },
+        prefix,
+        warnings: Vec::new(),
+    }
+}
+
+/// The recorded gaps after the prefix joined into the reply's unobserved hours, within its
+/// budget.
+pub fn finish(
+    source: &Source,
+    branch: u64,
+    mut reply: VolunteersExpeditionariesReply,
+) -> io::Result<VolunteersExpeditionariesReply> {
+    let through = reply.prefix.coverage.last_hour;
     reply
         .unobserved
         .extend(prefix::gaps_after(source, branch, through));
@@ -180,16 +229,17 @@ pub fn query(
     check_reply_budget(&reply)?;
     Ok(reply)
 }
-pub(crate) fn read(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
+
+/// The reply the publication gives through `prefix`.
+pub fn read<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
     params: &VolunteersExpeditionariesParams,
-    catalogue: Catalogue,
     prefix: prefix::Prefix,
     cancelled: &AtomicBool,
 ) -> io::Result<VolunteersExpeditionariesReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
+    let branch = branch(params)?;
     let (first, last) = (prefix.coverage.first_hour, prefix.coverage.last_hour);
     if first > last {
         return Ok(VolunteersExpeditionariesReply {
@@ -200,14 +250,20 @@ pub(crate) fn read(
             warnings: Vec::new(),
         });
     }
-    let channel = if params.kind == MilitaryAidKind::Land {
+    let channel: u64 = if params.kind == MilitaryAidKind::Land {
         0
     } else {
         1
     };
-    let mut values = Reader::new(store, key, format!("army-aid-values-{branch}"), cancelled)?;
-    let mut proof = Reader::new(store, key, format!("army-aid-proof-{branch}"), cancelled)?;
-    let mut proofs = BTreeMap::<u64, Vec<Run>>::new();
+    let party = |actor: u64| {
+        directory
+            .actors
+            .get(actor as usize)
+            .and_then(|actor| party_of(&actor.name))
+            .ok_or_else(|| dashboard_core::invalid("A prepared aid link names an unknown party"))
+    };
+    let proof = |actor: u64, channel: u64| directory.key(actor, AID_PROOF, Some(channel));
+    let mut proofs = BTreeMap::<(u64, u64), Vec<Run>>::new();
     let mut links = Vec::new();
     let mut tallies = Vec::new();
     let mut unobserved = Vec::new();
@@ -216,33 +272,46 @@ pub(crate) fn read(
         .tags
         .as_ref()
         .map(|tags| tags.iter().map(String::as_str).collect::<BTreeSet<_>>());
-    for (at, link) in catalogue.links.iter().enumerate() {
+    let mut index = 0;
+    while let Some(link) = directory.scalar(LINKS + index) {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        if link.channels & ((1 << channel) | if channel == 0 { 1 << 2 } else { 0 }) == 0 {
+        let at = index;
+        index += 1;
+        let fields: Vec<u64> = link
+            .list()
+            .iter()
+            .filter_map(|field| u64::try_from(field.integer()?).ok())
+            .collect();
+        let &[sender_actor, host_actor, channels] = fields.as_slice() else {
+            return Err(dashboard_core::invalid("A prepared aid link is not valid"));
+        };
+        if channels & ((1 << channel) | if channel == 0 { 1 << 2 } else { 0 }) == 0 {
             continue;
         }
-        let sender = &catalogue.actors[link.sender as usize];
-        let host = &catalogue.actors[link.host as usize];
-        if wanted.as_ref().is_some_and(|tags| {
-            !tags.contains(sender.tag.as_str()) && !tags.contains(host.tag.as_str())
-        }) {
+        let sender = party(sender_actor)?;
+        let host = party(host_actor)?;
+        if wanted
+            .as_ref()
+            .is_some_and(|tags| !tags.contains(sender.2) && !tags.contains(host.2))
+        {
             continue;
         }
         for (target, selected) in [(&mut links, channel), (&mut tallies, 2)] {
             if selected == 2 && params.kind != MilitaryAidKind::Land {
                 continue;
             }
-            let keys = [
-                4 + link.sender * 4 + selected,
-                4 + link.sender * 4 + 3,
-                4 + link.host * 4 + 3,
-            ];
+            let keys = [(sender_actor, selected), (sender_actor, 3), (host_actor, 3)];
             for id in keys {
                 if let Entry::Vacant(entry) = proofs.entry(id) {
-                    entry.insert(proof.runs(id, first, last)?);
+                    entry.insert(runs(snapshot, proof(id.0, id.1), first, last)?);
                 }
             }
-            let runs = values.runs(at as u64 * 3 + selected, first, last)?;
+            let values = runs(
+                snapshot,
+                directory.key(sender_actor, AID_VALUE, Some(at * 3 + selected)),
+                first,
+                last,
+            )?;
             let source_presence = &proofs[&keys[1]];
             let host_presence = &proofs[&keys[2]];
             let left = source_presence
@@ -256,7 +325,7 @@ pub(crate) fn read(
                 .map(|(a, b)| a.last_hour.min(b.last_hour))
                 .unwrap_or(first.saturating_sub(1));
             let runs = project(
-                &runs,
+                &values,
                 keys.map(|key| proofs[&key].as_slice()),
                 left.max(first),
                 right.min(last),
@@ -274,34 +343,39 @@ pub(crate) fn read(
                 size_of::<MilitaryAidLink>()
                     + runs.len() * size_of::<MilitaryAidRun>()
                     + link_key.len()
-                    + sender.tag.len()
-                    + host.tag.len(),
+                    + sender.2.len()
+                    + host.2.len(),
             );
             if bytes > dashboard_base::products::MAX_PRODUCT_REPLY_BYTES {
                 return Err(io::Error::other(
                     "Military aid history exceeds the reply budget; narrow the country selection",
                 ));
             }
-            // Catalogue pairs stay distinct when either endpoint's tag is reused.
+            // Link pairs stay distinct when either endpoint's tag is reused.
             target.push(MilitaryAidLink {
                 key: link_key,
-                sender: sender.tag.clone(),
-                sender_slot: Some(sender.slot),
-                sender_country_id: Some(sender.id),
-                host: host.tag.clone(),
-                host_slot: Some(host.slot),
-                host_country_id: Some(host.id),
+                sender: sender.2.to_owned(),
+                sender_slot: Some(sender.0),
+                sender_country_id: Some(sender.1),
+                host: host.2.to_owned(),
+                host_slot: Some(host.0),
+                host_country_id: Some(host.1),
                 runs,
             });
         }
     }
-    // A sparse empty link catalogue is not proof of an empty native tally
-    // roster. Preserve both source channels even when neither has a pair yet.
+    // An empty link list is not proof of an empty native tally roster. Preserve both source
+    // channels even when neither has a pair yet.
     for source_channel in [channel, 2]
         .into_iter()
         .take(if channel == 0 { 2 } else { 1 })
     {
-        let known = proof.runs(source_channel, first, last)?;
+        let known = runs(
+            snapshot,
+            directory.key(FAMILY, AID_READ, Some(source_channel)),
+            first,
+            last,
+        )?;
         let mut from = first;
         for run in known {
             if from < run.first_hour {
@@ -320,13 +394,10 @@ pub(crate) fn read(
         }
     }
     merge_spans(&mut unobserved);
-    let warnings = catalogue.warnings[channel as usize]
-        .iter()
-        .chain(if channel == 0 {
-            catalogue.warnings[2].iter()
-        } else {
-            catalogue.warnings[1].iter()
-        })
+    let other = if channel == 0 { 2 } else { 1 };
+    let warnings = reasons(directory, AID_WARNINGS + channel)
+        .into_iter()
+        .chain(reasons(directory, AID_WARNINGS + other))
         .map(|(reason, count)| format!("{count} {reason}"))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -342,5 +413,6 @@ pub(crate) fn read(
     Ok(reply)
 }
 
+pub mod served;
 #[cfg(test)]
 mod tests;

@@ -14,6 +14,7 @@ doctest = false
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+dashboard-world.workspace = true
 replay.workspace = true
 engine-dlc.workspace = true
 engine-land-inputs.workspace = true

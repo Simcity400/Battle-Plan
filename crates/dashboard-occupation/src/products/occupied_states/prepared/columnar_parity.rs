@@ -442,6 +442,7 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
     assert!(projector.starts_at(Start::Run { continues: true }));
     for (run, inputs) in runs.iter().enumerate() {
         let mut walk = Synthetic::new(&tables, 1, inputs[0].hour).unwrap();
+        let mut world_held: Option<dashboard_world::World> = None;
         let mut row_views =
             replay::columnar_frames::Views::new(&tables, format, CaptureMode::Full).unwrap();
         if run == 0 {
@@ -472,7 +473,19 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
                 tracker.invalidate();
             }
             write_hour(&mut walk, input);
-            walk.end(|state, manifest, _, _| {
+            walk.end(|state, manifest, _, walk_starts| {
+                let world = dashboard_world::World::at(
+                    &mut world_held,
+                    walk_starts,
+                    &crate::products::occupied_states::scan::columnar::needs(),
+                    (
+                        replay_data::format::FormatVersion::CURRENT,
+                        replay_data::scope::CaptureMode::Full,
+                    ),
+                    state,
+                    manifest,
+                )
+                .unwrap();
                 let (frame, raw) = row_views.advance_recorded(state, manifest, opens).unwrap();
                 expected
                     .observe(
@@ -493,6 +506,7 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
                             opens: starts,
                             state,
                             manifest,
+                            world,
                         },
                         &mut out,
                     )
@@ -664,12 +678,25 @@ fn missing_join_table_refuses_by_the_row_paths_name() {
     }
     .into();
     let mut walk = Synthetic::new(&observed_tables(false), 1, 100).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let mut projector = Prepared::default()
         .projector(format, CaptureMode::Full)
         .unwrap();
     let mut out: Vec<columnar::Hour> = Vec::new();
     write_hour(&mut walk, &input);
     walk.end(|state, manifest, frame, starts| {
+        let world = dashboard_world::World::at(
+            &mut world_held,
+            starts,
+            &crate::products::occupied_states::scan::columnar::needs(),
+            (
+                replay_data::format::FormatVersion::CURRENT,
+                replay_data::scope::CaptureMode::Full,
+            ),
+            state,
+            manifest,
+        )
+        .unwrap();
         let expected = Prepared::default()
             .observe_frame(frame, format, None)
             .unwrap_err();
@@ -684,6 +711,7 @@ fn missing_join_table_refuses_by_the_row_paths_name() {
                     opens: true,
                     state,
                     manifest,
+                    world,
                 },
                 &mut out,
             )
@@ -814,6 +842,7 @@ fn triggered_laws_follow_reached_countries_hold_supplier_and_recover_after_gaps(
     let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
     let mut out: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let mut row_views =
         replay::columnar_frames::Views::new(&prototype.tables(), format, CaptureMode::Full)
             .unwrap();
@@ -825,6 +854,18 @@ fn triggered_laws_follow_reached_countries_hold_supplier_and_recover_after_gaps(
         for (ordinal, input) in hours.iter().enumerate() {
             write_hour(&mut walk, input);
             walk.end(|state, manifest, _, starts| {
+                let world = dashboard_world::World::at(
+                    &mut world_held,
+                    starts,
+                    &crate::products::occupied_states::scan::columnar::needs(),
+                    (
+                        replay_data::format::FormatVersion::CURRENT,
+                        replay_data::scope::CaptureMode::Full,
+                    ),
+                    state,
+                    manifest,
+                )
+                .unwrap();
                 let (frame, raw) = row_views.advance_recorded(state, manifest, starts).unwrap();
                 expected
                     .observe(
@@ -845,6 +886,7 @@ fn triggered_laws_follow_reached_countries_hold_supplier_and_recover_after_gaps(
                             opens: starts,
                             state,
                             manifest,
+                            world,
                         },
                         &mut out,
                     )
@@ -937,9 +979,22 @@ fn a_law_declared_on_too_few_reads_is_caught_on_both_paths() {
         let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
         let mut out: Vec<columnar::Hour> = Vec::new();
         let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
+        let mut world_held: Option<dashboard_world::World> = None;
         for (ordinal, input) in hours.iter().enumerate() {
             write_hour(&mut walk, input);
             walk.end(|state, manifest, _, starts| {
+                let world = dashboard_world::World::at(
+                    &mut world_held,
+                    starts,
+                    &crate::products::occupied_states::scan::columnar::needs(),
+                    (
+                        replay_data::format::FormatVersion::CURRENT,
+                        replay_data::scope::CaptureMode::Full,
+                    ),
+                    state,
+                    manifest,
+                )
+                .unwrap();
                 projector
                     .hour(
                         &segments::Hour {
@@ -951,6 +1006,7 @@ fn a_law_declared_on_too_few_reads_is_caught_on_both_paths() {
                             opens: starts,
                             state,
                             manifest,
+                            world,
                         },
                         &mut out,
                     )
@@ -1138,10 +1194,23 @@ fn equipment_dictionary_and_partial_manpower_keep_absolute_strength_results() {
     let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
     let mut out: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
+    let mut world_held: Option<dashboard_world::World> = None;
     let mut tracker = FrameChangeTracker::new();
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input);
         walk.end(|state, manifest, frame, starts| {
+            let world = dashboard_world::World::at(
+                &mut world_held,
+                starts,
+                &crate::products::occupied_states::scan::columnar::needs(),
+                (
+                    replay_data::format::FormatVersion::CURRENT,
+                    replay_data::scope::CaptureMode::Full,
+                ),
+                state,
+                manifest,
+            )
+            .unwrap();
             row.observe(
                 frame,
                 format,
@@ -1160,6 +1229,7 @@ fn equipment_dictionary_and_partial_manpower_keep_absolute_strength_results() {
                         opens: starts,
                         state,
                         manifest,
+                        world,
                     },
                     &mut out,
                 )

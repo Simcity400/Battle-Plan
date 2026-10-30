@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, nameKey } from '../../dashboard/countryFacts.ts';
-import type { FlagRead } from '../../dashboard/countryFlagsAt';
+import type { FlagRead } from '../../dashboard/countryFlags';
 import { casualtyCountryCell, casualtyEnemyName } from './casualtyFlags.ts';
 
 const row = { enemyTag: 'Opaque enemy [x:y]', enemyHour: 23 };

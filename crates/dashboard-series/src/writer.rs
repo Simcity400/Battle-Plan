@@ -150,6 +150,24 @@ pub struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
+    /// The bytes its appended rows hold of its budget until it is cut.
+    pub fn held_bytes(&self) -> usize {
+        let columns = &self.columns;
+        [
+            columns.runs.held(),
+            columns.evidence.held(),
+            columns.domain_rows.held(),
+            columns.events.held(),
+            columns.keys.held(),
+            columns.domains.held(),
+            columns.definitions.held(),
+            columns.metadata.held(),
+            columns.heap.held(),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
+    }
+
     pub fn new(budget: &'a Budget, identity: Identity, first: i32) -> io::Result<Self> {
         Ok(Self {
             budget,
@@ -183,10 +201,12 @@ impl<'a> Writer<'a> {
         })
     }
 
-    /// Continues the publication rooted at `root`: keys, counters and edges come from its hierarchy.
+    /// Continues the publication rooted at `root`, read through `cache`: keys, counters and edges
+    /// come from its hierarchy, and its rows draw on `budget`.
     pub fn resume(
         io: &mut impl PageRead,
-        cache: &'a Cache<'a>,
+        cache: &Cache<'_>,
+        budget: &'a Budget,
         root: PageId,
         identity: Identity,
     ) -> io::Result<Self> {
@@ -196,7 +216,7 @@ impl<'a> Writer<'a> {
         }
         let root: Root = reader.root().clone();
         let mut writer = Self::new(
-            cache.budget(),
+            budget,
             identity,
             root.state.publication.accepted.first,
         )?;

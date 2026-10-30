@@ -35,7 +35,7 @@ pub(super) fn query(
     let countries = frame.complete::<tables::Countries>()?;
     let links = frame.complete::<tables::CountryLinks>()?;
     let country = dashboard_text::metadata::tagged_country(countries, links, tag);
-    let TaggedCountry::Found(_, slot) = country else {
+    let dashboard_text::metadata::TaggedCountry::Found(_, slot) = country else {
         return Err(dashboard_core::invalid(
             "Template roster country is unavailable at this hour",
         ));
@@ -140,7 +140,7 @@ pub(super) fn query(
         warnings,
     };
     dashboard_core::transport::json_len(&reply, dashboard_base::products::MAX_PRODUCT_REPLY_BYTES)
-        .ok_or_else(reply_bound)?;
+        .ok_or_else(query::reply_bound)?;
     Ok(reply)
 }
 
@@ -338,9 +338,8 @@ mod tests {
             window: None,
         };
         let cancel = AtomicBool::new(false);
-        let reply = prepared::query(&source, &params, &context, &cancel)
-            .unwrap()
-            .unwrap();
+        let reply =
+            super::super::template_roster(&source, &params, &context, &cancel).unwrap();
         assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
         let text = reply.template_sections.unwrap().join("\n");
         for fact in [
@@ -360,9 +359,8 @@ mod tests {
             assert!(text.contains(fact), "missing {fact}: {text}");
         }
         params.template_at = Some(("empty".into(), 101));
-        let reply = prepared::query(&source, &params, &context, &cancel)
-            .unwrap()
-            .unwrap();
+        let reply =
+            super::super::template_roster(&source, &params, &context, &cancel).unwrap();
         let text = reply.template_sections.unwrap().join("\n");
         for fact in [
             "No division templates.",
@@ -373,9 +371,8 @@ mod tests {
             assert!(text.contains(fact), "missing {fact}: {text}");
         }
         params.template_at = Some(("empty".into(), 102));
-        let reply = prepared::query(&source, &params, &context, &cancel)
-            .unwrap()
-            .unwrap();
+        let reply =
+            super::super::template_roster(&source, &params, &context, &cancel).unwrap();
         assert_eq!(reply.warnings.len(), 7, "{:?}", reply.warnings);
         for field in [
             "Template settings and layout/Template layout:",
@@ -418,9 +415,8 @@ mod tests {
             assert!(text.contains(fact), "missing {fact}: {text}");
         }
         params.template_at = Some(("empty".into(), 103));
-        let reply = prepared::query(&source, &params, &context, &cancel)
-            .unwrap()
-            .unwrap();
+        let reply =
+            super::super::template_roster(&source, &params, &context, &cancel).unwrap();
         assert_eq!(reply.warnings.len(), 2, "{:?}", reply.warnings);
         assert!(reply.warnings.iter().all(|warning| warning.starts_with(
             "Template settings and layout/Template settings: template settings acquisition refused"
@@ -440,9 +436,8 @@ mod tests {
         }
         // An owner absent from CountryLinks leaves this country's roster unknown, never empty.
         params.template_at = Some(("empty".into(), 104));
-        let reply = prepared::query(&source, &params, &context, &cancel)
-            .unwrap()
-            .unwrap();
+        let reply =
+            super::super::template_roster(&source, &params, &context, &cancel).unwrap();
         assert!(
             reply
                 .warnings

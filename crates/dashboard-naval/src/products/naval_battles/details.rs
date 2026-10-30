@@ -132,15 +132,8 @@ pub(super) fn fleet_names(
     cat: Option<&catalogue::Catalogue>,
     refused: &mut catalogue::Refusals,
 ) -> [NavalBattleFleetNames; 2] {
-    let mut out = std::array::from_fn(|_| NavalBattleFleetNames {
-        names: vec![],
-        unknown: None,
-    });
     let Some((frame, cat)) = frame.zip(cat) else {
-        for side in &mut out {
-            side.unknown = Some("Fleet roster or content not recorded".into());
-        }
-        return out;
+        return unknown_fleets("Fleet roster or content not recorded");
     };
     let Some((detail, tasks, fleets)) = frame
         .complete::<tables::NavalCombatDetails>()
@@ -155,35 +148,61 @@ pub(super) fn fleet_names(
         .zip(frame.complete::<tables::Fleets>().ok())
         .map(|((a, b), c)| (a, b, c))
     else {
-        for side in &mut out {
-            side.unknown = Some("Fleet identities not recorded".into());
-        }
-        return out;
+        return unknown_fleets("Fleet identities not recorded");
     };
+    named_fleets(
+        detail,
+        |reference| {
+            tasks
+                .binary_search_by_key(&reference, |row| row.id)
+                .ok()
+                .map(|index| tasks[index].fleet)
+        },
+        |fleet| {
+            fleets
+                .binary_search_by_key(&fleet, |row| row.id)
+                .ok()
+                .map(|index| (fleets[index].id, fleets[index].name.clone()))
+        },
+        cat,
+        refused,
+    )
+}
+
+/// Both sides' labels unknown for `reason`.
+pub(super) fn unknown_fleets(reason: &str) -> [NavalBattleFleetNames; 2] {
+    std::array::from_fn(|_| NavalBattleFleetNames {
+        names: vec![],
+        unknown: Some(reason.into()),
+    })
+}
+
+/// [`fleet_names`] of a details row, through `fleet_of` (a task force's fleet) and `fleet`.
+pub(super) fn named_fleets(
+    detail: &replay_data::rows::NavalCombatDetailsRow,
+    fleet_of: impl Fn(u64) -> Option<u64>,
+    fleet: impl Fn(u64) -> Option<(u64, Recorded<Option<Vec<u8>>>)>,
+    cat: &catalogue::Catalogue,
+    refused: &mut catalogue::Refusals,
+) -> [NavalBattleFleetNames; 2] {
+    let mut out = std::array::from_fn(|_| NavalBattleFleetNames {
+        names: vec![],
+        unknown: None,
+    });
     for (side, input) in out.iter_mut().zip(&detail.sides) {
         let mut seen = BTreeSet::new();
         let mut missing = 0;
         // Combatant units are task-force handles. The recorded
         // TaskForce.fleet resolves the fleet reference.
-        for reference in &input.units {
-            let fleet = tasks
-                .binary_search_by_key(reference, |row| row.id)
-                .ok()
-                .map(|index| &tasks[index])
-                .and_then(|task| {
-                    fleets
-                        .binary_search_by_key(&task.fleet, |row| row.id)
-                        .ok()
-                        .map(|index| &fleets[index])
-                });
-            let Some(fleet) = fleet else {
+        for &reference in &input.units {
+            let Some((id, name)) = fleet_of(reference).and_then(&fleet) else {
                 missing += 1;
                 continue;
             };
-            if !seen.insert(fleet.id) {
+            if !seen.insert(id) {
                 continue;
             }
-            match &fleet.name {
+            match &name {
                 Recorded::Value(Some(bytes)) => match scripted_text::stored_text(
                     &cat.localisation,
                     &cat.recorded_language,
@@ -195,7 +214,7 @@ pub(super) fn fleet_names(
                     Ok(name) if !name.is_empty() => side.names.push(name),
                     Ok(_) => missing += 1,
                     Err(reason) => {
-                        refused.note(reason, format!("fleet {}", fleet.id));
+                        refused.note(reason, format!("fleet {id}"));
                         missing += 1;
                     }
                 },
@@ -277,6 +296,8 @@ pub(super) fn detail_row(
 impl Product for NavalBattleDetails {
     const KEY: &'static str = "naval-battle-details";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> =
+        Some(&super::served::PLAN);
     type Params = NavalBattleDetailsParams;
     type Reply = NavalBattleDetailsReply;
     fn types() -> Vec<String> {

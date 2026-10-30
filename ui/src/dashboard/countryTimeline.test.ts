@@ -1,18 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { colourOf, coloursIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import { colourOf, coloursIn, flagIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
 import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
 
-/** GER named Germany, then German Reich from 15, losing its colour at 35; D01 a country from 32. */
+/** GER named Germany, then German Reich from 15 under another flag, losing its colour at 35; D01 a
+ * country from 32, drawn as GER was first. */
 const REPLY: CountryFactsReply = {
   branchId: '1', known: [[10, 20], [30, 40]], names: ['Germany', 'German Reich'], reasons: ['not a country at this hour', 'no recorded map colour'],
+  flags: [{ keys: ['GER_democratic', 'GER_democratic', null], reasons: [null, null, 'flag artwork unavailable in the recorded content'] },
+    { keys: ['GER_fascism', 'GER_fascism', 'GER_fascism'], reasons: [null, null, null] }],
   countries: [
-    { tag: 'GER', runs: [[10, 0, 0x336699, -1], [15, 1, 0x336699, -1], [35, 1, -1, 1]] },
-    { tag: 'D01', runs: [[10, -1, -1, 0], [32, 0, 0x112233, -1]] },
+    { tag: 'GER', runs: [[10, 0, 0x336699, -1, 0], [15, 1, 0x336699, -1, 1], [35, 1, -1, 1, 1]] },
+    { tag: 'D01', runs: [[10, -1, -1, 0, -1], [32, 0, 0x112233, -1, 0]] },
   ],
   warnings: ['content'],
 };
@@ -69,12 +72,15 @@ test('a malformed country facts reply is refused', () => {
   broken(reply => { reply.countries[0].runs[1][0] = 10; });
   broken(reply => { reply.known[0] = [20, 10]; });
   broken(reply => { (reply.countries[1].runs[0] as number[]).pop(); });
+  broken(reply => { reply.countries[0].runs[0][4] = 2; });
+  broken(reply => { (reply.flags[0].keys as unknown[]).pop(); });
+  broken(reply => { (reply.flags[1].reasons as unknown[])[0] = 1; });
 });
 
 test('thousands of held hours are told through the scheduler without asking, and without growing the stack', async () => {
   const hours = 5000;
   const reply: CountryFactsReply = { branchId: '1', known: [[0, hours]], names: ['Germany'], reasons: [],
-    countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1]] }], warnings: [] };
+    flags: [], countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1, -1]] }], warnings: [] };
   const asked: unknown[] = [];
   const client = {
     preparedQuery: async () => ({ ...reply, coverage: { firstHour: 0, lastHour: hours, complete: true }, pending: [] }),
@@ -178,6 +184,25 @@ test('the hours a held timeline holds are answered at once, each keeping its ide
   assert.equal(again.answered.get(nameKey(12, 'GER')), first.answered.get(nameKey(12, 'GER')), 'an answer keeps its identity');
   assert.equal(answerHeld(pick, timeline, [{ hour: 13, tag: 'GER' }], first.answered).rest.length, 0, 'nothing left to read');
   assert.equal(answerHeld(undefined, timeline, wanted, undefined).rest, wanted, 'a spec without a lookup reads everything');
+});
+
+test('each run names the flag preparation chose for it, and a tag that is not a country has none, saying why', async () => {
+  const { client } = facts();
+  heldStyles(client, source, recording, 12, ['GER']);
+  await settle();
+  const timeline = heldTimeline(client, source)!;
+  assert.deepEqual(flagIn(timeline, 12, 'GER'), { choice: REPLY.flags[0] });
+  assert.deepEqual(flagIn(timeline, 15, 'GER'), { choice: REPLY.flags[1] });
+  assert.deepEqual(flagIn(timeline, 36, 'GER'), { choice: REPLY.flags[1] }, 'a missing colour leaves the flag');
+  assert.deepEqual(flagIn(timeline, 31, 'D01'), { reason: 'not a country at this hour' });
+  assert.deepEqual(flagIn(timeline, 32, 'D01'), { choice: REPLY.flags[0] });
+  assert.deepEqual(flagIn(timeline, 12, 'ENG'), { reason: 'not a country at this hour' });
+  assert.deepEqual(flagIn(timeline, 25, 'GER'), { reason: 'country facts were not recorded at this hour' },
+    'an hour a finished preparation holds no facts of says so');
+  const growing = facts(REPLY, true).client;
+  heldStyles(growing, source, recording, 12, ['GER']);
+  await settle();
+  assert.equal(flagIn(heldTimeline(growing, source)!, 25, 'GER'), undefined, 'an hour a growing preparation does not hold yet is not known');
 });
 
 test('a held timeline gives each country its packed map colour, one object per colour, kept as it grows and released with it', async t => {

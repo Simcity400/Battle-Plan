@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub mod block;
+pub mod columnar;
 pub mod prepared;
+pub mod served;
 #[cfg(test)]
 mod tests;
 pub struct FactionState;
@@ -252,6 +254,7 @@ impl dashboard_base::products::ReplyWarnings for FactionStateReply {
 impl Product for FactionState {
     const KEY: &'static str = "faction-state";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = FactionStateParams;
     type Reply = FactionStateReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

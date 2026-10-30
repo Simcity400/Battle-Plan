@@ -1,7 +1,8 @@
 import { useMemo, useRef } from 'react';
 import type { CountryStyle, CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { flagReadMetadata, flagReadSpec } from './countryFlagsAt.ts';
+import { flagReadMetadata } from './countryFlagsAt.ts';
+import { useCountryFlagsRead } from './countryFlags.ts';
 import type { CountryLabel } from './countryFlagsAt';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
 import { FAILED_FACT } from './countryFacts.ts';
@@ -24,7 +25,6 @@ export const STYLES: FactSpec<CountryStyle> = {
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
   held: heldFacts(({ tag, name, color }) => ({ tag, name, color })),
 };
-export const FLAGS = flagReadSpec('panel');
 
 /** A country as a lane names it: its name and flag. */
 export type CountryAt = CountryLabel;
@@ -70,7 +70,7 @@ export function useCountriesAt(client: DashboardClient, track: Pick<BoundTrack, 
   const wanted = useMemo<NameAt[]>(() => samples.filter(sample => tagSets.flags.has(sample.tag)).map(({ tag, hour }) => ({ tag, hour })), [samples, tagSets]);
   const nameWanted = useMemo<NameAt[]>(() => samples.filter(sample => tagSets.names.has(sample.tag)).map(({ tag, hour }) => ({ tag, hour })), [samples, tagSets]);
   const styles = useCountryFactsRead(client, track, nameWanted, active, STYLES);
-  const flags = useCountryFactsRead(client, track, wanted, active, FLAGS);
+  const flags = useCountryFlagsRead(client, track, wanted, active);
   return useMemo(() => {
     // Merging what finished is idempotent, so a repeated render changes nothing.
     const next = sampledLooks(held, samples, sample => {

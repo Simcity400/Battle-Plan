@@ -1,5 +1,5 @@
-//! The families observing every block hour by hour on their own thread (the
-//! politics ledger, occupation and the naval family) read
+//! The families observing every block hour by hour on their own thread
+//! (occupation and the naval family) read
 //! each block once, together, and each reconstructs its own tables from that
 //! read: each publishes, saves and refuses exactly what reading each block
 //! alone made it publish, save and refuse (the reference, with the shared
@@ -10,10 +10,10 @@
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
 use crate::prepared::prepass;
-use independent::{evaluated, ledger, shared, windowed};
+use independent::{evaluated, shared, windowed};
 use replay_data::{
-    rows::LexicalTokenRow, rows::PoliticsCaptureCoverageRow, rows::ProjectProgramRow,
-    rows::ProjectRow, rows::ProjectState, rows::StateGarrisonRow, rows::StateResistanceRow,
+    rows::LexicalTokenRow, rows::ProjectProgramRow, rows::ProjectRow, rows::ProjectState,
+    rows::StateGarrisonRow, rows::StateResistanceRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -24,8 +24,7 @@ const BASE: i32 = 1000 * 24;
 
 /// The families reading through the shared reader, each with the count of
 /// the hours its own thread observes.
-const FAMILIES: [(&str, &str); 3] = [
-    ("politics_ledger", ledger::OBSERVED),
+const FAMILIES: [(&str, &str); 2] = [
     ("occupation", evaluated::OCCUPATION_OBSERVED),
     ("naval", windowed::NAVAL_OBSERVED),
 ];
@@ -40,8 +39,7 @@ fn set(observed: &mut DecodedFrame, rows: TableRows) {
     *observed.tables[index] = TableView::Complete(rows);
 }
 
-// Three countries (`frame`) whose balances change every hour; both first
-// countries' politics captures extend to every hour. The first runs project
+// Three countries (`frame`) whose balances change every hour. The first runs project
 // 1 from the start, prototype progress moving every hour, completing it at
 // +30; project 2 starts at +12, and the program's scientist is named at +44.
 // The project table is not read at +20 to +22. The dictionary gains a token
@@ -50,23 +48,7 @@ fn set(observed: &mut DecodedFrame, rows: TableRows) {
 // garrison read every six hours.
 fn shared_frame(branch: u64, hour: i32) -> DecodedFrame {
     let at = offset(branch, hour);
-    let start = hour - at;
     let mut observed = frame(branch, hour, 3);
-    set(
-        &mut observed,
-        TableRows::PoliticsCaptureCoverage(
-            [100_000, 100_001]
-                .map(|country| PoliticsCaptureCoverageRow {
-                    country,
-                    instance: 1,
-                    epoch: 1,
-                    since_hour: start,
-                    through_hour: hour,
-                    streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-                })
-                .to_vec(),
-        ),
-    );
     if !(20..=22).contains(&at) {
         observed.metrics.table_ns[TableId::Projects.index()] = 1;
     }

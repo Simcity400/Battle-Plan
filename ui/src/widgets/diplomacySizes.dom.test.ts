@@ -97,18 +97,18 @@ test('the Diplomacy widgets’ chart forms fit their cards at every size', async
       // A whole widget in its production hooks, reading from a client the test answers.
       await evaluate(`import('/ui/src/widgets/diplomacyWidgets.dom.fixture.tsx')`);
       const widget = (expression: string) => evaluate(`window.widgetsFixture.${expression}`);
-      await context.test('a mounted pooled-strength list names a member loading only while its read is going, and releases its flags with the list', async () => {
+      await context.test('a mounted pooled-strength list names a member loading only while its read is going, and reads no flags before preparation chooses them', async () => {
         await widget(`mount('manpower', 100)`);
         assert.deepEqual(await widget('members()'), ['Loading name…', 'Loading name…'], `names still being read are loading: ${await widget('text()')}`);
         await widget('release()');
         assert.deepEqual(await widget('members()'), ['Synthetic country AAA', 'Country name unavailable'],
           'once the read completes, a name the recording lacks is unavailable, not loading for ever');
-        const flags = await widget('flagRequests()') as number;
-        assert.ok(flags > 0, 'the mounted rows read their flags');
+        // This recording holds no country timeline: a flag is what preparation chose, so none is asked of the recording.
+        assert.equal(await widget('flagRequests()'), 0, 'the mounted rows wait for preparation to choose their flags');
         await widget(`mount('resources', 100)`);
         await widget(`mount('resources', 120)`);
         assert.match(await widget('text()') as string, /Synthetic oil/);
-        assert.equal(await widget('flagRequests()'), flags, 'after leaving the list, a new hour reads no flags for rows no longer mounted');
+        assert.equal(await widget('flagRequests()'), 0);
       });
       // RRR passes from its earlier holder (magenta) to a later one (blue) at hour 24, inside
       // one 720-hour look-sampling interval of the branch start.

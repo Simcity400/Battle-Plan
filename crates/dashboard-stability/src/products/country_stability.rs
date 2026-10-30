@@ -19,6 +19,10 @@
 //! identity the recorder proved, or the game's display text (in the
 //! recording's language) for an unpaired line, and an explicit remainder when
 //! the lines do not add up to the recorded total.
+//!
+//! Preparation projects each hour's changed measures ([`facts`]), keeps them as runs with
+//! their holder evidence on the family's series publication ([`emit`]), and the series
+//! family `country-stability` answers from it ([`query`]).
 
 use dashboard_base::{Source, catalogue::View, products::country_measure::FixedRun};
 use dashboard_base::{
@@ -191,6 +195,7 @@ pub struct CountryStabilityReply {
 impl Product for CountryStability {
     const KEY: &'static str = "country-stability";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryStabilityParams;
     type Reply = CountryStabilityReply;
 
@@ -1487,47 +1492,6 @@ impl Scan {
         Ok(())
     }
 
-    /// The hour of `countries` a columnar walk projected ([`columnar::Projector`]): `valid`
-    /// the tags with a current holder, when it may have changed, and by id every country
-    /// whose measures may have changed, at least those [`Self::step`] would offer.
-    pub(crate) fn emit(
-        &mut self,
-        hour: i32,
-        valid: Option<BTreeSet<String>>,
-        countries: &[columnar::Projected],
-        mut sink: impl FnMut(
-            &str,
-            &CountryStabilityInputRow,
-            u32,
-            i32,
-            [Option<i64>; 3],
-            [bool; 3],
-            [bool; 4],
-        ) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let adjacent = self.begin(hour);
-        if let Some(valid) = valid {
-            self.hold(valid);
-        }
-        for country in countries {
-            offer(
-                &mut self.tracks,
-                Offer {
-                    tag: &country.tag,
-                    row: &country.row,
-                    identity: (country.slot, country.id),
-                    read: country.read,
-                    values: country.values,
-                },
-                adjacent,
-                false,
-                &mut || {},
-                &mut sink,
-            )?;
-        }
-        Ok(())
-    }
-
     /// Starts the hour `hour`: whether it follows the scan's hour before.
     fn begin(&mut self, hour: i32) -> bool {
         let adjacent = self.hour.and_then(|before| before.checked_add(1)) == Some(hour);
@@ -1546,10 +1510,6 @@ impl Scan {
             }
         }
         self.active = valid;
-    }
-    #[cfg(test)]
-    pub(crate) fn work(&self) -> dashboard_base::prepared::observer_tests::Work {
-        self.native.work
     }
 }
 
@@ -1758,7 +1718,12 @@ mod display_text_tests {
     }
 }
 
-pub mod columnar;
+pub mod emit;
+pub mod facts;
+#[cfg(test)]
+mod prepared_tests;
+pub mod query;
+pub mod served;
 #[cfg(test)]
 mod tests;
 

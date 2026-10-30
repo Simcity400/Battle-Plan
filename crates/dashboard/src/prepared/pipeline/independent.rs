@@ -379,7 +379,6 @@ static ROWS: &[&dyn Own] = &[
     &economy::PRODUCTION,
     &economy::EXPERIENCE,
     &intelligence::INTELLIGENCE,
-    &ledger::LEDGER,
     &focus::FOCUS,
     &air_superiority::AIR_SUPERIORITY,
     &world_tension::TENSION,
@@ -396,11 +395,10 @@ static ROWS: &[&dyn Own] = &[
     &windowed::NAVAL,
     &leaders::LEADERS,
     &sampled::AIR,
-    &sampled::STABILITY,
+    &sampled::PARTS,
     &sampled::NAVY,
     &economy::FUEL,
     &sampled::EQUIPMENT_LOSSES,
-    &sampled::SUPPLY,
     &sampled::PARTIES,
     &sampled::FUEL_BRANCHES,
     &sampled::MARKET,
@@ -410,7 +408,6 @@ static ROWS: &[&dyn Own] = &[
     &sampled::POLITICS,
     &sampled::TRADE,
     &sampled::TERRITORY,
-    &sampled::DIVISION_EQUIPMENT,
     &keyed::AIR_MISSIONS,
     &keyed::AIR_STATISTICS,
     &keyed::WEATHER,
@@ -421,7 +418,6 @@ static ROWS: &[&dyn Own] = &[
     &keyed::INTEL_COVERAGE,
     &keyed::NAVAL_REPAIRS,
     &keyed::NAVAL_REFITS,
-    &keyed::COUNTRY_STYLES,
 ];
 
 /// One read of each block for the families that observe every block hour by
@@ -442,9 +438,6 @@ pub(super) mod economy;
 
 /// Decryption, operative placements, agencies, the roster and espionage.
 pub(super) mod intelligence;
-
-/// The politics ledger.
-pub(super) mod ledger;
 
 /// The national focus order.
 pub(super) mod focus;
@@ -480,8 +473,8 @@ pub(super) mod windowed;
 /// Unit leaders' careers, commands and battles.
 pub(super) mod leaders;
 
-/// Air force and navy size, stability and its parts, equipment losses,
-/// supply health, the party history, trade flows and territory.
+/// Air force and navy size, stability's parts, equipment losses, the party
+/// history, trade flows and territory.
 pub(super) mod sampled;
 
 impl Own for Groups {
@@ -975,13 +968,6 @@ pub(super) fn kept_as(section: &'static str) -> &'static str {
 /// with.
 pub(super) fn gating(product: &str) -> Option<&'static str> {
     plan::current().gating(product)
-}
-
-/// The families whose coverage `product`'s queries wait for together, while
-/// any of them is prepared on its own; None otherwise, when the product waits
-/// as [`gating`] says.
-pub(super) fn joint(product: &str) -> Option<&'static [registry::FamilyId]> {
-    plan::current().joint(product)
 }
 
 pub(super) use crate::prepared::driver::registry::coverage_section;
@@ -2604,7 +2590,6 @@ impl Counts {
 #[cfg(test)]
 #[derive(Clone)]
 struct TestContext {
-    presentation: Option<(usize, usize)>,
     observation_hook: Option<lanes::Hook>,
     prepass: prepass::TestContext,
     lanes: lanes::TestContext,
@@ -2650,7 +2635,6 @@ impl TestRegistry {
 impl TestContext {
     fn capture() -> Self {
         Self {
-            presentation: crate::products::politics_ledger::prepared::test_presentation(),
             observation_hook: TEST_OBSERVATION_HOOK.with(|hook| hook.borrow().clone()),
             prepass: prepass::TestContext::capture(),
             lanes: lanes::TestContext::capture(),
@@ -2664,20 +2648,16 @@ impl TestContext {
 
     /// Install the settings on this thread for as long as the guard lives.
     fn install(self) -> impl Drop {
-        struct Installed<P, L, R, S, A, O> {
+        struct Installed<P, R, S, A, O> {
             _prepass: P,
-            _presentation: L,
             _research: R,
             _sampled: S,
             _lanes: A,
             _observation: O,
         }
-        impl<P, L, R, S, A, O> Drop for Installed<P, L, R, S, A, O> {
+        impl<P, R, S, A, O> Drop for Installed<P, R, S, A, O> {
             fn drop(&mut self) {}
         }
-        let presentation = crate::products::politics_ledger::prepared::install_test_presentation(
-            self.presentation,
-        );
         let prepass = self.prepass.install();
         let observation = install_observation_hook(self.observation_hook);
         let lanes = self.lanes.install();
@@ -2690,7 +2670,6 @@ impl TestContext {
         self.registry.install();
         Installed {
             _prepass: prepass,
-            _presentation: presentation,
             _research: research,
             _sampled: sampled,
             _lanes: lanes,

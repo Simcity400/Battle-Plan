@@ -75,13 +75,10 @@ impl std::fmt::Debug for Outcome {
 /// block's outcomes.
 pub(crate) fn families() -> Vec<&'static Family> {
     let plan = super::driver::plan::current();
-    [
-        &crate::products::resource_balance::prepared::FAMILY,
-        &crate::products::army_size::prepared::FAMILY,
-    ]
-    .into_iter()
-    .filter(|family| plan.backend(family.name) == Some(super::driver::plan::Backend::Walk))
-    .collect()
+    [&crate::products::resource_balance::prepared::FAMILY]
+        .into_iter()
+        .filter(|family| plan.backend(family.name) == Some(super::driver::plan::Backend::Walk))
+        .collect()
 }
 
 /// Whether migrated families are prepared through the pre-pass. Tests can

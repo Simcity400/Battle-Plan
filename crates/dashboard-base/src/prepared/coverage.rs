@@ -410,6 +410,10 @@ impl Page {
 /// pages were published under.
 pub const VERSIONS: &str = "preparation-versions-v1";
 
+/// The section a native recording's preparation marks its store with: the mark of the plan
+/// its publications follow. A store without it was prepared from the row recording.
+pub const PLAN: &str = "preparation-plan-v1";
+
 /// The version stamps a row preparation's pages were published under: the
 /// hourly walk's, and each family prepared on its own's, by name. It is
 /// written with every checkpoint, so it always names the pages beside it.

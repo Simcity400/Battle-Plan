@@ -27,7 +27,8 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { tagAt, unknownHours } from '../../dashboard/politicsHistory';
 import { pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useProduct } from '../../dashboard/products';
-import { countryReadName, FLAGS, STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
+import { countryReadName, STYLES, useCountriesAt } from '../../dashboard/useCountriesAt';
+import { useCountryFlagsRead } from '../../dashboard/countryFlags';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import type { CivilWarsReply } from '../../generated/dashboard';
@@ -106,7 +107,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   }, [wanted.dated, tipWanted]);
   const datedHours = Math.max(MAX_NAME_HOURS, new Set(datedWanted.map(pair => pair.hour)).size);
   const styles = useCountryFactsRead(runtime.client, track, datedWanted, active, STYLES, datedHours);
-  const flags = useCountryFactsRead(runtime.client, track, datedWanted, active, FLAGS, datedHours);
+  const flags = useCountryFlagsRead(runtime.client, track, datedWanted, active);
   const fixed = tokens.countryColours === 'fixed';
   const colours = useMemo(() => {
     const keys = [...wanted.live, ...wanted.dated.map(pair => nameKey(pair.hour, pair.tag))];

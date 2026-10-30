@@ -36,6 +36,7 @@ pub(crate) fn append(
 /// out), appending one dictionary string, and every `restart_units`th full page ends in a
 /// restart. `tamper` changes each page before it is written. The file, and each run's page
 /// extents.
+#[cfg(test)]
 pub(crate) fn recording(
     runs: &[(u64, i32, u32)],
     hour: impl Fn(u32, u32) -> Option<i32>,
@@ -199,11 +200,13 @@ pub(crate) fn recording(
 }
 
 /// Every ordinal of `runs` at its run's hour.
+#[cfg(test)]
 pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> Option<i32> + '_ {
     |run, ordinal| Some(runs[run as usize].1 + ordinal as i32)
 }
 
 /// Two live countries, one retaining its first string through unique-string churn.
+#[cfg(test)]
 pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage)) -> Vec<u8> {
     use super::synthetic::{Input, Sample, Synthetic};
     use crate::rows::CountryRow;
@@ -393,13 +396,13 @@ pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage)) -> V
 }
 
 /// What a synthetic writer saw of an hour: its frame, and each table's sample hour.
-pub(crate) type Seen = (DecodedFrame, Vec<Option<i32>>);
+pub type Seen = (DecodedFrame, Vec<Option<i32>>);
 
 /// Countries and world tension over `runs` (branch, first hour, units), written as the native
 /// recorder writes them and stored as the converter stores them ([`written`]). Strings come
 /// back pages after their last use, as text cells and as an unavailable table's reasons, and
 /// a row leaves and comes back with the string it held.
-pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Seen>) {
+pub fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::{Input, Sample};
     use crate::rows::{CountryRow, WorldTensionRow};
     let streams = [TableId::Countries, TableId::WorldTension];

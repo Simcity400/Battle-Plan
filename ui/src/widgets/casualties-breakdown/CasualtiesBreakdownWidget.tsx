@@ -18,8 +18,8 @@ import { fitTooltip } from '../../charts/tooltip';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { useContentRevision } from '../../dashboard/contentRevision';
-import { flagReadSpec } from '../../dashboard/countryFlagsAt';
-import { nameKey, useCountryFactsRead, useCountryNamesAt } from '../../dashboard/countryNamesAt';
+import { useCountryFlagsRead } from '../../dashboard/countryFlags';
+import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
@@ -106,7 +106,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   // Artwork follows the table viewport, including a removed enemy's last
   // observed holder. A replacement under its tag cannot supply its old flag.
   const flagFacts = useMemo(() => visible.map(row => ({ tag: row.enemyTag, hour: row.enemyHour })), [visible]);
-  const flags = useCountryFactsRead(runtime.client, track, flagFacts, active && open, flagReadSpec('panel'));
+  const flags = useCountryFlagsRead(runtime.client, track, flagFacts, active && open);
   const items = useMemo(() => lossItems(snapshot, end, (tag, hour) => names.get(nameKey(hour, tag)) ?? 'Country name unavailable'), [snapshot, end, names]);
   const levels = [options.warLevel !== false, options.enemyLevel !== false];
   const chartReplies = useMemo(() => chartWindows.flatMap(index => histories.data.has(index) ? [histories.data.get(index)!] : []),

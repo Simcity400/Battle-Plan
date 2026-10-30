@@ -110,7 +110,9 @@ use std::{collections::VecDeque, sync::atomic::Ordering};
 pub struct EquipmentStockpile;
 
 pub mod artwork;
+pub mod columnar;
 pub mod prepared;
+pub mod served;
 
 #[cfg(test)]
 const CACHED_COUNTRIES: usize = 8;
@@ -728,6 +730,7 @@ pub fn type_name(catalogue: &dashboard_text::catalogue::Catalogue, key: &str) ->
 impl Product for EquipmentStockpile {
     const KEY: &'static str = "equipment-stockpile";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = CountryParams;
     type Reply = EquipmentStockpileReply;
 

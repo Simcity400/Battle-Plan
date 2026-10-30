@@ -2,11 +2,14 @@
 //! The sub-unit's authored group survives template copying; no template
 //! representative enters this calculation. Placed regiments use their grid's
 //! group; the shared database's air/naval inventory does not establish army reach.
-use super::*;
+use super::{
+    query::{Track, window_mix},
+    *,
+};
 use dashboard_base::catalogue::{Catalogue, catalogue};
 use installed_content_core::unit_leader::SubUnits;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub(super) struct RawMixRun {
     pub first: i32,
     pub last: i32,
@@ -77,12 +80,12 @@ fn group_info(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "Keeps independent scan, window, content, output and cancellation inputs explicit"
+    reason = "Keeps independent tracks, window, content, output and cancellation inputs explicit"
 )]
 pub(super) fn composition_reply(
     source: &Source,
     context: &LoadContext,
-    scan: &Scan,
+    tracks: &BTreeMap<String, Track>,
     params: &ArmySizeParams,
     range: &HourSpan,
     series: &mut [ArmySeries],
@@ -126,7 +129,7 @@ pub(super) fn composition_reply(
     let index = usize::from(params.count_for == ArmyAttribution::Host);
     let names: std::collections::BTreeSet<_> = series
         .iter()
-        .filter_map(|series| scan.tracks.get(&series.tag))
+        .filter_map(|series| tracks.get(&series.tag))
         .flat_map(|track| window_mix(track, range))
         .filter_map(|run| run.parts[index].as_ref())
         .flat_map(|parts| parts.keys().cloned())
@@ -153,7 +156,7 @@ pub(super) fn composition_reply(
         .map(|(index, info)| (&info.key, index))
         .collect();
     for series in series {
-        let Some(track) = scan.tracks.get(&series.tag) else {
+        let Some(track) = tracks.get(&series.tag) else {
             continue;
         };
         let spans: Vec<_> = series

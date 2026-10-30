@@ -140,6 +140,7 @@ pub mod columnar;
 #[cfg(test)]
 mod oracle;
 pub mod prepared;
+pub mod served;
 #[cfg(test)]
 pub use oracle::scan;
 #[cfg(test)]
@@ -1872,6 +1873,7 @@ struct Cache {
 impl Product for EquipmentLosses {
     const KEY: &'static str = "equipment-losses";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = LossesParams;
     type Reply = LossesReply;
 

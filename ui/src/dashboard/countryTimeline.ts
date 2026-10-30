@@ -1,4 +1,4 @@
-import type { CountryFactsReply, CountryStyle } from '../generated/dashboard';
+import type { CountryFactsReply, CountryFlagChoice, CountryStyle } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
 import type { FactSource } from './countryFacts';
 import { loadTransientProduct } from './products.ts';
@@ -7,8 +7,8 @@ import { finalPreparedReply } from './preparedPrefix.ts';
 /** A country's style at an hour, with the warnings that concern it: the recording's and its own. */
 export type HeldStyle = CountryStyle & { warnings: readonly string[] };
 
-type Run = readonly [number, number, number, number];
-/** A recording branch's country timeline: every name and colour preparation holds, as runs. */
+type Run = readonly [number, number, number, number, number];
+/** A recording branch's country timeline: every name, colour and flag choice preparation holds, as runs. */
 export interface CountryTimeline {
   reply: CountryFactsReply; runs: ReadonlyMap<string, readonly Run[]>; final: boolean;
   /** One colour per recorded map colour, shared by every country and hour drawn in it; kept as the timeline grows and released with it. */
@@ -33,13 +33,18 @@ const timelineKey = (source: Pick<FactSource, 'sourceId' | 'revision' | 'branchI
 
 /** Sets `key`'s entry, telling its watchers when the timeline it holds changes. */
 function setEntry(client: DashboardClient, entries: Map<string, Entry>, key: string, entry: Entry | undefined): void {
-  const before = entries.get(key)?.timeline;
+  const before = entries.get(key);
   if (entry) entries.set(key, entry); else entries.delete(key);
-  if (before !== entry?.timeline) for (const changed of [...watchers.get(client)?.get(key) ?? []]) changed();
+  // A read that settles tells its watchers even when it keeps the timeline: one waiting for an
+  // hour asks again once the read's retry may.
+  const settled = !!before?.controller && !entry?.controller;
+  if (before?.timeline !== entry?.timeline || settled) for (const changed of [...watchers.get(client)?.get(key) ?? []]) changed();
 }
 
 const integer = (value: unknown): value is number => Number.isInteger(value);
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(text => typeof text === 'string');
+/** One entry per flag atlas (normal, medium, small), each a text or null. */
+const atlases = (value: unknown) => Array.isArray(value) && value.length === 3 && value.every(text => text === null || typeof text === 'string');
 
 /** A `country-facts` reply, or a refusal naming what is malformed. */
 export function validateCountryFacts(data: unknown): CountryFactsReply {
@@ -47,9 +52,10 @@ export function validateCountryFacts(data: unknown): CountryFactsReply {
   const ok = !!reply && typeof reply === 'object' && typeof reply.branchId === 'string'
     && Array.isArray(reply.known) && reply.known.every(span => Array.isArray(span) && span.length === 2 && span.every(integer) && span[0] <= span[1])
     && texts(reply.names) && texts(reply.reasons) && texts(reply.warnings)
+    && Array.isArray(reply.flags) && reply.flags.every(choice => !!choice && typeof choice === 'object' && atlases(choice.keys) && atlases(choice.reasons))
     && Array.isArray(reply.countries) && reply.countries.every(country => !!country && typeof country.tag === 'string'
-      && Array.isArray(country.runs) && country.runs.every((run, index) => Array.isArray(run) && run.length === 4 && run.every(integer)
-        && run[1] < reply.names!.length && run[3] < reply.reasons!.length && (index === 0 || run[0] > country.runs[index - 1][0])));
+      && Array.isArray(country.runs) && country.runs.every((run, index) => Array.isArray(run) && run.length === 5 && run.every(integer)
+        && run[1] < reply.names!.length && run[3] < reply.reasons!.length && run[4] < reply.flags!.length && (index === 0 || run[0] > country.runs[index - 1][0])));
   if (!ok) throw new Error('Country facts reply is malformed');
   return reply as CountryFactsReply;
 }
@@ -102,6 +108,13 @@ export function askTimeline(client: DashboardClient, source: FactSource, recordi
   return current;
 }
 
+/** When `source`'s held timeline may be read again for an hour it does not hold, or undefined
+ * while a read of it answers or nothing holds a read back. */
+export function askableAt(client: DashboardClient, source: FactSource): number | undefined {
+  const entry = held.get(client)?.get(timelineKey(source));
+  return entry && !entry.controller ? entry.askAt : undefined;
+}
+
 /** Whether the timeline holds `hour`. */
 function holds(known: readonly (readonly number[])[], hour: number): boolean {
   let low = 0, high = known.length;
@@ -152,6 +165,16 @@ export function colourOf(facts: CountryTimeline, packed: number): { color: [numb
   let colour = facts.colours.get(packed);
   if (!colour) facts.colours.set(packed, colour = { color: [(packed >> 16) & 255, (packed >> 8) & 255, packed & 255] });
   return colour;
+}
+
+/** `tag`'s flag at `hour` in `facts`: the choice preparation made, or why there is none (a tag
+ * that is not a country, or an hour a finished preparation holds no facts of), or undefined when
+ * `facts` does not hold the hour yet. */
+export function flagIn(facts: CountryTimeline, hour: number, tag: string): { choice: CountryFlagChoice } | { reason: string } | undefined {
+  if (!holds(facts.reply.known, hour)) return facts.final ? { reason: 'country facts were not recorded at this hour' } : undefined;
+  const run = runAt(facts.runs.get(tag) ?? [], hour);
+  if (run && run[4] >= 0) return { choice: facts.reply.flags[run[4]] };
+  return { reason: run && run[3] >= 0 ? facts.reply.reasons[run[3]] : 'not a country at this hour' };
 }
 
 /** Forgets a recording's timelines, and stops their reads; with `settled`, only those no read

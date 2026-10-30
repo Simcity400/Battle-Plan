@@ -13,7 +13,6 @@ pub(super) fn walk_state(branch: u64, hour: i32, state: &BranchState) -> Line {
         .json("index", &state.index)
         .json("measure", &state.measure)
         .json("land", &state.land)
-        .json("army", &state.army)
         .json("resources", &state.resources)
         .json("group_changes", &state.group_changes)
         .json("game_score", &state.game_score)
@@ -48,8 +47,7 @@ pub(super) fn walk_state(branch: u64, hour: i32, state: &BranchState) -> Line {
         divisions => "divisions",
         air => "air",
         navy => "navy",
-        supply => "supply",
-        stability => "stability",
+        parts => "parts",
         fuel => "fuel",
         equipment_losses => "equipment_losses",
         trade => "trade",

@@ -9,8 +9,8 @@ use std::{collections::BTreeSet, sync::Mutex};
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
-/// Stability's step in the walk's serial flush order.
-const STABILITY_FLUSH: usize = 38;
+/// The parts' step in the walk's serial flush order.
+const PARTS_FLUSH: usize = 38;
 
 /// The walk's saved state of branch 1.
 fn walk_state(source: &Source) -> serde_json::Value {
@@ -29,7 +29,7 @@ fn without_checkpoint(payloads: Payloads) -> Payloads {
         .collect()
 }
 
-/// What the hourly walk did with stability in one preparation, counted where
+/// What the hourly walk did with stability's parts in one preparation, counted where
 /// it does it: the hours it observed, the flush steps it ran and the branch
 /// states it restored it from.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -43,7 +43,7 @@ fn walked(source: &Source) -> Walked {
     let observed = Arc::new(Mutex::new(BTreeSet::new()));
     let seen = Arc::clone(&observed);
     let hook: lanes::Hook = Arc::new(move |family, frame, _| {
-        if family == "stability" {
+        if family == "parts" {
             seen.lock().unwrap().insert((frame.branch, frame.hour));
         }
         lanes::Fault::Continue
@@ -61,35 +61,26 @@ fn walked(source: &Source) -> Walked {
         observed,
         flushed: steps
             .iter()
-            .filter(|&&(position, _, _)| position == STABILITY_FLUSH)
+            .filter(|&&(position, _, _)| position == PARTS_FLUSH)
             .count(),
-        restored: restored
-            .iter()
-            .filter(|&&family| family == "stability")
-            .count(),
+        restored: restored.iter().filter(|&&family| family == "parts").count(),
     }
 }
 
-/// Stability prepared on its own, or every family hour by hour.
+/// The parts prepared on their own, or every family hour by hour.
 fn planned<T>(own: bool, run: impl FnOnce() -> T) -> T {
     if own {
-        independent::with_test_only(&["stability"], run)
+        independent::with_test_only(&["parts"], run)
     } else {
         independent::with_test_hourly(run)
     }
 }
 
-/// The extent stability's queries answer on branch 1.
-fn stability_coverage(source: &Source) -> (i32, i32, bool) {
-    let coverage = product_coverage(
-        source,
-        None,
-        1,
-        "country-stability",
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-    .expect("stability's coverage");
+/// The extent the parts' queries answer on branch 1.
+fn parts_coverage(source: &Source) -> (i32, i32, bool) {
+    let coverage = product_coverage(source, None, 1, "stability-parts", &AtomicBool::new(false))
+        .unwrap()
+        .expect("the parts' coverage");
     (coverage.first_hour, coverage.last_hour, coverage.complete)
 }
 
@@ -103,9 +94,9 @@ fn the_walk_never_observes_flushes_loads_or_saves_a_family_prepared_on_its_own()
             vec![frame(1, 12, 2), frame(1, 13, 2)],
         )])
         .unwrap();
-    let own_page = (independent::coverage_section("stability", 1), 0);
+    let own_page = (independent::coverage_section("parts", 1), 0);
     let continuation = (
-        crate::prepared::driver::registry::continuation_section("stability", 1),
+        crate::prepared::driver::registry::continuation_section("parts", 1),
         0,
     );
     for own in [true, false] {
@@ -113,18 +104,18 @@ fn the_walk_never_observes_flushes_loads_or_saves_a_family_prepared_on_its_own()
         let mut fixture = Fixture::new(&first);
         let source = fixture.source("first");
         let (prepared, state, pages, extent) = planned(own, || {
-            assert_eq!(Refused::default().live("stability"), !own, "{label}");
+            assert_eq!(Refused::default().live("parts"), !own, "{label}");
             assert!(
                 prepass::families()
                     .iter()
-                    .any(|family| family.name == "army")
+                    .any(|family| family.name == "resources")
             );
             let prepared = walked(&source);
             (
                 prepared,
                 walk_state(&source),
                 payloads(&source, None),
-                stability_coverage(&source),
+                parts_coverage(&source),
             )
         });
         assert_eq!(extent, (10, 11, true), "{label}");
@@ -136,20 +127,20 @@ fn the_walk_never_observes_flushes_loads_or_saves_a_family_prepared_on_its_own()
                 walked(&source),
                 walk_state(&source),
                 payloads(&source, None),
-                stability_coverage(&source),
+                parts_coverage(&source),
             )
         });
         assert_eq!(resumed_extent, (10, 13, true), "{label}");
         if own {
-            assert_eq!(prepared, Walked::default(), "the walk prepared stability");
+            assert_eq!(prepared, Walked::default(), "the walk prepared the parts");
             assert_eq!(
                 resumed,
                 Walked::default(),
-                "the resumed walk prepared stability"
+                "the resumed walk prepared the parts"
             );
             for state in [&state, &resumed_state] {
-                assert!(state.get("stability").is_none(), "the walk saved stability");
-                assert!(state.get("army").is_some());
+                assert!(state.get("parts").is_none(), "the walk saved the parts");
+                assert!(state.get("resources").is_some());
             }
             for pages in [&pages, &resumed_pages] {
                 assert!(pages.contains_key(&own_page) && pages.contains_key(&continuation));
@@ -161,15 +152,9 @@ fn the_walk_never_observes_flushes_loads_or_saves_a_family_prepared_on_its_own()
             );
             assert_eq!(resumed.observed, BTreeSet::from([(1, 12), (1, 13)]));
             assert!(prepared.flushed > 0 && resumed.flushed > 0);
-            assert!(
-                resumed.restored > 0,
-                "the resumed walk restored no stability"
-            );
+            assert!(resumed.restored > 0, "the resumed walk restored no parts");
             for state in [&state, &resumed_state] {
-                assert!(
-                    state.get("stability").is_some(),
-                    "the walk left stability out"
-                );
+                assert!(state.get("parts").is_some(), "the walk left the parts out");
             }
             for pages in [&pages, &resumed_pages] {
                 assert!(!pages.contains_key(&own_page) && !pages.contains_key(&continuation));
@@ -214,7 +199,7 @@ fn the_walk_decodes_the_tables_its_plan_selects() {
 
 /// Every family ordinary preparation prepares on its own, and the job
 /// beside them.
-const PUBLISHERS: [&str; 60] = [
+const PUBLISHERS: [&str; 56] = [
     "aces",
     "air",
     "air-missions",
@@ -224,9 +209,7 @@ const PUBLISHERS: [&str; 60] = [
     "casualties",
     "construction",
     "convoys",
-    "country-styles",
     "diplomacy_state",
-    "division-equipment",
     "divisions",
     "doctrine-mastery",
     "equipment_losses",
@@ -256,8 +239,8 @@ const PUBLISHERS: [&str; 60] = [
     "occupation",
     "occupation-reserve",
     "parties",
+    "parts",
     "peace",
-    "politics_ledger",
     "politics_state",
     "production",
     "production-lines",
@@ -267,10 +250,8 @@ const PUBLISHERS: [&str; 60] = [
     "regional-weather",
     "repairs",
     "research",
-    "stability",
     "stockpile",
     "subjects",
-    "supply",
     "tension",
     "territory",
     "trade",
@@ -342,6 +323,7 @@ fn ordinary_preparation_goes_through_the_driver_and_answers_from_its_plan() {
             "scoreboard",
             [
                 "air",
+                "army",
                 "casualties",
                 "factories",
                 "identities",
@@ -356,7 +338,7 @@ fn ordinary_preparation_goes_through_the_driver_and_answers_from_its_plan() {
             .chain([walk.clone()])
             .collect(),
         ),
-        ("army-size", vec![walk.clone()]),
+        ("army-size", ["army", "identities"].map(family).to_vec()),
         ("production-line-detail", vec![family("production-lines")]),
     ] {
         let pinned = query_pages(&published, 1, product).unwrap();
@@ -368,12 +350,15 @@ fn ordinary_preparation_goes_through_the_driver_and_answers_from_its_plan() {
             pages.into_iter().collect::<BTreeSet<_>>(),
             "{product}"
         );
-        assert!(
-            pinned.iter().all(|(_, page)| page.is_some()),
-            "{product} pins an unpublished page"
-        );
+        // Ordinary preparation is the row driver's: a segment family's page stays unpublished.
+        for (section, page) in &pinned {
+            let segments = ["stability", "supply", "army"]
+                .iter()
+                .any(|family| *section == independent::coverage_section(family, 1));
+            assert_eq!(page.is_some(), !segments, "{product} pins {section}");
+        }
     }
-    for product in ["country-stability", "event-feed", "army-size"] {
+    for product in ["stability-parts", "event-feed", "resource-balance"] {
         let coverage = product_coverage(&source, None, 1, product, &flag)
             .unwrap()
             .unwrap_or_else(|| panic!("{product} has no coverage"));

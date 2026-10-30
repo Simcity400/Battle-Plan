@@ -25,6 +25,7 @@ mod driver_plan;
 mod equipment_loss_pending;
 mod family_lanes;
 mod family_refusal;
+mod forward_windows;
 mod independent_air;
 mod independent_census;
 mod independent_economy;
@@ -37,27 +38,23 @@ mod independent_groups;
 mod independent_identities;
 mod independent_intelligence;
 mod independent_keyed;
-mod independent_map_pages;
 mod independent_leaders;
 mod independent_ledgers;
+mod independent_map_pages;
 mod independent_politics;
-mod independent_politics_ledger;
 mod independent_sampled;
 mod independent_shared;
-mod independent_styles;
 mod independent_superiority;
 mod independent_tension;
 mod independent_wars;
 mod independent_windowed;
-mod forward_windows;
+mod map_export;
 mod parallel_flush;
 mod prepass_parity;
 mod production_scans;
 mod publication_gates;
 mod reply_gates;
 mod serialization_order;
-mod map_export;
-mod stability_progressive;
 mod walk_pace;
 mod walk_selection;
 
@@ -248,8 +245,6 @@ fn observer_timing_table_is_filled_only_in_measured_mode() {
     assert_eq!(families["research.read"].calls, 1);
     assert!(families.values().all(|family| family.calls > 0));
     for name in [
-        // The politics ledger is prepared on its own beside the walk.
-        "independent.politics_ledger",
         "stability_parts",
         "setup.files",
         "setup.state",
@@ -553,407 +548,6 @@ fn assert_prepared_identities(source: &Source, branch: u64) {
         serde_json::to_value(&*prepared).unwrap(),
         serde_json::to_value(&*oracle).unwrap()
     );
-}
-
-fn forces_frame(hour: i32) -> DecodedFrame {
-    let mut frame = crate::products::army_size::test_fixtures::frame(hour);
-    let divisions = frame
-        .complete::<replay_data::rows::tables::Divisions>()
-        .unwrap();
-    *frame.tables[TableId::DivisionStatus.index()] =
-        TableView::Complete(TableRows::DivisionStatus(
-            divisions
-                .iter()
-                .map(|row| replay_data::rows::DivisionStatusRow {
-                    division: row.id,
-                    supply_ratio: if hour % 2 == 0 { 0 } else { 100_000 },
-                    supply_grace_maximum: replay_data::rows::Recorded::Value(1_000_000),
-                    supply_grace_remaining: replay_data::rows::Recorded::Value(0),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    let divisions = frame
-        .complete::<replay_data::rows::tables::Divisions>()
-        .unwrap();
-    *frame.tables[TableId::DivisionLandInputs.index()] =
-        TableView::Complete(TableRows::DivisionLandInputs(
-            divisions
-                .iter()
-                .map(|row| replay_data::rows::DivisionLandInputsRow {
-                    division: row.id,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    frame
-}
-
-fn assert_forces(source: &Source, context: &crate::products::LoadContext) {
-    use crate::products::{Product, army_size::*, supply_health::*};
-    let flag = AtomicBool::new(false);
-    for measure in [
-        ArmyMeasure::Divisions,
-        ArmyMeasure::Strength,
-        ArmyMeasure::Battalions,
-        ArmyMeasure::Manpower,
-    ] {
-        for count_for in [ArmyAttribution::Owner, ArmyAttribution::Host] {
-            for top in [None, Some(1), Some(5000)] {
-                for window in 0..source
-                    .replay_ref()
-                    .index
-                    .iter()
-                    .filter(|block| block.branch == 1)
-                    .count()
-                {
-                    let params = ArmySizeParams {
-                        template_at: None,
-                        branch_id: "1".into(),
-                        tags: if top.is_some() {
-                            Vec::new()
-                        } else {
-                            vec!["origin".into()]
-                        },
-                        top,
-                        measure,
-                        count_for,
-                        by_type: measure == ArmyMeasure::Battalions,
-                        window: Some(window),
-                    };
-                    let old = ArmySize::load(source, &params, context, &flag).unwrap();
-                    let new = crate::products::army_size::prepared::query(
-                        source, &params, context, &flag,
-                    )
-                    .unwrap()
-                    .unwrap();
-                    assert_eq!(
-                        serde_json::to_value(&new).unwrap(),
-                        serde_json::to_value(&old).unwrap(),
-                        "{measure:?} {count_for:?} top={top:?} window={window}"
-                    );
-                }
-            }
-        }
-    }
-    let params = SupplyHealthParams {
-        branch_id: "1".into(),
-        tags: vec!["origin".into()],
-    };
-    let old = SupplyHealth::load(source, &params, context, &flag).unwrap();
-    let new = crate::products::supply_health::prepared::query(
-        source,
-        &serde_json::json!({"branchId": params.branch_id, "tags": params.tags, "from":100, "to":1000}),
-        context, &flag,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        serde_json::to_value(&new).unwrap(),
-        serde_json::to_value(&old).unwrap()
-    );
-    let last = source.block_windows(1).last().unwrap().last_hour;
-    let dense = crate::products::supply_health::prepared::query(
-        source,
-        &serde_json::json!({"branchId": params.branch_id, "tags": params.tags, "from":100, "to":last, "width":1}),
-        context,
-        &flag,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(dense.summaries.as_ref().unwrap().len(), dense.series.len());
-    for series in &dense.series {
-        for run in &series.runs {
-            let supplying = old
-                .series
-                .iter()
-                .find(|old| old.tag == series.tag)
-                .unwrap()
-                .runs
-                .iter()
-                .find(|old| old.first_hour <= run.first_hour && old.last_hour >= run.last_hour)
-                .unwrap();
-            assert_eq!(
-                (run.no_supply, run.strained, run.in_supply),
-                (supplying.no_supply, supplying.strained, supplying.in_supply)
-            );
-        }
-    }
-    let request = crate::transport::ProductRequest {
-        source_id: source.key().source_id.clone(),
-        revision: source.key().revision.clone(),
-        product: "series-next-change".into(),
-        params: serde_json::json!({"branchId":"1","family":{"kind":"supply-health"},"tags":["origin"],"key":"ArrowRight","from":100,"firstHour":100,"lastHour":last}),
-    };
-    let value: serde_json::Value = serde_json::from_str(
-        &super::super::query::query(source, &request, context.content.as_ref(), &flag).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(value["data"]["hour"].as_f64(), Some(101.0));
-    for family in [
-        serde_json::json!({"kind":"supply-health"}),
-        serde_json::json!({"kind":"army-size","measure":"divisions","countFor":"owner"}),
-        serde_json::json!({"kind":"army-size","measure":"divisions","countFor":"owner","top":1}),
-    ] {
-        let tags = if family["top"].is_null() {
-            vec!["origin"]
-        } else {
-            vec![]
-        };
-        for (key, from, expected) in [
-            ("Home", None, 100.5),
-            ("ArrowRight", Some(last as f64), last as f64),
-        ] {
-            let request = crate::transport::ProductRequest {
-                params: serde_json::json!({"branchId":"1","family":family,"tags":tags,
-                    "key":key,"from":from,"firstHour":100.5,"lastHour":last}),
-                ..request.clone()
-            };
-            let value: serde_json::Value = serde_json::from_str(
-                &super::super::query::query(source, &request, context.content.as_ref(), &flag)
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(value["data"]["hour"], expected, "{family} {key}");
-        }
-    }
-}
-
-#[test]
-fn prepared_forces_match_oracles_across_batches_resume_append_and_aliases() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for composition parity");
-    let mut first = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(1, vec![forces_frame(100), forces_frame(101)])],
-    )
-    .unwrap();
-    let mut replay = first
-        .append(&[continuation_records(&first, 1, vec![forces_frame(102)])])
-        .unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let game = fixture.root.join("content");
-    std::fs::create_dir_all(game.join("common/defines")).unwrap();
-    std::fs::create_dir_all(game.join("user")).unwrap();
-    std::fs::write(game.join("hoi4.exe"), "test").unwrap();
-    std::fs::write(
-        game.join("user/dlc_load.json"),
-        r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        game.join("user/settings.txt"),
-        "language=l_english force_pow2_textures=no",
-    )
-    .unwrap();
-    std::fs::write(game.join("common/defines/synthetic.lua"), "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}").unwrap();
-    let (options, identity) = crate::test_fixtures::content_identity(&game);
-    let mut wire = records(1, vec![forces_frame(100), forces_frame(101)]);
-    if let replay::spool::Record::SessionStart(session) = &mut wire[0] {
-        session.identity = identity;
-    }
-    first = Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap();
-    replay = first
-        .append(&[continuation_records(&first, 1, vec![forces_frame(102)])])
-        .unwrap();
-    let context = crate::products::LoadContext {
-        content: Some(options),
-    };
-    fixture.replace(&first);
-    let source = fixture.source("forces");
-    let flag = AtomicBool::new(false);
-    run(&source, context.content.as_ref(), &flag, |_| {}).unwrap();
-    assert_forces(&source, &context);
-    fixture.replace(&replay);
-    let source = fixture.source("forces-tail");
-    assert_eq!(
-        run_checked(
-            &source,
-            context.content.as_ref(),
-            &flag,
-            |_| {},
-            |next| {
-                if next == 2 {
-                    flag.store(true, Ordering::Release);
-                }
-                Ok(())
-            }
-        )
-        .unwrap_err()
-        .kind(),
-        io::ErrorKind::Interrupted
-    );
-    flag.store(false, Ordering::Release);
-    let resumed = fixture.source("forces-resume");
-    let mut visited = Vec::new();
-    run_checked(
-        &resumed,
-        context.content.as_ref(),
-        &flag,
-        |_| {},
-        |next| {
-            visited.push(next);
-            Ok(())
-        },
-    )
-    .unwrap();
-    assert_eq!(visited, [2]);
-    assert_forces(&resumed, &context);
-    let mut renamed = forces_frame(103);
-    if let TableView::Complete(TableRows::Countries(rows)) =
-        &mut *renamed.tables[TableId::Countries.index()]
-    {
-        rows[0].tag = b"later alias".to_vec();
-    }
-    let grown = replay
-        .append(&[continuation_records(&replay, 1, vec![renamed])])
-        .unwrap();
-    fixture.replace(&grown);
-    let appended = fixture.source("forces-append");
-    visited.clear();
-    run_checked(
-        &appended,
-        context.content.as_ref(),
-        &flag,
-        |_| {},
-        |next| {
-            visited.push(next);
-            Ok(())
-        },
-    )
-    .unwrap();
-    assert_eq!(visited, [3]);
-    assert_forces(&appended, &context);
-}
-
-#[test]
-fn prepared_pipeline_keeps_ledger_and_other_families_when_advisor_define_is_missing() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for ledger content parity");
-    use crate::products::{
-        Product,
-        country_measure::{CountryMeasure, Measure, MeasureParams},
-        politics_ledger::{LedgerView, PoliticsLedger, PoliticsLedgerParams, PoliticsLedgerReply},
-    };
-
-    let frames: Vec<_> = (100..=104)
-        .map(|hour| crate::test_fixtures::source(1, hour, Some(i64::from(hour) * 1000)))
-        .collect();
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, frames[..2].to_vec())]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let game = fixture.root.join("ledger-content-without-advisor-define");
-    std::fs::create_dir_all(game.join("common/defines")).unwrap();
-    std::fs::write(
-        game.join("common/defines/synthetic.lua"),
-        "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
-    )
-    .unwrap();
-    let (with_content, context) =
-        crate::test_fixtures::source_with_content(frames[..2].to_vec(), &game);
-    let first = with_content.replay_ref();
-    let second = first
-        .append(&[continuation_records(first, 1, frames[2..4].to_vec())])
-        .unwrap();
-    let replay = second
-        .append(&[continuation_records(&second, 1, frames[4..].to_vec())])
-        .unwrap();
-    fixture.replace(first);
-    let source = fixture.source("ledger-missing-advisor-prefix");
-    let flag = AtomicBool::new(false);
-    let params = PoliticsLedgerParams {
-        branch_id: "1".into(),
-        tag: "GER".into(),
-        view: LedgerView::Raw,
-    };
-    let refusal = PoliticsLedger::load(&source, &params, &context, &flag)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        refusal.contains("NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU"),
-        "{refusal}"
-    );
-    let check = |source: &Source, hour: i32| {
-        let (store, key) = super::super::files(source, context.content.as_ref()).unwrap();
-        let reply: PoliticsLedgerReply = serde_json::from_value(
-            crate::products::politics_ledger::prepared::query(
-                &serde_json::json!({"branchId":"1", "tag":"GER", "view":"raw", "hour":hour}),
-                &store,
-                &key,
-                &flag,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            reply
-                .warnings
-                .iter()
-                .filter(|warning| warning.contains(&refusal))
-                .collect::<Vec<_>>(),
-            [&format!("{refusal} (count: 1)")]
-        );
-        assert!(reply.mutations.is_empty());
-        let expected = CountryMeasure::load(
-            source,
-            &MeasureParams {
-                branch_id: "1".into(),
-                measure: Measure::PoliticalPower,
-                tags: vec!["GER".into()],
-            },
-            &context,
-            &flag,
-        )
-        .unwrap();
-        let request = crate::transport::ProductRequest {
-            source_id: source.key().source_id.clone(),
-            revision: source.key().revision.clone(),
-            product: "series-state".into(),
-            params: serde_json::json!({"branchId":"1", "family":{"kind":"country-measure", "measure":"politicalPower"}, "reads":[{"tag":"GER", "hour":hour}]}),
-        };
-        let actual: serde_json::Value = serde_json::from_str(
-            &super::super::query::query(source, &request, context.content.as_ref(), &flag).unwrap(),
-        )
-        .unwrap();
-        let expected = expected.series[0]
-            .runs
-            .iter()
-            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-            .unwrap();
-        assert_eq!(
-            actual["data"]["states"][0]["run"]["valueRaw"],
-            expected.value_raw
-        );
-    };
-    run(&source, context.content.as_ref(), &flag, |_| {}).unwrap();
-    check(&source, 101);
-    fixture.replace(&second);
-    let source = fixture.source("ledger-missing-advisor-tail");
-    assert_eq!(
-        run_checked(
-            &source,
-            context.content.as_ref(),
-            &flag,
-            |_| {},
-            |next| {
-                if next == 2 {
-                    flag.store(true, Ordering::Release);
-                }
-                Ok(())
-            },
-        )
-        .unwrap_err()
-        .kind(),
-        io::ErrorKind::Interrupted
-    );
-    flag.store(false, Ordering::Release);
-    check(&source, 101);
-    fixture.replace(&replay);
-    let source = fixture.source("ledger-missing-advisor-resume");
-    let accepted = run(&source, context.content.as_ref(), &flag, |_| {}).unwrap();
-    assert_eq!(accepted.new_blocks, 2);
-    assert!(accepted.coverage["1"].complete);
-    check(&source, 104);
 }
 
 #[test]
@@ -5229,9 +4823,11 @@ fn prepared_force_histories_keep_only_the_selected_holder_of_a_reused_alias() {
             ));
         frame
     };
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, (100..=105).map(make).collect())])
-            .unwrap();
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, (100..=105).map(make).collect())],
+    )
+    .unwrap();
     let mut fixture = Fixture::new(&replay);
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
@@ -5423,126 +5019,6 @@ fn native_force_sizes_keep_only_the_selected_holder_of_a_reused_alias() {
     for tag in [reused, selected.as_str()] {
         assert_eq!(runs(&native, tag), runs(&prepared, tag), "navy {tag}");
     }
-}
-
-/// An alias of the selected country that another native country held at
-/// other hours: zoomed-out prepared supply summaries keep only the selected
-/// holder's hours, as its exact counts do.
-#[test]
-fn prepared_supply_summaries_keep_only_the_selected_holder_of_a_reused_alias() {
-    use replay_data::rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow, Recorded};
-    let reused = "reused alias";
-    let make = |hour: i32| {
-        let mut frame = scale_frame(1, hour, 2);
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *frame.tables[TableId::Countries.index()]
-        {
-            // The second country holds the alias until the first takes it at 103.
-            rows[usize::from(hour < 103)].tag = reused.as_bytes().to_vec();
-        }
-        // Each country's one division: the first's in supply, the second's without.
-        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
-            (0..2u32)
-                .map(|index| DivisionRow {
-                    id: u64::from(index) + 1,
-                    roster_owner: 100_000 + index,
-                    logical_owner: 100_000 + index,
-                    expeditionary_owner: u32::MAX,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::DivisionLandInputs.index()] =
-            TableView::Complete(TableRows::DivisionLandInputs(
-                (1..=2)
-                    .map(|division| DivisionLandInputsRow {
-                        division,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::DivisionStatus.index()] =
-            TableView::Complete(TableRows::DivisionStatus(
-                (1..=2)
-                    .map(|division| DivisionStatusRow {
-                        division,
-                        supply_ratio: if division == 1 { 100_000 } else { 0 },
-                        supply_grace_maximum: Recorded::Value(1_000_000),
-                        supply_grace_remaining: Recorded::Value(0),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        frame
-    };
-    let frames: Vec<_> = (100..=105).map(make).collect();
-    let mut fixture = Fixture::new(
-        &Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap(),
-    );
-    let game = fixture.root.join("content");
-    for (path, text) in [
-        ("hoi4.exe", "test"),
-        (
-            "user/dlc_load.json",
-            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-        ),
-        (
-            "user/settings.txt",
-            "language=l_english force_pow2_textures=no",
-        ),
-        (
-            "common/defines/synthetic.lua",
-            "NDefines={NMilitary={SUPPLY_GRACE=10,LOW_SUPPLY=.6},NGraphics={SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD=.15,SUPPLY_UNIT_COUNTER_LOW_THRESHOLD=.4}}",
-        ),
-    ] {
-        let path = game.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, text).unwrap();
-    }
-    let (options, identity) = crate::test_fixtures::content_identity(&game);
-    let mut wire = records(1, frames);
-    if let replay::spool::Record::SessionStart(session) = &mut wire[0] {
-        session.identity = identity;
-    }
-    fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
-    let context = crate::products::LoadContext {
-        content: Some(options),
-    };
-    let source = fixture.source("reused-alias-supply");
-    let flag = AtomicBool::new(false);
-    run(&source, context.content.as_ref(), &flag, |_| {}).unwrap();
-    let selected = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
-    let reply = crate::products::supply_health::prepared::query(
-        &source,
-        &serde_json::json!({"branchId":"1","tags":[selected],"from":100,"to":105,"width":1}),
-        &context,
-        &flag,
-    )
-    .unwrap()
-    .unwrap();
-    let hours = |tag: &str| -> Vec<(i32, i32)> {
-        reply
-            .summaries
-            .as_ref()
-            .unwrap()
-            .iter()
-            .filter(|display| display.tag == tag)
-            .flat_map(|display| &display.values)
-            .flat_map(|summary| summary.buckets.iter().flatten())
-            .map(|bucket| (bucket.first_hour, bucket.last_hour))
-            .collect()
-    };
-    let alias = hours(reused);
-    assert_eq!(alias.len(), 3, "each share is summarised");
-    assert!(
-        alias.iter().all(|&(first, last)| (first, last) == (103, 105)),
-        "the other holder's divisions are not the selection's: {alias:?}"
-    );
-    let own = hours(&selected);
-    assert!(
-        own.iter().all(|&(first, last)| (first, last) == (100, 102)),
-        "{own:?}"
-    );
 }
 
 #[test]

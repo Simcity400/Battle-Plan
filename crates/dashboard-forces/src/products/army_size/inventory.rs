@@ -1,10 +1,25 @@
-//! Sparse division baselines and template-weighted country composition.
-//! Keys/order are checked before sparse updates; native delta fields use Replay.
-use super::*;
-use dashboard_base::prepared::frame_changes::FrameChanges;
-use replay_data::{rows::DeltaRow, rows::RowCodec, rows::TableSchema};
-use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
-use std::collections::HashSet;
+//! Division baselines and template-weighted country composition, kept from the walk's
+//! divisions ([`dashboard_world::Divisions`]) and its template columns: an hour reads only the
+//! rows it changed, and marks the countries whose totals or composition they move.
+use super::{ArmyAttribution, ArmyMeasure, Mix, Totals, channel, owner};
+use dashboard_base::prepared::frame_changes::field_mask;
+use dashboard_text::metadata::link_slot;
+use dashboard_world::{Division, Divisions};
+use replay::{columns, segments::State};
+use replay_data::rows::{CountryLinkRow, LexicalTokenRow, RowCodec, TableId, TableSchema, tables};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    io,
+    sync::LazyLock,
+};
+
+/// The DivisionTemplateIcons fields a composition reads; the template is the key.
+static TEMPLATE_FIELDS: LazyLock<u64> = LazyLock::new(|| {
+    field_mask(
+        TableId::DivisionTemplateIcons,
+        &["subunits", "model_unreadable"],
+    )
+});
 
 pub(super) enum Applied<R> {
     Reset(Vec<(Option<R>, Option<R>)>),
@@ -13,154 +28,26 @@ pub(super) enum Applied<R> {
     Missing,
 }
 
-/// How one inventory table reached this hour.
-#[derive(Clone, Copy)]
-pub(super) enum Update<'a> {
-    Columnar(&'a replay::segments::State, u16, bool),
-    /// A recorded table update.
-    Recorded(&'a TableUpdate),
-    /// The hour's decoded table, unchanged since `baseline`, the hour last
-    /// applied.
-    Unchanged(i32),
-    /// The hour's decoded table. When the rows that changed it from the
-    /// previous observed hour's are given (each changed row with its changed
-    /// fields, then the deleted keys), only they are read; otherwise the
-    /// table is read whole.
-    Decoded(Option<(&'a [DeltaRow], &'a [u128])>),
-}
-
-/// How one inventory table changed since the hour last applied: unchanged
-/// (`None`), by the rows a recorded delta changed and the keys it deleted
-/// (`Some(Some(..))`), or to be read whole (`Some(None)`).
-pub(super) type Change<'a> = Option<Option<(&'a [DeltaRow], &'a [u128])>>;
-
-/// The inventory tables' updates this hour.
-#[derive(Clone, Copy)]
-pub(super) struct Updates<'a> {
-    divisions: Update<'a>,
-    templates: Update<'a>,
-    land: Update<'a>,
-}
-
-impl<'a> Updates<'a> {
-    pub(super) fn columnar(state: &'a replay::segments::State, format: u16, whole: bool) -> Self {
-        let update = Update::Columnar(state, format, whole);
-        Self {
-            divisions: update,
-            templates: update,
-            land: update,
-        }
-    }
-
-    pub(super) fn is_columnar(self) -> bool {
-        matches!(self.divisions, Update::Columnar(..))
-    }
-
-    /// A recorded frame's updates.
-    pub fn recorded(frame: &'a (impl replay_frame::frame::FrameSource + ?Sized)) -> Self {
-        let update = move |table: TableId| Update::Recorded(frame.update(table.index()));
-        Self {
-            divisions: update(TableId::Divisions),
-            templates: update(TableId::DivisionTemplateIcons),
-            land: update(TableId::DivisionLandInputs),
-        }
-    }
-
-    /// The decoded tables' updates since `applied`, the hour last applied: a
-    /// table that has not changed since is unchanged, and a changed one is
-    /// read from its changed rows when this hour `continues` the last
-    /// observed one, otherwise whole.
-    pub fn decoded(changes: &'a FrameChanges, applied: Option<i32>, continues: bool) -> Self {
-        let update = move |table: TableId| match applied {
-            Some(baseline) if !changes.rows_changed[table.index()] => Update::Unchanged(baseline),
-            Some(_) if continues => Update::Decoded(changes.rows(table)),
-            _ => Update::Decoded(None),
-        };
-        Self {
-            divisions: update(TableId::Divisions),
-            templates: update(TableId::DivisionTemplateIcons),
-            land: update(TableId::DivisionLandInputs),
-        }
-    }
-
-    /// The decoded tables' updates of the hour after `applied`, the hour last
-    /// applied, as [`Self::decoded`] gives them from an hour's frame changes:
-    /// for Divisions, DivisionTemplateIcons and DivisionLandInputs in turn,
-    /// unchanged since `applied` (`None`), read from the rows a recorded delta
-    /// changed (`Some(Some(..))`), or read whole (`Some(None)`).
-    pub fn following(applied: i32, [divisions, templates, land]: [Change<'a>; 3]) -> Self {
-        let update = |change: Change<'a>| match change {
-            None => Update::Unchanged(applied),
-            Some(rows) => Update::Decoded(rows),
-        };
-        Self {
-            divisions: update(divisions),
-            templates: update(templates),
-            land: update(land),
-        }
-    }
-
-    fn get(&self, table: TableId) -> Update<'a> {
-        match table {
-            TableId::Divisions => self.divisions,
-            TableId::DivisionTemplateIcons => self.templates,
-            TableId::DivisionLandInputs => self.land,
-            _ => unreachable!("{table:?} is not an inventory table"),
-        }
-    }
-
-    /// Whether `table`'s rows are read this hour: recorded whole, by a
-    /// delta, or unchanged from a read baseline.
-    pub fn read(&self, table: TableId, decoded: &DecodedFrame) -> bool {
-        match self.get(table) {
-            Update::Columnar(state, ..) => replay::columns::complete(state, table),
-            Update::Recorded(update) => matches!(
-                update,
-                TableUpdate::Snapshot(_)
-                    | TableUpdate::Delta { .. }
-                    | TableUpdate::Unchanged { .. }
-            ),
-            Update::Unchanged(_) | Update::Decoded(_) => {
-                matches!(&*decoded.tables[table.index()], TableView::Complete(_))
-            }
-        }
-    }
-
-    /// The rows the inventory tables' updates visit this hour.
-    #[cfg(test)]
-    pub fn row_visits(&self, decoded: &DecodedFrame) -> usize {
-        [
-            TableId::Divisions,
-            TableId::DivisionTemplateIcons,
-            TableId::DivisionLandInputs,
-        ]
+/// Every live row of `table`, by key.
+pub(super) fn rows<R: RowCodec>(state: &State, table: TableId, format: u16) -> io::Result<Vec<R>> {
+    let held = columns::table(state, table)?;
+    let mut slots: Vec<_> = held
+        .live()
+        .ones()
+        .filter_map(|slot| held.key(slot).map(|key| (key, slot)))
+        .collect();
+    slots.sort_unstable();
+    slots
         .into_iter()
-        .map(|table| match self.get(table) {
-            Update::Columnar(..) => 0,
-            Update::Recorded(TableUpdate::Snapshot(rows) | TableUpdate::Truncated { rows, .. }) => {
-                rows.len()
-            }
-            Update::Recorded(TableUpdate::Delta {
-                changed, deleted, ..
-            }) => changed.len() + deleted.len(),
-            Update::Recorded(_) | Update::Unchanged(_) => 0,
-            Update::Decoded(Some((changed, deleted))) => changed.len() + deleted.len(),
-            Update::Decoded(None) => match &*decoded.tables[table.index()] {
-                TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-                TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
-            },
-        })
-        .sum()
-    }
+        .map(|(_, slot)| columns::row(state, table, slot, format))
+        .collect()
 }
 
+/// One table's rows as the walk held them at the hour last applied.
 pub(super) struct Sparse<T: TableSchema> {
     pub(super) rows: HashMap<u128, T::Row>,
     pub(super) baseline: Option<i32>,
     error: Option<String>,
-    /// Updates applied from changed rows alone.
-    #[cfg(test)]
-    row_updates: usize,
 }
 
 impl<T: TableSchema> Default for Sparse<T> {
@@ -169,30 +56,8 @@ impl<T: TableSchema> Default for Sparse<T> {
             rows: HashMap::new(),
             baseline: None,
             error: None,
-            #[cfg(test)]
-            row_updates: 0,
         }
     }
-}
-
-/// The index of the row keyed `key` at or after `from` in rows ascending by
-/// key. The search gallops out from `from`, so ascending lookups cost the
-/// logarithm of their distance rather than of the table.
-pub(super) fn find_from<R: RowCodec>(rows: &[R], from: usize, key: u128) -> Option<usize> {
-    let (mut low, mut high, mut step) = (from, from, 1_usize);
-    while high < rows.len() && rows[high].key() < key {
-        low = high + 1;
-        high = high.saturating_add(step);
-        step = step.saturating_mul(2);
-    }
-    let end = rows.len().min(high.saturating_add(1));
-    if low >= end {
-        return None;
-    }
-    rows[low..end]
-        .binary_search_by_key(&key, RowCodec::key)
-        .ok()
-        .map(|at| low + at)
 }
 
 fn check_key_width<R: RowCodec>(key: u128) -> io::Result<()> {
@@ -204,46 +69,8 @@ fn check_key_width<R: RowCodec>(key: u128) -> io::Result<()> {
 }
 
 impl<T: TableSchema> Sparse<T> {
-    // Replay's validate_rows/validate_delta are private. Match their checks
-    // using this schema's native key width and row field validation.
-    fn validate(update: &TableUpdate) -> io::Result<()> {
-        match update {
-            TableUpdate::Snapshot(rows) => Self::validate_rows(
-                rows.rows::<T>()
-                    .ok_or_else(|| io::Error::other("snapshot rows have the wrong table type"))?,
-            )?,
-            TableUpdate::Delta {
-                changed, deleted, ..
-            } => {
-                for value in changed
-                    .iter()
-                    .map(|row| row.key)
-                    .chain(deleted.iter().copied())
-                {
-                    check_key_width::<T::Row>(value)?;
-                }
-                if changed.windows(2).any(|pair| pair[0].key >= pair[1].key)
-                    || deleted.windows(2).any(|pair| pair[0] >= pair[1])
-                {
-                    return Err(io::Error::other("delta keys must be unique and ascending"));
-                }
-                let mut deleted = deleted.iter().peekable();
-                for row in changed {
-                    while deleted.peek().is_some_and(|value| **value < row.key) {
-                        deleted.next();
-                    }
-                    if deleted.peek().is_some_and(|value| **value == row.key) {
-                        return Err(io::Error::other("delta both changes and deletes a key"));
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// A whole table's checks: native key widths, valid key fields, and keys
-    /// unique and ascending.
+    /// A whole table's checks: native key widths, valid key fields, and keys unique and
+    /// ascending.
     fn validate_rows(rows: &[T::Row]) -> io::Result<()> {
         let mut previous = None;
         for row in rows {
@@ -267,183 +94,54 @@ impl<T: TableSchema> Sparse<T> {
 
     /// Hold `rows` whole, with each row that differs from the held one when
     /// `compare_snapshot`.
-    fn snapshot(&mut self, rows: &[T::Row], compare_snapshot: bool) -> Applied<T::Row> {
+    fn snapshot(&mut self, rows: Vec<T::Row>, compare_snapshot: bool) -> Applied<T::Row> {
         let mut edits = Vec::new();
         if compare_snapshot {
             let mut previous = std::mem::take(&mut self.rows);
             for row in rows {
                 let old = previous.remove(&row.key());
-                if old.as_ref() != Some(row) {
+                if old.as_ref() != Some(&row) {
                     edits.push((old, Some(row.clone())));
                 }
-                self.rows.insert(row.key(), row.clone());
+                self.rows.insert(row.key(), row);
             }
             edits.extend(previous.into_values().map(|old| (Some(old), None)));
         } else {
-            self.rows = rows.iter().map(|row| (row.key(), row.clone())).collect();
+            self.rows = rows.into_iter().map(|row| (row.key(), row)).collect();
         }
         Applied::Reset(edits)
     }
 
-    #[cfg(test)]
-    fn update(
-        &mut self,
-        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
-        compare_snapshot: bool,
-    ) -> Applied<T::Row> {
-        self.update_table(frame.update(T::ID.index()), frame.hour(), compare_snapshot)
-    }
-
-    fn update_table(
-        &mut self,
-        update: &TableUpdate,
-        hour: i32,
-        compare_snapshot: bool,
-    ) -> Applied<T::Row> {
-        self.error = None;
-        if let Err(error) = Self::validate(update) {
-            return self.refuse(error);
-        }
-        let outcome = match update {
-            TableUpdate::Snapshot(rows) => rows
-                .rows::<T>()
-                .map(|rows| self.snapshot(rows, compare_snapshot)),
-            TableUpdate::Delta {
-                baseline,
-                changed,
-                deleted,
-            } if self.baseline == Some(*baseline) && *baseline < hour => {
-                let mut edits = Vec::with_capacity(changed.len() + deleted.len());
-                let mut valid = true;
-                for key in deleted {
-                    if let Some(old) = self.rows.remove(key) {
-                        edits.push((Some(old), None));
-                    } else {
-                        self.error = Some("delta deletes an absent key".into());
-                        valid = false;
-                        break;
-                    }
-                }
-                if valid {
-                    for delta in changed {
-                        let old = self.rows.remove(&delta.key);
-                        match delta.apply::<T::Row>(old.clone()) {
-                            Ok(row) if row.check_key_fields().is_ok() => {
-                                self.rows.insert(delta.key, row.clone());
-                                edits.push((old, Some(row)));
-                            }
-                            Ok(_) => {
-                                self.error = Some("delta row has invalid key fields".into());
-                                valid = false;
-                                break;
-                            }
-                            Err(error) => {
-                                self.error = Some(error.to_string());
-                                valid = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                valid.then_some(Applied::Changes(edits))
-            }
-            TableUpdate::Unchanged { baseline }
-                if self.baseline == Some(*baseline) && *baseline < hour =>
-            {
-                Some(Applied::Same)
-            }
-            _ => None,
-        };
-        if let Some(outcome) = outcome {
-            self.baseline = Some(hour);
-            outcome
-        } else {
-            self.rows.clear();
-            self.baseline = None;
-            if matches!(
-                update,
-                TableUpdate::Delta { .. } | TableUpdate::Unchanged { .. }
-            ) {
-                self.error
-                    .get_or_insert_with(|| "missing table baseline".into());
-            }
-            Applied::Missing
-        }
-    }
-
-    /// Apply `update` to the held rows, reading the hour's rows from
-    /// `decoded` where it names them. A change to no field in `fields`
-    /// leaves its held row as it was: nothing reads those fields.
+    /// Apply the hour's columns to the held rows: whole when `whole`, without held rows, or
+    /// when the hour deletes a key not held; otherwise only the rows it changed. A change to
+    /// no field in `fields` leaves a held row as it was: nothing reads those fields.
     pub(super) fn apply(
         &mut self,
-        update: Update<'_>,
-        decoded: &DecodedFrame,
+        state: &State,
+        (format, hour): (u16, i32),
         fields: u64,
         compare_snapshot: bool,
+        whole: bool,
     ) -> Applied<T::Row> {
-        let hour = decoded.hour;
-        if let Update::Columnar(state, format, whole) = update {
-            return match self.apply_columnar(state, format, hour, fields, compare_snapshot, whole) {
-                Ok(applied) => applied,
-                Err(error) => self.refuse(error),
-            };
-        }
-        match (update, &*decoded.tables[T::ID.index()]) {
-            (Update::Recorded(update), _) => self.update_table(update, hour, compare_snapshot),
-            (Update::Unchanged(baseline), TableView::Complete(_)) => {
-                self.update_table(&TableUpdate::Unchanged { baseline }, hour, compare_snapshot)
-            }
-            (Update::Decoded(changed), TableView::Complete(rows)) => {
-                if let Some(changed) = changed
-                    && let Some(rows) = rows.rows::<T>()
-                    && let Some(applied) = self.update_rows(rows, changed, fields, hour)
-                {
-                    return applied;
-                }
-                // The decoded table read whole, as its recorded snapshot is.
-                self.error = None;
-                match rows
-                    .rows::<T>()
-                    .ok_or_else(|| io::Error::other("snapshot rows have the wrong table type"))
-                    .and_then(|rows| Self::validate_rows(rows).map(|()| rows))
-                {
-                    Ok(rows) => {
-                        let applied = self.snapshot(rows, compare_snapshot);
-                        self.baseline = Some(hour);
-                        applied
-                    }
-                    Err(error) => self.refuse(error),
-                }
-            }
-            // A truncated or refused table holds no rows.
-            _ => self.update_table(
-                &TableUpdate::Unavailable {
-                    reason: String::new(),
-                },
-                hour,
-                compare_snapshot,
-            ),
+        match self.read(state, (format, hour), fields, compare_snapshot, whole) {
+            Ok(applied) => applied,
+            Err(error) => self.refuse(error),
         }
     }
 
-    fn apply_columnar(
+    fn read(
         &mut self,
-        state: &replay::segments::State,
-        format: u16,
-        hour: i32,
+        state: &State,
+        (format, hour): (u16, i32),
         fields: u64,
         compare_snapshot: bool,
         whole: bool,
     ) -> io::Result<Applied<T::Row>> {
-        use replay::columns;
         if !columns::complete(state, T::ID) {
-            return Ok(self.update_table(
-                &TableUpdate::Unavailable {
-                    reason: String::new(),
-                },
-                hour,
-                compare_snapshot,
-            ));
+            self.error = None;
+            self.rows.clear();
+            self.baseline = None;
+            return Ok(Applied::Missing);
         }
         let table = columns::table(state, T::ID)?;
         let changes = columns::changes(state, T::ID)?;
@@ -454,13 +152,13 @@ impl<T: TableSchema> Sparse<T> {
                 .iter()
                 .any(|key| !self.rows.contains_key(key))
         {
-            let rows = super::columnar::rows::<T::Row>(state, T::ID, format)?;
+            let rows = rows::<T::Row>(state, T::ID, format)?;
             Self::validate_rows(&rows)?;
             self.error = None;
             self.baseline = Some(hour);
-            return Ok(self.snapshot(&rows, compare_snapshot));
+            return Ok(self.snapshot(rows, compare_snapshot));
         }
-        let mut slots = std::collections::BTreeSet::new();
+        let mut slots = BTreeSet::new();
         for (&slot, &mask) in changes
             .changed
             .iter()
@@ -497,51 +195,6 @@ impl<T: TableSchema> Sparse<T> {
             Applied::Changes(edits)
         })
     }
-
-    /// Apply the rows that changed the decoded table `rows` from the previous
-    /// observed hour's, which are the held rows. A change to no field in
-    /// `fields` leaves a held row as it was. None, changing nothing, without
-    /// held rows, or when a changed row is not in the decoded table or a
-    /// deleted key is not held: the table is then read whole.
-    fn update_rows(
-        &mut self,
-        rows: &[T::Row],
-        (changed, deleted): (&[DeltaRow], &[u128]),
-        fields: u64,
-        hour: i32,
-    ) -> Option<Applied<T::Row>> {
-        self.baseline?;
-        // Read every change before holding any.
-        let mut read = Vec::with_capacity(changed.len());
-        let mut from = 0;
-        for change in changed {
-            if change.mask & fields == 0 && self.rows.contains_key(&change.key) {
-                continue;
-            }
-            // Recorded changes ascend by key, as the decoded rows do.
-            from = find_from(rows, from, change.key)?;
-            rows[from].check_key_fields().ok()?;
-            read.push(from);
-        }
-        if !deleted.iter().all(|key| self.rows.contains_key(key)) {
-            return None;
-        }
-        let mut edits = Vec::with_capacity(read.len() + deleted.len());
-        for key in deleted {
-            edits.push((self.rows.remove(key), None));
-        }
-        for at in read {
-            let row = &rows[at];
-            edits.push((self.rows.insert(row.key(), row.clone()), Some(row.clone())));
-        }
-        self.error = None;
-        self.baseline = Some(hour);
-        #[cfg(test)]
-        {
-            self.row_updates += 1;
-        }
-        Some(Applied::Changes(edits))
-    }
 }
 
 #[derive(Default)]
@@ -565,9 +218,11 @@ type Composition = Option<BTreeMap<String, i64>>;
 
 #[derive(Default)]
 pub(super) struct Inventory {
-    divisions: Sparse<tables::Divisions>,
+    /// Whether the walk's divisions are held, and its manpower, as last applied.
+    known: bool,
+    land: bool,
+    /// The divisions whose aid-relevant owners the hour changed; None when it read them whole.
     pub(super) aid_changes: Option<Vec<u64>>,
-    land: Sparse<tables::DivisionLandInputs>,
     templates: Sparse<tables::DivisionTemplateIcons>,
     core: HashMap<u32, Core>,
     // A template edit touches its country weights, not every division using it.
@@ -575,32 +230,26 @@ pub(super) struct Inventory {
     compiled: HashMap<u64, Composition>,
     parts: HashMap<u32, Parts>,
     unknown_owner: [i128; 2],
-    pub(super) dirty: std::collections::BTreeSet<u32>,
-    links: Option<ViewIdentity>,
-    lexical: Option<ViewIdentity>,
+    pub(super) dirty: BTreeSet<u32>,
     names: HashMap<u32, String>,
     token_templates: HashMap<u32, HashSet<u64>>,
     dirty_templates: HashSet<u64>,
     weights: HashMap<(u64, u32), [i128; 2]>,
     rebuild_parts: bool,
     generation: u64,
-    #[cfg(test)]
-    pub applied_divisions: usize,
-    #[cfg(test)]
-    pub compiled_templates: usize,
 }
 
 fn edit_core(
-    row: &DivisionRow,
-    land: Option<&replay_data::rows::DivisionLandInputsRow>,
+    division: &Division,
+    manpower: Option<i32>,
     sign: i128,
     links: &[CountryLinkRow],
     core: &mut HashMap<u32, Core>,
     unknown: &mut [i128; 2],
 ) -> [Option<u32>; 2] {
     let slots = [
-        link_slot(links, owner(row)),
-        link_slot(links, row.roster_owner),
+        link_slot(links, owner(&division.row())),
+        link_slot(links, division.roster_owner),
     ];
     for (index, slot) in slots.iter().enumerate() {
         let Some(slot) = slot else {
@@ -609,37 +258,28 @@ fn edit_core(
         };
         let total = core.entry(*slot).or_default();
         total.count[index] += sign;
-        edit_manpower(total, index, land, sign);
-        edit_hp(total, index, row, sign);
+        edit_manpower(total, index, manpower, sign);
+        edit_hp(total, index, division, sign);
     }
     slots
 }
 
-/// Combined strength counts current hit points that are finite and not
-/// negative; any other value leaves the total unknown.
-fn edit_hp(core: &mut Core, index: usize, row: &DivisionRow, sign: i128) {
-    if dashboard_base::products::finite_fixed64(row.hit_points) && row.hit_points >= 0 {
-        core.hp[index] += sign * i128::from(row.hit_points);
+/// Combined strength counts current hit points that are finite and not negative; any other
+/// value leaves the total unknown.
+fn edit_hp(core: &mut Core, index: usize, division: &Division, sign: i128) {
+    if dashboard_base::products::finite_fixed64(division.hit_points) && division.hit_points >= 0 {
+        core.hp[index] += sign * i128::from(division.hit_points);
     } else {
         core.bad_hp[index] += sign;
     }
 }
 
-fn edit_manpower(
-    core: &mut Core,
-    index: usize,
-    land: Option<&replay_data::rows::DivisionLandInputsRow>,
-    sign: i128,
-) {
-    if let Some(land) = land {
-        // The manpower total sums recorded signed dwords.
-        let amount = land
-            .manpower
-            .iter()
-            .fold(0i32, |sum, part| sum.wrapping_add(part.amount));
-        core.manpower[index] += sign * i128::from(amount);
-    } else {
-        core.bad_manpower[index] += sign;
+/// The manpower total sums recorded signed dwords; a division without land inputs leaves it
+/// unknown.
+fn edit_manpower(core: &mut Core, index: usize, manpower: Option<i32>, sign: i128) {
+    match manpower {
+        Some(amount) => core.manpower[index] += sign * i128::from(amount),
+        None => core.bad_manpower[index] += sign,
     }
 }
 
@@ -694,32 +334,22 @@ fn edit_parts(parts: &mut HashMap<u32, Parts>, slot: u32, counts: [i128; 2], val
 }
 
 impl Inventory {
-    /// The recorded updates of `frame` applied, as the oracle reads them.
-    #[cfg(test)]
-    pub fn apply_changes(
+    /// Apply the hour's divisions and template columns through `links` (None while
+    /// CountryLinks is not whole); `changed_links` when the hour changed them. Each country
+    /// whose totals or composition they can change is marked dirty.
+    pub fn apply(
         &mut self,
-        frame: &(impl replay_frame::frame::FrameSource + ?Sized),
-        decoded: &DecodedFrame,
+        state: &State,
+        (format, hour): (u16, i32),
+        whole: bool,
+        (links, changed_links): (Option<&[CountryLinkRow]>, bool),
+        walked: &Divisions,
     ) {
-        self.apply_updates(Updates::recorded(frame), decoded);
-    }
-
-    /// Apply the hour's inventory table updates. Each country whose totals
-    /// or composition they can change is marked dirty.
-    pub fn apply_updates(&mut self, updates: Updates<'_>, decoded: &DecodedFrame) {
         self.dirty.clear();
-        let links = decoded.complete::<tables::CountryLinks>().ok();
-        let view = links.map(|_| &decoded.tables[TableId::CountryLinks.index()]);
-        let changed_links = match (&self.links, view) {
-            (Some(previous), Some(view)) => !previous.is(view),
-            (None, None) => false,
-            _ => true,
-        };
-        self.links = view.map(|view| view.identity());
         let links = links.unwrap_or_default();
         let templates = self
             .templates
-            .apply(updates.templates, decoded, *TEMPLATE_FIELDS, true);
+            .apply(state, (format, hour), *TEMPLATE_FIELDS, true, whole);
         match templates {
             Applied::Missing => {
                 self.dirty_templates.extend(self.compiled.keys().copied());
@@ -751,207 +381,158 @@ impl Inventory {
             }
             Applied::Same => {}
         }
-        let divisions = self
-            .divisions
-            .apply(updates.divisions, decoded, *DIVISION_FIELDS, false);
-        self.aid_changes = match &divisions {
-            Applied::Same => Some(Vec::new()),
-            Applied::Changes(edits) => Some(
-                edits
-                    .iter()
-                    .filter_map(|(old, new)| {
-                        if old.as_ref().zip(new.as_ref()).is_some_and(|(old, new)| {
-                            old.logical_owner == new.logical_owner
-                                && owner(old) == owner(new)
-                                && old.roster_owner == new.roster_owner
-                        }) {
-                            return None;
-                        }
-                        old.as_ref().or(new.as_ref()).map(|row| row.id)
+        let (divisions, land) = (walked.divisions(), walked.manpower());
+        let manpower = |division: u64| land.holds().then(|| land.get(division).copied()).flatten();
+        let edited = divisions.holds() && !divisions.whole();
+        self.aid_changes = edited.then(|| {
+            divisions
+                .edits()
+                .iter()
+                .filter(|(_, old, new)| {
+                    (*old).zip(*new).is_none_or(|(old, new)| {
+                        old.logical_owner != new.logical_owner
+                            || owner(&old.row()) != owner(&new.row())
+                            || old.roster_owner != new.roster_owner
                     })
-                    .collect(),
-            ),
-            _ => None,
-        };
-        #[cfg(test)]
-        {
-            self.applied_divisions += match &divisions {
-                Applied::Reset(_) => self.divisions.rows.len(),
-                Applied::Changes(edits) => edits.len(),
-                _ => 0,
-            };
-        }
-        if changed_links || matches!(&divisions, Applied::Reset(_) | Applied::Missing) {
+                })
+                .map(|&(id, _, _)| id)
+                .collect()
+        });
+        let rebuild = changed_links
+            || !edited
+            || land.whole()
+            || land.holds() != self.land
+            || divisions.holds() != self.known;
+        self.known = divisions.holds();
+        self.land = land.holds();
+        if rebuild {
             self.dirty.extend(self.core.keys().copied());
             self.core.clear();
             self.members.clear();
             self.weights.clear();
             self.unknown_owner = [0, 0];
             self.rebuild_parts = true;
-            for row in self.divisions.rows.values() {
+            for (id, division) in divisions.iter() {
                 let slots = edit_core(
-                    row,
-                    self.land.rows.get(&row.key()),
+                    division,
+                    manpower(id),
                     1,
                     links,
                     &mut self.core,
                     &mut self.unknown_owner,
                 );
                 self.dirty.extend(slots.into_iter().flatten());
-                edit_weights(row.template, slots, 1, &mut self.members, &mut self.weights);
+                edit_weights(
+                    division.template,
+                    slots,
+                    1,
+                    &mut self.members,
+                    &mut self.weights,
+                );
             }
-        } else if let Applied::Changes(edits) = divisions {
-            for (old, new) in edits {
-                // With the same census owners and template, only HP affects
-                // these totals. Logical-host edits have their own aid invalidation.
-                if let (Some(old), Some(new)) = (&old, &new)
-                    && owner(old) == owner(new)
-                    && old.roster_owner == new.roster_owner
-                    && old.template == new.template
-                {
-                    for (index, raw) in [owner(new), new.roster_owner].into_iter().enumerate() {
-                        if let Some(slot) = link_slot(links, raw) {
-                            let core = self.core.entry(slot).or_default();
-                            edit_hp(core, index, old, -1);
-                            edit_hp(core, index, new, 1);
-                            self.dirty.insert(slot);
-                        }
-                    }
-                    continue;
-                }
-                let before = old.as_ref().map(|row| {
-                    edit_core(
-                        row,
-                        self.land.rows.get(&row.key()),
-                        -1,
-                        links,
-                        &mut self.core,
-                        &mut self.unknown_owner,
-                    )
-                });
-                let after = new.as_ref().map(|row| {
-                    edit_core(
-                        row,
-                        self.land.rows.get(&row.key()),
-                        1,
-                        links,
-                        &mut self.core,
-                        &mut self.unknown_owner,
-                    )
-                });
-                self.dirty
-                    .extend(before.into_iter().chain(after).flatten().flatten());
-                if before == after
-                    && old.as_ref().map(|row| row.template) == new.as_ref().map(|row| row.template)
-                {
-                    continue; // HP-only changes do no composition work.
-                }
-                if let (Some(row), Some(slots)) = (old, before) {
-                    edit_weights(
-                        row.template,
-                        slots,
-                        -1,
-                        &mut self.members,
-                        &mut self.weights,
-                    );
-                }
-                if let (Some(row), Some(slots)) = (new, after) {
-                    edit_weights(row.template, slots, 1, &mut self.members, &mut self.weights);
-                }
-            }
+            return;
         }
-        match self.land.apply(updates.land, decoded, *LAND_FIELDS, true) {
-            Applied::Changes(edits) | Applied::Reset(edits) => {
-                for (old, new) in edits {
-                    let id = old
-                        .as_ref()
-                        .or(new.as_ref())
-                        .expect("changed land row")
-                        .division;
-                    let Some(division) = self.divisions.rows.get(&u128::from(id)) else {
-                        continue;
-                    };
-                    for (index, raw) in [owner(division), division.roster_owner]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let Some(slot) = link_slot(links, raw) else {
-                            continue;
-                        };
-                        self.dirty.insert(slot);
+        // Each division the hour's Divisions or manpower edits name, before and after.
+        let mut touched: BTreeMap<u64, [(Option<Division>, Option<i32>); 2]> = BTreeMap::new();
+        for &(id, old, new) in divisions.edits() {
+            let manpower = manpower(id);
+            touched.insert(id, [(old, manpower), (new, manpower)]);
+        }
+        for &(id, old, new) in land.edits() {
+            let current = divisions.get(id).copied();
+            let entry = touched
+                .entry(id)
+                .or_insert([(current, None), (current, None)]);
+            entry[0].1 = old;
+            entry[1].1 = new;
+        }
+        for (_, [(old, old_manpower), (new, new_manpower)]) in touched {
+            // With the same census owners and template, only HP and manpower affect these
+            // totals. Logical-host edits have their own aid invalidation.
+            if let (Some(old), Some(new)) = (&old, &new)
+                && owner(&old.row()) == owner(&new.row())
+                && old.roster_owner == new.roster_owner
+                && old.template == new.template
+            {
+                for (index, raw) in [owner(&new.row()), new.roster_owner]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if let Some(slot) = link_slot(links, raw) {
                         let core = self.core.entry(slot).or_default();
-                        edit_manpower(core, index, old.as_ref(), -1);
-                        edit_manpower(core, index, new.as_ref(), 1);
+                        edit_hp(core, index, old, -1);
+                        edit_hp(core, index, new, 1);
+                        edit_manpower(core, index, old_manpower, -1);
+                        edit_manpower(core, index, new_manpower, 1);
+                        self.dirty.insert(slot);
                     }
                 }
+                continue;
             }
-            Applied::Missing => {
-                self.dirty.extend(self.core.keys().copied());
-                for core in self.core.values_mut() {
-                    core.manpower = [0, 0];
-                    core.bad_manpower = core.count;
-                }
+            let before = old.as_ref().map(|division| {
+                edit_core(
+                    division,
+                    old_manpower,
+                    -1,
+                    links,
+                    &mut self.core,
+                    &mut self.unknown_owner,
+                )
+            });
+            let after = new.as_ref().map(|division| {
+                edit_core(
+                    division,
+                    new_manpower,
+                    1,
+                    links,
+                    &mut self.core,
+                    &mut self.unknown_owner,
+                )
+            });
+            self.dirty
+                .extend(before.into_iter().chain(after).flatten().flatten());
+            if before == after
+                && old.map(|division| division.template) == new.map(|division| division.template)
+            {
+                continue; // HP and manpower changes do no composition work.
             }
-            Applied::Same => {}
+            if let (Some(division), Some(slots)) = (old, before) {
+                edit_weights(
+                    division.template,
+                    slots,
+                    -1,
+                    &mut self.members,
+                    &mut self.weights,
+                );
+            }
+            if let (Some(division), Some(slots)) = (new, after) {
+                edit_weights(
+                    division.template,
+                    slots,
+                    1,
+                    &mut self.members,
+                    &mut self.weights,
+                );
+            }
         }
     }
 
-    pub fn compose(&mut self, decoded: &DecodedFrame) {
-        let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-        let view = lexical.map(|_| &decoded.tables[TableId::LexicalTokens.index()]);
-        let changed = match (&self.lexical, view) {
-            (Some(previous), Some(view)) => !previous.is(view),
-            (None, None) => false,
-            _ => true,
-        };
-        if changed {
-            let names: HashMap<_, _> = lexical
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|row| {
-                    std::str::from_utf8(&row.literal)
-                        .ok()
-                        .map(|name| (row.token, name.to_owned()))
-                })
-                .collect();
-            for token in self.names.keys().chain(names.keys()) {
-                if self.names.get(token) != names.get(token) {
-                    self.dirty_templates.extend(
-                        self.token_templates
-                            .get(token)
-                            .into_iter()
-                            .flatten()
-                            .copied(),
-                    );
-                }
-            }
-            self.names = names;
-            self.lexical = view.map(|view| view.identity());
-        }
-        self.compose_parts();
-    }
-
-    pub(super) fn columnar_names(
-        &mut self,
-        state: &replay::segments::State,
-        format: u16,
-        whole: bool,
-    ) -> io::Result<()> {
-        use replay::columns;
+    /// Reads the sub-unit names the hour changed, then recomposes what they and the hour's
+    /// division edits moved.
+    pub(super) fn compose(&mut self, state: &State, format: u16, whole: bool) -> io::Result<()> {
         let table = TableId::LexicalTokens;
         let mut edits = Vec::new();
         if !columns::complete(state, table) {
             edits.extend(self.names.keys().copied().map(|token| (token, None)));
         } else if whole {
-            let mut names: HashMap<_, _> =
-                super::columnar::rows::<replay_data::rows::LexicalTokenRow>(state, table, format)?
-                    .into_iter()
-                    .filter_map(|row| {
-                        String::from_utf8(row.literal)
-                            .ok()
-                            .map(|name| (row.token, name))
-                    })
-                    .collect();
+            let mut names: HashMap<_, _> = rows::<LexicalTokenRow>(state, table, format)?
+                .into_iter()
+                .filter_map(|row| {
+                    String::from_utf8(row.literal)
+                        .ok()
+                        .map(|name| (row.token, name))
+                })
+                .collect();
             for token in self.names.keys() {
                 if !names.contains_key(token) {
                     edits.push((*token, None));
@@ -961,7 +542,7 @@ impl Inventory {
         } else {
             let changes = columns::changes(state, table)?;
             edits.extend(changes.deleted_keys.iter().map(|&key| (key as u32, None)));
-            let slots: std::collections::BTreeSet<_> = changes
+            let slots: BTreeSet<_> = changes
                 .changed
                 .iter()
                 .chain(&changes.fill_slots)
@@ -969,8 +550,7 @@ impl Inventory {
                 .copied()
                 .collect();
             for slot in slots {
-                let row: replay_data::rows::LexicalTokenRow =
-                    columns::row(state, table, slot, format)?;
+                let row: LexicalTokenRow = columns::row(state, table, slot, format)?;
                 edits.push((row.token, String::from_utf8(row.literal).ok()));
             }
         }
@@ -993,10 +573,11 @@ impl Inventory {
                 }
             }
         }
+        self.compose_parts();
         Ok(())
     }
 
-    pub(super) fn compose_parts(&mut self) {
+    fn compose_parts(&mut self) {
         if self.rebuild_parts {
             self.dirty.extend(self.parts.keys().copied());
             self.parts.clear();
@@ -1024,7 +605,6 @@ impl Inventory {
                         }
                         let mut parts = BTreeMap::<String, i64>::new();
                         for unit in &row.subunits {
-                            // TemplateSubunit: replay/extended_rows/movement.rs:585.
                             // Token zero names the null-object definition, not a battalion.
                             if unit.token == 0 {
                                 continue;
@@ -1040,10 +620,6 @@ impl Inventory {
                         }
                         Some(parts)
                     });
-            #[cfg(test)]
-            {
-                self.compiled_templates += 1;
-            }
             let old = self.compiled.get(&template).unwrap_or(&unknown);
             if old != &value {
                 for (slot, counts) in self.members.get(&template).into_iter().flatten() {
@@ -1060,46 +636,36 @@ impl Inventory {
         }
     }
 
-    /// The divisions, templates and land inputs updates applied from changed
-    /// rows alone.
-    #[cfg(test)]
-    pub fn row_updates(&self) -> [usize; 3] {
-        [
-            self.divisions.row_updates,
-            self.templates.row_updates,
-            self.land.row_updates,
-        ]
+    /// Whether the divisions were held as last applied.
+    pub fn known(&self) -> bool {
+        self.known
     }
 
-    pub(super) fn division(&self, reference: u64) -> Option<&DivisionRow> {
-        (reference != 0)
-            .then(|| self.divisions.rows.get(&u128::from(reference)))
-            .flatten()
-    }
-    pub fn known(&self) -> bool {
-        self.divisions.baseline.is_some()
-    }
-    pub fn errors(&self) -> impl Iterator<Item = (TableId, &str)> {
+    /// Each table whose rows could not be read, with why: the walk's divisions and manpower,
+    /// and the templates.
+    pub fn errors<'a>(&'a self, walked: &'a Divisions) -> impl Iterator<Item = (TableId, &'a str)> {
         [
-            (TableId::Divisions, self.divisions.error.as_deref()),
+            (TableId::Divisions, walked.divisions().refusal()),
             (
                 TableId::DivisionTemplateIcons,
                 self.templates.error.as_deref(),
             ),
-            (TableId::DivisionLandInputs, self.land.error.as_deref()),
+            (TableId::DivisionLandInputs, walked.manpower().refusal()),
         ]
         .into_iter()
         .filter_map(|(table, reason)| reason.map(|reason| (table, reason)))
     }
+
     pub fn composition_known(&self) -> bool {
         self.known() && self.templates.baseline.is_some()
     }
+
     pub fn unreadable(&self) -> usize {
         self.unknown_owner.iter().sum::<i128>() as usize
     }
 
     pub fn totals(&self, slot: u32, composition: bool) -> Totals {
-        let mut total = Totals::default();
+        let mut total = [None; 8];
         if !self.known() {
             return total;
         }
@@ -1111,23 +677,23 @@ impl Inventory {
                 continue;
             }
             let count = channel(ArmyMeasure::Divisions, attribution);
-            total.values[count] = Some(core.map_or(0, |core| core.count[index]));
+            total[count] = Some(core.map_or(0, |core| core.count[index]));
             if core.is_none_or(|core| core.bad_hp[index] == 0) {
-                total.values[count + 1] = Some(core.map_or(0, |core| core.hp[index]));
+                total[count + 1] = Some(core.map_or(0, |core| core.hp[index]));
             }
-            if self.land.baseline.is_some() && core.is_none_or(|core| core.bad_manpower[index] == 0)
-            {
-                total.values[channel(ArmyMeasure::Manpower, attribution)] =
+            if self.land && core.is_none_or(|core| core.bad_manpower[index] == 0) {
+                total[channel(ArmyMeasure::Manpower, attribution)] =
                     Some(core.map_or(0, |core| core.manpower[index]));
             }
             if composition && parts.is_none_or(|parts| parts.missing[index] == 0) {
-                total.values[channel(ArmyMeasure::Battalions, attribution)] =
+                total[channel(ArmyMeasure::Battalions, attribution)] =
                     Some(parts.map_or(0, |parts| parts.total[index]));
             }
         }
         total
     }
 
+    /// Names the composition of `slot` held now: equal versions, equal compositions.
     pub fn parts_version(&self, slot: u32) -> (u64, u64, [bool; 2]) {
         let parts = self.parts.get(&slot);
         (
@@ -1140,10 +706,11 @@ impl Inventory {
         )
     }
 
-    pub fn parts_at(&self, slot: u32) -> [Option<BTreeMap<String, i64>>; 2] {
+    pub fn parts_at(&self, slot: u32) -> Mix {
         let parts = self.parts.get(&slot);
+        let known = self.parts_version(slot).2;
         std::array::from_fn(|index| {
-            if !self.parts_version(slot).2[index] {
+            if !known[index] {
                 return None;
             }
             parts.map_or_else(
@@ -1160,97 +727,5 @@ impl Inventory {
                 },
             )
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use replay_frame::frame::FrameEncoder;
-
-    #[test]
-    fn army_size_sparse_rejects_invalid_snapshot_and_delta_keys() {
-        let mut encoder = FrameEncoder::new();
-        let initial = encoder
-            .encode(super::super::test_fixtures::frame(100), false)
-            .unwrap();
-        let mut observation = super::super::test_fixtures::frame(101);
-        if let replay_frame::frame::TableView::Complete(rows) =
-            &mut *observation.tables[TableId::Divisions.index()]
-        {
-            // A whole display step (replay_data::display), so the row changes.
-            rows.rows_mut::<tables::Divisions>().unwrap()[0].hit_points += 100_000;
-        }
-        let changed = encoder.encode(observation, false).unwrap();
-        for case in 0..7 {
-            let mut invalid = if case <= 1 {
-                initial.clone()
-            } else {
-                changed.clone()
-            };
-            invalid.hour = 101;
-            match &mut invalid.tables[TableId::Divisions.index()] {
-                TableUpdate::Snapshot(rows) => {
-                    let rows = rows.rows_mut::<tables::Divisions>().unwrap();
-                    if case == 0 {
-                        rows.push(rows[0].clone());
-                    } else {
-                        rows.swap(0, 1);
-                    }
-                }
-                TableUpdate::Delta {
-                    changed, deleted, ..
-                } => match case {
-                    2 => changed.push(changed[0].clone()),
-                    3 => changed[0].key = 1u128 << 64,
-                    4 => *deleted = vec![2, 2],
-                    5 => *deleted = vec![changed[0].key],
-                    6 => *deleted = vec![1u128 << 64],
-                    _ => unreachable!(),
-                },
-                _ => unreachable!(),
-            }
-            let mut sparse = Sparse::<tables::Divisions>::default();
-            sparse.update(&initial, false);
-            assert!(matches!(sparse.update(&invalid, false), Applied::Missing));
-            assert!(sparse.rows.is_empty());
-            assert!(sparse.baseline.is_none());
-            assert!(sparse.error.is_some(), "case {case} must name its refusal");
-        }
-        let mut invalid = initial.clone();
-        invalid.hour = 101;
-        if let TableUpdate::Snapshot(rows) =
-            &mut invalid.tables[TableId::DivisionTemplateIcons.index()]
-        {
-            let rows = rows.rows_mut::<tables::DivisionTemplateIcons>().unwrap();
-            rows.push(rows[0].clone());
-        }
-        let mut sparse = Sparse::<tables::DivisionTemplateIcons>::default();
-        sparse.update(&initial, true);
-        assert!(matches!(sparse.update(&invalid, true), Applied::Missing));
-        assert_eq!(
-            sparse.error.as_deref(),
-            Some("row keys must be unique and ascending")
-        );
-    }
-
-    #[test]
-    fn army_size_galloping_search_finds_each_key_at_or_after_its_start() {
-        let rows: Vec<_> = (0..100_u64)
-            .map(|id| DivisionRow {
-                id: id * 2 + 1,
-                ..Default::default()
-            })
-            .collect();
-        for from in [0, 1, 7, 50, 99] {
-            for (at, row) in rows.iter().enumerate() {
-                let expected = (at >= from).then_some(at);
-                assert_eq!(find_from(&rows, from, row.key()), expected, "{from} {at}");
-                assert_eq!(find_from(&rows, from, row.key() + 1), None);
-            }
-            assert_eq!(find_from(&rows, from, 0), None);
-            assert_eq!(find_from(&rows, from, u128::MAX), None);
-        }
-        assert_eq!(find_from::<DivisionRow>(&[], 0, 1), None);
     }
 }

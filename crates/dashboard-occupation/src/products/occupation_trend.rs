@@ -394,6 +394,7 @@ pub(in crate::products) fn reply_with_histories(
 impl Product for OccupationTrend {
     const KEY: &'static str = "occupation-trend";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = OccupationTrendParams;
     type Reply = OccupationTrendReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -459,5 +460,6 @@ impl Product for OccupationTrend {
     }
 }
 
+pub mod served;
 #[cfg(test)]
 mod tests;

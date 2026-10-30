@@ -14,6 +14,7 @@ doctest = false
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+dashboard-world.workspace = true
 dashboard-keyed = { path = "../dashboard-keyed" }
 replay.workspace = true
 installed-content-core.workspace = true

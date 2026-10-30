@@ -1290,7 +1290,7 @@ fn shared_evidence_read_refreshes_identity_reuse_and_publication_prefixes_are_ex
         Blob::EMPTY,
     );
     drop(writer);
-    let mut writer = Writer::resume(&mut memory, &cache, first, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, &cache, &budget, first, identity()).unwrap();
     writer.run(key, span(4, 6), 0, false, false).unwrap();
     writer.domain(99, known(4, 6, Some(4), Some(888))).unwrap();
     let reused = writer
@@ -2071,7 +2071,7 @@ fn codecs_enforce_declared_widths_and_late_cursor_generations_cannot_mix() {
     );
     drop(snapshot);
     let mut memory = memory;
-    let mut writer = Writer::resume(&mut memory, &cache, root, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
     let sequence = writer.sequence().unwrap();
     writer
         .event(Event {
@@ -2821,7 +2821,7 @@ fn shared_coverage_survives_resume_and_prefixes_keep_their_own_roots() {
         publication(1, 0, 0, 1023, 2047),
         Blob::EMPTY,
     );
-    let mut writer = Writer::resume(&mut memory, &cache, first, identity()).unwrap();
+    let mut writer = Writer::resume(&mut memory, &cache, &budget, first, identity()).unwrap();
     writer.run(key, span(1024, 2047), 5, false, false).unwrap();
     for h in 1024..2048 {
         writer
@@ -4732,7 +4732,7 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
         .unwrap();
     assert_eq!(extents, [span(0, 3)]);
     drop(snapshot);
-    let mut resumed = Writer::resume(&mut memory, &cache, root, identity()).unwrap();
+    let mut resumed = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
     let mut presented = [0; 2];
     for (at, writer) in [&mut writer, &mut resumed].into_iter().enumerate() {
         let sequence = writer.sequence().unwrap();
@@ -4766,7 +4766,7 @@ fn a_resumed_writer_presents_the_domain_row_it_carried_with_its_exact_evidence()
     let sequence = writer.sequence().unwrap();
     writer.present_domain(key, handles[1], sequence).unwrap();
     drop(writer);
-    let mut resumed = Writer::resume(&mut memory, &cache, root, identity()).unwrap();
+    let mut resumed = Writer::resume(&mut memory, &cache, &budget, root, identity()).unwrap();
     let sequence = resumed.sequence().unwrap();
     assert!(resumed.present_domain(key, handles[0], sequence).is_err());
     resumed.present_domain(key, handles[1], sequence).unwrap();
@@ -5416,4 +5416,16 @@ fn malformed_deltas_lengths_and_indices_are_invalid_data_not_overflow() {
             .kind(),
     );
     check(s.event_block(&node, &entry, 1).unwrap_err().kind());
+}
+
+#[test]
+fn a_writer_holds_what_its_open_segment_appended() {
+    let budget = Budget::new(BIG);
+    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let before = writer.held_bytes();
+    for id in 0..4_096u64 {
+        writer.catalogue(id, Cell::Integer(i128::from(id))).unwrap();
+    }
+    assert!(writer.held_bytes() > before);
+    assert!(writer.held_bytes() <= budget.used());
 }

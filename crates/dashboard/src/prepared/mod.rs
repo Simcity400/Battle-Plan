@@ -4,12 +4,14 @@
 pub(crate) use dashboard_base::prepared::observer_tests;
 pub mod change_runs;
 pub mod driver;
+pub(crate) mod families;
 pub(crate) mod pace;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
 pub mod pipeline;
 pub(crate) mod prepass;
 pub mod query;
 pub mod runner;
+pub mod served_check;
 
 pub use crate::transport::Action;
 pub use dashboard_base::prepared::{
