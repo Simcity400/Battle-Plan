@@ -106,22 +106,22 @@ pub(super) fn growth(current: &Value, previous: Option<&Value>) -> Value {
             .find(|prior| prior["table"] == table["table"])
             .unwrap();
         let bytes = ratio(
-            &table["independentNativeRowZstd9Bytes"],
-            &prior["independentNativeRowZstd9Bytes"],
+            &table["independentNativeRowZstd3Bytes"],
+            &prior["independentNativeRowZstd3Bytes"],
         );
         tables.push(json!({"table": table["table"],
-            "independentNativeRowZstd9Bytes": table["independentNativeRowZstd9Bytes"],
-            "additionalIndependentNativeRowZstd9Bytes": table["independentNativeRowZstd9Bytes"].as_f64().unwrap() - prior["independentNativeRowZstd9Bytes"].as_f64().unwrap(),
+            "independentNativeRowZstd3Bytes": table["independentNativeRowZstd3Bytes"],
+            "additionalIndependentNativeRowZstd3Bytes": table["independentNativeRowZstd3Bytes"].as_f64().unwrap() - prior["independentNativeRowZstd3Bytes"].as_f64().unwrap(),
             "bytesRatio": bytes, "bytesPerHourRatio": bytes.map(|bytes| bytes / hours),
             "rawBytesRatio": ratio(&table["nativeRowRawBytes"], &prior["nativeRowRawBytes"]),
             "sourceLaterBytesRatio": ratio(&table["recordingLaterBytes"], &prior["recordingLaterBytes"])}));
     }
     tables.sort_by(|left, right| {
-        right["additionalIndependentNativeRowZstd9Bytes"]
+        right["additionalIndependentNativeRowZstd3Bytes"]
             .as_f64()
             .unwrap()
             .total_cmp(
-                &left["additionalIndependentNativeRowZstd9Bytes"]
+                &left["additionalIndependentNativeRowZstd3Bytes"]
                     .as_f64()
                     .unwrap(),
             )

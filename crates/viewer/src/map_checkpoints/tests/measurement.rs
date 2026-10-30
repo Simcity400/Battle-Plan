@@ -674,7 +674,7 @@ fn measure_recording(
             serde_json::json!((max_applied)),
         );
         candidate_report.insert("parityDifferences".into(), serde_json::json!((0)));
-        candidate_report.insert("storageRepresentation".into(), serde_json::json!(("independent sparse native checkpoints, zstd9 per range; selected hourly updates read only from recording")));
+        candidate_report.insert("storageRepresentation".into(), serde_json::json!(("independent sparse native checkpoints, zstd3 per range; selected hourly updates read only from recording")));
         candidate_report.insert(
             "diskBudgetMet".into(),
             serde_json::json!((total_bytes as f64 / frames as f64 * 1000.0 <= 6_000_000.0)),
@@ -741,10 +741,10 @@ fn measure_recording(
             .clone();
         let independent_bytes: u64 = tables
             .iter()
-            .map(|table| table["independentNativeRowZstd9Bytes"].as_u64().unwrap())
+            .map(|table| table["independentNativeRowZstd3Bytes"].as_u64().unwrap())
             .sum();
         for table in &mut tables {
-            let weight = table["independentNativeRowZstd9Bytes"].as_u64().unwrap() as f64
+            let weight = table["independentNativeRowZstd3Bytes"].as_u64().unwrap() as f64
                 / independent_bytes as f64;
             table["estimatedStoreCheckpointBytes"] =
                 serde_json::json!(weight * checkpoint_bytes as f64);

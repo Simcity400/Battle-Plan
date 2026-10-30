@@ -40,7 +40,7 @@ impl Attribution {
             }
             total.checkpoints += 1;
             total.raw += bytes.len() as u64;
-            total.compressed += zstd::bulk::compress(&bytes, 9).unwrap().len() as u64;
+            total.compressed += zstd::bulk::compress(&bytes, 3).unwrap().len() as u64;
         }
         self.elapsed_us += micros(started);
     }
@@ -70,7 +70,7 @@ impl Attribution {
 
     pub(super) fn report(&self, evidence: &Path, selected: &[TableId]) -> serde_json::Value {
         let mut csv = BufWriter::new(File::create(evidence.join("table-checkpoints.csv")).unwrap());
-        writeln!(csv, "stride,table,checkpoints,rows,native_row_raw_bytes,independent_native_row_zstd9_bytes,recording_keyframe_bytes,recording_later_bytes").unwrap();
+        writeln!(csv, "stride,table,checkpoints,rows,native_row_raw_bytes,independent_native_row_zstd3_bytes,recording_keyframe_bytes,recording_later_bytes").unwrap();
         let mut candidates = Vec::new();
         let mut production = Vec::new();
         for (&stride, totals) in &self.checkpoints {
@@ -86,7 +86,7 @@ impl Attribution {
                 .unwrap();
                 tables.push(serde_json::json!({"table": format!("{table:?}"),
                     "checkpoints": total.checkpoints, "rows": total.rows,
-                    "nativeRowRawBytes": total.raw, "independentNativeRowZstd9Bytes": total.compressed,
+                    "nativeRowRawBytes": total.raw, "independentNativeRowZstd3Bytes": total.compressed,
                     "recordingKeyframeBytes": keyframe, "recordingLaterBytes": later}));
             }
             if stride == dashboard_base::prepared_map::CHECKPOINT_STRIDE {

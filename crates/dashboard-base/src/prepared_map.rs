@@ -634,7 +634,7 @@ pub fn section(branch: BranchId) -> String {
 }
 
 fn compress(payload: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
-    let mut compressor = zstd::bulk::Compressor::new(9)?;
+    let mut compressor = zstd::bulk::Compressor::new(3)?;
     compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
     let compressed = compressor.compress(payload)?;
     engine_allocation::reserve(out, engine_allocation::add(8, compressed.len())?)?;
