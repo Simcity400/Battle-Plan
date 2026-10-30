@@ -240,6 +240,10 @@ export class FactRequests<V> {
   private waiting: { at: number; stop: () => void } | null = null;
   /** Whether a change is to be told at the next frame. */
   private telling = false;
+  /** While pumping, whether another pass is asked for (and whether it rebuilds), so a read
+   * answered at once (a held timeline) starts the next without growing the stack. */
+  private pumping = false;
+  private again: boolean | null = null;
   private readonly store: HourStore<V>;
   private readonly read: FactRead<V>;
   private readonly changed: () => void;
@@ -312,6 +316,19 @@ export class FactRequests<V> {
   }
 
   private pump(rebuild = false): number {
+    if (this.pumping) { this.again = !!this.again || rebuild; return 0; }
+    this.pumping = true;
+    let started = 0;
+    try {
+      for (let pass: boolean | null = rebuild; pass !== null; pass = this.again) {
+        this.again = null;
+        started += this.pumpOnce(pass);
+      }
+    } finally { this.pumping = false; }
+    return started;
+  }
+
+  private pumpOnce(rebuild: boolean): number {
     if (rebuild) {
       const now = this.clock.now();
       let next = Infinity;
@@ -426,6 +443,9 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
   shared?: boolean;
   params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
   extract: (data: unknown, params?: unknown, source?: FactSource) => Found;
+  /** The values a timeline the client holds gives at an hour (`heldFacts`), or undefined when it
+   * does not hold the hour, which is then asked for. */
+  held?: (client: DashboardClient, source: FactSource, recording: DashboardSource | undefined, hour: number, tags: readonly string[]) => ReadonlyMap<string, V> | undefined;
 }
 
 /** A product read for a whole plan in one request, for facts wanted at many hours at once. */
@@ -562,8 +582,11 @@ async function readChunk<V>(client: DashboardClient, source: FactSource, spec: F
  * hour is never asked again while it is kept. Stops when aborted. */
 export async function readFacts<V>(client: DashboardClient, source: FactSource, spec: FactSpec<V, FactsFound<V>>,
   plan: FactPlan, signal: AbortSignal, onChunk: Parameters<FactRead<V>>[2], recording?: DashboardSource): Promise<void> {
+  const held = (hour: number, tags: readonly string[]) => spec.held?.(client, source, recording, hour, tags);
   if (!spec.shared) {
     for (const [hour, tags] of plan) {
+      const known = held(hour, tags);
+      if (known) { onChunk(hour, tags, known); continue; }
       let found: ReadonlyMap<string, V> | null = null;
       let retryable = false;
       try {
@@ -590,6 +613,8 @@ export async function readFacts<V>(client: DashboardClient, source: FactSource, 
     }
   });
   for (const [hour, tags] of plan) {
+    const known = held(hour, tags);
+    if (known) { onChunk(hour, tags, known); continue; }
     const read = await facts.read(hour, tags, signal);
     if (!read || signal.aborted) return;
     const alike = new Set(read.failed.values());

@@ -1222,6 +1222,27 @@ name: string | null,
  */
 color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
+export type CountryFactsParams = { branchId: string, };
+export type CountryFactRuns = { tag: string,
+/**
+ * `[hour, name, colour, reason]` from `hour` until the next run: the name's index in
+ * `names`, the colour as `0xRRGGBB` and the reason's index in `reasons`, each -1 when
+ * there is none. A tag that is not a country has a run with no name or colour and its reason.
+ */
+runs: Array<[number, number, number, number]>, };
+export type CountryFactsReply = { branchId: string,
+/**
+ * The hours the runs answer, as `[first, last]` spans in order.
+ */
+known: Array<[number, number]>,
+/**
+ * Names, each once; a run holds its index.
+ */
+names: Array<string>,
+/**
+ * Why part of a style is missing, each once; a run holds its index.
+ */
+reasons: Array<string>, countries: Array<CountryFactRuns>, warnings: Array<string>, };
 export type CountryColourParams = { branchId: string,
 /**
  * The hours to read, in any order.

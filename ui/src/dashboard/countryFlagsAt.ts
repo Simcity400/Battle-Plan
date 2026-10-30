@@ -27,7 +27,8 @@ export function flagReadSpec(size: CountryFlagSize): FactSpec<FlagRead, Promise<
   let spec = readingSpecs.get(size);
   if (!spec) {
     const urls = flagSpec(size);
-    spec = { ...urls, extract: async (data, params, source) => {
+    // Flags are read hour by hour: no timeline holds them.
+    spec = { ...urls, held: undefined, extract: async (data, params, source) => {
       const reply = data as CountryFlagReply;
       const found = new Map<string, FlagRead>();
       for (const [tag, url] of await urls.extract(reply, params, source)) found.set(tag, { url });

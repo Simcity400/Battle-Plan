@@ -11,11 +11,12 @@ use dashboard_base::{
     prepared::{coverage, prepass::Family, series},
     products::{
         ContentOptions,
-        country_styles::{StyleInputs, StyleRuns},
+        country_styles::{CountryFactRuns, CountryFactsReply, HourStyles, StyleInputs, StyleRuns},
     },
 };
 use dashboard_keyed::{KNOWN, Observer, Scan, Values};
 use installed_content_country_names::country_names::{Operands, TABLES as STYLE_TABLES};
+use installed_content_localisation::localisation::Localisation;
 use replay::container::TableFields;
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -416,6 +417,258 @@ impl StyleRuns for PreparedStyles {
         }
         Ok(true)
     }
+}
+
+/// Numbers texts by first use, as a reply's dictionary.
+#[derive(Default)]
+struct Dictionary {
+    numbered: HashMap<String, i32>,
+    texts: Vec<String>,
+}
+
+impl Dictionary {
+    fn number(&mut self, text: &str) -> i32 {
+        if let Some(&number) = self.numbered.get(text) {
+            return number;
+        }
+        let number = self.texts.len() as i32;
+        self.numbered.insert(text.to_owned(), number);
+        self.texts.push(text.to_owned());
+        number
+    }
+}
+
+/// Every tag's style at every hour `branch`'s runs hold from `first` through `last`, named
+/// with `localisation` ([`CountryFactsReply`]): exactly what [`PreparedStyles`] gives each
+/// hour, kept as runs. Only the tags an hour's changes reach are styled again: a tag's own
+/// link, its link's colour, any naming operands its name reaches, or the reserved names
+/// built. None before preparation holds the family. Read through the prepared query's `store`.
+pub(crate) fn country_facts(
+    source: &Source,
+    (store, key): (&store::Store, &store::SourceKey),
+    branch: u64,
+    [first, last]: [i32; 2],
+    localisation: Option<&Localisation>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<CountryFactsReply>> {
+    let _scope = store.scope(key)?;
+    let Some(published) = published(source, store, key, branch)? else {
+        return Ok(None);
+    };
+    let Some(built) = published.built else {
+        return Ok(None);
+    };
+    let mut reply = CountryFactsReply {
+        branch_id: branch.to_string(),
+        ..CountryFactsReply::default()
+    };
+    if last < first {
+        return Ok(Some(reply));
+    }
+    let mut reader = series::Reader::new(
+        store,
+        key,
+        dashboard_keyed::series_section(NAME, branch),
+        cancelled,
+    )?;
+    for run in reader.runs(KNOWN, first, last)? {
+        match reply.known.last_mut() {
+            Some(span) if span[1].checked_add(1) == Some(run.first_hour) => span[1] = run.last_hour,
+            _ => reply.known.push([run.first_hour, run.last_hour]),
+        }
+    }
+    let mut tags: Vec<(&String, u64)> = published.tags.iter().map(|(tag, &key)| (tag, key)).collect();
+    tags.sort_unstable();
+    let colours: Vec<(u32, u64)> = published.colours.iter().map(|(&id, &key)| (id, key)).collect();
+    let slots: Vec<(u32, u64)> = published.slots.iter().map(|(&slot, &key)| (slot, key)).collect();
+    // One order for every key: the reserved names built, then tags, colours and slots.
+    let keys: Vec<u64> = std::iter::once(built)
+        .chain(tags.iter().map(|&(_, key)| key))
+        .chain(colours.iter().map(|&(_, key)| key))
+        .chain(slots.iter().map(|&(_, key)| key))
+        .collect();
+    let runs = reader
+        .runs_each(&keys, first, last)?
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>()?;
+    // Every key's value changes in hour order: a run's start, and its end the hour after its
+    // last. An end sorts before a start at one hour, so a run following another keeps its value.
+    let mut events: Vec<(i32, bool, usize, i128)> = Vec::new();
+    for (at, runs) in runs.iter().enumerate() {
+        for run in runs {
+            events.push((run.first_hour, true, at, run.value));
+            if let Some(end) = run.last_hour.checked_add(1) {
+                events.push((end, false, at, 0));
+            }
+        }
+    }
+    events.sort_unstable_by_key(|&(hour, start, at, _)| (hour, start, at));
+    let held = |hour: i32| {
+        let at = reply.known.partition_point(|span| span[1] < hour);
+        reply.known.get(at).is_some_and(|span| span[0] <= hour)
+    };
+    // Tags are styled at each known span's first hour and at every known hour a value changes;
+    // changes in a gap are styled at the next span's first hour.
+    let mut styled: BTreeSet<i32> = reply.known.iter().map(|span| span[0]).collect();
+    styled.extend(events.iter().map(|&(hour, ..)| hour).filter(|&hour| held(hour)));
+    let (tag_at, colour_at, slot_at) = (1, 1 + tags.len(), 1 + tags.len() + colours.len());
+    let slot_of: HashMap<u32, usize> = slots
+        .iter()
+        .enumerate()
+        .map(|(at, &(slot, _))| (slot, slot_at + at))
+        .collect();
+    let colour_of: HashMap<u32, usize> = colours
+        .iter()
+        .enumerate()
+        .map(|(at, &(id, _))| (id, colour_at + at))
+        .collect();
+    // The overlord a slot's operands name, read without copying them.
+    let overlord = |values: &[Option<i128>], slot: u32| -> Option<u32> {
+        let value = slot_of.get(&slot).and_then(|&at| values[at])?;
+        published
+            .operands
+            .get(usize::try_from(value).ok()?)?
+            .as_ref()
+            .ok()?
+            .overlord
+    };
+    let operands_at = |values: &[Option<i128>], slot: u32| -> io::Result<Option<Result<Operands, String>>> {
+        let Some(value) = slot_of.get(&slot).and_then(|&at| values[at]) else {
+            return Ok(None);
+        };
+        usize::try_from(value)
+            .ok()
+            .and_then(|at| published.operands.get(at))
+            .ok_or_else(|| invalid("Prepared country naming operands are not catalogued"))
+            .map(|parts| Some(parts.as_ref().map(Parts::operands).map_err(String::clone)))
+    };
+    let mut values: Vec<Option<i128>> = vec![None; keys.len()];
+    let mut changed: Vec<usize> = Vec::new();
+    let mut marked = vec![false; keys.len()];
+    let mut next = 0;
+    // Each tag's link and the slots its name reaches, and who depends on what.
+    let mut links: Vec<Option<(u32, u32)>> = vec![None; tags.len()];
+    let mut chains: Vec<Vec<u32>> = vec![Vec::new(); tags.len()];
+    let mut holding: HashMap<u32, BTreeSet<usize>> = HashMap::new();
+    let mut reaching: HashMap<u32, BTreeSet<usize>> = HashMap::new();
+    let mut names = Dictionary::default();
+    let mut reasons = Dictionary::default();
+    let mut shown: Vec<Option<[i32; 3]>> = vec![None; tags.len()];
+    let mut countries: Vec<Vec<[i32; 4]>> = vec![Vec::new(); tags.len()];
+    let mut first_hour = true;
+    for hour in styled {
+        check_cancel(cancelled)?;
+        while let Some(&(_, start, at, value)) = events.get(next).filter(|event| event.0 <= hour) {
+            next += 1;
+            let value = start.then_some(value);
+            if values[at] != value {
+                values[at] = value;
+                if !std::mem::replace(&mut marked[at], true) {
+                    changed.push(at);
+                }
+            }
+        }
+        // The tags this hour's changes reach: all of them when the reserved names built change.
+        let mut reached = BTreeSet::new();
+        if first_hour || marked[0] {
+            reached.extend(0..tags.len());
+        } else {
+            for &at in &changed {
+                let dependents = if at < colour_at {
+                    reached.insert(at - tag_at);
+                    continue;
+                } else if at < slot_at {
+                    holding.get(&colours[at - colour_at].0)
+                } else {
+                    reaching.get(&slots[at - slot_at].0)
+                };
+                reached.extend(dependents.into_iter().flatten());
+            }
+        }
+        first_hour = false;
+        for at in changed.drain(..) {
+            marked[at] = false;
+        }
+        let built = values[0].filter(|&built| built >= 0).map(|built| built as u8);
+        for index in reached {
+            let link = values[tag_at + index].map(|value| ((value >> 32) as u32, value as u32));
+            if link != links[index] {
+                if let Some((id, _)) = links[index]
+                    && let Some(holders) = holding.get_mut(&id)
+                {
+                    holders.remove(&index);
+                }
+                if let Some((id, _)) = link {
+                    holding.entry(id).or_default().insert(index);
+                }
+                links[index] = link;
+            }
+            // The slots its name reaches now, overlord by overlord, each once.
+            let mut chain = Vec::new();
+            let mut next_slot = link.map(|(_, slot)| slot);
+            while let Some(slot) = next_slot.filter(|slot| !chain.contains(slot)) {
+                chain.push(slot);
+                next_slot = overlord(&values, slot);
+            }
+            if chain != chains[index] {
+                for slot in &chains[index] {
+                    if let Some(named) = reaching.get_mut(slot) {
+                        named.remove(&index);
+                    }
+                }
+                for &slot in &chain {
+                    reaching.entry(slot).or_default().insert(index);
+                }
+                chains[index] = chain;
+            }
+            let fact = match link {
+                None => [-1, -1, reasons.number("not a country at this hour")],
+                Some((id, slot)) => {
+                    let mut inputs = StyleInputs {
+                        reserved_built: built,
+                        ..StyleInputs::default()
+                    };
+                    inputs.tags.insert(tags[index].0.clone(), (id, slot));
+                    if let Some(value) = colour_of.get(&id).and_then(|&at| values[at]) {
+                        inputs
+                            .colors
+                            .insert(id, [(value >> 16) as u8, (value >> 8) as u8, value as u8]);
+                    }
+                    if localisation.is_some() {
+                        for &slot in &chains[index] {
+                            if let Some(operands) = operands_at(&values, slot)? {
+                                inputs.operands.insert(slot, operands);
+                            }
+                        }
+                    }
+                    let styles = HourStyles::build(inputs, localisation);
+                    match styles.fact(tags[index].0) {
+                        Ok((style, problem)) => [
+                            style.name.as_deref().map_or(-1, |name| names.number(name)),
+                            style.color.map_or(-1, |[red, green, blue]| {
+                                (i32::from(red) << 16) | (i32::from(green) << 8) | i32::from(blue)
+                            }),
+                            problem.map_or(-1, |problem| reasons.number(problem)),
+                        ],
+                        Err(reason) => [-1, -1, reasons.number(&reason)],
+                    }
+                }
+            };
+            if shown[index] != Some(fact) {
+                shown[index] = Some(fact);
+                countries[index].push([hour, fact[0], fact[1], fact[2]]);
+            }
+        }
+    }
+    reply.names = names.texts;
+    reply.reasons = reasons.texts;
+    reply.countries = tags
+        .into_iter()
+        .zip(countries)
+        .filter(|(_, runs)| !runs.is_empty())
+        .map(|((tag, _), runs)| CountryFactRuns { tag: tag.clone(), runs })
+        .collect();
+    Ok(Some(reply))
 }
 
 /// The naming operands at `hour` of each tag `inputs` holds, then of each overlord its name

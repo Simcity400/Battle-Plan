@@ -4,6 +4,7 @@ import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
 import { forgetFlags } from './flagCache.ts';
 import { forgetFacts } from './sharedFacts.ts';
+import { forgetTimelines } from './countryTimeline.ts';
 import { forgetReplySizes } from './replySizes.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
 import { isPreparedProduct, preparedSeriesQuery } from './preparedSeries.ts';
@@ -127,6 +128,7 @@ export function forgetProducts(client: DashboardClient, sourceId: string): void 
   cache(client).deleteSource(sourceId);
   forgetFlags(client, sourceId);
   forgetFacts(client, sourceId);
+  forgetTimelines(client, sourceId);
   forgetReplySizes(client, sourceId);
 }
 
@@ -135,6 +137,7 @@ export function forgetSettledProducts(client: DashboardClient, sourceId: string)
   cache(client).deleteSettled(sourceId);
   forgetFlags(client, sourceId);
   forgetFacts(client, sourceId);
+  forgetTimelines(client, sourceId, true);
 }
 
 export interface ProductState<T> { data?: T; error?: string; retry: () => void }

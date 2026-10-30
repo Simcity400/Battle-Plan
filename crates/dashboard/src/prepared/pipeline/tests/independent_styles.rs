@@ -1,10 +1,11 @@
 //! Country styles prepared on their own (`products::style_runs`): before preparation every hour
 //! is left to a seek, and once prepared every hour of the branch answers exactly as its seek
 //! reads it, names and colours alike, across a tag change, a new country, a subject, a changed
-//! ruling party and colour, an incomplete table, a second block and a gap.
+//! ruling party and colour, an incomplete table, a second block and a gap; and the branch's
+//! facts, as runs, hold exactly those hours and styles.
 use super::*;
 use crate::{
-    products::style_runs::PREPARED_STYLES,
+    products::style_runs::{PREPARED_STYLES, country_facts},
     test_fixtures::{continuation_records, world_frame},
 };
 use dashboard_base::products::country_styles::{HourStyles, StyleRuns};
@@ -17,7 +18,8 @@ use replay_data::rows::{
 
 /// GER (raw 9001, slot 7), ITA (raw 21, slot 8) and, from hour 24, D01 (raw 31, slot 9), which
 /// becomes GER's puppet at 26; ITA is RSI from 28, GER's colour changes at 16 and its ruling
-/// party at 18, and the appearance table is incomplete at 20.
+/// party at 18 and back at 34 (renaming its puppet through its adjective), the reserved names
+/// built change at 36, and the appearance table is incomplete at 20.
 fn styled(hour: i32) -> DecodedFrame {
     let mut frame = world_frame(hour, hour >= 24);
     if hour >= 28
@@ -60,7 +62,7 @@ fn styled(hour: i32) -> DecodedFrame {
     if hour >= 24 {
         politics_rows.push(politics(31, 1));
     }
-    politics_rows.push(politics(9001, if hour < 18 { 1 } else { 2 }));
+    politics_rows.push(politics(9001, if hour < 18 || hour >= 34 { 1 } else { 2 }));
     *frame.tables[TableId::Politics.index()] =
         TableView::Complete(TableRows::Politics(politics_rows));
     let party = |country, id, token: &[u8]| PoliticalPartyRow {
@@ -95,7 +97,7 @@ fn styled(hour: i32) -> DecodedFrame {
         TableView::Complete(TableRows::ReservedCountryNaming(vec![
             ReservedCountryNamingRow {
                 tag: b"ZZZ".to_vec(),
-                built: 7,
+                built: if hour < 36 { 7 } else { 8 },
                 ..Default::default()
             },
         ]));
@@ -152,6 +154,8 @@ fn prepared_country_styles_answer_every_hour_as_its_seek_does() {
         ("GER_fascism", "German Reich"),
         ("GER_democratic", "German Republic"),
         ("GER_ADJ", "German"),
+        ("GER_fascism_ADJ", "Reich"),
+        ("GER_democratic_ADJ", "Federal"),
         ("ITA", "Italy"),
         ("RSI", "Italian Social Republic"),
         ("D01 mod", "Danubia"),
@@ -212,6 +216,69 @@ fn prepared_country_styles_answer_every_hour_as_its_seek_does() {
     // A request reaching an hour preparation left to seeks, or a gap, is wholly a seek's.
     assert_eq!(read(&[19, 20, 21], false), None);
     assert_eq!(read(&[30, 31], false), None);
+    // The whole branch's facts hold exactly the hours preparation answers, each tag's run in
+    // force giving the style, and the reason, its hour gives.
+    for localisation in [Some(&localisation), None] {
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let facts = country_facts(&source, (&store, &key), 1, [9, 41], localisation, &flag)
+            .unwrap()
+            .unwrap();
+        let holds = |hour: i32| facts.known.iter().any(|&[first, last]| (first..=last).contains(&hour));
+        for hour in 9..=41 {
+            let Some(mut prepared) = read(&[hour], localisation.is_some()) else {
+                assert!(!holds(hour), "{hour} is left to seeks");
+                continue;
+            };
+            assert!(holds(hour), "{hour}");
+            let expected = HourStyles::build(prepared.pop().unwrap().1, localisation);
+            for tag in &tags {
+                let Some(run) = facts
+                    .countries
+                    .iter()
+                    .find(|country| &country.tag == tag)
+                    .and_then(|country| country.runs.iter().rev().find(|run| run[0] <= hour))
+                else {
+                    // A tag no hour made a country has no runs: it is not one.
+                    assert_eq!(expected.fact(tag).err().as_deref(), Some("not a country at this hour"), "{hour} {tag}");
+                    continue;
+                };
+                let reason = (run[3] >= 0).then(|| facts.reasons[run[3] as usize].as_str());
+                match expected.fact(tag) {
+                    Ok((style, problem)) => {
+                        assert_eq!(
+                            (run[1] >= 0).then(|| facts.names[run[1] as usize].as_str()),
+                            style.name.as_deref(),
+                            "{hour} {tag}"
+                        );
+                        assert_eq!(
+                            (run[2] >= 0).then(|| [(run[2] >> 16) as u8, (run[2] >> 8) as u8, run[2] as u8]),
+                            style.color,
+                            "{hour} {tag}"
+                        );
+                        assert_eq!(reason, problem, "{hour} {tag}");
+                    }
+                    Err(missing) => {
+                        assert_eq!([run[1], run[2]], [-1, -1], "{hour} {tag}");
+                        assert_eq!(reason, Some(missing.as_str()), "{hour} {tag}");
+                    }
+                }
+            }
+        }
+        if localisation.is_some() {
+            let d01 = facts.countries.iter().find(|country| country.tag == "D01 mod").unwrap();
+            let named = |hour: i32| {
+                let run = d01.runs.iter().rev().find(|run| run[0] <= hour).unwrap();
+                facts.names[run[1] as usize].clone()
+            };
+            assert_ne!(named(33), named(35), "the overlord's new adjective renames its puppet");
+        }
+        // A run starts only where a tag's style changes.
+        for country in &facts.countries {
+            for pair in country.runs.windows(2) {
+                assert_ne!(pair[0][1..], pair[1][1..], "{}", country.tag);
+            }
+        }
+    }
     super::super::super::files(&source, None)
         .unwrap()
         .0

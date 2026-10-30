@@ -5,6 +5,7 @@ import { FAILED_FACT, FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey
 import type { BatchFactSpec, FactRead, FactRequestOrder, FactSpec, FactsFound, NameAt } from './countryFacts';
 import { useContentRevision } from './contentRevision.ts';
 import type { BoundTrack } from './model';
+import { heldFacts } from './countryTimeline.ts';
 
 export { MAX_NAME_HOURS, nameKey };
 export type { NameAt };
@@ -95,6 +96,7 @@ const NAMES: FactSpec<string> = {
   product: 'country-styles', perRequest: 64, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => typeof style.name === 'string' ? [[style.tag, style.name] as const] : [])),
+  held: heldFacts(style => style.name),
 };
 
 /** Country names as recorded at the given hours (`country-styles`), for labels

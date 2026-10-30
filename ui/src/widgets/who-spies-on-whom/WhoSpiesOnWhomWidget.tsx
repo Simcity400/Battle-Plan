@@ -26,10 +26,12 @@ import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { placementChordMemo, placementTooltip, placementsAt, selectPlacements, validatePlacementsReply } from './placementsData';
 import type { PlacementChord } from './placementsData';
 import './placements.css';
+import { heldFacts } from '../../dashboard/countryTimeline.ts';
 
 const COLORS: FactSpec<[number, number, number]> = { product: 'country-styles', perRequest: 64, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: value => new Map((value as CountryStyleReply).styles.flatMap(style => style.color ? [[style.tag, style.color] as const] : [])),
+  held: heldFacts(style => style.color),
 };
 const NO_WARNINGS: string[] = [];
 

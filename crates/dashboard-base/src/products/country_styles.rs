@@ -125,6 +125,49 @@ pub struct CountryStyleReply {
     pub warnings: Vec<String>,
 }
 
+/// The product naming every country's styles over every hour preparation holds.
+pub const FACTS_PRODUCT: &str = "country-facts";
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CountryFactsParams {
+    pub branch_id: String,
+}
+
+/// Every country's style ([`CountryStyle`]) at every hour preparation read, as runs, so an
+/// hour is looked up rather than asked for. An hour no `known` span holds is `country-styles`'.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryFactsReply {
+    pub branch_id: String,
+    /// The hours the runs answer, as `[first, last]` spans in order.
+    pub known: Vec<[i32; 2]>,
+    /// Names, each once; a run holds its index.
+    pub names: Vec<String>,
+    /// Why part of a style is missing, each once; a run holds its index.
+    pub reasons: Vec<String>,
+    pub countries: Vec<CountryFactRuns>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CountryFactRuns {
+    pub tag: String,
+    /// `[hour, name, colour, reason]` from `hour` until the next run: the name's index in
+    /// `names`, the colour as `0xRRGGBB` and the reason's index in `reasons`, each -1 when
+    /// there is none. A tag that is not a country has a run with no name or colour and its reason.
+    pub runs: Vec<[i32; 4]>,
+}
+
+impl HourStyles {
+    /// `tag`'s style this hour and why part of it is missing, or, when it is not a country,
+    /// why not.
+    pub fn fact(&self, tag: &str) -> Result<(&CountryStyle, Option<&str>), String> {
+        self.style(tag).ok_or_else(|| self.missing_reason(tag))
+    }
+}
+
 impl Product for CountryStyles {
     const KEY: &'static str = "country-styles";
     const CONTENT_DEPENDENT: bool = true;
@@ -137,6 +180,9 @@ impl Product for CountryStyles {
             CountryStyleParams::decl(),
             CountryStyle::decl(),
             CountryStyleReply::decl(),
+            CountryFactsParams::decl(),
+            CountryFactRuns::decl(),
+            CountryFactsReply::decl(),
         ]
     }
 

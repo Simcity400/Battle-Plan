@@ -12,6 +12,7 @@ import type { Look, LookRead } from './looks';
 import type { BoundTrack } from './model';
 import { useContentRevision } from './contentRevision.ts';
 import { useThrottled } from './useThrottled.ts';
+import { heldFacts } from './countryTimeline.ts';
 
 /** How often names and flags follow a moving hour, in milliseconds. */
 export const FOLLOW_MS = 400;
@@ -21,6 +22,7 @@ export const STYLES: FactSpec<CountryStyle> = {
   product: 'country-styles', perRequest: 64, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
+  held: heldFacts(({ tag, name, color }) => ({ tag, name, color })),
 };
 export const FLAGS = flagReadSpec('panel');
 

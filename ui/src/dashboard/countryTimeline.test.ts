@@ -1,0 +1,135 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { forgetTimelines, heldFacts, heldStyles, validateCountryFacts } from './countryTimeline.ts';
+import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
+import type { FactSpec } from './countryFacts';
+import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
+import type { DashboardClient, DashboardSource } from './client';
+
+/** GER named Germany, then German Reich from 15, losing its colour at 35; D01 a country from 32. */
+const REPLY: CountryFactsReply = {
+  branchId: '1', known: [[10, 20], [30, 40]], names: ['Germany', 'German Reich'], reasons: ['not a country at this hour', 'no recorded map colour'],
+  countries: [
+    { tag: 'GER', runs: [[10, 0, 0x336699, -1], [15, 1, 0x336699, -1], [35, 1, -1, 1]] },
+    { tag: 'D01', runs: [[10, -1, -1, 0], [32, 0, 0x112233, -1]] },
+  ],
+  warnings: ['content'],
+};
+
+/** A client answering `country-facts` with `reply`, complete, counting what it is asked. */
+function facts(reply: CountryFactsReply = REPLY) {
+  const asked: unknown[] = [];
+  const client = {
+    preparedQuery: async (_source: DashboardSource, product: string, params: unknown) => {
+      asked.push([product, params]);
+      return { ...reply, coverage: { firstHour: 10, lastHour: 40, complete: true }, pending: [] };
+    },
+  } as unknown as DashboardClient;
+  return { client, asked };
+}
+const source = { sourceId: 'timeline', revision: 'r1', branchId: '1', content: 0 };
+const recording = { id: 'timeline', revision: 'r1' } as DashboardSource;
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+
+test('a held timeline answers every hour it holds, as country-styles would, and leaves the rest to be asked', async () => {
+  const { client, asked } = facts();
+  const at = (hour: number, tags: string[]) => heldStyles(client, source, recording, hour, tags);
+  assert.equal(at(12, ['GER']), undefined, 'asked for while it is read');
+  await settle();
+  assert.deepEqual(asked, [['country-facts', { branchId: '1' }]]);
+  assert.deepEqual(at(12, ['GER'])?.get('GER'), { tag: 'GER', name: 'Germany', color: [0x33, 0x66, 0x99], warnings: ['content'] });
+  assert.equal(at(15, ['GER'])?.get('GER')?.name, 'German Reich');
+  assert.deepEqual(at(36, ['GER'])?.get('GER'),
+    { tag: 'GER', name: 'German Reich', color: null, warnings: ['content', 'GER: no recorded map colour'] });
+  // Not yet a country, then one; a tag never a country is not one either.
+  assert.deepEqual(at(31, ['D01', 'ENG'])?.get('D01'), { tag: 'D01', name: null, color: null,
+    warnings: ['content', 'D01: not a country at this hour', 'ENG: not a country at this hour'] });
+  assert.equal(at(32, ['D01'])?.get('D01')?.name, 'Germany');
+  // An hour no known span holds is asked for.
+  for (const hour of [9, 21, 29, 41]) assert.equal(at(hour, ['GER']), undefined, String(hour));
+  assert.equal(asked.length, 1, 'the timeline is read once');
+  // A spec's lookup leaves out what its reply's extract leaves out.
+  assert.deepEqual([...heldFacts(style => style.name)(client, source, recording, 31, ['GER', 'D01'])!], [['GER', 'German Reich']]);
+  // Without the recording there is nothing to read it from.
+  assert.equal(heldStyles(client, source, undefined, 12, ['GER']), undefined);
+  forgetTimelines(client, 'timeline');
+  assert.equal(at(12, ['GER']), undefined, 'a forgotten timeline is read again');
+});
+
+test('a malformed country facts reply is refused', () => {
+  assert.equal(validateCountryFacts(REPLY), REPLY);
+  const broken = (change: (reply: CountryFactsReply) => void) => {
+    const reply = structuredClone(REPLY);
+    change(reply);
+    assert.throws(() => validateCountryFacts(reply), /malformed/);
+  };
+  broken(reply => { reply.countries[0].runs[1][1] = 2; });
+  broken(reply => { reply.countries[0].runs[1][0] = 10; });
+  broken(reply => { reply.known[0] = [20, 10]; });
+  broken(reply => { (reply.countries[1].runs[0] as number[]).pop(); });
+});
+
+test('thousands of held hours are told through the scheduler without asking, and without growing the stack', async () => {
+  const hours = 5000;
+  const reply: CountryFactsReply = { branchId: '1', known: [[0, hours]], names: ['Germany'], reasons: [],
+    countries: [{ tag: 'GER', runs: [[0, 0, 0x336699, -1]] }], warnings: [] };
+  const asked: unknown[] = [];
+  const client = {
+    preparedQuery: async () => ({ ...reply, coverage: { firstHour: 0, lastHour: hours, complete: true }, pending: [] }),
+    product: async (request: unknown) => { asked.push(request); throw new Error('asked for an hour the timeline holds'); },
+  } as unknown as DashboardClient;
+  const source = { sourceId: 'many', revision: 'r1', branchId: '1', content: 0 };
+  const recording = { id: 'many', revision: 'r1' } as DashboardSource;
+  heldStyles(client, source, recording, 0, ['GER']);
+  await settle();
+  for (const shared of [true, false]) {
+    const spec: FactSpec<CountryStyle> = { product: 'country-styles', perRequest: 64, shared,
+      params: (branchId, hour, tags) => ({ branchId, hour, tags }),
+      extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
+      held: heldFacts(({ tag, name, color }) => ({ tag, name, color })) };
+    const store = new HourStore<CountryStyle>(MAX_NAME_HOURS);
+    const requests = new FactRequests<CountryStyle>(store,
+      (plan, signal, onChunk) => readFacts(client, source, spec, plan, signal, onChunk, recording), () => {},
+      { now: () => 0, after: () => () => {} });
+    const wanted = Array.from({ length: hours }, (_, hour) => ({ hour, tag: 'GER' }));
+    requests.want(wanted, Infinity, spec.perRequest);
+    await settle();
+    const read = requests.pickRead(wanted);
+    assert.equal(read.size, hours, `${shared}`);
+    assert.deepEqual(read.get(nameKey(hours - 1, 'GER')), { tag: 'GER', name: 'Germany', color: [0x33, 0x66, 0x99] });
+    assert.equal(requests.running, 0);
+  }
+  assert.deepEqual(asked, []);
+});
+
+test('a timeline still being read survives forgetting what settled, and another content revision is read anew', async () => {
+  const replies: (() => void)[] = [];
+  let asked = 0;
+  const client = {
+    preparedQuery: () => { asked++; return new Promise(resolve => replies.push(() => resolve(
+      { ...REPLY, coverage: { firstHour: 10, lastHour: 40, complete: true }, pending: [] }))); },
+  } as unknown as DashboardClient;
+  const source = { sourceId: 'settled', revision: 'r1', branchId: '1', content: 0 };
+  const recording = { id: 'settled', revision: 'r1' } as DashboardSource;
+  assert.equal(heldStyles(client, source, recording, 12, ['GER']), undefined);
+  forgetTimelines(client, 'settled', true);
+  assert.equal(heldStyles(client, source, recording, 12, ['GER']), undefined);
+  assert.equal(asked, 1, 'the read in flight is kept, not asked again');
+  replies.shift()!();
+  await settle();
+  assert.equal(heldStyles(client, source, recording, 12, ['GER'])?.get('GER')?.name, 'Germany');
+  assert.equal(heldStyles(client, { ...source, content: 1 }, recording, 12, ['GER']), undefined, 'new content is read anew');
+  assert.equal(asked, 2);
+  // The new content's timeline replaced the old one, whose answers are not held any more.
+  replies.shift()!();
+  await settle();
+  assert.equal(heldStyles(client, { ...source, content: 1 }, recording, 12, ['GER'])?.get('GER')?.name, 'Germany');
+  assert.equal(heldStyles(client, source, recording, 12, ['GER']), undefined, 'the old content is read anew too');
+  assert.equal(asked, 3);
+  replies.shift()!();
+  await settle();
+  assert.equal(heldStyles(client, source, recording, 12, ['GER'])?.get('GER')?.name, 'Germany');
+  forgetTimelines(client, 'settled', true);
+  assert.equal(heldStyles(client, source, recording, 12, ['GER']), undefined, 'a settled timeline is forgotten');
+  assert.equal(asked, 4);
+});

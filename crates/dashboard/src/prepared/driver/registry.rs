@@ -211,10 +211,11 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &[products::naval_refits::RefitsObserver::NAME],
         ..family("naval-refits")
     },
-    // Read by interactive products through their coverage, never by a prepared query.
+    // Interactive products read it hour by hour through its coverage; `country-facts` whole.
     Descriptor {
         status: &["country-styles"],
-        gates: &["country-styles", "country-colours"],
+        queries: &["country-facts"],
+        gates: &["country-styles", "country-colours", "country-facts"],
         sections: &[products::style_runs::NAME],
         ..family("country-styles")
     },

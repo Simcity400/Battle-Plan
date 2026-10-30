@@ -1253,6 +1253,40 @@ fn query_data(
             .mark(&mut data)?;
             data
         }
+        dashboard_base::products::country_styles::FACTS_PRODUCT => {
+            use dashboard_base::products::country_styles::{CountryFactsParams, CountryFactsReply};
+            let params: CountryFactsParams = serde_json::from_value(request.params.clone())?;
+            let branch = branch(source, &params.branch_id)?;
+            let prefix = super::prefix::read_or_empty(source, content, &request.product, branch, None, cancelled)?;
+            let localisation = dashboard_base::content::name_localisation(source, content);
+            let mut warnings = Vec::new();
+            match (&localisation, content) {
+                (Err(reason), _) => warnings.push(reason.clone()),
+                // Names read from unverified content keep its standing warning.
+                (Ok(_), Some(content)) => dashboard_base::content::check_replay(
+                    &source.replay(),
+                    content.allow_unverified,
+                    &mut warnings,
+                )?,
+                (Ok(_), None) => {}
+            }
+            let mut reply = crate::products::style_runs::country_facts(
+                source,
+                (&store, &key),
+                branch,
+                [prefix.coverage.first_hour, prefix.coverage.last_hour],
+                localisation.as_deref().ok(),
+                cancelled,
+            )?
+            .unwrap_or_else(|| CountryFactsReply {
+                branch_id: params.branch_id.clone(),
+                ..CountryFactsReply::default()
+            });
+            reply.warnings = warnings;
+            let mut data = serde_json::to_value(reply)?;
+            prefix.mark(&mut data)?;
+            data
+        }
         "land-owners" => {
             let _: crate::products::land_owners::LandOwnersParams =
                 serde_json::from_value(request.params.clone())?;

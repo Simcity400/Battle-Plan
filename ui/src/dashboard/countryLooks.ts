@@ -9,6 +9,7 @@ import { matchesLookSegment, sampledLooks } from './looks.ts';
 import { useContentRevision } from './contentRevision.ts';
 import type { Look } from './looks';
 import type { BoundTrack } from './model';
+import { heldFacts } from './countryTimeline.ts';
 
 /** Country looks are sampled about once a month of playback. */
 export const LOOK_STEP = 30 * 24;
@@ -58,6 +59,7 @@ const STYLES: FactSpec<CountryStyle & { warnings?: readonly string[] }> = {
     const reply = data as CountryStyleReply;
     return new Map(reply.styles.map(style => [style.tag, { ...style, warnings: reply.warnings }] as const));
   },
+  held: heldFacts(style => style),
 };
 const FLAGS = flagReadSpec('panel');
 /** What a country's name reads while its read is still answering, as other name reads say it. */
