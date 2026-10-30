@@ -503,8 +503,6 @@ struct Emitting<'a> {
     replay: &'a Replay,
     prototype: Option<&'a supply_health::prepared::Prepared>,
     occupation: Option<&'a occupied_states::prepared::Prepared>,
-    prepared: Option<&'a Path>,
-    row: bool,
     block_ends: &'a BTreeMap<(u64, i32), usize>,
     /// Each branch's row blocks' first hours, by their last.
     block_starts: &'a BTreeMap<(u64, i32), i32>,
@@ -512,34 +510,49 @@ struct Emitting<'a> {
     context: Option<&'a dashboard::config::LoadContext>,
     writer: &'a mut store::Writer,
     cancelled: &'a AtomicBool,
+    /// Each branch's flush hours, read before the walk ([`reference_flushes`]).
     flushes: BTreeMap<u64, Vec<i32>>,
     accumulators: BTreeMap<u64, Family>,
     emit_ns: u64,
     publish_ns: u64,
 }
 
+/// Each of `branches`' flush hours, in order: those of the reference preparation `prepared`,
+/// else in `row` mode the ends of the row blocks of `block_ends`, else none. Read before the
+/// walk: the reference store failing stops the check, and is never a family's.
+fn reference_flushes(
+    branches: impl IntoIterator<Item = u64>,
+    family: &str,
+    prepared: Option<&Path>,
+    row: bool,
+    block_ends: &BTreeMap<(u64, i32), usize>,
+) -> io::Result<BTreeMap<u64, Vec<i32>>> {
+    let mut flushes = BTreeMap::new();
+    for branch in branches {
+        let mut hours = Vec::new();
+        if let Some(prepared) = prepared {
+            for section in Family::sections(family, branch).1 {
+                hours.extend(flush_hours(prepared, &section)?);
+            }
+        } else if row {
+            hours.extend(
+                block_ends
+                    .keys()
+                    .filter(|(at, _)| *at == branch)
+                    .map(|(_, hour)| *hour),
+            );
+        }
+        hours.sort_unstable();
+        hours.dedup();
+        flushes.insert(branch, hours);
+    }
+    Ok(flushes)
+}
+
 impl Emitting<'_> {
     /// Keeps `hour` in its branch's state, flushing or publishing where the reference did.
     fn observe(&mut self, hour: impl Projected) -> io::Result<()> {
         let (branch, at) = hour.at();
-        if !self.flushes.contains_key(&branch) {
-            let mut hours = Vec::new();
-            if let Some(prepared) = self.prepared {
-                for section in Family::sections(self.family, branch).1 {
-                    hours.extend(flush_hours(prepared, &section)?);
-                }
-            } else if self.row {
-                hours.extend(
-                    self.block_ends
-                        .keys()
-                        .filter(|(at, _)| *at == branch)
-                        .map(|(_, hour)| *hour),
-                );
-            }
-            hours.sort_unstable();
-            hours.dedup();
-            self.flushes.insert(branch, hours);
-        }
         let (family, prototype, occupation, replay) =
             (self.family, self.prototype, self.occupation, self.replay);
         let state = self
@@ -588,18 +601,47 @@ impl Emitting<'_> {
                     branch,
                     ordinal,
                     self.cancelled,
-                )?;
+                )
+                .map_err(stored)?;
             }
-        } else if self.flushes[&branch].binary_search(&at).is_ok() {
-            state.flush(self.writer, branch, self.cancelled)?;
+        } else if self
+            .flushes
+            .get(&branch)
+            .is_some_and(|hours| hours.binary_search(&at).is_ok())
+        {
+            state
+                .flush(self.writer, branch, self.cancelled)
+                .map_err(stored)?;
         }
         self.publish_ns += cpu().1 - publishing;
         Ok(())
     }
 }
 
+/// `error`, met writing a family's state to the store: the run's own, but for a refusal of
+/// the data.
+fn stored(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::InvalidData {
+        error
+    } else {
+        segments::fatal(error)
+    }
+}
+
+/// What a run whose family failed leaves to publish: nothing, as its emit's state may be part
+/// changed.
+fn publishable(family: &str, outcome: &segments::Outcome) -> io::Result<()> {
+    match &outcome.failure {
+        Some(failure) => Err(io::Error::other(format!(
+            "{family} failed at segment {} ({:?}): {}",
+            failure.at, failure.operation, failure.error
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The family's lane: `make`'s operators, and an emit keeping each hour they project in its
-/// branch's state.
+/// branch's state. A refusal there refuses the branch from that hour, as the row path's.
 fn emitted<'a, O>(
     name: &'a str,
     make: impl Fn(&Segment) -> io::Result<O> + Sync + 'a,
@@ -612,11 +654,75 @@ where
     segments::Lane::new(name, make, move |chunk: segments::Chunk<'_, O::Output>| {
         let started = cpu().1;
         for hour in chunk.items {
-            emitting.observe(hour)?;
+            let (_, at) = hour.at();
+            emitting.observe(hour).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    segments::refused(at, error)
+                } else {
+                    error
+                }
+            })?;
         }
         emitting.emit_ns += cpu().1 - started;
         Ok(())
     })
+}
+
+/// What became of the family's segments short of whole, as the report holds it, and the
+/// branches it refused, which the row path stops flushing.
+fn summary(
+    file: &Recording,
+    outcome: &segments::Outcome,
+) -> io::Result<(serde_json::Value, std::collections::BTreeSet<u64>)> {
+    let hours = |at: usize| -> io::Result<(i32, i32)> {
+        let segment = file.segments()[at];
+        let first = file.run(segment.run)?.first_hour;
+        Ok((first + segment.first as i32, first + segment.last as i32))
+    };
+    let (mut refused, mut lost) = (Vec::new(), Vec::new());
+    let mut branches = std::collections::BTreeSet::new();
+    for ended in &outcome.ended {
+        match &ended.ending {
+            segments::Ending::Refused { hour, error } => {
+                branches.insert(ended.branch);
+                refused.push(json!({
+                    "segment": ended.at,
+                    "branch": ended.branch,
+                    "hour": hour,
+                    "error": error.to_string(),
+                }));
+            }
+            segments::Ending::Lost(loss) => {
+                let (first, last) = hours(ended.at)?;
+                let cause = match loss {
+                    segments::Loss::Damaged(damage) => damage.to_string(),
+                    segments::Loss::After(before) => format!("goes on from segment {before}"),
+                };
+                lost.push(json!({
+                    "segment": ended.at,
+                    "branch": ended.branch,
+                    "first_hour": first,
+                    "last_hour": last,
+                    "cause": cause,
+                }));
+            }
+        }
+    }
+    let failure = outcome.failure.as_ref().map(|failure| {
+        json!({
+            "segment": failure.at,
+            "operation": format!("{:?}", failure.operation),
+            "panicked": failure.panicked,
+            "error": failure.error.to_string(),
+        })
+    });
+    let report = json!({
+        "settled": outcome.settled,
+        "refused": refused,
+        "lost": lost,
+        "failure": failure,
+    });
+    Ok((report, branches))
 }
 
 /// Visits every hour and keeps nothing: the walk's own cost.
@@ -846,6 +952,11 @@ fn run() -> io::Result<()> {
     let walk_wall = walk_started.0.elapsed().as_secs_f64();
     let walk_cpu = cpu().0 - walk_started.1;
 
+    let mut branches = std::collections::BTreeSet::new();
+    for segment in file.segments() {
+        branches.insert(file.run(segment.run)?.branch);
+    }
+    let flushes = reference_flushes(branches, &family, prepared.as_deref(), row, &block_ends)?;
     let wall = Instant::now();
     let (process_before, thread_before) = cpu();
     let mut emitting = Emitting {
@@ -853,15 +964,13 @@ fn run() -> io::Result<()> {
         replay: &replay,
         prototype: prototype.as_ref(),
         occupation: occupation.as_ref(),
-        prepared: prepared.as_deref(),
-        row,
         block_ends: &block_ends,
         block_starts: &block_starts,
         source: source.as_ref(),
         context: context.as_ref(),
         writer: &mut writer,
         cancelled: &cancelled,
-        flushes: BTreeMap::new(),
+        flushes,
         accumulators: BTreeMap::new(),
         emit_ns: 0,
         publish_ns: 0,
@@ -920,6 +1029,27 @@ fn run() -> io::Result<()> {
         ),
     };
     let ran = segments::run(&file, &settings, &scratch, &cancellation, vec![lane])?;
+    if ran.cancelled {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "The walk was cancelled",
+        ));
+    }
+    let (outcome, refused) = summary(&file, &ran.outcomes[0])?;
+    // The writer goes uncommitted, leaving the store as it was.
+    if let Err(failed) = publishable(&family, &ran.outcomes[0]) {
+        let report = json!({
+            "family": family,
+            "recording": recording,
+            "outcome": outcome,
+        });
+        std::fs::write(
+            output.join("report.json"),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Err(failed);
+    }
     let Emitting {
         flushes,
         mut accumulators,
@@ -929,6 +1059,10 @@ fn run() -> io::Result<()> {
     } = emitting;
     let final_publish = cpu().1;
     for (branch, accumulator) in &mut accumulators {
+        // A branch its family refused is flushed no more, as the row path's.
+        if refused.contains(branch) {
+            continue;
+        }
         if flushes.get(branch).is_none_or(Vec::is_empty) {
             accumulator.flush(&mut writer, *branch, &cancelled)?;
         } else {
@@ -964,18 +1098,21 @@ fn run() -> io::Result<()> {
         "emit_publish_cpu_us_per_hour": publish_ns as f64 / 1e3 / hours,
         "caller_cpu_us_per_hour": (thread_after - thread_before) as f64 / 1e3 / hours,
         "run": {
-            "walks": ran.walks,
-            "chained": ran.chained,
-            "deferred": ran.deferred,
-            "segments_held": ran.segments,
-            "output_bytes_held": ran.output_bytes,
-            "carry_bytes_held": ran.carry_bytes,
-            "carry_scratch_bytes_held": ran.carry_scratch,
-            "parked": ran.parked,
-            "spilled": ran.spilled,
-            "loaded": ran.loaded,
-            "chunks_spilled": ran.chunks_spilled,
+            "walks": ran.stats.walks,
+            "chained": ran.stats.chained,
+            "deferred": ran.stats.deferred,
+            "segments_held": ran.stats.segments,
+            "output_bytes_held": ran.stats.output_bytes,
+            "carry_bytes_held": ran.stats.carry_bytes,
+            "carry_scratch_bytes_held": ran.stats.carry_scratch,
+            "parked": ran.stats.parked,
+            "spilled": ran.stats.spilled,
+            "loaded": ran.stats.loaded,
+            "chunks_spilled": ran.stats.chunks_spilled,
+            "derived": ran.stats.derived,
+            "rewalked": ran.stats.rewalked,
         },
+        "outcome": outcome,
         "sections_written": written.len(),
         "scopes": scopes.then(replay_frame::cpu::snapshot),
     });
@@ -1011,6 +1148,17 @@ fn run() -> io::Result<()> {
         serde_json::to_vec_pretty(&report)?,
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    // Input lost leaves nothing to check past it.
+    if let Some(ended) = ran.outcomes[0]
+        .ended
+        .iter()
+        .find(|ended| matches!(ended.ending, segments::Ending::Lost(_)))
+    {
+        return Err(invalid(format!(
+            "The columnar file is damaged: {family} lost segment {}",
+            ended.at
+        )));
+    }
     Ok(())
 }
 
@@ -1273,5 +1421,58 @@ fn main() -> std::process::ExitCode {
             eprintln!("columnar-family-check: {error}");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run whose family failed publishes nothing, naming the failure; one whose family went
+    /// through, refusing or losing segments at most, publishes what it emitted.
+    #[test]
+    fn a_run_whose_family_failed_publishes_nothing() {
+        let failed = segments::Outcome {
+            failure: Some(segments::Failure {
+                at: 3,
+                operation: segments::Operation::Emit,
+                panicked: true,
+                error: io::Error::other("emit panicked"),
+            }),
+            ..segments::Outcome::default()
+        };
+        let error = publishable("stability", &failed).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "stability failed at segment 3 (Emit): emit panicked"
+        );
+        assert!(publishable("stability", &segments::Outcome::default()).is_ok());
+    }
+
+    /// The reference's flush hours are read before the walk: a reference store holding no
+    /// manifest stops the check as it starts, a refusal of nothing. Row blocks' ends date
+    /// each branch's flushes in row mode, and nothing does without a reference.
+    #[test]
+    fn the_reference_s_flushes_are_read_before_the_walk() {
+        let folder = std::env::temp_dir().join(format!(
+            "columnar-family-check-reference-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let none = BTreeMap::new();
+        let error =
+            reference_flushes([4], "stability", Some(folder.as_path()), false, &none).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("holds no manifest"), "{error}");
+        std::fs::remove_dir(&folder).unwrap();
+        let ends = BTreeMap::from([((4, 30), 1), ((4, 10), 0), ((5, 20), 0)]);
+        assert_eq!(
+            reference_flushes([4, 5], "stability", None, true, &ends).unwrap(),
+            BTreeMap::from([(4, vec![10, 30]), (5, vec![20])])
+        );
+        assert_eq!(
+            reference_flushes([4], "stability", None, false, &ends).unwrap(),
+            BTreeMap::from([(4, Vec::new())])
+        );
     }
 }

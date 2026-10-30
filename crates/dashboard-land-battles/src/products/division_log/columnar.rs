@@ -637,6 +637,10 @@ impl Operator for Projector {
     }
 
     fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
+        // The hour before is whole: it reaches the emit even if this hour refuses.
+        if let Some(before) = self.pending.take() {
+            out.push(before)?;
+        }
         let state = hour.state;
         let at = hour.hour;
         let mut warnings: Vec<(String, usize)> = Vec::new();
@@ -874,10 +878,8 @@ impl Operator for Projector {
             warnings,
             names: None,
         };
-        match self.pending.replace(projected) {
-            Some(before) => out.push(before),
-            None => Ok(()),
-        }
+        self.pending = Some(projected);
+        Ok(())
     }
 
     fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {

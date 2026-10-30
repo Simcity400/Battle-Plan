@@ -14,12 +14,29 @@
 //! first starts while the output it is taken to need, beside what is held and what walks
 //! reserved, would overdraw the output budget, nor while a family's slots are spent. No task
 //! waits for credit: one that cannot have it is not handed out.
+//!
+//! What fails a family is its own ([`Outcome`]). A refusal of the recorded data
+//! (`InvalidData`) ends its branch at that hour, as the row path's families do; any other
+//! error, or a panic, ends the family from that segment on, its operator and emit never used
+//! again. Damage a walk meets loses the segment for the families reading what it covers, and
+//! each goes on as its [`Recovery`] says; a damaged restart costs only the walk of the
+//! segments before it, measured and held as that walk is handed out again. Every other
+//! family, and branch, goes on; a family's failure stands once nothing before it in segment
+//! order ended its branch first. The run's own failures, a lack of memory among them and what
+//! a family's code says is the run's ([`fatal`]), stop every family, and cancellation leaves
+//! what was not emitted pending, neither lost, refused nor failed.
 
-use crate::columnar_frames::{Budget, Recording, Segment, Walker, schema};
+use crate::{
+    columnar_frames::{Budget, Damage, DamageScope, Recording, Segment, Walker, schema},
+    rows::TableId,
+};
 use replay_columnar::manifest::Manifest;
 pub use replay_columnar::walk::State;
 use std::{
-    io,
+    any::Any,
+    cell::Cell,
+    fmt, io,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -35,8 +52,8 @@ mod tests;
 pub use store::{Folder, Scratch, Spilled};
 
 use lane::{Context, Emitted, Erased, Reserved, Shared, Taken, Walking};
-use schedule::{Plan, Schedule, Task};
-use store::Store;
+use schedule::{Closing, Gone, Plan, Schedule, Status, Task};
+use store::{Parked, Store};
 
 /// One hour of a segment's walk.
 pub struct Hour<'a> {
@@ -114,6 +131,13 @@ impl Item for () {
 
 /// A family's work on a segment, and on the segments after it in its branch that it cannot
 /// start.
+///
+/// An `InvalidData` error from [`Self::start`], [`Self::cross`], [`Self::hour`] or
+/// [`Self::end`] refuses the branch's data from that hour on: what the operator pushed before
+/// it reaches the emit, so it pushes an hour's items only once nothing more of that hour can
+/// fail. An error naming recorded damage ([`Damage`]) loses the segment; one [`fatal`] made
+/// stops the run; any other error, or a panic, ends the family. Its operators are never used
+/// again after any of them.
 pub trait Operator: Send {
     type Output: Item;
 
@@ -176,13 +200,189 @@ pub struct Chunk<'a, T> {
     pub segment: &'a Segment,
     pub items: Vec<T>,
     pub last: bool,
+    /// On the segment's last chunk, why the family's walk of it ended short, when it did.
+    pub ending: Option<&'a Ending>,
+}
+
+/// Why a family's segment reached its emit short.
+#[derive(Debug)]
+pub enum Ending {
+    /// It refused its branch's data from `hour` on: its items of the hours before reached
+    /// the emit, and nothing of the branch's later segments does.
+    Refused { hour: i32, error: io::Error },
+    /// None of its items reached the emit; its branch's later segments follow its family's
+    /// [`Recovery`].
+    Lost(Loss),
+}
+
+/// Why a family lost a segment.
+#[derive(Clone, Debug)]
+pub enum Loss {
+    /// Recorded bytes it reads there cannot be read: [`Damage::of`] names their scope.
+    Damaged(Arc<io::Error>),
+    /// Its operator goes on from segment `.0` of its branch, which it lost.
+    After(usize),
+}
+
+/// What a family does once it lost a segment of a branch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recovery {
+    /// Nothing of the branch after the loss reaches its emit: what it holds of the branch's
+    /// history has a gap it cannot fill.
+    #[default]
+    Ends,
+    /// It starts again at the branch's next segment its operator can start, from that
+    /// segment's own state; its emit takes the loss first, and holds nothing across it.
+    Resumes,
+}
+
+/// A family's own code, by what it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    /// Making an operator: [`Lane::new`]'s `make`.
+    Make,
+    /// Deciding where its operators start, and both deciding alike.
+    Decide,
+    Start,
+    Cross,
+    Hour,
+    End,
+    /// Writing out its items or its parked operator.
+    Save,
+    /// Reading them back.
+    Load,
+    Emit,
+}
+
+/// What ended a family: of its segments from `at` on, of every branch, none reached its emit
+/// whole, `at` itself at most in part; those before did.
+#[derive(Debug)]
+pub struct Failure {
+    pub at: usize,
+    pub operation: Operation,
+    /// It panicked; `error` holds what the panic said.
+    pub panicked: bool,
+    pub error: io::Error,
+}
+
+/// A family's segment that reached its emit short.
+#[derive(Debug)]
+pub struct Ended {
+    pub at: usize,
+    pub branch: u64,
+    pub ending: Ending,
+}
+
+/// What became of a family in a run.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    /// Its segments that reached its emit short, in segment order.
+    pub ended: Vec<Ended>,
+    pub failure: Option<Failure>,
+    /// The segments, from the first, it went past: emitted, or passed over once their branch
+    /// ended or it failed. Short of every segment only when the run was cancelled: the rest
+    /// are pending.
+    pub settled: usize,
+}
+
+/// What a run did, and what became of each family, in the order of their lanes.
+#[derive(Debug, Default)]
+pub struct Ran {
+    pub stats: Stats,
+    pub outcomes: Vec<Outcome>,
+    /// Cancellation stopped it.
+    pub cancelled: bool,
+}
+
+/// `error`, an emit's refusal of its branch's data from `hour` on. An emit's `InvalidData`
+/// error naming no hour refuses from its segment's first. The run's own failure ([`fatal`])
+/// is no refusal, and comes back as it is.
+pub fn refused(hour: i32, error: io::Error) -> io::Error {
+    if is_fatal(&error) {
+        return error;
+    }
+    io::Error::new(io::ErrorKind::InvalidData, Refusal { hour, error })
+}
+
+/// An emit's refusal, with its hour.
+#[derive(Debug)]
+struct Refusal {
+    hour: i32,
+    error: io::Error,
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for Refusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.source()
+    }
+}
+
+/// The hour an emit's refusal names, and its own error; one naming none refuses from `first`.
+fn dated(error: io::Error, first: i32) -> (i32, io::Error) {
+    if !error.get_ref().is_some_and(|inner| inner.is::<Refusal>()) {
+        return (first, error);
+    }
+    match error.into_inner().map(|inner| inner.downcast::<Refusal>()) {
+        Some(Ok(refusal)) => (refusal.hour, refusal.error),
+        _ => unreachable!("the error holds a refusal"),
+    }
+}
+
+/// `error`, met by a family's operator or emit in what the run gives it to work with, such as
+/// the store its emit writes to: the run's own failure, not the family's. It stops every
+/// family, and the run returns `error`.
+pub fn fatal(error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), Fatal(error))
+}
+
+/// The run's own failure, met in a family's code.
+#[derive(Debug)]
+struct Fatal(io::Error);
+
+impl fmt::Display for Fatal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for Fatal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+/// Whether [`fatal`] made `error`.
+fn is_fatal(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Fatal>())
+}
+
+/// The run's own failure `error` holds, when [`fatal`] made it; else `error`.
+fn unfatal(error: io::Error) -> Result<io::Error, io::Error> {
+    if !is_fatal(&error) {
+        return Err(error);
+    }
+    match error.into_inner().map(|inner| inner.downcast::<Fatal>()) {
+        Some(Ok(fatal)) => Ok(fatal.0),
+        _ => unreachable!("the error holds the run's own"),
+    }
 }
 
 /// A family: its operator for each segment, and its ordered emit, which takes every
 /// segment's chunks in segment order, one call at a time. Operators and emits run as tasks
 /// of the run's workers, and must never wait for another task of the run: it may need
 /// their worker.
-pub struct Lane<'a>(Box<dyn Erased + 'a>);
+pub struct Lane<'a> {
+    erased: Box<dyn Erased + 'a>,
+    /// The tables its operators read; None for every one.
+    reads: Option<&'a [TableId]>,
+    recovery: Recovery,
+}
 
 impl<'a> Lane<'a> {
     pub fn new<O: Operator + 'a>(
@@ -190,11 +390,30 @@ impl<'a> Lane<'a> {
         make: impl Fn(&Segment) -> io::Result<O> + Sync + 'a,
         emit: impl FnMut(Chunk<'_, O::Output>) -> io::Result<()> + Send + 'a,
     ) -> Self {
-        Self(Box::new(lane::Typed::new(
-            name,
-            Box::new(make),
-            Box::new(emit),
-        )))
+        Self {
+            erased: Box::new(lane::Typed::new(name, Box::new(make), Box::new(emit))),
+            reads: None,
+            recovery: Recovery::Ends,
+        }
+    }
+
+    /// Its operators read `tables` alone: damage to another table's units leaves it walking.
+    pub fn reads(self, tables: &'a [TableId]) -> Self {
+        Self {
+            reads: Some(tables),
+            ..self
+        }
+    }
+
+    /// What it does once it lost a segment of a branch; its branch ends there unless told.
+    pub fn recovers(self, recovery: Recovery) -> Self {
+        Self { recovery, ..self }
+    }
+
+    /// Whether its operators read table `table`.
+    fn reading(&self, table: usize) -> bool {
+        self.reads
+            .is_none_or(|tables| tables.iter().any(|read| read.index() == table))
     }
 }
 
@@ -218,7 +437,8 @@ pub struct Settings {
     /// Segments a family may hold sealed for its emit before segments past the first some
     /// family has not emitted wait.
     pub slots: usize,
-    /// Parked operators held resident; the furthest from their segment spill past it.
+    /// Parked operators held resident; the furthest from their segment spill past it, each
+    /// held until written out: past it by one a worker at most.
     pub carry_bytes: usize,
     /// Projected bytes a chunk holds before it closes: what a walk reserves for a family
     /// whose items spill.
@@ -264,8 +484,8 @@ pub struct Stats {
     pub segments: usize,
     /// Projected bytes held resident at once, spilled chunks being read back included.
     pub output_bytes: usize,
-    /// Parked operators' bytes held resident at once, one being parked and not yet spilled
-    /// included.
+    /// Parked operators' bytes held resident at once, those being parked and written out, not
+    /// yet spilled, included.
     pub carry_bytes: usize,
     /// Bytes of parked operators being written out or read back at once.
     pub carry_scratch: usize,
@@ -275,6 +495,13 @@ pub struct Stats {
     pub loaded: usize,
     /// Projected chunks spilled.
     pub chunks_spilled: usize,
+    /// Segments walked again, with no family, for the state a damaged restart holds.
+    pub derived: usize,
+    /// Segments whose own pages a measure read: each once, however many walks begin before
+    /// it, but for measures under way at once.
+    pub measured: usize,
+    /// Walks of a segment begun again for its other families after one panicked.
+    pub rewalked: usize,
 }
 
 /// Stops the runs it is handed, from any thread, waking each wait they are in.
@@ -289,10 +516,12 @@ pub struct Cancellation {
 
 impl Cancellation {
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-        for signal in lock(&self.runs).iter() {
+        let runs = lock(&self.runs);
+        // Its runs stop before it reads as cancelled: code that sees it so finds them stopped.
+        for signal in runs.iter() {
             signal.cancel();
         }
+        self.cancelled.store(true, Ordering::SeqCst);
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -301,14 +530,13 @@ impl Cancellation {
 
     /// Wakes `signal`'s run once cancelled, until dropped.
     fn enter(&self, signal: &Arc<Signal>) -> io::Result<Entered<'_>> {
-        {
-            let mut runs = lock(&self.runs);
-            runs.try_reserve(1).map_err(|_| engine_allocation::oom())?;
-            runs.push(Arc::clone(signal));
-        }
+        let mut runs = lock(&self.runs);
+        runs.try_reserve(1).map_err(|_| engine_allocation::oom())?;
+        runs.push(Arc::clone(signal));
         if self.is_cancelled() {
             signal.cancel();
         }
+        drop(runs);
         Ok(Entered {
             cancellation: self,
             signal: Arc::clone(signal),
@@ -368,11 +596,87 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
+/// A failure inside a run: its own, which stops every family, or a family's own code's.
+#[derive(Debug)]
+enum Fault {
+    Run(io::Error),
+    Error(Operation, io::Error),
+    /// A panic, with what it said.
+    Panic(Operation, String),
+}
+
+impl From<io::Error> for Fault {
+    fn from(error: io::Error) -> Self {
+        Self::Run(error)
+    }
+}
+
+impl Fault {
+    /// `error`, returned by a family's code as `operation`: the run's own when [`fatal`] made it.
+    fn of(operation: Operation, error: io::Error) -> Self {
+        match unfatal(error) {
+            Ok(error) => Self::Run(error),
+            Err(error) => Self::Error(operation, error),
+        }
+    }
+
+    /// The same failure as an error, for the operator whose push met it to return.
+    fn echo(&self) -> io::Error {
+        match self {
+            Self::Run(error) | Self::Error(_, error) => {
+                io::Error::new(error.kind(), error.to_string())
+            }
+            Self::Panic(_, said) => io::Error::other(said.clone()),
+        }
+    }
+}
+
+/// What a panic said.
+fn said(payload: &(dyn Any + Send)) -> String {
+    match (
+        payload.downcast_ref::<&str>(),
+        payload.downcast_ref::<String>(),
+    ) {
+        (Some(said), _) => (*said).to_owned(),
+        (_, Some(said)) => said.clone(),
+        _ => "A panic said nothing".to_owned(),
+    }
+}
+
+/// Runs `call`, a family's own code, as `operation`: its panic is the family's.
+fn caught<T>(operation: Operation, call: impl FnOnce() -> io::Result<T>) -> Result<T, Fault> {
+    match catch_unwind(AssertUnwindSafe(call)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(Fault::of(operation, error)),
+        Err(payload) => Err(Fault::Panic(operation, said(&*payload))),
+    }
+}
+
+/// [`caught`], for the code of a walk's family `index`, which calls back into the run's own:
+/// that clears `culprit` while it runs, and its panic goes on as the run's.
+fn marked<T>(
+    culprit: &Cell<Option<usize>>,
+    index: usize,
+    operation: Operation,
+    call: impl FnOnce() -> io::Result<T>,
+) -> Result<T, Fault> {
+    culprit.set(Some(index));
+    let result = catch_unwind(AssertUnwindSafe(call));
+    let blamed = culprit.replace(None);
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(Fault::of(operation, error)),
+        Err(payload) if blamed.is_some() => Err(Fault::Panic(operation, said(&*payload))),
+        Err(payload) => resume_unwind(payload),
+    }
+}
+
 /// A run's schedule, and how its workers and its cancellation wake one another.
 struct Signal {
     schedule: Mutex<Schedule>,
     changed: Condvar,
     stopped: AtomicBool,
+    cancelled: AtomicBool,
 }
 
 impl Signal {
@@ -392,23 +696,33 @@ impl Signal {
         self.changed.notify_all();
     }
 
-    /// Keeps the run's first failure and stops every worker.
+    /// Keeps the run's first failure and stops every worker; what fails once the run is
+    /// cancelled only stops it.
     fn fail(&self, error: io::Error) {
-        self.lock().failure.get_or_insert(error);
+        // One not kept drops once the lock is let go: a family may have made it.
+        let spare = {
+            let mut schedule = self.lock();
+            if self.cancelled.load(Ordering::SeqCst) || schedule.failure.is_some() {
+                Some(error)
+            } else {
+                schedule.failure = Some(error);
+                None
+            }
+        };
+        drop(spare);
         self.stop();
     }
 
     fn cancel(&self) {
-        self.fail(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "The run was cancelled",
-        ));
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.stop();
     }
 
-    /// Stops every worker.
+    /// Stops every worker: what tasks finish since settles nothing more of any family.
     fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        self.changed();
+        self.lock().halted = true;
+        self.changed.notify_all();
     }
 }
 
@@ -432,6 +746,8 @@ impl Drop for Unwinding<'_> {
 /// on, if any, and what it reserved of the output budget.
 struct Job<'r, 'c> {
     at: usize,
+    /// The segment its walk begins at, as its share was measured.
+    from: usize,
     lanes: Vec<(usize, Option<Box<dyn Walking + 'r>>)>,
     /// The state holds the tables the walk of the segment before, of the same run, left.
     hot: bool,
@@ -443,6 +759,110 @@ struct Attached<'r> {
     lane: usize,
     operator: Box<dyn Walking + 'r>,
     cold: bool,
+    /// Its walk of the segment began: it started, or crossed into its run.
+    begun: bool,
+    /// Hours of the segment it saw before another family's panic began the walk again.
+    seen: u32,
+    /// It goes on into the segment after, which it cannot start.
+    hands: bool,
+    fate: Option<Fate>,
+}
+
+impl<'r> Attached<'r> {
+    fn new(lane: usize, operator: Box<dyn Walking + 'r>, cold: bool) -> Self {
+        Self {
+            lane,
+            operator,
+            cold,
+            begun: false,
+            seen: 0,
+            hands: false,
+            fate: None,
+        }
+    }
+
+    fn live(&self) -> bool {
+        self.fate.is_none()
+    }
+
+    /// The fault a call of its family's code met, `called`'s, or else one its items' sink
+    /// kept though the call went on past it, which ends its walk all the same.
+    fn met(&mut self, called: Result<(), Fault>) -> Option<Fault> {
+        match called {
+            Ok(()) => self.operator.fault(),
+            Err(fault) => Some(fault),
+        }
+    }
+
+    /// Damage to what it reads from ordinal `from` on loses it the segment, but for a refusal
+    /// it made before, which the damage does not explain, or its failure.
+    fn lose(&mut self, fate: Fate, from: u32) {
+        let stands = match &self.fate {
+            Some(Fate::Failed { .. } | Fate::Lost(_)) => true,
+            Some(Fate::Refused { ordinal, .. }) => *ordinal < from,
+            Some(Fate::Table) | None => false,
+        };
+        if !stands {
+            self.fate = Some(fate);
+        }
+    }
+
+    /// Whether its walk goes on: its operator walks, or what it pushed before its refusal waits
+    /// for the walk to check the pages it came from.
+    fn walks(&self) -> bool {
+        matches!(self.fate, None | Some(Fate::Refused { .. }))
+    }
+}
+
+/// The first ordinal of its run that damage `error` covers; its run's first when it names none.
+fn damaged_from(error: &io::Error) -> u32 {
+    match Damage::of(error).map(|damage| &damage.scope) {
+        Some(DamageScope::Page { first, .. }) => *first,
+        Some(DamageScope::Extent(extent)) => extent.first,
+        _ => 0,
+    }
+}
+
+/// How a family's walk of a segment ended short.
+enum Fate {
+    /// It refused its branch from `hour`, ordinal `ordinal` of its run, on: what it pushed
+    /// before stands.
+    Refused {
+        hour: i32,
+        ordinal: u32,
+        error: io::Error,
+    },
+    /// A table it reads was lost; the walk names the damage once it ends, or a panic begins
+    /// it again.
+    Table,
+    Lost(Loss),
+    Failed {
+        operation: Operation,
+        panicked: bool,
+        error: io::Error,
+    },
+}
+
+/// What a family made, given up under the schedule's lock: its errors' drops are its own
+/// code, so it is dropped only once the lock is let go ([`Gone`]). Set aside without a
+/// failing allocation: one that failed would drop it there.
+enum Waste {
+    Failure(Failure),
+    Ending(Ending),
+    Loss(Loss),
+    Fault(Fault),
+    Fate(Fate),
+}
+
+/// What a walk's start found.
+enum Begun {
+    /// The state its first hour applies to, after walking this many segments for it.
+    Ready(usize),
+    /// The restart it begins at is damaged: the walk goes back to begin before it.
+    Back(io::Error),
+    /// Nothing says what its first hour applies to.
+    Lost(io::Error),
+    Stopped,
 }
 
 /// What a run's workers share.
@@ -455,6 +875,9 @@ struct Run<'r, 'a> {
     /// The walkers' budget, the run's alone: no walker waits for it.
     budget: Arc<Budget>,
     store: Store<'r>,
+    /// What the families of walks given back after a panic did of their segment, by segment,
+    /// for the walk of it handed out again.
+    resumed: Mutex<Vec<(usize, Attached<'r>)>>,
     shared: Shared<'r>,
     #[cfg(test)]
     cancellation: &'r Cancellation,
@@ -463,7 +886,7 @@ struct Run<'r, 'a> {
 impl<'r, 'a> Run<'r, 'a> {
     fn erased(&self, lane: usize) -> &'r (dyn Erased + 'r) {
         let lanes: &'r [Lane<'a>] = self.lanes;
-        &*lanes[lane].0
+        &*lanes[lane].erased
     }
 
     fn work(&self) {
@@ -529,9 +952,10 @@ impl<'r, 'a> Run<'r, 'a> {
                 Task::Emit { lane, at, restore } => self.emit(lane, at, restore),
                 Task::Walk {
                     at,
+                    from,
                     lanes,
                     reserved,
-                } => self.walk(&mut walker, &mut state, at, lanes, reserved),
+                } => self.walk(&mut walker, &mut state, at, from, lanes, reserved),
             };
             self.signal.lock().done();
             self.signal.changed.notify_all();
@@ -541,26 +965,74 @@ impl<'r, 'a> Run<'r, 'a> {
         }
     }
 
-    /// Measures what walking segment `at` reads.
+    /// Whether the run stopped: what its tasks meet since is no family's, and what they did
+    /// not settle stays pending.
+    fn stopped(&self) -> bool {
+        self.signal.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Measures what walking segment `at` reads, from the segment its walk begins at: of that
+    /// one's restart, and of each segment's own pages from there, what is not measured yet.
     fn measure(&self, walker: &mut Walker<'_>, at: usize) -> io::Result<()> {
-        let reads = walker.measure(&self.segments[at])?;
-        self.signal.lock().measured(at, reads);
+        let (from, restart, pages) = self.signal.lock().unmeasured(at)?;
+        let restart = if restart {
+            Some(walker.measure_restart(&self.segments[from])?)
+        } else {
+            None
+        };
+        let mut read = engine_allocation::vec(pages.len())?;
+        for page in pages {
+            read.push((page, walker.measure_pages(&self.segments[page])?));
+        }
+        self.signal.lock().measured(at, from, restart, &read);
         self.signal.changed.notify_all();
         Ok(())
     }
 
+    /// Hands segment `at`'s items to `lane`'s emit, reading its spilled chunk back into
+    /// `restore`: the emit's refusal ends its branch, its other failures end its family.
     fn emit(&self, lane: usize, at: usize, restore: Option<Taken<'_>>) -> io::Result<()> {
         let emitted = self
             .erased(lane)
-            .emit(at, &self.segments[at], &self.shared, restore)?;
+            .emit(at, &self.segments[at], &self.shared, restore);
+        let planned = *self.plan.get(at);
+        let mut gone = Gone::default();
         {
             let mut schedule = self.signal.lock();
+            let plan = &self.plan;
             match emitted {
-                Emitted::Ended => schedule.emitted(lane, at),
-                Emitted::Spilled(need) => schedule.restores(lane, need),
+                Ok(Emitted::Ended(ending)) => {
+                    schedule.emitted(plan, lane, at, planned.branch, ending, &mut gone)?;
+                }
+                Ok(Emitted::Spilled(need)) => schedule.restores(lane, need),
+                Err(Fault::Run(error)) => return Err(error),
+                // What an emit meets once the run is cancelled is no family's.
+                Err(fault) if self.signal.cancelled.load(Ordering::SeqCst) => {
+                    schedule.unemit(lane);
+                    gone.waste.push(Waste::Fault(fault));
+                }
+                Err(Fault::Error(Operation::Emit, error))
+                    if error.kind() == io::ErrorKind::InvalidData =>
+                {
+                    let (hour, error) = dated(error, planned.first);
+                    let ending = Ending::Refused { hour, error };
+                    // Its branch ends before its emit moves on past a failure there.
+                    if let Err(failed) = schedule.close(plan, lane, Closing::Branch(at), &mut gone)
+                    {
+                        gone.waste.push(Waste::Ending(ending));
+                        return Err(failed);
+                    }
+                    schedule.emitted(plan, lane, at, planned.branch, Some(ending), &mut gone)?;
+                }
+                Err(fault) => {
+                    schedule.unemit(lane);
+                    let failure = failure_at(at, fault)?;
+                    schedule.fail(&self.plan, lane, failure, &mut gone)?;
+                }
             }
         }
         self.signal.changed.notify_all();
+        self.drop_gone(gone);
         Ok(())
     }
 
@@ -582,17 +1054,19 @@ impl<'r, 'a> Run<'r, 'a> {
         )
     }
 
-    /// Segment `at`'s walk of `lanes`, and every walk it goes on into.
+    /// Segment `at`'s walk of `lanes` from `from`, and every walk it goes on into.
     fn walk<'c>(
         &'c self,
         walker: &mut Walker<'_>,
         state: &mut State,
         at: usize,
+        from: usize,
         lanes: Vec<usize>,
         reserved: Reserved<'c>,
     ) -> io::Result<()> {
         let mut job = Some(Job {
             at,
+            from,
             lanes: engine_allocation::collect_vec(lanes.into_iter().map(|lane| (lane, None)))?,
             hot: false,
             reserved,
@@ -603,15 +1077,400 @@ impl<'r, 'a> Run<'r, 'a> {
         Ok(())
     }
 
-    /// The operator of `lane` parked for segment `at`, if any.
-    fn parked(&self, at: usize, lane: usize) -> io::Result<Option<Box<dyn Walking + 'r>>> {
+    /// Parks `operator` of `lane`, holding `bytes`, for segment `at`, and writes out, with no
+    /// lock held, the furthest parked operators past the continuation budget, which the store
+    /// takes out as it parks: a walk finding one being written leaves it until it lands, and
+    /// none takes its segment meanwhile. A family whose parked operator failed as it was
+    /// written out fails at that segment before any walk may take it again, or find it gone:
+    /// until then it reads as being written, even to a walk holding the segment already.
+    fn park(
+        &self,
+        at: usize,
+        lane: usize,
+        operator: Box<dyn Walking + 'r>,
+        bytes: usize,
+    ) -> io::Result<()> {
+        let mut out = self.store.park(at, lane, operator, bytes, self.lanes)?;
+        while !out.is_empty() {
+            let cells = engine_allocation::collect_vec(out.iter().map(|&(cell, _, _)| cell))?;
+            self.signal.lock().write(&cells);
+            let written = self.store.write(out, self.shared.scratch);
+            let mut gone = Gone::default();
+            let mut victims = match written {
+                Ok(victims) => victims,
+                Err(error) => {
+                    self.signal.lock().written(&cells);
+                    return Err(error);
+                }
+            };
+            victims.reverse();
+            {
+                let mut schedule = self.signal.lock();
+                if !self.stopped() {
+                    while let Some((cell, victim, fault)) = victims.pop() {
+                        let failure = failure_at(cell, fault)?;
+                        self.failed(&mut schedule, victim, failure, false, &mut gone)?;
+                    }
+                }
+                schedule.written(&cells);
+            }
+            self.signal.changed.notify_all();
+            self.drop_gone(gone);
+            drop(victims);
+            // Those that cannot spill stay resident: others are written out in their place.
+            out = self.store.evict(self.lanes)?;
+        }
+        Ok(())
+    }
+
+    /// What is parked for `lane` of segment `at`, if anything.
+    fn parked(&self, at: usize, lane: usize) -> Result<Option<Parked<'r>>, Fault> {
         self.store
             .take(at, lane, &self.segments[at], self.erased(lane))
     }
 
-    /// Walks `job`'s segment through its families' operators, seals what they projected,
-    /// and hands on or parks those that cannot start the segment after in their branch: the
-    /// walk it goes on into, when that segment may start now.
+    /// A new operator of `lane` for segment `at`, when it can start there at `start`; one
+    /// that cannot start a segment that `leads` its branch fails.
+    fn fresh(
+        &self,
+        at: usize,
+        lane: usize,
+        start: Start<'_>,
+        leads: bool,
+    ) -> Result<Option<Box<dyn Walking + 'r>>, Fault> {
+        let erased = self.erased(lane);
+        let operator = caught(Operation::Make, || erased.fresh(&self.segments[at]))?;
+        if caught(Operation::Decide, || Ok(operator.starts_at(start)))? {
+            return Ok(Some(operator));
+        }
+        if leads {
+            return Err(Fault::Error(
+                Operation::Decide,
+                invalid(format!(
+                    "{} cannot start segment {at}, which no segment of its branch precedes",
+                    erased.name()
+                )),
+            ));
+        }
+        Ok(None)
+    }
+
+    /// Puts into `state` what segment `at`'s first hour applies to, from `from`, the segment
+    /// its walk begins at: `from`'s restart, or its run's empty tables, then the walk of the
+    /// segments from `from` to `at`, which leaves the tables `at`'s own restart holds. The
+    /// walker's share was measured and taken for all of it.
+    fn begin(
+        &self,
+        walker: &mut Walker<'_>,
+        state: &mut State,
+        at: usize,
+        from: usize,
+    ) -> io::Result<Begun> {
+        match walker.begin(&self.segments[from], state) {
+            Ok(()) => {}
+            // A segment with a restart follows another of its run.
+            Err(error) if Damage::of(&error).is_some() => {
+                return Ok(if self.segments[from].restart.is_some() {
+                    Begun::Back(error)
+                } else {
+                    Begun::Lost(error)
+                });
+            }
+            Err(error) => return Err(error),
+        }
+        let stopped = &self.signal.stopped;
+        for earlier in from..at {
+            let walked = walker.walk_isolated(&self.segments[earlier], state, |_, _, _, _| {
+                Ok(!stopped.load(Ordering::Relaxed))
+            });
+            match walked {
+                Ok(true) => {}
+                Ok(false) => return Ok(Begun::Stopped),
+                Err(error) if Damage::of(&error).is_some() => return Ok(Begun::Lost(error)),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Begun::Ready(at - from))
+    }
+
+    /// Gives segment `at`'s walk of `lanes`, which could not restore `from`'s restart, back,
+    /// to begin before `from` once what that walk reads is measured and its share taken, as
+    /// no task waits for a share: the operators handed on to it wait parked for it, and its
+    /// families' cells are open again.
+    fn back(
+        &self,
+        at: usize,
+        from: usize,
+        lanes: Vec<(usize, Option<Box<dyn Walking + 'r>>)>,
+    ) -> io::Result<()> {
+        let mut held = engine_allocation::vec(lanes.len())?;
+        // Families failing to park their operator, and whether the walk holds the segment.
+        let mut failures = Vec::new();
+        for (lane, handed) in lanes {
+            held.push(lane);
+            let Some(operator) = handed else {
+                continue;
+            };
+            let fault = match caught(Operation::Save, || Ok(operator.carried())) {
+                Ok(Some(bytes)) => {
+                    self.park(at, lane, operator, bytes)?;
+                    continue;
+                }
+                Ok(None) => Fault::Error(
+                    Operation::Save,
+                    invalid(format!(
+                        "{} cannot be parked for segment {at}: its operator does not say what it \
+                         holds",
+                        self.erased(lane).name()
+                    )),
+                ),
+                Err(fault) => fault,
+            };
+            engine_allocation::reserve(&mut failures, 1)?;
+            failures.push((lane, failure_at(at, fault)?, true));
+        }
+        // Taken one by one under the lock: those left drop once it is let go.
+        failures.reverse();
+        let mut gone = Gone::default();
+        {
+            let mut schedule = self.signal.lock();
+            if self.stopped() {
+                return Ok(());
+            }
+            while let Some((lane, failure, holding)) = failures.pop() {
+                self.failed(&mut schedule, lane, failure, holding, &mut gone)?;
+            }
+            schedule.derive(&self.plan, at, from, &held, &mut gone)?;
+        }
+        self.signal.changed.notify_all();
+        self.drop_gone(gone);
+        Ok(())
+    }
+
+    /// Gives segment `at`'s walk back after a family's panic, as [`Self::back`] does, once
+    /// beginning it again from `from` takes a walk of the segments before that its share does
+    /// not hold: each family of `walking` keeps what it did of the segment for the walk handed
+    /// out again, as it would have once that walk had begun cold, and those of `failures`,
+    /// which failed before it walked, fail. A family whose walk ended failed or lost keeps only
+    /// its fate: what it projected, none of which reaches its emit, is given back now. It
+    /// derived `derived` segments, and began again `rewalked` times.
+    fn resume(
+        &self,
+        at: usize,
+        from: usize,
+        mut walking: Vec<Attached<'r>>,
+        mut failures: Vec<(usize, Failure)>,
+        (derived, rewalked): (usize, usize),
+    ) -> io::Result<()> {
+        for attached in walking.iter_mut().filter(|attached| !attached.walks()) {
+            attached.operator.discard(&self.shared.credit);
+        }
+        let mut held = engine_allocation::vec(walking.len())?;
+        {
+            let mut resumed = lock(&self.resumed);
+            engine_allocation::reserve(&mut *resumed, walking.len())?;
+            for attached in walking {
+                held.push(attached.lane);
+                resumed.push((at, attached));
+            }
+        }
+        let mut gone = Gone::default();
+        {
+            let mut schedule = self.signal.lock();
+            if self.stopped() {
+                return Ok(());
+            }
+            schedule.stats.derived += derived;
+            schedule.stats.rewalked += rewalked;
+            failures.reverse();
+            while let Some((lane, failure)) = failures.pop() {
+                self.failed(&mut schedule, lane, failure, true, &mut gone)?;
+            }
+            schedule.derive(&self.plan, at, from, &held, &mut gone)?;
+        }
+        self.signal.changed.notify_all();
+        self.drop_gone(gone);
+        Ok(())
+    }
+
+    /// What a walk of segment `at` given back after a panic left of the families of `lanes`,
+    /// for this walk of it to go on with.
+    fn resumed(
+        &self,
+        at: usize,
+        lanes: &[(usize, Option<Box<dyn Walking + 'r>>)],
+    ) -> io::Result<Vec<Attached<'r>>> {
+        // Before the lock, so what it took drops after it, should taking more fail.
+        let mut taken = Vec::new();
+        let mut resumed = lock(&self.resumed);
+        for &(lane, _) in lanes {
+            let Some(index) = resumed
+                .iter()
+                .position(|(held, attached)| *held == at && attached.lane == lane)
+            else {
+                continue;
+            };
+            engine_allocation::reserve(&mut taken, 1)?;
+            taken.push(resumed.swap_remove(index).1);
+        }
+        Ok(taken)
+    }
+
+    /// Drops what waits for `lane`'s walk of segment `at`: the operator parked for it, and what
+    /// a walk of it given back after a panic left.
+    fn forget(&self, at: usize, lane: usize) {
+        self.store.discard(at, lane);
+        let resumed = {
+            let mut resumed = lock(&self.resumed);
+            resumed
+                .iter()
+                .position(|(held, attached)| *held == at && attached.lane == lane)
+                .map(|index| resumed.swap_remove(index).1)
+        };
+        if let Some(mut attached) = resumed {
+            attached.operator.discard(&self.shared.credit);
+        }
+    }
+
+    /// The tables a walk lost to their own damage, `tables`, are lost to the families of
+    /// `walking` reading them.
+    fn lose_tables(&self, walking: &mut [Attached<'_>], tables: Vec<(usize, io::Error)>) {
+        for (table, error) in tables {
+            let from = damaged_from(&error);
+            let loss = Loss::Damaged(Arc::new(error));
+            for attached in walking.iter_mut() {
+                if self.lanes[attached.lane].reading(table) {
+                    attached.lose(Fate::Lost(loss.clone()), from);
+                }
+            }
+        }
+    }
+
+    /// What `fault`, met by `attached` at `hour`, ordinal `ordinal` of its run, does to its
+    /// walk; the run's own failures, a lack of memory among them, stop the run.
+    fn fate(
+        &self,
+        fault: Fault,
+        attached: &mut Attached<'_>,
+        (hour, ordinal): (i32, u32),
+    ) -> io::Result<Fate> {
+        // What its items' sink met is not the operator's own.
+        let fault = attached.operator.fault().unwrap_or(fault);
+        let reading = |operation: Operation| {
+            matches!(
+                operation,
+                Operation::Start | Operation::Cross | Operation::Hour | Operation::End
+            )
+        };
+        Ok(match fault {
+            Fault::Run(error) => return Err(error),
+            Fault::Panic(operation, said) => Fate::Failed {
+                operation,
+                panicked: true,
+                error: io::Error::other(said),
+            },
+            Fault::Error(_, error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                return Err(error);
+            }
+            // Its read of the recording met damage.
+            Fault::Error(operation, error)
+                if reading(operation) && Damage::of(&error).is_some() =>
+            {
+                Fate::Lost(Loss::Damaged(Arc::new(error)))
+            }
+            Fault::Error(operation, error)
+                if reading(operation) && error.kind() == io::ErrorKind::InvalidData =>
+            {
+                Fate::Refused {
+                    hour,
+                    ordinal,
+                    error,
+                }
+            }
+            Fault::Error(operation, error) => Fate::Failed {
+                operation,
+                panicked: false,
+                error,
+            },
+        })
+    }
+
+    /// Family `lane` loses segment `at`, which its walk holds, for `loss`: the loss is filed
+    /// for its emit, and its branch ends there, or the operators waiting to go on from it are
+    /// lost with it, as its recovery says.
+    fn lost(
+        &self,
+        schedule: &mut Schedule,
+        at: usize,
+        lane: usize,
+        loss: Loss,
+        gone: &mut Gone,
+    ) -> io::Result<()> {
+        if schedule.status(at, lane) == Status::Abandoned {
+            gone.waste.push(Waste::Loss(loss));
+            return schedule.abandoned(&self.plan, at, lane, gone);
+        }
+        let erased = self.erased(lane);
+        erased.settle(at, Ending::Lost(loss));
+        schedule.settle(at, lane, Status::Lost);
+        match self.lanes[lane].recovery {
+            Recovery::Ends => schedule.close(&self.plan, lane, Closing::Branch(at), gone),
+            Recovery::Resumes => {
+                let mut from = at;
+                while let Some(later) = schedule.waiting_after(&self.plan, from, lane) {
+                    erased.settle(later, Ending::Lost(Loss::After(from)));
+                    schedule.settle(later, lane, Status::Lost);
+                    from = later;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Family `lane` fails at the failure's segment, unless what comes before it in segment
+    /// order ends it there first ([`Schedule::fail`]). A walk `holding` that segment gives it
+    /// back.
+    fn failed(
+        &self,
+        schedule: &mut Schedule,
+        lane: usize,
+        failure: Failure,
+        holding: bool,
+        gone: &mut Gone,
+    ) -> io::Result<()> {
+        let at = failure.at;
+        schedule.fail(&self.plan, lane, failure, gone)?;
+        if holding && schedule.status(at, lane) == Status::Abandoned {
+            schedule.abandoned(&self.plan, at, lane, gone)?;
+        }
+        Ok(())
+    }
+
+    /// Drops, once the schedule is let go, what the cells a closure covered filed for their
+    /// emits and what waited for their walks, and what families made that was given up.
+    fn drop_gone(&self, gone: Gone) {
+        let Gone { cells, waste } = gone;
+        for (lane, at, filed) in cells {
+            if filed {
+                self.erased(lane).discard(at, &self.shared.credit);
+            }
+            self.forget(at, lane);
+        }
+        for waste in waste {
+            match waste {
+                Waste::Failure(failure) => drop(failure),
+                Waste::Ending(ending) => drop(ending),
+                Waste::Loss(loss) => drop(loss),
+                Waste::Fault(fault) => drop(fault),
+                Waste::Fate(fate) => drop(fate),
+            }
+        }
+    }
+
+    /// Walks `job`'s segment through its families' operators, files what they projected,
+    /// with why a family's walk ended short, and hands on or parks the operators that cannot
+    /// start the segment after in their branch: the walk it goes on into, when that segment
+    /// may start now.
     fn segment<'c>(
         &'c self,
         walker: &mut Walker<'_>,
@@ -620,14 +1479,46 @@ impl<'r, 'a> Run<'r, 'a> {
     ) -> io::Result<Option<Job<'r, 'c>>> {
         let Job {
             at,
+            from,
             lanes,
             hot,
             reserved,
         } = job;
         let segment = &self.segments[at];
         let planned = *self.plan.get(at);
+        let mut derived = 0;
         if !hot {
-            walker.begin(segment, state)?;
+            match self.begin(walker, state, at, from) {
+                Ok(Begun::Ready(walks)) => derived = walks,
+                Ok(Begun::Stopped) => return Ok(None),
+                Err(_) if self.stopped() => return Ok(None),
+                Err(error) => return Err(error),
+                Ok(Begun::Back(_)) => {
+                    self.back(at, from, lanes)?;
+                    return Ok(None);
+                }
+                // No family can start, or go on, where nothing says what the tables hold.
+                Ok(Begun::Lost(damage)) => {
+                    let loss = Loss::Damaged(Arc::new(damage));
+                    let mut gone = Gone::default();
+                    {
+                        let mut schedule = self.signal.lock();
+                        if self.stopped() {
+                            return Ok(None);
+                        }
+                        for &(lane, _) in &lanes {
+                            self.lost(&mut schedule, at, lane, loss.clone(), &mut gone)?;
+                        }
+                    }
+                    self.signal.changed.notify_all();
+                    for (lane, handed) in lanes {
+                        drop(handed);
+                        self.forget(at, lane);
+                    }
+                    self.drop_gone(gone);
+                    return Ok(None);
+                }
+            }
         }
         let start = match segment.restart {
             Some(_) => Start::Restart(&*state),
@@ -636,134 +1527,422 @@ impl<'r, 'a> Run<'r, 'a> {
             },
         };
         let mut walking: Vec<Attached<'r>> = engine_allocation::vec(lanes.len())?;
-        let mut refused = Vec::new();
+        let mut refusing = Vec::new();
+        // Families whose parked operator is being written out, left until it lands.
+        let mut landing = Vec::new();
+        // Families failing before they walk, the segment held for them.
+        let mut failures: Vec<(usize, Failure)> = Vec::new();
+        let mut resumed = self.resumed(at, &lanes)?;
         for (lane, handed) in lanes {
-            let carried = match handed {
-                Some(operator) => Some(operator),
-                None => self.parked(at, lane)?,
-            };
-            if let Some(operator) = carried {
-                walking.push(Attached {
-                    lane,
-                    operator,
-                    cold: false,
-                });
+            if let Some(index) = resumed.iter().position(|attached| attached.lane == lane) {
+                walking.push(resumed.swap_remove(index));
                 continue;
             }
-            let operator = self.erased(lane).fresh(segment)?;
-            if operator.starts_at(start) {
-                walking.push(Attached {
-                    lane,
-                    operator,
-                    cold: true,
-                });
-            } else if planned.before.is_none() {
-                return Err(invalid(format!(
-                    "{} cannot start segment {at}, which no segment of its branch precedes",
-                    self.erased(lane).name()
-                )));
-            } else {
-                engine_allocation::reserve(&mut refused, 1)?;
-                refused.push(lane);
+            let carried = match handed {
+                Some(operator) => Ok(Some(Parked::Ready(operator))),
+                None => self.parked(at, lane),
+            };
+            let fresh = match carried {
+                Ok(Some(Parked::Ready(operator))) => {
+                    walking.push(Attached::new(lane, operator, false));
+                    continue;
+                }
+                Ok(Some(Parked::Writing)) => {
+                    engine_allocation::reserve(&mut landing, 1)?;
+                    landing.push(lane);
+                    continue;
+                }
+                Ok(None) => self.fresh(at, lane, start, planned.before.is_none()),
+                Err(fault) => Err(fault),
+            };
+            match fresh {
+                Ok(Some(operator)) => walking.push(Attached::new(lane, operator, true)),
+                Ok(None) => {
+                    engine_allocation::reserve(&mut refusing, 1)?;
+                    refusing.push(lane);
+                }
+                Err(fault) => {
+                    engine_allocation::reserve(&mut failures, 1)?;
+                    failures.push((lane, failure_at(at, fault)?));
+                }
             }
         }
-        if !refused.is_empty() {
-            let ready = self.signal.lock().refused(&self.plan, at, &refused)?;
+        let mut gone = Gone::default();
+        let mut closed: Vec<Attached<'r>> = Vec::new();
+        let ready = {
+            let mut schedule = self.signal.lock();
+            if self.stopped() {
+                return Ok(None);
+            }
+            let deferred = schedule.refused(&self.plan, at, &refusing, &mut gone)?;
+            for &(lane, before) in &deferred.lost {
+                self.lost(&mut schedule, at, lane, Loss::After(before), &mut gone)?;
+            }
+            // Families closed since the walk took them: their branch ended, or they failed.
+            let mut index = 0;
+            while index < walking.len() {
+                let lane = walking[index].lane;
+                if schedule.status(at, lane) == Status::Abandoned {
+                    schedule.abandoned(&self.plan, at, lane, &mut gone)?;
+                    engine_allocation::reserve(&mut closed, 1)?;
+                    closed.push(walking.remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            deferred.ready
+        };
+        if !refusing.is_empty() || !closed.is_empty() {
             self.signal.changed.notify_all();
-            for lane in ready {
-                let operator = self.parked(at, lane)?.ok_or_else(|| {
-                    invalid(format!(
+        }
+        for mut attached in closed {
+            attached.operator.discard(&self.shared.credit);
+        }
+        self.drop_gone(gone);
+        for lane in ready {
+            match self.parked(at, lane) {
+                Ok(Some(Parked::Ready(operator))) => {
+                    engine_allocation::reserve(&mut walking, 1)?;
+                    walking.push(Attached::new(lane, operator, false));
+                }
+                Ok(Some(Parked::Writing)) => {
+                    engine_allocation::reserve(&mut landing, 1)?;
+                    landing.push(lane);
+                }
+                Ok(None) => {
+                    let error = invalid(format!(
                         "{} cannot start segment {at}, and the segment before handed it nothing",
                         self.erased(lane).name()
-                    ))
-                })?;
-                walking.push(Attached {
-                    lane,
-                    operator,
-                    cold: false,
-                });
-            }
-            walking.sort_unstable_by_key(|attached| attached.lane);
-        }
-        if walking.is_empty() {
-            return Ok(None);
-        }
-        for attached in &mut walking {
-            if attached.cold {
-                attached
-                    .operator
-                    .start(start, planned.branch, planned.first)?;
-            } else if segment.restart.is_none() {
-                attached.operator.cross(planned.first)?;
+                    ));
+                    engine_allocation::reserve(&mut failures, 1)?;
+                    failures.push((
+                        lane,
+                        failure_at(at, Fault::Error(Operation::Decide, error))?,
+                    ));
+                }
+                Err(fault) => {
+                    engine_allocation::reserve(&mut failures, 1)?;
+                    failures.push((lane, failure_at(at, fault)?));
+                }
             }
         }
+        if !landing.is_empty() {
+            let mut gone = Gone::default();
+            {
+                let mut schedule = self.signal.lock();
+                if self.stopped() {
+                    return Ok(None);
+                }
+                schedule.waits(&self.plan, at, &landing, &mut gone)?;
+            }
+            self.signal.changed.notify_all();
+            self.drop_gone(gone);
+        }
+        walking.sort_unstable_by_key(|attached| attached.lane);
+        // Families starting here start; those going on into a later run cross into it.
+        let run_start = segment.restart.is_none();
+        for attached in walking.iter_mut().filter(|attached| !attached.begun) {
+            attached.begun = true;
+            let operator = &mut attached.operator;
+            let begun = if attached.cold {
+                caught(Operation::Start, || {
+                    operator.start(start, planned.branch, planned.first)
+                })
+            } else if run_start {
+                caught(Operation::Cross, || operator.cross(planned.first))
+            } else {
+                continue;
+            };
+            if let Err(fault) = begun {
+                let when = (planned.first, segment.first);
+                attached.fate = Some(self.fate(fault, attached, when)?);
+            }
+        }
+        let culprit = Cell::new(None);
         let context = Context {
             shared: &self.shared,
             at,
             reserved: &reserved,
+            culprit: &culprit,
         };
         let stopped = &self.signal.stopped;
-        let run_start = segment.restart.is_none();
-        let mut ordinal = segment.first;
-        let walked = walker.walk(segment, state, |state, manifest, first| {
-            for attached in walking.iter_mut() {
-                let hour = Hour {
-                    branch: planned.branch,
-                    hour: manifest.hour,
-                    run: segment.run,
-                    ordinal,
-                    starts: first && (attached.cold || run_start),
-                    opens: ordinal == segment.first,
-                    state,
-                    manifest,
-                };
-                attached.operator.hour(&hour, &context)?;
+        // The walk reached the segment's end with some family, leaving its last tables, and
+        // lost none of them.
+        let (mut whole, mut intact) = (false, true);
+        let mut rewalks = 0;
+        let walked = loop {
+            if !walking.iter().any(Attached::walks) {
+                break Ok(true);
             }
-            ordinal += 1;
-            Ok(!stopped.load(Ordering::Relaxed))
-        })?;
-        if !walked {
-            return Ok(None);
+            let (mut ordinal, mut hours, mut noted) = (segment.first, 0_u32, 0);
+            // The hour being walked, for a panic there.
+            let mut now = planned.first;
+            let attempt = catch_unwind(AssertUnwindSafe(|| {
+                walker.walk_isolated(segment, state, |state, manifest, first, lost| {
+                    now = manifest.hour;
+                    // A table lost to its own damage is lost to the families reading it.
+                    if lost.len() != noted {
+                        for (table, error) in &lost[noted..] {
+                            let since = damaged_from(error);
+                            for attached in walking.iter_mut() {
+                                if self.lanes[attached.lane].reading(*table) {
+                                    attached.lose(Fate::Table, since);
+                                }
+                            }
+                        }
+                        noted = lost.len();
+                    }
+                    let mut going = false;
+                    for (index, attached) in walking.iter_mut().enumerate() {
+                        if attached.fate.is_some() || hours < attached.seen {
+                            going |= attached.walks();
+                            continue;
+                        }
+                        let hour = Hour {
+                            branch: planned.branch,
+                            hour: manifest.hour,
+                            run: segment.run,
+                            ordinal,
+                            starts: first && (attached.cold || run_start),
+                            opens: ordinal == segment.first,
+                            state,
+                            manifest,
+                        };
+                        culprit.set(Some(index));
+                        let result = attached.operator.hour(&hour, &context);
+                        culprit.set(None);
+                        let called = result.map_err(|error| Fault::of(Operation::Hour, error));
+                        if let Some(fault) = attached.met(called) {
+                            let when = (manifest.hour, ordinal);
+                            attached.fate = Some(self.fate(fault, attached, when)?);
+                        }
+                        going |= attached.walks();
+                    }
+                    ordinal += 1;
+                    hours += 1;
+                    Ok(going && !stopped.load(Ordering::Relaxed))
+                })
+            }));
+            match attempt {
+                Ok(walked) => {
+                    whole = matches!(walked, Ok(true));
+                    break walked;
+                }
+                Err(payload) => {
+                    // A family's panic is its own; the run's goes on.
+                    let Some(index) = culprit.take() else {
+                        resume_unwind(payload)
+                    };
+                    // What its items' sink met first stands, the run's own failure stopping it.
+                    let fault = Fault::Panic(Operation::Hour, said(&*payload));
+                    let attached = &mut walking[index];
+                    attached.fate = Some(self.fate(fault, attached, (now, ordinal))?);
+                    // The others walk the segment again from where each was.
+                    for (other, attached) in walking.iter_mut().enumerate() {
+                        attached.seen = attached.seen.max(hours + u32::from(other < index));
+                    }
+                    // The tables lost so far stay lost to their readers once the walker forgets.
+                    let tables = walker.take_lost();
+                    intact &= tables.is_empty();
+                    self.lose_tables(&mut walking, tables);
+                    // What unwound with the panic is not used again: the walker starts afresh
+                    // with the share it holds, and the tables are begun again.
+                    walker.renew()?;
+                    *state = State::new(schema()?)?;
+                    rewalks += 1;
+                    match self.begin(walker, state, at, from) {
+                        Ok(Begun::Ready(walks)) => derived += walks,
+                        Ok(Begun::Stopped) => return Ok(None),
+                        // A walk gone on from the one before needs a walk of the segments
+                        // before that its share does not hold: it goes back, as begun cold.
+                        Ok(Begun::Back(_)) => {
+                            self.resume(at, from, walking, failures, (derived, rewalks))?;
+                            return Ok(None);
+                        }
+                        Ok(Begun::Lost(damage)) => break Err(damage),
+                        Err(_) if stopped.load(Ordering::SeqCst) => return Ok(None),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        };
+        let tables = walker.take_lost();
+        intact &= tables.is_empty();
+        match walked {
+            Ok(_) if stopped.load(Ordering::SeqCst) => return Ok(None),
+            Ok(_) => {}
+            Err(_) if stopped.load(Ordering::SeqCst) => return Ok(None),
+            // The segment's own damage: every family walking it loses it.
+            Err(error) if Damage::of(&error).is_some() => {
+                let since = damaged_from(&error);
+                let loss = Loss::Damaged(Arc::new(error));
+                for attached in &mut walking {
+                    attached.lose(Fate::Lost(loss.clone()), since);
+                }
+            }
+            Err(error) => return Err(error),
         }
-        let mut projected = engine_allocation::vec(walking.len())?;
-        for attached in &mut walking {
-            attached.operator.end(&context)?;
-            projected.push((attached.lane, attached.operator.seal(&context)?));
+        // A table's own damage is lost to its readers, found as late as its page's end.
+        self.lose_tables(&mut walking, tables);
+        let last = (
+            planned.first + (segment.last - segment.first) as i32,
+            segment.last,
+        );
+        for (index, attached) in walking.iter_mut().enumerate() {
+            if !attached.live() {
+                continue;
+            }
+            let operator = &mut attached.operator;
+            let ended = marked(&culprit, index, Operation::End, || operator.end(&context));
+            if let Some(fault) = attached.met(ended) {
+                attached.fate = Some(self.fate(fault, attached, last)?);
+            }
         }
-        drop(reserved);
-        let lanes = engine_allocation::collect_vec(walking.iter().map(|attached| attached.lane))?;
-        // The operators that cannot start the segment after go on into it.
-        let mut handing: Vec<(usize, Box<dyn Walking + 'r>)> = Vec::new();
         if let Some(next) = planned.after {
             let start = if self.segments[next].run == segment.run {
                 Start::Restart(&*state)
             } else {
                 Start::Run { continues: true }
             };
-            for attached in walking {
-                if !attached.operator.starts_at(start) {
-                    engine_allocation::reserve(&mut handing, 1)?;
-                    handing.push((attached.lane, attached.operator));
+            for attached in walking.iter_mut().filter(|attached| attached.live()) {
+                let operator = &attached.operator;
+                match caught(Operation::Decide, || Ok(operator.starts_at(start))) {
+                    Ok(starts) => attached.hands = !starts,
+                    Err(fault) => attached.fate = Some(self.fate(fault, attached, last)?),
                 }
             }
         }
-        let Some(next) = planned.after else {
-            {
-                let mut schedule = self.signal.lock();
-                schedule.estimate(&projected);
-                schedule.sealed(at, &lanes);
+        let mut projected = engine_allocation::vec(walking.len())?;
+        for (index, attached) in walking.iter_mut().enumerate() {
+            if !matches!(attached.fate, None | Some(Fate::Refused { .. })) {
+                attached.operator.discard(&self.shared.credit);
+                continue;
             }
-            self.signal.changed.notify_all();
-            return Ok(None);
-        };
-        let hot = self.segments[next].run == segment.run;
-        let handed = engine_allocation::collect_vec(handing.iter().map(|(lane, _)| *lane))?;
-        if (hot || !handed.is_empty()) && self.signal.lock().reads(next).is_none() {
-            self.measure(walker, next)?;
+            let operator = &mut attached.operator;
+            match marked(&culprit, index, Operation::Save, || {
+                operator.close(&context)
+            }) {
+                Ok(bytes) => projected.push((attached.lane, bytes)),
+                Err(fault) => {
+                    let fate = self.fate(fault, attached, last)?;
+                    attached.operator.discard(&self.shared.credit);
+                    attached.fate = Some(fate);
+                }
+            }
         }
-        let (chained, reserved) = {
+        drop(reserved);
+        let next = planned.after;
+        // A walk going on into the segment after keeps its tables only once it walked this
+        // one through, every table whole.
+        let hot =
+            whole && intact && next.is_some_and(|next| self.segments[next].run == segment.run);
+        if let Some(next) = next {
+            let hands = walking
+                .iter()
+                .any(|attached| attached.live() && attached.hands);
+            if (hot || hands) && self.signal.lock().reads(next).is_none() {
+                self.measure(walker, next)?;
+            }
+        }
+        let mut gone = Gone::default();
+        let mut dropped: Vec<Attached<'r>> = engine_allocation::vec(walking.len())?;
+        let mut kept: Vec<Attached<'r>> = engine_allocation::vec(walking.len())?;
+        let (chained, begins, reserved, next) = {
             let mut schedule = self.signal.lock();
+            // Faults its families met as it ended, the run stopped, are none of theirs.
+            if self.stopped() {
+                return Ok(None);
+            }
             schedule.estimate(&projected);
+            schedule.stats.derived += derived;
+            schedule.stats.rewalked += rewalks;
+            // Each taken in turn, those left dropping once the lock is let go.
+            failures.reverse();
+            while let Some((lane, failure)) = failures.pop() {
+                self.failed(&mut schedule, lane, failure, true, &mut gone)?;
+            }
+            // Each family goes into `kept` or `dropped`, held for room, before anything that can
+            // fail: none drops under the lock.
+            walking.reverse();
+            while let Some(attached) = walking.pop() {
+                let lane = attached.lane;
+                let arrived = schedule.arrived(at, lane);
+                if schedule.status(at, lane) == Status::Abandoned {
+                    dropped.push(attached);
+                    schedule.abandoned(&self.plan, at, lane, &mut gone)?;
+                    continue;
+                }
+                // An operator parked for a segment its family started anew: both did not decide
+                // alike.
+                let undecided = attached.cold && planned.before.is_some() && arrived;
+                if attached.fate.is_none() && !undecided {
+                    kept.push(attached);
+                    continue;
+                }
+                dropped.push(attached);
+                let Some(attached) = dropped.last_mut() else {
+                    unreachable!("it was just held");
+                };
+                if undecided {
+                    let decided = attached.fate.replace(Fate::Failed {
+                        operation: Operation::Decide,
+                        panicked: false,
+                        error: invalid(format!(
+                            "{} started segment {at}, which the segment before went on into",
+                            self.erased(lane).name()
+                        )),
+                    });
+                    if let Some(decided) = decided {
+                        gone.waste.push(Waste::Fate(decided));
+                    }
+                }
+                match attached.fate.take() {
+                    None => unreachable!("a family dropped ended short"),
+                    Some(Fate::Refused { hour, error, .. }) => {
+                        attached
+                            .operator
+                            .file(at, Some(Ending::Refused { hour, error }));
+                        schedule.settle(at, lane, Status::Refused);
+                        schedule.close(&self.plan, lane, Closing::Branch(at), &mut gone)?;
+                    }
+                    Some(Fate::Lost(loss)) => {
+                        self.lost(&mut schedule, at, lane, loss, &mut gone)?
+                    }
+                    Some(Fate::Table) => unreachable!("a walk names every table it lost"),
+                    Some(Fate::Failed {
+                        operation,
+                        panicked,
+                        error,
+                    }) => {
+                        let failure = Failure {
+                            at,
+                            operation,
+                            panicked,
+                            error,
+                        };
+                        self.failed(&mut schedule, lane, failure, true, &mut gone)?;
+                    }
+                }
+            }
+            let Some(next) = next else {
+                let lanes = engine_allocation::collect_vec(kept.iter().map(|kept| kept.lane))?;
+                for attached in &mut kept {
+                    attached.operator.file(at, None);
+                }
+                schedule.sealed(at, &lanes);
+                drop(schedule);
+                self.signal.changed.notify_all();
+                self.drop_gone(gone);
+                for mut attached in dropped.into_iter().chain(kept) {
+                    attached.operator.discard(&self.shared.credit);
+                }
+                return Ok(None);
+            };
+            let handed = engine_allocation::collect_vec(
+                kept.iter()
+                    .filter(|attached| attached.hands)
+                    .map(|attached| attached.lane),
+            )?;
             let (chained, reserved) = schedule.chain(
                 &self.plan,
                 &self.shared.settings,
@@ -773,40 +1952,117 @@ impl<'r, 'a> Run<'r, 'a> {
                 hot,
                 &mut |reads| walker.hold(reads),
             )?;
-            if let Some(lane) = schedule.started_without(next, &handed, &chained) {
-                return Err(invalid(format!(
+            for lane in schedule.started_without(next, &handed, &chained)? {
+                let error = invalid(format!(
                     "{} went on into segment {next}, which started without it",
                     self.erased(lane).name()
-                )));
+                ));
+                let failure = failure_at(next, Fault::Error(Operation::Decide, error))?;
+                self.failed(&mut schedule, lane, failure, false, &mut gone)?;
+            }
+            // An operator going on into a segment its family will not walk goes no further.
+            for attached in &mut kept {
+                attached.hands &= chained.contains(&attached.lane)
+                    || !matches!(
+                        schedule.status(next, attached.lane),
+                        Status::Closed | Status::Abandoned | Status::Lost
+                    );
+                attached.operator.file(at, None);
             }
             // Every family but those to park is sealed now: a chained one goes on with its walk.
-            let parking: Vec<usize> = handed
-                .iter()
-                .copied()
-                .filter(|lane| !chained.contains(lane))
-                .collect();
             let unparked = engine_allocation::collect_vec(
-                lanes.iter().copied().filter(|lane| !parking.contains(lane)),
+                kept.iter()
+                    .filter(|attached| !attached.hands || chained.contains(&attached.lane))
+                    .map(|attached| attached.lane),
             )?;
             schedule.sealed(at, &unparked);
-            (chained, reserved)
+            // Where the walk it goes on into begins, as its share was measured.
+            (chained, schedule.begins(next), reserved, next)
         };
         self.signal.changed.notify_all();
-        let mut chain = engine_allocation::vec(chained.len())?;
-        let mut parked = Vec::new();
-        for (lane, operator) in handing {
-            if chained.contains(&lane) {
-                chain.push((lane, Some(operator)));
-            } else {
-                self.store
-                    .park(next, lane, operator, self.lanes, self.shared.scratch)?;
-                engine_allocation::reserve(&mut parked, 1)?;
-                parked.push(lane);
-            }
+        self.drop_gone(gone);
+        for mut attached in dropped {
+            attached.operator.discard(&self.shared.credit);
         }
-        if !parked.is_empty() {
-            self.signal.lock().sealed(at, &parked);
+        let mut chain = engine_allocation::vec(chained.len())?;
+        // Families whose operator parked for `next`, or that failed to park it.
+        let mut parked = Vec::new();
+        let mut failures = Vec::new();
+        for attached in kept {
+            let lane = attached.lane;
+            if !attached.hands {
+                continue;
+            }
+            if chained.contains(&lane) {
+                chain.push((lane, Some(attached.operator)));
+                continue;
+            }
+            engine_allocation::reserve(&mut parked, 1)?;
+            parked.push(lane);
+            let operator = attached.operator;
+            let error = match caught(Operation::Save, || Ok(operator.carried())) {
+                Ok(Some(bytes)) => {
+                    self.park(next, lane, operator, bytes)?;
+                    continue;
+                }
+                Ok(None) => Fault::Error(
+                    Operation::Save,
+                    invalid(format!(
+                        "{} cannot be parked for segment {next}: its operator does not say what \
+                         it holds",
+                        self.erased(lane).name()
+                    )),
+                ),
+                Err(fault) => fault,
+            };
+            engine_allocation::reserve(&mut failures, 1)?;
+            failures.push((lane, failure_at(next, error)?));
+        }
+        if !parked.is_empty() || !failures.is_empty() {
+            failures.reverse();
+            let mut gone = Gone::default();
+            {
+                let mut schedule = self.signal.lock();
+                if self.stopped() {
+                    return Ok(None);
+                }
+                while let Some((lane, failure)) = failures.pop() {
+                    self.failed(&mut schedule, lane, failure, false, &mut gone)?;
+                }
+                for lane in parked {
+                    // Closed while its operator parked: what it filed goes, with the operator.
+                    if schedule.status(at, lane) == Status::Abandoned {
+                        schedule.abandoned(&self.plan, at, lane, &mut gone)?;
+                        engine_allocation::reserve(&mut gone.cells, 2)?;
+                        gone.cells.push((lane, at, true));
+                        gone.cells.push((lane, next, false));
+                        continue;
+                    }
+                    match schedule.status(next, lane) {
+                        // Its walk of `next` started without the operator parked for it.
+                        Status::Sealed | Status::Refused => {
+                            let error = invalid(format!(
+                                "{} went on into segment {next}, which started without it",
+                                self.erased(lane).name()
+                            ));
+                            let failure = failure_at(next, Fault::Error(Operation::Decide, error))?;
+                            self.failed(&mut schedule, lane, failure, false, &mut gone)?;
+                            engine_allocation::reserve(&mut gone.cells, 1)?;
+                            gone.cells.push((lane, next, false));
+                        }
+                        Status::Closed | Status::Abandoned | Status::Lost => {
+                            engine_allocation::reserve(&mut gone.cells, 1)?;
+                            gone.cells.push((lane, next, false));
+                        }
+                        // Its walk, had it started anew, finds it parked as it ends.
+                        Status::Running => schedule.arrives(next, lane),
+                        Status::Open | Status::Waiting => {}
+                    }
+                    schedule.sealed(at, &[lane]);
+                }
+            }
             self.signal.changed.notify_all();
+            self.drop_gone(gone);
         }
         for &lane in &chained {
             if !chain.iter().any(|(held, _)| *held == lane) {
@@ -819,6 +2075,7 @@ impl<'r, 'a> Run<'r, 'a> {
         chain.sort_unstable_by_key(|(lane, _)| *lane);
         Ok(Some(Job {
             at: next,
+            from: begins,
             lanes: chain,
             hot,
             reserved,
@@ -826,23 +2083,49 @@ impl<'r, 'a> Run<'r, 'a> {
     }
 }
 
+/// The failure `fault`, met at segment `at` outside a walk's hours, is; the run's own, and a
+/// lack of memory, stop the run.
+fn failure_at(at: usize, fault: Fault) -> io::Result<Failure> {
+    match fault {
+        Fault::Run(error) => Err(error),
+        Fault::Error(_, error) if error.kind() == io::ErrorKind::OutOfMemory => Err(error),
+        Fault::Error(operation, error) => Ok(Failure {
+            at,
+            operation,
+            panicked: false,
+            error,
+        }),
+        Fault::Panic(operation, said) => Ok(Failure {
+            at,
+            operation,
+            panicked: true,
+            error: io::Error::other(said),
+        }),
+    }
+}
+
 /// Walks every segment of `recording` on [`Settings::threads`] workers, each hour visiting
 /// the operators of `lanes` that walk it, and hands each lane's emit its items in segment
-/// order on those workers, spilling to `scratch` what the budgets do not hold. The first
-/// failure, or `cancellation`, stops every worker and is returned; a panic stops them too and
-/// goes on once they have stopped.
+/// order on those workers, spilling to `scratch` what the budgets do not hold: what became of
+/// each family. A family's own failure ends it alone; the run's own failure stops every worker
+/// and is returned, a panic outside any family's code going on once they have stopped; and
+/// `cancellation` stops them, leaving what was not emitted pending. Damage that leaves hours
+/// where no branch places them refuses the run before it starts.
 pub fn run(
     recording: &Recording,
     settings: &Settings,
     scratch: &dyn Scratch,
     cancellation: &Cancellation,
     lanes: Vec<Lane<'_>>,
-) -> io::Result<Stats> {
+) -> io::Result<Ran> {
     if lanes.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "A run needs a family",
         ));
+    }
+    if let Some(damage) = recording.unlocated() {
+        return Err(damage);
     }
     let settings = Settings {
         threads: settings.threads.max(1),
@@ -853,13 +2136,17 @@ pub fn run(
     };
     let segments = recording.segments();
     if segments.is_empty() {
-        return Ok(Stats::default());
+        return Ok(Ran {
+            outcomes: engine_allocation::collect_vec(lanes.iter().map(|_| Outcome::default()))?,
+            ..Ran::default()
+        });
     }
-    let spills = engine_allocation::collect_vec(lanes.iter().map(|lane| lane.0.spills()))?;
+    let spills = engine_allocation::collect_vec(lanes.iter().map(|lane| lane.erased.spills()))?;
     let signal = Arc::new(Signal {
         schedule: Mutex::new(Schedule::new(segments.len(), spills)?),
         changed: Condvar::new(),
         stopped: AtomicBool::new(false),
+        cancelled: AtomicBool::new(false),
     });
     let _entered = cancellation.enter(&signal)?;
     let run = Run {
@@ -870,6 +2157,7 @@ pub fn run(
         signal: &signal,
         budget: Arc::new(Budget::new(settings.walker_bytes)),
         store: Store::new(settings.carry_bytes),
+        resumed: Mutex::new(Vec::new()),
         shared: Shared::new(settings, scratch, &signal),
         #[cfg(test)]
         cancellation,
@@ -881,13 +2169,28 @@ pub fn run(
             scope.spawn(|| run.work());
         }
     });
-    if let Some(error) = signal.lock().failure.take() {
-        return Err(error);
+    let (outcomes, mut stats) = {
+        let mut schedule = signal.lock();
+        if let Some(error) = schedule.failure.take() {
+            return Err(error);
+        }
+        (schedule.outcomes(), schedule.stats)
+    };
+    let cancelled = signal.cancelled.load(Ordering::SeqCst);
+    if !cancelled {
+        run.store.finish(&lanes)?;
+        debug_assert_eq!(
+            run.shared.credit.held(),
+            0,
+            "every projected item went to its emit or was dropped with its credit"
+        );
     }
-    run.store.finish(&lanes)?;
-    let mut stats = signal.lock().stats;
     stats.output_bytes = run.shared.credit.peak();
     stats.chunks_spilled = run.shared.chunks_spilled.load(Ordering::SeqCst);
     run.store.count(&mut stats);
-    Ok(stats)
+    Ok(Ran {
+        stats,
+        outcomes,
+        cancelled,
+    })
 }
