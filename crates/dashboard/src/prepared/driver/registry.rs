@@ -876,7 +876,7 @@ pub(crate) static JOBS: &[Job] = &[
             "production-line-detail",
             "production-line-breakdown",
         ],
-        sections: &["production-lines"],
+        sections: products::production_lines::SECTIONS,
         tables: &[],
         content: Content::Bound,
     },

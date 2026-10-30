@@ -878,3 +878,368 @@ pub(super) fn with_native<T>(
     let _reset = Reset(&state, Some(before));
     render()
 }
+
+/// Whether a reference scan answers this source's replies.
+pub(super) fn installed(source: &Source) -> bool {
+    source.state::<Selected>().lock().unwrap().literal.is_some()
+}
+
+type ScannedView = (
+    Option<Arc<Catalogue>>,
+    Arc<ScannedLines>,
+    Vec<super::super::country_groups::HourSpan>,
+);
+
+/// The installed reference scan as the replies read a whole scan before the index: the
+/// content's warnings, the reference's refused layouts, and no prefix still being prepared.
+fn scanned_view(
+    source: &Source,
+    _params: &CountryParams,
+    holder: Option<prepared::NativeCountry>,
+    context: &LoadContext,
+    _cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> io::Result<ScannedView> {
+    let (catalogue, _) = scan_content(source, context, warnings);
+    let scanned = selected(source, holder.as_ref())
+        .ok_or_else(|| crate::invalid("No reference production scan"))?;
+    warnings.extend(
+        scanned
+            .modifier_layout_refusals
+            .iter()
+            .map(|(reason, count)| format!("{reason} ({count} supplying reads)")),
+    );
+    Ok((catalogue, Arc::new(scanned), Vec::new()))
+}
+
+fn scanned_lines(
+    source: &Source,
+    params: &CountryParams,
+    holder: Option<prepared::NativeCountry>,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> io::Result<(Option<Arc<Catalogue>>, Arc<ScannedLines>)> {
+    let (catalogue, scanned, _) =
+        scanned_view(source, params, holder, context, cancelled, warnings)?;
+    Ok((catalogue, scanned))
+}
+
+/// `production-lines` as it answered from a whole scan.
+pub(super) fn lines(
+    source: &Source,
+    params: &ProductionLinesParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<ProductionLinesReply> {
+    let mut warnings = Vec::new();
+    let (catalogue, scanned, approximate) = scanned_view(
+        source,
+        &params.country(),
+        None,
+        context,
+        cancelled,
+        &mut warnings,
+    )?;
+    if params.exact == Some(true) && !approximate.is_empty() {
+        return Err(crate::invalid("Production lines are still being prepared"));
+    }
+    if !approximate.is_empty() {
+        warnings.push(format!(
+            "{}'s production history after the published prefix is still being prepared.",
+            params.tag
+        ));
+    }
+    let texts = catalogue
+        .as_ref()
+        .map(|catalogue| catalogue.as_ref() as &dyn Texts);
+    // The scan keeps each variant's icon as a choice with its artwork questions open
+    // (kept with prepared scans too); this reply answers them, and draws the icon, as the
+    // request's selection shows it.
+    let pictured = catalogue.as_ref().map(|_| {
+        context
+            .content()
+            .and_then(|content| catalogue::catalogue(source, content))
+    });
+    let mut images: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let (variants, unnamed, unknown_icons) = {
+        let art = source.state::<catalogue::ByCatalogue<VariantArt>>();
+        let mut art = art.lock().unwrap_or_else(|error| error.into_inner());
+        let mut drawn = match (&pictured, &catalogue) {
+            (Some(Ok(admitted)), Some(recorded)) => Ok(catalogue::Redrawn::bind(
+                &mut art.of(admitted).0,
+                admitted,
+                recorded,
+            )),
+            (Some(Err(error)), _) => Err(format!("Equipment pictures are unavailable: {error}")),
+            _ => Err("Equipment icons need the game folders.".to_owned()),
+        };
+        variant_entries(
+            &scanned,
+            texts,
+            catalogue.is_some(),
+            &mut |choice: &IconChoice| {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err("cancelled".to_owned());
+                }
+                let drawn = drawn.as_mut().map_err(|why| why.clone())?;
+                draw_variant_icon(drawn, &mut images, choice)
+            },
+        )
+    };
+    if cancelled.load(Ordering::Acquire) {
+        return Err(cancelled_error());
+    }
+    warnings.extend(scanned.variants.warnings());
+    let pictured = pictured.and_then(Result::ok);
+    // Organisations: each one's choice of sprite and its picture drawn as one operation from
+    // the selection, kept per catalogue, its picture under the picture's key.
+    let mut organisations = Vec::new();
+    let state = source.state::<Cache>();
+    for (id, versions) in &scanned.organisations {
+        let mut previous: Option<OrganisationName> = None;
+        for raw in versions {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(cancelled_error());
+            }
+            let icon = pictured.as_ref().and_then(|catalogue| {
+                let (key, image) =
+                    kept_organisation_picture(&state, catalogue, raw, &mut warnings)?;
+                images.entry(key.clone()).or_insert(image);
+                Some(key)
+            });
+            let entry = OrganisationName {
+                    id: id.to_string(),
+                    first_hour: raw.first_hour,
+                    token: raw.token.clone(),
+                    name: organisation_name(raw, texts),
+                    name_unknown: raw.owner_unknown.then(|| "The organisation's owner is unresolved at this read; its country-specific name is unknown.".to_owned()),
+                    icon_unknown: (raw.owner_unknown && icon.is_none()).then(|| "The organisation's owner is unresolved at this read; its country-specific icon is unknown.".to_owned()),
+                    icon,
+                };
+            if previous.as_ref().is_none_or(|old| {
+                OrganisationName {
+                    first_hour: entry.first_hour,
+                    ..old.clone()
+                } != entry
+            }) {
+                previous = Some(entry.clone());
+                organisations.push(entry);
+            }
+        }
+    }
+    let icons_out: Vec<EquipmentIcon> = images
+        .into_iter()
+        .map(|(key, image)| EquipmentIcon { key, image })
+        .collect();
+    if !icons_out.is_empty() {
+        warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+    }
+    for reason in unknown_icons {
+        warnings.push(format!("Some equipment icons are unknown: {reason}"));
+    }
+    if unnamed > 0 {
+        warnings.push(format!("{unnamed} produced variants have no recorded definition in this branch; they are shown by id."));
+    }
+    if scanned.unknown_kinds > 0 {
+        warnings.push(format!(
+            "{} recorded line reads are of an unknown native class; they are left out.",
+            scanned.unknown_kinds
+        ));
+    }
+    if scanned.unlisted_output > 0 {
+        warnings.push(format!(
+                "{} output reads name a line no census listed without its final count; they are left out.",
+                scanned.unlisted_output
+            ));
+    }
+    if scanned.unread_output_reads > 0 || scanned.unreadable_stretches > 0 {
+        let stretches = match scanned.unreadable_stretches {
+            0 => String::new(),
+            count => format!(", nor {count} stretches of the recording"),
+        };
+        warnings.push(format!(
+                "{} daily production output reads of {} could not be read{stretches}, so lines made and ended then may be missing and their final counts are not recorded; the history marks those hours.",
+                scanned.unread_output_reads, params.tag
+            ));
+    }
+    if scanned.unlinked_rows > 0 {
+        warnings.push(format!(
+                "{} production rows name a producer the recording does not link to a country; those naming a line of {} are kept with counts that are not exact, the others are left out.",
+                scanned.unlinked_rows, params.tag
+            ));
+    }
+    // A first view without reads says nothing of the hours before it.
+    if scanned.reads.is_empty() && approximate.is_empty() {
+        warnings.push(format!(
+            "{}: no recorded production lines in this branch",
+            params.tag
+        ));
+    }
+    if let Some(catalogue) = &catalogue {
+        warnings.extend(catalogue.refusal_lines());
+    }
+    bounded(
+        ProductionLinesReply {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+            decimals: EQUIPMENT_DECIMALS,
+            lines: scanned.lines.iter().map(line_history).collect(),
+            variants,
+            organisations,
+            icons: icons_out,
+            reads: scanned.reads.clone(),
+            output_hours: scanned.output_hours.clone(),
+            line_hours: scanned.line_hours.clone(),
+            organisation_hours: scanned.organisation_hours.clone(),
+            unread_output: scanned.unread_output.clone(),
+            approximate,
+            detail_hours: DETAIL_HOURS,
+            warnings,
+        },
+        "This country's production history",
+        "its lines cannot be shown.",
+    )
+}
+
+/// `production-line-detail` as it answered from a whole scan.
+pub(super) fn detail(
+    source: &Source,
+    params: &ProductionDetailParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<ProductionLineDetailReply> {
+    let country = CountryParams {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+    };
+    let mut warnings = Vec::new();
+    let (_, scanned) = scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
+    let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
+    let lines = detail_lines(&scanned, first_hour, last_hour);
+    warnings.sort();
+    warnings.dedup();
+    bounded(
+        ProductionLineDetailReply {
+            warnings,
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+            decimals: EQUIPMENT_DECIMALS,
+            window: params.window,
+            first_hour,
+            last_hour,
+            lines,
+        },
+        "This month of production lines",
+        "its values cannot be shown.",
+    )
+}
+
+/// `production-line-breakdown` as it answered from a whole scan.
+pub(super) fn breakdown(
+    source: &Source,
+    params: &ProductionBreakdownParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<ProductionLineBreakdownReply> {
+    use super::breakdown::{FACTORS, ProductionModifierChoice};
+    let country = CountryParams {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+    };
+    let mut warnings = Vec::new();
+    let (_, original) = scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
+    let (scanned, selected_key) = if let Some(hour) = params.origin_hour {
+        let holder = prepared::country_at(
+            &mut prepared::open(source, context, country.branch(), None, cancelled)?,
+            &params.tag,
+            hour,
+        )?;
+        let (_, selected) = scanned_lines(
+            source,
+            &country,
+            Some(holder),
+            context,
+            cancelled,
+            &mut warnings,
+        )?;
+        // Literal-tag appearance numbers can include a previous holder's line.
+        // Match the original line's recorded runs as well as its handle.
+        let original_line = original.lines.iter().find(|line| line.key == params.key);
+        let key = if let Some(line) = original_line {
+            let mut matching = selected.lines.iter().filter(|candidate| {
+                candidate.handle == line.handle
+                    && candidate.runs.iter().any(|run| {
+                        line.runs.iter().any(|old| {
+                            old.first_hour <= run.last_hour && run.first_hour <= old.last_hour
+                        })
+                    })
+            });
+            let first = matching.next();
+            if matching.next().is_some() {
+                return Err(crate::invalid(
+                    "Conflicting appearances for the original production line",
+                ));
+            }
+            first.map(|line| line.key.clone())
+        } else {
+            None
+        };
+        (selected, key)
+    } else {
+        (original, Some(params.key.clone()))
+    };
+    let raw = selected_key
+        .as_ref()
+        .and_then(|key| scanned.modifiers.get(key))
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let reads = raw.iter().map(|run| run.first_hour).collect();
+    let groups: Vec<ProductionModifierChoice> = if raw.is_empty() {
+        Vec::new()
+    } else {
+        FACTORS
+            .iter()
+            .map(|(id, label)| ProductionModifierChoice {
+                id: (*id).into(),
+                label: (*label).into(),
+            })
+            .collect()
+    };
+    if !raw.is_empty() && !groups.iter().any(|group| group.id == params.group) {
+        return Err(crate::invalid("Unknown production factor"));
+    }
+    let mut runs: Vec<ProductionModifierRun> = Vec::new();
+    for raw in raw {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
+        let value = raw.project(Some(&params.group));
+        match runs.last_mut() {
+            Some(last)
+                if last.last_hour.checked_add(1) == Some(value.first_hour)
+                    && last.groups == value.groups
+                    && last.warnings == value.warnings =>
+            {
+                last.last_hour = value.last_hour
+            }
+            _ => runs.push(value),
+        }
+    }
+    if runs.is_empty() {
+        warnings.push("Production modifier inputs were not recorded for this line".into());
+    }
+    bounded(
+        ProductionLineBreakdownReply {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+            key: params.key.clone(),
+            groups,
+            reads,
+            runs,
+            warnings,
+        },
+        "This production line's modifier history",
+        "its full breakdown cannot be shown.",
+    )
+}

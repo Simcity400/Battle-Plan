@@ -31,6 +31,24 @@ impl Pages for FixturePages {
     }
 }
 
+/// The fixture pages a source holds, read as a query reads its store.
+struct Held(Arc<std::sync::Mutex<FixturePages>>);
+impl Pages for Held {
+    fn write_at(&mut self, _: &str, _: u64, _: &[u8]) -> io::Result<()> {
+        Err(crate::invalid("Production query cannot write pages"))
+    }
+    fn write(&mut self, _: &str, _: &[u8]) -> io::Result<u64> {
+        Err(crate::invalid("Production query cannot write pages"))
+    }
+    fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+        self.0.lock().unwrap().read_at(section, range)
+    }
+}
+
+pub(super) fn read_directory(bytes: &[u8]) -> io::Result<Directory> {
+    serde_json::from_slice(&crate::prepared::series::decompress(bytes)?).map_err(io::Error::other)
+}
+
 pub fn prepare(source: &Source, context: &LoadContext) -> io::Result<()> {
     let icons = preparation_icons(source, context);
     let replay = source.replay_ref();
@@ -69,6 +87,8 @@ pub fn prepare(source: &Source, context: &LoadContext) -> io::Result<()> {
     Ok(())
 }
 
+/// A tag's whole scan (or, with `holder`, the native country's) as the index serves it
+/// once `blocks` are prepared.
 pub fn scan(
     replay: &Replay,
     blocks: &[&BlockIndex],
@@ -96,78 +116,33 @@ pub fn scan(
             prepared.publish(&mut pages, replay, block, cancelled)?;
         }
     }
-    let selected = match holder {
-        None => tag_key(tag),
-        Some((slot, id)) => {
-            let mut found = None;
-            for range in 0..prepared.directory.pages {
-                let bytes = pages
-                    .read_at(&alias_section(first.branch), range)?
-                    .ok_or_else(|| crate::invalid("Missing fixture aliases"))?;
-                let aliases: Vec<Alias> = pages::read(&bytes)?;
-                if let Some(alias) = aliases
-                    .into_iter()
-                    .find(|alias| alias.country.slot == slot && alias.country.id == id)
-                {
-                    found = Some(alias.country);
-                    break;
-                }
-            }
-            native_key(&found.ok_or_else(|| crate::invalid("Missing fixture country"))?)
+    let mut index = read::Index::open(Box::new(pages), prepared.directory.clone())?;
+    let history = match holder {
+        None => index.tag_history(tag),
+        Some((slot, id)) => index
+            .identity()
+            .natives
+            .iter()
+            .find(|(country, _)| country.slot == slot && country.id == id)
+            .map(|(_, history)| *history)
+            .ok_or_else(|| crate::invalid("Missing fixture country"))?,
+    };
+    let localisation = icons
+        .and_then(|icons| icons.catalogue.as_ref())
+        .filter(|_| prepared.directory.localised)
+        .map(|catalogue| Arc::clone(&catalogue.localisation));
+    index.scanned(history, localisation, recorded_language(replay), cancelled)
+}
+
+/// The fixture index a source holds for `branch`, if one was prepared into its state.
+pub(super) fn open(source: &Source, branch: u64) -> io::Result<Option<read::Index<'static>>> {
+    let state = source.state::<FixturePages>();
+    let directory = {
+        let mut pages = state.lock().unwrap();
+        match pages.read_at(&directory_section(branch), 0)? {
+            Some(bytes) => read_directory(&bytes)?,
+            None => return Ok(None),
         }
     };
-    assemble(
-        &prepared.directory,
-        &selected,
-        icons.and_then(|icons| icons.catalogue.as_deref()),
-        recorded_language(replay),
-        cancelled,
-        |section, range| pages.read_at(section, range),
-    )
-}
-
-pub(super) fn query(
-    source: &Source,
-    branch: u64,
-    tag: &str,
-    holder: Option<NativeCountry>,
-    icons: Option<&IconContent>,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<(ScannedLines, crate::prepared::coverage::Coverage)>> {
-    let state = source.state::<FixturePages>();
-    let mut pages = state.lock().unwrap();
-    let Some(bytes) = pages.read_at(&directory_section(branch), 0)? else {
-        return Ok(None);
-    };
-    let directory: Directory = pages::read_json(&bytes)?;
-    let selected = match holder {
-        None => tag_key(tag),
-        Some(country) => native_key(&country),
-    };
-    let result = assemble(
-        &directory,
-        &selected,
-        icons.and_then(|icons| icons.catalogue.as_deref()),
-        recorded_language(source.replay_ref()),
-        cancelled,
-        |section, range| pages.read_at(section, range),
-    )?;
-    Ok(Some((result, directory.coverage)))
-}
-
-pub(super) fn country_at(
-    source: &Source,
-    branch: u64,
-    tag: &str,
-    hour: i32,
-) -> io::Result<Option<NativeCountry>> {
-    let state = source.state::<FixturePages>();
-    let mut pages = state.lock().unwrap();
-    let Some(bytes) = pages.read_at(&directory_section(branch), 0)? else {
-        return Ok(None);
-    };
-    let directory: Directory = pages::read_json(&bytes)?;
-    read_country_at(&directory, tag, hour, |section, range| {
-        pages.read_at(section, range)
-    })
+    read::Index::open(Box::new(Held(state)), directory).map(Some)
 }

@@ -6,10 +6,6 @@ product_codec::product! { impl Carry {
     modifiers: bool,
     output: bool,
 } default {} }
-product_codec::product! { impl ClosedLine {
-    appearance: u32,
-    line: ScannedLine,
-} default {} }
 product_codec::product! { impl NativeCountry {
     slot: u32,
     id: u32,
@@ -21,51 +17,73 @@ product_codec::product! { impl Alias {
     last_hour: i32,
     country: NativeCountry,
 } default {} }
-product_codec::product! { impl Dormant {
-    hour: i32,
-    head: pages::PageLog,
-    reads: usize,
-    stretches: usize,
+product_codec::product! { impl Handle {
+    lifetime: u64,
+    appearance: u32,
 } default {} }
-product_codec::product! { impl ActiveCountry {
-    native: NativeCountry,
+product_codec::product! { impl LineLedger {
+    lifetime: u64,
+    appearance: u32,
+    run: Option<(u64, RawRun)>,
+    step: Option<(u64, u64, i32, i32)>,
+    output: Option<(u64, RawOutput)>,
+    modifier: Option<i32>,
+    operands: Option<Vec<u8>>,
 } default {} }
-product_codec::product! { impl CountrySnapshot {
-    page: pages::Page,
-    head: pages::PageLog,
-    sleep: Option<Dormant>,
-    history: private::Root,
-    active_variants: BTreeSet<u64>,
-    carry: Option<Carry>,
-    pending_bytes: usize,
-    last_country: Option<(Vec<u8>, u64)>,
-    next_country: u64,
+product_codec::product! { impl CoreLedger {
     last: Option<((u32, u32), i32)>,
-    open: BTreeMap<u64, Open>,
+    open: Vec<(u64, LineLedger)>,
     carried: bool,
-    broken: BTreeMap<u64, Open>,
+    broken: Vec<(u64, LineLedger)>,
     last_read_identity: Option<(u32, u32)>,
     broken_identity: Option<(u32, u32)>,
     first_read: bool,
     output_open: bool,
     organisations_open: bool,
     last_census: Option<i32>,
-    appearances: BTreeMap<u64, u32>,
-    latest: BTreeMap<u64, usize>,
+    active_variants: BTreeSet<u64>,
+    carry: Option<Carry>,
     last_output_due: Option<i32>,
+    last_modifier_country: Option<Vec<u8>>,
     last_design_revision: Option<u64>,
+    counters: index::Counters,
+    stream: Option<(u64, Vec<HourSpan>)>,
+    ids: (u64, u64, u64, u64),
+    through: Option<i32>,
+    overview: Option<u64>,
 } default {} }
-product_codec::product! { impl Continuation {
+product_codec::product! { impl KeysLedger {
+    root: Option<keys::NodeRef>,
+    handles: Vec<(u64, Handle)>,
+    designs: Vec<(u64, (DesignRead, u64))>,
+    organisations: Vec<(u64, (RawOrganisation, u64))>,
+    icons: Vec<(u64, IconChoice)>,
+} default {} }
+product_codec::product! { impl HistoryLedger {
+    parent: Option<(u64, u64)>,
+    sleep: Option<Sleep>,
+    full: bool,
+    state: StateLedger,
+} default {} }
+product_codec::product! { impl LedgerRecord {
+    full: bool,
+    chunks: u64,
+    through: Option<i32>,
+    flushed_through: Option<i32>,
+    next_history: u64,
     world: input::WorldSaved,
-    active: Vec<((u32, u32), ActiveCountry)>,
-    native: Vec<NativeCountry>,
-    aliases: Vec<String>,
+    absent: u64,
+    active: Vec<((u32, u32), NativeCountry)>,
+    links: Vec<((u32, u32), NativeCountry)>,
+    epochs: Vec<((u32, u32), u64)>,
+    natives: Vec<(NativeCountry, u64)>,
+    retired: Vec<(NativeCountry, u64)>,
+    aliases: Vec<(String, TagLedger)>,
+    dormant: Vec<(String, TagLedger)>,
+    spans: Vec<Alias>,
+    histories: Vec<(u64, HistoryLedger)>,
 } default {} }
-product_codec::product! { impl VariantPage {
-    catalogue: VariantCatalogue,
-    icons: Vec<(u64, i32, IconChoice, bool)>,
-} default {} }
-impl BinaryProduct for TagSnapshot {
+impl BinaryProduct for TagLedger {
     const MIN_BYTES: usize = 1;
     fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         match self {
@@ -84,13 +102,12 @@ impl BinaryProduct for TagSnapshot {
         match input.u8()? {
             0 => Ok(Self::Absent),
             1 => Ok(Self::Native(NativeCountry::decode(input)?)),
-            2 => Ok(Self::Projected(Box::<CountrySnapshot>::decode(input)?)),
-            _ => Err(crate::invalid("Unknown binary production tag snapshot")),
+            2 => Ok(Self::Projected(u64::decode(input)?)),
+            _ => Err(crate::invalid("Unknown binary production tag ledger")),
         }
     }
     fn schema(s: &mut Schema) {
-        s.field("production-tag-snapshot/v1");
+        s.field("production-tag-ledger/v1");
         NativeCountry::schema(s);
-        CountrySnapshot::schema(s);
     }
 }

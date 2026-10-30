@@ -49,8 +49,6 @@ pub(super) struct HourInput {
     pub design_read_hour: Option<i32>,
     pub organisation_read_hour: Option<i32>,
     pub icons: BTreeMap<u64, IconChoice>,
-    pub localisation: Option<Arc<installed_content_localisation::localisation::Localisation>>,
-    pub language: Arc<str>,
 }
 
 impl HourInput {
@@ -61,7 +59,7 @@ impl HourInput {
                 .get(&variant)
                 .and_then(|read| read.author)
                 .and_then(|author| self.author_names.get(&author))
-                .map_or(0, pages::record_bytes)
+                .map_or(0, record_bytes)
     }
 
     pub fn output_due(&self, country: Option<Country>) -> Option<bool> {
@@ -103,45 +101,94 @@ pub(super) struct World {
     naming: Option<(i32, Vec<(u64, crate::products::equipment::VariantVersion)>)>,
     /// An icon rule's table changed at a quiet hour without a census since the last extract.
     pictured_changed: bool,
+    /// Variants whose versions changed since the last chunk, and since the last ledger record.
+    flushed: BTreeSet<u64>,
+    saved_variants: BTreeSet<u64>,
+    /// Definitions the cache took since the last ledger record.
+    saved_definitions: BTreeSet<u64>,
 }
 
-#[derive(Serialize, Deserialize)]
+/// The world in one ledger record: the latest version of each variant and the definitions
+/// the cache took since the record before, or all of them in a full record. A chunk is
+/// written before every record, so no icon event or pending version is left.
+#[derive(Clone, Debug, Default)]
 pub(super) struct WorldSaved {
-    variants: VariantCatalogue,
-    pending_bytes: usize,
-    icon_events: Vec<(u64, i32, IconChoice, bool)>,
+    full: bool,
+    variants: BTreeMap<u64, Vec<crate::products::equipment::VariantVersion>>,
+    last_hour: Option<i32>,
     definitions: Vec<u8>,
     definition_count: usize,
     revision: u64,
 }
 
 impl World {
-    pub fn save(&self) -> io::Result<WorldSaved> {
+    /// The variants whose versions the next chunk holds.
+    pub fn take_flushed(&mut self) -> BTreeSet<u64> {
+        std::mem::take(&mut self.flushed)
+    }
+
+    /// Marks a variant whose versions a test edited as the next chunk's and ledger record's.
+    #[cfg(test)]
+    pub fn touch_variant(&mut self, id: u64) {
+        self.flushed.insert(id);
+        self.saved_variants.insert(id);
+    }
+
+    pub fn save(&mut self, full: bool) -> io::Result<WorldSaved> {
+        let variants = std::mem::take(&mut self.saved_variants);
+        let definitions = std::mem::take(&mut self.saved_definitions);
+        let rows: Vec<VariantDefinitionRow> = if full {
+            self.definitions.values().cloned().collect()
+        } else {
+            definitions
+                .iter()
+                .filter_map(|id| self.definitions.get(id).cloned())
+                .collect()
+        };
         Ok(WorldSaved {
-            variants: self.variants.clone(),
-            pending_bytes: self.pending_bytes,
-            icon_events: self.icon_events.clone(),
-            definitions: saved::encode(replay_data::rows::TableRows::VariantDefinitions(
-                self.definitions.values().cloned().collect(),
-            ))?,
-            definition_count: self.definitions.len(),
+            full,
+            variants: if full {
+                self.variants.versions.clone()
+            } else {
+                variants
+                    .iter()
+                    .filter_map(|id| Some((*id, self.variants.versions.get(id)?.clone())))
+                    .collect()
+            },
+            last_hour: self.variants.last_hour(),
+            definition_count: rows.len(),
+            definitions: index::encode_row(replay_data::rows::TableRows::VariantDefinitions(rows))?,
             revision: self.revision,
         })
     }
-    pub fn restore(saved: WorldSaved) -> io::Result<Self> {
-        let mut decoder = replay_data::codec::Decoder::new(&saved.definitions);
-        let replay_data::rows::TableRows::VariantDefinitions(rows) =
-            TableId::VariantDefinitions.decode_rows(saved.definition_count, &mut decoder)?
-        else {
-            return Err(crate::invalid("Invalid production definitions"));
-        };
-        decoder.finish()?;
+
+    /// The world the ledger records hold, applied in order from the last full one.
+    pub fn resume(saved: Vec<WorldSaved>) -> io::Result<Self> {
+        let mut versions = BTreeMap::new();
+        let mut definitions = BTreeMap::new();
+        let mut last_hour = None;
+        let mut revision = 0;
+        for saved in saved {
+            if saved.full {
+                versions.clear();
+                definitions.clear();
+            }
+            let mut decoder = replay_data::codec::Decoder::new(&saved.definitions);
+            let replay_data::rows::TableRows::VariantDefinitions(rows) =
+                TableId::VariantDefinitions.decode_rows(saved.definition_count, &mut decoder)?
+            else {
+                return Err(crate::invalid("Invalid production definitions"));
+            };
+            decoder.finish()?;
+            definitions.extend(rows.into_iter().map(|row| (row.id, row)));
+            versions.extend(saved.variants);
+            last_hour = saved.last_hour;
+            revision = saved.revision;
+        }
         Ok(Self {
-            variants: saved.variants,
-            pending_bytes: saved.pending_bytes,
-            icon_events: saved.icon_events,
-            definitions: rows.into_iter().map(|row| (row.id, row)).collect(),
-            revision: saved.revision,
+            variants: VariantCatalogue::resumed(versions, last_hour),
+            definitions,
+            revision,
             ..Self::default()
         })
     }
@@ -350,8 +397,12 @@ impl World {
         };
         self.pending_bytes += naming
             .iter()
-            .map(|(_, version)| pages::record_bytes(version))
+            .map(|(_, version)| record_bytes(version))
             .sum::<usize>();
+        for (id, _) in &naming {
+            self.flushed.insert(*id);
+            self.saved_variants.insert(*id);
+        }
         let changed = |table: TableId| {
             relevant(changes, table)
                 && self
@@ -407,6 +458,7 @@ impl World {
                     }
                     if refresh.contains(&definition.id) {
                         self.definitions.insert(definition.id, definition.clone());
+                        self.saved_definitions.insert(definition.id);
                         crate::prepared::prepass::note("production-lines.definition_projection");
                     }
                 }
@@ -521,8 +573,6 @@ impl World {
             design_read_hour: design_hour,
             organisation_read_hour: None,
             icons: BTreeMap::new(),
-            localisation: catalogue.map(|catalogue| Arc::clone(&catalogue.localisation)),
-            language: recorded_language(replay),
         });
         input.hour = hour;
         input.last_hour = hour;
@@ -886,7 +936,7 @@ impl World {
                     && self.definitions.contains_key(&id)
                     && (refresh.contains(&id) || naming.iter().any(|(changed, _)| *changed == id))
                 {
-                    self.pending_bytes += pages::record_bytes(&icon);
+                    self.pending_bytes += record_bytes(&icon);
                     self.icon_events
                         .push((id, hour, icon.clone(), altered.contains(&id)));
                 }
@@ -908,41 +958,6 @@ impl World {
         self.last_hour = Some(hour);
         Ok(input)
     }
-}
-
-/// The bytes the scan now holds beyond what it did.
-pub(super) fn observe_design(scanned: &mut ScannedLines, input: &HourInput, variant: u64) -> usize {
-    let read = DesignRead {
-        first_hour: input.hour,
-        read_hour: input
-            .designs
-            .get(&variant)
-            .and_then(|_| input.design_read_hour),
-        ..input.designs.get(&variant).copied().unwrap_or_default()
-    };
-    let pushed = version(scanned.designs.entry(variant).or_default(), read, |a, b| {
-        DesignRead {
-            first_hour: 0,
-            ..*a
-        } == DesignRead {
-            first_hour: 0,
-            ..*b
-        }
-    });
-    let mut added = usize::from(pushed) * std::mem::size_of::<DesignRead>();
-    if let Some(author) = read.author.filter(|id| *id != 0)
-        && input.author_names_due
-        && !scanned.organisations.contains_key(&author)
-        && let Some(raw) = input.author_names.get(&author)
-    {
-        let raw = RawOrganisation {
-            first_hour: input.hour,
-            ..raw.clone()
-        };
-        added += pages::record_bytes(&raw);
-        scanned.organisations.insert(author, vec![raw]);
-    }
-    added
 }
 
 struct PreparedTables;
@@ -1002,9 +1017,9 @@ fn organisation_tokens(
 }
 
 product_codec::product! { impl WorldSaved {
-    variants: VariantCatalogue,
-    pending_bytes: usize,
-    icon_events: Vec<(u64, i32, IconChoice, bool)>,
+    full: bool,
+    variants: BTreeMap<u64, Vec<crate::products::equipment::VariantVersion>>,
+    last_hour: Option<i32>,
     definitions: Vec<u8>,
     definition_count: usize,
     revision: u64,

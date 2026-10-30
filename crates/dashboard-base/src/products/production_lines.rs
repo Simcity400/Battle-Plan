@@ -14,7 +14,8 @@
 //! a large country's lines too big for one reply. Full histories grow with the
 //! campaign; every reply is measured and refused past [`MAX_REPLY_BYTES`].
 //!
-//! Preparation observes every recorded country; requests read its published pages.
+//! Preparation observes every recorded country and appends what each read recorded to the
+//! branch's index once; each request reads only the parts of it that it answers from.
 //!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
@@ -86,23 +87,35 @@ use std::{
 use ts_rs::TS;
 
 mod breakdown;
+mod index;
 mod input;
-mod pages;
 pub mod prepared;
-mod private;
+mod read;
 #[cfg(test)]
 mod reference;
+#[cfg(test)]
 mod saved;
 pub use breakdown::{
     ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
     ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun, factory_output,
 };
-pub use saved::{SavedLines, SavedModifierRun};
+#[cfg(test)]
+use saved::SavedLines;
 
 pub const PREPARED_PRODUCTS: &[&str] = &[
     "production-lines",
     "production-line-detail",
     "production-line-breakdown",
+];
+
+/// The stems of every section production lines publish.
+pub const SECTIONS: &[&str] = &[
+    "production-lines",
+    index::INDEX,
+    index::COMMITS,
+    index::LEDGER,
+    index::CHUNKS,
+    index::ABSENCE,
 ];
 
 pub struct ProductionLines;
@@ -658,7 +671,27 @@ fn output_of(rows: &[(&ProductionLineOutputRow, bool)], hour: i32) -> RawOutput 
     }
 }
 
+// The JSON charge also covers inline slots in nested string and tuple vectors.
+fn record_bytes<T: Serialize>(value: &T) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    if serde_json::to_writer(&mut count, value).is_err() {
+        return crate::prepared::pages::BATCH_BYTES;
+    }
+    (std::mem::size_of::<T>() + count.0).saturating_mul(8)
+}
+
 /// Pushes a version when it differs from the last, whatever hour it is from; whether it did.
+#[cfg(test)]
 fn version<T: Clone + PartialEq>(
     versions: &mut Vec<T>,
     value: T,
@@ -713,7 +746,8 @@ fn append_design_runs(
 }
 
 /// A line open at the last read: where it is in `lines`.
-#[derive(Clone, Serialize, Deserialize)]
+#[cfg(test)]
+#[derive(Clone)]
 struct Open {
     index: usize,
 }
@@ -788,6 +822,7 @@ impl Country {
 }
 
 /// Extend each open line through consecutive hours with equal availability.
+#[cfg(test)]
 fn carry_lines(
     result: &mut ScannedLines,
     open: &BTreeMap<u64, Open>,
@@ -996,12 +1031,31 @@ pub fn variant_entries(
                 .chain(parts)
         })
         .collect();
+    named_variants(
+        &used,
+        &scanned.variants,
+        &scanned.icons,
+        texts,
+        has_content,
+        shown,
+    )
+}
+
+/// [`variant_entries`] of the `used` variants, named from `catalogue` and pictured from
+/// `icons`.
+fn named_variants(
+    used: &BTreeSet<u64>,
+    catalogue: &VariantCatalogue,
+    icons: &BTreeMap<u64, Vec<IconAt>>,
+    texts: Option<&dyn Texts>,
+    has_content: bool,
+    shown: &mut dyn FnMut(&IconChoice) -> Result<Option<String>, String>,
+) -> (Vec<VariantName>, usize, BTreeSet<String>) {
     let mut variants = Vec::new();
     let mut unnamed = 0;
     let mut unknown_icons = BTreeSet::new();
-    for id in &used {
-        let versions = scanned
-            .variants
+    for id in used {
+        let versions = catalogue
             .versions
             .get(id)
             .map(Vec::as_slice)
@@ -1010,7 +1064,7 @@ pub fn variant_entries(
             unnamed += 1;
             continue;
         }
-        let icons_at: &[IconAt] = scanned.icons.get(id).map_or(&[], Vec::as_slice);
+        let icons_at: &[IconAt] = icons.get(id).map_or(&[], Vec::as_slice);
         let mut hours: Vec<i32> = versions
             .iter()
             .map(|version| version.first_hour)
@@ -1018,7 +1072,7 @@ pub fn variant_entries(
             .collect();
         hours.sort_unstable();
         hours.dedup();
-        let token = scanned.variants.token(*id);
+        let token = catalogue.token(*id);
         let mut previous: Option<VariantName> = None;
         for hour in hours {
             // Nothing before the first read: unknown, never a later read's name.
@@ -1429,6 +1483,103 @@ pub fn detail_lines(scanned: &ScannedLines, first: i32, last: i32) -> Vec<LineDe
         .collect()
 }
 
+/// What `production-lines` sends of a prepared line: its life, steps and final count.
+fn history_line(line: &read::OverviewLine) -> LineHistory {
+    LineHistory {
+        key: line.key.clone(),
+        handle: line.handle.to_string(),
+        kind: line.kind,
+        steps: line
+            .steps
+            .iter()
+            .map(|step| LineStep {
+                first_hour: step.first_hour,
+                last_hour: step.last_hour,
+                starts_segment: step.starts_segment,
+                variant: step.variant.to_string(),
+                active_factories: step.active_factories,
+                requested_factories: step.requested_factories,
+            })
+            .collect(),
+        final_output: line.final_output.as_ref().map(OutputRun::from),
+        ended_by: line.ended_by,
+        before_recording: line.before_recording,
+        between_reads: line.between_reads,
+        variants: line.variants.iter().map(u64::to_string).collect(),
+    }
+}
+
+/// [`detail_lines`] of a window the index read: every line's runs and output reads that
+/// hold any hour from `first` to `last`, whole, with the overlays they need.
+fn window_details(window: &read::Window, first: i32, last: i32) -> Vec<LineDetail> {
+    let overlaps = |from: i32, to: i32| from <= last && to >= first;
+    window
+        .lines
+        .iter()
+        .filter_map(|line| {
+            let mut runs = Vec::new();
+            for run in &line.runs {
+                if overlaps(run.first_hour, run.last_hour) {
+                    append_design_runs(
+                        &mut runs,
+                        run,
+                        window
+                            .designs
+                            .get(&run.variant)
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                        first,
+                        last,
+                    );
+                }
+            }
+            let output: Vec<OutputRun> = line
+                .output
+                .iter()
+                .filter(|output| overlaps(output.first_hour, output.last_hour))
+                .map(OutputRun::from)
+                .collect();
+            let demanded: BTreeSet<_> = line
+                .runs
+                .iter()
+                .filter(|run| overlaps(run.first_hour, run.last_hour))
+                .map(|run| run.mio)
+                .filter(|&id| id != 0)
+                .collect();
+            let organisations = demanded
+                .into_iter()
+                .flat_map(|id| {
+                    let versions = window
+                        .organisations
+                        .get(&id)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    versions
+                        .iter()
+                        .enumerate()
+                        .filter(move |(index, raw)| {
+                            raw.first_hour <= last
+                                && versions
+                                    .get(index + 1)
+                                    .is_none_or(|next| next.first_hour > first)
+                        })
+                        .map(move |(_, raw)| OrganisationStateRead {
+                            id: id.to_string(),
+                            first_hour: raw.first_hour,
+                            state: raw.state.clone(),
+                        })
+                })
+                .collect();
+            (!runs.is_empty() || !output.is_empty()).then(|| LineDetail {
+                organisations,
+                key: line.key.clone(),
+                runs,
+                output,
+            })
+        })
+        .collect()
+}
+
 /// Refuses a reply past [`MAX_REPLY_BYTES`], measured before it is sent, with what
 /// to do instead.
 fn bounded<T: Serialize>(reply: T, what: &str, instead: &str) -> io::Result<T> {
@@ -1569,96 +1720,143 @@ fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
         .map(|block| (block.first_hour, block.last_hour, block.offset))
 }
 
-fn scanned_lines(
+/// A branch's prepared index opened for one view (a literal tag's, or a native holder's),
+/// with the content its replies name and draw with.
+struct Opened {
+    catalogue: Option<Arc<Catalogue>>,
+    index: read::Index<'static>,
+    history: u64,
+    approximate: Vec<super::country_groups::HourSpan>,
+}
+
+/// The hours beyond the published prefix, while preparation is still behind the branch.
+fn approximate(
     source: &Source,
-    params: &CountryParams,
-    holder: Option<prepared::NativeCountry>,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-    warnings: &mut Vec<String>,
-) -> io::Result<(Option<Arc<Catalogue>>, Arc<ScannedLines>)> {
-    let (catalogue, scanned, approximate) =
-        scanned_view(source, params, holder, context, cancelled, warnings)?;
+    branch: u64,
+    coverage: &crate::prepared::coverage::Coverage,
+) -> Vec<super::country_groups::HourSpan> {
+    if coverage.complete {
+        return Vec::new();
+    }
+    let last = branch_blocks(source.replay_ref(), branch)
+        .last()
+        .map_or(coverage.last_hour, |block| block.last_hour);
+    coverage
+        .last_hour
+        .checked_add(1)
+        .filter(|first| *first <= last)
+        .map(|first_hour| {
+            vec![super::country_groups::HourSpan {
+                first_hour,
+                last_hour: last,
+            }]
+        })
+        .unwrap_or_default()
+}
+
+fn prefix_warning(approximate: &[super::country_groups::HourSpan], warnings: &mut Vec<String>) {
     if let Some(span) = approximate.first() {
         warnings.push(format!(
             "Production history from hour {} is still being prepared; missing reads are unknown.",
             span.first_hour
         ));
     }
-    Ok((catalogue, scanned))
 }
 
-type ScannedView = (
-    Option<Arc<Catalogue>>,
-    Arc<ScannedLines>,
-    Vec<super::country_groups::HourSpan>,
-);
-
-fn scanned_view(
-    source: &Source,
-    params: &CountryParams,
-    holder: Option<prepared::NativeCountry>,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
+/// The warnings every reply of a view carries beside the catalogue's: each refused modifier
+/// layout's. A view whose modifier reads were named with content now missing is refused.
+fn view_warnings(
+    index: &mut read::Index<'_>,
+    history: u64,
+    catalogue: Option<&Catalogue>,
     warnings: &mut Vec<String>,
-) -> io::Result<ScannedView> {
-    let (catalogue, icons) = scan_content(source, context, warnings);
-    #[cfg(test)]
-    let reference = reference::selected(source, holder.as_ref());
-    #[cfg(not(test))]
-    let reference: Option<ScannedLines> = None;
-    let (scanned, coverage) = match reference {
-        Some(scanned) => (
-            scanned,
-            crate::prepared::coverage::Coverage {
-                schema: crate::prepared::coverage::SCHEMA,
-                first_hour: branch_blocks(source.replay_ref(), params.branch())
-                    .first()
-                    .unwrap()
-                    .first_hour,
-                last_hour: branch_blocks(source.replay_ref(), params.branch())
-                    .last()
-                    .unwrap()
-                    .last_hour,
-                complete: true,
-            },
-        ),
-        None => prepared::query(
-            source,
-            context,
-            params.branch(),
-            &params.tag,
-            holder,
-            icons.as_deref(),
-            catalogue.as_deref(),
-            cancelled,
-        )?,
-    };
-    let approximate = if coverage.complete {
-        Vec::new()
-    } else {
-        let last = branch_blocks(source.replay_ref(), params.branch())
-            .last()
-            .map_or(coverage.last_hour, |block| block.last_hour);
-        coverage
-            .last_hour
-            .checked_add(1)
-            .filter(|first| *first <= last)
-            .map(|first_hour| {
-                vec![super::country_groups::HourSpan {
-                    first_hour,
-                    last_hour: last,
-                }]
-            })
-            .unwrap_or_default()
-    };
+) -> io::Result<()> {
+    let counters = index.counters(history)?;
+    if index.directory.localised && catalogue.is_none() && counters.modified {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "saved production scan: its content's localisation is not loaded",
+        ));
+    }
     warnings.extend(
-        scanned
-            .modifier_layout_refusals
+        counters
+            .refusals
             .iter()
             .map(|(reason, count)| format!("{reason} ({count} supplying reads)")),
     );
-    Ok((catalogue, Arc::new(scanned), approximate))
+    Ok(())
+}
+
+fn opened(
+    source: &Source,
+    params: &CountryParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+    warnings: &mut Vec<String>,
+) -> io::Result<Opened> {
+    let (catalogue, icons) = scan_content(source, context, warnings);
+    let mut index = prepared::open(
+        source,
+        context,
+        params.branch(),
+        icons.as_deref(),
+        cancelled,
+    )?;
+    let history = index.tag_history(&params.tag);
+    view_warnings(&mut index, history, catalogue.as_deref(), warnings)?;
+    let approximate = approximate(source, params.branch(), &index.directory.coverage);
+    Ok(Opened {
+        catalogue,
+        index,
+        history,
+        approximate,
+    })
+}
+
+/// The native `holder`'s view of an opened index, with the warnings opening a second view adds.
+fn holder_view(
+    source: &Source,
+    context: &LoadContext,
+    params: &CountryParams,
+    index: &mut read::Index<'_>,
+    holder: &prepared::NativeCountry,
+    warnings: &mut Vec<String>,
+) -> io::Result<u64> {
+    let (catalogue, _) = scan_content(source, context, warnings);
+    let history = index
+        .native_history(holder)
+        .ok_or_else(|| crate::invalid("Production country identity is not prepared"))?;
+    view_warnings(index, history, catalogue.as_deref(), warnings)?;
+    prefix_warning(
+        &approximate(source, params.branch(), &index.directory.coverage),
+        warnings,
+    );
+    Ok(history)
+}
+
+/// The variants' versions and icon events of the index, kept per publication.
+fn variant_fold(
+    source: &Source,
+    index: &mut read::Index<'_>,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<read::VariantFold>> {
+    match (index.binding.clone(), index.publication) {
+        (Some(binding), Some(publication)) => crate::prepared::query::observations::scope(
+            source,
+            "production-lines:variants",
+            Some(&binding),
+        )
+        .get_entry(
+            branch,
+            &(),
+            &(index::commits_section(branch), publication),
+            cancelled,
+            read::VariantFold::bytes,
+            || index.variants(cancelled),
+        ),
+        _ => index.variants(cancelled).map(Arc::new),
+    }
 }
 
 impl Product for ProductionLines {
@@ -1693,15 +1891,17 @@ impl Product for ProductionLines {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        #[cfg(test)]
+        if reference::installed(source) {
+            return reference::lines(source, params, context, cancelled);
+        }
         let mut warnings = Vec::new();
-        let (catalogue, scanned, approximate) = scanned_view(
-            source,
-            &params.country(),
-            None,
-            context,
-            cancelled,
-            &mut warnings,
-        )?;
+        let Opened {
+            catalogue,
+            mut index,
+            history,
+            approximate,
+        } = opened(source, &params.country(), context, cancelled, &mut warnings)?;
         if params.exact == Some(true) && !approximate.is_empty() {
             return Err(crate::invalid("Production lines are still being prepared"));
         }
@@ -1711,12 +1911,15 @@ impl Product for ProductionLines {
                 params.tag
             ));
         }
+        let mut overview = index.overview(history, cancelled)?;
+        let fold = variant_fold(source, &mut index, params.country().branch(), cancelled)?;
+        let mut icons = std::mem::take(&mut overview.icons);
+        read::merge_icons(&mut icons, &fold.icons, cancelled)?;
         let texts = catalogue
             .as_ref()
             .map(|catalogue| catalogue.as_ref() as &dyn Texts);
-        // The scan keeps each variant's icon as a choice with its artwork questions open
-        // (kept with prepared scans too); this reply answers them, and draws the icon, as the
-        // request's selection shows it.
+        // The index keeps each variant's icon as a choice with its artwork questions open;
+        // this reply answers them, and draws the icon, as the request's selection shows it.
         let pictured = catalogue.as_ref().map(|_| {
             context
                 .content()
@@ -1737,8 +1940,10 @@ impl Product for ProductionLines {
                 }
                 _ => Err("Equipment icons need the game folders.".to_owned()),
             };
-            variant_entries(
-                &scanned,
+            named_variants(
+                &overview.used,
+                &fold.catalogue,
+                &icons,
                 texts,
                 catalogue.is_some(),
                 &mut |choice: &IconChoice| {
@@ -1753,13 +1958,13 @@ impl Product for ProductionLines {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancelled_error());
         }
-        warnings.extend(scanned.variants.warnings());
+        warnings.extend(fold.catalogue.warnings());
         let pictured = pictured.and_then(Result::ok);
         // Organisations: each one's choice of sprite and its picture drawn as one operation from
         // the selection, kept per catalogue, its picture under the picture's key.
         let mut organisations = Vec::new();
         let state = source.state::<Cache>();
-        for (id, versions) in &scanned.organisations {
+        for (id, versions) in &overview.organisations {
             let mut previous: Option<OrganisationName> = None;
             for raw in versions {
                 if cancelled.load(Ordering::Acquire) {
@@ -1804,36 +2009,37 @@ impl Product for ProductionLines {
         if unnamed > 0 {
             warnings.push(format!("{unnamed} produced variants have no recorded definition in this branch; they are shown by id."));
         }
-        if scanned.unknown_kinds > 0 {
+        let counters = &overview.counters;
+        if counters.unknown_kinds > 0 {
             warnings.push(format!(
                 "{} recorded line reads are of an unknown native class; they are left out.",
-                scanned.unknown_kinds
+                counters.unknown_kinds
             ));
         }
-        if scanned.unlisted_output > 0 {
+        if counters.unlisted_output > 0 {
             warnings.push(format!(
                 "{} output reads name a line no census listed without its final count; they are left out.",
-                scanned.unlisted_output
+                counters.unlisted_output
             ));
         }
-        if scanned.unread_output_reads > 0 || scanned.unreadable_stretches > 0 {
-            let stretches = match scanned.unreadable_stretches {
+        if counters.unread_output_reads > 0 || counters.unreadable_stretches > 0 {
+            let stretches = match counters.unreadable_stretches {
                 0 => String::new(),
                 count => format!(", nor {count} stretches of the recording"),
             };
             warnings.push(format!(
                 "{} daily production output reads of {} could not be read{stretches}, so lines made and ended then may be missing and their final counts are not recorded; the history marks those hours.",
-                scanned.unread_output_reads, params.tag
+                counters.unread_output_reads, params.tag
             ));
         }
-        if scanned.unlinked_rows > 0 {
+        if counters.unlinked_rows > 0 {
             warnings.push(format!(
                 "{} production rows name a producer the recording does not link to a country; those naming a line of {} are kept with counts that are not exact, the others are left out.",
-                scanned.unlinked_rows, params.tag
+                counters.unlinked_rows, params.tag
             ));
         }
         // A first view without reads says nothing of the hours before it.
-        if scanned.reads.is_empty() && approximate.is_empty() {
+        if overview.reads.is_empty() && approximate.is_empty() {
             warnings.push(format!(
                 "{}: no recorded production lines in this branch",
                 params.tag
@@ -1847,15 +2053,15 @@ impl Product for ProductionLines {
                 branch_id: params.branch_id.clone(),
                 tag: params.tag.clone(),
                 decimals: EQUIPMENT_DECIMALS,
-                lines: scanned.lines.iter().map(line_history).collect(),
+                lines: overview.lines.iter().map(history_line).collect(),
                 variants,
                 organisations,
                 icons: icons_out,
-                reads: scanned.reads.clone(),
-                output_hours: scanned.output_hours.clone(),
-                line_hours: scanned.line_hours.clone(),
-                organisation_hours: scanned.organisation_hours.clone(),
-                unread_output: scanned.unread_output.clone(),
+                reads: overview.reads,
+                output_hours: overview.output_hours,
+                line_hours: overview.line_hours,
+                organisation_hours: overview.organisation_hours,
+                unread_output: overview.unread_output,
                 approximate,
                 detail_hours: DETAIL_HOURS,
                 warnings,
@@ -1899,15 +2105,25 @@ impl Product for ProductionLineDetail {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        #[cfg(test)]
+        if reference::installed(source) {
+            return reference::detail(source, params, context, cancelled);
+        }
         let country = CountryParams {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
         };
         let mut warnings = Vec::new();
-        let (_, scanned) =
-            scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
+        let Opened {
+            mut index,
+            history,
+            approximate,
+            ..
+        } = opened(source, &country, context, cancelled, &mut warnings)?;
+        prefix_warning(&approximate, &mut warnings);
         let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
-        let lines = detail_lines(&scanned, first_hour, last_hour);
+        let window = index.window(history, first_hour, last_hour, cancelled)?;
+        let lines = window_details(&window, first_hour, last_hour);
         warnings.sort();
         warnings.dedup();
         bounded(

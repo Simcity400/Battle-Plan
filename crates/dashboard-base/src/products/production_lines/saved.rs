@@ -1,18 +1,13 @@
-//! A country's whole-branch production scan as it is persisted ([`SavedLines`]),
-//! and restored to the scan the products answer from.
+//! A country's whole-branch production scan as it is persisted ([`SavedLines`]).
 //!
 //! Every value of [`ScannedLines`] is kept but the handles its modifier runs hold
 //! of the content they were read with (its localisation) and of the recording (its
-//! language): restoring takes them from the content and recording the saved scan
-//! is keyed by. Replay rows keep the recording's own row encoding, one row at a
+//! language). Replay rows keep the recording's own row encoding, one row at a
 //! time, and a country's modifier row that several runs share is kept once.
 
-use super::{RawRun, ScannedLine, ScannedLines, breakdown::RawModifierRun};
+use super::{RawRun, ScannedLine, ScannedLines};
 use crate::products::{country_groups::HourSpan, equipment::VariantCatalogue};
-use replay_data::{
-    rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow, rows::TableId,
-    rows::TableRows,
-};
+use replay_data::rows::{CountryProductionModifiersRow, TableRows};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -23,7 +18,7 @@ use std::{
     },
 };
 
-/// The saved layout's version: a scan saved by another is scanned again.
+/// The saved layout's version.
 pub const SCHEMA: u32 = 5;
 
 #[cfg(test)]
@@ -78,13 +73,6 @@ pub(super) fn encode(rows: TableRows) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     rows.encode_rows(&mut bytes)?;
     Ok(bytes)
-}
-
-pub(super) fn decode(table: TableId, bytes: &[u8]) -> io::Result<TableRows> {
-    let mut input = replay_data::codec::Decoder::new(bytes);
-    let rows = table.decode_rows(1, &mut input)?;
-    input.finish()?;
-    Ok(rows)
 }
 
 fn invalid(what: &str) -> io::Error {
@@ -166,82 +154,5 @@ impl SavedLines {
             unlinked_rows: scanned.unlinked_rows,
             unread_output: scanned.unread_output.clone(),
         })
-    }
-
-    /// The scan this holds, its modifier runs given the content's
-    /// `localisation` (required where the scan read one) and the recording's
-    /// `recorded_language`. None for a scan saved by another layout.
-    pub fn restore(
-        self,
-        localisation: Option<Arc<installed_content_localisation::localisation::Localisation>>,
-        recorded_language: Arc<str>,
-    ) -> io::Result<Option<ScannedLines>> {
-        if self.schema != SCHEMA {
-            return Ok(None);
-        }
-        let localisation = match (self.localised, localisation) {
-            (true, Some(localisation)) => Some(localisation),
-            (true, None) => return Err(invalid("its content's localisation is not loaded")),
-            (false, _) => None,
-        };
-        let countries: Vec<Arc<CountryProductionModifiersRow>> = self
-            .countries
-            .iter()
-            .map(
-                |bytes| match decode(TableId::CountryProductionModifiers, bytes)? {
-                    TableRows::CountryProductionModifiers(mut rows) if rows.len() == 1 => {
-                        Ok(Arc::new(rows.remove(0)))
-                    }
-                    _ => Err(invalid("a country modifier row does not decode")),
-                },
-            )
-            .collect::<io::Result<_>>()?;
-        let mut modifiers = BTreeMap::new();
-        for (key, runs) in self.modifiers {
-            let mut restored = Vec::with_capacity(runs.len());
-            for run in runs {
-                let line: ProductionLineModifiersRow =
-                    match decode(TableId::ProductionLineModifiers, &run.line)? {
-                        TableRows::ProductionLineModifiers(mut rows) if rows.len() == 1 => {
-                            rows.remove(0)
-                        }
-                        _ => return Err(invalid("a line modifier row does not decode")),
-                    };
-                restored.push(RawModifierRun {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                    country: Arc::clone(
-                        countries
-                            .get(run.country)
-                            .ok_or_else(|| invalid("a run names no country row"))?,
-                    ),
-                    line,
-                    run: run.run,
-                    organisation: run.organisation,
-                    localisation: localisation.clone(),
-                    recorded_language: Arc::clone(&recorded_language),
-                });
-            }
-            modifiers.insert(key, restored);
-        }
-        Ok(Some(ScannedLines {
-            lines: self.lines,
-            designs: self.designs,
-            modifiers,
-            modifier_layout_refusals: self.modifier_layout_refusals,
-            variants: self.variants,
-            icons: self.icons,
-            organisations: self.organisations,
-            reads: self.reads,
-            output_hours: self.output_hours,
-            line_hours: self.line_hours,
-            organisation_hours: self.organisation_hours,
-            unknown_kinds: self.unknown_kinds,
-            unlisted_output: self.unlisted_output,
-            unread_output_reads: self.unread_output_reads,
-            unreadable_stretches: self.unreadable_stretches,
-            unlinked_rows: self.unlinked_rows,
-            unread_output: self.unread_output,
-        }))
     }
 }

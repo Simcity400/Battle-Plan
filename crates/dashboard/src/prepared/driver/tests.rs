@@ -117,6 +117,26 @@ fn every_section_has_one_exact_owner() {
             "production-lines-state-v2-1-0",
             Some(Owner::Job("production-lines")),
         ),
+        (
+            "production-index-v3-1",
+            Some(Owner::Job("production-lines")),
+        ),
+        (
+            "production-commits-v3-1",
+            Some(Owner::Job("production-lines")),
+        ),
+        (
+            "production-ledger-v2-1",
+            Some(Owner::Job("production-lines")),
+        ),
+        (
+            "production-chunks-v1-1",
+            Some(Owner::Job("production-lines")),
+        ),
+        (
+            "production-absence-v1-1",
+            Some(Owner::Job("production-lines")),
+        ),
         ("occupation-3", Some(family("occupation"))),
         (
             "occupation-reserve-values-3",

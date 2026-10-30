@@ -36,7 +36,7 @@ fn recording() -> Replay {
         .unwrap()
 }
 
-fn restore(pages: &mut fixtures::FixturePages, replay: &Replay) -> Prepared {
+pub(super) fn restore(pages: &mut fixtures::FixturePages, replay: &Replay) -> Prepared {
     restore_branch(pages, replay, 1)
 }
 fn restore_branch(pages: &mut fixtures::FixturePages, replay: &Replay, branch: u64) -> Prepared {
@@ -50,9 +50,81 @@ fn restore_branch(pages: &mut fixtures::FixturePages, replay: &Replay, branch: u
         .unwrap()
         .expect("real resume binding")
 }
-/// A whole scan as its pages hold it, to compare scans byte for byte.
+/// A whole scan in the old saved layout, to compare scans byte for byte.
 fn saved_bytes(scan: &ScannedLines) -> Vec<u8> {
     serde_json::to_vec(&SavedLines::save(scan, &AtomicBool::new(false)).unwrap()).unwrap()
+}
+
+/// Pages read through a closure, as a query reads them.
+struct ReadPages<F>(F);
+impl<F: FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>> Pages for ReadPages<F> {
+    fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+        (self.0)(section, range)
+    }
+    fn write_at(&mut self, _: &str, _: u64, _: &[u8]) -> io::Result<()> {
+        Err(crate::invalid("Production query cannot write pages"))
+    }
+    fn write(&mut self, _: &str, _: &[u8]) -> io::Result<u64> {
+        Err(crate::invalid("Production query cannot write pages"))
+    }
+}
+
+fn tag_key(tag: &str) -> String {
+    format!(
+        "tag-{}",
+        tag.bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+fn native_key(country: &NativeCountry) -> String {
+    format!("native-{}-{}-{}", country.slot, country.id, country.epoch)
+}
+
+/// The whole scan the index serves for `selected`: a tag's key or a native country's.
+fn assemble(
+    directory: &Directory,
+    selected: &str,
+    catalogue: Option<&Catalogue>,
+    language: Arc<str>,
+    cancelled: &AtomicBool,
+    read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
+) -> io::Result<ScannedLines> {
+    let mut index = read::Index::open(Box::new(ReadPages(read)), directory.clone())?;
+    let history = if let Some(hex) = selected.strip_prefix("tag-") {
+        let bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect();
+        index.tag_history(std::str::from_utf8(&bytes).unwrap())
+    } else {
+        let parts: Vec<&str> = selected
+            .strip_prefix("native-")
+            .unwrap()
+            .split('-')
+            .collect();
+        let country = NativeCountry {
+            slot: parts[0].parse().unwrap(),
+            id: parts[1].parse().unwrap(),
+            epoch: parts[2].parse().unwrap(),
+        };
+        index
+            .native_history(&country)
+            .ok_or_else(|| crate::invalid("Production country identity is not prepared"))?
+    };
+    let localisation = catalogue
+        .filter(|_| directory.localised)
+        .map(|catalogue| Arc::clone(&catalogue.localisation));
+    index.scanned(history, localisation, language, cancelled)
+}
+
+fn read_country_at(
+    directory: &Directory,
+    tag: &str,
+    hour: i32,
+    read: impl FnMut(&str, u64) -> io::Result<Option<Vec<u8>>>,
+) -> io::Result<Option<NativeCountry>> {
+    read::Index::open(Box::new(ReadPages(read)), directory.clone())?.country_at(tag, hour)
 }
 
 /// The tag's scan as a query assembles it from the prepared pages.
@@ -75,15 +147,13 @@ fn served(
     )
 }
 
-fn known(prepared: &Prepared, pages: &mut fixtures::FixturePages) -> BTreeSet<String> {
-    let mut keys: BTreeSet<_> = prepared.native.keys().map(native_key).collect();
-    private::Store::new(pages, 1)
-        .visit(prepared.directory.index, "native-", &mut |key, _| {
-            keys.insert(key.into());
-            Ok(())
-        })
-        .unwrap();
-    keys
+fn known(prepared: &Prepared, _pages: &mut fixtures::FixturePages) -> BTreeSet<String> {
+    prepared
+        .native
+        .keys()
+        .chain(prepared.retired.keys())
+        .map(native_key)
+        .collect()
 }
 
 #[test]
@@ -399,7 +469,7 @@ fn a_prefix_stays_readable_and_missing_pages_are_refused() {
     assert_eq!(result.lines[0].output.last().unwrap().last_hour, FIRST);
     pages
         .pages
-        .retain(|(section, _), _| section != &history_section(1));
+        .retain(|(section, _), _| section != &index::index_section(1));
     assert!(
         assemble(
             &prepared.directory,
@@ -446,8 +516,7 @@ fn surrender_target_changes_keep_one_production_lifetime_and_alias() {
     assert_eq!(countries.len(), 1);
     assert_eq!(
         prepared
-            .directory
-            .aliases
+            .aliases_spans
             .iter()
             .filter(|alias| alias.tag == "GER")
             .count(),
@@ -480,8 +549,7 @@ fn a_new_published_country_link_cannot_reuse_the_previous_production_lifetime() 
             .any(|country| country.starts_with("native-7-9002-"))
     );
     let aliases: Vec<_> = prepared
-        .directory
-        .aliases
+        .aliases_spans
         .iter()
         .filter(|alias| alias.tag == "GER")
         .collect();
@@ -490,30 +558,28 @@ fn a_new_published_country_link_cannot_reuse_the_previous_production_lifetime() 
 }
 
 #[test]
-fn completed_runs_leave_only_active_tails_and_latest_line_indexes() {
+fn each_publication_only_appends_and_keeps_only_carried_entries_pending() {
     let replay = recording();
     let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
     let mut pages = fixtures::FixturePages::default();
     let flag = AtomicBool::new(false);
     for (position, block) in replay.index.iter().enumerate() {
+        let before = pages.pages.clone();
         prepared
             .advance_block(&mut pages, &replay, position, None, &flag)
             .unwrap();
         prepared.publish(&mut pages, &replay, block, &flag).unwrap();
-        for country in prepared
-            .native
-            .values()
-            .chain(prepared.aliases.values().filter_map(TagCountry::projection))
-        {
-            assert!(
-                country
-                    .state
-                    .result
-                    .lines
-                    .iter()
-                    .all(|line| line.runs.len() <= 1 && line.output.len() <= 1)
-            );
-            assert!(country.state.result.reads.is_empty());
+        for (key, bytes) in &before {
+            if key.0 != directory_section(1) && key.0 != coverage_section(1) {
+                assert_eq!(pages.pages.get(key), Some(bytes), "rewrote {key:?}");
+            }
+        }
+        for history in prepared.histories() {
+            let events = &history.state.events;
+            assert_eq!(events.detail.runs.len(), 0);
+            assert!(events.detail.outputs.is_empty());
+            assert!(events.overview.reads.is_empty());
+            assert!(events.overview.lives.is_empty());
         }
     }
     let result = assemble(
@@ -754,13 +820,13 @@ fn private_spills_preserve_completed_bytes_and_page_alias_history() {
             prepared
                 .publish(&mut pages, &replay, block, &cancelled)
                 .unwrap();
-            assert!(prepared.directory.aliases.len() <= 2);
+            assert!(prepared.aliases_spans.len() <= 2);
         }
         (prepared, pages)
     };
     let (ordinary, mut left) = prepare(usize::MAX);
     let (spilled, mut right) = prepare(1);
-    assert!(spilled.directory.pages > ordinary.directory.pages);
+    assert!(spilled.chunks >= ordinary.chunks);
     for tag in ["GER", "ITA"] {
         assert_eq!(
             served(&ordinary.directory, &replay, tag, |section, range| left
@@ -783,7 +849,7 @@ fn private_spills_preserve_completed_bytes_and_page_alias_history() {
 }
 
 #[test]
-fn non_flushing_continuation_keeps_pending_records_before_observing_more() {
+fn a_checkpoint_between_blocks_resumes_what_an_uninterrupted_preparation_publishes() {
     let replay = recording();
     let flag = AtomicBool::new(false);
     let mut uninterrupted = Prepared::new(&replay, 1, ["GER".into(), "ITA".into()], None);
@@ -800,14 +866,13 @@ fn non_flushing_continuation_keeps_pending_records_before_observing_more() {
         if position + 1 < replay.index.len() {
             let block = &replay.index[position];
             resumed.directory.last_block = Some((block.first_hour, block.last_hour, block.offset));
-            pages::write_json(&mut right, &directory_section(1), 0, &resumed.directory).unwrap();
             resumed.save(&mut right, &flag).unwrap();
             resumed = restore(&mut right, &replay);
             assert!(
                 resumed
                     .native
                     .values()
-                    .any(|country| country.state.pending_bytes != 0)
+                    .any(|country| !country.state.open.is_empty())
             );
         }
     }
@@ -831,7 +896,7 @@ fn replay_frames(frames: Vec<DecodedFrame>) -> Replay {
     replay
 }
 
-fn authored(
+pub(super) fn authored(
     hour: i32,
     lines: &[(u64, u64, i32, i64)],
     output: &[(u64, u64, i64, bool, bool)],
@@ -1115,15 +1180,6 @@ fn assert_reference_publication_tags(
                 prepared.flush(&mut pages, &flag).unwrap();
             }
             if checkpoint && position + 1 < replay.index.len() {
-                if !spill {
-                    assert!(
-                        prepared.native.values().any(|country| !country
-                            .state
-                            .result
-                            .reads
-                            .is_empty())
-                    );
-                }
                 prepared.directory.last_block =
                     Some((block.first_hour, block.last_hour, block.offset));
                 prepared.save(&mut pages, &flag).unwrap();
@@ -1165,67 +1221,28 @@ fn assert_reference_publication_tags(
                 "{tag}: spill={spill}, checkpoint={checkpoint}"
             );
         }
-        // A query keeps one fold of the variant pages for every country.
-        let fold = Arc::new(
-            fold_variants(
-                &prepared.directory,
-                &flag,
-                &mut |section: &str, range: u64| pages.read_at(section, range),
-            )
-            .unwrap(),
-        );
-        let every = std::iter::once(("GER", &baseline))
-            .chain(others.iter().copied().zip(other_baselines.iter()));
-        for (tag, baseline) in every {
-            let actual = assemble_with(
-                &prepared.directory,
-                &tag_key(tag),
-                None,
-                recorded_language(replay),
-                &flag,
-                |section, range| pages.read_at(section, range),
-                |_| Ok(Arc::clone(&fold)),
-            )
-            .unwrap();
-            assert_eq!(
-                saved_bytes(&actual),
-                *baseline,
-                "{tag} from a shared fold: spill={spill}, checkpoint={checkpoint}"
-            );
-        }
-        // The same pages opened from a store, read ahead on spare cores, fold alike.
+        // The same pages opened from a store answer alike.
         let stored = crate::prepared::series::tests::Fixture::new();
         let mut writer = stored.writer();
         for ((section, range), bytes) in &pages.pages {
             writer.write_at(section, *range, bytes.as_slice()).unwrap();
         }
         writer.commit().unwrap();
-        let ranges = variant_ranges(
-            &prepared.directory,
-            &stored.store,
-            &stored.key,
-            &variant_section(1),
-            &flag,
-            &mut |section: &str, range: u64| pages.read_at(section, range),
+        let mut opened = read::Index::open(
+            Box::new(index::StoreRanges::new(&stored.store, stored.key.clone())),
+            prepared.directory.clone(),
         )
         .unwrap();
-        assert!(!ranges.is_empty(), "spill={spill}, checkpoint={checkpoint}");
-        let ahead = Arc::new(fold_ranges(ranges, &flag).unwrap());
-        let actual = assemble_with(
-            &prepared.directory,
-            &tag_key("GER"),
-            None,
-            recorded_language(replay),
-            &flag,
-            |section, range| pages.read_at(section, range),
-            |_| Ok(Arc::clone(&ahead)),
-        )
-        .unwrap();
+        let history = opened.tag_history("GER");
+        let actual = opened
+            .scanned(history, None, recorded_language(replay), &flag)
+            .unwrap();
         assert_eq!(
             saved_bytes(&actual),
             baseline,
-            "GER from pages read ahead: spill={spill}, checkpoint={checkpoint}"
+            "GER from a store: spill={spill}, checkpoint={checkpoint}"
         );
+        drop(opened);
         let source = fixture_source(replay, pages);
         for origin in [
             None,
@@ -1692,12 +1709,11 @@ fn an_unresolved_link_is_unknown_and_recovers_the_same_origin_lifetime_after_rea
 }
 
 #[test]
-fn closed_handles_and_retired_lifetimes_are_only_private_pages_not_checkpoint_rosters() {
+fn closed_handles_and_retired_lifetimes_keep_only_their_ledger_entries() {
     let replay = recording();
     let flag = AtomicBool::new(false);
     let mut prepared = Prepared::new(&replay, 1, [], None);
     let mut pages = fixtures::FixturePages::default();
-    let mut baseline = None;
     for offset in 0..80 {
         let mut frame = production_frame(
             FIRST + offset,
@@ -1727,30 +1743,18 @@ fn closed_handles_and_retired_lifetimes_are_only_private_pages_not_checkpoint_ro
         assert!(prepared.native.len() <= 2);
         assert!(prepared.aliases.len() <= 2);
         for country in prepared.native.values() {
-            assert!(
-                country.state.latest.len() <= country.state.open.len() + country.state.broken.len()
-            );
-            assert_eq!(country.state.appearances.len(), country.state.latest.len());
-            assert_eq!(country.state.result.lines.len(), country.state.latest.len());
+            // A closed handle keeps its lifetime and appearance, never its reads.
+            assert!(country.state.open.len() + country.state.broken.len() <= 1);
+            assert!(country.state.keys.handles.len() <= offset as usize + 1);
+            assert_eq!(country.state.events.detail.runs.len(), 0);
         }
-        let snapshot = prepared
-            .native
-            .iter_mut()
-            .find(|(key, _)| key.slot == 7)
-            .unwrap()
-            .1
-            .snapshot(&flag)
-            .unwrap();
-        let size = serde_json::to_vec(&snapshot).unwrap().len();
-        if offset == 10 {
-            baseline = Some(size);
-        }
-        if offset >= 10 {
-            assert!(
-                size <= baseline.unwrap() + 512,
-                "closed history leaked into the checkpoint: {size}"
-            );
-        }
+        // A retired lifetime is put away whole at the flush after it retires.
+        assert!(
+            prepared
+                .retired
+                .values()
+                .all(|history| history.blob.is_some())
+        );
     }
     assert!(known(&prepared, &mut pages).len() > prepared.native.len());
 }
@@ -1795,7 +1799,7 @@ fn a_boundary_without_quiet_hours_keeps_unchanged_identities_and_census_operands
         match boundary {
             "flush" => prepared.flush(&mut pages, &flag).unwrap(),
             "save" => prepared.save(&mut pages, &flag).unwrap(),
-            "pressure" => assert!(prepared.directory.pages > 0),
+            "pressure" => assert!(prepared.chunks > 0),
             _ => unreachable!(),
         }
         let input = prepared.last_input.as_ref().expect(boundary);
@@ -1844,7 +1848,7 @@ fn a_boundary_without_quiet_hours_keeps_unchanged_identities_and_census_operands
             vec![(0, 21), (7, 9001)],
             "{boundary}"
         );
-        prepared.flush(&mut pages, &flag).unwrap();
+        prepared.save(&mut pages, &flag).unwrap();
         let scan = assemble(
             &prepared.directory,
             &tag_key("GER"),
@@ -2136,7 +2140,7 @@ fn one_changed_name_only_projects_its_organisation_not_the_world() {
     }
 }
 
-fn scaled_production(countries: u32, per_country: u32) -> DecodedFrame {
+pub(super) fn scaled_production(countries: u32, per_country: u32) -> DecodedFrame {
     use replay_data::rows::{
         IndustrialOrganisationDetailsRow, IndustrialOrganisationRow, LexicalTokenRow,
         ProductionLineOutputRow, ProductionLineRow, TableRows, VariantStatsRow,
@@ -2200,7 +2204,7 @@ fn scaled_production(countries: u32, per_country: u32) -> DecodedFrame {
     frame
 }
 
-fn fixture_source(replay: &Replay, pages: fixtures::FixturePages) -> Source {
+pub(super) fn fixture_source(replay: &Replay, pages: fixtures::FixturePages) -> Source {
     let source = Source::from_replay(
         crate::SourceKey {
             source_id: "production-fixture".into(),
@@ -2301,181 +2305,6 @@ fn independent_full_scan_and_all_public_routes_cover_gaps_refusals_and_native_ta
     }
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-struct NamingPeak {
-    live: usize,
-    peak: usize,
-    total_peak: usize,
-    pages: usize,
-    live_bytes: usize,
-    peak_bytes: usize,
-    total_bytes: usize,
-}
-thread_local! {
-    static NAMING_PEAK: std::cell::Cell<NamingPeak> = const {
-        std::cell::Cell::new(NamingPeak { live: 0, peak: 0, total_peak: 0, pages: 0, live_bytes: 0, peak_bytes: 0, total_bytes: 0 })
-    };
-}
-pub(super) struct NamingOperands(usize, usize);
-// Counts owned operand backing allocations, not tree nodes or backend fixture pages.
-fn naming_bytes(versions: &BTreeMap<u64, Vec<equipment::VariantVersion>>) -> usize {
-    versions
-        .values()
-        .map(|versions| {
-            versions.capacity() * std::mem::size_of::<equipment::VariantVersion>()
-                + versions
-                    .iter()
-                    .filter_map(|version| version.raw.as_ref())
-                    .map(|raw| {
-                        raw.token.capacity()
-                            + raw.display_name.capacity()
-                            + raw.suffix.capacity()
-                            + raw.name_tag.as_ref().map_or(0, String::capacity)
-                            + raw.type_tag.as_ref().map_or(0, String::capacity)
-                            + raw.design.as_ref().map_or(0, String::capacity)
-                            + raw.refusals.capacity() * std::mem::size_of::<(String, String)>()
-                            + raw
-                                .refusals
-                                .iter()
-                                .map(|(key, value)| key.capacity() + value.capacity())
-                                .sum::<usize>()
-                    })
-                    .sum::<usize>()
-        })
-        .sum()
-}
-impl NamingOperands {
-    pub(super) fn hold(
-        catalogue: &VariantCatalogue,
-        retained: &BTreeMap<u64, Vec<equipment::VariantVersion>>,
-    ) -> Self {
-        let operands = catalogue.versions.values().map(Vec::len).sum();
-        let bytes = naming_bytes(&catalogue.versions);
-        let retained_operands: usize = retained.values().map(Vec::len).sum();
-        let retained_bytes = naming_bytes(retained);
-        NAMING_PEAK.with(|counter| {
-            let mut count = counter.get();
-            count.live += operands;
-            count.peak = count.peak.max(count.live);
-            count.total_peak = count.total_peak.max(count.live + retained_operands);
-            count.pages += 1;
-            count.live_bytes += bytes;
-            count.peak_bytes = count.peak_bytes.max(count.live_bytes);
-            count.total_bytes = count.total_bytes.max(count.live_bytes + retained_bytes);
-            counter.set(count);
-        });
-        Self(operands, bytes)
-    }
-}
-impl Drop for NamingOperands {
-    fn drop(&mut self) {
-        NAMING_PEAK.with(|counter| {
-            let mut count = counter.get();
-            count.live -= self.0;
-            count.live_bytes -= self.1;
-            counter.set(count);
-        });
-    }
-}
-
-#[test]
-fn a_kept_variant_fold_charges_every_version_slot_it_holds() {
-    let mut page = VariantPage {
-        catalogue: VariantCatalogue::default(),
-        icons: Vec::new(),
-    };
-    page.catalogue.versions = (0..1000)
-        .map(|id| {
-            let absent = equipment::VariantVersion {
-                first_hour: FIRST,
-                raw: None,
-            };
-            (id, vec![absent])
-        })
-        .collect();
-    let mut fold = VariantFold::new();
-    fold.push(page);
-    // Each list grew by a push: its buffer may hold more slots than versions.
-    let slots: usize = fold
-        .versions
-        .values()
-        .map(|list| list.capacity() * std::mem::size_of::<equipment::VariantVersion>())
-        .sum();
-    let entries = 1000 * std::mem::size_of::<(u64, Vec<equipment::VariantVersion>)>();
-    assert!(
-        fold.bytes() >= slots + entries,
-        "{} < {}",
-        fold.bytes(),
-        slots + entries
-    );
-}
-
-#[test]
-fn fixed_variant_naming_workspace_does_not_grow_with_historical_pages() {
-    const VARIANTS: usize = 48;
-    let replay = recording();
-    let flag = AtomicBool::new(false);
-    let mut baseline = None;
-    for page_count in [4, 32, 128] {
-        let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
-        prepared.world.variants = VariantCatalogue::seeded(
-            (0..VARIANTS as u64)
-                .map(|id| {
-                    (
-                        id,
-                        vec![equipment::VariantVersion {
-                            first_hour: FIRST,
-                            raw: Some(equipment::RawVariant {
-                                id,
-                                first_hour: FIRST,
-                                token: format!("synthetic-{id}"),
-                                display_name: "unchanged naming operand ".repeat(32),
-                                ..Default::default()
-                            }),
-                        }],
-                    )
-                })
-                .collect(),
-        );
-        let mut stored = fixtures::FixturePages::default();
-        for hour in 0..page_count {
-            prepared.world.variants.advance(FIRST + hour);
-            prepared.flush(&mut stored, &flag).unwrap();
-        }
-        let expected = serde_json::to_value(&prepared.world.variants).unwrap();
-        let directory = prepared.directory;
-        drop(prepared.world);
-        NAMING_PEAK.set(NamingPeak::default());
-        let scan = assemble(
-            &directory,
-            &tag_key("GER"),
-            None,
-            recorded_language(&replay),
-            &flag,
-            |section, range| stored.read_at(section, range),
-        )
-        .unwrap();
-        let peak = NAMING_PEAK.get();
-        assert_eq!(peak.live, 0);
-        assert_eq!(peak.live_bytes, 0);
-        assert!(peak.peak_bytes > 32 * 768);
-        let first = *baseline.get_or_insert((peak.peak_bytes, peak.total_bytes));
-        assert_eq!(
-            (peak.peak_bytes, peak.total_bytes),
-            first,
-            "operand allocations grew with pages"
-        );
-        assert_eq!(peak.pages, page_count as usize);
-        assert_eq!(peak.peak, VARIANTS, "decoded page operands: {peak:?}");
-        assert!(
-            peak.total_peak <= 2 * VARIANTS,
-            "page plus final operands: {peak:?}"
-        );
-        assert_eq!(serde_json::to_value(&scan.variants).unwrap(), expected);
-        assert!(scan.lines.is_empty());
-    }
-}
-
 #[test]
 fn naming_pages_keep_independent_bytes_metadata_and_public_payloads_across_spill_and_resume() {
     use replay_data::rows::TableRows;
@@ -2516,42 +2345,33 @@ fn naming_pages_keep_independent_bytes_metadata_and_public_payloads_across_spill
 }
 
 #[test]
-fn ordered_page_logs_keep_old_checkpoints_and_shared_prefixes_immutable() {
-    let mut stored = fixtures::FixturePages::default();
-    let mut facts = private::Store::new(&mut stored, 1);
-    let mut log = pages::PageLog::default();
-    log.append(&mut facts, "synthetic-log", &"first".to_owned())
-        .unwrap();
-    let prefix = log;
-    log.append(&mut facts, "synthetic-log", &"later".to_owned())
-        .unwrap();
-    let mut alternative = prefix;
-    alternative
-        .append(&mut facts, "synthetic-log", &"replacement".to_owned())
-        .unwrap();
-    for (log, expected) in [
-        (prefix, vec!["first"]),
-        (log, vec!["first", "later"]),
-        (alternative, vec!["first", "replacement"]),
-    ] {
-        let mut cursor = log.cursor(0).unwrap();
-        for value in expected {
-            assert_eq!(
-                cursor
-                    .next::<String>(&mut facts, "synthetic-log")
-                    .unwrap()
-                    .as_deref(),
-                Some(value)
-            );
-        }
-        assert!(
-            cursor
-                .next::<String>(&mut facts, "synthetic-log")
-                .unwrap()
-                .is_none()
-        );
+fn commits_chain_every_chunk_in_order_across_spills_and_resumes() {
+    let replay = recording();
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared.flush(&mut pages, &flag).unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+        prepared = restore(&mut pages, &replay);
     }
-    assert!(prefix.cursor(2).is_err());
+    assert_eq!(prepared.directory.commits, replay.index.len() as u64);
+    let mut opened = read::Index::open(
+        Box::new(fixtures::FixturePages {
+            pages: pages.pages.clone(),
+        }),
+        prepared.directory.clone(),
+    )
+    .unwrap();
+    let chunks = opened.chunks().unwrap();
+    assert_eq!(chunks.len() as u64, prepared.chunks);
+    assert!(chunks.windows(2).all(|pair| {
+        pair[0].range < pair[1].range && pair[0].last.checked_add(1) == Some(pair[1].first)
+    }));
+    assert_eq!(chunks.last().unwrap().last, FIRST + 2);
 }
 
 fn unreadable_initial_recording(later: bool) -> Replay {
@@ -2679,12 +2499,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
                 .unwrap();
             assert!(prepared.directory.coverage.complete);
             for (tag, expected) in &expected {
-                assert!(
-                    private::Store::new(&mut stored, 1)
-                        .get(prepared.directory.index, &format!("tagname-{tag}"))
-                        .unwrap()
-                        .is_some()
-                );
+                assert!(prepared.tag_names.contains(*tag));
                 assert_eq!(
                     &served(&prepared.directory, &replay, tag, |section, range| stored
                         .read_at(section, range)),
@@ -2721,6 +2536,8 @@ fn naming_boundary_tails_keep_latest_page_precedence_and_earlier_versions() {
     let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
     prepared.world.variants = VariantCatalogue::seeded(BTreeMap::from([(70, vec![first.clone()])]));
     let mut stored = fixtures::FixturePages::default();
+    prepared.world.touch_variant(70);
+    prepared.pending = true;
     prepared.flush(&mut stored, &flag).unwrap();
     prepared
         .world
@@ -2729,6 +2546,8 @@ fn naming_boundary_tails_keep_latest_page_precedence_and_earlier_versions() {
         .get_mut(&70)
         .unwrap()
         .push(next);
+    prepared.world.touch_variant(70);
+    prepared.pending = true;
     prepared.flush(&mut stored, &flag).unwrap();
     let tail = prepared
         .world
@@ -2740,7 +2559,10 @@ fn naming_boundary_tails_keep_latest_page_precedence_and_earlier_versions() {
         .unwrap();
     tail.raw.as_mut().unwrap().display_name = "corrected boundary".into();
     let expected = vec![first, tail.clone()];
+    prepared.world.touch_variant(70);
+    prepared.pending = true;
     prepared.flush(&mut stored, &flag).unwrap();
+    prepared.save(&mut stored, &flag).unwrap();
     let actual = assemble(
         &prepared.directory,
         &tag_key("GER"),
@@ -2885,22 +2707,21 @@ fn recording_growth_reconciles_new_seed_tags_without_rewalking_accepted_blocks()
                     prepared.directory.last_block,
                     prepared.directory.coverage.clone(),
                 );
-                let pages = prepared.directory.pages;
+                let chunks = prepared.chunks;
                 prepared
                     .reconcile_tags(&mut stored, &grown, ["GER", "ITA", "NEW"], &flag)
                     .unwrap();
                 if publish_prefix && !extend_old {
-                    assert_eq!(prepared.directory.pages, pages);
+                    assert_eq!(prepared.chunks, chunks);
                     assert_eq!(prepared.directory.last_block, frontier.0);
                     assert_eq!(
                         serde_json::to_value(&prepared.directory.coverage).unwrap(),
                         serde_json::to_value(frontier.1).unwrap()
                     );
                     for (key, bytes) in &accepted {
-                        if key.0.starts_with("production-lines-history-")
-                            || key.0.starts_with("production-lines-variants-")
-                            || key.0.starts_with("production-lines-aliases-")
-                            || key.0.starts_with("production-lines-state-")
+                        if key.0.starts_with("production-index-")
+                            || key.0.starts_with("production-commits-")
+                            || key.0.starts_with("production-ledger-")
                         {
                             assert_eq!(stored.pages.get(key), Some(bytes), "rewrote {key:?}");
                         }
@@ -3005,7 +2826,7 @@ fn failed_seed_reconciliation_keeps_the_committed_roster_atomic() {
     }
     writer.commit().unwrap();
     let accepted = fixture.payloads();
-    let accepted_index = prepared.directory.index;
+    let accepted_tags = prepared.directory.tags.clone();
     let mut writer = fixture.writer();
     let error = prepared
         .reconcile_tags(
@@ -3024,8 +2845,8 @@ fn failed_seed_reconciliation_keeps_the_committed_roster_atomic() {
         directory(&fixture.store, &fixture.key, 1)
             .unwrap()
             .unwrap()
-            .index,
-        accepted_index
+            .tags,
+        accepted_tags
     );
     let mut prepared = Prepared::resume(&fixture.store, &fixture.key, &replay, 1, None)
         .unwrap()
@@ -3045,7 +2866,7 @@ fn failed_seed_reconciliation_keeps_the_committed_roster_atomic() {
     )
     .unwrap();
     let directory = directory(&fixture.store, &fixture.key, 1).unwrap().unwrap();
-    assert_eq!(directory.index, prepared.directory.index);
+    assert_eq!(directory.tags, prepared.directory.tags);
     let actual = served(&directory, &replay, "NEW", |section, range| {
         use std::io::Read;
         fixture
@@ -3075,10 +2896,18 @@ fn an_old_private_section_identity_forces_repreparation() {
             .publish(&mut pages, &replay, block, &cancelled)
             .unwrap();
     }
-    let state = pages.pages.remove(&(state_section(1, "world"), 0)).unwrap();
-    pages
+    let commits: Vec<_> = pages
         .pages
-        .insert(("production-lines-state-v1-1-world".into(), 0), state);
+        .keys()
+        .filter(|(section, _)| *section == index::commits_section(1))
+        .cloned()
+        .collect();
+    for key in commits {
+        let bytes = pages.pages.remove(&key).unwrap();
+        pages
+            .pages
+            .insert(("production-commits-v0-1".into(), key.1), bytes);
+    }
     assert!(pages.pages.contains_key(&(directory_section(1), 0)));
     let fixture = crate::prepared::series::tests::Fixture::new();
     let mut writer = fixture.writer();
@@ -3094,248 +2923,8 @@ fn an_old_private_section_identity_forces_repreparation() {
     );
 }
 
-#[test]
-fn a_census_charges_a_shared_modifier_row_once_and_repeated_samples_nothing() {
-    use replay_data::rows::{
-        CountryProductionModifiersRow, ModifierBreakdownNode, ProductionLineModifiersRow,
-        ProductionLineRow, ProductionModifierTree,
-    };
-    let kind = engine_native::cequipment_production_line::KIND_MILITARY;
-    let rows: Vec<ProductionLineRow> = (1..=40)
-        .map(|handle| ProductionLineRow {
-            handle,
-            country: 9001,
-            variant: 70,
-            kind,
-            active_factories: 2,
-            ..Default::default()
-        })
-        .collect();
-    let country = CountryProductionModifiersRow {
-        country: 9001,
-        trees: replay_derive::fixed_layout::PRODUCTION_MODIFIERS
-            .keys
-            .iter()
-            .map(|key| ProductionModifierTree {
-                key: *key,
-                failure: vec![],
-                nodes: vec![ModifierBreakdownNode {
-                    value: 1,
-                    name: b"Synthetic total".to_vec(),
-                    children: 0,
-                }],
-            })
-            .collect(),
-        ..Default::default()
-    };
-    let operands: BTreeMap<u64, ProductionLineModifiersRow> = rows
-        .iter()
-        .map(|row| {
-            (
-                row.handle,
-                ProductionLineModifiersRow {
-                    line: row.handle,
-                    country: row.country,
-                    variant: row.variant,
-                    organisation: row.mio,
-                    kind: row.kind,
-                    active_factories: row.active_factories,
-                    ..Default::default()
-                },
-            )
-        })
-        .collect();
-    let input = |hour| HourInput {
-        rows_complete: true,
-        linked: BTreeSet::from([(7, 9001)]),
-        identities_changed: false,
-        author_names_due: false,
-        hour,
-        last_hour: hour,
-        countries: None,
-        holders: BTreeMap::new(),
-        lines_complete: true,
-        lines_read: true,
-        output_read: false,
-        output_complete: false,
-        organisations_complete: false,
-        organisations_named: false,
-        modifiers_complete: true,
-        modifiers_read: true,
-        modifier_refusal: None,
-        lines: BTreeMap::from([(7, rows.clone())]),
-        unlinked_lines: Vec::new(),
-        output: BTreeMap::new(),
-        unlinked_output: Vec::new(),
-        modifier_countries: BTreeMap::from([(9001, country.clone())]),
-        modifier_lines: operands.clone(),
-        organisations: BTreeMap::new(),
-        author_names: BTreeMap::new(),
-        organisation_names: BTreeMap::new(),
-        designs: BTreeMap::new(),
-        design_revision: 0,
-        design_read_hour: None,
-        organisation_read_hour: None,
-        icons: BTreeMap::new(),
-        localisation: None,
-        language: Arc::from("english"),
-    };
-    let mut stored = fixtures::FixturePages::default();
-    let mut facts = private::Store::new(&mut stored, 1);
-    let mut state = CountryState::default();
-    let fold = std::mem::size_of::<i32>()
-        + 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>();
-    let line = std::mem::size_of::<ScannedLine>() + 40 + std::mem::size_of::<RawRun>();
-    let runs: usize = operands.values().map(modifier_bytes).sum();
-    let first = input(FIRST);
-    state
-        .observe_input(&mut facts, &first, Some(Country::Found(7, 9001)))
-        .unwrap();
-    assert_eq!(state.result.modifiers.len(), rows.len());
-    assert_eq!(
-        state.pending_bytes,
-        fold + rows.len() * line
-            + std::mem::size_of::<DesignRead>()
-            + modifier_country_bytes(&country)
-            + runs
-    );
-    let charged = state.pending_bytes;
-    state
-        .observe_input(&mut facts, &input(FIRST + 1), Some(Country::Found(7, 9001)))
-        .unwrap();
-    assert!(
-        state
-            .result
-            .modifiers
-            .values()
-            .all(|runs| runs.len() == 2 && Arc::ptr_eq(&runs[0].country, &runs[1].country))
-    );
-    assert_eq!(state.result.designs[&70].len(), 1);
-    assert_eq!(
-        state.pending_bytes - charged,
-        fold + rows.len() * line + runs
-    );
-    // A flush keeps each line's last run and the design version, which the next page encodes again.
-    let kept = modifier_country_bytes(&country) + std::mem::size_of::<DesignRead>();
-    state.compact(&mut facts).unwrap();
-    assert!(state.result.modifiers.values().all(|runs| runs.len() == 1));
-    assert_eq!(state.pending_bytes, kept);
-    state
-        .observe_input(&mut facts, &input(FIRST + 2), Some(Country::Found(7, 9001)))
-        .unwrap();
-    assert_eq!(state.pending_bytes, kept + fold + rows.len() * line + runs);
-    // Lines that all closed before the flush keep no run, but the cached row stays charged.
-    let mut closed = CountryState::default();
-    closed
-        .observe_input(&mut facts, &input(FIRST), Some(Country::Found(7, 9001)))
-        .unwrap();
-    let mut ended = input(FIRST + 1);
-    ended.lines.insert(7, Vec::new());
-    closed
-        .observe_input(&mut facts, &ended, Some(Country::Found(7, 9001)))
-        .unwrap();
-    closed.compact(&mut facts).unwrap();
-    assert!(closed.result.modifiers.is_empty() && closed.result.designs.is_empty());
-    assert_eq!(closed.pending_bytes, modifier_country_bytes(&country));
-    closed
-        .observe_input(&mut facts, &input(FIRST + 2), Some(Country::Found(7, 9001)))
-        .unwrap();
-    assert_eq!(
-        closed.pending_bytes,
-        modifier_country_bytes(&country)
-            + fold
-            + rows.len() * line
-            + std::mem::size_of::<DesignRead>()
-            + runs
-    );
-}
-
-#[test]
-fn restored_history_records_charge_what_they_add_to_the_next_page() {
-    use replay_data::rows::ProductionLineRow;
-    let kind = engine_native::cequipment_production_line::KIND_MILITARY;
-    let restored_icon = IconChoice::unknown("synthetic restored icon".into());
-    let input = |icon: &IconChoice| HourInput {
-        rows_complete: true,
-        linked: BTreeSet::from([(7, 9001)]),
-        identities_changed: false,
-        author_names_due: false,
-        hour: FIRST,
-        last_hour: FIRST,
-        countries: None,
-        holders: BTreeMap::new(),
-        lines_complete: true,
-        lines_read: true,
-        output_read: false,
-        output_complete: false,
-        organisations_complete: false,
-        organisations_named: false,
-        modifiers_complete: false,
-        modifiers_read: false,
-        modifier_refusal: None,
-        lines: BTreeMap::from([(
-            7,
-            vec![ProductionLineRow {
-                handle: 1,
-                country: 9001,
-                variant: 70,
-                kind,
-                active_factories: 2,
-                ..Default::default()
-            }],
-        )]),
-        unlinked_lines: Vec::new(),
-        output: BTreeMap::new(),
-        unlinked_output: Vec::new(),
-        modifier_countries: BTreeMap::new(),
-        modifier_lines: BTreeMap::new(),
-        organisations: BTreeMap::new(),
-        author_names: BTreeMap::new(),
-        organisation_names: BTreeMap::new(),
-        designs: BTreeMap::new(),
-        design_revision: 0,
-        design_read_hour: None,
-        organisation_read_hour: None,
-        icons: BTreeMap::from([(70, icon.clone())]),
-        localisation: None,
-        language: Arc::from("english"),
-    };
-    let fold = std::mem::size_of::<i32>()
-        + 6 * std::mem::size_of::<crate::products::country_groups::HourSpan>();
-    let line = std::mem::size_of::<ScannedLine>() + 40 + std::mem::size_of::<RawRun>();
-    let icon_at: IconAt = (FIRST - 5, restored_icon.clone());
-    let design = DesignRead {
-        first_hour: FIRST - 5,
-        ..Default::default()
-    };
-    // The same records restored, then a sample equal to them and one that differs.
-    let changed = IconChoice::unknown("synthetic changed icon".into());
-    for (icon, versions, sample) in [
-        (&restored_icon, 1, 0),
-        (&changed, 2, pages::record_bytes(&changed)),
-    ] {
-        let mut stored = fixtures::FixturePages::default();
-        let mut facts = private::Store::new(&mut stored, 1);
-        let mut state = CountryState::default();
-        private::put(&mut facts, &mut state.history, "icon-70", &icon_at).unwrap();
-        private::put(&mut facts, &mut state.history, "design-70", &design).unwrap();
-        state
-            .observe_input(&mut facts, &input(icon), Some(Country::Found(7, 9001)))
-            .unwrap();
-        assert_eq!(state.result.icons[&70].len(), versions);
-        assert_eq!(state.result.designs[&70], vec![design]);
-        assert_eq!(
-            state.pending_bytes,
-            fold + line
-                + std::mem::size_of::<DesignRead>()
-                + pages::record_bytes(&icon_at)
-                + sample
-        );
-    }
-}
-
 /// One branch's frames in blocks of `hours` hours each.
-fn replay_blocks(frames: Vec<DecodedFrame>, hours: usize) -> Replay {
+pub(super) fn replay_blocks(frames: Vec<DecodedFrame>, hours: usize) -> Replay {
     let mut blocks = frames.chunks(hours).map(<[DecodedFrame]>::to_vec);
     let mut replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, blocks.next().unwrap())]).unwrap();
@@ -3617,94 +3206,450 @@ fn countries_follow_deferred_hours_once_per_run_and_design_hours_visit_only_thei
     );
 }
 
+/// One line replaced every hour, each by a new handle; the first handle returns at the end.
+fn churning_frames(days: i32) -> Vec<DecodedFrame> {
+    let last = days * 24 - 1;
+    (0..=last)
+        .map(|offset| {
+            let handle = if offset == last {
+                1_000
+            } else {
+                1_000 + offset as u64
+            };
+            production_frame(
+                FIRST + offset,
+                true,
+                true,
+                9001,
+                &[(handle, 70, 8, 0)],
+                Some(&[]),
+            )
+        })
+        .collect()
+}
+
 #[test]
-fn a_design_without_an_organisation_reads_no_private_page() {
-    use replay_data::rows::ProductionLineRow;
-    struct Counted(fixtures::FixturePages, usize);
-    impl Pages for Counted {
-        fn write_at(&mut self, section: &str, range: u64, bytes: &[u8]) -> io::Result<()> {
-            self.0.write_at(section, range, bytes)
+fn held_keyed_values_stay_flat_however_many_handles_churn() {
+    let flag = AtomicBool::new(false);
+    let mut peaks = Vec::new();
+    for days in [40, 160] {
+        let replay = replay_blocks(churning_frames(days), 24);
+        let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+        let mut pages = fixtures::FixturePages::default();
+        let mut peak = 0;
+        for (position, block) in replay.index.iter().enumerate() {
+            prepared
+                .advance_block(&mut pages, &replay, position, None, &flag)
+                .unwrap();
+            prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+            let held: usize = prepared
+                .histories()
+                .map(|history| history.state.keys.len())
+                .sum();
+            peak = peak.max(held);
+            assert!(prepared.trees.cached() <= 2 * 4096);
         }
-        fn write(&mut self, section: &str, bytes: &[u8]) -> io::Result<u64> {
-            self.0.write(section, bytes)
-        }
-        fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
-            self.1 += 1;
-            self.0.read_at(section, range)
-        }
+        peaks.push(peak);
+        // The returning handle's next appearance came from its tree, numbered as the
+        // reference numbers it.
+        let expected = super::super::reference::scan(
+            &replay,
+            &branch_blocks(&replay, 1),
+            "GER",
+            None,
+            None,
+            &flag,
+        )
+        .unwrap();
+        assert!(expected.lines.iter().any(|line| line.key == "1000#2"));
+        assert_eq!(
+            served(&prepared.directory, &replay, "GER", |section, range| pages
+                .read_at(section, range)),
+            saved_bytes(&expected),
+            "{days} days"
+        );
     }
-    let input = |hour, lines_read, design_revision| HourInput {
-        rows_complete: true,
-        linked: BTreeSet::from([(7, 9001)]),
-        identities_changed: false,
-        author_names_due: false,
-        hour,
-        last_hour: hour,
-        countries: None,
-        holders: BTreeMap::new(),
-        lines_complete: true,
-        lines_read,
-        output_read: false,
-        output_complete: false,
-        organisations_complete: false,
-        organisations_named: false,
-        modifiers_complete: false,
-        modifiers_read: false,
-        modifier_refusal: None,
-        lines: BTreeMap::from([(
-            7,
-            vec![ProductionLineRow {
-                handle: 1,
-                country: 9001,
-                variant: 70,
-                kind: engine_native::cequipment_production_line::KIND_MILITARY,
-                active_factories: 2,
-                ..Default::default()
-            }],
-        )]),
-        unlinked_lines: Vec::new(),
-        output: BTreeMap::new(),
-        unlinked_output: Vec::new(),
-        modifier_countries: BTreeMap::new(),
-        modifier_lines: BTreeMap::new(),
-        organisations: BTreeMap::new(),
-        author_names: BTreeMap::new(),
-        organisation_names: BTreeMap::new(),
-        designs: BTreeMap::from([(
-            70,
-            DesignRead {
-                first_hour: FIRST,
-                author: Some(0),
-                ..Default::default()
-            },
-        )]),
-        design_revision,
-        design_read_hour: Some(hour),
-        organisation_read_hour: None,
-        icons: BTreeMap::new(),
-        localisation: None,
-        language: Arc::from("english"),
-    };
-    let mut stored = Counted(fixtures::FixturePages::default(), 0);
-    let mut facts = private::Store::new(&mut stored, 1);
-    let mut state = CountryState::default();
-    // A held record makes the private pages a tree that a lookup walks.
-    private::put(
-        &mut facts,
-        &mut state.history,
-        "design-71",
-        &DesignRead::default(),
+    // At most two sweeps' worth of closed handles are held, however long the branch.
+    assert!(peaks[1] <= peaks[0], "{peaks:?}");
+    assert!(peaks[1] <= 2 * LEDGER_FULL_EVERY * 24 + 8, "{peaks:?}");
+}
+
+#[test]
+fn ledger_records_stay_bounded_under_recurring_output_gaps() {
+    let flag = AtomicBool::new(false);
+    let frames = (0..24 * 120)
+        .map(|offset| {
+            // Every other hour's output goes unread.
+            let output = [(5, 70, i64::from(offset), true, false)];
+            production_frame(
+                FIRST + offset,
+                true,
+                true,
+                9001,
+                &[(5, 70, 8, 0)],
+                (offset % 2 == 0).then_some(&output[..]),
+            )
+        })
+        .collect();
+    let replay = replay_blocks(frames, 24);
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    let mut sizes = Vec::new();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+        let range = *prepared.ledger_ranges.last().unwrap();
+        sizes.push(pages.pages[&(index::ledger_section(1), range)].len());
+        assert!(prepared.histories().all(|history| {
+            history
+                .state
+                .stream
+                .as_ref()
+                .is_none_or(|stream| stream.tail.len() < index::SPAN_PAGE)
+        }));
+    }
+    let quarter = sizes.len() / 4;
+    let early = *sizes[..quarter].iter().max().unwrap();
+    let late = *sizes[sizes.len() - quarter..].iter().max().unwrap();
+    // A record holds counts and cursors; the gaps so far stay in the chunks.
+    assert!(late <= early + 64, "{sizes:?}");
+    let expected = super::super::reference::scan(
+        &replay,
+        &branch_blocks(&replay, 1),
+        "GER",
+        None,
+        None,
+        &flag,
     )
     .unwrap();
-    let country = Some(Country::Found(7, 9001));
-    state
-        .observe_input(&mut facts, &input(FIRST, true, 0), country)
+    assert!(expected.unread_output.len() > 50);
+    prepared = restore(&mut pages, &replay);
+    assert_eq!(
+        served(&prepared.directory, &replay, "GER", |section, range| pages
+            .read_at(section, range)),
+        saved_bytes(&expected)
+    );
+}
+
+/// One line read every day with values that never change: its run stays open to the end.
+fn steady_frames(days: i32) -> Vec<DecodedFrame> {
+    (0..days * 24)
+        .map(|offset| {
+            let census = offset % 24 == 0;
+            production_frame(
+                FIRST + offset,
+                census,
+                census,
+                9001,
+                &[(5, 70, 8, 0)],
+                Some(&[(5, 70, i64::from(offset), true, false)]),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_detail_window_decodes_as_many_parts_however_long_the_branch_runs_on() {
+    let flag = AtomicBool::new(false);
+    let mut firsts = Vec::new();
+    for days in [30, 300] {
+        let replay = replay_blocks(steady_frames(days), 12);
+        let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+        let mut pages = fixtures::FixturePages::default();
+        for (position, block) in replay.index.iter().enumerate() {
+            prepared
+                .advance_block(&mut pages, &replay, position, None, &flag)
+                .unwrap();
+            prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+        }
+        let last_hour = replay.index.last().unwrap().last_hour;
+        let mut index = read::Index::open(Box::new(pages), prepared.directory.clone()).unwrap();
+        let chunks = index.chunks().unwrap();
+        let history = index.tag_history("GER");
+        let windows = [
+            FIRST.div_euclid(DETAIL_HOURS),
+            (FIRST + days * 12).div_euclid(DETAIL_HOURS),
+            last_hour.div_euclid(DETAIL_HOURS),
+        ];
+        for (at, window) in windows.into_iter().enumerate() {
+            let (first, last) = detail_window(window).unwrap();
+            let before = index.decoded;
+            let read = index.window(history, first, last, &flag).unwrap();
+            let decoded = index.decoded - before;
+            let meeting = chunks
+                .iter()
+                .filter(|chunk| chunk.first <= last && chunk.last >= first)
+                .count();
+            // The window's own chunks, and a bisection's steps for what it holds open.
+            assert!(
+                decoded <= 2 * meeting + 48,
+                "{days} days, window {window}: {decoded}"
+            );
+            let run = &read
+                .lines
+                .iter()
+                .find(|line| line.key == "5#1")
+                .unwrap()
+                .runs[0];
+            assert_eq!(run.last_hour, last_hour);
+            if at == 0 {
+                firsts.push(decoded);
+            }
+        }
+    }
+    // Three bisections of at most eleven steps over the longer branch's chunks, and the
+    // chunk the last one names.
+    assert!(firsts[1] <= firsts[0] + 34, "{firsts:?}");
+}
+
+#[test]
+fn chunk_table_pages_fill_and_read_back_across_resumes() {
+    struct Budget(usize);
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            crate::prepared::pages::TEST_BATCH_BYTES.set(self.0);
+        }
+    }
+    let flag = AtomicBool::new(false);
+    let frames = (0..index::CHUNK_PAGE as i32 + 80)
+        .map(|offset| {
+            production_frame(
+                FIRST + offset,
+                true,
+                true,
+                9001,
+                &[(5, 70, 8, i64::from(offset % 3))],
+                Some(&[(5, 70, i64::from(offset), true, false)]),
+            )
+        })
+        .collect();
+    let replay = replay_blocks(frames, 100);
+    let expected = super::super::reference::scan(
+        &replay,
+        &branch_blocks(&replay, 1),
+        "GER",
+        None,
+        None,
+        &flag,
+    )
+    .unwrap();
+    let _budget = Budget(crate::prepared::pages::TEST_BATCH_BYTES.replace(1));
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+        prepared = restore(&mut pages, &replay);
+    }
+    assert!(prepared.chunks > index::CHUNK_PAGE as u64);
+    assert!(pages.pages.contains_key(&(index::chunks_section(1), 0)));
+    let mut opened = read::Index::open(
+        Box::new(fixtures::FixturePages {
+            pages: pages.pages.clone(),
+        }),
+        prepared.directory.clone(),
+    )
+    .unwrap();
+    let chunks = opened.chunks().unwrap();
+    assert_eq!(chunks.len() as u64, prepared.chunks);
+    assert!(chunks.windows(2).all(|pair| {
+        pair[0].range < pair[1].range && pair[0].last.checked_add(1) == Some(pair[1].first)
+    }));
+    assert_eq!(
+        served(&prepared.directory, &replay, "GER", |section, range| pages
+            .read_at(section, range)),
+        saved_bytes(&expected)
+    );
+}
+
+#[test]
+fn a_commit_whose_chunk_table_does_not_add_up_is_refused_as_invalid_data() {
+    let replay = recording();
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+    }
+    let key = (index::commits_section(1), prepared.directory.commits - 1);
+    let commit: Commit = index::unpack(&pages.pages[&key]).unwrap();
+    let opened = |commit: &Commit| {
+        let mut pages = fixtures::FixturePages {
+            pages: pages.pages.clone(),
+        };
+        pages
+            .pages
+            .insert(key.clone(), index::pack(commit).unwrap());
+        read::Index::open(Box::new(pages), prepared.directory.clone()).and_then(|mut index| {
+            let total = index.len();
+            (0..total).try_for_each(|at| index.chunk(at).map(drop))
+        })
+    };
+    assert!(opened(&commit).is_ok());
+    // More chunks than its table holds, and a page that was never written.
+    for chunks in [commit.chunks + 1, commit.chunks + index::CHUNK_PAGE as u64] {
+        let error = opened(&Commit {
+            chunks,
+            ..commit.clone()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{chunks}");
+    }
+}
+
+#[test]
+fn dormant_countries_waking_after_many_gaps_hold_no_copied_spans() {
+    use crate::test_fixtures::scale_frame;
+    let replay = recording();
+    let flag = AtomicBool::new(false);
+    let countries = 300;
+    let gap = |at: i32| FIRST + 3 + 2 * at;
+    let mut held = Vec::new();
+    for gaps in [200, 2_000] {
+        let mut prepared = Prepared::new(&replay, 1, [], None);
+        let mut pages = fixtures::FixturePages::default();
+        prepared
+            .observe(&mut pages, &replay, &scale_frame(1, FIRST, countries), None)
+            .unwrap();
+        // All but the first go dormant; the last stays so to the end.
+        prepared
+            .observe(&mut pages, &replay, &scale_frame(1, FIRST + 1, 1), None)
+            .unwrap();
+        prepared.flush(&mut pages, &flag).unwrap();
+        for at in 0..gaps {
+            prepared.lost(gap(at), gap(at)).unwrap();
+            if at % 100 == 99 {
+                prepared.flush(&mut pages, &flag).unwrap();
+            }
+        }
+        prepared
+            .observe(
+                &mut pages,
+                &replay,
+                &scale_frame(1, gap(gaps), countries - 1),
+                None,
+            )
+            .unwrap();
+        // Before any flush: the woken countries name the gaps, holding none of them.
+        held.push(
+            prepared
+                .histories()
+                .map(|history| {
+                    history.state.events.overview.unread_output.len()
+                        + history
+                            .state
+                            .stream
+                            .as_ref()
+                            .map_or(0, |stream| stream.tail.len())
+                })
+                .sum::<usize>(),
+        );
+        let woken = prepared
+            .native
+            .values()
+            .filter(|country| country.state.events.overview.wakes.len() == 1)
+            .count();
+        assert_eq!(woken, countries as usize - 2);
+        prepared.save(&mut pages, &flag).unwrap();
+        // A woken country's view and the one still dormant read every gap, as copied ones did.
+        let mut index = read::Index::open(Box::new(pages), prepared.directory.clone()).unwrap();
+        let expected: Vec<(i32, i32)> = (0..gaps).map(|at| (gap(at), gap(at))).collect();
+        for slot in [1, countries / 2, countries - 1] {
+            let history = index
+                .native_history(&NativeCountry {
+                    slot,
+                    id: 100_000 + slot,
+                    epoch: 1,
+                })
+                .unwrap();
+            let overview = index.overview(history, &flag).unwrap();
+            let spans: Vec<(i32, i32)> = overview
+                .unread_output
+                .iter()
+                .map(|span| (span.first_hour, span.last_hour))
+                .collect();
+            assert_eq!(spans, expected, "{gaps} gaps, slot {slot}");
+            assert_eq!(overview.counters.unreadable_stretches, gaps as usize);
+        }
+    }
+    // The absence's partial page and the spans since the last flush, however many gaps.
+    assert!(held[1] <= held[0] + index::SPAN_PAGE, "{held:?}");
+    assert!(held[1] < 100 + index::SPAN_PAGE, "{held:?}");
+}
+
+#[test]
+fn a_malformed_absence_count_is_refused_as_invalid_data_on_resume_and_on_reading() {
+    let replay = recording();
+    let flag = AtomicBool::new(false);
+    let mut prepared = Prepared::new(&replay, 1, ["GER".into()], None);
+    let mut pages = fixtures::FixturePages::default();
+    for (position, block) in replay.index.iter().enumerate() {
+        prepared
+            .advance_block(&mut pages, &replay, position, None, &flag)
+            .unwrap();
+        prepared.publish(&mut pages, &replay, block, &flag).unwrap();
+    }
+    let commit_key = (index::commits_section(1), prepared.directory.commits - 1);
+    let commit: Commit = index::unpack(&pages.pages[&commit_key]).unwrap();
+    let span = |at: i32| HourSpan {
+        first_hour: at,
+        last_hour: at,
+    };
+    let whole_page: Vec<HourSpan> = (0..index::SPAN_PAGE as i32).map(span).collect();
+    // An absence that counts no span yet holds a whole page of them.
+    let mut broken = fixtures::FixturePages {
+        pages: pages.pages.clone(),
+    };
+    for &range in &commit.ledger {
+        let key = (index::ledger_section(1), range);
+        let mut record: LedgerRecord = index::unpack(&broken.pages[&key]).unwrap();
+        let absent = record.absent;
+        for (id, history) in &mut record.histories {
+            if *id == absent
+                && let StateLedger::Loaded { core, .. } = &mut history.state
+            {
+                core.stream = Some((0, whole_page.clone()));
+            }
+        }
+        broken.pages.insert(key, index::pack(&record).unwrap());
+    }
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let mut writer = fixture.writer();
+    for ((section, range), bytes) in &broken.pages {
+        writer.write_at(section, *range, bytes.as_slice()).unwrap();
+    }
+    writer.commit().unwrap();
+    let error = Prepared::resume(&fixture.store, &fixture.key, &replay, 1, None)
+        .err()
         .unwrap();
-    let reads = facts.pages.1;
-    state
-        .observe_input(&mut facts, &input(FIRST + 1, false, 1), country)
-        .unwrap();
-    assert_eq!(facts.pages.1, reads);
-    assert_eq!(state.result.designs[&70].len(), 2);
-    assert!(!state.result.organisations.contains_key(&0));
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    // A commit whose absence count its tail does not follow is refused when read.
+    for (spans, span_tail) in [
+        (0, whole_page.clone()),
+        (5, vec![span(1), span(2), span(3)]),
+    ] {
+        let mut broken = fixtures::FixturePages {
+            pages: pages.pages.clone(),
+        };
+        broken.pages.insert(
+            commit_key.clone(),
+            index::pack(&Commit {
+                spans,
+                span_tail,
+                ..commit.clone()
+            })
+            .unwrap(),
+        );
+        let error = read::Index::open(Box::new(broken), prepared.directory.clone())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{spans}");
+    }
 }

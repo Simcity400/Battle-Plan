@@ -9,7 +9,7 @@ use replay_data::{
     rows::ProductionModifierTree,
 };
 
-const FACTORS: &[(&str, &str)] = &[
+pub(super) const FACTORS: &[(&str, &str)] = &[
     ("efficiency", "Stored factory efficiency"),
     ("start", "Starting efficiency"),
     ("cap", "Efficiency cap"),
@@ -839,33 +839,44 @@ impl Product for ProductionLineBreakdown {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        #[cfg(test)]
+        if super::reference::installed(source) {
+            return super::reference::breakdown(source, params, context, cancelled);
+        }
         let country = CountryParams {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
         };
         let mut warnings = Vec::new();
-        let (_, original) =
-            scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
-        let (scanned, selected_key) = if let Some(hour) = params.origin_hour {
-            let holder =
-                prepared::country_at(source, context, country.branch(), &params.tag, hour)?;
-            let (_, selected) = scanned_lines(
+        let super::Opened {
+            catalogue,
+            mut index,
+            history: original_history,
+            approximate,
+        } = super::opened(source, &country, context, cancelled, &mut warnings)?;
+        super::prefix_warning(&approximate, &mut warnings);
+        let original = index.overview(original_history, cancelled)?;
+        let (history, lifetime) = if let Some(hour) = params.origin_hour {
+            let holder = prepared::country_at(&mut index, &params.tag, hour)?;
+            let history = super::holder_view(
                 source,
-                &country,
-                Some(holder),
                 context,
-                cancelled,
+                &country,
+                &mut index,
+                &holder,
                 &mut warnings,
             )?;
+            let selected = index.overview(history, cancelled)?;
             // Literal-tag appearance numbers can include a previous holder's line.
-            // Match the original line's recorded runs as well as its handle.
+            // Match the original line's recorded steps as well as its handle: steps cover
+            // exactly the hours its runs do.
             let original_line = original.lines.iter().find(|line| line.key == params.key);
-            let key = if let Some(line) = original_line {
+            let lifetime = if let Some(line) = original_line {
                 let mut matching = selected.lines.iter().filter(|candidate| {
                     candidate.handle == line.handle
-                        && candidate.runs.iter().any(|run| {
-                            line.runs.iter().any(|old| {
-                                old.first_hour <= run.last_hour && run.first_hour <= old.last_hour
+                        && candidate.steps.iter().any(|step| {
+                            line.steps.iter().any(|old| {
+                                old.first_hour <= step.last_hour && step.first_hour <= old.last_hour
                             })
                         })
                 });
@@ -875,19 +886,37 @@ impl Product for ProductionLineBreakdown {
                         "Conflicting appearances for the original production line",
                     ));
                 }
-                first.map(|line| line.key.clone())
+                first.map(|line| line.lifetime)
             } else {
                 None
             };
-            (selected, key)
+            (history, lifetime)
         } else {
-            (original, Some(params.key.clone()))
+            let lifetime = original
+                .lines
+                .iter()
+                .find(|line| line.key == params.key)
+                .map(|line| line.lifetime);
+            (original_history, lifetime)
         };
-        let raw = selected_key
+        let localisation = catalogue
             .as_ref()
-            .and_then(|key| scanned.modifiers.get(key))
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+            .filter(|_| index.directory.localised)
+            .map(|catalogue| Arc::clone(&catalogue.localisation));
+        let raw = match lifetime {
+            Some(lifetime) => index
+                .modifiers(
+                    history,
+                    Some(&BTreeSet::from([lifetime])),
+                    localisation,
+                    recorded_language(source.replay_ref()),
+                    cancelled,
+                )?
+                .remove(&lifetime)
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let raw = raw.as_slice();
         let reads = raw.iter().map(|run| run.first_hour).collect();
         let groups: Vec<ProductionModifierChoice> = if raw.is_empty() {
             Vec::new()

@@ -303,7 +303,7 @@ fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
             let reconciled = production_lines::prepared::directory(&store, &key, 1)
                 .unwrap()
                 .unwrap();
-            assert_eq!(reconciled.pages, accepted.pages);
+            assert_eq!(reconciled.commits, accepted.commits);
             assert_eq!(reconciled.last_block, accepted.last_block);
             assert_eq!(
                 serde_json::to_value(reconciled.coverage).unwrap(),

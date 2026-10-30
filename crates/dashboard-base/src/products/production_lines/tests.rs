@@ -1970,215 +1970,6 @@ fn variant_names_match_the_hourly_oracle_across_definition_context_and_gap_chang
     );
 }
 
-/// Valid synthetic country trees in the native request catalogue's order.
-fn saved_modifier_trees() -> Vec<replay_data::rows::ProductionModifierTree> {
-    engine_production::production_modifiers::KEYS
-        .into_iter()
-        .map(|key| replay_data::rows::ProductionModifierTree {
-            key,
-            nodes: vec![replay_data::rows::ModifierBreakdownNode {
-                children: 0,
-                value: 0,
-                name: b"Synthetic total".to_vec(),
-            }],
-            failure: vec![],
-        })
-        .collect()
-}
-
-/// A saved scan restores to the scan it saved: every value, its modifier runs'
-/// replay rows through the recording's own encoding, a country row its runs share
-/// still shared once, and the recording's language and content's localisation
-/// given again. A scan saved by another layout is not restored, and one that read
-/// a localisation is not restored without it.
-#[test]
-fn a_saved_scan_restores_the_scan_it_saved() {
-    use crate::products::production_lines::{
-        LineKind, RawOrganisation, RawRun, SavedLines, ScannedLine, ScannedLines,
-        breakdown::RawModifierRun,
-    };
-    use replay_data::{rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow};
-    let run = |first_hour: i32| RawRun {
-        first_hour,
-        last_hour: first_hour + 23,
-        variant: 70,
-        active_factories: 8,
-        cost_raw: 500_000,
-        efficiency_raw: 1_000_000,
-        amount: -1,
-        ..RawRun::default()
-    };
-    let line = |handle: u64| ScannedLine {
-        key: format!("{handle}#1"),
-        handle,
-        kind: Some(LineKind::Military),
-        runs: vec![run(0), run(24)],
-        output: Vec::new(),
-        final_output: None,
-        ended_by: Some(48),
-        before_recording: true,
-        between_reads: None,
-        variants: vec![70],
-    };
-    let mut scanned = ScannedLines {
-        lines: vec![line(5), line(6)],
-        reads: vec![0, 24],
-        unknown_kinds: 1,
-        unlinked_rows: 2,
-        ..ScannedLines::default()
-    };
-    scanned.icons.insert(
-        70,
-        vec![
-            (
-                0,
-                IconChoice {
-                    probes: Vec::new(),
-                    otherwise: Ok(()),
-                },
-            ),
-            (24, IconChoice::unknown("unknown".into())),
-        ],
-    );
-    scanned.organisations.insert(
-        79,
-        vec![RawOrganisation {
-            first_hour: 0,
-            token: "GER_mauser_organization".into(),
-            owner_tag: Some("GER".into()),
-            ..RawOrganisation::default()
-        }],
-    );
-    scanned
-        .modifier_layout_refusals
-        .insert("production modifiers refused".into(), 3);
-    let shared = Arc::new(CountryProductionModifiersRow {
-        country: 9001,
-        trees: saved_modifier_trees(),
-        ..Default::default()
-    });
-    let later = Arc::new(CountryProductionModifiersRow {
-        country: 9001,
-        base_cap: 7,
-        trees: shared.trees.clone(),
-        ..Default::default()
-    });
-    for (handle, countries) in [(5, [&shared, &shared]), (6, [&shared, &later])] {
-        let runs = [run(0), run(24)]
-            .into_iter()
-            .zip(countries)
-            .map(|(run, country)| RawModifierRun {
-                first_hour: run.first_hour,
-                last_hour: run.last_hour,
-                country: Arc::clone(country),
-                line: ProductionLineModifiersRow {
-                    line: handle,
-                    country: 9001,
-                    variant: 70,
-                    active_factories: 8,
-                    factory_efficiencies: vec![run.efficiency_raw; 8],
-                    ..Default::default()
-                },
-                run,
-                organisation: Some("Mauser".into()),
-                localisation: None,
-                recorded_language: Arc::from("english"),
-            })
-            .collect();
-        scanned.modifiers.insert(format!("{handle}#1"), runs);
-    }
-    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
-    assert_eq!(
-        saved.countries.len(),
-        2,
-        "a shared country row is kept once"
-    );
-    let bytes = serde_json::to_vec(&saved).unwrap();
-    let mut rows = pages::CountryRows::default();
-    let mut assembled = pages::Assembler::default();
-    for read in 0..2 {
-        let mut page = scanned.clone();
-        page.reads = vec![scanned.reads[read]];
-        for line in &mut page.lines {
-            line.runs = vec![line.runs[read]];
-        }
-        for runs in page.modifiers.values_mut() {
-            *runs = vec![runs[read].clone()];
-        }
-        for versions in page.icons.values_mut() {
-            *versions = vec![versions[read].clone()];
-        }
-        let encoded =
-            serde_json::to_vec(&rows.page(&page, &AtomicBool::new(false)).unwrap()).unwrap();
-        assembled
-            .push(
-                serde_json::from_slice(&encoded).unwrap(),
-                None,
-                Arc::from("english"),
-            )
-            .unwrap();
-        rows.continuation = true;
-    }
-    assert_eq!(
-        bytes,
-        serde_json::to_vec(&SavedLines::save(&assembled.result, &AtomicBool::new(false)).unwrap())
-            .unwrap()
-    );
-    let parsed: SavedLines = serde_json::from_slice(&bytes).unwrap();
-    let restored = parsed
-        .clone()
-        .restore(None, Arc::from("english"))
-        .unwrap()
-        .unwrap();
-    assert_eq!(restored.lines, scanned.lines);
-    assert_eq!(restored.modifiers, scanned.modifiers);
-    assert_eq!(restored.icons, scanned.icons);
-    assert_eq!(restored.organisations, scanned.organisations);
-    assert_eq!(
-        restored.modifier_layout_refusals,
-        scanned.modifier_layout_refusals
-    );
-    assert_eq!(restored.variants.versions, scanned.variants.versions);
-    assert_eq!(
-        (
-            restored.reads.clone(),
-            restored.unknown_kinds,
-            restored.unlinked_rows
-        ),
-        (scanned.reads.clone(), 1, 2)
-    );
-    let runs = &restored.modifiers["5#1"];
-    assert!(Arc::ptr_eq(&runs[0].country, &runs[1].country));
-    assert!(Arc::ptr_eq(
-        &runs[0].country,
-        &restored.modifiers["6#1"][0].country
-    ));
-    // Span extension retains the modifier operands' supplying run, and leaves
-    // endpoints with a gap untouched just as hourly extension does.
-    let open = BTreeMap::from([(5, Open { index: 0 }), (6, Open { index: 1 })]);
-    let mut spans = restored.clone();
-    let mut hourly = restored.clone();
-    carry_lines(&mut spans, &open, (48, 71), true, true);
-    for hour in 48..=71 {
-        carry_lines(&mut hourly, &open, (hour, hour), true, true);
-    }
-    assert_eq!(spans.modifiers, hourly.modifiers);
-    assert_eq!(spans.lines, hourly.lines);
-    assert_eq!(spans.modifiers["5#1"][1].last_hour, 71);
-    carry_lines(&mut spans, &open, (74, 80), true, true);
-    assert_eq!(spans.modifiers["5#1"][1].last_hour, 71);
-    assert_eq!(spans.lines[0].runs[1].last_hour, 71);
-
-    // Another layout's scan is scanned again.
-    let mut other = parsed.clone();
-    other.schema += 1;
-    assert!(other.restore(None, Arc::from("english")).unwrap().is_none());
-    // A localised scan needs its content's localisation.
-    let mut localised = parsed;
-    localised.localised = true;
-    assert!(localised.restore(None, Arc::from("english")).is_err());
-}
-
 /// Prepared icon choices hold only while what they were made with holds outside the
 /// recorded content's hash: its graphic pools (and geography and DLC). Which sprites are
 /// declared and which texture files exist do not refuse them: a choice leaves those questions
@@ -2261,65 +2052,6 @@ fn prepared_choices_hold_only_while_their_inputs_do() {
     assert!(!pictures_serve_with(Some(&pooled), true, Some(&visual)));
     assert!(pictures_hold_with(None, false, None));
     assert!(!pictures_hold_with(Some(&with), false, None));
-}
-
-/// Saving a scan looks up each modifier run's country row once, by the
-/// allocation it shares: its work is one step per run however many rows the
-/// runs share, each row is encoded once, and a cancelled save stops.
-#[test]
-fn saving_a_scan_does_one_lookup_per_modifier_run() {
-    use crate::products::production_lines::{
-        RawRun, SavedLines, ScannedLines, breakdown::RawModifierRun,
-    };
-    use replay_data::{rows::CountryProductionModifiersRow, rows::ProductionLineModifiersRow};
-    let (lines, days) = (50_u64, 200_i32);
-    // The country's row changes at every read; every line shares it.
-    let rows: Vec<Arc<CountryProductionModifiersRow>> = (0..days)
-        .map(|day| {
-            Arc::new(CountryProductionModifiersRow {
-                country: 9001,
-                base_cap: day,
-                trees: saved_modifier_trees(),
-                ..Default::default()
-            })
-        })
-        .collect();
-    let mut scanned = ScannedLines::default();
-    for handle in 0..lines {
-        let runs = rows
-            .iter()
-            .zip(0..)
-            .map(|(row, day)| RawModifierRun {
-                first_hour: day * 24,
-                last_hour: day * 24 + 23,
-                country: Arc::clone(row),
-                line: ProductionLineModifiersRow {
-                    line: handle,
-                    country: 9001,
-                    ..Default::default()
-                },
-                run: RawRun::default(),
-                organisation: None,
-                localisation: None,
-                recorded_language: Arc::from("english"),
-            })
-            .collect();
-        scanned.modifiers.insert(format!("{handle}#1"), runs);
-    }
-    super::saved::SAVE_WORK.with(|work| work.set((0, 0)));
-    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
-    let (lookups, encoded) = super::saved::SAVE_WORK.with(std::cell::Cell::get);
-    assert_eq!(
-        lookups,
-        lines as usize * days as usize,
-        "one lookup per run"
-    );
-    assert_eq!(
-        (encoded, saved.countries.len()),
-        (days as usize, days as usize)
-    );
-    let error = SavedLines::save(&scanned, &AtomicBool::new(true)).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
 }
 
 #[test]
@@ -2463,10 +2195,17 @@ fn organisation_design_observations_follow_stats_cadence_availability_and_shared
         Some(recovered_hour),
         "line read must not redate the design"
     );
-    let saved = SavedLines::save(&scanned, &AtomicBool::new(false)).unwrap();
-    let restored = saved.restore(None, Arc::from("english")).unwrap().unwrap();
-    assert_eq!(restored.designs, scanned.designs);
-    assert_eq!(detail_lines(&restored, FIRST, FIRST + 25), detail);
+    let expected = reference::scan(
+        &replay,
+        &branch_blocks(&replay, 1),
+        "GER",
+        None,
+        None,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(expected.designs, scanned.designs);
+    assert_eq!(detail_lines(&expected, FIRST, FIRST + 25), detail);
 }
 
 #[test]

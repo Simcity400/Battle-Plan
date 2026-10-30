@@ -1057,6 +1057,18 @@ impl VariantCatalogue {
             ..Self::default()
         }
     }
+    /// [`Self::seeded`] whose reads last observed `hour`, as a continuation restores it: a
+    /// gap after `hour` forgets what it knows, as it would have.
+    pub fn resumed(versions: BTreeMap<u64, Vec<VariantVersion>>, hour: Option<i32>) -> Self {
+        Self {
+            last_hour: hour,
+            ..Self::seeded(versions)
+        }
+    }
+    /// The last hour it observed.
+    pub fn last_hour(&self) -> Option<i32> {
+        self.last_hour
+    }
     /// The frames' tables it reads: select them with the product's own.
     pub const TABLES: [TableId; 8] = [
         TableId::Countries,

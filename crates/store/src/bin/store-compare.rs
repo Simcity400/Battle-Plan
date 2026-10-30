@@ -303,7 +303,7 @@ impl Input {
             {
                 return Err(invalid(format!("Production scan is incomplete: {branch}")));
             }
-            let name = format!("production-lines-directory-v2-{branch}");
+            let name = format!("production-lines-directory-v3-{branch}");
             let directory: Value = serde_json::from_reader(zstd::stream::Decoder::new(
                 self.single_range(&name)?.open(&self.directory)?,
             )?)?;
@@ -405,6 +405,16 @@ fn compare_bytes(
 
 fn private_section(name: &str) -> bool {
     for prefix in [
+        "production-index-v1-",
+        "production-commits-v1-",
+        "production-ledger-v1-",
+        "production-index-v2-",
+        "production-commits-v2-",
+        "production-index-v3-",
+        "production-commits-v3-",
+        "production-ledger-v2-",
+        "production-chunks-v1-",
+        "production-absence-v1-",
         "production-lines-private-v2-",
         "production-lines-private-v3-",
         "production-lines-history-v2-",
@@ -721,7 +731,7 @@ mod tests {
             for (section, ranges) in [
                 ("preparation-side-work-v1", vec![SIDE.to_vec()]),
                 (
-                    "production-lines-directory-v2-1",
+                    "production-lines-directory-v3-1",
                     vec![production_directory()],
                 ),
                 (
@@ -792,6 +802,16 @@ mod tests {
     #[test]
     fn only_versioned_internal_production_pages_allow_private_migrations() {
         for section in [
+            "production-index-v1-1",
+            "production-commits-v1-1",
+            "production-ledger-v1-1",
+            "production-index-v2-1",
+            "production-commits-v2-1",
+            "production-index-v3-1",
+            "production-commits-v3-1",
+            "production-ledger-v2-1",
+            "production-chunks-v1-1",
+            "production-absence-v1-1",
             "production-lines-history-v2-1",
             "production-lines-history-v3-1",
             "production-lines-variants-v1-1",
@@ -803,10 +823,12 @@ mod tests {
             assert!(private_section(section), "{section}");
         }
         for section in [
+            "production-index-v1-01",
+            "production-chunks-v1-1-extra",
             "production-lines-history-v3-01",
             "production-lines-history-v3-1-extra",
             "production-lines-state-v2-1-other",
-            "production-lines-directory-v2-1",
+            "production-lines-directory-v3-1",
             "production-lines-scan-v5-1-474552",
             "production-lines-scan-meta-v5-1-474552",
             "preparation-family-production-lines-1",
@@ -912,7 +934,7 @@ mod tests {
             let input = fixture.store(
                 &format!("invalid-production-directory-{index}"),
                 vec![(
-                    "production-lines-directory-v2-1",
+                    "production-lines-directory-v3-1",
                     vec![compressed(&directory)],
                 )],
                 1,
@@ -951,7 +973,7 @@ mod tests {
         {
             let input = fixture.store(
                 &format!("invalid-production-ranges-{index}"),
-                vec![("production-lines-directory-v2-1", ranges)],
+                vec![("production-lines-directory-v3-1", ranges)],
                 1,
                 true,
             );
@@ -969,7 +991,7 @@ mod tests {
         let changed = fixture.store(
             "public-production-directory-changed",
             vec![(
-                "production-lines-directory-v2-1",
+                "production-lines-directory-v3-1",
                 vec![compressed(&directory)],
             )],
             2,
