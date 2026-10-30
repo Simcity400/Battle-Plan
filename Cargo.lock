@@ -2723,6 +2723,7 @@ dependencies = [
  "content-witness",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-text",
  "engine-allocation",
  "engine-dlc",
@@ -3699,6 +3700,16 @@ dependencies = [
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
+]
+
+[[package]]
+name = "dashboard-series"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "engine-allocation",
+ "store",
+ "zstd",
 ]
 
 [[package]]

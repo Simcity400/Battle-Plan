@@ -4349,6 +4349,8 @@ pub fn event_window(
 }
 mod catalogue;
 #[cfg(test)]
+mod engine_parity;
+#[cfg(test)]
 mod publication_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;

@@ -161,6 +161,7 @@ blake3 = "1"
 bytemuck = "1"
 dashboard = { path = "crates/dashboard" }
 dashboard-base = { path = "crates/dashboard-base" }
+dashboard-series = { path = "crates/dashboard-series" }
 dashboard-factions = { path = "crates/dashboard-factions" }
 dashboard-air-aces = { path = "crates/dashboard-air-aces" }
 dashboard-air-superiority = { path = "crates/dashboard-air-superiority" }

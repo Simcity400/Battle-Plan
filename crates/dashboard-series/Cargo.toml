@@ -1,0 +1,16 @@
+[package]
+name = "dashboard-series"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+blake3.workspace = true
+engine-allocation.workspace = true
+store = { path = "../store" }
+zstd = "0.13"
