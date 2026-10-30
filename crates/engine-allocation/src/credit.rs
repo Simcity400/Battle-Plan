@@ -323,6 +323,11 @@ impl Credit {
             bytes,
         }
     }
+    /// Takes `other`'s bytes into this credit: [`Self::split_off`] undone.
+    pub fn absorb(&mut self, mut other: Credit) {
+        assert!(self.budget.same(&other.budget));
+        self.bytes += std::mem::take(&mut other.bytes);
+    }
     pub fn resize(&mut self, bytes: usize) -> io::Result<()> {
         if bytes > self.bytes {
             let mut extra = self.budget.admit(bytes - self.bytes)?;
@@ -377,6 +382,10 @@ mod tests {
         second.resize(60).unwrap();
         assert_eq!(budget.used(), 100);
         assert_eq!(budget.peak(), 100);
+        let third = second.split_off(25);
+        first.absorb(third);
+        assert_eq!((first.bytes(), second.bytes()), (65, 35));
+        assert_eq!(budget.used(), 100);
         drop(first);
         drop(second);
         assert_eq!(budget.used(), 0);

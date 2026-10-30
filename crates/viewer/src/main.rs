@@ -33,6 +33,7 @@ mod map;
 mod map_assets;
 mod map_checkpoints;
 mod map_icons;
+mod map_source;
 mod map_views;
 mod paint_owner;
 mod playback;
@@ -115,6 +116,7 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
            --settle <seconds>, play that many seconds before the frame so entity events
              (damaged fire and smoke) and particles are under way; renders at the clock plus it
            --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps
+           --change-runs <index.h4runs>, the map's hours from a change-run index of the replay's native columnar recording
            --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states
            --debug-borders, the game's console toggle: no gradient fill and no border strips
            --no-water, a verification aid that skips the water plane as the game's debug_water does
@@ -365,6 +367,9 @@ struct Options {
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
+    /// `--dump --change-runs <index.h4runs>`: a change-run index of the replay's native
+    /// columnar recording, which serves the map's hours in place of the prepared map.
+    change_runs: Option<PathBuf>,
     compare: Option<[PathBuf; 2]>,
     mask: Option<PathBuf>,
     diff: Option<PathBuf>,
@@ -642,6 +647,10 @@ impl Options {
                 }
                 Some("--game-dir") => {
                     options.game_dir =
+                        Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
+                }
+                Some("--change-runs") => {
+                    options.change_runs =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 Some("--user-dir") => {
@@ -1184,6 +1193,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             None,
             0,
         )?;
+        if let Some(path) = &options.change_runs {
+            let index = replay::columnar_runs::IndexFile::open(path)?;
+            if !document.bind_columnar(index) {
+                return Err(invalid(
+                    "--change-runs: the index does not hold exactly the replay's hours and map tables",
+                )
+                .into());
+            }
+            let (branch, hour) = (document.playback.branch(), document.playback.hour());
+            document.playback.seek(branch, hour)?;
+        }
         // Each frame settles its own flag and portrait decodes, in request
         // order, so a dump lays out the same cells on every run.
         document.icons.lazy.set_background(false);

@@ -619,7 +619,7 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
     lane.want(vec![(1, 100), (1, 101), (1, 105)], 2);
     let decoded = |current: Current| match current {
         Current::Frame(frame) => Some(frame.hour),
-        Current::Gap { .. } => None,
+        Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
     };
     assert_eq!(decoded(frame_within(&lane, 1, 105)), Some(105));
     // Decoded ahead, in want order: already there.
@@ -714,7 +714,9 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
             .complete::<replay_data::rows::tables::NuclearStrikes>()
             .map(|rows| rows.iter().map(|row| row.id).collect::<Vec<_>>())
             .map_err(|error| error.to_string()),
-        Current::Gap { reason, .. } => Err(reason.clone()),
+        Current::Gap { reason, .. }
+        | Current::Pending { reason, .. }
+        | Current::Refused { reason, .. } => Err(reason.clone()),
     };
     assert_eq!(strikes(&current), Ok(vec![7]));
     // The resources map mode's and the trade routes' tables, including exchange ordinals, survive checkpoint restoration
@@ -1283,7 +1285,8 @@ fn walk_and_export(
             .iter()
             .map(|frame| match frame {
                 Current::Frame(frame) => frame.hour,
-                Current::Gap { .. } => panic!("only recorded visitors"),
+                Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } =>
+                    panic!("only recorded visitors"),
             })
             .collect::<Vec<_>>(),
         (hour - behind..hour).collect::<Vec<_>>(),

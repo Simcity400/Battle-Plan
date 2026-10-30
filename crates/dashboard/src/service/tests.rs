@@ -1282,6 +1282,83 @@ fn library_preparation_failed_opens_stop_at_one_attempt_for_repeated_inputs() {
     service.shutdown();
 }
 
+/// A recording refused for want of an ended session's native recording is
+/// prepared, its campaign map's status naming the refusal: terminal for the
+/// recording and its native recordings as they are, so later scans admit
+/// nothing. A native recording landing beside it admits it again. The next
+/// start restores the refusal that stands, preparing nothing again.
+#[test]
+fn library_preparation_refused_for_a_native_recording_retries_once_one_lands() {
+    let fixture = LibraryFixture::new(&["ended"]);
+    let path = &fixture.paths[0];
+    let mut records =
+        crate::test_fixtures::records(1, vec![crate::test_fixtures::source(1, 0, Some(1))]);
+    records.push(Record::Control(replay::spool::ControlRecord::Detach {
+        session: 1,
+        last_hour: Some(0),
+    }));
+    let ended = Replay::from_records(crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
+    std::fs::write(path, ended.bytes()).unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let paths = std::slice::from_ref(path);
+    let map = |source: &Source| {
+        let progress = source.state::<crate::prepared::Progress>();
+        let progress = progress.lock().unwrap();
+        assert_eq!(progress.state, crate::prepared::State::Ready);
+        assert_eq!(progress.error, None);
+        let map = progress
+            .sections
+            .iter()
+            .find(|section| section.id == "map")
+            .expect("the campaign map's status row");
+        assert_eq!(map.state, crate::prepared::State::Failed);
+        map.error.clone().unwrap_or_default()
+    };
+    admit_library(&service, paths);
+    let source = library_source(&service, path).expect("the ended session is admitted");
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert!(map(&source).contains("session 1"), "{}", map(&source));
+    let refused = admission_of(&source);
+    for _ in 0..3 {
+        admit_library(&service, paths);
+    }
+    assert_eq!(
+        admission_of(&source),
+        refused,
+        "an unchanged refusal is not prepared again"
+    );
+    std::fs::write(path.with_file_name("ended.session-1.h4col"), [0_u8; 4_096]).unwrap();
+    admit_library(&service, paths);
+    assert_ne!(
+        admission_of(&source),
+        refused,
+        "a native recording landing prepares it again"
+    );
+    crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
+    assert!(
+        map(&source).contains("ended.session-1.h4col"),
+        "{}",
+        map(&source)
+    );
+    service.shutdown();
+    let restarted = Service::new(Arc::new(|_| true)).unwrap();
+    admit_library(&restarted, paths);
+    assert!(
+        library_source(&restarted, path).is_none(),
+        "a refusal that stands is restored, not prepared again"
+    );
+    assert!(
+        restarted
+            .inner
+            .sources
+            .lock()
+            .unwrap()
+            .completed
+            .contains_key(path)
+    );
+    restarted.shutdown();
+}
+
 /// Only the loaders are stalled. All repeated product bodies and cancellation
 /// calls below go through the real service admission and physical lane queue.
 struct LoaderHold(Arc<(Mutex<bool>, std::sync::Condvar)>);
@@ -1762,6 +1839,7 @@ fn prepared_production_source() -> (
         None,
         crate::prepared::pipeline::restore(&source, None, &AtomicBool::new(false)),
         crate::prepared::store_epoch(&source),
+        crate::prepared::change_runs::native_revision(source.path()).ok(),
         &AtomicBool::new(false),
     )
     .unwrap();

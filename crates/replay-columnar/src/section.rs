@@ -358,6 +358,8 @@ pub struct Changes {
     /// The columns each changed slot's runs wrote, a bit by column (at `changed`'s
     /// positions): SET, ADD, PATCH, NOOP and unrecorded cells.
     pub masks: Vec<u64>,
+    /// [`Self::masks`] without NOOPs: the columns whose cell each changed slot's runs set.
+    pub written: Vec<u64>,
     pub deleted: Vec<u32>,
     /// The keys the deleted slots held, at `deleted`'s positions.
     pub deleted_keys: Vec<u128>,
@@ -645,6 +647,9 @@ pub fn apply(
     changes.masks.clear();
     engine_allocation::reserve(&mut changes.masks, changes.changed.len())?;
     changes.masks.resize(changes.changed.len(), 0);
+    changes.written.clear();
+    engine_allocation::reserve(&mut changes.written, changes.changed.len())?;
+    changes.written.resize(changes.changed.len(), 0);
     changes.touched.clear();
     changes.filled.clear();
     changes.fill_slots.clear();
@@ -744,6 +749,7 @@ pub fn apply(
             Op::Patch => {
                 reader.positions(changes.changed.len(), &mut scratch.positions)?;
                 mark(&mut changes.masks, &scratch.positions, column_bit(column));
+                mark(&mut changes.written, &scratch.positions, column_bit(column));
                 let mut slots = std::mem::take(&mut scratch.slots);
                 let applied = slots_at(&changes.changed, &scratch.positions, &mut slots)
                     .and_then(|()| patch_run(&mut reader, scratch, table, column, kind, &slots));
@@ -753,6 +759,7 @@ pub fn apply(
             op @ (Op::Set | Op::Add) => {
                 reader.positions(changes.changed.len(), &mut scratch.positions)?;
                 mark(&mut changes.masks, &scratch.positions, column_bit(column));
+                mark(&mut changes.written, &scratch.positions, column_bit(column));
                 let mut slots = std::mem::take(&mut scratch.slots);
                 let applied =
                     slots_at(&changes.changed, &scratch.positions, &mut slots).and_then(|()| {
@@ -786,6 +793,7 @@ pub fn apply(
         for slot in &scratch.slots {
             if let Ok(position) = changes.changed.binary_search(slot) {
                 changes.masks[position] |= column_bit(column);
+                changes.written[position] |= column_bit(column);
             }
         }
     }

@@ -96,6 +96,8 @@ export interface DashboardMapState {
   requestedSequence: number;
   loading: boolean;
   error: string | null;
+  /** Why the hour shows no map yet, which is no failure: its session is still being recorded. */
+  pending?: string | null;
 }
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };

@@ -396,23 +396,119 @@ pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage)) -> V
 pub(crate) type Seen = (DecodedFrame, Vec<Option<i32>>);
 
 /// Countries and world tension over `runs` (branch, first hour, units), written as the native
-/// recorder writes them and stored as the converter stores them: each unit's manifests and
-/// sections, and a restart ending every `restart_units`th unit. Strings come back pages
-/// after their last use, as text cells and as an unavailable table's reasons, and a row
-/// leaves and comes back with the string it held. The file, and what the writer saw of each
-/// hour, run after run.
+/// recorder writes them and stored as the converter stores them ([`written`]). Strings come
+/// back pages after their last use, as text cells and as an unavailable table's reasons, and
+/// a row leaves and comes back with the string it held.
 pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>, Vec<Seen>) {
-    use super::synthetic::{Input, Sample, Synthetic};
+    use super::synthetic::{Input, Sample};
     use crate::rows::{CountryRow, WorldTensionRow};
+    let streams = [TableId::Countries, TableId::WorldTension];
+    written(
+        b"churned synthetic",
+        runs,
+        restart_units,
+        &streams,
+        |synthetic, _, ordinal| {
+            let mut rows = vec![
+                CountryRow {
+                    id: 1,
+                    tag: b"old string".to_vec(),
+                    stability_raw: 1,
+                    ..Default::default()
+                },
+                CountryRow {
+                    id: 2,
+                    tag: format!("new string {ordinal}").into_bytes(),
+                    stability_raw: i64::from(ordinal),
+                    ..Default::default()
+                },
+                // The same 40 strings, each back 2,000 hours after it was last held.
+                CountryRow {
+                    id: 3,
+                    tag: format!("cycle {}", ordinal / 50 % 40).into_bytes(),
+                    ..Default::default()
+                },
+            ];
+            if ordinal / 100 % 2 == 0 {
+                rows.push(CountryRow {
+                    id: 4,
+                    tag: b"returning".to_vec(),
+                    ..Default::default()
+                });
+            }
+            synthetic
+                .table(
+                    TableId::Countries,
+                    Input::Snapshot {
+                        rows: &rows,
+                        partial: None,
+                        read: true,
+                        sample: Sample::FromReadBit,
+                    },
+                )
+                .unwrap();
+            let block = ordinal / 300;
+            let tension = if block % 2 == 0 {
+                synthetic.table(
+                    TableId::WorldTension,
+                    Input::Snapshot {
+                        rows: &[WorldTensionRow {
+                            total_raw: i64::from(block),
+                            source_count: 1,
+                            country_aggregate_count: 2,
+                        }],
+                        partial: None,
+                        read: true,
+                        sample: Sample::FromReadBit,
+                    },
+                )
+            } else {
+                synthetic.table::<WorldTensionRow>(
+                    TableId::WorldTension,
+                    Input::Unavailable {
+                        reason: &format!("refused {}", block / 2 % 3),
+                        read: false,
+                        sample: Sample::FromReadBit,
+                    },
+                )
+            };
+            tension.unwrap();
+        },
+    )
+}
+
+/// `streams` over `runs` (branch, first hour, units), `write(synthetic, run, ordinal)` writing
+/// each hour's tables as the native recorder writes them, stored as the converter stores them:
+/// each unit's manifests and sections, and a restart ending every `restart_units`th unit. The
+/// file, and what the writer saw of each hour, run after run.
+pub(crate) fn written(
+    campaign: &[u8],
+    runs: &[(u64, i32, u32)],
+    restart_units: u32,
+    streams: &[TableId],
+    write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    written_captured(campaign, None, runs, restart_units, streams, write)
+}
+
+/// [`written`], its root's control records holding `capture` when given.
+pub(crate) fn written_captured(
+    campaign: &[u8],
+    capture: Option<&crate::columnar_file::Capture>,
+    runs: &[(u64, i32, u32)],
+    restart_units: u32,
+    streams: &[TableId],
+    mut write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
+) -> (Vec<u8>, Vec<Seen>) {
+    use super::synthetic::Synthetic;
     let schema = schema().unwrap();
     let columns: Vec<_> = schema.iter().map(Vec::len).collect();
     let identity = Identity {
         schema: envelope::schema_digest(&schema),
-        campaign: b"churned synthetic".to_vec(),
+        campaign: campaign.to_vec(),
         content: Vec::new(),
         capture_mode: 0,
     };
-    let streams = [TableId::Countries, TableId::WorldTension];
     let mut written = vec![0; TABLE_COUNT.div_ceil(64)];
     for table in streams {
         written[table.index() / 64] |= 1 << (table.index() % 64);
@@ -422,7 +518,7 @@ pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>,
     file.extend_from_slice(&envelope::VERSION.to_le_bytes());
     let (mut directories, mut seen) = (Vec::new(), Vec::new());
     for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
-        let mut synthetic = Synthetic::new(&streams, branch, first_hour).unwrap();
+        let mut synthetic = Synthetic::new(streams, branch, first_hour).unwrap();
         let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), run);
         let (mut pages, mut chunk_ends) = (Vec::new(), Vec::new());
         for unit in 0..units {
@@ -431,70 +527,7 @@ pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>,
             let mut manifests = Writer::new();
             let mut sections: Vec<Writer> = streams.iter().map(|_| Writer::new()).collect();
             for ordinal in first..=after {
-                let mut rows = vec![
-                    CountryRow {
-                        id: 1,
-                        tag: b"old string".to_vec(),
-                        stability_raw: 1,
-                        ..Default::default()
-                    },
-                    CountryRow {
-                        id: 2,
-                        tag: format!("new string {ordinal}").into_bytes(),
-                        stability_raw: i64::from(ordinal),
-                        ..Default::default()
-                    },
-                    // The same 40 strings, each back 2,000 hours after it was last held.
-                    CountryRow {
-                        id: 3,
-                        tag: format!("cycle {}", ordinal / 50 % 40).into_bytes(),
-                        ..Default::default()
-                    },
-                ];
-                if ordinal / 100 % 2 == 0 {
-                    rows.push(CountryRow {
-                        id: 4,
-                        tag: b"returning".to_vec(),
-                        ..Default::default()
-                    });
-                }
-                synthetic
-                    .table(
-                        TableId::Countries,
-                        Input::Snapshot {
-                            rows: &rows,
-                            partial: None,
-                            read: true,
-                            sample: Sample::FromReadBit,
-                        },
-                    )
-                    .unwrap();
-                let block = ordinal / 300;
-                let tension = if block % 2 == 0 {
-                    synthetic.table(
-                        TableId::WorldTension,
-                        Input::Snapshot {
-                            rows: &[WorldTensionRow {
-                                total_raw: i64::from(block),
-                                source_count: 1,
-                                country_aggregate_count: 2,
-                            }],
-                            partial: None,
-                            read: true,
-                            sample: Sample::FromReadBit,
-                        },
-                    )
-                } else {
-                    synthetic.table::<WorldTensionRow>(
-                        TableId::WorldTension,
-                        Input::Unavailable {
-                            reason: &format!("refused {}", block / 2 % 3),
-                            read: false,
-                            sample: Sample::FromReadBit,
-                        },
-                    )
-                };
-                tension.unwrap();
+                write(&mut synthetic, run, ordinal);
                 synthetic
                     .end_encoded(|_, manifest, frame, _, encoded| {
                         let bytes = manifest.write(&columns).unwrap();
@@ -626,11 +659,22 @@ pub(crate) fn churned(runs: &[(u64, i32, u32)], restart_units: u32) -> (Vec<u8>,
             &directory.write(run).unwrap(),
         ));
     }
+    let controls = capture
+        .map(|capture| {
+            append(
+                &mut file,
+                Kind::Controls,
+                (0, 0, 0, 0),
+                &capture.write().unwrap(),
+            )
+        })
+        .into_iter()
+        .collect();
     let root = Root {
         identity,
         revision: 1,
         runs: directories,
-        controls: Vec::new(),
+        controls,
     };
     let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
     file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));

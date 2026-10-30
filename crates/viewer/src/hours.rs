@@ -349,7 +349,7 @@ fn carry_colour(
     for current in frames {
         colour = match current {
             Current::Frame(frame) => fill(&frame, colour.as_deref())?,
-            Current::Gap { .. } => None,
+            Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
         };
     }
     Ok(colour)
@@ -2188,7 +2188,9 @@ impl coordinator::BuildTarget for Coordinator {
         let branch = want.branch;
         let frame = match &current {
             Current::Frame(frame) => Arc::clone(frame),
-            Current::Gap { reason, .. } => {
+            Current::Gap { reason, .. }
+            | Current::Pending { reason, .. }
+            | Current::Refused { reason, .. } => {
                 let reason = reason.clone();
                 trace.assembled();
                 return PreparedTarget::Ready(Box::new(Built {
@@ -3010,6 +3012,7 @@ impl Pipeline {
         &self.completed
     }
 
+    #[cfg(test)]
     pub fn wait(&self) -> io::Result<Built> {
         let want = self.want.as_ref().ok_or_else(stopped)?;
         self.completed.wait(self.epoch, (want.branch, want.hour))

@@ -208,3 +208,26 @@ fn integers_lengths_and_keys_round_trip_as_varints() {
         "ends that decrease"
     );
 }
+
+#[test]
+fn a_slot_list_past_its_end_is_refused_before_anything_is_allocated() {
+    let mut read = Vec::new();
+    let mut writer = Writer::new();
+    writer.slots(&(0..4096).collect::<Vec<u32>>()).unwrap();
+    // 4,096 slots where the table holds one: refused by the count alone.
+    let error = Reader::new(writer.bytes())
+        .slots_below(1, &mut read)
+        .unwrap_err();
+    assert_eq!(error.to_string(), "Slot list holds more slots than it may");
+    assert_eq!(read.capacity(), 0);
+    let mut writer = Writer::new();
+    writer.slots(&[2, 9]).unwrap();
+    let error = Reader::new(writer.bytes())
+        .slots_below(9, &mut read)
+        .unwrap_err();
+    assert_eq!(error.to_string(), "Slot list passes the last slot");
+    let mut writer = Writer::new();
+    writer.slots(&[2, 8]).unwrap();
+    Reader::new(writer.bytes()).slots_below(9, &mut read).unwrap();
+    assert_eq!(read, [2, 8]);
+}

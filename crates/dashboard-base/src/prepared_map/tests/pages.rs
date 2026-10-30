@@ -306,7 +306,7 @@ fn bytes(frame: &DecodedFrame) -> Vec<u8> {
 fn canonical(current: &Current) -> Option<Vec<u8>> {
     match current {
         Current::Frame(frame) => Some(bytes(frame)),
-        Current::Gap { .. } => None,
+        Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
     }
 }
 

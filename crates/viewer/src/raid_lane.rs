@@ -190,7 +190,7 @@ fn input(current: &Current, viewing: Option<&Arc<crate::hours::ViewingCountry>>)
             frame: Arc::clone(frame),
             viewing: Arc::clone(viewing),
         }),
-        Current::Gap { .. } => None,
+        Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
     }
 }
 

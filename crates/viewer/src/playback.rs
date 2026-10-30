@@ -41,6 +41,10 @@ pub struct Playback {
     reader: Option<Arc<BlockReader>>,
     checkpoints: Option<crate::map_checkpoints::PreparedMap>,
     checkpoint_source: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+    /// The map's hours from the binding's change-run index, which replace the prepared map and
+    /// the replay's blocks once open; `map_refused` once it failed to open.
+    map: Option<crate::map_source::MapSource>,
+    map_refused: bool,
     page_workers: usize,
     source_path: Option<bool>,
     #[cfg(test)]
@@ -81,6 +85,8 @@ impl Playback {
             reader: None,
             checkpoints: None,
             checkpoint_source: None,
+            map: None,
+            map_refused: false,
             page_workers: 1,
             source_path: None,
             #[cfg(test)]
@@ -144,6 +150,9 @@ impl Playback {
         if let Some(map) = &mut self.checkpoints {
             map.set_page_workers(workers);
         }
+        if let Some(map) = &mut self.map {
+            map.set_workers(workers);
+        }
         self
     }
 
@@ -161,6 +170,9 @@ impl Playback {
     ) {
         debug_assert!(Arc::ptr_eq(&source.replay_handle(), &self.replay));
         self.checkpoint_source = Some(source);
+        // The binding's change-run index, if any, opens again on the next read.
+        self.map = None;
+        self.map_refused = false;
     }
 
     pub fn checkpoint_source(&self) -> Option<Arc<crate::map_checkpoints::CheckpointSource>> {
@@ -175,6 +187,37 @@ impl Playback {
     }
 
     fn refresh_checkpoints(&mut self, branch: BranchId, hour: Hour) {
+        if self.map.is_some() {
+            return;
+        }
+        let Some(source) = &self.checkpoint_source else {
+            return;
+        };
+        if !self.map_refused {
+            let opened = source.columnar().and_then(|columnar| {
+                columnar
+                    .map(|columnar| {
+                        columnar.open(
+                            Arc::clone(&self.replay),
+                            self.change_budget.clone(),
+                            self.page_workers,
+                        )
+                    })
+                    .transpose()
+            });
+            match opened {
+                Ok(Some(map)) => {
+                    self.map = Some(map);
+                    self.checkpoints = None;
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.map_refused = true;
+                    eprintln!("Change-run map source unavailable: {error}; using the replay reader")
+                }
+            }
+        }
         if self
             .checkpoints
             .as_ref()
@@ -182,9 +225,6 @@ impl Playback {
         {
             return;
         }
-        let Some(source) = &self.checkpoint_source else {
-            return;
-        };
         match source.open() {
             Ok(Some(mut checkpoints)) => {
                 checkpoints.set_page_workers(self.page_workers);
@@ -262,7 +302,7 @@ impl Playback {
     pub fn frame(&self) -> Option<&DecodedFrame> {
         match &self.current {
             Current::Frame(frame) => Some(frame),
-            Current::Gap { .. } => None,
+            Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
         }
     }
 
@@ -279,9 +319,10 @@ impl Playback {
         std::mem::replace(&mut self.current, current)
     }
 
-    // Presented frames retain their identity while the load-time decoder and block go.
+    // Presented frames retain their identity while the load-time decoder, block and map walk go.
     pub fn release_source(&mut self) -> Option<impl Send + 'static + use<>> {
-        self.cache.take()
+        let released = (self.cache.take(), self.map.take());
+        (released.0.is_some() || released.1.is_some()).then_some(released)
     }
 
     #[cfg(test)]
@@ -329,6 +370,9 @@ impl Playback {
     /// or when the block failed at or before `hour`: that seek is a gap with no
     /// walk at all.
     pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
+        if let Some(map) = &self.map {
+            return map.walk_start(branch, hour);
+        }
         if let Some(checkpoints) = &self.checkpoints
             && checkpoints.covers(branch, hour)
         {
@@ -385,14 +429,6 @@ impl Playback {
         Ok(())
     }
 
-    /// Applies a cancellation walk's endpoint without keeping an owned output
-    /// alive across the next native update. Earlier passed hours stay borrowed.
-    pub fn advance_without_output(&mut self, branch: BranchId, hour: Hour) -> io::Result<()> {
-        self.seek_to(branch, hour, |_| {}, false, &|| false)?;
-        self.materialized = false;
-        Ok(())
-    }
-
     pub fn seek_cancellable(
         &mut self,
         branch: BranchId,
@@ -429,6 +465,9 @@ impl Playback {
     }
 
     pub fn page_skip(&self) -> (Option<&'static str>, Option<Hour>) {
+        if self.map.is_some() {
+            return (Some("change-run-map"), None);
+        }
         self.checkpoints
             .as_ref()
             .map_or((Some("no-prepared-map"), None), |map| {
@@ -496,6 +535,9 @@ impl Playback {
         Ok(ControlFlow::Continue(reached))
     }
 
+    /// Reads `hour` of `branch`, handing `passed` earlier hours on the way: every one a
+    /// block or the prepared map decodes. A change-run map builds the hour alone, so the hours
+    /// before it a caller lacks are asked for after it.
     fn seek_to(
         &mut self,
         branch: BranchId,
@@ -519,6 +561,15 @@ impl Playback {
             // prepared decoder can apply deltas in its existing row storage.
             self.current = gap(branch, hour, "hour has not been decoded".into());
             self.materialized = false;
+        }
+        if let Some(map) = &mut self.map {
+            let current = map.read(branch, hour, materialize, cancelled)?;
+            self.branch = branch;
+            self.hour = hour;
+            self.current = current;
+            self.cache = None;
+            self.note_source(branch, hour, true);
+            return Ok(());
         }
         if let Some(checkpoints) = &mut self.checkpoints {
             let prepared = checkpoints.read_shared_cancellable(
@@ -686,19 +737,24 @@ impl Playback {
     }
 
     fn gap_reason(&self, branch: BranchId, hour: Hour) -> String {
-        let reason = self
-            .replay
-            .gaps
-            .iter()
-            .filter(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
-            .map(|gap| gap.reason.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
-        if reason.is_empty() {
-            "hour was not recorded".into()
-        } else {
-            reason
-        }
+        gap_reason(&self.replay, branch, hour)
+    }
+}
+
+/// Why `replay` holds no frame of `hour` of `branch`: every gap holding it, in the replay's
+/// order, else that it was not recorded.
+pub(crate) fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> String {
+    let reason = replay
+        .gaps
+        .iter()
+        .filter(|gap| gap.branch == branch && gap.first_hour <= hour && hour <= gap.last_hour)
+        .map(|gap| gap.reason.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if reason.is_empty() {
+        "hour was not recorded".into()
+    } else {
+        reason
     }
 }
 
@@ -1533,7 +1589,7 @@ pub(crate) mod tests {
     fn cancellation_walks_do_not_hold_endpoints_and_can_export_the_same_hour_afterwards() {
         let replay = Arc::new(fixture());
         let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
-        playback.advance_without_output(1, 104).unwrap();
+        playback.advance_cancellable(1, 104, &|| false).unwrap();
         assert!(!playback.materialized);
         assert!(matches!(playback.current(), Current::Gap { .. }));
         let before = playback
@@ -1546,7 +1602,7 @@ pub(crate) mod tests {
             .complete::<tables::Provinces>()
             .unwrap()
             .as_ptr();
-        playback.advance_without_output(1, 105).unwrap();
+        playback.advance_cancellable(1, 105, &|| false).unwrap();
         let after = playback
             .cache
             .as_ref()
@@ -1564,7 +1620,7 @@ pub(crate) mod tests {
         assert_seek_matches_shared(&mut playback, 1, 105);
         let held = playback.current().clone();
         for hour in [820, 102, 104, 100] {
-            playback.advance_without_output(1, hour).unwrap();
+            playback.advance_cancellable(1, hour, &|| false).unwrap();
             assert_seek_matches_shared(&mut playback, 1, hour);
         }
         let Current::Frame(held) = held else {

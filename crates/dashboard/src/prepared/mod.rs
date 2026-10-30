@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 pub(crate) use dashboard_base::prepared::observer_tests;
+pub mod change_runs;
 pub mod driver;
 pub(crate) mod pace;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
@@ -151,6 +152,9 @@ pub struct Progress {
     pub(crate) user_stops: u64,
     pub(crate) clearing: bool,
     pub(crate) finished: Arc<(Mutex<bool>, Condvar)>,
+    /// The native recordings' stamp read before the check or job that reached
+    /// `state` (`change_runs::native_revision`); none when it was not read.
+    pub(crate) natives: Option<String>,
 }
 
 impl Default for Progress {
@@ -173,6 +177,7 @@ impl Default for Progress {
             user_stops: 0,
             clearing: false,
             finished: Arc::new((Mutex::new(true), Condvar::new())),
+            natives: None,
         }
     }
 }
@@ -257,12 +262,15 @@ fn stop(source: &Source, pause: Option<PauseReason>) {
 /// no store I/O: a complete store is shown Ready, a store that cannot be read
 /// fails with its reason, and anything else is queued for preparation. An
 /// outcome whose epoch has moved on is dropped and the store is prepared.
+/// `natives` is the native recordings' stamp read before `restored`: the state
+/// reached is theirs.
 pub fn start(
     runner: &runner::Runner,
     source: Arc<Source>,
     content: Option<crate::products::ContentOptions>,
     restored: std::io::Result<Option<pipeline::Accepted>>,
     epoch: u64,
+    natives: Option<String>,
     cancel_request: &AtomicBool,
 ) -> std::io::Result<()> {
     crate::metadata::check_cancel(cancel_request)?;
@@ -292,6 +300,7 @@ pub fn start(
             let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
             if !state.running && !state.clearing {
                 finish(&mut state, State::Failed);
+                state.natives = natives;
                 state.error = Some(error.to_string());
                 state.sections =
                     pipeline::sections(State::Failed, 0, Some(source.replay_ref().index.len()));
@@ -312,6 +321,7 @@ pub fn start(
     if state.running {
         return Ok(());
     }
+    state.natives = natives;
     if let Some(restored) = restored {
         state.cleared = false;
         finish(&mut state, State::Ready);

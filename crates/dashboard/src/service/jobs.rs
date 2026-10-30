@@ -36,7 +36,8 @@ pub(super) struct Sources {
     // Only jobs that may need resuming hold a library source. Completed revisions
     // retain a cheap stamp; explicit Cancel/Clear suppress ticks across revisions.
     pub(super) library: BTreeMap<PathBuf, Arc<Source>>,
-    pub(super) completed: BTreeMap<PathBuf, String>,
+    /// Each finished recording's revision and its native recordings' stamp.
+    pub(super) completed: BTreeMap<PathBuf, (String, String)>,
     pub(super) suppressed: BTreeSet<PathBuf>,
     pub(super) entries: BTreeMap<(PathBuf, String), Weak<Source>>,
     /// Sources opening: registered before their first binding so every configuration writer
@@ -96,6 +97,9 @@ pub(super) struct Checked {
     /// The store's manifest identity, read before the restore (`None` when it
     /// could not be read), to notice another writer after publication.
     pub(super) identity: StoreIdentity,
+    /// The native recordings' stamp, read before the restore (`None` when it
+    /// could not be read, which never matches).
+    pub(super) natives: Option<String>,
 }
 
 /// A store's on-disk manifest identity (`store::Store::manifest_identity`);
@@ -110,6 +114,7 @@ impl Checked {
             restored: Ok(None),
             room,
             identity: None,
+            natives: None,
         }
     }
 
@@ -344,6 +349,7 @@ impl Inner {
             content,
             checked.restored,
             checked.epoch,
+            checked.natives,
             cancelled,
         );
         // Every library admission, from the scan or a refresh, keeps
@@ -432,11 +438,13 @@ impl Inner {
         let epoch = crate::prepared::store_epoch(source);
         let content = self.content_for(source, crate::source::Work::Recorded);
         let identity = store_identity(source);
+        let natives = crate::prepared::change_runs::native_revision(source.path()).ok();
         Checked {
             epoch,
             restored: crate::prepared::pipeline::restore(source, content.as_ref(), &self.closed),
             room,
             identity,
+            natives,
         }
     }
 
@@ -565,13 +573,14 @@ impl Inner {
 
     /// Publish a store the scan restored (another writer may have completed
     /// it) as Ready with its sections, clearing any pause or error, under the
-    /// admission lock. Whether it was published: a job that started meanwhile
-    /// reports its own outcome.
+    /// admission lock, for the native recordings of stamp `natives`. Whether it
+    /// was published: a job that started meanwhile reports its own outcome.
     fn publish_prepared(
         &self,
         source: &Source,
         accepted: crate::prepared::pipeline::Accepted,
         epoch: u64,
+        natives: Option<String>,
     ) -> bool {
         let progress = source.state::<crate::prepared::Progress>();
         let mut progress = progress.lock().unwrap_or_else(|e| e.into_inner());
@@ -585,6 +594,7 @@ impl Inner {
         progress.sections = accepted.sections;
         progress.coverage = accepted.coverage;
         progress.bytes = accepted.bytes;
+        progress.natives = natives;
         true
     }
 
@@ -679,7 +689,7 @@ impl Inner {
         cancelled: &AtomicBool,
     ) -> std::io::Result<()> {
         let yielded = self.take_over_preparation(source, cancelled)?;
-        let room = checked.room;
+        let (room, natives) = (checked.room, checked.natives.clone());
         match self.start_preparation(Arc::clone(source), admission, checked, cancelled) {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && !yielded.is_empty() => {
                 for other in &yielded {
@@ -689,7 +699,10 @@ impl Inner {
                 self.start_preparation(
                     Arc::clone(source),
                     admission,
-                    Checked::unread(room),
+                    Checked {
+                        natives,
+                        ..Checked::unread(room)
+                    },
                     cancelled,
                 )
             }
@@ -753,7 +766,9 @@ impl Inner {
             .map_err(std::io::Error::other)?;
         let path = path.canonicalize()?;
         let revision = self.recording_revision(&path)?;
-        let result = self.prepare_recording_inner(path.clone(), revision.clone(), room);
+        let natives = crate::prepared::change_runs::native_revision(&path)?;
+        let result =
+            self.prepare_recording_inner(path.clone(), revision.clone(), natives.clone(), room);
         if let Err(error) = &result
             && !matches!(
                 error.kind(),
@@ -762,24 +777,37 @@ impl Inner {
             && !self.closed.load(Ordering::Acquire)
         {
             // An unchanged failed input cannot make progress on a later worker
-            // completion. Only a new revision, binding or manual Start retries it.
+            // completion. Only a new revision or native recording, binding or
+            // manual Start retries it.
             let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
             sources.library.remove(&path);
-            sources.completed.insert(path, revision);
+            sources.completed.insert(path, (revision, natives));
         }
         result
     }
 
+    /// [`Self::prepare_recording`] of the recording at `path` of `revision`,
+    /// its native recordings of stamp `natives`: a terminal state reached for
+    /// other native recordings is prepared again.
     fn prepare_recording_inner(
         &self,
         path: PathBuf,
         revision: String,
+        natives: String,
         room: bool,
     ) -> std::io::Result<()> {
         use crate::prepared::{Progress, State};
+        let finished = |state: &Progress| {
+            matches!(state.state, State::Ready | State::Failed)
+                && state.natives.as_ref() == Some(&natives)
+        };
         let previous = {
             let sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
-            if sources.suppressed.contains(&path) || sources.completed.get(&path) == Some(&revision)
+            if sources.suppressed.contains(&path)
+                || sources
+                    .completed
+                    .get(&path)
+                    .is_some_and(|(held, stamp)| *held == revision && *stamp == natives)
             {
                 return Ok(());
             }
@@ -819,7 +847,7 @@ impl Inner {
         // failure through the ordinary terminal failure.
         let idle = {
             let state = progress.lock().unwrap_or_else(|e| e.into_inner());
-            !state.running && !matches!(state.state, State::Ready | State::Failed)
+            !state.running && !finished(&state)
         };
         let checked = if idle {
             self.check_store(&source, room)
@@ -857,21 +885,22 @@ impl Inner {
                 .insert(path, source);
             return Ok(());
         }
-        let finished = matches!(state.state, State::Ready | State::Failed);
+        let finished = finished(&state);
         drop(state);
         let Checked {
             epoch,
             restored,
             room,
             identity,
+            natives: checked_natives,
         } = checked;
         let restored = match restored {
             Ok(Some(accepted)) if !finished => {
-                if self.publish_prepared(&source, accepted, epoch) {
+                if self.publish_prepared(&source, accepted, epoch, checked_natives.clone()) {
                     {
                         let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
                         sources.library.remove(&path);
-                        sources.completed.insert(path, revision);
+                        sources.completed.insert(path, (revision, natives));
                     }
                     drop(admission);
                     self.confirm_checked(&source, confirmation);
@@ -886,7 +915,7 @@ impl Inner {
         if finished {
             let mut sources = self.sources.lock().unwrap_or_else(|e| e.into_inner());
             sources.library.remove(&path);
-            sources.completed.insert(path, revision);
+            sources.completed.insert(path, (revision, natives));
             return Ok(());
         }
         if let Err(error) = self.start_preparation(
@@ -897,6 +926,7 @@ impl Inner {
                 restored,
                 room,
                 identity,
+                natives: checked_natives,
             },
             &self.closed,
         ) {

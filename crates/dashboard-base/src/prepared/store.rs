@@ -140,11 +140,25 @@ pub fn recording_store(path: &Path) -> std::io::Result<Arc<store::Store>> {
 /// Its folder and the campaign its header names, which a rename keeps; else its path.
 pub fn recording_identity(path: &Path) -> std::io::Result<uuid::Uuid> {
     let path = std::fs::canonicalize(path)?;
+    let campaign = replay::recording_files::campaign_of(&path).ok().flatten();
+    Ok(identity(&path, campaign.as_deref()))
+}
+
+/// The prepared store's folder of `source`'s recording, from the campaign its loaded recording
+/// names, as [`recording_store`] places it: the recording is not read again.
+pub fn recording_folder(source: &Source) -> std::io::Result<std::path::PathBuf> {
+    let path = std::fs::canonicalize(source.path())?;
+    let campaign = &source.replay_ref().campaign_id;
+    let campaign = replay_data::identity::is_campaign_uuid(campaign).then_some(&campaign[..]);
+    Ok(store::Store::local(identity(&path, campaign))?
+        .folder()
+        .to_owned())
+}
+
+/// The identity of the recording at `path`, canonical, whose header names `campaign`.
+fn identity(path: &Path, campaign: Option<&[u8]>) -> uuid::Uuid {
     let mut hash = blake3::Hasher::new();
-    match (
-        path.parent(),
-        replay::recording_files::campaign_of(&path).ok().flatten(),
-    ) {
+    match (path.parent(), campaign) {
         (Some(folder), Some(campaign)) => {
             hash.update(folder.as_os_str().as_encoded_bytes());
             hash.update(&[0]);
@@ -156,7 +170,7 @@ pub fn recording_identity(path: &Path) -> std::io::Result<uuid::Uuid> {
     }
     let mut id = [0; 16];
     id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(uuid::Uuid::from_bytes(id))
+    uuid::Uuid::from_bytes(id)
 }
 
 #[cfg(test)]

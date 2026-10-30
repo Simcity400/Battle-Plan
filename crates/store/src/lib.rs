@@ -878,8 +878,9 @@ impl Store {
         ))
     }
 
-    /// Removes saved names while held range readers keep their bytes. The empty
-    /// directory and zero-byte lock file remain so writers cannot split ownership.
+    /// Removes saved names, and every folder of data prepared beside them, while held
+    /// readers keep their bytes. The empty directory and zero-byte lock file remain so
+    /// writers cannot split ownership.
     pub fn clear(&self) -> io::Result<()> {
         let _lock = self.lock()?;
         // Removing the manifest first prevents new readers seeing deleted packs.
@@ -889,7 +890,14 @@ impl Store {
         }
         published(&self.directory, || None);
         *self.source.lock().unwrap() = None;
-        self.cleanup(None)
+        self.cleanup(None)?;
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                remove_folder(&entry.path())?;
+            }
+        }
+        Ok(())
     }
 
     fn catalog(&self) -> io::Result<Option<Catalog>> {
@@ -919,7 +927,8 @@ impl Store {
 
     /// Keeps the lock, the manifest, its source stamps, its names file and the
     /// packs and entry logs its tables list, plus live stages' files; removes
-    /// every other name in one directory pass.
+    /// every other name in one directory pass. A folder holds data prepared
+    /// beside the packs, which only [`Self::clear`] removes.
     fn cleanup(&self, catalog: Option<&Catalog>) -> io::Result<()> {
         // Creation and registration of a stage's packs use this same lock, so
         // the directory pass cannot remove a pack before its pin is visible.
@@ -945,6 +954,9 @@ impl Store {
         }
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                continue;
+            }
             let name = entry.file_name();
             let text = name.to_str();
             let keep = name == LOCK
@@ -1019,6 +1031,24 @@ fn lookup(
         }
     };
     Ok((count, Some(Range::new(file, id))))
+}
+
+/// Removes `folder` and everything in it, each file's name at once: a reader holding one keeps
+/// its bytes. What is gone already is not an error.
+fn remove_folder(folder: &Path) -> io::Result<()> {
+    let gone = |result: io::Result<()>| match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    };
+    for entry in fs::read_dir(folder)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_folder(&entry.path())?;
+        } else {
+            gone(posix_delete(&entry.path()))?;
+        }
+    }
+    gone(fs::remove_dir(folder))
 }
 
 fn open_pack(directory: &Path, pack: u64) -> io::Result<File> {

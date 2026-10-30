@@ -417,7 +417,9 @@ impl<B: BuildTarget> Driver<B> {
             let key = self.targets.get(&ticket).map(|target| match target {
                 PreparedTarget::Parts(pending, _) => match &pending.current {
                     Current::Frame(f) => (f.branch, f.hour),
-                    Current::Gap { branch, hour, .. } => (*branch, *hour),
+                    Current::Gap { branch, hour, .. }
+                    | Current::Pending { branch, hour, .. }
+                    | Current::Refused { branch, hour, .. } => (*branch, *hour),
                 },
                 PreparedTarget::Ready(built) => (built.branch, built.hour),
                 PreparedTarget::Pressure(..) => unreachable!("pressure retains the ordered stage"),

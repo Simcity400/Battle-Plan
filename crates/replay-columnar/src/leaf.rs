@@ -435,7 +435,16 @@ impl<'a> Reader<'a> {
 
     /// A strictly ascending slot list, as [`Writer::slots`] writes it.
     pub fn slots(&mut self, into: &mut Vec<u32>) -> io::Result<()> {
+        self.slots_below(u32::MAX as usize + 1, into)
+    }
+
+    /// Strictly ascending slots, each below `end`: a list that could not be is refused before
+    /// anything is allocated for it.
+    pub fn slots_below(&mut self, end: usize, into: &mut Vec<u32>) -> io::Result<()> {
         let count = self.count()?;
+        if count > end {
+            return Err(invalid("Slot list holds more slots than it may"));
+        }
         into.clear();
         match self.u8()? {
             SLOT_DELTAS => {
@@ -444,7 +453,7 @@ impl<'a> Reader<'a> {
                 for _ in 0..count {
                     let slot = next
                         .checked_add(self.varint()?)
-                        .filter(|&slot| slot <= u64::from(u32::MAX))
+                        .filter(|&slot| slot < end as u64)
                         .ok_or_else(|| invalid("Slot list passes the last slot"))?;
                     into.push(slot as u32);
                     next = slot + 1;
@@ -452,7 +461,7 @@ impl<'a> Reader<'a> {
             }
             SLOT_BITMAP => {
                 let words = self.count()?;
-                if words > SLOT_WORDS {
+                if words > SLOT_WORDS || words > end.div_ceil(64) {
                     return Err(invalid("Slot bitmap passes the last slot"));
                 }
                 let bytes = self.words(words)?;
@@ -468,7 +477,11 @@ impl<'a> Reader<'a> {
                 for (index, word) in bits.enumerate() {
                     let mut rest = word;
                     while rest != 0 {
-                        into.push(index as u32 * 64 + rest.trailing_zeros());
+                        let slot = index * 64 + rest.trailing_zeros() as usize;
+                        if slot >= end {
+                            return Err(invalid("Slot bitmap passes the last slot"));
+                        }
+                        into.push(slot as u32);
                         rest &= rest - 1;
                     }
                 }

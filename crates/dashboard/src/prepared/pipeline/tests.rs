@@ -1803,6 +1803,7 @@ fn queued_cancellation_and_clear_wait_for_the_real_worker_to_release_its_writer(
         None,
         super::restore(&source, None, &AtomicBool::new(false)),
         super::super::store_epoch(&source),
+        super::super::change_runs::native_revision(source.path()).ok(),
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -1931,6 +1932,7 @@ fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
         None,
         super::restore(&source, None, &flag),
         super::super::store_epoch(&source),
+        super::super::change_runs::native_revision(source.path()).ok(),
         &flag,
     )
     .unwrap();
@@ -1960,6 +1962,7 @@ fn completed_cache_restores_before_queue_admission_and_old_schema_rebuilds() {
         None,
         super::restore(&source, None, &flag),
         super::super::store_epoch(&source),
+        super::super::change_runs::native_revision(source.path()).ok(),
         &flag,
     )
     .unwrap();

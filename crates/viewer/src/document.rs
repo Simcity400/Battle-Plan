@@ -422,7 +422,6 @@ const MISSION_MEMO: usize = 8;
 pub struct Hour<'a> {
     pub content: &'a Content,
     pub frame: &'a DecodedFrame,
-    pub changes: replay_frame::frame::HourChanges<'a>,
     /// See [`Document::hour_fraction`].
     pub hour_fraction: f32,
     /// The last perspective read for this hour; several builders need it.
@@ -1378,6 +1377,23 @@ impl Document {
                     presentation: Default::default(),
                 }),
             ));
+    }
+
+    /// Serves the map from `index`, a change-run index of this replay's native columnar
+    /// recording, in place of the one preparation writes in the replay's store and of the
+    /// prepared map. False, the binding unchanged, when it is of another campaign, does not hold
+    /// exactly the hours the replay records, or lacks a map table.
+    pub fn bind_columnar(&mut self, index: replay::columnar_runs::IndexFile) -> bool {
+        let replay = self.playback.replay_handle();
+        let Some(columnar) = crate::map_source::Columnar::verify(&replay, Arc::new(index)) else {
+            return false;
+        };
+        let binding = match self.playback.checkpoint_source() {
+            Some(source) => source.with_columnar(columnar),
+            None => crate::map_checkpoints::CheckpointSource::columnar_only(replay, columnar),
+        };
+        self.playback.bind_checkpoint_source(binding);
+        true
     }
 
     /// Load verified presentation assets using the same immutable recording
@@ -3047,7 +3063,8 @@ impl Document {
         self.hour()?.demilitarized_zone(regions, &override_ids)
     }
 
-    /// The decoded frame of the hour on screen, or a named error for a recorded gap.
+    /// The decoded frame of the hour on screen, or a named error for a recorded gap, an hour not
+    /// indexed yet, or one refused.
     pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
             crate::playback::Current::Frame(frame) => Ok(frame),
@@ -3057,6 +3074,20 @@ impl Document {
                 reason,
             } => Err(invalid(format!(
                 "branch {branch}, hour {hour} is a gap: {reason}"
+            ))),
+            crate::playback::Current::Pending {
+                branch,
+                hour,
+                reason,
+            } => Err(invalid(format!(
+                "branch {branch}, hour {hour} is not indexed yet: {reason}"
+            ))),
+            crate::playback::Current::Refused {
+                branch,
+                hour,
+                reason,
+            } => Err(invalid(format!(
+                "branch {branch}, hour {hour} cannot be shown: {reason}"
             ))),
         }
     }
@@ -3256,7 +3287,6 @@ impl<'a> Hour<'a> {
             content,
             frame,
             hour_fraction,
-            changes: input.changes(),
             product_hour: map_products::ProductHour::from_input(&content.products, input, hour_fraction),
             pool_limits: Default::default(),
             worker_etas: None,

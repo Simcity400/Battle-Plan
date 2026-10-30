@@ -13,8 +13,9 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 /// The preparation revision, whether the prepared-data volume has room for
-/// library preparation, and each library recording with its replay revision.
-type Observation = (u64, bool, Vec<(PathBuf, Option<String>)>);
+/// library preparation, and each library recording with its replay revision
+/// and its native recordings' stamp.
+type Observation = (u64, bool, Vec<(PathBuf, Option<String>, Option<String>)>);
 
 /// One admission attempt per observed input/worker change. A busy or unchanged
 /// reply ends retries until new external inputs or completed work wake them.
@@ -71,6 +72,7 @@ impl LibraryAdmission {
                     (
                         path.clone(),
                         dashboard::protocol::replay_revision(path).ok(),
+                        dashboard::prepared::change_runs::native_revision(path).ok(),
                     )
                 })
                 .collect(),
@@ -214,6 +216,45 @@ mod tests {
         assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
         assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
         assert_eq!(admission.requests, 2);
+        runtime.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A session's native recording lands beside its recording after the
+    /// recording is published; the next scan requests admission once more, as
+    /// it does when one is replaced.
+    #[test]
+    fn a_native_recording_landing_wakes_library_admission_once() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "preparation-native-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("session.battleplan"), b"synthetic recording").unwrap();
+        let scan = || {
+            replay_library::scan(&root)
+                .unwrap()
+                .files
+                .into_iter()
+                .map(|file| PathBuf::from(file.path))
+                .collect::<Vec<_>>()
+        };
+        let runtime = dashboard::Service::new(Arc::new(|_| true)).unwrap();
+        let mut admission = LibraryAdmission::default();
+        assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
+        let native = root.join("session.session-1.h4col");
+        std::fs::write(&native, b"synthetic native recording").unwrap();
+        assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
+        std::fs::write(&native, b"another synthetic native recording").unwrap();
+        assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
+        // Another replay's native recording is not this one's.
+        std::fs::write(root.join("other.session-1.h4col"), b"synthetic").unwrap();
+        assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
+        assert_eq!(admission.requests, 3);
         runtime.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }

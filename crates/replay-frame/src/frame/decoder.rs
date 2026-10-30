@@ -424,7 +424,9 @@ pub(super) fn pinned_change_refusal(
     )
 }
 
-pub(super) fn change_credit(
+/// `bytes` of `budget` for change facts and field stamps; a refusal is the pressure
+/// [`FrameDecoder::change_fact_admission_refused`] names, retryable once pins are released.
+pub fn change_credit(
     budget: &allocation::credit::MemoryBudget,
     bytes: usize,
     cancelled: Option<&dyn Fn() -> bool>,

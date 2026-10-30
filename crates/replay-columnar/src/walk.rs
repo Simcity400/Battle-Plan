@@ -283,7 +283,7 @@ impl Dictionary {
     }
 
     /// Holds string `id`: a run's dictionary pins the chunk holding it when it held none.
-    fn hold(&mut self, id: u32) -> io::Result<()> {
+    pub fn hold(&mut self, id: u32) -> io::Result<()> {
         if id as usize >= self.len() || self.get(id).is_some() {
             return Ok(());
         }
@@ -478,22 +478,22 @@ fn each_text_id(
 
 /// Every schema table while a branch is walked.
 pub struct State {
-    kinds: Vec<Vec<Kind>>,
+    pub(crate) kinds: Vec<Vec<Kind>>,
     columns: Vec<usize>,
     /// Each table's text columns.
     text: Vec<Vec<usize>>,
-    tables: Vec<Table>,
-    changes: Vec<Changes>,
-    statuses: Vec<Status>,
+    pub(crate) tables: Vec<Table>,
+    pub(crate) changes: Vec<Changes>,
+    pub(crate) statuses: Vec<Status>,
     /// Each table's sample hour.
-    sampled: Vec<Option<i32>>,
+    pub(crate) sampled: Vec<Option<i32>>,
     /// Each truncated table's rows read: its last hour's read and inserted slots.
-    views: Vec<Vec<u32>>,
+    pub(crate) views: Vec<Vec<u32>>,
     /// Tables whose changes the last hour set, to clear before the next.
-    present: Vec<usize>,
+    pub(crate) present: Vec<usize>,
     /// Tables whose sections are not applied: no reader of the walk reads them.
     skipped: Vec<bool>,
-    dictionary: Dictionary,
+    pub(crate) dictionary: Dictionary,
     /// The ids a dictionary trim keeps.
     named: Vec<u32>,
     scratch: Scratch,
@@ -577,6 +577,17 @@ impl State {
         &self.dictionary
     }
 
+    /// The bytes its tables and dictionary hold, chunks shared with other walkers included.
+    pub fn held_bytes(&self) -> usize {
+        self.tables.iter().map(Table::held_bytes).sum::<usize>()
+            + self
+                .views
+                .iter()
+                .map(|view| view.capacity() * size_of::<u32>())
+                .sum::<usize>()
+            + self.dictionary.held_bytes()
+    }
+
     /// Walks on with `dictionary`, a run's ([`Dictionary::run`]).
     pub fn set_dictionary(&mut self, dictionary: Dictionary) {
         self.dictionary = dictionary;
@@ -636,6 +647,15 @@ impl State {
             .get(table)
             .ok_or_else(|| invalid("Table past the schema"))?;
         each_text_id(held, &self.text[table], self.statuses[table], visit)
+    }
+
+    /// Holds every string `table`'s last changes name, and its status's reason: what a run's
+    /// dictionary holds once a move other than an hour's changed the table.
+    pub(crate) fn hold_text(&mut self, table: usize) -> io::Result<()> {
+        if let Some(&Status::Unavailable { reason }) = self.statuses.get(table) {
+            self.dictionary.hold(reason)?;
+        }
+        self.hold_changed_text(table)
     }
 
     /// Holds every string the last hour's changes to `table` name.
@@ -731,6 +751,7 @@ impl State {
             changes.filled.clear();
             changes.fill_slots.clear();
             changes.masks.clear();
+            changes.written.clear();
             changes.deleted_keys.clear();
             changes.fill_masks.clear();
         }

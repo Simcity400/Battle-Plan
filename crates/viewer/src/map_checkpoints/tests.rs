@@ -1322,7 +1322,7 @@ fn source_path_follows_each_change_between_the_map_and_the_replay_reader() {
     for hour in [101, 102, 821, 823, 100, 101] {
         playback.seek(1, hour).unwrap();
     }
-    playback.advance_without_output(1, 823).unwrap();
+    playback.advance_cancellable(1, 823, &|| false).unwrap();
     assert_eq!(
         playback.source_paths(),
         [

@@ -437,6 +437,26 @@ impl Drop for Fixture {
     }
 }
 
+/// A folder in a store's directory holds data prepared beside its packs: commits keep it, the
+/// first one included, and Clear removes it with all it holds, a file a reader holds open too.
+#[test]
+fn a_folder_prepared_beside_the_packs_lasts_until_clear() {
+    let fixture = Fixture::new();
+    let folder = fixture.store.directory.join("beside");
+    fs::create_dir_all(folder.join("inner")).unwrap();
+    fs::write(folder.join("index"), b"prepared").unwrap();
+    fs::write(folder.join("inner").join("left.partial"), b"partial").unwrap();
+    fixture.save(b"first");
+    fixture.save(b"second");
+    assert_eq!(fs::read(folder.join("index")).unwrap(), b"prepared");
+    assert!(folder.join("inner").join("left.partial").exists());
+    let held = File::open(folder.join("index")).unwrap();
+    fixture.store.clear().unwrap();
+    assert!(!folder.exists());
+    assert!(fixture.store.directory.join(LOCK).exists());
+    drop(held);
+}
+
 fn bytes(mut range: Range) -> Vec<u8> {
     let mut bytes = Vec::new();
     range.read_to_end(&mut bytes).unwrap();

@@ -24,7 +24,7 @@ mod store;
 pub mod timing;
 
 pub use store::{
-    SettingsStamp, files, rebind_settings, recording_identity, recording_store,
+    SettingsStamp, files, rebind_settings, recording_folder, recording_identity, recording_store,
     refresh_saved_binding, settings_stamp,
 };
 

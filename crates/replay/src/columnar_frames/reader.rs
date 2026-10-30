@@ -129,6 +129,8 @@ pub struct Run {
     pub epoch: u8,
     pub first_hour: i32,
     pub ordinals: u32,
+    /// The hour digest chain after its last hour: every manifest and section it holds.
+    pub chain: [u8; 32],
     index: u32,
     source: Arc<Source>,
     pages: Box<[Extent]>,
@@ -227,6 +229,7 @@ impl Run {
             epoch: directory.epoch,
             first_hour: directory.first_hour,
             ordinals: directory.ordinals,
+            chain: directory.chain,
             index,
             source: source.clone(),
             pages: engine_allocation::boxed_slice(directory.pages)?,
@@ -318,6 +321,8 @@ pub struct Recording {
     identity: Vec<u8>,
     /// The root's control records' extents.
     controls: Box<[Extent]>,
+    /// The campaign its identity names.
+    campaign: Vec<u8>,
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     damage: Box<[Damage]>,
@@ -388,6 +393,7 @@ impl Recording {
         Ok(Self {
             identity: root.identity.chain_bytes()?,
             controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&root.controls)?)?,
+            campaign: root.identity.campaign,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
             segments: engine_allocation::boxed_slice(segments)?,
@@ -487,7 +493,17 @@ impl Recording {
         self.verify = verify;
     }
 
-    /// Why each run directory or page that cannot be read is refused.
+    /// The campaign its identity names, as the row recording's header names it.
+    pub fn campaign(&self) -> &[u8] {
+        &self.campaign
+    }
+
+    /// Its identity block, every run's chain starts from: this build's schema, the campaign,
+    /// the content identity and the capture mode.
+    pub fn identity(&self) -> &[u8] {
+        &self.identity
+    }
+
     /// The capture the file's runs belong to, as the root's control records hold it; none
     /// when the root holds none.
     pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
@@ -500,6 +516,7 @@ impl Recording {
         crate::columnar_file::Capture::read(&raw).map(Some)
     }
 
+    /// Why each run directory or page that cannot be read is refused.
     pub fn damage(&self) -> &[Damage] {
         &self.damage
     }

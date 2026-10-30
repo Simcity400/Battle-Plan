@@ -337,6 +337,9 @@ struct ShownHour {
     hour: i32,
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
+    /// Why the hour draws nothing yet, no failure: its session is still being recorded, and
+    /// the map holds its hours once the session's native recording lands.
+    pending: Option<String>,
     political_warnings: Vec<String>,
     /// The battle plan's refusals and missing inputs ([`viewer_foundation::map::ribbon_content::OrderReport::warnings`]).
     plan_warnings: Vec<String>,
@@ -1938,7 +1941,15 @@ impl Viewer {
     fn picture_ready(&self) -> bool {
         self.shown
             .as_ref()
-            .is_some_and(|shown| shown.error.is_none())
+            .is_some_and(|shown| shown.error.is_none() && shown.pending.is_none())
+    }
+
+    /// Why the hour on screen, of this epoch, draws nothing yet, when it is not indexed yet.
+    fn shown_pending(&self) -> Option<String> {
+        self.shown
+            .as_ref()
+            .filter(|shown| shown.epoch == self.epoch)
+            .and_then(|shown| shown.pending.clone())
     }
 
     /// Whether the frame drawn answers `target` with a built hour of this
@@ -1948,6 +1959,7 @@ impl Viewer {
             !self.animation_seek
                 && shown.epoch == self.epoch
                 && shown.error.is_none()
+                && shown.pending.is_none()
                 && self.rendered.is_some_and(|rendered| {
                     (rendered.branch, rendered.hour) == (shown.branch, shown.hour)
                         && presentation_matches(rendered, target, playing)
@@ -1977,6 +1989,15 @@ impl Viewer {
                 target.playing,
             )
         }) && self.rendered_sequence == target.sequence;
+        let pending = self
+            .shown
+            .as_ref()
+            .filter(|shown| {
+                shown.epoch == self.epoch
+                    && shown.branch.to_string() == target.branch_id
+                    && shown.hour == target.hour
+            })
+            .and_then(|shown| shown.pending.clone());
         dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
             source_id: Some(target.source_id.clone()),
@@ -1986,8 +2007,9 @@ impl Viewer {
             fraction: self.rendered.map(|shown| shown.fraction as f32),
             sequence: self.rendered_sequence,
             requested_sequence: target.sequence,
-            loading: error.is_none() && !ready,
+            loading: error.is_none() && pending.is_none() && !ready,
             error,
+            pending,
         }
     }
 
@@ -3432,6 +3454,13 @@ impl Viewer {
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
+            });
+            return Ok(());
+        }
+        if let Some(pending) = self.shown_pending() {
+            self.rendered = None;
+            ui.centered_and_justified(|ui| {
+                ui.label(format!("Not indexed yet: {pending}"));
             });
             return Ok(());
         }
@@ -6934,6 +6963,7 @@ pub(crate) mod tests {
             branch: 1,
             hour: 10,
             error: None,
+            pending: None,
             political_warnings: Vec::new(),
             plan_warnings: Vec::new(),
             building_warnings: Vec::new(),

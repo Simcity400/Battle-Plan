@@ -416,14 +416,21 @@ impl Viewer {
         let layers = match layers {
             Ok(layers) => layers,
             Err(error) => {
+                // An hour not indexed yet draws nothing, and is no failure.
+                let pending = matches!(raid_frame, crate::playback::Current::Pending { .. });
                 if let Some(scene) = self.scene.as_mut() {
+                    let what = if pending {
+                        "is not indexed yet"
+                    } else {
+                        "failed"
+                    };
                     scene.apply(
                         &state.device,
                         &state.queue,
                         SceneInput::MissingMapTextEvents {
                             at: (branch, hour),
                             seek,
-                            reason: format!("map text presented hour failed: {error}"),
+                            reason: format!("map text presented hour {what}: {error}"),
                         },
                     )?;
                 }
@@ -440,11 +447,17 @@ impl Viewer {
                         viewing: viewing.as_ref(),
                     },
                 );
+                let (error, pending) = if pending {
+                    (None, Some(error))
+                } else {
+                    (Some(error), None)
+                };
                 retired.push(self.shown.replace(ShownHour {
                     epoch,
                     branch,
                     hour,
-                    error: Some(error),
+                    error,
+                    pending,
                     political_warnings: Vec::new(),
                     plan_warnings: Vec::new(),
                     building_warnings: Vec::new(),
@@ -784,6 +797,28 @@ impl Viewer {
                     },
                 )?;
             }
+            crate::playback::Current::Pending { reason, .. } => {
+                scene.apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::MissingMapTextEvents {
+                        at: (branch, hour),
+                        seek,
+                        reason: format!("map text presented hour is not indexed yet: {reason}"),
+                    },
+                )?;
+            }
+            crate::playback::Current::Refused { reason, .. } => {
+                scene.apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::MissingMapTextEvents {
+                        at: (branch, hour),
+                        seek,
+                        reason: format!("map text presented hour cannot be shown: {reason}"),
+                    },
+                )?;
+            }
         }
         retired.push(self.overlay_tables.replace((
             branch,
@@ -814,6 +849,7 @@ impl Viewer {
             branch,
             hour,
             error: None,
+            pending: None,
             political_warnings: political.layers.warnings().to_vec(),
             plan_warnings,
             building_warnings,

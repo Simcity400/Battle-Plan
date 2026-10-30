@@ -6,7 +6,7 @@ import { createServer } from 'vite';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { DashboardMapState } from '../../dashboard/client';
 
-test('map load errors hide diagnostics and retain Retry; the displayed map keeps its mode and date', async () => {
+test('map load errors hide diagnostics and retain Retry; an hour not indexed yet says so; the displayed map keeps its mode and date', async () => {
   const host = globalThis as typeof globalThis & { __mapReview?: DashboardMapState };
   host.__mapReview = { id: 'map', sourceId: 's', revision: 'r', branchId: 'b', hour: 105, fraction: 0,
     sequence: 0, requestedSequence: 0, loading: false, error: 'Synthetic native failure' };
@@ -30,6 +30,12 @@ test('map load errors hide diagnostics and retain Retry; the displayed map keeps
     assert.match(failed, /Retry/);
     assert.doesNotMatch(failed.replace(/<[^>]*>/g, ' '), /Synthetic native failure|Follow the campaign/);
     host.__mapReview.error = null;
+    host.__mapReview.pending = 'Session 2 is still being recorded: the map holds its hours once it ends.';
+    const pending = render();
+    assert.match(pending, /Map not indexed yet/);
+    assert.match(pending, /Session 2 is still being recorded/);
+    assert.doesNotMatch(pending, /Couldn’t load|Retry|Live/);
+    host.__mapReview.pending = null;
     const live = render();
     assert.match(live, /Campaign map/);
     assert.match(live, /Live/);

@@ -42,6 +42,20 @@ pub struct Bits {
     words: Vec<u64>,
 }
 
+/// The `count` bits of `words` from bit `from`, at most 64, the first lowest.
+pub(crate) fn span(words: &[u64], from: u32, count: u32) -> u64 {
+    let (word, shift) = ((from / 64) as usize, from % 64);
+    let low = words.get(word).copied().unwrap_or(0) >> shift;
+    let high = match shift {
+        0 => 0,
+        _ => words.get(word + 1).copied().unwrap_or(0) << (64 - shift),
+    };
+    match count {
+        64.. => low | high,
+        _ => (low | high) & ((1 << count) - 1),
+    }
+}
+
 impl Bits {
     pub fn from_words(words: Vec<u64>) -> io::Result<Self> {
         if words.len() > SLOT_WORDS {
@@ -81,7 +95,7 @@ impl Bits {
         })
     }
 
-    fn set(&mut self, bit: u32) -> io::Result<()> {
+    pub(crate) fn set(&mut self, bit: u32) -> io::Result<()> {
         let word = bit as usize / 64;
         if word >= self.words.len() {
             engine_allocation::resize_default(&mut self.words, word + 1)?;
@@ -90,7 +104,7 @@ impl Bits {
         Ok(())
     }
 
-    fn clear(&mut self, bit: u32) {
+    pub(crate) fn clear(&mut self, bit: u32) {
         if let Some(word) = self.words.get_mut(bit as usize / 64) {
             *word &= !(1 << (bit % 64));
         }
@@ -460,6 +474,38 @@ impl Column {
         }
     }
 
+    /// The bytes its values hold, list and opaque cells' items included.
+    pub fn held_bytes(&self) -> usize {
+        fn bytes<T>(values: &Vec<T>) -> usize {
+            values.capacity() * size_of::<T>()
+        }
+        fn cells<T>(values: &Vec<Box<[T]>>) -> usize {
+            bytes(values)
+                + values
+                    .iter()
+                    .map(|cell| cell.len() * size_of::<T>())
+                    .sum::<usize>()
+        }
+        match self {
+            Self::U8(values) => bytes(values),
+            Self::I8(values) => bytes(values),
+            Self::U16(values) => bytes(values),
+            Self::I16(values) => bytes(values),
+            Self::U32(values) | Self::Bytes(values) => bytes(values),
+            Self::I32(values) => bytes(values),
+            Self::U64(values) => bytes(values),
+            Self::I64(values) => bytes(values),
+            Self::Bool(values) => bytes(values),
+            Self::OptionalI32(values, present) => bytes(values) + bytes(&present.words),
+            Self::OptionalU32(values, present) => bytes(values) + bytes(&present.words),
+            Self::OptionalI64(values, present) => bytes(values) + bytes(&present.words),
+            Self::OptionalU64(values, present) => bytes(values) + bytes(&present.words),
+            Self::U32List(values) => cells(values),
+            Self::U64List(values) => cells(values),
+            Self::Opaque(values) => cells(values),
+        }
+    }
+
     /// The value at `slot`, live or not: a deleted row's slot keeps stale scalars.
     pub fn cell(&self, slot: u32) -> Option<Cell<'_>> {
         let at = slot as usize;
@@ -492,7 +538,7 @@ impl Column {
         })
     }
 
-    fn grow(&mut self, slots: usize) -> io::Result<()> {
+    pub(crate) fn grow(&mut self, slots: usize) -> io::Result<()> {
         match self {
             Self::U8(values) => grow(values, slots),
             Self::I8(values) => grow(values, slots),
@@ -808,15 +854,15 @@ fn ascending(slots: &[u32]) -> io::Result<()> {
 /// One table's live rows: their keys and one column per field, at writer-assigned slots.
 #[derive(Clone, Debug)]
 pub struct Table {
-    keys: Vec<u128>,
-    live: Bits,
-    columns: Vec<Column>,
+    pub(crate) keys: Vec<u128>,
+    pub(crate) live: Bits,
+    pub(crate) columns: Vec<Column>,
     /// Per column, the slots whose cell the recording did not record: unknown, never the
     /// value the column holds there.
-    unrecorded: Vec<Bits>,
-    slots: usize,
+    pub(crate) unrecorded: Vec<Bits>,
+    pub(crate) slots: usize,
     /// Each live row's slot by its key, for joins between tables.
-    by_key: HashMap<u128, u32, foldhash::fast::RandomState>,
+    pub(crate) by_key: HashMap<u128, u32, foldhash::fast::RandomState>,
 }
 
 /// Tables are equal when they hold the same rows at the same slots: what a freed slot
@@ -917,6 +963,17 @@ impl Table {
         self.slots
     }
 
+    /// The bytes its rows hold: keys, bits, every column and the key index.
+    pub fn held_bytes(&self) -> usize {
+        let bits = |bits: &Bits| bits.words.capacity() * size_of::<u64>();
+        self.keys.capacity() * size_of::<u128>()
+            + bits(&self.live)
+            + self.unrecorded.iter().map(bits).sum::<usize>()
+            + self.columns.iter().map(Column::held_bytes).sum::<usize>()
+            // A hash map entry and its control byte.
+            + self.by_key.capacity() * (size_of::<(u128, u32)>() + 1)
+    }
+
     pub fn live(&self) -> &Bits {
         &self.live
     }
@@ -991,7 +1048,7 @@ impl Table {
         }
     }
 
-    fn resize(&mut self, slots: usize) -> io::Result<()> {
+    pub(crate) fn resize(&mut self, slots: usize) -> io::Result<()> {
         if slots <= self.slots {
             return Ok(());
         }

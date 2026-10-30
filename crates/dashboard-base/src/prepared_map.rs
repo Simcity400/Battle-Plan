@@ -22,11 +22,26 @@ mod reader;
 pub use reader::Reader;
 
 /// What a playback holds for its hour: the decoded frame, shared so the
-/// window can hand it between threads without a copy, or the gap it falls in.
+/// window can hand it between threads without a copy, the gap it falls in, or
+/// why its map is not read yet.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Current {
     Frame(Arc<DecodedFrame>),
     Gap {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    /// The recording holds the hour, but its session is still being recorded:
+    /// the map holds its hours once the session's native recording lands.
+    Pending {
+        branch: BranchId,
+        hour: Hour,
+        reason: String,
+    },
+    /// The recording holds the hour, but its map needs more memory than its
+    /// reader may ever hold: refused by name, never the recording's gap.
+    Refused {
         branch: BranchId,
         hour: Hour,
         reason: String,

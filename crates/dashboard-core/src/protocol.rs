@@ -680,6 +680,9 @@ pub struct DashboardMapState {
     pub requested_sequence: u64,
     pub loading: bool,
     pub error: Option<String>,
+    /// Why the hour shows no map yet, which is no failure: its session is still being
+    /// recorded, and the map holds its hours once the session's native recording lands.
+    pub pending: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
