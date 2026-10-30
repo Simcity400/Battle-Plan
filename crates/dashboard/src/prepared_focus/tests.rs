@@ -1194,9 +1194,14 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
         (102, "GER", "a_static"),
         (101, "ENG", "a_static"),
     ];
+    let before = reads();
+    art::EVENT_ART_FREE.with(|free| free.set(true));
     let (art, _) = art::event_art(&source, &content, 1, &requests, &cancelled)
         .unwrap()
         .unwrap();
+    // Its frames are read with the art context free, so other requests present meanwhile.
+    assert!(reads() > before, "the dynamic completion reads its hour's frame");
+    assert!(art::EVENT_ART_FREE.with(std::cell::Cell::get));
     let mut events = artwork::Context::load(Arc::clone(&catalogue), national).unwrap();
     for ((hour, tag, token), actual) in requests.iter().zip(&art) {
         let expected = events

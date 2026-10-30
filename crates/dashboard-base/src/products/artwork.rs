@@ -335,7 +335,15 @@ pub fn ensure<'a>(
     content: &ContentOptions,
     kind: Kind,
 ) -> io::Result<&'a mut Context> {
-    let catalogue = catalogue::catalogue(source, content)?;
+    ensure_in(slot, catalogue::catalogue(source, content)?, kind)
+}
+
+/// [`ensure`] over `catalogue`, which a request pins so each of its steps reads the same one.
+pub fn ensure_in(
+    slot: &mut Option<Context>,
+    catalogue: Arc<Catalogue>,
+    kind: Kind,
+) -> io::Result<&mut Context> {
     if !slot
         .as_ref()
         .is_some_and(|cached| cached.kind == kind && Arc::ptr_eq(&cached.catalogue, &catalogue))
