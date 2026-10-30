@@ -374,7 +374,10 @@ impl<'a> Designs<'a> {
                 None
             }
         };
-        Some(DesignOperand { raw, archetype })
+        Some(DesignOperand {
+            raw: Arc::new(raw),
+            archetype,
+        })
     }
 
     /// A design's name from its naming operands.
@@ -394,7 +397,7 @@ pub fn design_name(raw: &equipment::RawVariant, cat: Option<&Arc<Catalogue>>) ->
 /// A design's naming operands and archetype key, as its read of the definitions records them.
 #[derive(Clone, Debug)]
 pub struct DesignOperand {
-    pub raw: equipment::RawVariant,
+    pub raw: Arc<equipment::RawVariant>,
     pub archetype: Option<String>,
 }
 

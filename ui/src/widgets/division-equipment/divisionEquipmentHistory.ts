@@ -105,6 +105,8 @@ export function divisionEquipmentAt(history: DivisionEquipmentHistory, hour: num
   reply.divisions = divisions;
   reply.divisionsShort = short;
   reply.unknownDivisions = unknown;
+  // One stockpile read, published once for all countries, dates every stock.
+  const stockRead = number('*|stock');
   const types: EquipmentType[] = [];
   for (const kind of history.kinds) {
     const base = `type|${kind.id}|`;
@@ -119,13 +121,13 @@ export function divisionEquipmentAt(history: DivisionEquipmentHistory, hour: num
       variants.push({ variant, name: design === null ? null : history.designs[design] ?? null, heldRaw: amount });
     }
     variants.sort((a, b) => handleOrder(a.variant, b.variant));
-    const stockHour = number(`${base}stockHour`);
+    const stock = value(`${base}stock`);
     const typeShort = number(`${base}short`), typeUnknown = number(`${base}unknown`);
     if (typeShort === null || typeUnknown === null) return null;
     types.push({ archetype: kind.archetype, name: kind.name, nameMissing: kind.nameMissing, heldRaw: held,
       neededRaw: value(`${base}needed`), filledRaw: value(`${base}filled`), missingRaw: value(`${base}missing`),
       divisionsShort: typeShort, unknownDivisions: typeUnknown,
-      stockpileRaw: value(`${base}stock`), stockpileHour: stockHour, variants });
+      stockpileRaw: stock, stockpileHour: stock === null ? null : stockRead, variants });
   }
   const templates: EquipmentTemplate[] = [];
   const handles = [...values.keys()].flatMap(name => { const found = /^template\|([^|]*)\|divisions$/.exec(name); return found ? [found[1]] : []; });

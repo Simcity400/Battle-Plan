@@ -15,6 +15,7 @@ function history(): DivisionEquipmentHistory {
     branchId: '1', tag: 'GER', countFor: 'owner',
     window: { firstHour: 10, lastHour: 40, known: [{ firstHour: 10, lastHour: 30 }], reads: [], series: [
       series('*|pool', run(10, 30, '8', true)),
+      series('*|stock', run(10, 11, '2', true), run(12, 30, '11')),
       series('state', run(10, 25, '1', true)),
       series('refused', run(20, 21, '1')),
       series('divisions', run(10, 25, '2', true)),
@@ -27,7 +28,6 @@ function history(): DivisionEquipmentHistory {
       series('type|1|short', run(10, 25, '1', true)),
       series('type|1|unknown', run(10, 25, '0', true)),
       series('type|1|stock', run(12, 25, '900')),
-      series('type|1|stockHour', run(12, 25, '11')),
       series('type|1|variant|70', run(10, 25, '150', true)),
       series('type|1|design|70', run(10, 25, '0', true)),
       series('type|1|variant|9', run(10, 25, '50', true)),
@@ -62,6 +62,7 @@ test('an hour the history holds is the reached reply, measure by measure', () =>
   });
   assert.equal(divisionEquipmentAt(history(), 15)?.divisionsShort, 0);
   assert.equal(divisionEquipmentAt(history(), 11)?.types[0].stockpileRaw, null, 'stock not read then stays unknown, not zero');
+  assert.equal(divisionEquipmentAt(history(), 11)?.types[0].stockpileHour, null, 'a read withholding the stock dates none');
 });
 
 test('a kept refusal names the hour each reply is for, counted and ordered by its words', () => {

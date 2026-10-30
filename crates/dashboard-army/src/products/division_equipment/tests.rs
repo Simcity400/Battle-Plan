@@ -2,6 +2,8 @@ use super::*;
 use replay_data::rows::*;
 use replay_frame::frame::TableView;
 
+mod parity;
+
 const DOCUMENT: &str = r#"
 sub_units = { test_line = { type = infantry need = { widgets = 100 } } }
 equipments = {
@@ -1051,6 +1053,21 @@ fn content_blocks_with(
     LoadContext,
     dashboard_text::catalogue::tests::Folder,
 ) {
+    recorded_blocks(frames, starts, &[], name, document)
+}
+
+/// [`content_blocks_with`], the recording's gaps over `gaps`' hours, which need a later block.
+fn recorded_blocks(
+    frames: Vec<DecodedFrame>,
+    starts: &[i32],
+    gaps: &[(i32, i32)],
+    name: &str,
+    document: &str,
+) -> (
+    Source,
+    LoadContext,
+    dashboard_text::catalogue::tests::Folder,
+) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
@@ -1084,10 +1101,20 @@ fn content_blocks_with(
         let records = dashboard_base::test_fixtures::continuation_records(last, 1, block);
         replay = Some(last.append(&[records]).unwrap());
     }
-    let Some(replay) = replay else {
+    let Some(mut replay) = replay else {
+        assert!(gaps.is_empty(), "a gap needs a later block");
         return (first, context, folder);
     };
     assert_eq!(replay.index.len(), starts.len() + 1);
+    replay.gaps.extend(
+        gaps.iter()
+            .map(|&(first_hour, last_hour)| replay_frame::branches::Gap {
+                branch: 1,
+                first_hour,
+                last_hour,
+                reason: "synthetic recording gap".into(),
+            }),
+    );
     let source = Source::from_replay(
         dashboard_base::SourceKey {
             source_id: "content-fixture".into(),
@@ -1696,7 +1723,7 @@ fn held_value(reply: &history::DivisionEquipmentHistoryReply, series: &str, hour
 #[test]
 fn a_stockpile_read_patches_every_country_another_change_does_not_rebuild_as_rebuilding_would() {
     let count = 5;
-    // At 56 C0000 mints a division and holds design 72, ahead of the others numbering 71 anew.
+    // At 56 C0000 mints a division and holds design 72, the first to name it.
     let frames = (2..=60)
         .map(|offset| {
             let mut f = stock_frame(count, offset, |at| match at {
@@ -1724,7 +1751,8 @@ fn a_stockpile_read_patches_every_country_another_change_does_not_rebuild_as_reb
     assert_eq!(at(57), Some((0, 0)));
     let tags = ["C0000", "C0001", "C0002", "C0003", "C0004"];
     assert_numeric_histories_equal(&source, &context, &fixtures, &tags, 60_000_060);
-    // A country patched at 56 publishes its read's hour and its designs as read at 46.
+    // A country patched at 56 publishes its read's hour, and design 71, read alike at 22 and
+    // 46, keeps its number.
     let patched = history_of(
         &source,
         &context,
@@ -1733,9 +1761,17 @@ fn a_stockpile_read_patches_every_country_another_change_does_not_rebuild_as_reb
         ArmyAttribution::Owner,
         Some(60_000_060),
     );
-    assert_ne!(
+    assert_eq!(
         held_value(&patched, "stockDesign|71", 60_000_055),
         held_value(&patched, "stockDesign|71", 60_000_056)
+    );
+    assert!(
+        patched
+            .window
+            .series
+            .iter()
+            .all(|series| !series.name.ends_with("|stockHour")),
+        "the stockpile read's hour is published once for every country"
     );
     for (hour, read) in [(60_000_055, 60_000_032), (60_000_056, 60_000_056)] {
         let reply = history::reply_at(&patched, hour).unwrap();
@@ -1752,57 +1788,73 @@ fn a_stockpile_read_patches_every_country_another_change_does_not_rebuild_as_reb
 }
 
 #[test]
-fn designs_number_as_their_first_equal_design_keeping_only_reads_still_looked_up() {
-    let raw = |id: u64, first_hour: i32, name: &str| equipment::RawVariant {
-        id,
-        first_hour,
-        token: "widgets_1".into(),
-        display_name: name.into(),
-        ..Default::default()
+fn a_design_keeps_its_number_across_reads_while_a_value_names_it() {
+    let raw = |id: u64, first_hour: i32, name: &str| {
+        Arc::new(equipment::RawVariant {
+            id,
+            first_hour,
+            token: "widgets_1".into(),
+            display_name: name.into(),
+            ..Default::default()
+        })
     };
-    let mut designs = history::Designs::default();
-    let mut first: Vec<equipment::RawVariant> = Vec::new();
-    let mut check = |designs: &mut history::Designs, design: equipment::RawVariant| {
-        let expected = match first.iter().position(|seen| *seen == design) {
-            Some(number) => number,
-            None => {
-                first.push(design.clone());
-                first.len() - 1
-            }
-        };
-        assert_eq!(designs.number(&design), expected, "{design:?}");
-    };
-    // Twelve daily reads of three designs, one renamed from the seventh and one asked twice,
-    // each with a refused operand, and the read before asked again as a stockpile read asks it.
-    let mut before = None;
-    for read in 0..12 {
-        let hour = 60_000_022 + 24 * read;
-        designs.keep(&[Some(hour), before]);
-        for id in [70, 71, 72, 70] {
-            let name = if id == 71 && read >= 6 {
-                "Renamed"
-            } else {
-                "Model"
-            };
-            check(&mut designs, raw(id, hour, name));
-        }
-        let mut refused = raw(70, hour, "Model");
+    let refused = |hour: i32| {
+        let mut refused = (*raw(70, hour, "Model")).clone();
         refused
             .refusals
             .push(("name tag".into(), "unresolved".into()));
-        check(&mut designs, refused);
-        if let Some(before) = before {
-            for id in [70, 72] {
-                check(&mut designs, raw(id, before, "Model"));
-            }
+        Arc::new(refused)
+    };
+    let mut designs = history::Designs::default();
+    // Twelve daily reads, each hour's values naming their designs as read then, in place of the
+    // values before: 70 twice, 71 renamed from the seventh read, 72, and 70 with a refused operand.
+    let mut named: Vec<usize> = Vec::new();
+    for read in 0..12 {
+        let hour = 60_000_022 + 24 * read;
+        let name = if read >= 6 { "Renamed" } else { "Model" };
+        let now: Vec<usize> = [
+            raw(70, hour, "Model"),
+            raw(70, hour, "Model"),
+            raw(71, hour, name),
+            raw(72, hour, "Model"),
+            refused(hour),
+        ]
+        .iter()
+        .map(|design| designs.hold(design))
+        .collect();
+        for number in std::mem::replace(&mut named, now.clone()) {
+            designs.release(number);
         }
-        // Two reads' designs at most, however many reads went before.
-        assert!(designs.kept() <= 8, "{}", designs.kept());
-        before = Some(hour);
+        designs.prune();
+        let renamed = if read >= 6 { 4 } else { 1 };
+        assert_eq!(now, [0, 0, renamed, 2, 3], "read {read}");
     }
-    assert_eq!(designs.len(), 48);
-    designs.keep(&[None, None]);
-    assert_eq!(designs.kept(), 0);
+    // Numbered once by their operands, whatever the read: 70, 71, 72, the refused 70, and 71
+    // renamed; 71 as first named is named no more.
+    assert_eq!(designs.len(), 5);
+    assert_eq!(designs.named(), 4);
+    // A design no value names at the hour's end is numbered anew.
+    designs.release(2);
+    designs.prune();
+    assert_eq!(designs.named(), 3);
+    assert_eq!(designs.hold(&raw(72, 60_000_400, "Model")), 5);
+    // One named again within the hour keeps its number.
+    designs.release(0);
+    designs.release(0);
+    assert_eq!(designs.hold(&raw(70, 60_000_401, "Model")), 0);
+    designs.prune();
+    assert_eq!(designs.hold(&raw(70, 60_000_402, "Model")), 0);
+    // When no value names any, as through unknown hours, each is still found until the end of
+    // the next hour and only then numbered anew.
+    designs.release_all();
+    assert_eq!(designs.hold(&raw(70, 60_000_403, "Model")), 0);
+    designs.prune();
+    assert_eq!(designs.named(), 1);
+    designs.release_all();
+    designs.prune();
+    assert_eq!(designs.named(), 0);
+    assert_eq!(designs.hold(&raw(70, 60_000_404, "Model")), 6);
+    assert_eq!(designs.len(), 7);
 }
 
 /// Three countries holding designs 70 and 71 or 72, read through two designs reads.
@@ -1836,9 +1888,9 @@ fn restored_designs_keep_their_count_and_nothing_to_find_again() {
         .flush(&mut writer, 1, &AtomicBool::new(false))
         .unwrap();
     writer.commit().unwrap();
-    // A flushed page leaves only the designs of the reads still looked up.
+    // A flushed page leaves only the designs published values name.
     assert_eq!(prepared.pending_page(), (0, 0));
-    assert!(prepared.designs().kept() > 0);
+    assert!(prepared.designs().named() > 0);
     let mut restored: history::Prepared =
         serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
     restored
@@ -1851,7 +1903,7 @@ fn restored_designs_keep_their_count_and_nothing_to_find_again() {
     let count = prepared.designs().len();
     assert!(count > 0);
     assert_eq!(restored.designs().len(), count);
-    assert_eq!(restored.designs().kept(), 0);
+    assert_eq!(restored.designs().named(), 0);
 }
 
 /// The name of `reply`'s one series ending `suffix`.
@@ -1868,10 +1920,11 @@ fn series_ending(reply: &history::DivisionEquipmentHistoryReply, suffix: &str) -
 }
 
 #[test]
-fn a_designs_read_looking_every_design_up_alike_renumbers_them_as_rebuilding_would() {
+fn a_designs_read_names_again_only_renamed_designs_as_rebuilding_would() {
     let count = 3;
     // Designs reads at 22, 46 and 70. At 46 design 70 is renamed: numbered anew, looked up
-    // alike. At 70 its equipment is unresolved, so both countries holding it rebuild.
+    // alike, while 71 keeps its number. At 70 its equipment is unresolved, so both countries
+    // holding it rebuild.
     let frames = (2..=74)
         .map(|offset| {
             let mut f = stock_frame(count, offset, |_| vec![(71, 1_000)]);
@@ -1918,6 +1971,19 @@ fn a_designs_read_looking_every_design_up_alike_renumbers_them_as_rebuilding_wou
     assert_ne!(
         held_value(&patched, &design, 60_000_045),
         held_value(&patched, &design, 60_000_046)
+    );
+    // The stockpile's design, read alike at 22 and 46, keeps its number from its first stockpile
+    // read with designs, at 32, through 56's read of 46.
+    let stocked = patched
+        .window
+        .series
+        .iter()
+        .find(|series| series.name == "stockDesign|71")
+        .unwrap();
+    assert_eq!(stocked.runs.len(), 1, "{stocked:?}");
+    assert_eq!(
+        (stocked.runs[0].0, stocked.runs[0].1),
+        (60_000_032, 60_000_069)
     );
 }
 

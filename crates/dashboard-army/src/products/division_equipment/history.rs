@@ -29,7 +29,8 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    hash::{Hash, Hasher},
     io,
     sync::{Arc, LazyLock, atomic::AtomicBool},
 };
@@ -348,16 +349,83 @@ impl<T: Serialize> Numbered<T> {
     }
 }
 
-/// Designs numbered as [`Numbered`] numbers them. A design's naming operands name the hour of
-/// their read, and reads only move on: only the designs of reads still looked up can be found
-/// again, and only those numbered since the last page are kept for the next.
+/// A design's naming operands without the hour of the read that gave them.
+#[allow(clippy::type_complexity)]
+fn operands_of(
+    raw: &RawVariant,
+) -> (
+    u64,
+    &str,
+    &str,
+    &str,
+    bool,
+    Option<&str>,
+    Option<&str>,
+    Option<&str>,
+    &[(String, String)],
+) {
+    let RawVariant {
+        id,
+        first_hour: _,
+        token,
+        display_name,
+        suffix,
+        append,
+        name_tag,
+        type_tag,
+        design,
+        refusals,
+    } = raw;
+    (
+        *id,
+        token.as_str(),
+        display_name.as_str(),
+        suffix.as_str(),
+        *append,
+        name_tag.as_deref(),
+        type_tag.as_deref(),
+        design.as_deref(),
+        refusals.as_slice(),
+    )
+}
+
+/// Whether two reads give a design the same naming operands.
+fn same_operands(a: &RawVariant, b: &RawVariant) -> bool {
+    operands_of(a) == operands_of(b)
+}
+
+/// A design's naming operands, whichever read gave them.
+#[derive(Clone)]
+struct NamingOperands(Arc<RawVariant>);
+
+impl PartialEq for NamingOperands {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || same_operands(&self.0, &other.0)
+    }
+}
+
+impl Eq for NamingOperands {}
+
+impl Hash for NamingOperands {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        operands_of(&self.0).hash(state);
+    }
+}
+
+/// Designs numbered once by their naming operands, whichever read gave them: a design keeps its
+/// number from read to read until its operands change. Only the designs published values name,
+/// or named before the unknown hours since, can be found again, and only those numbered since
+/// the last page are kept for the next.
 #[derive(Default)]
 pub(crate) struct Designs {
     count: usize,
     /// Those numbered since the last page, in number order.
     pending: Vec<Arc<RawVariant>>,
-    /// The designs of each read still looked up, by its hour, with their numbers.
-    reads: BTreeMap<i32, HashMap<Arc<RawVariant>, usize>>,
+    /// Each design a published value names: its number and how many values name it.
+    named: HashMap<NamingOperands, (usize, usize)>,
+    numbers: HashMap<usize, NamingOperands>,
+    /// Numbers no value names any more, forgotten at the hour's end unless named again.
+    idle: Vec<usize>,
 }
 
 impl Designs {
@@ -367,27 +435,66 @@ impl Designs {
 
     /// How many designs it keeps to find again.
     #[cfg(test)]
-    pub(crate) fn kept(&self) -> usize {
-        self.reads.values().map(HashMap::len).sum()
+    pub(crate) fn named(&self) -> usize {
+        self.named.len()
     }
 
-    /// Keep to find again only the designs of the reads taken at `hours`.
-    pub(crate) fn keep(&mut self, hours: &[Option<i32>]) {
-        self.reads.retain(|hour, _| hours.contains(&Some(*hour)));
-    }
-
-    /// `raw`'s number: new unless an equal design was numbered.
-    pub(crate) fn number(&mut self, raw: &RawVariant) -> usize {
-        let read = self.reads.entry(raw.first_hour).or_default();
-        if let Some(&number) = read.get(raw) {
-            return number;
+    /// The number of a value naming `raw`, counted as one more value naming it: the number of
+    /// the design with its operands, new when none is named.
+    pub(crate) fn hold(&mut self, raw: &Arc<RawVariant>) -> usize {
+        let operands = NamingOperands(Arc::clone(raw));
+        if let Some((number, values)) = self.named.get_mut(&operands) {
+            *values += 1;
+            return *number;
         }
-        let design = Arc::new(raw.clone());
         let number = self.count;
-        read.insert(Arc::clone(&design), number);
-        self.pending.push(design);
         self.count += 1;
+        self.pending.push(Arc::clone(raw));
+        self.numbers.insert(number, operands.clone());
+        self.named.insert(operands, (number, 1));
         number
+    }
+
+    /// One value fewer names design `number`.
+    pub(crate) fn release(&mut self, number: usize) {
+        let Some(operands) = self.numbers.get(&number) else {
+            return;
+        };
+        if let Some((_, values)) = self.named.get_mut(operands)
+            && *values > 0
+        {
+            *values -= 1;
+            if *values == 0 {
+                self.idle.push(number);
+            }
+        }
+    }
+
+    /// Forget the designs no value names at the hour's end.
+    pub(crate) fn prune(&mut self) {
+        for number in std::mem::take(&mut self.idle) {
+            let Some(operands) = self.numbers.get(&number) else {
+                continue;
+            };
+            if self
+                .named
+                .get(operands)
+                .is_some_and(|(_, values)| *values == 0)
+            {
+                self.named.remove(operands);
+                self.numbers.remove(&number);
+            }
+        }
+    }
+
+    /// No value names any design now: each is forgotten at the next hour's end unless named again.
+    pub(crate) fn release_all(&mut self) {
+        for (number, values) in self.named.values_mut() {
+            if *values > 0 {
+                *values = 0;
+                self.idle.push(*number);
+            }
+        }
     }
 
     /// Append the designs from `from` to `body` in chunks of [`CHUNK`], as [`chunked`] would.
@@ -430,9 +537,38 @@ impl Designs {
         };
         self.pending
             .iter()
-            .chain(self.reads.values().flat_map(HashMap::keys))
+            .chain(self.named.keys().map(|operands| &operands.0))
             .map(|design| 360 + text(design))
-            .sum()
+            .sum::<usize>()
+            + self.numbers.len() * 48
+            + self.idle.capacity() * size_of::<usize>()
+    }
+}
+
+/// A value as a reply gives it, before the catalogue numbers the design it names.
+#[derive(Clone, Debug)]
+enum Value {
+    Number(i128),
+    Design(Arc<RawVariant>),
+}
+
+/// What `value` publishes under `key`: a design's number, counted as one more value naming it.
+fn publish_value(designs: &mut Designs, keys: &mut HashSet<u64>, key: u64, value: Value) -> i128 {
+    match value {
+        Value::Number(value) => value,
+        Value::Design(raw) => {
+            keys.insert(key);
+            designs.hold(&raw) as i128
+        }
+    }
+}
+
+/// `value`, published under `key`, is published no more: one value fewer names its design.
+fn end_value(designs: &mut Designs, keys: &HashSet<u64>, key: u64, value: i128) {
+    if keys.contains(&key)
+        && let Ok(number) = usize::try_from(value)
+    {
+        designs.release(number);
     }
 }
 
@@ -679,7 +815,7 @@ impl Catalogued {
             extend(&mut range, start, kinds, &mut catalogued.kinds.values)?;
             extend(&mut range, start, namings, &mut catalogued.namings.values)?;
             extend(&mut range, start, artworks, &mut catalogued.artworks.values)?;
-            // Designs are found again only within the reads still looked up, none at a restore.
+            // Designs are found again only while a published value names them, none at a restore.
             for &span in designs {
                 let listed = segment::<Vec<serde::de::IgnoredAny>>(&mut range, start, span)?;
                 catalogued.designs.restored(listed.len());
@@ -958,15 +1094,31 @@ enum Rebuild {
     Whole,
     /// Its stockpile part patched from a new stockpile read ([`Prepared::restock`]).
     Restock,
-    /// Its designs numbered again from a new designs read ([`Prepared::redesign`]).
+    /// Its renamed designs numbered again from a new designs read ([`Prepared::redesign`]).
     Redesign,
 }
 
-/// Whether two lookups of a design give a reply alike: the same notes and the same archetype.
-fn looked_alike(before: &super::Looked, now: &super::Looked) -> bool {
-    before.notes == now.notes
-        && before.operand.as_ref().map(|operand| &operand.archetype)
-            == now.operand.as_ref().map(|operand| &operand.archetype)
+/// How a design's lookup in a new designs read differs from its lookup in the read before.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Relooked {
+    Same,
+    /// The same notes and archetype under other naming operands.
+    Renamed,
+    /// Other notes or another archetype.
+    Other,
+}
+
+fn relooked(before: &super::Looked, now: &super::Looked) -> Relooked {
+    fn archetype(looked: &super::Looked) -> Option<&Option<String>> {
+        looked.operand.as_ref().map(|operand| &operand.archetype)
+    }
+    if before.notes != now.notes || archetype(before) != archetype(now) {
+        return Relooked::Other;
+    }
+    match (&before.operand, &now.operand) {
+        (Some(was), Some(is)) if !same_operands(&was.raw, &is.raw) => Relooked::Renamed,
+        _ => Relooked::Same,
+    }
 }
 
 impl Dirty {
@@ -1068,8 +1220,6 @@ struct Carried {
     hourly: BTreeSet<u64>,
     /// The links and local sub-units the needs resolve through, kept while their tables are.
     sources: Option<Arc<dashboard_text::subunit_requirements::SourceIndex>>,
-    designs_numbered: HashMap<u64, Option<usize>>,
-    stock_numbered: HashMap<u64, Option<usize>>,
     /// What each country's replies read besides the stockpile, as of its last rebuild.
     stocked: HashMap<String, Stocked>,
 }
@@ -1088,7 +1238,7 @@ struct Stocked {
 struct Unstocked {
     types: Vec<(usize, Option<String>)>,
     notes: BTreeMap<String, (KeptReason, usize)>,
-    /// Each variant held, by its type's number and its handle, in the order a rebuild numbers
+    /// Each variant held, by its type's number and its handle, in the order a rebuild names
     /// their designs.
     designs: Vec<(usize, u64)>,
 }
@@ -1572,6 +1722,9 @@ pub struct Prepared {
     batch: Accumulator,
     #[serde(skip)]
     index: HashMap<String, u64>,
+    /// The keys whose values number designs.
+    #[serde(skip)]
+    design_keys: HashSet<u64>,
     #[serde(skip)]
     carried: Option<Box<Carried>>,
     #[serde(skip)]
@@ -1622,6 +1775,12 @@ impl Prepared {
         &self.catalogued.designs
     }
 
+    /// How many values its observations set or ended so far.
+    #[cfg(test)]
+    pub(crate) fn observations(&self) -> usize {
+        self.batch.key_visits
+    }
+
     /// What the branch state keeps after a flush, its continuation (written at every commit) included.
     pub fn held_bytes(&self) -> usize {
         let catalogued = &self.catalogued;
@@ -1639,7 +1798,8 @@ impl Prepared {
             .owned
             .iter()
             .map(|(tag, values)| tag.len() + 48 + values.len() * 48)
-            .sum();
+            .sum::<usize>()
+            + self.design_keys.len() * 16;
         let carried = self.carried.as_ref().map_or(0, |carried| {
             let mut frames = dashboard_base::prepared::prepass::HeldBytes::default();
             for read in [
@@ -1670,7 +1830,6 @@ impl Prepared {
                     .sources
                     .as_ref()
                     .map_or(0, |index| 64 + index.len() * 96)
-                + (carried.designs_numbered.len() + carried.stock_numbered.len()) * 32
                 + carried
                     .stocked
                     .iter()
@@ -1851,13 +2010,13 @@ impl Prepared {
                 dirty.slots(carried.division_slots(id));
             }
         }
-        // A new designs read numbers every design again. An armed country whose designs it looks
-        // up as the last read did has only those numbers to patch; any other rebuilds.
+        // A design keeps its number from read to read. An armed country whose designs a new read
+        // looks up as the last read did changes nothing; one whose designs it only renames has
+        // those to name again; any other rebuilds.
         let looked_again = reads[2] != carried.reads[2] && !matches!(dirty, Dirty::All);
         let mut redesigned = BTreeSet::new();
         if looked_again {
             let before = std::mem::take(&mut carried.shared.designs);
-            carried.designs_numbered.clear();
             let cat = self.cat.clone().flatten();
             let designs = LazyDesigns::new(carried.designs.read.as_deref(), cat.as_ref());
             for slot in carried.armed() {
@@ -1869,6 +2028,7 @@ impl Prepared {
                     continue;
                 }
                 let looked = &mut carried.shared.designs;
+                let mut renamed = false;
                 let alike = carried.slots.get(&slot).into_iter().flatten().all(|tag| {
                     carried.stocked.get(tag).is_some_and(|stocked| {
                         stocked.replies.iter().flatten().all(|reply| {
@@ -1876,26 +2036,31 @@ impl Prepared {
                                 let now = looked
                                     .entry(handle)
                                     .or_insert_with(|| super::Looked::of(&designs, handle));
-                                before.get(&handle).is_some_and(|was| looked_alike(was, now))
+                                match before.get(&handle).map(|was| relooked(was, now)) {
+                                    Some(Relooked::Same) => true,
+                                    Some(Relooked::Renamed) => {
+                                        renamed = true;
+                                        true
+                                    }
+                                    Some(Relooked::Other) | None => false,
+                                }
                             })
                         })
                     })
                 });
-                if alike {
-                    redesigned.insert(slot);
-                } else {
+                if !alike {
                     dirty.slots([slot]);
+                } else if renamed {
+                    redesigned.insert(slot);
                 }
             }
         }
         let patch = self.stage_numeric(frame, carried, &numeric, &mut dirty);
         if reads[2] != carried.reads[2] && !looked_again {
             carried.shared.designs.clear();
-            carried.designs_numbered.clear();
         }
         if reads[3] != carried.reads[3] {
             carried.shared.stock_designs.clear();
-            carried.stock_numbered.clear();
         }
         if reads[1] != carried.reads[1] || carried.shared.stock.is_none() {
             carried.shared.stock = carried.stock.read.as_deref().map(Shared::group_stock);
@@ -1906,11 +2071,6 @@ impl Prepared {
                 .map(army_content::read_identities);
         }
         carried.reads = reads;
-        let hour_of = |read: &Option<Arc<DecodedFrame>>| read.as_ref().map(|read| read.hour);
-        self.catalogued.designs.keep(&[
-            hour_of(&carried.designs.read),
-            hour_of(&carried.stock_designs.0),
-        ]);
         carried.previous = Some(Arc::new(kept(frame, MEASURED)));
         if matches!(dirty, Dirty::All) {
             carried.index(frame)?;
@@ -2005,12 +2165,13 @@ impl Prepared {
                 })
                 .collect(),
         };
-        let pool = carried.pool.read.as_ref().map(|read| read.hour);
-        let mut global = Vec::new();
-        if let Some(hour) = pool {
-            global.push(("*|pool".to_owned(), i128::from(hour)));
-        }
-        self.publish("*", global, hour, starts);
+        let hour_of = |read: &Option<Arc<DecodedFrame>>| read.as_ref().map(|read| read.hour);
+        self.publish_reads(
+            hour_of(&carried.pool.read),
+            hour_of(&carried.stock.read),
+            hour,
+            starts,
+        );
         if !rebuilt.is_empty() {
             self.rebuild(frame, carried, &rebuilt, hour, starts)?;
         }
@@ -2035,6 +2196,7 @@ impl Prepared {
         if starts {
             self.batch.observe(KNOWN, hour, Some(1), true);
         }
+        self.catalogued.designs.prune();
         self.batch.through(hour);
         self.last_hour = Some(hour);
         self.open = true;
@@ -2268,7 +2430,7 @@ impl Prepared {
                             &mut at_stock,
                         )?)
                     }
-                    Err(_) => values.push((format!("{prefix}refused"), 1)),
+                    Err(_) => values.push((format!("{prefix}refused"), Value::Number(1))),
                 }
             }
             let keys = self.publish(tag, values, hour, starts);
@@ -2298,22 +2460,22 @@ impl Prepared {
         built: Built,
         refusals: Refusals,
         carried: &mut Carried,
-        values: &mut Vec<(String, i128)>,
+        values: &mut Vec<(String, Value)>,
         stocked: &mut Vec<usize>,
     ) -> io::Result<Unstocked> {
         let mut unstocked = Unstocked::default();
         let parse = |text: &str| {
             text.parse::<i128>()
+                .map(Value::Number)
                 .map_err(|_| io::Error::other("Division equipment value is not a number"))
         };
+        let count = |count: u32| Value::Number(i128::from(count));
         let reply = built.reply;
-        values.push((format!("{prefix}state"), 1));
-        values.push((format!("{prefix}divisions"), i128::from(reply.divisions)));
-        values.push((format!("{prefix}short"), i128::from(reply.divisions_short)));
-        values.push((
-            format!("{prefix}unknown"),
-            i128::from(reply.unknown_divisions),
-        ));
+        values.push((format!("{prefix}state"), Value::Number(1)));
+        values.push((format!("{prefix}divisions"), count(reply.divisions)));
+        values.push((format!("{prefix}short"), count(reply.divisions_short)));
+        values.push((format!("{prefix}unknown"), count(reply.unknown_divisions)));
+        // A type's stock is read at the stockpile read every reply shares (`*|stock`).
         for kind in &reply.types {
             let (id, _) = self.catalogued.kinds.number(kind.archetype.clone())?;
             unstocked.types.push((id, kind.archetype.clone()));
@@ -2332,12 +2494,8 @@ impl Prepared {
                     values.push((format!("{base}{measure}"), parse(value)?));
                 }
             }
-            values.push((format!("{base}short"), i128::from(kind.divisions_short)));
-            values.push((format!("{base}unknown"), i128::from(kind.unknown_divisions)));
-            if let Some(hour) = kind.stockpile_hour {
-                stocked.push(values.len());
-                values.push((format!("{base}stockHour"), i128::from(hour)));
-            }
+            values.push((format!("{base}short"), count(kind.divisions_short)));
+            values.push((format!("{base}unknown"), count(kind.unknown_divisions)));
             for variant in &kind.variants {
                 let handle = variant
                     .variant
@@ -2345,14 +2503,8 @@ impl Prepared {
                     .map_err(|_| io::Error::other("Invalid design handle"))?;
                 values.push((format!("{base}variant|{handle}"), parse(&variant.held_raw)?));
                 unstocked.designs.push((id, handle));
-                let number = design_number(
-                    &mut self.catalogued,
-                    &carried.shared.designs,
-                    &mut carried.designs_numbered,
-                    handle,
-                );
-                if let Some(number) = number {
-                    values.push((format!("{base}design|{handle}"), number as i128));
+                if let Some(raw) = design_of(&carried.shared.designs, handle) {
+                    values.push((format!("{base}design|{handle}"), Value::Design(raw)));
                 }
             }
         }
@@ -2362,15 +2514,9 @@ impl Prepared {
                 .parse::<u64>()
                 .map_err(|_| io::Error::other("Invalid template handle"))?;
             let base = format!("{prefix}template|{handle}|");
-            values.push((format!("{base}divisions"), i128::from(template.divisions)));
-            values.push((
-                format!("{base}unknown"),
-                i128::from(template.unknown_divisions),
-            ));
-            values.push((
-                format!("{base}typesShort"),
-                i128::from(template.types_short),
-            ));
+            values.push((format!("{base}divisions"), count(template.divisions)));
+            values.push((format!("{base}unknown"), count(template.unknown_divisions)));
+            values.push((format!("{base}typesShort"), count(template.types_short)));
             for (measure, value) in [
                 ("manpower", &template.manpower),
                 ("required", &template.manpower_required),
@@ -2401,8 +2547,8 @@ impl Prepared {
                     (naming, artwork)
                 }
             };
-            values.push((format!("{base}naming"), naming as i128));
-            values.push((format!("{base}artwork"), artwork as i128));
+            values.push((format!("{base}naming"), Value::Number(naming as i128)));
+            values.push((format!("{base}artwork"), Value::Number(artwork as i128)));
         }
         for (note, times) in refusals.counted() {
             // A need this hour's composition read refused, noted as that need words it.
@@ -2420,18 +2566,12 @@ impl Prepared {
                 unstocked.notes.insert(note, (reason, times - stock));
             }
             stocked.push(values.len());
-            values.push((format!("{prefix}note|{id}"), times as i128));
+            values.push((format!("{prefix}note|{id}"), Value::Number(times as i128)));
         }
         for handle in built.stock.designs {
-            let number = design_number(
-                &mut self.catalogued,
-                &carried.shared.stock_designs,
-                &mut carried.stock_numbered,
-                handle,
-            );
-            if let Some(number) = number {
+            if let Some(raw) = design_of(&carried.shared.stock_designs, handle) {
                 stocked.push(values.len());
-                values.push((format!("{prefix}stockDesign|{handle}"), number as i128));
+                values.push((format!("{prefix}stockDesign|{handle}"), Value::Design(raw)));
             }
         }
         Ok(unstocked)
@@ -2470,8 +2610,7 @@ impl Prepared {
         ) else {
             return Ok(false);
         };
-        // In the order a rebuild numbers them: each attribution's types, notes, then designs.
-        let read = context.stock.map(|read| i128::from(read.hour));
+        // In the order a rebuild names them: each attribution's types, notes, then designs.
         let mut values = Vec::new();
         for (at, reply) in stocked.replies.iter().enumerate() {
             let Some(reply) = reply else {
@@ -2483,10 +2622,7 @@ impl Prepared {
                 let Some(held) = super::stock_held(&part, archetype.as_deref()) else {
                     continue;
                 };
-                values.push((format!("{prefix}type|{id}|stock"), held));
-                if let Some(read) = read {
-                    values.push((format!("{prefix}type|{id}|stockHour"), read));
-                }
+                values.push((format!("{prefix}type|{id}|stock"), Value::Number(held)));
             }
             let mut notes = reply.notes.clone();
             for (note, times) in &part.notes {
@@ -2497,39 +2633,28 @@ impl Prepared {
             }
             for (reason, times) in notes.into_values() {
                 let (id, _) = self.catalogued.notes.number(reason)?;
-                values.push((format!("{prefix}note|{id}"), times as i128));
+                values.push((format!("{prefix}note|{id}"), Value::Number(times as i128)));
             }
             for &handle in &part.designs {
-                let number = design_number(
-                    &mut self.catalogued,
-                    &carried.shared.stock_designs,
-                    &mut carried.stock_numbered,
-                    handle,
-                );
-                if let Some(number) = number {
-                    values.push((format!("{prefix}stockDesign|{handle}"), number as i128));
+                if let Some(raw) = design_of(&carried.shared.stock_designs, handle) {
+                    values.push((format!("{prefix}stockDesign|{handle}"), Value::Design(raw)));
                 }
             }
         }
-        let mut next = BTreeMap::new();
-        let mut keys = Vec::with_capacity(values.len());
+        let mut set = Vec::with_capacity(values.len());
         for (name, value) in values {
-            let key = self.number(&name);
-            keys.push(key);
-            next.insert(key, value);
+            set.push((self.number(&name), Some(value)));
         }
-        let Some(owned) = self.owned.get_mut(tag) else {
+        let keys: Vec<u64> = set.iter().map(|(key, _)| *key).collect();
+        let listed: HashSet<u64> = keys.iter().copied().collect();
+        let ended = stocked
+            .keys
+            .iter()
+            .filter(|key| !listed.contains(*key))
+            .map(|key| (*key, None));
+        let changes: Vec<(u64, Option<Value>)> = ended.chain(set).collect();
+        if !self.patch(tag, changes, hour) {
             return Ok(false);
-        };
-        for key in &stocked.keys {
-            if !next.contains_key(key) && owned.remove(key).is_some() {
-                self.batch.observe(*key, hour, None, false);
-            }
-        }
-        for (key, value) in next {
-            if owned.insert(key, value) != Some(value) {
-                self.batch.observe(key, hour, Some(value), false);
-            }
         }
         if let Some(stocked) = carried.stocked.get_mut(tag) {
             stocked.keys = keys;
@@ -2537,8 +2662,9 @@ impl Prepared {
         Ok(true)
     }
 
-    /// Number a country's designs again from a new designs read that looks each of them up as the
-    /// last read did, as rebuilding it would; false, unchanged, where its replies were not kept.
+    /// Name a country's renamed designs again from a new designs read that looks each of them up
+    /// as the last read did, as rebuilding it would; false, unchanged, where its replies were not
+    /// kept.
     fn redesign(&mut self, tag: &str, carried: &mut Carried, hour: i32) -> bool {
         let Some(stocked) = carried.stocked.get(tag) else {
             return false;
@@ -2546,7 +2672,7 @@ impl Prepared {
         if !self.owned.contains_key(tag) {
             return false;
         }
-        // In the order a rebuild numbers them: each attribution's types and their variants.
+        // In the order a rebuild names them: each attribution's types and their variants.
         let mut values = Vec::new();
         for (at, reply) in stocked.replies.iter().enumerate() {
             let Some(reply) = reply else {
@@ -2555,37 +2681,35 @@ impl Prepared {
             let attribution = [ArmyAttribution::Owner, ArmyAttribution::Host][at];
             let prefix = format!("{tag}|{}|", mode(attribution));
             for &(id, handle) in &reply.designs {
-                let number = design_number(
-                    &mut self.catalogued,
-                    &carried.shared.designs,
-                    &mut carried.designs_numbered,
-                    handle,
-                );
-                if let Some(number) = number {
-                    values.push((format!("{prefix}type|{id}|design|{handle}"), number as i128));
+                if let Some(raw) = design_of(&carried.shared.designs, handle) {
+                    values.push((
+                        format!("{prefix}type|{id}|design|{handle}"),
+                        Value::Design(raw),
+                    ));
                 }
             }
         }
-        let keys: Vec<(u64, i128)> = values
+        let changes: Vec<(u64, Option<Value>)> = values
             .into_iter()
-            .map(|(name, value)| (self.number(&name), value))
+            .map(|(name, value)| (self.number(&name), Some(value)))
             .collect();
-        let Some(owned) = self.owned.get_mut(tag) else {
-            return false;
-        };
-        for (key, value) in keys {
-            if owned.insert(key, value) != Some(value) {
-                self.batch.observe(key, hour, Some(value), false);
-            }
-        }
-        true
+        self.patch(tag, changes, hour)
+    }
+
+    /// The hours of the pool and stockpile reads every reply reads, published once for all.
+    fn publish_reads(&mut self, pool: Option<i32>, stock: Option<i32>, hour: i32, starts: bool) {
+        let reads = [("*|pool", pool), ("*|stock", stock)]
+            .into_iter()
+            .filter_map(|(name, read)| Some((name.to_owned(), Value::Number(i128::from(read?)))))
+            .collect();
+        self.publish("*", reads, hour, starts);
     }
 
     /// One country's values at `hour`, observed against those it last published; their keys.
     fn publish(
         &mut self,
         tag: &str,
-        values: Vec<(String, i128)>,
+        values: Vec<(String, Value)>,
         hour: i32,
         starts: bool,
     ) -> Vec<u64> {
@@ -2594,7 +2718,20 @@ impl Prepared {
         for (name, value) in values {
             let key = self.number(&name);
             keys.push(key);
-            next.insert(key, value);
+            let value = publish_value(
+                &mut self.catalogued.designs,
+                &mut self.design_keys,
+                key,
+                value,
+            );
+            if let Some(replaced) = next.insert(key, value) {
+                end_value(
+                    &mut self.catalogued.designs,
+                    &self.design_keys,
+                    key,
+                    replaced,
+                );
+            }
         }
         let current = self.owned.remove(tag).unwrap_or_default();
         for (&key, &value) in &next {
@@ -2602,13 +2739,44 @@ impl Prepared {
                 self.batch.observe(key, hour, Some(value), starts);
             }
         }
-        for &key in current.keys() {
+        for (&key, &value) in &current {
+            end_value(&mut self.catalogued.designs, &self.design_keys, key, value);
             if !next.contains_key(&key) {
                 self.batch.observe(key, hour, None, false);
             }
         }
         self.owned.insert(tag.to_owned(), next);
         keys
+    }
+
+    /// Set or end some of `tag`'s values at `hour` as publishing them all would; false,
+    /// unchanged, where it publishes none.
+    fn patch(&mut self, tag: &str, changes: Vec<(u64, Option<Value>)>, hour: i32) -> bool {
+        let Some(owned) = self.owned.get_mut(tag) else {
+            return false;
+        };
+        for (key, value) in changes {
+            let value = match value {
+                Some(value) => Some(publish_value(
+                    &mut self.catalogued.designs,
+                    &mut self.design_keys,
+                    key,
+                    value,
+                )),
+                None => None,
+            };
+            let before = match value {
+                Some(value) => owned.insert(key, value),
+                None => owned.remove(&key),
+            };
+            if let Some(before) = before {
+                end_value(&mut self.catalogued.designs, &self.design_keys, key, before);
+            }
+            if before != value {
+                self.batch.observe(key, hour, value, false);
+            }
+        }
+        true
     }
 
     fn publish_sparse(
@@ -2647,6 +2815,7 @@ impl Prepared {
             for key in keys {
                 self.batch.observe(key, hour, None, false);
             }
+            self.catalogued.designs.release_all();
         }
         self.owned.clear();
         self.open = false;
@@ -2709,6 +2878,7 @@ impl Prepared {
         }
         self.catalogued = catalogued;
         self.index.clear();
+        self.design_keys.clear();
         self.carried = None;
         Ok(())
     }
@@ -2811,22 +2981,13 @@ impl DesignsOf for LazyDesigns<'_> {
     }
 }
 
-/// A design's naming number, from the operands its lookup read; none when it has none.
-fn design_number(
-    catalogued: &mut Catalogued,
-    looked: &BTreeMap<u64, super::Looked>,
-    numbered: &mut HashMap<u64, Option<usize>>,
-    handle: u64,
-) -> Option<usize> {
-    if let Some(&number) = numbered.get(&handle) {
-        return number;
-    }
-    let number = looked
-        .get(&handle)
-        .and_then(|looked| looked.operand.as_ref())
-        .map(|operand| catalogued.designs.number(&operand.raw));
-    numbered.insert(handle, number);
-    number
+/// The naming operands a design's lookup read; none when it read none.
+fn design_of(looked: &BTreeMap<u64, super::Looked>, handle: u64) -> Option<Arc<RawVariant>> {
+    looked
+        .get(&handle)?
+        .operand
+        .as_ref()
+        .map(|operand| Arc::clone(&operand.raw))
 }
 
 /// The value `runs` hold at `hour`.
@@ -3213,6 +3374,7 @@ pub fn reply_at(
     reply.divisions_short = count("short")?;
     reply.unknown_divisions = count("unknown")?;
     let text = |name: String| values.get(name.as_str()).map(|value| (*value).to_owned());
+    let stock_hour = number("*|stock").map(|hour| hour as i32);
     for kind in &history.kinds {
         let base = format!("type|{}|", kind.id);
         let Some(held) = text(format!("{base}held")) else {
@@ -3236,6 +3398,8 @@ pub fn reply_at(
             })
             .collect::<Option<_>>()?;
         variants.sort_by_key(|(handle, _)| *handle);
+        let stockpile_raw = text(format!("{base}stock"));
+        let stockpile_hour = stockpile_raw.as_ref().and(stock_hour);
         reply.types.push(EquipmentType {
             archetype: kind.archetype.clone(),
             name: kind.name.clone(),
@@ -3246,8 +3410,8 @@ pub fn reply_at(
             missing_raw: text(format!("{base}missing")),
             divisions_short: count(&format!("{base}short"))?,
             unknown_divisions: count(&format!("{base}unknown"))?,
-            stockpile_raw: text(format!("{base}stock")),
-            stockpile_hour: number(&format!("{base}stockHour")).map(|hour| hour as i32),
+            stockpile_raw,
+            stockpile_hour,
             variants: variants.into_iter().map(|(_, variant)| variant).collect(),
         });
     }
