@@ -11,7 +11,10 @@ use crate::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -679,8 +682,14 @@ impl LazyEvents {
     }
 
     fn index(&self, cache: &mut Cache) -> Result<(), String> {
+        self.index_unless(cache, &AtomicBool::new(false))
+    }
+
+    /// [`Self::index`], left unbuilt and unkept once `cancelled` while its files are read.
+    fn index_unless(&self, cache: &mut Cache, cancelled: &AtomicBool) -> Result<(), String> {
         if cache.index.is_none() {
-            cache.index = Some((|| {
+            let mut files = BTreeMap::new();
+            let built = (|| {
                 let mut index = Index::default();
                 // Prefetched files join before registration; duplicate event IDs
                 // retain separate references in registration order.
@@ -689,6 +698,9 @@ impl LazyEvents {
                     .directory_files("events", ".txt")
                     .map_err(|error| error.to_string())?
                 {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Ok(None);
+                    }
                     let bytes = path
                         .read(&self.layers)
                         .map_err(|error| format!("{path}: {error}"))?;
@@ -696,13 +708,20 @@ impl LazyEvents {
                         let names = self.layers.key_names().map_err(|error| error.to_string())?;
                         let file = read_events(&bytes, &names, None);
                         index.add(&file.read, &path, true);
-                        cache.files.insert(path, file);
+                        files.insert(path, file);
                     } else {
                         index.add(&read_headers(&bytes), &path, false);
                     }
                 }
-                Ok(index)
-            })());
+                Ok(Some(index))
+            })();
+            let index = match built {
+                Ok(Some(index)) => Ok(index),
+                Ok(None) => return Err("event index read cancelled".into()),
+                Err(error) => Err(error),
+            };
+            cache.files.extend(files);
+            cache.index = Some(index);
         }
         let index = cache
             .index
@@ -720,7 +739,15 @@ impl LazyEvents {
         }
     }
 
-    fn cache_trees<'a>(&self, cache: &mut Cache, references: impl Iterator<Item = &'a EventRef>) {
+    /// Reads the trees of `references` not read yet. A static file is read once for them all;
+    /// `apart`, each event is walked from its bytes as its own lookup walks it, so another's body
+    /// can neither stop nor count against it.
+    fn cache_trees<'a>(
+        &self,
+        cache: &mut Cache,
+        references: impl Iterator<Item = &'a EventRef>,
+        apart: bool,
+    ) {
         let mut wanted: BTreeMap<&ScriptPath, BTreeSet<usize>> = BTreeMap::new();
         for reference in references {
             if !cache.trees.contains_key(reference) {
@@ -747,43 +774,44 @@ impl LazyEvents {
             // Static files are reader-walked only for the requested ordinals.
             // Unrelated bodies are neither interpreted nor retained; a later
             // novel request may walk that file again through the same reader.
-            let file = (|| {
+            let read = (|| {
                 let bytes = path
                     .read(&self.layers)
                     .map_err(|error| format!("{path}: {error}"))?;
                 let names = self.layers.key_names().map_err(|error| error.to_string())?;
-                Ok::<_, String>(read_events(&bytes, &names, Some(&ordinals)))
+                Ok::<_, String>((bytes, names))
             })();
-            match file {
-                Ok(mut file) => {
-                    for ordinal in ordinals {
-                        let event = file.event(&path.text(), ordinal).map(Arc::new);
-                        cache.trees.insert(
-                            EventRef {
-                                path: path.clone(),
-                                ordinal,
-                            },
-                            event,
-                        );
-                    }
-                }
-                Err(error) => {
-                    for ordinal in ordinals {
-                        cache.trees.insert(
-                            EventRef {
-                                path: path.clone(),
-                                ordinal,
-                            },
-                            Err(error.clone()),
-                        );
-                    }
+            let walks = if apart {
+                ordinals
+                    .iter()
+                    .map(|&ordinal| BTreeSet::from([ordinal]))
+                    .collect()
+            } else {
+                vec![ordinals]
+            };
+            for wanted in walks {
+                let mut file = read
+                    .as_ref()
+                    .map(|(bytes, names)| read_events(bytes, names, Some(&wanted)));
+                for ordinal in wanted {
+                    let event = match &mut file {
+                        Ok(file) => file.event(&path.text(), ordinal).map(Arc::new),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    cache.trees.insert(
+                        EventRef {
+                            path: path.clone(),
+                            ordinal,
+                        },
+                        event,
+                    );
                 }
             }
         }
     }
 
     fn event(&self, cache: &mut Cache, reference: &EventRef) -> Result<Arc<Event>, String> {
-        self.cache_trees(cache, std::iter::once(reference));
+        self.cache_trees(cache, std::iter::once(reference), false);
         cache
             .trees
             .get(reference)
@@ -838,6 +866,50 @@ impl LazyEvents {
         result
     }
 
+    /// Reads the events `ids` name, each file they lie in once and each event as its own lookup
+    /// ([`Self::get`]) reads it, so their lookups read no file and give what they would alone.
+    /// An id a lookup refuses before reading is left for it; nothing is read for no ids, and no
+    /// file once `cancelled`.
+    pub fn prefetch<'i>(&self, ids: impl IntoIterator<Item = &'i [u8]>, cancelled: &AtomicBool) {
+        let keys: Vec<Vec<u8>> = ids
+            .into_iter()
+            .filter_map(|id| identifier_key(id).ok())
+            .collect();
+        if keys.is_empty() || cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        if self.index_unless(&mut cache, cancelled).is_err() {
+            return;
+        }
+        let mut files: BTreeMap<ScriptPath, Vec<EventRef>> = BTreeMap::new();
+        {
+            let index = cache.index.as_ref().unwrap().as_ref().unwrap();
+            for key in keys {
+                // A lookup refuses an unregistered namespace before reading any tree.
+                let registered = key
+                    .iter()
+                    .rposition(|byte| *byte == b'.')
+                    .is_some_and(|dot| index.namespaces.contains(&key[..dot]));
+                if !registered || cache.events.contains_key(&key) {
+                    continue;
+                }
+                if let Some(reference) = index.events.get(&key).and_then(|found| found.last()) {
+                    files
+                        .entry(reference.path.clone())
+                        .or_default()
+                        .push(reference.clone());
+                }
+            }
+        }
+        for references in files.values() {
+            if cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            self.cache_trees(&mut cache, references.iter(), true);
+        }
+    }
+
     /// Raw option-name candidates in registered event and option order.
     /// The renderer skips candidates containing `event_option_tooltip` before describing.
     /// Empty, bare, and non-normalizable event IDs do not alter this scan.
@@ -858,6 +930,7 @@ impl LazyEvents {
         self.cache_trees(
             &mut cache,
             references.iter().map(|(reference, _)| reference),
+            false,
         );
         references
             .iter()

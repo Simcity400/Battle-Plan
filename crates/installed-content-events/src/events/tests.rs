@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -408,6 +408,103 @@ fn option_index_fixture(files: &[(&str, &[u8])]) -> (LazyEvents, std::path::Path
     }
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     (LazyEvents::new(Arc::new(layers)), root)
+}
+
+/// A page's events are read together: each file holding one of them once, after which their
+/// lookups read no file and give what single lookups give, a refused one included.
+#[test]
+fn prefetched_events_read_each_file_once_and_look_up_as_single_lookups_do() {
+    let (single, root) = option_index_fixture(&[
+        (
+            "a.txt",
+            b"add_namespace=s country_event={id=s.1 title=FIRST} country_event={id=s.2 title=SECOND} country_event={id=s.3 title=THIRD}",
+        ),
+        ("b.txt", b"add_namespace=t country_event={id=t.1 title=OTHER}"),
+    ]);
+    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let traced = {
+        let reads = Arc::clone(&reads);
+        ResolvedLayers::from_folders(&[(&root, &[])])
+            .unwrap()
+            .with_read_trace(Arc::new(move |read: installed_content_core::content::ContentRead| {
+                reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
+            }))
+    };
+    let batched = LazyEvents::new(Arc::new(traced));
+    let ids: [&[u8]; 4] = [b"s.1", b"s.3", b"t.1", b"x.9"];
+    batched.prefetch(ids, &AtomicBool::new(false));
+    // The index read every file once; the prefetch each file holding a wanted event once more.
+    let prefetched = reads.lock().unwrap().clone();
+    for file in ["events/a.txt", "events/b.txt"] {
+        assert_eq!(prefetched.iter().filter(|path| *path == file).count(), 2, "{prefetched:?}");
+    }
+    for id in ids {
+        assert_eq!(format!("{:?}", batched.get(id)), format!("{:?}", single.get(id)));
+    }
+    assert_eq!(*reads.lock().unwrap(), prefetched);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// An event whose body stops a shared reader leaves every other one of its file to read as its
+/// own lookup reads it. A definition in an unregistered namespace, which a lookup refuses unread,
+/// is never read, and nothing at all is when no id is asked or the request is cancelled.
+#[test]
+fn prefetched_events_read_apart_and_leave_unread_what_a_lookup_refuses_unread() {
+    let (single, root) = option_index_fixture(&[
+        (
+            "a.txt",
+            b"add_namespace=s country_event={id=s.0 option={name=Other promote_character={character={ignored}}}} country_event={id=s.1 option={name=Chosen custom_effect_tooltip=ONE}}",
+        ),
+        ("b.txt", b"country_event={id=orphan.1 title=ORPHAN}"),
+    ]);
+    let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let traced = {
+        let reads = Arc::clone(&reads);
+        ResolvedLayers::from_folders(&[(&root, &[])])
+            .unwrap()
+            .with_read_trace(Arc::new(move |read: installed_content_core::content::ContentRead| {
+                reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
+            }))
+    };
+    let batched = LazyEvents::new(Arc::new(traced));
+    batched.prefetch(std::iter::empty(), &AtomicBool::new(false));
+    batched.prefetch([b"s.1".as_slice()], &AtomicBool::new(true));
+    assert!(reads.lock().unwrap().is_empty());
+    assert!(batched.cache.lock().unwrap().index.is_none());
+    // Cancelled while the index is read, the rest of its files are left and nothing is kept.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancelling = {
+        let (cancel, reads) = (Arc::clone(&cancel), Arc::clone(&reads));
+        ResolvedLayers::from_folders(&[(&root, &[])])
+            .unwrap()
+            .with_read_trace(Arc::new(move |read: installed_content_core::content::ContentRead| {
+                reads.lock().unwrap().push(String::from_utf8(read.path).unwrap());
+                cancel.store(true, Ordering::Release);
+            }))
+    };
+    let cancelled = LazyEvents::new(Arc::new(cancelling));
+    cancelled.prefetch([b"s.1".as_slice()], &cancel);
+    assert_eq!(reads.lock().unwrap().len(), 1, "the index stopped after its first file");
+    assert!(cancelled.cache.lock().unwrap().index.is_none());
+    reads.lock().unwrap().clear();
+    let ids: [&[u8]; 3] = [b"s.0", b"s.1", b"orphan.1"];
+    batched.prefetch(ids, &AtomicBool::new(false));
+    // The index read each file once; the prefetch read only the registered one again.
+    let prefetched = reads.lock().unwrap().clone();
+    for (file, count) in [("events/a.txt", 2), ("events/b.txt", 1)] {
+        assert_eq!(
+            prefetched.iter().filter(|path| *path == file).count(),
+            count,
+            "{prefetched:?}"
+        );
+    }
+    assert_eq!(batched.cache.lock().unwrap().trees.len(), 2);
+    for id in ids {
+        assert_eq!(format!("{:?}", batched.get(id)), format!("{:?}", single.get(id)));
+    }
+    assert!(batched.get(b"s.1").is_ok_and(|event| event.refused.is_none()));
+    assert_eq!(*reads.lock().unwrap(), prefetched);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

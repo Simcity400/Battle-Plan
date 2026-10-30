@@ -743,6 +743,34 @@ fn plain_item(
 struct ScriptContentIndex(std::sync::Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
 
 /// The event database of the catalogue's content stack, read once per stack.
+/// Reads the script events presenting `items` reads ([`script_presentation`]) together, each
+/// event file once, so presenting them reads none
+/// ([`installed_content_events::events::LazyEvents::prefetch`]).
+fn prefetch_script_events<'i>(
+    catalogue: &Catalogue,
+    items: impl IntoIterator<Item = (EventFeedKind, &'i EventFeedItem)>,
+    cancelled: &AtomicBool,
+) {
+    script_events(catalogue).prefetch(
+        items
+            .into_iter()
+            .filter(|(kind, _)| presents_event(*kind))
+            .filter_map(|(_, item)| item.token.as_deref())
+            .map(str::as_bytes),
+        cancelled,
+    );
+}
+
+/// Whether a row of `kind` is presented from its script event ([`script_presentation`]).
+fn presents_event(kind: EventFeedKind) -> bool {
+    matches!(
+        kind,
+        EventFeedKind::ScriptEventFired
+            | EventFeedKind::NewsEventFired
+            | EventFeedKind::EventOptionSelected
+    )
+}
+
 fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events::LazyEvents> {
     let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
     let mut index = cache
@@ -991,12 +1019,7 @@ fn script_presentation(
     if kind == EventFeedKind::DecisionRosterRebuilt {
         return decision_roster::present(builder, catalogue, item, inputs);
     }
-    if !matches!(
-        kind,
-        EventFeedKind::ScriptEventFired
-            | EventFeedKind::NewsEventFired
-            | EventFeedKind::EventOptionSelected
-    ) {
+    if !presents_event(kind) {
         if names_decision(kind) {
             let token = item.token.as_deref().unwrap_or("unidentified decision");
             let named = match (texts, inputs) {
@@ -1585,6 +1608,13 @@ fn build(
             .iter()
             .filter_map(|row| row.item.map(|item| (item, row.kind, row.id.clone())))
             .collect();
+        prefetch_script_events(
+            catalogue,
+            script_items
+                .iter()
+                .map(|&(index, kind, _)| (kind, &builder.feed.items[index as usize])),
+            cancelled,
+        );
         for (index, kind, id) in script_items {
             let mut item = builder.feed.items[index as usize].clone();
             let inputs = builder.script_inputs.get(&id).cloned();

@@ -973,6 +973,18 @@ pub(crate) fn query(
         .feed
         .warnings
         .extend(special_projects::art_warnings(failed));
+    if let Some(catalogue) = catalogue.as_deref() {
+        super::super::prefetch_script_events(
+            catalogue,
+            rows.values().filter_map(|row| match row {
+                SourceRow::Fact(fact) if fact.row.item.is_some() => {
+                    Some((fact.row.kind, fact.item.as_ref()?))
+                }
+                _ => None,
+            }),
+            cancelled,
+        );
+    }
     for (position, row) in rows {
         check_cancel(cancelled)?;
         if position.kind == EventFeedKind::Peace {

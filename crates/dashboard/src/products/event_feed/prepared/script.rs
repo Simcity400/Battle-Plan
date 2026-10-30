@@ -453,12 +453,45 @@ pub(crate) fn query(
             None
         }
     };
+    // Whether a held fact is shown as an occurrence's first edge, and whether it opens one: a
+    // joined edge is shown inside its opener's card, with the others its opener read by `live`.
+    let shown = |fact: &Fact| {
+        let joins = fact
+            .occurrence
+            .as_ref()
+            .is_some_and(|occurrence| occurrence.opener.is_some());
+        let opens = openers.contains(&fact.row.kind);
+        (!joins && (opens || adapter.continuing().contains(&fact.row.kind))).then_some(opens)
+    };
     let texts = ScopedTexts::new(source, branch, cancelled);
-    if catalogue.is_some() {
+    if let Some(catalogue) = catalogue.as_deref() {
         texts.prefetch(held.iter().filter_map(|(_, fact)| {
             (fact.row.item.is_some() && fact.script.is_some() && super::super::names_decision(fact.row.kind))
                 .then_some(fact.row.name_hour)
         }));
+        let mut presented = Vec::new();
+        for (placed, fact) in &held {
+            let Some(opens) = shown(fact) else {
+                continue;
+            };
+            presented.push(fact);
+            if opens {
+                presented.extend(
+                    joined
+                        .get(&(placed.key, placed.ordinal))
+                        .into_iter()
+                        .flatten()
+                        .filter(|fact| fact.row.read_hour <= live),
+                );
+            }
+        }
+        super::super::prefetch_script_events(
+            catalogue,
+            presented.into_iter().filter_map(|fact| {
+                Some((fact.row.kind, fact.item.as_ref().filter(|_| fact.row.item.is_some())?))
+            }),
+            cancelled,
+        );
     }
     let present = |builder: &mut Builder, fact: Fact| -> io::Result<ScriptEdge> {
         let (option, lifecycle, days, costs) = edge(&fact);
@@ -491,19 +524,9 @@ pub(crate) fn query(
     for (placed, fact) in held.into_iter().rev() {
         check_cancel(cancelled)?;
         let at = (placed.key, placed.ordinal);
-        let kind = fact.row.kind;
-        // A joined edge is shown inside its opener's card.
-        if fact
-            .occurrence
-            .as_ref()
-            .is_some_and(|occurrence| occurrence.opener.is_some())
-        {
+        let Some(opens) = shown(&fact) else {
             continue;
-        }
-        let opens = openers.contains(&kind);
-        if !opens && !adapter.continuing().contains(&kind) {
-            continue;
-        }
+        };
         let id = fact.row.id.clone();
         let mut edges = vec![present(&mut builder, fact)?];
         if opens {
