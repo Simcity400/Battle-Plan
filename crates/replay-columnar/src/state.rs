@@ -931,9 +931,7 @@ impl Table {
     }
 
     fn index(&mut self, additional: usize) -> io::Result<()> {
-        self.by_key
-            .try_reserve(additional)
-            .map_err(|_| engine_allocation::oom())
+        engine_allocation::reserve_map(&mut self.by_key, additional)
     }
 
     fn key_slot(&mut self, key: u128, slot: u32) -> io::Result<()> {
@@ -970,6 +968,11 @@ impl Table {
             bits.set(slot)?;
         }
         Ok(())
+    }
+
+    /// `column`'s unrecorded slots, a bit each.
+    pub(crate) fn unrecorded_bits(&self, column: usize) -> Option<&Bits> {
+        self.unrecorded.get(column)
     }
 
     /// The live slots whose cell in `column` is unrecorded, ascending.

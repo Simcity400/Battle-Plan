@@ -1,14 +1,26 @@
 //! The writer's side of the change grammar: one table's held columns, an hour's candidate
-//! rows compared once with them, and the section that hour writes. [`TableWriter::commit`]
-//! applies the section through the reader's own [`section::apply`], so after the same hours
-//! the writer holds exactly the table, status, sample hour and view a walker holds.
+//! rows compared once with them, and the section that hour writes. Each changed cell is
+//! written as the held cell's ADD or PATCH when that takes no more bytes than its SET; a
+//! column whose changed cells all take one value writes it once, as a FILL when they are at
+//! least half its rows. [`TableWriter::commit`] applies the section through the reader's own
+//! [`section::apply`], so after the same hours the writer holds exactly the table, status,
+//! sample hour and view a walker holds.
+//!
+//! An hour's rows come one at a time ([`Hour::row`]) or together as a [`Batch`]
+//! ([`TableWriter::prepare`]), which compares each column with the held one in one pass and
+//! writes the same section.
+//!
+//! An hour clears and finishes only the columns it or the hour before staged a cell in, so
+//! an hour that changes nothing costs its table no work per column. An hour after one that
+//! did not finish (refused, dropped or unwound) clears every column.
 
 use crate::{
-    invalid,
+    invalid_static,
+    leaf::varint_len,
     manifest::{self, Status},
     restart::{self, Acquisition, Restored},
-    section::{self, Changes, Op, Run, Scratch, TableHour},
-    state::{Cell, Kind, Table, Values},
+    section::{self, Changes, Op, PatchItems, Patches, Run, Scratch, TableHour},
+    state::{Bits, Cell, Column, Kind, Table, Values},
 };
 use std::{
     cmp::Reverse,
@@ -25,12 +37,22 @@ type Hasher = foldhash::fast::RandomState;
 /// Names each writer, so a preparation commits only to the writer that made it.
 static WRITERS: AtomicU64 = AtomicU64::new(1);
 
+/// The fewest changed cells of one value a FILL writes; fewer take one SET run.
+const FILL_MINIMUM: usize = 16;
+
+/// A batch row the table does not hold. No slot is `u32::MAX`: an hour keeps the table's
+/// extent within 32 bits.
+const NEW: u32 = u32::MAX;
+
 /// A run's strings: exact bytes with append-only ids, each appended before its first use.
 #[derive(Default)]
 pub struct Dictionary {
     ids: HashMap<Box<[u8]>, u32, Hasher>,
     len: u32,
     appended: Vec<Box<[u8]>>,
+    /// Every string by id: string `id` ends at `ends[id]` in `bytes`.
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
 }
 
 impl Dictionary {
@@ -46,6 +68,14 @@ impl Dictionary {
         self.len == 0
     }
 
+    /// String `id`'s bytes.
+    pub fn get(&self, id: u32) -> Option<&[u8]> {
+        let id = id as usize;
+        let end = *self.ends.get(id)?;
+        let start = id.checked_sub(1).map_or(0, |previous| self.ends[previous]);
+        Some(&self.bytes[start..end])
+    }
+
     /// The id of `bytes`, appending it when the run has not used it.
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
         if let Some(&id) = self.ids.get(bytes) {
@@ -54,19 +84,21 @@ impl Dictionary {
         let id = self.len;
         let next = id
             .checked_add(1)
-            .ok_or_else(|| invalid("Dictionary ids exceed 32 bits"))?;
+            .ok_or_else(|| invalid_static("Dictionary ids exceed 32 bits"))?;
         let mut owned = engine_allocation::vec(bytes.len())?;
         owned.extend_from_slice(bytes);
         let owned = engine_allocation::boxed_slice(owned)?;
         let mut copy = engine_allocation::vec(bytes.len())?;
         copy.extend_from_slice(bytes);
         let copy = engine_allocation::boxed_slice(copy)?;
-        self.ids
-            .try_reserve(1)
-            .map_err(|_| engine_allocation::oom())?;
+        engine_allocation::reserve_map(&mut self.ids, 1)?;
         engine_allocation::reserve(&mut self.appended, 1)?;
+        engine_allocation::reserve(&mut self.bytes, bytes.len())?;
+        engine_allocation::reserve(&mut self.ends, 1)?;
         self.ids.insert(owned, id);
         self.appended.push(copy);
+        self.bytes.extend_from_slice(bytes);
+        self.ends.push(self.bytes.len());
         self.len = next;
         Ok(id)
     }
@@ -74,6 +106,41 @@ impl Dictionary {
     /// The strings appended since the last take, in id order: the hour's manifest appends.
     pub fn take_appended(&mut self) -> Vec<Box<[u8]>> {
         std::mem::take(&mut self.appended)
+    }
+}
+
+/// The run's dictionary as one table's hour uses it. Tables prepared side by side share it
+/// [`Strings::Reading`], where a string the run has not used fails the hour: that table is
+/// prepared again interning, in table order, so every id is the one a single thread assigns.
+pub enum Strings<'a> {
+    Interning(&'a mut Dictionary),
+    Reading(&'a Dictionary),
+}
+
+impl Strings<'_> {
+    /// The id of `bytes`; reading, a string the run has not used fails.
+    pub fn intern(&mut self, bytes: &[u8]) -> io::Result<u32> {
+        match self {
+            Self::Interning(dictionary) => dictionary.intern(bytes),
+            Self::Reading(dictionary) => dictionary
+                .ids
+                .get(bytes)
+                .copied()
+                .ok_or_else(|| invalid_static("A new string is interned in table order")),
+        }
+    }
+
+    pub fn dictionary(&self) -> &Dictionary {
+        match self {
+            Self::Interning(dictionary) => dictionary,
+            Self::Reading(dictionary) => dictionary,
+        }
+    }
+}
+
+impl<'a> From<&'a mut Dictionary> for Strings<'a> {
+    fn from(dictionary: &'a mut Dictionary) -> Self {
+        Self::Interning(dictionary)
     }
 }
 
@@ -119,8 +186,471 @@ pub struct Evidence {
     pub sample: Sample,
 }
 
+/// What an hour's runs carry: their values by op, and its FILLs with the slots they set and
+/// the live slots they leave.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Census {
+    pub set: u64,
+    pub add: u64,
+    pub patch: u64,
+    pub fills: u64,
+    pub fill_slots: u64,
+    pub fill_exceptions: u64,
+}
+
+/// Which columns a writer's hours clear and finish.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sweep {
+    /// Those the hour or the hour before staged a cell in.
+    #[default]
+    Touched,
+    /// Every column, every hour, and an hour of no rows staged as any other: the reference,
+    /// which writes the same sections.
+    Every,
+}
+
+/// What a writer's hours have cost it so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    /// Hours begun.
+    pub hours: u64,
+    /// Columns an hour cleared or finished.
+    pub columns: u64,
+}
+
+/// One column of a [`Batch`]: every row's cell, in the order the rows came.
+#[derive(Default)]
+struct Cells {
+    /// A scalar cell's bits as [`word`] takes them; a text, list or opaque cell's end in its
+    /// items.
+    words: Vec<u64>,
+    /// An optional cell's presence, a bit per row.
+    present: Vec<u64>,
+    u32s: Vec<u32>,
+    u64s: Vec<u64>,
+    bytes: Vec<u8>,
+    /// The rows whose cell the recording did not record, ascending.
+    unrecorded: Vec<u32>,
+}
+
+fn optional(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64
+    )
+}
+
+impl Cells {
+    fn clear(&mut self) {
+        self.words.clear();
+        self.present.clear();
+        self.u32s.clear();
+        self.u64s.clear();
+        self.bytes.clear();
+        self.unrecorded.clear();
+    }
+
+    /// The end of the items a `kind` column's cells take so far.
+    fn end(&self, kind: Kind) -> u64 {
+        (match kind {
+            Kind::U32List => self.u32s.len(),
+            Kind::U64List => self.u64s.len(),
+            Kind::Bytes | Kind::Opaque => self.bytes.len(),
+            _ => 0,
+        }) as u64
+    }
+
+    /// The items of row `row`'s text, list or opaque cell.
+    fn span(&self, row: usize) -> std::ops::Range<usize> {
+        let start = row
+            .checked_sub(1)
+            .map_or(0, |previous| self.words[previous] as usize);
+        start..self.words[row] as usize
+    }
+
+    fn present(&self, row: usize) -> bool {
+        self.present
+            .get(row / 64)
+            .is_some_and(|bits| bits >> (row % 64) & 1 != 0)
+    }
+
+    /// Row `row`'s cell of a `kind` column other than text, none when it is unrecorded.
+    fn cell(&self, kind: Kind, row: u32) -> Option<Cell<'_>> {
+        if self.unrecorded.binary_search(&row).is_ok() {
+            return None;
+        }
+        let at = row as usize;
+        let word = self.words[at];
+        let present = self.present(at);
+        Some(match kind {
+            Kind::U8 => Cell::U8(word as u8),
+            Kind::I8 => Cell::I8(word as i8),
+            Kind::U16 => Cell::U16(word as u16),
+            Kind::I16 => Cell::I16(word as i16),
+            Kind::U32 => Cell::U32(word as u32),
+            Kind::I32 => Cell::I32(word as i32),
+            Kind::U64 => Cell::U64(word),
+            Kind::I64 => Cell::I64(word as i64),
+            Kind::Bool => Cell::Bool(word != 0),
+            Kind::OptionalI32 => Cell::OptionalI32(present.then_some(word as i32)),
+            Kind::OptionalU32 => Cell::OptionalU32(present.then_some(word as u32)),
+            Kind::OptionalI64 => Cell::OptionalI64(present.then_some(word as i64)),
+            Kind::OptionalU64 => Cell::OptionalU64(present.then_some(word)),
+            Kind::Bytes => return None,
+            Kind::U32List => Cell::U32List(&self.u32s[self.span(at)]),
+            Kind::U64List => Cell::U64List(&self.u64s[self.span(at)]),
+            Kind::Opaque => Cell::Opaque(&self.bytes[self.span(at)]),
+        })
+    }
+}
+
+/// An hour's rows by column, a row at a time: each row's key, then one cell per column in
+/// any order. Kept between hours, so a warm batch allocates nothing.
+#[derive(Default)]
+pub struct Batch {
+    kinds: Vec<Kind>,
+    keys: Vec<u128>,
+    /// One per column of `kinds`, and those wider tables left.
+    columns: Vec<Cells>,
+}
+
+impl Batch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts an hour of about `rows` rows of a table with these columns.
+    pub fn begin(&mut self, kinds: &[Kind], rows: usize) -> io::Result<()> {
+        // A cell follows its row's key, so only a batch with rows holds cells, and only in
+        // its own columns.
+        if !self.keys.is_empty() {
+            for cells in self.columns.iter_mut().take(self.kinds.len()) {
+                cells.clear();
+            }
+        }
+        self.keys.clear();
+        if self.columns.len() < kinds.len() {
+            engine_allocation::resize_default(&mut self.columns, kinds.len())?;
+        }
+        self.kinds.clear();
+        extend(&mut self.kinds, kinds)?;
+        engine_allocation::reserve(&mut self.keys, rows)?;
+        if rows > 0 {
+            for (cells, &kind) in self.columns.iter_mut().zip(kinds) {
+                engine_allocation::reserve(&mut cells.words, rows)?;
+                if optional(kind) {
+                    engine_allocation::reserve(&mut cells.present, rows.div_ceil(64))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn rows(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Starts the next row.
+    #[inline]
+    pub fn key(&mut self, key: u128) -> io::Result<()> {
+        push(&mut self.keys, key)
+    }
+
+    /// The current row's cells of `column`, which holds `kind`, and the row.
+    #[inline]
+    fn next(&mut self, column: usize, kind: Kind) -> io::Result<(&mut Cells, usize)> {
+        let row = self.keys.len().wrapping_sub(1);
+        let held = *self
+            .kinds
+            .get(column)
+            .ok_or_else(|| invalid_static("A batch column is past the schema"))?;
+        if held != kind {
+            return Err(invalid_static("A batch cell's kind is not its column's"));
+        }
+        let cells = &mut self.columns[column];
+        if cells.words.len() != row {
+            return Err(invalid_static(
+                "A batch row carries other than one cell per column",
+            ));
+        }
+        Ok((cells, row))
+    }
+
+    /// The current row's cell of `column`: any but a text cell, which is its bytes.
+    #[inline]
+    pub fn value(&mut self, column: usize, cell: Cell<'_>) -> io::Result<()> {
+        let (cells, row) = self.next(column, cell_kind(&cell))?;
+        match cell {
+            Cell::Bytes(_) => Err(invalid_static("A batch takes text as its bytes")),
+            Cell::U32List(items) => {
+                extend(&mut cells.u32s, items)?;
+                let end = cells.u32s.len() as u64;
+                push(&mut cells.words, end)
+            }
+            Cell::U64List(items) => {
+                extend(&mut cells.u64s, items)?;
+                let end = cells.u64s.len() as u64;
+                push(&mut cells.words, end)
+            }
+            Cell::Opaque(items) => {
+                extend(&mut cells.bytes, items)?;
+                let end = cells.bytes.len() as u64;
+                push(&mut cells.words, end)
+            }
+            Cell::OptionalI32(_)
+            | Cell::OptionalU32(_)
+            | Cell::OptionalI64(_)
+            | Cell::OptionalU64(_) => {
+                let (word, present) = word(cell);
+                presence(cells, row, present)?;
+                push(&mut cells.words, word)
+            }
+            cell => push(&mut cells.words, word(cell).0),
+        }
+    }
+
+    /// The current row's string in a Bytes column.
+    #[inline]
+    pub fn text(&mut self, column: usize, text: &[u8]) -> io::Result<()> {
+        let (cells, _) = self.next(column, Kind::Bytes)?;
+        extend(&mut cells.bytes, text)?;
+        let end = cells.bytes.len() as u64;
+        push(&mut cells.words, end)
+    }
+
+    /// The current row's opaque cell, as `write` appends it.
+    #[inline]
+    pub fn opaque_with(
+        &mut self,
+        column: usize,
+        write: impl FnOnce(&mut Vec<u8>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (cells, _) = self.next(column, Kind::Opaque)?;
+        write(&mut cells.bytes)?;
+        let end = cells.bytes.len() as u64;
+        push(&mut cells.words, end)
+    }
+
+    /// The current row's U32List cell, as `write` appends its items.
+    #[inline]
+    pub fn u32s_with(
+        &mut self,
+        column: usize,
+        write: impl FnOnce(&mut Vec<u32>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (cells, _) = self.next(column, Kind::U32List)?;
+        write(&mut cells.u32s)?;
+        let end = cells.u32s.len() as u64;
+        push(&mut cells.words, end)
+    }
+
+    /// The current row's U64List cell, as `write` appends its items.
+    #[inline]
+    pub fn u64s_with(
+        &mut self,
+        column: usize,
+        write: impl FnOnce(&mut Vec<u64>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let (cells, _) = self.next(column, Kind::U64List)?;
+        write(&mut cells.u64s)?;
+        let end = cells.u64s.len() as u64;
+        push(&mut cells.words, end)
+    }
+
+    /// The current row's cell of `column`, which the recording did not record.
+    #[inline]
+    pub fn unrecorded(&mut self, column: usize) -> io::Result<()> {
+        let kind = *self
+            .kinds
+            .get(column)
+            .ok_or_else(|| invalid_static("A batch column is past the schema"))?;
+        let (cells, row) = self.next(column, kind)?;
+        push(&mut cells.unrecorded, row as u32)?;
+        if optional(kind) {
+            presence(cells, row, false)?;
+        }
+        let end = cells.end(kind);
+        push(&mut cells.words, end)
+    }
+}
+
+/// Row `row`'s presence bit, set when `present`.
+fn presence(cells: &mut Cells, row: usize, present: bool) -> io::Result<()> {
+    if row % 64 == 0 {
+        push(&mut cells.present, 0)?;
+    }
+    if present {
+        cells.present[row / 64] |= 1 << (row % 64);
+    }
+    Ok(())
+}
+
+/// A held scalar column's value type and the cells it makes.
+trait Word: Copy {
+    /// The bits [`word`] takes of its cell.
+    fn word(self) -> u64;
+    /// The cell of `word`'s bits.
+    fn plain(word: u64) -> Cell<'static>;
+}
+
+macro_rules! words {
+    ($($kind:ty => $variant:ident),+) => {
+        $(impl Word for $kind {
+            fn word(self) -> u64 {
+                self as i64 as u64
+            }
+            fn plain(word: u64) -> Cell<'static> {
+                Cell::$variant(word as $kind)
+            }
+        })+
+    };
+}
+words!(u8 => U8, i8 => I8, u16 => U16, i16 => I16, u32 => U32, i32 => I32, u64 => U64, i64 => I64);
+
+impl Word for bool {
+    fn word(self) -> u64 {
+        u64::from(self)
+    }
+    fn plain(word: u64) -> Cell<'static> {
+        Cell::Bool(word != 0)
+    }
+}
+
+/// An optional column's value type.
+trait Present: Word {
+    fn optional(value: Option<u64>) -> Cell<'static>;
+}
+
+macro_rules! present {
+    ($($kind:ty => $variant:ident),+) => {
+        $(impl Present for $kind {
+            fn optional(value: Option<u64>) -> Cell<'static> {
+                Cell::$variant(value.map(|word| word as $kind))
+            }
+        })+
+    };
+}
+present!(i32 => OptionalI32, u32 => OptionalU32, i64 => OptionalI64, u64 => OptionalU64);
+
+/// A list or opaque column's item type.
+trait Items: Copy + PartialEq {
+    fn cell(items: &[Self]) -> Cell<'_>;
+}
+
+impl Items for u32 {
+    fn cell(items: &[Self]) -> Cell<'_> {
+        Cell::U32List(items)
+    }
+}
+
+impl Items for u64 {
+    fn cell(items: &[Self]) -> Cell<'_> {
+        Cell::U64List(items)
+    }
+}
+
+impl Items for u8 {
+    fn cell(items: &[Self]) -> Cell<'_> {
+        Cell::Opaque(items)
+    }
+}
+
+/// One batch column beside its held column: the cells it changes go to `pending`, those it
+/// no longer records to `unrecord`.
+struct Staged<'s> {
+    /// Each batch row's held slot, or [`NEW`].
+    slots: &'s [u32],
+    cells: &'s Cells,
+    /// The held column's unrecorded slots, when it has any.
+    marked: Option<&'s Bits>,
+    pending: &'s mut Pending,
+    unrecord: &'s mut Vec<u32>,
+    /// A cell was staged in `pending` or `unrecord`.
+    dirty: bool,
+}
+
+impl Staged<'_> {
+    /// Each held row the batch records, with whether the table records it: `change` stages
+    /// what differs, saying whether it did. A cell the batch leaves unrecorded is staged here.
+    #[inline]
+    fn each(
+        &mut self,
+        mut change: impl FnMut(&mut Pending, usize, u32, bool) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let mut skipped = self.cells.unrecorded.iter().copied().peekable();
+        for (row, &slot) in (0u32..).zip(self.slots) {
+            let recorded = skipped.next_if_eq(&row).is_none();
+            if slot == NEW {
+                continue;
+            }
+            let was = !self.marked.is_some_and(|bits| bits.get(slot));
+            if !recorded {
+                if was {
+                    self.dirty = true;
+                    push(&mut *self.unrecord, slot)?;
+                }
+                continue;
+            }
+            self.dirty |= change(&mut *self.pending, row as usize, slot, was)?;
+        }
+        Ok(())
+    }
+
+    fn scalars<T: Word>(&mut self, held: &[T]) -> io::Result<()> {
+        let cells = self.cells;
+        self.each(|pending, row, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = cells.words[row];
+            if was && value.word() == new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::plain(value.word()));
+            pending.change(slot, T::plain(new), held).map(|()| true)
+        })
+    }
+
+    fn optionals<T: Present>(&mut self, held: &[T], presence: &Bits) -> io::Result<()> {
+        let cells = self.cells;
+        self.each(|pending, row, slot, was| {
+            let value = *held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let old = presence.get(slot).then(|| value.word());
+            let new = cells.present(row).then(|| cells.words[row]);
+            if was && old == new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::optional(old));
+            pending.change(slot, T::optional(new), held).map(|()| true)
+        })
+    }
+
+    fn lists<T: Items>(&mut self, held: &[Box<[T]>], items: &[T]) -> io::Result<()> {
+        let cells = self.cells;
+        self.each(|pending, row, slot, was| {
+            let value = held
+                .get(slot as usize)
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+            let new = &items[cells.span(row)];
+            if was && **value == *new {
+                return Ok(false);
+            }
+            let held = was.then(|| T::cell(value));
+            pending.change(slot, T::cell(new), held).map(|()| true)
+        })
+    }
+}
+
+/// An empty vector keeping `values`' allocation (std collects in place), for items of
+/// another lifetime.
+fn recycle<T, U>(values: Vec<T>) -> Vec<U> {
+    values.into_iter().filter_map(|_| None).collect()
+}
+
 /// One cell's value kept by its own type: integers by their bits, lists and opaque
-/// cells as spans of item arrays.
+/// cells as spans of item arrays. A changed cell also keeps how its run writes it.
 #[derive(Default)]
 struct Pending {
     /// The held slot, or the insert's index, of each entry.
@@ -131,14 +661,146 @@ struct Pending {
     u32s: Vec<u32>,
     u64s: Vec<u64>,
     bytes: Vec<u8>,
+    /// Each changed entry's op: SET, ADD or PATCH.
+    ops: Vec<Op>,
+    /// An integer column's entries' ADD deltas at the column's width; zero for a SET.
+    deltas: Vec<u64>,
+    /// A list or opaque column's entries' PATCH edits in `edits`; none for a SET.
+    hunks: Vec<(u32, u32)>,
+    edits: Vec<(u32, u32, u32)>,
+    /// Every entry holds the first entry's value.
+    uniform: bool,
 }
 
 fn span(start: usize, len: usize) -> io::Result<(u32, u32)> {
     let end = start
         .checked_add(len)
         .filter(|&end| u32::try_from(end).is_ok())
-        .ok_or_else(|| invalid("Cell items exceed 32 bits"))?;
+        .ok_or_else(|| invalid_static("Cell items exceed 32 bits"))?;
     Ok((start as u32, (end - start) as u32))
+}
+
+fn push<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
+    engine_allocation::reserve(values, 1)?;
+    values.push(value);
+    Ok(())
+}
+
+fn extend<T: Copy>(values: &mut Vec<T>, items: &[T]) -> io::Result<()> {
+    engine_allocation::reserve(values, items.len())?;
+    values.extend_from_slice(items);
+    Ok(())
+}
+
+/// A cell's integer bits and presence; a list or opaque cell keeps its items apart.
+fn word(cell: Cell<'_>) -> (u64, bool) {
+    match cell {
+        Cell::U8(value) => (u64::from(value), true),
+        Cell::I8(value) => (value as i64 as u64, true),
+        Cell::U16(value) => (u64::from(value), true),
+        Cell::I16(value) => (value as i64 as u64, true),
+        Cell::U32(value) | Cell::Bytes(value) => (u64::from(value), true),
+        Cell::I32(value) => (value as i64 as u64, true),
+        Cell::U64(value) => (value, true),
+        Cell::I64(value) => (value as u64, true),
+        Cell::Bool(value) => (u64::from(value), true),
+        Cell::OptionalI32(value) => (value.map_or(0, |v| v as i64 as u64), value.is_some()),
+        Cell::OptionalU32(value) => (value.map_or(0, u64::from), value.is_some()),
+        Cell::OptionalI64(value) => (value.map_or(0, |v| v as u64), value.is_some()),
+        Cell::OptionalU64(value) => (value.unwrap_or(0), value.is_some()),
+        Cell::U32List(_) | Cell::U64List(_) | Cell::Opaque(_) => (0, true),
+    }
+}
+
+/// The bits and signedness of a column an ADD can shorten: byte-wide values are raw either
+/// way, and other kinds take no ADD.
+fn integer(kind: Kind) -> Option<(u32, bool)> {
+    Some(match kind {
+        Kind::U16 => (16, false),
+        Kind::I16 => (16, true),
+        Kind::U32 | Kind::OptionalU32 => (32, false),
+        Kind::I32 | Kind::OptionalI32 => (32, true),
+        Kind::U64 | Kind::OptionalU64 => (64, false),
+        Kind::I64 | Kind::OptionalI64 => (64, true),
+        _ => return None,
+    })
+}
+
+/// The varint a `bits`-wide integer takes in a run: its low bits, zigzagged when signed.
+fn wire(word: u64, bits: u32, signed: bool) -> u64 {
+    let shift = 64 - bits;
+    if signed {
+        let value = ((word << shift) as i64) >> shift;
+        ((value << 1) ^ (value >> 63)) as u64
+    } else {
+        word << shift >> shift
+    }
+}
+
+fn count(items: usize) -> io::Result<u32> {
+    u32::try_from(items).map_err(|_| invalid_static("Cell items exceed 32 bits"))
+}
+
+/// Appends to `edits` the hunks turning `held` into `new`: equal lengths edit their
+/// differing runs, merged across fewer than `gap` equal items; otherwise one hunk replaces
+/// what lies between the common prefix and suffix. Whether those hunks and the items they
+/// insert, `bytes` each, are shorter than `new` whole.
+fn hunks<T: Copy + PartialEq>(
+    held: &[T],
+    new: &[T],
+    gap: usize,
+    bytes: impl Fn(T) -> usize,
+    edits: &mut Vec<(u32, u32, u32)>,
+) -> io::Result<bool> {
+    let items = |range: &[T]| range.iter().map(|&item| bytes(item)).sum::<usize>();
+    let prefix = held.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let limit = held.len().min(new.len()) - prefix;
+    let suffix = held
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(limit)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let start = edits.len();
+    let mut inserted = 0;
+    if held.len() != new.len() {
+        let (removed, added) = (held.len() - prefix - suffix, new.len() - prefix - suffix);
+        push(edits, (count(prefix)?, count(removed)?, count(added)?))?;
+        inserted = items(&new[prefix..prefix + added]);
+    } else {
+        let end = held.len() - suffix;
+        let (mut at, mut kept) = (prefix, 0);
+        while at < end {
+            if held[at] == new[at] {
+                at += 1;
+                continue;
+            }
+            let (first, mut stop, mut probe, mut equal) = (at, at + 1, at + 1, 0);
+            while probe < end && equal < gap {
+                if held[probe] == new[probe] {
+                    equal += 1;
+                } else {
+                    equal = 0;
+                    stop = probe + 1;
+                }
+                probe += 1;
+            }
+            let edited = count(stop - first)?;
+            push(edits, (count(first - kept)?, edited, edited))?;
+            inserted += items(&new[first..stop]);
+            (kept, at) = (stop, stop);
+        }
+    }
+    let hunks = &edits[start..];
+    let edit_bytes = varint_len(hunks.len() as u64)
+        + hunks
+            .iter()
+            .map(|&(skip, removed, added)| {
+                varint_len(skip.into()) + varint_len(removed.into()) + varint_len(added.into())
+            })
+            .sum::<usize>();
+    Ok(edit_bytes + inserted < varint_len(new.len() as u64) + items(new))
 }
 
 impl Pending {
@@ -150,49 +812,34 @@ impl Pending {
         self.u32s.clear();
         self.u64s.clear();
         self.bytes.clear();
+        self.ops.clear();
+        self.deltas.clear();
+        self.hunks.clear();
+        self.edits.clear();
+        self.uniform = false;
     }
 
     fn len(&self) -> usize {
         self.at.len()
     }
 
+    fn items<T: Copy>(
+        spans: &mut Vec<(u32, u32)>,
+        into: &mut Vec<T>,
+        items: &[T],
+    ) -> io::Result<()> {
+        push(spans, span(into.len(), items.len())?)?;
+        extend(into, items)
+    }
+
     fn push(&mut self, at: u32, cell: Cell<'_>) -> io::Result<()> {
-        let (word, present) = match cell {
-            Cell::U8(value) => (u64::from(value), true),
-            Cell::I8(value) => (value as i64 as u64, true),
-            Cell::U16(value) => (u64::from(value), true),
-            Cell::I16(value) => (value as i64 as u64, true),
-            Cell::U32(value) | Cell::Bytes(value) => (u64::from(value), true),
-            Cell::I32(value) => (value as i64 as u64, true),
-            Cell::U64(value) => (value, true),
-            Cell::I64(value) => (value as u64, true),
-            Cell::Bool(value) => (u64::from(value), true),
-            Cell::OptionalI32(value) => (value.map_or(0, |v| v as i64 as u64), value.is_some()),
-            Cell::OptionalU32(value) => (value.map_or(0, u64::from), value.is_some()),
-            Cell::OptionalI64(value) => (value.map_or(0, |v| v as u64), value.is_some()),
-            Cell::OptionalU64(value) => (value.unwrap_or(0), value.is_some()),
-            Cell::U32List(items) => {
-                engine_allocation::reserve(&mut self.spans, 1)?;
-                engine_allocation::reserve(&mut self.u32s, items.len())?;
-                self.spans.push(span(self.u32s.len(), items.len())?);
-                self.u32s.extend_from_slice(items);
-                (0, true)
-            }
-            Cell::U64List(items) => {
-                engine_allocation::reserve(&mut self.spans, 1)?;
-                engine_allocation::reserve(&mut self.u64s, items.len())?;
-                self.spans.push(span(self.u64s.len(), items.len())?);
-                self.u64s.extend_from_slice(items);
-                (0, true)
-            }
-            Cell::Opaque(items) => {
-                engine_allocation::reserve(&mut self.spans, 1)?;
-                engine_allocation::reserve(&mut self.bytes, items.len())?;
-                self.spans.push(span(self.bytes.len(), items.len())?);
-                self.bytes.extend_from_slice(items);
-                (0, true)
-            }
-        };
+        match cell {
+            Cell::U32List(items) => Self::items(&mut self.spans, &mut self.u32s, items)?,
+            Cell::U64List(items) => Self::items(&mut self.spans, &mut self.u64s, items)?,
+            Cell::Opaque(items) => Self::items(&mut self.spans, &mut self.bytes, items)?,
+            _ => {}
+        }
+        let (word, present) = word(cell);
         engine_allocation::reserve(&mut self.at, 1)?;
         engine_allocation::reserve(&mut self.words, 1)?;
         engine_allocation::reserve(&mut self.present, 1)?;
@@ -200,6 +847,61 @@ impl Pending {
         self.words.push(word);
         self.present.push(present);
         Ok(())
+    }
+
+    /// Whether entries `a` and `b` of a `kind` column hold one value.
+    fn equal(&self, kind: Kind, a: usize, b: usize) -> bool {
+        let items = |at: usize| {
+            let (start, len) = self.spans[at];
+            start as usize..(start + len) as usize
+        };
+        match kind {
+            Kind::U32List => self.u32s[items(a)] == self.u32s[items(b)],
+            Kind::U64List => self.u64s[items(a)] == self.u64s[items(b)],
+            Kind::Opaque => self.bytes[items(a)] == self.bytes[items(b)],
+            _ => self.words[a] == self.words[b] && self.present[a] == self.present[b],
+        }
+    }
+
+    /// A held row's changed cell, written as an ADD or PATCH of `held`, the value the
+    /// recording recorded there, when that takes no more bytes than a SET.
+    fn change(&mut self, at: u32, cell: Cell<'_>, held: Option<Cell<'_>>) -> io::Result<()> {
+        let entry = self.len();
+        self.push(at, cell)?;
+        let kind = cell_kind(&cell);
+        self.uniform = entry == 0 || (self.uniform && self.equal(kind, 0, entry));
+        let op = if let Some((bits, signed)) = integer(kind) {
+            let (new, present) = (self.words[entry], self.present[entry]);
+            let delta = match held.map(word) {
+                Some((old, true)) if present => Some(new.wrapping_sub(old)).filter(|&delta| {
+                    varint_len(wire(delta, bits, signed)) <= varint_len(wire(new, bits, signed))
+                }),
+                _ => None,
+            };
+            push(&mut self.deltas, delta.unwrap_or(0))?;
+            if delta.is_some() { Op::Add } else { Op::Set }
+        } else if matches!(kind, Kind::U32List | Kind::U64List | Kind::Opaque) {
+            let start = self.edits.len();
+            let edits = &mut self.edits;
+            let patch = match (cell, held) {
+                (Cell::U32List(new), Some(Cell::U32List(old))) => {
+                    hunks(old, new, 1, |item| varint_len(item.into()), edits)?
+                }
+                (Cell::U64List(new), Some(Cell::U64List(old))) => {
+                    hunks(old, new, 1, varint_len, edits)?
+                }
+                (Cell::Opaque(new), Some(Cell::Opaque(old))) => hunks(old, new, 3, |_| 1, edits)?,
+                _ => false,
+            };
+            if !patch {
+                self.edits.truncate(start);
+            }
+            push(&mut self.hunks, span(start, self.edits.len() - start)?)?;
+            if patch { Op::Patch } else { Op::Set }
+        } else {
+            Op::Set
+        };
+        push(&mut self.ops, op)
     }
 }
 
@@ -216,6 +918,8 @@ struct Out {
     i64s: Vec<i64>,
     present: Vec<u64>,
     ends: Vec<u32>,
+    /// Values pushed: the next one's presence bit.
+    count: usize,
 }
 
 impl Out {
@@ -230,102 +934,94 @@ impl Out {
         self.i64s.clear();
         self.present.clear();
         self.ends.clear();
+        self.count = 0;
+    }
+
+    /// `pending`'s entry `at` as `kind`'s next value, its integer bits taken from `words`.
+    fn push(&mut self, kind: Kind, pending: &Pending, words: &[u64], at: usize) -> io::Result<()> {
+        let word = words[at];
+        match kind {
+            Kind::U8 | Kind::Bool => push(&mut self.u8s, word as u8)?,
+            Kind::I8 => push(&mut self.i8s, word as i8)?,
+            Kind::U16 => push(&mut self.u16s, word as u16)?,
+            Kind::I16 => push(&mut self.i16s, word as i16)?,
+            Kind::U32 | Kind::Bytes => push(&mut self.u32s, word as u32)?,
+            Kind::I32 => push(&mut self.i32s, word as i32)?,
+            Kind::U64 => push(&mut self.u64s, word)?,
+            Kind::I64 => push(&mut self.i64s, word as i64)?,
+            Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64 => {
+                if self.count % 64 == 0 {
+                    push(&mut self.present, 0)?;
+                }
+                if pending.present[at] {
+                    self.present[self.count / 64] |= 1 << (self.count % 64);
+                    match kind {
+                        Kind::OptionalI32 => push(&mut self.i32s, word as i32)?,
+                        Kind::OptionalU32 => push(&mut self.u32s, word as u32)?,
+                        Kind::OptionalI64 => push(&mut self.i64s, word as i64)?,
+                        _ => push(&mut self.u64s, word)?,
+                    }
+                }
+            }
+            Kind::U32List | Kind::U64List | Kind::Opaque => {
+                let (start, len) = pending.spans[at];
+                let range = start as usize..(start + len) as usize;
+                match kind {
+                    Kind::U32List => extend(&mut self.u32s, &pending.u32s[range])?,
+                    Kind::U64List => extend(&mut self.u64s, &pending.u64s[range])?,
+                    _ => extend(&mut self.u8s, &pending.bytes[range])?,
+                }
+                let end = self
+                    .ends
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(len)
+                    .ok_or_else(|| invalid_static("Cell items exceed 32 bits"))?;
+                push(&mut self.ends, end)?;
+            }
+        }
+        self.count += 1;
+        Ok(())
     }
 
     /// `pending`'s entries at `order` (indices into it), as `kind`'s values.
     fn fill(&mut self, kind: Kind, pending: &Pending, order: &[u32]) -> io::Result<()> {
         self.clear();
-        let count = order.len();
-        let words = order.iter().map(|&at| pending.words[at as usize]);
-        match kind {
-            Kind::U8 | Kind::Bool => {
-                engine_allocation::reserve(&mut self.u8s, count)?;
-                self.u8s.extend(words.map(|word| word as u8));
-            }
-            Kind::I8 => {
-                engine_allocation::reserve(&mut self.i8s, count)?;
-                self.i8s.extend(words.map(|word| word as i8));
-            }
-            Kind::U16 => {
-                engine_allocation::reserve(&mut self.u16s, count)?;
-                self.u16s.extend(words.map(|word| word as u16));
-            }
-            Kind::I16 => {
-                engine_allocation::reserve(&mut self.i16s, count)?;
-                self.i16s.extend(words.map(|word| word as i16));
-            }
-            Kind::U32 | Kind::Bytes => {
-                engine_allocation::reserve(&mut self.u32s, count)?;
-                self.u32s.extend(words.map(|word| word as u32));
-            }
-            Kind::I32 => {
-                engine_allocation::reserve(&mut self.i32s, count)?;
-                self.i32s.extend(words.map(|word| word as i32));
-            }
-            Kind::U64 => {
-                engine_allocation::reserve(&mut self.u64s, count)?;
-                self.u64s.extend(words);
-            }
-            Kind::I64 => {
-                engine_allocation::reserve(&mut self.i64s, count)?;
-                self.i64s.extend(words.map(|word| word as i64));
-            }
-            Kind::OptionalI32 | Kind::OptionalU32 | Kind::OptionalI64 | Kind::OptionalU64 => {
-                self.present = engine_allocation::filled(count.div_ceil(64), 0u64)?;
-                for (index, &at) in order.iter().enumerate() {
-                    if !pending.present[at as usize] {
-                        continue;
-                    }
-                    self.present[index / 64] |= 1 << (index % 64);
-                    let word = pending.words[at as usize];
-                    match kind {
-                        Kind::OptionalI32 => {
-                            engine_allocation::reserve(&mut self.i32s, 1)?;
-                            self.i32s.push(word as i32);
-                        }
-                        Kind::OptionalU32 => {
-                            engine_allocation::reserve(&mut self.u32s, 1)?;
-                            self.u32s.push(word as u32);
-                        }
-                        Kind::OptionalI64 => {
-                            engine_allocation::reserve(&mut self.i64s, 1)?;
-                            self.i64s.push(word as i64);
-                        }
-                        _ => {
-                            engine_allocation::reserve(&mut self.u64s, 1)?;
-                            self.u64s.push(word);
-                        }
-                    }
-                }
-            }
-            Kind::U32List | Kind::U64List | Kind::Opaque => {
-                engine_allocation::reserve(&mut self.ends, count)?;
-                let mut end = 0u32;
-                for &at in order {
-                    let (start, len) = pending.spans[at as usize];
-                    let range = start as usize..(start + len) as usize;
-                    match kind {
-                        Kind::U32List => {
-                            engine_allocation::reserve(&mut self.u32s, range.len())?;
-                            self.u32s.extend_from_slice(&pending.u32s[range]);
-                        }
-                        Kind::U64List => {
-                            engine_allocation::reserve(&mut self.u64s, range.len())?;
-                            self.u64s.extend_from_slice(&pending.u64s[range]);
-                        }
-                        _ => {
-                            engine_allocation::reserve(&mut self.u8s, range.len())?;
-                            self.u8s.extend_from_slice(&pending.bytes[range]);
-                        }
-                    }
-                    end = end
-                        .checked_add(len)
-                        .ok_or_else(|| invalid("Cell items exceed 32 bits"))?;
-                    self.ends.push(end);
-                }
-            }
+        for &at in order {
+            self.push(kind, pending, &pending.words, at as usize)?;
         }
         Ok(())
+    }
+
+    /// The items `edits` insert into `pending`'s entry `at`, a list or opaque cell.
+    fn inserted(
+        &mut self,
+        kind: Kind,
+        pending: &Pending,
+        at: usize,
+        edits: &[(u32, u32, u32)],
+    ) -> io::Result<()> {
+        let mut from = pending.spans[at].0 as usize;
+        for &(skip, _, added) in edits {
+            from += skip as usize;
+            let range = from..from + added as usize;
+            match kind {
+                Kind::U32List => extend(&mut self.u32s, &pending.u32s[range])?,
+                Kind::U64List => extend(&mut self.u64s, &pending.u64s[range])?,
+                _ => extend(&mut self.u8s, &pending.bytes[range])?,
+            }
+            from += added as usize;
+        }
+        Ok(())
+    }
+
+    fn patch_items(&self, kind: Kind) -> PatchItems<'_> {
+        match kind {
+            Kind::U32List => PatchItems::U32(&self.u32s),
+            Kind::U64List => PatchItems::U64(&self.u64s),
+            _ => PatchItems::Bytes(&self.u8s),
+        }
     }
 
     fn values(&self, kind: Kind) -> Values<'_> {
@@ -368,6 +1064,85 @@ impl Out {
                 ends: &self.ends,
                 items: &self.u8s,
             },
+        }
+    }
+}
+
+/// One column's runs for an hour, laid out as [`Run`] borrows them; kept between hours.
+#[derive(Default)]
+struct Runs {
+    /// The column's changed entries, by slot.
+    order: Vec<u32>,
+    /// A FILL writes every changed cell, and `except` names the other live slots.
+    fill: bool,
+    except: Vec<u32>,
+    set_positions: Vec<u32>,
+    add_positions: Vec<u32>,
+    patch_positions: Vec<u32>,
+    noop_positions: Vec<u32>,
+    /// SET values, or a FILL's one value.
+    values: Out,
+    /// ADD deltas of an integer column, or the items a list or opaque column's PATCH inserts.
+    deltas: Out,
+    hunks: Vec<u32>,
+    edits: Vec<(u32, u32, u32)>,
+}
+
+impl Runs {
+    fn clear(&mut self) {
+        self.order.clear();
+        self.fill = false;
+        self.except.clear();
+        self.set_positions.clear();
+        self.add_positions.clear();
+        self.patch_positions.clear();
+        self.noop_positions.clear();
+        self.values.clear();
+        self.deltas.clear();
+        self.hunks.clear();
+        self.edits.clear();
+    }
+}
+
+/// The slots live after an hour, the held live ones it does not delete and those it
+/// inserts, that ascending `covered` does not name.
+fn exceptions(
+    live: &Bits,
+    deleted: &[u32],
+    inserted: &[u32],
+    covered: impl Iterator<Item = u32>,
+    into: &mut Vec<u32>,
+) -> io::Result<()> {
+    let mut deleted = deleted.iter().copied().peekable();
+    let mut held = live
+        .ones()
+        .filter(|&slot| {
+            while deleted.next_if(|&gone| gone < slot).is_some() {}
+            deleted.next_if_eq(&slot).is_none()
+        })
+        .peekable();
+    let mut inserted = inserted.iter().copied().peekable();
+    let mut covered = covered.peekable();
+    loop {
+        // An insert takes a slot no held row keeps.
+        let slot = match (held.peek().copied(), inserted.peek().copied()) {
+            (Some(kept), Some(new)) if new < kept => {
+                inserted.next();
+                new
+            }
+            (Some(kept), _) => {
+                held.next();
+                kept
+            }
+            (None, Some(new)) => {
+                inserted.next();
+                new
+            }
+            (None, None) => return Ok(()),
+        };
+        while covered.next_if(|&set| set < slot).is_some() {}
+        if covered.next_if_eq(&slot).is_none() {
+            push(into, slot)?;
         }
     }
 }
@@ -417,6 +1192,52 @@ fn placeholder(kind: Kind) -> Cell<'static> {
     }
 }
 
+/// Marks `column` as holding the hour's cells.
+fn mark_dirty(dirty: &mut [u64], column: usize) {
+    dirty[column / 64] |= 1 << (column % 64);
+}
+
+/// Marks the first `columns` columns.
+fn mark_all_dirty(dirty: &mut [u64], columns: usize) {
+    for (index, word) in dirty.iter_mut().enumerate() {
+        *word = match columns.saturating_sub(index * 64) {
+            left @ 0..64 => (1u64 << left) - 1,
+            _ => u64::MAX,
+        };
+    }
+}
+
+/// The marked columns, ascending.
+fn dirty_columns(dirty: &[u64]) -> impl Iterator<Item = usize> + '_ {
+    dirty.iter().enumerate().flat_map(|(index, &word)| {
+        let mut rest = word;
+        std::iter::from_fn(move || {
+            (rest != 0).then(|| {
+                let bit = rest.trailing_zeros() as usize;
+                rest &= rest - 1;
+                index * 64 + bit
+            })
+        })
+    })
+}
+
+fn dirty_count(dirty: &[u64]) -> u64 {
+    dirty.iter().map(|word| u64::from(word.count_ones())).sum()
+}
+
+/// Marks a held slot visited, refusing a second visit.
+fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
+    let word = &mut seen[slot as usize / 64];
+    let bit = 1u64 << (slot % 64);
+    if *word & bit != 0 {
+        return Err(invalid_static("An hour visits a row twice"));
+    }
+    engine_allocation::reserve(visited, 1)?;
+    *word |= bit;
+    visited.push(slot);
+    Ok(())
+}
+
 /// One table's held state and the buffers its hours reuse.
 pub struct TableWriter {
     kinds: Box<[Kind]>,
@@ -430,6 +1251,9 @@ pub struct TableWriter {
     /// This writer's name and the hours begun, so only its latest preparation commits.
     identity: u64,
     generation: u64,
+    /// The last hour that finished. One begun and not finished may have staged cells in
+    /// columns it did not mark.
+    finished: u64,
     /// A commit failed part way: the held table is not one a walker holds.
     poisoned: bool,
     // Per hour, reused. `seen` holds one bit per visited held slot and is zero between
@@ -446,10 +1270,60 @@ pub struct TableWriter {
     new_keys: Vec<u128>,
     inserts: Vec<Pending>,
     insert_unrecorded: Vec<Vec<u32>>,
-    run_outs: Vec<Out>,
+    runs: Vec<Runs>,
     insert_outs: Vec<Out>,
     scratch: Scratch,
     changes: Changes,
+    /// The Bytes columns, which a batch stages row by row as their strings intern.
+    texts: Box<[usize]>,
+    /// A batch's held slot of each row, or [`NEW`], and its new rows.
+    slots: Vec<u32>,
+    insert_rows: Vec<u32>,
+    /// Each text column's next unrecorded row while a batch is staged.
+    cursors: Vec<usize>,
+    order: Order,
+    parts: Parts,
+    /// A bit per column whose per-hour buffers (staged cells, runs, insert values and
+    /// unrecorded slots) may hold anything; after a finished hour, every other column's are
+    /// empty.
+    dirty: Vec<u64>,
+    sweep: Sweep,
+    work: Work,
+}
+
+/// The rows the last complete batch visited, in its order, with their slots.
+#[derive(Default)]
+struct Order {
+    keys: Vec<u128>,
+    slots: Vec<u32>,
+    /// The table holds exactly these rows at these slots.
+    held: bool,
+}
+
+/// An hour's section in the making, kept between hours.
+#[derive(Default)]
+struct Parts {
+    deleted: Vec<u32>,
+    read: Vec<u32>,
+    /// The hour's new keys by key, with their insert index.
+    sorted_keys: Vec<(u128, u32)>,
+    /// Each insert's slot, by its index.
+    by_index: Vec<u32>,
+    by_slot: Vec<(u32, u128, u32)>,
+    popped: Vec<u32>,
+    inserted: Vec<u32>,
+    keys: Vec<u128>,
+    insert_order: Vec<u32>,
+    changed: Vec<u32>,
+    /// Per column, its changed and inserted slots left unrecorded.
+    unrecorded: Vec<Vec<u32>>,
+    // Empty between hours; only their allocations are kept.
+    runs: Vec<Run<'static>>,
+    inserts: Vec<Values<'static>>,
+    unrecorded_runs: Vec<(usize, &'static [u32])>,
+    /// The last committed hour's column bits and section, written over by the next.
+    columns: Vec<u64>,
+    section: Vec<u8>,
 }
 
 impl TableWriter {
@@ -460,6 +1334,9 @@ impl TableWriter {
     fn with_table(kinds: &[Kind], table: Table) -> io::Result<Self> {
         let columns = kinds.len();
         let many = |count: usize| engine_allocation::collect_vec((0..count).map(|_| Vec::new()));
+        let texts = engine_allocation::collect_vec(
+            (0..columns).filter(|&column| kinds[column] == Kind::Bytes),
+        )?;
         Ok(Self {
             kinds: engine_allocation::boxed_slice(engine_allocation::collect_vec(
                 kinds.iter().copied(),
@@ -471,6 +1348,7 @@ impl TableWriter {
             free: BinaryHeap::new(),
             identity: WRITERS.fetch_add(1, Ordering::Relaxed),
             generation: 0,
+            finished: 0,
             poisoned: false,
             seen: Vec::new(),
             visited: Vec::new(),
@@ -482,10 +1360,22 @@ impl TableWriter {
             new_keys: Vec::new(),
             inserts: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
             insert_unrecorded: many(columns)?,
-            run_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
+            runs: engine_allocation::collect_vec((0..columns).map(|_| Runs::default()))?,
             insert_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
             scratch: Scratch::default(),
             changes: Changes::default(),
+            texts: engine_allocation::boxed_slice(texts)?,
+            slots: Vec::new(),
+            insert_rows: Vec::new(),
+            cursors: Vec::new(),
+            order: Order::default(),
+            parts: Parts {
+                unrecorded: many(columns)?,
+                ..Parts::default()
+            },
+            dirty: engine_allocation::filled(columns.div_ceil(64), 0_u64)?,
+            sweep: Sweep::Touched,
+            work: Work::default(),
         })
     }
 
@@ -493,7 +1383,9 @@ impl TableWriter {
     /// had the writer never stopped.
     pub fn restore(kinds: &[Kind], restored: Restored) -> io::Result<Self> {
         if !restored.table.kinds().eq(kinds.iter().copied()) {
-            return Err(invalid("Restart table's columns differ from its schema"));
+            return Err(invalid_static(
+                "Restart table's columns differ from its schema",
+            ));
         }
         let mut free = Vec::new();
         for slot in 0..restored.table.slots() as u32 {
@@ -533,9 +1425,27 @@ impl TableWriter {
         &self.view
     }
 
+    /// The table's column kinds, in schema order.
+    pub fn kinds(&self) -> &[Kind] {
+        &self.kinds
+    }
+
+    pub fn sweep(&self) -> Sweep {
+        self.sweep
+    }
+
+    /// The columns the next hours clear and finish; the sections are the same either way.
+    pub fn set_sweep(&mut self, sweep: Sweep) {
+        self.sweep = sweep;
+    }
+
+    pub fn work(&self) -> Work {
+        self.work
+    }
+
     fn usable(&self) -> io::Result<()> {
         if self.poisoned {
-            return Err(invalid(
+            return Err(invalid_static(
                 "Column writer failed part way through a commit; restore it from a restart",
             ));
         }
@@ -545,26 +1455,50 @@ impl TableWriter {
     /// Starts an hour's rows. Nothing held changes until its preparation commits.
     pub fn begin<'w>(
         &'w mut self,
-        dictionary: &'w mut Dictionary,
+        dictionary: impl Into<Strings<'w>>,
         coverage: Coverage<'w>,
     ) -> io::Result<Hour<'w>> {
+        let dictionary = dictionary.into();
         self.usable()?;
+        let unfinished = self.finished != self.generation;
         self.generation += 1;
+        self.work.hours += 1;
         for &slot in &self.visited {
             self.seen[slot as usize / 64] &= !(1 << (slot % 64));
         }
         self.visited.clear();
         engine_allocation::resize_default(&mut self.seen, self.table.slots().div_ceil(64))?;
-        for pending in self.updates.iter_mut().chain(&mut self.inserts) {
-            pending.clear();
+        let columns = self.kinds.len();
+        if unfinished || self.sweep == Sweep::Every {
+            mark_all_dirty(&mut self.dirty, columns);
         }
-        for slots in self
-            .unrecord
-            .iter_mut()
-            .chain(&mut self.noops)
-            .chain(&mut self.insert_unrecorded)
-        {
-            slots.clear();
+        let Self {
+            dirty,
+            updates,
+            inserts,
+            unrecord,
+            noops,
+            insert_unrecorded,
+            runs,
+            insert_outs,
+            parts,
+            work,
+            ..
+        } = &mut *self;
+        work.columns += dirty_count(dirty.as_slice());
+        for column in dirty_columns(dirty.as_slice()) {
+            updates[column].clear();
+            inserts[column].clear();
+            unrecord[column].clear();
+            noops[column].clear();
+            insert_unrecorded[column].clear();
+            runs[column].clear();
+            insert_outs[column].clear();
+            parts.unrecorded[column].clear();
+        }
+        dirty.fill(0);
+        if self.sweep == Sweep::Every {
+            mark_all_dirty(&mut self.dirty, columns);
         }
         self.touched.clear();
         self.new_keys.clear();
@@ -574,7 +1508,7 @@ impl TableWriter {
             self.removed.extend_from_slice(removed);
             self.removed.sort_unstable();
             if self.removed.windows(2).any(|pair| pair[0] == pair[1]) {
-                return Err(invalid("A removed row key is named twice"));
+                return Err(invalid_static("A removed row key is named twice"));
             }
         }
         Ok(Hour {
@@ -583,10 +1517,61 @@ impl TableWriter {
             coverage,
             inserted: 0,
             failed: false,
+            ordered: false,
         })
     }
 
+    /// An hour's rows as one batch, each column compared with the held column in one pass:
+    /// the section [`Hour::row`] writes of the same rows in the same order. A complete hour
+    /// visiting the rows the last complete batch did, in its order, finds their slots
+    /// without looking up a key. Nothing held changes until the preparation commits.
+    pub fn prepare<'w>(
+        &'w mut self,
+        dictionary: impl Into<Strings<'w>>,
+        coverage: Coverage<'w>,
+        batch: &Batch,
+    ) -> io::Result<Prepared> {
+        let mut hour = self.begin(dictionary, coverage)?;
+        hour.staged(|hour| hour.stage(batch))?;
+        let ordered = hour.ordered;
+        let mut prepared = hour.finish()?;
+        prepared.order = matches!(coverage, Coverage::Complete) && !ordered;
+        Ok(prepared)
+    }
 
+    /// Holds the order the committed complete batch visited its rows in, and their slots.
+    fn hold_order(&mut self) -> io::Result<()> {
+        let Self {
+            table,
+            slots,
+            parts,
+            order,
+            ..
+        } = self;
+        order.held = false;
+        order.slots.clear();
+        engine_allocation::reserve(&mut order.slots, slots.len())?;
+        // Inserts took their indices in the order the batch visited them.
+        let mut inserted = parts.by_index.iter().copied();
+        for &slot in slots.iter() {
+            order.slots.push(match slot {
+                NEW => inserted
+                    .next()
+                    .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
+                slot => slot,
+            });
+        }
+        order.keys.clear();
+        engine_allocation::reserve(&mut order.keys, order.slots.len())?;
+        for &slot in &order.slots {
+            let key = table
+                .key(slot)
+                .ok_or_else(|| invalid_static("A batch's row is not held"))?;
+            order.keys.push(key);
+        }
+        order.held = true;
+        Ok(())
+    }
 
     /// Applies a section to the held table and keeps the free slots it leaves.
     fn apply(&mut self, bytes: &[u8], truncated: bool) -> io::Result<()> {
@@ -607,14 +1592,20 @@ impl TableWriter {
                 continue;
             }
             if self.free.pop() != Some(Reverse(slot)) {
-                return Err(invalid("Inserted slots are not the lowest free ones"));
+                return Err(invalid_static(
+                    "Inserted slots are not the lowest free ones",
+                ));
             }
+        }
+        let freed = changes.deleted.len();
+        if freed > self.free.capacity() - self.free.len() {
+            engine_allocation::allocation_attempt()?;
+            self.free
+                .try_reserve(freed)
+                .map_err(|_| engine_allocation::oom())?;
         }
         for &slot in &changes.deleted {
             if changes.inserted.binary_search(&slot).is_err() {
-                self.free
-                    .try_reserve(1)
-                    .map_err(|_| engine_allocation::oom())?;
                 self.free.push(Reverse(slot));
             }
         }
@@ -632,25 +1623,30 @@ impl TableWriter {
         self.usable()?;
         let truncated = matches!(evidence.status, Status::Truncated { .. });
         let readable = matches!(evidence.status, Status::Complete | Status::Truncated { .. });
-        let written = match prepared {
+        let (written, order) = match prepared {
             Some(prepared) => {
                 if (prepared.identity, prepared.generation) != (self.identity, self.generation) {
-                    return Err(invalid("Column preparation is not the latest hour's"));
+                    return Err(invalid_static(
+                        "Column preparation is not the latest hour's",
+                    ));
                 }
                 if !readable {
-                    return Err(invalid("A table with no rows this hour carries a section"));
+                    return Err(invalid_static(
+                        "A table with no rows this hour carries a section",
+                    ));
                 }
                 if prepared.partial != truncated {
-                    return Err(invalid(
+                    return Err(invalid_static(
                         "A partial read and a truncated status come together",
                     ));
                 }
-                prepared.section
+                self.parts.columns = prepared.columns;
+                (prepared.section, prepared.order)
             }
-            None => None,
+            None => (None, false),
         };
         if truncated && written.is_none() {
-            return Err(invalid("A partly read table names no rows it read"));
+            return Err(invalid_static("A partly read table names no rows it read"));
         }
         if let Some(bytes) = &written
             && let Err(error) = self.apply(bytes, truncated)
@@ -698,6 +1694,19 @@ impl TableWriter {
             self.view.sort_unstable();
             self.view.dedup();
         }
+        if order {
+            if let Err(error) = self.hold_order() {
+                self.poisoned = true;
+                return Err(error);
+            }
+        } else if written.is_some()
+            && !(self.changes.inserted.is_empty() && self.changes.deleted.is_empty())
+        {
+            self.order.held = false;
+        }
+        if let Some(bytes) = written {
+            self.parts.section = bytes;
+        }
         Ok(())
     }
 }
@@ -705,11 +1714,14 @@ impl TableWriter {
 /// An hour's rows while they are visited.
 pub struct Hour<'w> {
     writer: &'w mut TableWriter,
-    dictionary: &'w mut Dictionary,
+    dictionary: Strings<'w>,
     coverage: Coverage<'w>,
     inserted: u32,
     /// A row, NOOP or touch was refused: the hour is partly staged and never finishes.
     failed: bool,
+    /// A batch visited the held rows in the last complete batch's order: every live row,
+    /// each at the slot that order gives it.
+    ordered: bool,
 }
 
 /// An hour's section and what its manifest says of it.
@@ -718,12 +1730,16 @@ pub struct Prepared {
     identity: u64,
     generation: u64,
     partial: bool,
+    /// A complete batch's order, which its commit holds.
+    order: bool,
     /// None: the hour changed no row of a fully read table, so it writes no section.
     pub section: Option<Vec<u8>>,
     /// One bit per column a run or unrecorded cell names.
     pub columns: Vec<u64>,
-    /// [`manifest::INSERTS`], [`manifest::DELETES`] and [`manifest::TOUCHES`].
+    /// [`manifest::INSERTS`], [`manifest::DELETES`], [`manifest::FILLS`] and
+    /// [`manifest::TOUCHES`].
     pub ops: u8,
+    pub census: Census,
 }
 
 impl Hour<'_> {
@@ -732,21 +1748,13 @@ impl Hour<'_> {
     }
 
     fn mark_seen(&mut self, slot: u32) -> io::Result<()> {
-        let word = &mut self.writer.seen[slot as usize / 64];
-        let bit = 1u64 << (slot % 64);
-        if *word & bit != 0 {
-            return Err(invalid(format!("An hour visits row slot {slot} twice")));
-        }
-        engine_allocation::reserve(&mut self.writer.visited, 1)?;
-        *word |= bit;
-        self.writer.visited.push(slot);
-        Ok(())
+        see(&mut self.writer.seen, &mut self.writer.visited, slot)
     }
 
     /// Runs one staging step; a refusal fails the whole hour.
     fn staged(&mut self, step: impl FnOnce(&mut Self) -> io::Result<()>) -> io::Result<()> {
         if self.failed {
-            return Err(invalid("An earlier row of this hour was refused"));
+            return Err(invalid_static("An earlier row of this hour was refused"));
         }
         let result = step(self);
         self.failed = result.is_err();
@@ -761,20 +1769,19 @@ impl Hour<'_> {
                 Cell::Bytes(self.dictionary.intern(bytes)?)
             }
             Input::Text(_) => {
-                return Err(invalid(format!("Column {column} is not a Bytes column")));
+                return Err(invalid_static("Text is given for a column not of Bytes"));
             }
             Input::Value(cell) => cell,
         };
         if cell_kind(&cell) != kind {
-            return Err(invalid(format!(
-                "Column {column} holds {kind:?}, not {:?}",
-                cell_kind(&cell)
-            )));
+            return Err(invalid_static("A cell's kind is not its column's"));
         }
         if let Cell::Bytes(id) = cell
-            && id as usize >= self.dictionary.len()
+            && id as usize >= self.dictionary.dictionary().len()
         {
-            return Err(invalid(format!("Dictionary id {id} is not in the run's dictionary")));
+            return Err(invalid_static(
+                "A text cell's id is not in the run's dictionary",
+            ));
         }
         Ok(Some(cell))
     }
@@ -787,10 +1794,12 @@ impl Hour<'_> {
 
     fn stage_row(&mut self, key: u128, cells: &[Input<'_>]) -> io::Result<()> {
         if cells.len() != self.writer.kinds.len() {
-            return Err(invalid("A row carries other than one cell per column"));
+            return Err(invalid_static(
+                "A row carries other than one cell per column",
+            ));
         }
         if self.writer.removed.binary_search(&key).is_ok() {
-            return Err(invalid(format!("Row key {key:#x} is both changed and removed")));
+            return Err(invalid_static("A row key is both changed and removed"));
         }
         match self.held_slot(key) {
             Some(slot) => {
@@ -800,6 +1809,7 @@ impl Hour<'_> {
                     let recorded = self.writer.table.recorded(column, slot);
                     match cell {
                         None if recorded => {
+                            mark_dirty(&mut self.writer.dirty, column);
                             engine_allocation::reserve(&mut self.writer.unrecord[column], 1)?;
                             self.writer.unrecord[column].push(slot);
                         }
@@ -811,7 +1821,9 @@ impl Hour<'_> {
                                 .column(column)
                                 .and_then(|values| values.cell(slot));
                             if !recorded || held != Some(cell) {
-                                self.writer.updates[column].push(slot, cell)?;
+                                let held = held.filter(|_| recorded);
+                                mark_dirty(&mut self.writer.dirty, column);
+                                self.writer.updates[column].change(slot, cell, held)?;
                             }
                         }
                     }
@@ -821,6 +1833,7 @@ impl Hour<'_> {
                 let index = self.inserted;
                 engine_allocation::reserve(&mut self.writer.new_keys, 1)?;
                 self.writer.new_keys.push(key);
+                mark_all_dirty(&mut self.writer.dirty, cells.len());
                 for (column, &input) in cells.iter().enumerate() {
                     let cell = match self.resolve(column, input)? {
                         Some(cell) => cell,
@@ -837,7 +1850,183 @@ impl Hour<'_> {
                 }
                 self.inserted = index
                     .checked_add(1)
-                    .ok_or_else(|| invalid("An hour inserts more than 2^32 rows"))?;
+                    .ok_or_else(|| invalid_static("An hour inserts more than 2^32 rows"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A batch's rows, a column at a time: what [`Hour::row`] stages of each row in turn.
+    fn stage(&mut self, batch: &Batch) -> io::Result<()> {
+        let complete = matches!(self.coverage, Coverage::Complete);
+        let dictionary = &mut self.dictionary;
+        let TableWriter {
+            kinds,
+            table,
+            seen,
+            visited,
+            updates,
+            unrecord,
+            removed,
+            new_keys,
+            inserts,
+            insert_unrecorded,
+            texts,
+            slots,
+            insert_rows,
+            cursors,
+            order,
+            dirty,
+            ..
+        } = &mut *self.writer;
+        let rows = batch.keys.len();
+        if batch.kinds.as_slice() != &**kinds {
+            return Err(invalid_static("A batch's columns differ from its table's"));
+        }
+        if u32::try_from(rows).is_err() {
+            return Err(invalid_static("A batch holds more than 2^32 rows"));
+        }
+        let columns = &batch.columns[..kinds.len()];
+        // A batch of no rows holds no cells.
+        if rows > 0 && columns.iter().any(|cells| cells.words.len() != rows) {
+            return Err(invalid_static(
+                "A batch row carries other than one cell per column",
+            ));
+        }
+        slots.clear();
+        insert_rows.clear();
+        if complete && order.held && order.keys == batch.keys {
+            extend(slots, &order.slots)?;
+            self.ordered = true;
+        } else {
+            engine_allocation::reserve(slots, rows)?;
+            for (row, &key) in (0u32..).zip(&batch.keys) {
+                if !removed.is_empty() && removed.binary_search(&key).is_ok() {
+                    return Err(invalid_static("A row key is both changed and removed"));
+                }
+                match table.slot(key) {
+                    Some(NEW) => return Err(invalid_static("Row slots exceed 32 bits")),
+                    Some(slot) => {
+                        see(seen, visited, slot)?;
+                        slots.push(slot);
+                    }
+                    None => {
+                        push(new_keys, key)?;
+                        push(insert_rows, row)?;
+                        slots.push(NEW);
+                    }
+                }
+            }
+            self.inserted = insert_rows.len() as u32;
+        }
+        if rows == 0 {
+            return Ok(());
+        }
+        // Every column takes a cell of each inserted row.
+        if !insert_rows.is_empty() {
+            mark_all_dirty(dirty, kinds.len());
+        }
+        let slots = slots.as_slice();
+        for (column, (&kind, cells)) in kinds.iter().zip(columns).enumerate() {
+            if kind == Kind::Bytes {
+                continue;
+            }
+            let held = table
+                .column(column)
+                .ok_or_else(|| invalid_static("A batch names a column past the table"))?;
+            // Fewer rows than bit words test their own bits rather than scan them all.
+            let marked = table.unrecorded_bits(column).filter(|bits| {
+                let words = bits.words();
+                words.len() > rows || words.iter().any(|&word| word != 0)
+            });
+            let mut staged = Staged {
+                slots,
+                cells,
+                marked,
+                pending: &mut updates[column],
+                unrecord: &mut unrecord[column],
+                dirty: false,
+            };
+            let compared = match held {
+                Column::U8(values) => staged.scalars(values),
+                Column::I8(values) => staged.scalars(values),
+                Column::U16(values) => staged.scalars(values),
+                Column::I16(values) => staged.scalars(values),
+                Column::U32(values) => staged.scalars(values),
+                Column::I32(values) => staged.scalars(values),
+                Column::U64(values) => staged.scalars(values),
+                Column::I64(values) => staged.scalars(values),
+                Column::Bool(values) => staged.scalars(values),
+                Column::OptionalI32(values, presence) => staged.optionals(values, presence),
+                Column::OptionalU32(values, presence) => staged.optionals(values, presence),
+                Column::OptionalI64(values, presence) => staged.optionals(values, presence),
+                Column::OptionalU64(values, presence) => staged.optionals(values, presence),
+                Column::U32List(values) => staged.lists(values, &cells.u32s),
+                Column::U64List(values) => staged.lists(values, &cells.u64s),
+                Column::Opaque(values) => staged.lists(values, &cells.bytes),
+                Column::Bytes(_) => Ok(()),
+            };
+            if staged.dirty {
+                mark_dirty(dirty, column);
+            }
+            compared?;
+            for (index, &row) in (0u32..).zip(insert_rows.iter()) {
+                let cell = match cells.cell(kind, row) {
+                    Some(cell) => cell,
+                    None => {
+                        push(&mut insert_unrecorded[column], index)?;
+                        placeholder(kind)
+                    }
+                };
+                inserts[column].push(index, cell)?;
+            }
+        }
+        if texts.is_empty() {
+            return Ok(());
+        }
+        // Strings intern in row order, then column order, as rows visited one by one intern
+        // them; a held cell whose bytes are its string's needs none.
+        cursors.clear();
+        engine_allocation::resize_default(cursors, texts.len())?;
+        let mut index = 0u32;
+        for (row, &slot) in (0u32..).zip(slots) {
+            for (&column, next) in texts.iter().zip(cursors.iter_mut()) {
+                let cells = &columns[column];
+                let recorded = cells.unrecorded.get(*next) != Some(&row);
+                if !recorded {
+                    *next += 1;
+                }
+                let text = &cells.bytes[cells.span(row as usize)];
+                if slot == NEW {
+                    let cell = if recorded {
+                        Cell::Bytes(dictionary.intern(text)?)
+                    } else {
+                        push(&mut insert_unrecorded[column], index)?;
+                        placeholder(Kind::Bytes)
+                    };
+                    inserts[column].push(index, cell)?;
+                    continue;
+                }
+                let held = match table.column(column) {
+                    Some(Column::Bytes(ids)) => ids.get(slot as usize).copied(),
+                    _ => None,
+                }
+                .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let was = table.recorded(column, slot);
+                if !recorded {
+                    if was {
+                        mark_dirty(dirty, column);
+                        push(&mut unrecord[column], slot)?;
+                    }
+                } else if !was || dictionary.dictionary().get(held) != Some(text) {
+                    let id = dictionary.intern(text)?;
+                    let held = was.then_some(Cell::Bytes(held));
+                    mark_dirty(dirty, column);
+                    updates[column].change(slot, Cell::Bytes(id), held)?;
+                }
+            }
+            if slot == NEW {
+                index += 1;
             }
         }
         Ok(())
@@ -852,10 +2041,11 @@ impl Hour<'_> {
     fn stage_noop(&mut self, key: u128, column: usize) -> io::Result<()> {
         let slot = self
             .held_slot(key)
-            .ok_or_else(|| invalid(format!("NOOP names row key {key:#x}, which is not held")))?;
+            .ok_or_else(|| invalid_static("NOOP names a row key that is not held"))?;
         if column >= self.writer.kinds.len() {
-            return Err(invalid("NOOP names a column past the schema"));
+            return Err(invalid_static("NOOP names a column past the schema"));
         }
+        mark_dirty(&mut self.writer.dirty, column);
         engine_allocation::reserve(&mut self.writer.noops[column], 1)?;
         self.writer.noops[column].push(slot);
         Ok(())
@@ -869,7 +2059,7 @@ impl Hour<'_> {
     fn stage_touch(&mut self, key: u128) -> io::Result<()> {
         let slot = self
             .held_slot(key)
-            .ok_or_else(|| invalid(format!("Touch names row key {key:#x}, which is not held")))?;
+            .ok_or_else(|| invalid_static("Touch names a row key that is not held"))?;
         engine_allocation::reserve(&mut self.writer.touched, 1)?;
         self.writer.touched.push(slot);
         Ok(())
@@ -882,73 +2072,101 @@ impl Hour<'_> {
             coverage,
             inserted,
             failed,
+            ordered,
             ..
         } = self;
         if failed {
-            return Err(invalid("An hour with a refused row writes no section"));
+            return Err(invalid_static(
+                "An hour with a refused row writes no section",
+            ));
         }
         let columns = writer.kinds.len();
-        let seen = |slot: u32| writer.seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
+        writer.work.columns += dirty_count(&writer.dirty);
+        let seen =
+            |slot: u32| ordered || writer.seen[slot as usize / 64] >> (slot % 64) & 1 != 0;
         let partial = matches!(coverage, Coverage::Partial);
+        let Parts {
+            deleted,
+            read,
+            sorted_keys,
+            by_index,
+            by_slot,
+            popped,
+            inserted: inserted_slots,
+            keys,
+            insert_order,
+            changed,
+            unrecorded: unrecorded_slots,
+            runs: run_list,
+            inserts: insert_list,
+            unrecorded_runs,
+            columns: spare_columns,
+            section: spare_section,
+        } = &mut writer.parts;
         // Deletes, ascending.
-        let mut deleted: Vec<u32> = Vec::new();
+        deleted.clear();
         match coverage {
-            Coverage::Complete => {
+            // An ordered batch visited every live row.
+            Coverage::Complete if !ordered => {
                 for slot in writer.table.live().ones() {
                     if !seen(slot) {
-                        engine_allocation::reserve(&mut deleted, 1)?;
-                        deleted.push(slot);
+                        push(deleted, slot)?;
                     }
                 }
             }
-            Coverage::Partial => {}
+            Coverage::Complete | Coverage::Partial => {}
             Coverage::Changes { .. } => {
-                engine_allocation::reserve(&mut deleted, writer.removed.len())?;
+                engine_allocation::reserve(deleted, writer.removed.len())?;
                 for &key in &writer.removed {
-                    let slot = writer.table.slot(key).ok_or_else(|| {
-                        invalid(format!("Removed row key {key:#x} is not held"))
-                    })?;
+                    let slot = writer
+                        .table
+                        .slot(key)
+                        .ok_or_else(|| invalid_static("A removed row key is not held"))?;
                     deleted.push(slot);
                 }
                 deleted.sort_unstable();
             }
         }
         // The read held slots of a partial read, ascending.
-        let read = if partial {
-            let mut read = engine_allocation::collect_vec(writer.visited.iter().copied())?;
+        read.clear();
+        if partial {
+            extend(read, &writer.visited)?;
             read.sort_unstable();
-            Some(read)
-        } else {
-            None
-        };
+        }
         // New rows by key, at the lowest free slots (deletes free theirs first), then at
         // new slots past the table's extent.
-        let mut new_keys = engine_allocation::collect_vec(
+        sorted_keys.clear();
+        engine_allocation::reserve(sorted_keys, writer.new_keys.len())?;
+        sorted_keys.extend(
             writer
                 .new_keys
                 .iter()
                 .enumerate()
                 .map(|(index, &key)| (key, index as u32)),
-        )?;
-        new_keys.sort_unstable();
-        if let Some(pair) = new_keys.windows(2).find(|pair| pair[0].0 == pair[1].0) {
-            return Err(invalid(format!("An hour inserts row key {:#x} twice", pair[0].0)));
+        );
+        sorted_keys.sort_unstable();
+        if sorted_keys.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(invalid_static("An hour inserts a row key twice"));
         }
         let extent = u32::try_from(writer.table.slots())
-            .map_err(|_| invalid("Row slots exceed 32 bits"))?;
-        let fresh = new_keys.len().saturating_sub(writer.free.len() + deleted.len());
+            .map_err(|_| invalid_static("Row slots exceed 32 bits"))?;
+        let fresh = sorted_keys.len().saturating_sub(writer.free.len() + deleted.len());
         if extent.checked_add(u32::try_from(fresh).unwrap_or(u32::MAX)).is_none() {
-            return Err(invalid("Row slots exceed 32 bits"));
+            return Err(invalid_static("Row slots exceed 32 bits"));
         }
-        let mut slots_by_index = engine_allocation::filled(inserted as usize, 0u32)?;
-        let mut keys_by_slot: Vec<(u32, u128, u32)> = engine_allocation::vec(new_keys.len())?;
-        let mut popped: Vec<u32> = engine_allocation::vec(new_keys.len())?;
+        by_index.clear();
+        engine_allocation::reserve(by_index, inserted as usize)?;
+        by_index.resize(inserted as usize, 0);
+        by_slot.clear();
+        engine_allocation::reserve(by_slot, sorted_keys.len())?;
+        popped.clear();
+        engine_allocation::reserve(popped, sorted_keys.len())?;
         {
             // The lowest free slots come off the heap here and go back below, so the held
             // heap is unchanged until the hour commits; nothing in between can fail.
             let mut reused = deleted.iter().copied().peekable();
             let mut next = extent;
-            for &(key, index) in &new_keys {
+            for &(key, index) in sorted_keys.iter() {
                 let freed = writer.free.peek().map(|lowest| lowest.0);
                 let slot = match (freed, reused.peek().copied()) {
                     (Some(a), Some(b)) if a > b => {
@@ -969,112 +2187,211 @@ impl Hour<'_> {
                         next - 1
                     }
                 };
-                slots_by_index[index as usize] = slot;
-                keys_by_slot.push((slot, key, index));
+                by_index[index as usize] = slot;
+                by_slot.push((slot, key, index));
             }
-            for &slot in &popped {
+            for &slot in popped.iter() {
                 writer.free.push(Reverse(slot));
             }
         }
-        keys_by_slot.sort_unstable_by_key(|entry| entry.0);
-        let inserted_slots = engine_allocation::collect_vec(keys_by_slot.iter().map(|e| e.0))?;
-        let keys = engine_allocation::collect_vec(keys_by_slot.iter().map(|e| e.1))?;
-        let insert_order = engine_allocation::collect_vec(keys_by_slot.iter().map(|e| e.2))?;
-        // Changed held slots: those with a SET, a NOOP or a cell no longer recorded.
-        let mut changed: Vec<u32> = Vec::new();
-        for column in 0..columns {
+        by_slot.sort_unstable_by_key(|entry| entry.0);
+        inserted_slots.clear();
+        engine_allocation::reserve(inserted_slots, by_slot.len())?;
+        inserted_slots.extend(by_slot.iter().map(|entry| entry.0));
+        keys.clear();
+        engine_allocation::reserve(keys, by_slot.len())?;
+        keys.extend(by_slot.iter().map(|entry| entry.1));
+        insert_order.clear();
+        engine_allocation::reserve(insert_order, by_slot.len())?;
+        insert_order.extend(by_slot.iter().map(|entry| entry.2));
+        // Each column's changed cells by slot, and its NOOPs of cells it did not change. A
+        // column whose changed cells all take one value, covering at least half the rows live
+        // after the hour, FILLs them. A column the hour did not mark holds no cell.
+        let mut live_after = None;
+        for column in dirty_columns(&writer.dirty) {
+            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
+            let noops = &mut writer.noops[column];
+            runs.clear();
+            if pending.len() == 0 && noops.is_empty() {
+                continue;
+            }
+            engine_allocation::reserve(&mut runs.order, pending.len())?;
+            runs.order.extend(0..pending.len() as u32);
+            runs.order
+                .sort_unstable_by_key(|&entry| pending.at[entry as usize]);
+            let slot_of = |entry: &u32| pending.at[*entry as usize];
+            noops.sort_unstable();
+            noops.dedup();
+            noops.retain(|slot| runs.order.binary_search_by_key(slot, slot_of).is_err());
+            if pending.uniform && pending.len() >= FILL_MINIMUM {
+                let live = *live_after.get_or_insert_with(|| {
+                    writer.table.live().count() - deleted.len() + inserted_slots.len()
+                });
+                if pending.len() * 2 >= live {
+                    runs.fill = true;
+                    engine_allocation::reserve(&mut runs.except, live - pending.len())?;
+                    exceptions(
+                        writer.table.live(),
+                        deleted.as_slice(),
+                        inserted_slots.as_slice(),
+                        runs.order.iter().map(slot_of),
+                        &mut runs.except,
+                    )?;
+                }
+            }
+        }
+        // Changed held slots: those with a SET, ADD, PATCH or NOOP, or a cell no longer
+        // recorded.
+        changed.clear();
+        for column in dirty_columns(&writer.dirty) {
+            let set = if writer.runs[column].fill {
+                &[][..]
+            } else {
+                &writer.updates[column].at[..]
+            };
             engine_allocation::reserve(
-                &mut changed,
-                writer.updates[column].len()
-                    + writer.unrecord[column].len()
-                    + writer.noops[column].len(),
+                changed,
+                set.len() + writer.unrecord[column].len() + writer.noops[column].len(),
             )?;
-            changed.extend_from_slice(&writer.updates[column].at);
+            changed.extend_from_slice(set);
             changed.extend_from_slice(&writer.unrecord[column]);
             changed.extend_from_slice(&writer.noops[column]);
         }
         changed.sort_unstable();
         changed.dedup();
-        if let Some(&slot) = changed.iter().find(|&&slot| !seen(slot)) {
-            return Err(invalid(format!(
-                "Row slot {slot} has a NOOP but was not visited this hour"
-            )));
+        if changed.iter().any(|&slot| !seen(slot)) {
+            return Err(invalid_static(
+                "A row has a NOOP but was not visited this hour",
+            ));
         }
-        if let Some(&slot) = writer.touched.iter().find(|&&slot| !seen(slot)) {
-            return Err(invalid(format!(
-                "Row slot {slot} is touched but was not visited this hour"
-            )));
+        if writer.touched.iter().any(|&slot| !seen(slot)) {
+            return Err(invalid_static(
+                "A row is touched but was not visited this hour",
+            ));
         }
         if partial && !deleted.is_empty() {
-            return Err(invalid("A partial read deletes no row"));
+            return Err(invalid_static("A partial read deletes no row"));
         }
         writer.touched.sort_unstable();
         writer.touched.dedup();
+        let changed = changed.as_slice();
         let position = |slot: u32| changed.binary_search(&slot).expect("changed slot") as u32;
-        // Runs: per column, its SETs ordered by slot, then its NOOPs for cells it did not set.
-        let empty = |count: usize| -> io::Result<Vec<Vec<u32>>> {
-            engine_allocation::collect_vec((0..count).map(|_| Vec::new()))
-        };
-        let mut set_order = empty(columns)?;
-        let mut set_positions = empty(columns)?;
-        let mut noop_positions = empty(columns)?;
-        for column in 0..columns {
-            let pending = &writer.updates[column];
-            let order = &mut set_order[column];
-            *order = engine_allocation::collect_vec(0..pending.len() as u32)?;
-            order.sort_unstable_by_key(|&at| pending.at[at as usize]);
-            let set_slots =
-                engine_allocation::collect_vec(order.iter().map(|&at| pending.at[at as usize]))?;
-            set_positions[column] =
-                engine_allocation::collect_vec(set_slots.iter().map(|&slot| position(slot)))?;
-            let noops = &mut writer.noops[column];
-            noops.sort_unstable();
-            noops.dedup();
-            noops.retain(|slot| set_slots.binary_search(slot).is_err());
-            noop_positions[column] =
-                engine_allocation::collect_vec(noops.iter().map(|&slot| position(slot)))?;
-        }
-        for column in 0..columns {
+        // Each changed cell in its op's run, by slot; a column of one value SETs it.
+        let mut census = Census::default();
+        for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
-            writer.run_outs[column].fill(kind, &writer.updates[column], &set_order[column])?;
-            writer.insert_outs[column].fill(kind, &writer.inserts[column], &insert_order)?;
+            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
+            if runs.fill {
+                runs.values.push(kind, pending, &pending.words, 0)?;
+                census.fills += 1;
+                census.fill_slots += pending.len() as u64;
+                census.fill_exceptions += runs.except.len() as u64;
+            } else {
+                let uniform = pending.uniform && pending.len() > 1;
+                for &entry in &runs.order {
+                    let (entry, at) = (entry as usize, position(pending.at[entry as usize]));
+                    let op = if uniform { Op::Set } else { pending.ops[entry] };
+                    match op {
+                        Op::Add => {
+                            push(&mut runs.add_positions, at)?;
+                            let base = section::base(kind)?;
+                            runs.deltas.push(base, pending, &pending.deltas, entry)?;
+                        }
+                        Op::Patch => {
+                            push(&mut runs.patch_positions, at)?;
+                            let (start, count) = pending.hunks[entry];
+                            let edits = &pending.edits[start as usize..(start + count) as usize];
+                            push(&mut runs.hunks, count)?;
+                            extend(&mut runs.edits, edits)?;
+                            runs.deltas.inserted(kind, pending, entry, edits)?;
+                        }
+                        _ => {
+                            push(&mut runs.set_positions, at)?;
+                            runs.values.push(kind, pending, &pending.words, entry)?;
+                        }
+                    }
+                }
+                census.set += runs.set_positions.len() as u64;
+                census.add += runs.add_positions.len() as u64;
+                census.patch += runs.patch_positions.len() as u64;
+            }
+            engine_allocation::reserve(&mut runs.noop_positions, writer.noops[column].len())?;
+            runs.noop_positions
+                .extend(writer.noops[column].iter().map(|&slot| position(slot)));
+            let order = insert_order.as_slice();
+            writer.insert_outs[column].fill(kind, &writer.inserts[column], order)?;
         }
-        let mut runs: Vec<Run<'_>> = Vec::new();
-        for column in 0..columns {
-            if !set_positions[column].is_empty() {
-                engine_allocation::reserve(&mut runs, 1)?;
+        let mut runs: Vec<Run<'_>> = recycle(std::mem::take(run_list));
+        for column in dirty_columns(&writer.dirty) {
+            let kind = writer.kinds[column];
+            let column_runs = &writer.runs[column];
+            engine_allocation::reserve(&mut runs, 5)?;
+            if column_runs.fill {
+                runs.push(Run {
+                    column,
+                    op: Op::Fill,
+                    positions: &[],
+                    values: Some(column_runs.values.values(kind)),
+                    except: &column_runs.except,
+                    patches: None,
+                });
+            }
+            if !column_runs.set_positions.is_empty() {
                 runs.push(Run {
                     column,
                     op: Op::Set,
-                    positions: &set_positions[column],
-                    values: Some(writer.run_outs[column].values(writer.kinds[column])),
+                    positions: &column_runs.set_positions,
+                    values: Some(column_runs.values.values(kind)),
                     except: &[],
                     patches: None,
                 });
             }
-            if !noop_positions[column].is_empty() {
-                engine_allocation::reserve(&mut runs, 1)?;
+            if !column_runs.patch_positions.is_empty() {
+                runs.push(Run {
+                    column,
+                    op: Op::Patch,
+                    positions: &column_runs.patch_positions,
+                    values: None,
+                    except: &[],
+                    patches: Some(Patches {
+                        hunks: &column_runs.hunks,
+                        edits: &column_runs.edits,
+                        items: column_runs.deltas.patch_items(kind),
+                    }),
+                });
+            }
+            if !column_runs.add_positions.is_empty() {
+                runs.push(Run {
+                    column,
+                    op: Op::Add,
+                    positions: &column_runs.add_positions,
+                    values: Some(column_runs.deltas.values(section::base(kind)?)),
+                    except: &[],
+                    patches: None,
+                });
+            }
+            if !column_runs.noop_positions.is_empty() {
                 runs.push(Run {
                     column,
                     op: Op::Noop,
-                    positions: &noop_positions[column],
+                    positions: &column_runs.noop_positions,
                     values: None,
                     except: &[],
                     patches: None,
                 });
             }
         }
-        let inserts = if inserted_slots.is_empty() {
-            Vec::new()
-        } else {
-            engine_allocation::collect_vec(
+        let mut inserts: Vec<Values<'_>> = recycle(std::mem::take(insert_list));
+        if !inserted_slots.is_empty() {
+            engine_allocation::reserve(&mut inserts, columns)?;
+            inserts.extend(
                 (0..columns).map(|column| writer.insert_outs[column].values(writer.kinds[column])),
-            )?
-        };
+            );
+        }
         // Unrecorded cells per column: held slots no longer recorded and inserted ones.
-        let mut unrecorded_slots = empty(columns)?;
-        for column in 0..columns {
+        for column in dirty_columns(&writer.dirty) {
             let slots = &mut unrecorded_slots[column];
+            slots.clear();
             engine_allocation::reserve(
                 slots,
                 writer.unrecord[column].len() + writer.insert_unrecorded[column].len(),
@@ -1083,18 +2400,25 @@ impl Hour<'_> {
             slots.extend(
                 writer.insert_unrecorded[column]
                     .iter()
-                    .map(|&index| slots_by_index[index as usize]),
+                    .map(|&index| by_index[index as usize]),
             );
             slots.sort_unstable();
         }
-        let unrecorded: Vec<(usize, &[u32])> = engine_allocation::collect_vec(
-            unrecorded_slots
-                .iter()
-                .enumerate()
-                .filter(|(_, slots)| !slots.is_empty())
-                .map(|(column, slots)| (column, slots.as_slice())),
-        )?;
-        let mut column_bits = engine_allocation::filled(columns.div_ceil(64), 0u64)?;
+        let unrecorded_slots = &*unrecorded_slots;
+        let mut unrecorded: Vec<(usize, &[u32])> = recycle(std::mem::take(unrecorded_runs));
+        let marked = dirty_columns(&writer.dirty)
+            .filter(|&column| !unrecorded_slots[column].is_empty())
+            .count();
+        engine_allocation::reserve(&mut unrecorded, marked)?;
+        for column in dirty_columns(&writer.dirty) {
+            if !unrecorded_slots[column].is_empty() {
+                unrecorded.push((column, unrecorded_slots[column].as_slice()));
+            }
+        }
+        let mut column_bits = std::mem::take(spare_columns);
+        column_bits.clear();
+        engine_allocation::reserve(&mut column_bits, columns.div_ceil(64))?;
+        column_bits.resize(columns.div_ceil(64), 0);
         for run in &runs {
             column_bits[run.column / 64] |= 1 << (run.column % 64);
         }
@@ -1108,38 +2432,49 @@ impl Hour<'_> {
         if !deleted.is_empty() {
             ops |= manifest::DELETES;
         }
+        if census.fills > 0 {
+            ops |= manifest::FILLS;
+        }
         if !writer.touched.is_empty() {
             ops |= manifest::TOUCHES;
         }
-        let quiet = changed.is_empty()
+        let quiet = runs.is_empty()
+            && unrecorded.is_empty()
             && deleted.is_empty()
             && inserted_slots.is_empty()
             && writer.touched.is_empty();
         let bytes = if quiet && !partial {
             None
         } else {
-            Some(section::write(
+            Some(section::write_with(
                 &writer.kinds,
                 &TableHour {
-                    read: read.as_deref(),
-                    changed: &changed,
-                    deleted: &deleted,
-                    inserted: &inserted_slots,
-                    keys: &keys,
+                    read: partial.then_some(read.as_slice()),
+                    changed,
+                    deleted: deleted.as_slice(),
+                    inserted: inserted_slots.as_slice(),
+                    keys: keys.as_slice(),
                     inserts: &inserts,
                     runs: &runs,
                     unrecorded: &unrecorded,
                     touched: &writer.touched,
                 },
+                std::mem::take(spare_section),
             )?)
         };
+        *run_list = recycle(runs);
+        *insert_list = recycle(inserts);
+        *unrecorded_runs = recycle(unrecorded);
+        writer.finished = writer.generation;
         Ok(Prepared {
             identity: writer.identity,
             generation: writer.generation,
             partial,
+            order: false,
             section: bytes,
             columns: column_bits,
             ops,
+            census,
         })
     }
 }

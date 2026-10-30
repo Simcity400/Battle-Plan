@@ -5,9 +5,14 @@
 use replay_columnar::{
     manifest::Status,
     state::{Cell, Kind as Column},
-    writer::{Coverage, Dictionary, Evidence, Hour, Input, Prepared, Sample, TableWriter},
+    writer::{
+        Batch, Coverage, Evidence, Hour, Input, Prepared, Sample, Strings, Sweep, TableWriter,
+    },
 };
-use replay_data::rows::{Field, Kind, List, Opaque, RowCodec};
+use replay_data::{
+    codec::invalid_static,
+    rows::{Field, Kind, List, Opaque, RowCodec},
+};
 use std::io;
 
 #[cfg(test)]
@@ -59,9 +64,21 @@ fn at<T>(values: &[T], (start, len): (usize, usize)) -> &[T] {
     &values[start..start + len]
 }
 
-/// Buffers that turn one row at a time into cells, kept between rows.
+/// How [`table_hour`] hands an hour's rows to the writer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Staging {
+    /// All of them as one [`Batch`], compared with the held table a column at a time.
+    #[default]
+    Columns,
+    /// One row at a time ([`Hour::row`]), which writes the same sections.
+    Rows,
+}
+
+/// Buffers that turn rows into cells, kept between rows and hours.
 #[derive(Default)]
 pub struct RowCells {
+    staging: Staging,
+    batch: Batch,
     entries: Vec<Entry>,
     bytes: Vec<u8>,
     u32s: Vec<u32>,
@@ -69,9 +86,27 @@ pub struct RowCells {
 }
 
 impl RowCells {
+    pub fn new(staging: Staging) -> Self {
+        Self {
+            staging,
+            ..Self::default()
+        }
+    }
+
+    pub fn staging(&self) -> Staging {
+        self.staging
+    }
+
+    /// Adds `row` to the batch, each wire field its cell.
+    fn batch_row<R: RowCodec>(&mut self, row: &R) -> io::Result<()> {
+        let batch = &mut self.batch;
+        batch.key(row.key())?;
+        row.visit_wire(&mut |column, field| put(batch, column, field))
+    }
+
     fn take(&mut self, field: Field<'_>) -> io::Result<Entry> {
         Ok(match field {
-            Field::Empty => return Err(invalid("A row field is missing")),
+            Field::Empty => return Err(invalid_static("A row field is missing")),
             Field::NotRecorded => Entry::Unrecorded,
             Field::U8(value) => Entry::Cell(Cell::U8(value)),
             Field::I8(value) => Entry::Cell(Cell::I8(value)),
@@ -151,7 +186,9 @@ impl RowCells {
         self.u64s.clear();
         row.visit_wire(&mut |index, field| {
             if index != self.entries.len() || index >= MAX_FIELDS {
-                return Err(invalid("Row fields are not visited once each in schema order"));
+                return Err(invalid_static(
+                    "Row fields are not visited once each in schema order",
+                ));
             }
             let entry = self.take(field)?;
             engine_allocation::reserve(&mut self.entries, 1)?;
@@ -179,8 +216,51 @@ impl RowCells {
     }
 }
 
-fn invalid(what: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, what)
+/// One wire field as the current batch row's cell in `column`.
+fn put(batch: &mut Batch, column: usize, field: Field<'_>) -> io::Result<()> {
+    match field {
+        Field::Empty => Err(invalid_static("A row field is missing")),
+        Field::NotRecorded => batch.unrecorded(column),
+        Field::U8(value) => batch.value(column, Cell::U8(value)),
+        Field::I8(value) => batch.value(column, Cell::I8(value)),
+        Field::U16(value) => batch.value(column, Cell::U16(value)),
+        Field::I16(value) => batch.value(column, Cell::I16(value)),
+        Field::U32(value) => batch.value(column, Cell::U32(value)),
+        Field::I32(value) => batch.value(column, Cell::I32(value)),
+        Field::U64(value) => batch.value(column, Cell::U64(value)),
+        Field::I64(value) => batch.value(column, Cell::I64(value)),
+        Field::Bool(value) => batch.value(column, Cell::Bool(value)),
+        Field::OptionalI32(value) => batch.value(column, Cell::OptionalI32(value)),
+        Field::OptionalU32(value) => batch.value(column, Cell::OptionalU32(value)),
+        Field::OptionalI64(value) => batch.value(column, Cell::OptionalI64(value)),
+        Field::OptionalU64(value) => batch.value(column, Cell::OptionalU64(value)),
+        Field::Bytes(bytes) => batch.text(column, bytes),
+        // The cell is the payload a length prefix carries on the wire.
+        Field::Opaque(Opaque::Native(value)) => {
+            batch.opaque_with(column, |bytes| value.encode_value(bytes))
+        }
+        Field::Opaque(Opaque::Encoded(bytes, _)) => batch.value(column, Cell::Opaque(bytes)),
+        Field::U32List(List::Native(values)) => batch.value(column, Cell::U32List(values)),
+        Field::U32List(List::Encoded(bytes)) => batch.u32s_with(column, |items| {
+            engine_allocation::reserve(items, bytes.len() / 4)?;
+            items.extend(
+                bytes
+                    .chunks_exact(4)
+                    .map(|item| u32::from_le_bytes(item.try_into().expect("4 bytes"))),
+            );
+            Ok(())
+        }),
+        Field::U64List(List::Native(values)) => batch.value(column, Cell::U64List(values)),
+        Field::U64List(List::Encoded(bytes)) => batch.u64s_with(column, |items| {
+            engine_allocation::reserve(items, bytes.len() / 8)?;
+            items.extend(
+                bytes
+                    .chunks_exact(8)
+                    .map(|item| u64::from_le_bytes(item.try_into().expect("8 bytes"))),
+            );
+            Ok(())
+        }),
+    }
 }
 
 /// What a native producer holds of one table this hour.
@@ -190,6 +270,15 @@ pub enum TableInput<'a, R> {
     /// A complete table's proven changes: only `rows` may differ, and `removed` are gone.
     Changes {
         rows: &'a [R],
+        removed: &'a [u128],
+        read: bool,
+        sample: Sample,
+    },
+    /// [`TableInput::Changes`] named by key: of a complete table's `rows`, only those at
+    /// `keys` may differ, and `removed` are gone.
+    Keyed {
+        rows: &'a [R],
+        keys: &'a [u128],
         removed: &'a [u128],
         read: bool,
         sample: Sample,
@@ -217,36 +306,93 @@ pub struct TableHour {
 /// The section of one hour's `rows` under `coverage`.
 fn visit<R: RowCodec>(
     writer: &mut TableWriter,
-    dictionary: &mut Dictionary,
+    dictionary: Strings<'_>,
     cells: &mut RowCells,
     coverage: Coverage<'_>,
     rows: &[R],
 ) -> io::Result<Prepared> {
-    let mut hour = writer.begin(dictionary, coverage)?;
-    for row in rows {
-        cells.row(&mut hour, row)?;
+    stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(Ok))
+}
+
+/// The section of an hour that changed the rows at `keys` of key-ordered `rows` and
+/// removed `removed`.
+fn visit_keyed<R: RowCodec>(
+    writer: &mut TableWriter,
+    dictionary: Strings<'_>,
+    cells: &mut RowCells,
+    rows: &[R],
+    keys: &[u128],
+    removed: &[u128],
+) -> io::Result<Prepared> {
+    let changed = keys.iter().map(|&key| {
+        rows.binary_search_by_key(&key, R::key)
+            .map(|at| &rows[at])
+            .map_err(|_| invalid_static("A changed key names no row"))
+    });
+    stage(writer, dictionary, cells, Coverage::Changes { removed }, keys.len(), changed)
+}
+
+/// The section of an hour's `count` rows, staged as `cells` says.
+fn stage<'r, R: RowCodec + 'r>(
+    writer: &mut TableWriter,
+    dictionary: Strings<'_>,
+    cells: &mut RowCells,
+    coverage: Coverage<'_>,
+    count: usize,
+    rows: impl Iterator<Item = io::Result<&'r R>>,
+) -> io::Result<Prepared> {
+    match cells.staging {
+        Staging::Columns => {
+            cells.batch.begin(writer.kinds(), count)?;
+            for row in rows {
+                cells.batch_row(row?)?;
+            }
+            writer.prepare(dictionary, coverage, &cells.batch)
+        }
+        Staging::Rows => {
+            let mut hour = writer.begin(dictionary, coverage)?;
+            for row in rows {
+                cells.row(&mut hour, row?)?;
+            }
+            hour.finish()
+        }
     }
-    hour.finish()
 }
 
 /// Writes one table's hour from what its producer holds. Nothing held changes until
 /// the hour commits.
-pub fn table_hour<R: RowCodec>(
+pub fn table_hour<'d, R: RowCodec>(
     writer: &mut TableWriter,
-    dictionary: &mut Dictionary,
+    dictionary: impl Into<Strings<'d>>,
     cells: &mut RowCells,
     input: TableInput<'_, R>,
 ) -> io::Result<TableHour> {
+    let mut dictionary = dictionary.into();
     let evidence = |status, read, sample| Evidence {
         status,
         read,
         sample,
     };
+    // Changes that change no row and remove none leave the held table as it is.
+    let unchanged = writer.sweep() == Sweep::Touched
+        && match &input {
+            TableInput::Changes { rows, removed, .. } => rows.is_empty() && removed.is_empty(),
+            TableInput::Keyed { keys, removed, .. } => keys.is_empty() && removed.is_empty(),
+            _ => false,
+        };
     Ok(match input {
         TableInput::Same { read, sample } => TableHour {
             prepared: None,
             evidence: evidence(Status::Complete, read, sample),
         },
+        TableInput::Changes { read, sample, .. } | TableInput::Keyed { read, sample, .. }
+            if unchanged =>
+        {
+            TableHour {
+                prepared: None,
+                evidence: evidence(Status::Complete, read, sample),
+            }
+        }
         TableInput::Changes {
             rows,
             removed,
@@ -260,6 +406,16 @@ pub fn table_hour<R: RowCodec>(
                 Coverage::Changes { removed },
                 rows,
             )?),
+            evidence: evidence(Status::Complete, read, sample),
+        },
+        TableInput::Keyed {
+            rows,
+            keys,
+            removed,
+            read,
+            sample,
+        } => TableHour {
+            prepared: Some(visit_keyed(writer, dictionary, cells, rows, keys, removed)?),
             evidence: evidence(Status::Complete, read, sample),
         },
         TableInput::Snapshot {

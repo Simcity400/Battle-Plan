@@ -3,6 +3,7 @@ use replay_columnar::{
     section::{self, Changes, Scratch},
     state::Table,
     walk,
+    writer::Dictionary,
 };
 use replay_data::rows::{
     DivisionHistoryRow, Fields, Recorded, SharedDivisionHistoryRow, ShipNamingOperands, ShipRow,
@@ -20,11 +21,17 @@ struct Table1<R> {
     strings: walk::Dictionary,
     cells: RowCells,
     hour: i32,
+    /// The last hour's section.
+    section: Option<Vec<u8>>,
     _rows: std::marker::PhantomData<R>,
 }
 
 impl<R: RowCodec + Fields> Table1<R> {
     fn new() -> Self {
+        Self::staged(Staging::default())
+    }
+
+    fn staged(staging: Staging) -> Self {
         let columns = columns(R::SCHEMA).unwrap();
         Self {
             writer: TableWriter::new(&columns).unwrap(),
@@ -32,8 +39,9 @@ impl<R: RowCodec + Fields> Table1<R> {
             columns,
             dictionary: Dictionary::new(),
             strings: walk::Dictionary::default(),
-            cells: RowCells::default(),
+            cells: RowCells::new(staging),
             hour: 0,
+            section: None,
             _rows: std::marker::PhantomData,
         }
     }
@@ -53,6 +61,7 @@ impl<R: RowCodec + Fields> Table1<R> {
         }
         let truncated = matches!(hour.evidence.status, Status::Truncated { .. });
         let section = hour.prepared.as_ref().and_then(|prepared| prepared.section.clone());
+        self.section = section.clone();
         let applied = section.map(|bytes| {
             let mut changes = Changes::default();
             section::apply(
@@ -284,4 +293,216 @@ fn shared_history_rows_keep_their_strings_and_lists() {
     // Each distinct string is appended once: the reason, both names, the empty custom
     // name, then the new name.
     assert_eq!(table.strings.len(), 5);
+}
+
+/// One table's hours staged by column and one row at a time, side by side.
+struct Both<R> {
+    columns: Table1<R>,
+    rows: Table1<R>,
+}
+
+impl<R: RowCodec + Fields> Both<R> {
+    fn new() -> Self {
+        Self {
+            columns: Table1::staged(Staging::Columns),
+            rows: Table1::staged(Staging::Rows),
+        }
+    }
+
+    /// One hour through both: the same section, strings and restart.
+    fn hour<'r>(&mut self, input: impl Fn() -> TableInput<'r, R>) -> Option<Changes>
+    where
+        R: 'r,
+    {
+        let changes = self.rows.hour(input());
+        let at = self.rows.hour;
+        assert_eq!(self.columns.hour(input()), changes, "hour {at}");
+        assert_eq!(self.columns.section, self.rows.section, "hour {at}");
+        assert_eq!(self.columns.strings, self.rows.strings, "hour {at}");
+        let restart = self.rows.writer.restart().unwrap();
+        assert_eq!(self.columns.writer.restart().unwrap(), restart, "hour {at}");
+        changes
+    }
+}
+
+fn snapshot<R>(rows: &[R]) -> TableInput<'_, R> {
+    TableInput::Snapshot {
+        rows,
+        partial: None,
+        read: true,
+        sample: READ,
+    }
+}
+
+#[test]
+fn staging_by_column_writes_what_staging_a_row_at_a_time_writes() {
+    let mut ships = Both::<ShipRow>::new();
+    let first = [
+        ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice())),
+        ship(8, 0, Some(4).into(), None),
+    ];
+    ships.hour(|| snapshot(&first));
+    assert!(ships.hour(|| snapshot(&first)).is_none());
+    // A stepped value, a cell recorded again and an opaque cell gone, in the held order.
+    let second = [
+        ship(7, 200_001, Some(2).into(), None),
+        ship(8, 0, Some(4).into(), None),
+    ];
+    ships.hour(|| snapshot(&second)).unwrap();
+    let changed = [ship(9, 5, Recorded::NotRecorded, Some(b"New".as_slice()))];
+    ships.hour(|| TableInput::Changes {
+        rows: &changed,
+        removed: &[],
+        read: true,
+        sample: READ,
+    });
+    let census = [second[1].clone(), ship(9, 6, Recorded::NotRecorded, None)];
+    ships.hour(|| snapshot(&census)).unwrap();
+    ships.hour(|| TableInput::Unavailable {
+        reason: "refused",
+        read: false,
+        sample: READ,
+    });
+    let read = [ship(8, 7, Some(4).into(), None)];
+    ships.hour(|| TableInput::Snapshot {
+        rows: &read,
+        partial: Some(1),
+        read: true,
+        sample: READ,
+    });
+    let all = [read[0].clone(), census[1].clone(), ship(10, 1, Some(1).into(), None)];
+    ships.hour(|| snapshot(&all)).unwrap();
+    ships.hour(|| snapshot(&all));
+
+    let mut histories = Both::<SharedDivisionHistoryRow>::new();
+    let row = |division: u64, name: &[u8], provinces: &[u32]| {
+        Arc::new(DivisionHistoryRow {
+            division,
+            name: name.to_vec(),
+            reason: b"order".to_vec(),
+            provinces: provinces.to_vec(),
+            medal_token: Some(-2),
+            ..Default::default()
+        })
+    };
+    let first = [row(1, b"First", &[3, 1]), row(2, b"Second", &[])];
+    histories.hour(|| snapshot(&first));
+    assert!(histories.hour(|| snapshot(&first)).is_none());
+    let renamed = [row(1, b"Renamed", &[3, 1, 4]), first[1].clone()];
+    histories.hour(|| snapshot(&renamed)).unwrap();
+    // A delta's rows by key: one changed, one new.
+    let all = [renamed[0].clone(), row(2, b"Second", &[9]), row(3, b"Third", &[1])];
+    let keys = [RowCodec::key(&all[1]), RowCodec::key(&all[2])];
+    histories.hour(|| TableInput::Keyed {
+        rows: &all,
+        keys: &keys,
+        removed: &[],
+        read: true,
+        sample: READ,
+    });
+    assert!(histories.hour(|| snapshot(&all)).is_none());
+    assert!(histories.hour(|| snapshot(&all)).is_none());
+}
+
+/// Changes of no row, named or not, are the held rows again: nothing written and no hour
+/// begun, as for the same rows. A writer sweeping every column stages them and writes the
+/// same.
+#[test]
+fn changes_of_no_row_begin_no_hour() {
+    let mut touched = Table1::<ShipRow>::new();
+    let mut swept = Table1::<ShipRow>::new();
+    swept.writer.set_sweep(Sweep::Every);
+    let first = [ship(7, 100_000, Recorded::NotRecorded, Some(b"Ark".as_slice()))];
+    for table in [&mut touched, &mut swept] {
+        table.hour(snapshot(&first)).unwrap();
+    }
+    let begun = touched.writer.work();
+    for table in [&mut touched, &mut swept] {
+        let changes = TableInput::Changes {
+            rows: &[],
+            removed: &[],
+            read: true,
+            sample: READ,
+        };
+        assert!(table.hour(changes).is_none());
+        let keyed = TableInput::Keyed {
+            rows: &first,
+            keys: &[],
+            removed: &[],
+            read: false,
+            sample: READ,
+        };
+        assert!(table.hour(keyed).is_none());
+        table.holds(&first);
+    }
+    assert_eq!(touched.writer.work(), begun);
+    assert_eq!(swept.writer.work().hours, 3);
+    assert_eq!(touched.writer.restart().unwrap(), swept.writer.restart().unwrap());
+}
+
+/// A table's hour refused part way while reading the run's strings, as tables written side by
+/// side do, is written again interning: staged by column or a row at a time, the refused writer
+/// writes what one never refused writes, as does one sweeping every column. A delta naming a row
+/// it does not carry ends the hour once the rows before it are staged; a name the run has not
+/// used ends it wherever it comes.
+#[test]
+fn an_hour_written_again_after_a_refusal_writes_what_it_would_have() {
+    let row = |division: u64, amount: i32, name: &[u8]| {
+        Arc::new(DivisionHistoryRow {
+            division,
+            amount,
+            name: name.to_vec(),
+            reason: b"order".to_vec(),
+            provinces: vec![1, amount as u32],
+            ..Default::default()
+        })
+    };
+    let first: Vec<_> = (1..=20).map(|division| row(division, 1, b"Held")).collect();
+    let mut changed = first.clone();
+    for (division, history) in (1..).zip(&mut changed[..12]) {
+        *history = row(division, 5, b"Held");
+    }
+    changed[10] = row(11, 5, b"Renamed");
+    let unknown = RowCodec::key(&row(99, 0, b""));
+    let keys: Vec<u128> = changed[..10]
+        .iter()
+        .map(RowCodec::key)
+        .chain([unknown])
+        .collect();
+    for staging in [Staging::Columns, Staging::Rows] {
+        let mut tables: [Table1<SharedDivisionHistoryRow>; 3] =
+            std::array::from_fn(|_| Table1::staged(staging));
+        tables[1].writer.set_sweep(Sweep::Every);
+        for table in &mut tables {
+            table.hour(snapshot(&first)).unwrap();
+        }
+        let [refused, swept, never] = &mut tables;
+        for table in [&mut *refused, &mut *swept] {
+            let keyed = TableInput::Keyed {
+                rows: &changed,
+                keys: &keys,
+                removed: &[],
+                read: true,
+                sample: READ,
+            };
+            let strings = Strings::Reading(&table.dictionary);
+            assert!(table_hour(&mut table.writer, strings, &mut table.cells, keyed).is_err());
+            let strings = Strings::Reading(&table.dictionary);
+            let missed = table_hour(
+                &mut table.writer,
+                strings,
+                &mut table.cells,
+                snapshot(&changed),
+            );
+            assert!(missed.is_err());
+        }
+        let changes = never.hour(snapshot(&changed));
+        for table in [refused, swept] {
+            assert_eq!(table.hour(snapshot(&changed)), changes, "{staging:?}");
+            assert_eq!(table.section, never.section, "{staging:?}");
+            assert_eq!(table.strings, never.strings, "{staging:?}");
+            let restart = never.writer.restart().unwrap();
+            assert_eq!(table.writer.restart().unwrap(), restart, "{staging:?}");
+        }
+    }
 }

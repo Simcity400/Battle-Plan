@@ -7,6 +7,10 @@
 //! (changed unread, truncated, unavailable, not recorded) has none. A staggered table's
 //! off-slot refusal carries its complete rows, as the row encoder carries it between keyframes,
 //! and a run's first hour refuses a truncated read, as the row keyframe a run starts with does.
+//!
+//! A recorded hour ([`FrameWriter::hour_with`]) writes each table it names as the recording
+//! decodes it, wherever the run starts: at the recording's sample hour, a truncated view still
+//! truncated, and a refusal not carried.
 
 use crate::{
     columnar_file::{RestartState, referenced_ids},
@@ -18,7 +22,7 @@ use crate::{
 };
 use replay_columnar::{
     manifest::{self, Manifest, Section, Status},
-    writer::{Dictionary, Sample, TableWriter},
+    writer::{Dictionary, Prepared, Sample, Sweep, TableWriter},
 };
 use replay_data::sliced::SliceUpdate;
 use std::io::{self, Write};
@@ -80,6 +84,32 @@ impl FrameHour {
     pub fn read(&self) -> &[u64] {
         &self.read
     }
+
+    /// Each table's preparation (its section, manifest entry and census) with its table
+    /// index, in table order.
+    pub fn prepared(&self) -> impl Iterator<Item = (usize, &Prepared)> {
+        self.tables
+            .iter()
+            .enumerate()
+            .filter_map(|(index, table)| Some((index, table.prepared.as_ref()?)))
+    }
+}
+
+/// What a recording's delta names of a complete table's hour: the keys of the rows it
+/// changed or added, and the keys it removed.
+#[derive(Clone, Copy, Debug)]
+pub struct Changed<'a> {
+    pub keys: &'a [u128],
+    pub removed: &'a [u128],
+}
+
+/// What a recording holds of one table's hour beside its view.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Source<'a> {
+    /// The view's sample hour, as the recording decodes it.
+    pub sample: Option<i32>,
+    /// What its delta names, for a complete table it stores as one.
+    pub delta: Option<Changed<'a>>,
 }
 
 impl FrameWriter {
@@ -99,11 +129,10 @@ impl FrameWriter {
             absent.push(if change.present(format) {
                 None
             } else {
-                Some(
-                    change
-                        .table_gap(id, format)
-                        .ok_or_else(|| invalid("An absent table has no catalogued gap"))?,
-                )
+                let gap = change
+                    .gap(id, format)
+                    .ok_or_else(|| invalid("An absent table has no catalogued gap"))?;
+                Some(replay_data::codec::try_format(format_args!("{gap}"))?)
             });
         }
         Ok(Self {
@@ -127,21 +156,10 @@ impl FrameWriter {
 
     /// Prepares every table's hour. Nothing held changes until [`FrameWriter::commit`].
     pub fn hour(&mut self, input: &FrameInput) -> io::Result<FrameHour> {
-        if self.poisoned {
-            return Err(invalid("A failed hour ended this columnar run"));
-        }
-        // An uncommitted hour's interned strings would be lost to its successor's manifest.
-        if self.pending {
-            self.poisoned = true;
-            return Err(invalid("A prepared hour commits before the next"));
-        }
-        let hour = self.prepare(input);
-        self.poisoned = hour.is_err();
-        self.pending = hour.is_ok();
-        hour
+        self.hour_with(input, &[])
     }
 
-    fn prepare(&mut self, input: &FrameInput) -> io::Result<FrameHour> {
+    fn prepare(&mut self, input: &FrameInput, recorded: &[Source<'_>]) -> io::Result<FrameHour> {
         let mut tables = Vec::new();
         engine_allocation::reserve(&mut tables, TABLE_COUNT)?;
         let mut statuses = Vec::new();
@@ -158,25 +176,32 @@ impl FrameWriter {
             if was_read {
                 read[index / 64] |= 1 << (index % 64);
             }
-            let mut prepared = self.table(index, table, was_read, mode)?;
+            let source = recorded.get(index).copied();
+            let mut prepared = self.table(index, table, source, was_read, mode)?;
             let writer = &self.tables[index];
             let changed = prepared
                 .prepared
                 .as_ref()
                 .is_some_and(|prepared| prepared.section.is_some());
-            prepared.evidence.sample = match prepared.evidence.status {
-                Status::Complete if was_read || !changed => Sample::FromReadBit,
-                _ => Sample::Reset,
-            };
             let implied = if was_read {
                 Some(input.hour)
             } else {
                 writer.acquisition().last_read
             };
-            if prepared.evidence.sample == Sample::Reset && implied.is_some() {
+            let sample = match source {
+                Some(source) => source.sample,
+                None => match prepared.evidence.status {
+                    Status::Complete if was_read || !changed => implied,
+                    _ => None,
+                },
+            };
+            prepared.evidence.sample = if sample == implied {
+                Sample::FromReadBit
+            } else {
                 engine_allocation::reserve(&mut samples, 1)?;
-                samples.push((index, None));
-            }
+                samples.push((index, sample));
+                sample.map_or(Sample::Reset, Sample::Carried)
+            };
             statuses.push(prepared.evidence.status);
             if let Some(section) = prepared.prepared.as_ref()
                 && let Some(bytes) = &section.section
@@ -233,6 +258,7 @@ impl FrameWriter {
         &mut self,
         index: usize,
         input: &TableInput,
+        source: Option<Source<'_>>,
         read: bool,
         mode: CaptureMode,
     ) -> io::Result<TableHour> {
@@ -242,24 +268,41 @@ impl FrameWriter {
         }
         let writer = &self.tables[index];
         // The row encoder carries an off-slot refusal over a complete baseline from an
-        // earlier hour of the branch.
-        let carried = matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
-            if reason == replay_data::cadence::SKIPPED_REASON)
+        // earlier hour of the branch; a recorded refusal is one it did not carry.
+        let carried = source.is_none()
+            && matches!(input, TableInput::Sampled(TableView::Unavailable { reason })
+                if reason == replay_data::cadence::SKIPPED_REASON)
             && replay_data::cadence::is_staggered(id)
             && writer.status() == Status::Complete
             && writer.acquisition().available_from.is_some();
+        // A delta changes the complete rows the run's last hour held.
+        let delta = source
+            .and_then(|source| source.delta)
+            .filter(|_| !self.starting && writer.status() == Status::Complete);
         let held = Visit {
             writer: &mut self.tables[index],
             dictionary: &mut self.dictionary,
             cells: &mut self.cells,
             read,
-            starting: self.starting,
+            // The recording's run need not start here: its truncated view stays truncated.
+            starting: self.starting && source.is_none(),
         };
         if let Some(reason) = &self.absent[index] {
             return held.unavailable(reason);
         }
         if !scope::records(mode, id) {
             return held.not_recorded();
+        }
+        let complete = match input {
+            TableInput::Sampled(TableView::Complete(rows)) => Some(rows),
+            TableInput::SharedComplete(rows) => Some(&**rows),
+            _ => None,
+        };
+        if let (Some(rows), Some(delta)) = (complete, delta) {
+            if delta.keys.is_empty() && delta.removed.is_empty() {
+                return held.same();
+            }
+            return rows.visit(held.with(Form::Keyed(delta)));
         }
         match input {
             _ if carried => held.same(),
@@ -315,6 +358,54 @@ impl FrameWriter {
         }
         Ok((std::mem::take(&mut self.since_restart), tables))
     }
+
+    /// [`FrameWriter::hour`] of a recorded hour: each table `recorded` names at its index is
+    /// written as the recording decodes it. It is sampled at its [`Source::sample`], at a
+    /// run's start too; a truncated view stays truncated at a run's start, whose rows the
+    /// recording's run read; and a refusal is not carried. A complete table whose delta it
+    /// names changed only the rows the delta names, so only those are compared with the held
+    /// table; a run's first hour, and a table whose last hour was not complete, compare whole.
+    pub fn hour_with(
+        &mut self,
+        input: &FrameInput,
+        recorded: &[Source<'_>],
+    ) -> io::Result<FrameHour> {
+        if self.poisoned {
+            return Err(invalid("A failed hour ended this columnar run"));
+        }
+        // An uncommitted hour's interned strings would be lost to its successor's manifest.
+        if self.pending {
+            self.poisoned = true;
+            return Err(invalid("A prepared hour commits before the next"));
+        }
+        let hour = self.prepare(input, recorded);
+        self.poisoned = hour.is_err();
+        self.pending = hour.is_ok();
+        hour
+    }
+
+    /// Each table's writer, holding what the run's committed hours left.
+    pub fn tables(&self) -> &[TableWriter] {
+        &self.tables
+    }
+
+    /// A run's writer handing each table's rows to its writer as `staging` says;
+    /// [`FrameWriter::new`] stages them by column.
+    pub fn with_staging(staging: native_columns::Staging) -> io::Result<Self> {
+        let mut writer = Self::new()?;
+        writer.cells = RowCells::new(staging);
+        Ok(writer)
+    }
+
+    /// A run's writer whose tables' hours clear and finish the columns `sweep` says;
+    /// [`FrameWriter::new`] sweeps only those an hour touched.
+    pub fn with_sweep(sweep: Sweep) -> io::Result<Self> {
+        let mut writer = Self::new()?;
+        for table in &mut writer.tables {
+            table.set_sweep(sweep);
+        }
+        Ok(writer)
+    }
 }
 
 /// The held rows a slice update replaces and does not carry again.
@@ -349,6 +440,7 @@ enum Form<'a> {
     Complete,
     Truncated(u32),
     Changes(&'a [u128]),
+    Keyed(Changed<'a>),
 }
 
 struct Visit<'a> {
@@ -441,6 +533,13 @@ impl RowsVisit for Rows<'_, '_> {
             },
             Form::Changes(removed) => Native::Changes {
                 rows,
+                removed,
+                read,
+                sample,
+            },
+            Form::Keyed(Changed { keys, removed }) => Native::Keyed {
+                rows,
+                keys,
                 removed,
                 read,
                 sample,

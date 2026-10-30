@@ -73,7 +73,7 @@ const POSITION_BITMAP: u8 = 0;
 const POSITION_RUNS: u8 = 1;
 
 /// Varint bytes of `value`.
-fn varint_len(value: u64) -> usize {
+pub(crate) fn varint_len(value: u64) -> usize {
     (64 - value.max(1).leading_zeros() as usize).div_ceil(7)
 }
 
@@ -85,6 +85,12 @@ pub struct Writer {
 impl Writer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A writer into `bytes`, emptied first, keeping its allocation.
+    pub(crate) fn reusing(mut bytes: Vec<u8>) -> Self {
+        bytes.clear();
+        Self { bytes }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -194,11 +200,7 @@ impl Writer {
         if words * 8 + varint_len(words as u64) + 7 < deltas {
             self.u8(SLOT_BITMAP)?;
             self.varint(words as u64)?;
-            let mut bits = engine_allocation::filled(words, 0u64)?;
-            for &slot in slots {
-                bits[slot as usize / 64] |= 1 << (slot % 64);
-            }
-            self.values(&bits)
+            self.bitmap(words, slots)
         } else {
             self.u8(SLOT_DELTAS)?;
             for (index, &slot) in slots.iter().enumerate() {
@@ -219,35 +221,22 @@ impl Writer {
         {
             return Err(invalid("Positions are not ascending within their list"));
         }
-        let mut runs: Vec<(u32, u32)> = Vec::new();
-        for &position in positions {
-            match runs.last_mut() {
-                Some((start, length)) if *start + *length == position => *length += 1,
-                _ => {
-                    engine_allocation::reserve(&mut runs, 1)?;
-                    runs.push((position, 1));
-                }
-            }
-        }
-        let mut end = 0;
-        let mut run_bytes = varint_len(runs.len() as u64);
-        for &(start, length) in &runs {
+        let (mut count, mut end, mut run_bytes) = (0u64, 0, 0);
+        for (start, length) in runs(positions) {
+            count += 1;
             run_bytes += varint_len(u64::from(start - end)) + varint_len(u64::from(length - 1));
             end = start + length;
         }
+        run_bytes += varint_len(count);
         let words = of.div_ceil(64);
         if words * 8 + 7 < run_bytes {
             self.u8(POSITION_BITMAP)?;
-            let mut bits = engine_allocation::filled(words, 0u64)?;
-            for &position in positions {
-                bits[position as usize / 64] |= 1 << (position % 64);
-            }
-            self.values(&bits)
+            self.bitmap(words, positions)
         } else {
             self.u8(POSITION_RUNS)?;
-            self.varint(runs.len() as u64)?;
+            self.varint(count)?;
             let mut end = 0;
-            for (start, length) in runs {
+            for (start, length) in runs(positions) {
                 self.varint(u64::from(start - end))?;
                 self.varint(u64::from(length - 1))?;
                 end = start + length;
@@ -255,6 +244,38 @@ impl Writer {
             Ok(())
         }
     }
+
+    /// Ascending `bits`, all below `words` words, as those words' values.
+    fn bitmap(&mut self, words: usize, bits: &[u32]) -> io::Result<()> {
+        self.align(u64::WIDTH)?;
+        self.reserve(words * u64::WIDTH)?;
+        let mut bits = bits.iter().copied().peekable();
+        for word in 0..words {
+            let mut value = 0u64;
+            while let Some(bit) = bits.next_if(|&bit| bit as usize / 64 == word) {
+                value |= 1 << (bit % 64);
+            }
+            value.put(&mut self.bytes);
+        }
+        Ok(())
+    }
+}
+
+/// Ascending positions as runs of consecutive ones: each run's first and its length.
+fn runs(positions: &[u32]) -> impl Iterator<Item = (u32, u32)> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let &start = positions.get(at)?;
+        let mut length = 1;
+        while positions
+            .get(at + length as usize)
+            .is_some_and(|&next| next - start == length)
+        {
+            length += 1;
+        }
+        at += length as usize;
+        Some((start, length))
+    })
 }
 
 pub struct Reader<'a> {
@@ -406,6 +427,12 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// `count` words as [`Reader::values`] reads them, left in place.
+    fn words(&mut self, count: usize) -> io::Result<&'a [u8]> {
+        self.align(u64::WIDTH)?;
+        self.take(count.checked_mul(u64::WIDTH).ok_or_else(short)?)
+    }
+
     /// A strictly ascending slot list, as [`Writer::slots`] writes it.
     pub fn slots(&mut self, into: &mut Vec<u32>) -> io::Result<()> {
         let count = self.count()?;
@@ -428,17 +455,17 @@ impl<'a> Reader<'a> {
                 if words > SLOT_WORDS {
                     return Err(invalid("Slot bitmap passes the last slot"));
                 }
-                let mut bits = Vec::new();
-                self.values::<u64>(words, &mut bits)?;
-                if bits.last() == Some(&0) {
+                let bytes = self.words(words)?;
+                if bytes.rchunks_exact(u64::WIDTH).next().map(u64::get) == Some(0) {
                     return Err(invalid("Slot bitmap ends in an empty word"));
                 }
-                let set: usize = bits.iter().map(|word| word.count_ones() as usize).sum();
+                let bits = bytes.chunks_exact(u64::WIDTH).map(u64::get);
+                let set: usize = bits.clone().map(|word| word.count_ones() as usize).sum();
                 if set != count {
                     return Err(invalid("Slot bitmap disagrees with its count"));
                 }
                 engine_allocation::reserve(into, count)?;
-                for (index, &word) in bits.iter().enumerate() {
+                for (index, word) in bits.enumerate() {
                     let mut rest = word;
                     while rest != 0 {
                         into.push(index as u32 * 64 + rest.trailing_zeros());
@@ -456,9 +483,8 @@ impl<'a> Reader<'a> {
         into.clear();
         match self.u8()? {
             POSITION_BITMAP => {
-                let mut bits = Vec::new();
-                self.values::<u64>(of.div_ceil(64), &mut bits)?;
-                for (index, &word) in bits.iter().enumerate() {
+                let bits = self.words(of.div_ceil(64))?.chunks_exact(u64::WIDTH);
+                for (index, word) in bits.map(u64::get).enumerate() {
                     let mut rest = word;
                     while rest != 0 {
                         let position = index * 64 + rest.trailing_zeros() as usize;

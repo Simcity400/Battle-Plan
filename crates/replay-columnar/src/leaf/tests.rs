@@ -80,6 +80,26 @@ fn positions_choose_the_shorter_form_and_read_back_exactly() {
 }
 
 #[test]
+fn bitmaps_and_runs_are_written_word_by_word() {
+    // Runs: their count, then each one's gap from the last one's end and its length less one.
+    let runs = positions_round_trip(10, &[0, 1, 2, 5]);
+    assert_eq!(runs, [POSITION_RUNS, 2, 0, 2, 2, 0]);
+    // Every other position of 64: the form, padding to a word's width, then the word.
+    let alternate: Vec<u32> = (0..64).step_by(2).collect();
+    let mut bitmap = vec![POSITION_BITMAP, 0, 0, 0, 0, 0, 0, 0];
+    bitmap.extend_from_slice(&0x5555_5555_5555_5555_u64.to_le_bytes());
+    assert_eq!(positions_round_trip(64, &alternate), bitmap);
+    // Slots 0 to 63 and 130: their count, the form and three words, the middle one empty.
+    let mut slots: Vec<u32> = (0..64).collect();
+    slots.push(130);
+    let mut bitmap = vec![65, SLOT_BITMAP, 3, 0, 0, 0, 0, 0];
+    for word in [u64::MAX, 0, 1 << 2] {
+        bitmap.extend_from_slice(&word.to_le_bytes());
+    }
+    assert_eq!(slots_round_trip(&slots), bitmap);
+}
+
+#[test]
 fn values_align_from_the_buffer_start_and_padding_must_be_zero() {
     let mut writer = Writer::new();
     writer.u8(7).unwrap();

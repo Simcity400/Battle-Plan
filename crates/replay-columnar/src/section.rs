@@ -202,6 +202,15 @@ fn counts(values: Values<'_>, count: usize) -> bool {
 /// The section's bytes. Each run's values are checked against its column's kind and its
 /// count of positions, so a section that reads back is one the state can apply.
 pub fn write(kinds: &[Kind], hour: &TableHour<'_>) -> io::Result<Vec<u8>> {
+    write_with(kinds, hour, Vec::new())
+}
+
+/// [`write`] into `bytes`, emptied first, keeping its allocation.
+pub(crate) fn write_with(
+    kinds: &[Kind],
+    hour: &TableHour<'_>,
+    bytes: Vec<u8>,
+) -> io::Result<Vec<u8>> {
     if hour.keys.len() != hour.inserted.len()
         || (!hour.inserted.is_empty() && hour.inserts.len() != kinds.len())
     {
@@ -209,7 +218,7 @@ pub fn write(kinds: &[Kind], hour: &TableHour<'_>) -> io::Result<Vec<u8>> {
             "Inserts carry other than one key per slot and one run per column",
         ));
     }
-    let mut writer = Writer::new();
+    let mut writer = Writer::reusing(bytes);
     if let Some(read) = hour.read {
         if !within(hour.changed, read) || !within(hour.deleted, read) {
             return Err(invalid(
@@ -289,7 +298,7 @@ pub fn write(kinds: &[Kind], hour: &TableHour<'_>) -> io::Result<Vec<u8>> {
 }
 
 /// The integer kind an ADD to `kind` carries.
-fn base(kind: Kind) -> io::Result<Kind> {
+pub(crate) fn base(kind: Kind) -> io::Result<Kind> {
     Ok(match kind {
         Kind::U8
         | Kind::I8
@@ -327,6 +336,7 @@ pub struct Scratch {
     slots: Vec<u32>,
     positions: Vec<u32>,
     except: Vec<u32>,
+    masks: Vec<u64>,
 }
 
 /// Whether every slot of ascending `slots` is in ascending `of`.
@@ -476,35 +486,68 @@ fn fill_run(
     table.fill(column, except, value, targets)
 }
 
-/// The ascending union of `slots` and `more`, into `slots`.
-fn union(slots: &mut Vec<u32>, more: &[u32], scratch: &mut Vec<u32>) -> io::Result<()> {
+/// The ascending union of `slots` and `more`, into `slots`, with `bit` set in the mask (at
+/// `slots`' positions in `masks`) of every slot `more` names. `merged` and `merged_masks` are
+/// scratch, swapped with the union.
+fn union(
+    slots: &mut Vec<u32>,
+    masks: &mut Vec<u64>,
+    more: &[u32],
+    bit: u64,
+    merged: &mut Vec<u32>,
+    merged_masks: &mut Vec<u64>,
+) -> io::Result<()> {
     // An hour's FILLs mostly set the same slots: every live row but a few.
     if slots.as_slice() == more {
+        for mask in masks.iter_mut() {
+            *mask |= bit;
+        }
         return Ok(());
     }
     if slots.is_empty() {
         engine_allocation::reserve(slots, more.len())?;
         slots.extend_from_slice(more);
+        masks.clear();
+        engine_allocation::reserve(masks, more.len())?;
+        masks.resize(more.len(), bit);
         return Ok(());
     }
-    scratch.clear();
-    engine_allocation::reserve(scratch, slots.len() + more.len())?;
-    let (mut left, mut right) = (slots.iter().peekable(), more.iter().peekable());
+    merged.clear();
+    merged_masks.clear();
+    engine_allocation::reserve(merged, slots.len() + more.len())?;
+    engine_allocation::reserve(merged_masks, slots.len() + more.len())?;
+    let mut left = slots.iter().copied().zip(masks.iter().copied()).peekable();
+    let mut right = more.iter().copied().peekable();
     loop {
-        let next = match (left.peek(), right.peek()) {
-            (Some(&&a), Some(&&b)) if a < b => left.next(),
-            (Some(&&a), Some(&&b)) if b < a => right.next(),
-            (Some(_), Some(_)) => {
-                right.next();
-                left.next()
+        let (slot, mask) = match (left.peek().copied(), right.peek().copied()) {
+            (Some((a, mask)), Some(b)) if a < b => {
+                left.next();
+                (a, mask)
             }
-            (Some(_), None) => left.next(),
-            (None, Some(_)) => right.next(),
+            (Some((a, _)), Some(b)) if b < a => {
+                right.next();
+                (b, bit)
+            }
+            (Some((a, mask)), Some(_)) => {
+                left.next();
+                right.next();
+                (a, mask | bit)
+            }
+            (Some((a, mask)), None) => {
+                left.next();
+                (a, mask)
+            }
+            (None, Some(b)) => {
+                right.next();
+                (b, bit)
+            }
             (None, None) => break,
         };
-        scratch.push(*next.expect("a slot"));
+        merged.push(slot);
+        merged_masks.push(mask);
     }
-    std::mem::swap(slots, scratch);
+    std::mem::swap(slots, merged);
+    std::mem::swap(masks, merged_masks);
     Ok(())
 }
 
@@ -649,8 +692,6 @@ pub fn apply(
         }
     }
     let runs = reader.count()?;
-    // Each FILL's column bit and the slots it set, for their masks once every FILL is applied.
-    let mut fills: Vec<(u64, Vec<u32>)> = Vec::new();
     for _ in 0..runs {
         let column = usize::try_from(reader.varint()?)
             .map_err(|_| invalid("Run names a column past the schema"))?;
@@ -682,13 +723,18 @@ pub fn apply(
                     {
                         return Err(invalid("A partly read table fills a slot it did not read"));
                     }
-                    union(&mut changes.fill_slots, &targets, &mut scratch.positions)
+                    union(
+                        &mut changes.fill_slots,
+                        &mut changes.fill_masks,
+                        &targets,
+                        column_bit(column),
+                        &mut scratch.positions,
+                        &mut scratch.masks,
+                    )
                 });
-                let copied = filled.and_then(|()| engine_allocation::copy_vec(&targets));
                 scratch.slots = targets;
-                let targets = copied?;
-                engine_allocation::reserve(&mut fills, 1)?;
-                fills.push((column_bit(column), targets));
+                filled?;
+                engine_allocation::reserve(&mut changes.filled, 1)?;
                 changes.filled.push(column);
             }
             Op::Noop => {
@@ -740,23 +786,6 @@ pub fn apply(
         for slot in &scratch.slots {
             if let Ok(position) = changes.changed.binary_search(slot) {
                 changes.masks[position] |= column_bit(column);
-            }
-        }
-    }
-    if !fills.is_empty() {
-        engine_allocation::reserve(&mut changes.fill_masks, changes.fill_slots.len())?;
-        changes.fill_masks.resize(changes.fill_slots.len(), 0);
-        let (slots, masks) = (&changes.fill_slots, &mut changes.fill_masks);
-        for (bit, targets) in &fills {
-            // Both ascend, so one pass finds each target's position.
-            let mut position = 0;
-            for slot in targets {
-                while slots.get(position).is_some_and(|filled| filled < slot) {
-                    position += 1;
-                }
-                if slots.get(position) == Some(slot) {
-                    masks[position] |= bit;
-                }
             }
         }
     }

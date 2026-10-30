@@ -830,6 +830,41 @@ pub struct AppendedField {
 /// Nested suffixes use source format even when parent field counts are unchanged.
 /// Record-kind dates 1/24/33 are inert below the proven horizon of 91.
 /// Adding/retiring a table changes its lifetime, not the Frame framing date.
+/// A table a recording's format does not hold, displayed as the readers' refusal.
+#[derive(Clone, Copy, Debug)]
+pub struct TableGap {
+    table: TableId,
+    format: u16,
+    cause: GapCause,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GapCause {
+    Introduced(u16),
+    Retired(u16),
+    Changed(u16),
+}
+
+impl std::fmt::Display for TableGap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (table, format) = (self.table, self.format);
+        match self.cause {
+            GapCause::Introduced(introduced) => write!(
+                f,
+                "{table:?} not recorded at format {format} (introduced at format {introduced})"
+            ),
+            GapCause::Retired(retired) => write!(
+                f,
+                "{table:?} retired at format {retired}; this recording is format {format}"
+            ),
+            GapCause::Changed(changed) => write!(
+                f,
+                "{table:?} layout or meaning changed at format {changed}; this recording is format {format}"
+            ),
+        }
+    }
+}
+
 pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     let baseline = LastChange {
         subject: Subject::Table(TableId::Clock),
@@ -4203,26 +4238,28 @@ impl LastChange {
     }
 
     pub fn table_gap(&self, table: TableId, format: u16) -> Option<String> {
-        if format < self.introduced {
-            Some(format!(
-                "{table:?} not recorded at format {format} (introduced at format {})",
-                self.introduced
-            ))
+        self.gap(table, format).map(|gap| gap.to_string())
+    }
+
+    /// Why `table` is not recorded at `format`, formatted only when it is displayed.
+    pub fn gap(&self, table: TableId, format: u16) -> Option<TableGap> {
+        let cause = if format < self.introduced {
+            GapCause::Introduced(self.introduced)
         } else if let Some(retired) = self
             .retired
             .filter(|retired| *retired <= crate::FORMAT_VERSION)
         {
-            Some(format!(
-                "{table:?} retired at format {retired}; this recording is format {format}"
-            ))
+            GapCause::Retired(retired)
         } else if format < self.format && self.kind != ChangeKind::AppendedOnly {
-            Some(format!(
-                "{table:?} layout or meaning changed at format {}; this recording is format {format}",
-                self.format
-            ))
+            GapCause::Changed(self.format)
         } else {
-            None
-        }
+            return None;
+        };
+        Some(TableGap {
+            table,
+            format,
+            cause,
+        })
     }
 
     pub fn fields(&self, table: TableId, format: u16) -> usize {
