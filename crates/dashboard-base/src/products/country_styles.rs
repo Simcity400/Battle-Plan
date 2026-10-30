@@ -293,10 +293,11 @@ struct StyleState {
 /// ([`Self::read`]), or as preparation's runs give them back for the tags a request names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StyleInputs {
-    /// Each tag's first country row: its raw link id and canonical slot.
-    pub tags: HashMap<String, (u32, u32)>,
-    /// Each raw link id's recorded map colour.
-    pub colors: HashMap<u32, [u8; 3]>,
+    /// Each tag's first country row: its raw link id and canonical slot. Ordered, as preparation
+    /// keeps them in the order they are visited and its output is a function of the recording.
+    pub tags: BTreeMap<String, (u32, u32)>,
+    /// Each raw link id's recorded map colour, ordered as `tags` are.
+    pub colors: BTreeMap<u32, [u8; 3]>,
     /// Why the appearance table is incomplete this hour, if it is.
     pub appearance: Option<String>,
     /// Why the country table is incomplete this hour, if it is.
@@ -324,7 +325,7 @@ impl StyleInputs {
             .complete::<tables::Countries>()
             .err()
             .map(|error| error.to_string());
-        let mut tags = HashMap::new();
+        let mut tags = BTreeMap::new();
         // Countries are keyed by their raw link id, which appearance rows share.
         for country in recorded_rows::<tables::Countries>(frame)? {
             tags.entry(String::from_utf8_lossy(&country.tag).into_owned())

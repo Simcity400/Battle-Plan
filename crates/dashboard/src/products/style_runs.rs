@@ -455,3 +455,43 @@ fn operands(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An hour's values come in an order its content alone decides, so preparing one recording
+    /// twice writes the same keys and series.
+    #[test]
+    fn an_hours_values_come_in_one_order() {
+        use replay_data::rows::{CountryAppearanceRow, TableRows};
+        let mut frame = crate::test_fixtures::scale_frame(1, 10, 64);
+        *frame.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(
+                (0..64)
+                    .map(|index| CountryAppearanceRow {
+                        country: 100_000 + index,
+                        red: (index as f32 / 64.0).to_bits(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::ReservedCountryNaming.index()] =
+            TableView::Complete(TableRows::ReservedCountryNaming(Vec::new()));
+        let observed = || {
+            let mut values = Values::default();
+            assert!(
+                StylesObserver::default()
+                    .observe(FormatVersion::CURRENT, &frame, &mut values)
+                    .unwrap()
+            );
+            values
+                .iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect::<Vec<_>>()
+        };
+        let first = observed();
+        assert!(first.len() > 128, "{}", first.len());
+        assert_eq!(first, observed());
+    }
+}
