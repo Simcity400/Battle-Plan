@@ -26,6 +26,9 @@ export type { TableColumn } from './columns';
 export type { TableTree } from './logic';
 const WINDOWING_THRESHOLD = 120;
 const NO_KEYS: ReadonlySet<string> = new Set();
+const NO_RANKS: ReadonlyMap<string, RankChange> = new Map();
+/** How long a rank marker shows once its row moves. */
+const RANK_HOLD_MS = 2500;
 const NO_COLUMNS: readonly TableColumn<never>[] = [];
 /** Unchanged markers keep their state, so new row objects in the same order do not re-render the table. */
 const sameRanks = (before: ReadonlyMap<string, RankChange>, next: ReadonlyMap<string, RankChange>) => before.size === next.size
@@ -149,29 +152,41 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     }, parity?.preparation);
   }
   const moving = useRowMotion(items);
-  const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
-  const [departing, setDeparting] = useState(NO_KEYS);
+  // The rows in view at the last commit, and those in view before its change, kept mounted while
+  // they glide out until the next change. Read in render and written after a commit, so recording
+  // them renders nothing again.
+  const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string>; departing: ReadonlySet<string> } | null>(null);
   const motionNow = useMotionNow();
   const glideMs = easeTau(tokens.motion, motionNow(hoursPerSecond), tokens.reducedMotion) * 2.5;
-  const [ranks, setRanks] = useState<ReadonlyMap<string, RankChange>>(new Map());
-  const rankSort = useRef('');
   const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
+  // Rank markers against the ranks last committed, so a new order shows them in the frame it is drawn.
+  const committedRanks = useRef<{ ordering: string; ranks: ReadonlyMap<string, RankChange> }>({ ordering: '', ranks: NO_RANKS });
+  // Moved on when a marker's hold ends.
+  const [rankClock, setRankClock] = useState(0);
+  const drawnRanks = useMemo(() => {
+    const at = performance.now();
+    if (!rank || !rankMarkers) return { ranks: NO_RANKS, at };
+    const held = committedRanks.current;
+    const next = rankChanges(held.ranks, items.map(item => item.key), at, RANK_HOLD_MS, held.ordering !== ordering);
+    return { ranks: sameRanks(held.ranks, next) ? held.ranks : next, at };
+  }, [items, rank, rankMarkers, ordering, rankClock]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ranks = drawnRanks.ranks;
   useLayoutEffect(() => {
-    const reset = rankSort.current !== ordering;
-    rankSort.current = ordering;
-    setRanks(before => {
-      if (!rank || !rankMarkers) return before.size ? new Map() : before;
-      const next = rankChanges(before, items.map(item => item.key), performance.now(), 2500, reset);
-      return sameRanks(before, next) ? before : next;
-    });
-  }, [items, rank, rankMarkers, ordering]);
-  useEffect(() => {
+    // A marker drawn here holds from when it is shown, however late its render commits.
+    const shift = performance.now() - drawnRanks.at;
+    let shown: Map<string, RankChange> | null = null;
+    for (const [key, item] of ranks) {
+      if (!item.delta || item.until !== drawnRanks.at + RANK_HOLD_MS) continue;
+      shown ??= new Map(ranks);
+      shown.set(key, { ...item, until: item.until + shift });
+    }
+    committedRanks.current = { ordering, ranks: shown ?? ranks };
     let due = Infinity;
-    for (const item of ranks.values()) if (item.delta) due = Math.min(due, item.until);
+    for (const item of committedRanks.current.ranks.values()) if (item.delta) due = Math.min(due, item.until);
     if (!Number.isFinite(due)) return;
-    const timer = window.setTimeout(() => setRanks(before => rankChanges(before, items.map(item => item.key), performance.now())), Math.max(0, due - performance.now()) + 16);
+    const timer = window.setTimeout(() => setRankClock(value => value + 1), Math.max(0, due - performance.now()) + 16);
     return () => window.clearTimeout(timer);
-  }, [ranks, items]);
+  }, [drawnRanks, ordering]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -218,20 +233,14 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   // rank is outside the viewport. The existing motion hook owns their slots.
   const previousWindow = committedWindow.current;
   const crossing = previousWindow?.items !== items ? previousWindow?.keys : undefined;
+  const departing = previousWindow?.items === items ? previousWindow.departing : NO_KEYS;
   const mounted = shownMotion(moving, start, end, !tokens.reducedMotion,
     row => row.key === focusedKey || (!tokens.reducedMotion && (departing.has(row.key) || crossing?.has(row.key) === true)));
   useLayoutEffect(() => {
     const before = committedWindow.current;
-    committedWindow.current = { items, keys: new Set(items.slice(start, end).map(row => row.key)) };
-    if (before?.items === items) return;
-    const keys = tokens.reducedMotion ? NO_KEYS : before?.keys ?? NO_KEYS;
-    setDeparting(held => held.size || keys.size ? keys : held);
+    committedWindow.current = { items, keys: new Set(items.slice(start, end).map(row => row.key)),
+      departing: before?.items === items ? before.departing : tokens.reducedMotion ? NO_KEYS : before?.keys ?? NO_KEYS };
   }, [items, start, end, tokens.reducedMotion]);
-  useEffect(() => {
-    if (!departing.size) return;
-    const timer = window.setTimeout(() => setDeparting(NO_KEYS), glideMs);
-    return () => window.clearTimeout(timer);
-  }, [departing, glideMs]);
   const visible = useMemo(() => ordered.filter((row, slot) => (slot >= start && slot < end) || rowKey(row) === focusedKey
     || (!tokens.reducedMotion && (departing.has(rowKey(row)) || crossing?.has(rowKey(row)) === true))),
     [ordered, start, end, departing, crossing, focusedKey, rowKey, tokens.reducedMotion]);

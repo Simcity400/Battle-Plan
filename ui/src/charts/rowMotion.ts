@@ -16,8 +16,10 @@ export interface MovingRow<T> {
 
 /** The rows after an update: `items` in their new order, and the rows no longer in
  * it fading out for `leaveMs` from `now`. A row coming back while it fades stays.
- * On the `first` update nothing flashes in: the table is simply shown. */
-export function nextRows<T>(previous: readonly MovingRow<T>[], items: readonly { key: string; item: T }[], now: number, leaveMs: number, first = false): MovingRow<T>[] {
+ * On the `first` update nothing flashes in: the table is simply shown. A row that was
+ * already leaving is kept unless it had faded by `cutoff`. */
+export function nextRows<T>(previous: readonly MovingRow<T>[], items: readonly { key: string; item: T }[], now: number, leaveMs: number, first = false,
+  cutoff = now): MovingRow<T>[] {
   const remaining = new Set<string>();
   for (const row of previous) remaining.add(row.key);
   const rows: MovingRow<T>[] = items.map(({ key, item }, slot) => {
@@ -29,8 +31,9 @@ export function nextRows<T>(previous: readonly MovingRow<T>[], items: readonly {
   if (!remaining.size) return rows;
   for (const row of previous) {
     if (!remaining.has(row.key)) continue;
-    const since = row.phase === 'leaving' ? row.since : now;
-    if (now - since < leaveMs) rows.push({ ...row, phase: 'leaving', since });
+    // With no time to fade, a row that goes is gone at once.
+    if (row.phase !== 'leaving') { if (leaveMs > 0) rows.push({ ...row, phase: 'leaving', since: now }); }
+    else if (cutoff - row.since < leaveMs) rows.push(row);
   }
   return rows;
 }
@@ -47,22 +50,26 @@ export interface RowHistory<T> { items: readonly { key: string; item: T }[] | nu
 
 export const EMPTY_HISTORY: RowHistory<never> = { items: null, rows: [] };
 
+/** `rows` less those faded at `now`: the same array when none has, so unchanged rows keep their identity. */
 const unfaded = <T>(rows: readonly MovingRow<T>[], now: number, leaveMs: number) =>
-  rows.filter(row => row.phase !== 'leaving' || now - row.since < leaveMs);
+  rows.some(row => row.phase === 'leaving' && now - row.since >= leaveMs) ? rows.filter(row => row.phase !== 'leaving' || now - row.since < leaveMs) : rows;
 
 /** The rows to draw for `items`, from the committed `history` only, at `now`. Pure: a
  * render repeated (StrictMode) or abandoned (suspended) reads the same history and
  * gives the same rows, and leaves nothing behind. */
-export function shownRows<T>(history: RowHistory<T>, items: readonly { key: string; item: T }[], now: number, leaveMs: number): MovingRow<T>[] {
+export function shownRows<T>(history: RowHistory<T>, items: readonly { key: string; item: T }[], now: number, leaveMs: number): readonly MovingRow<T>[] {
   if (history.items === items) return unfaded(history.rows, now, leaveMs);
   return nextRows(history.rows, items, now, leaveMs, history.items == null);
 }
 
 /** The history once `items` has been committed at `now` (from an effect): the rows
- * drawn become the next update's past, and faded rows are dropped. Unchanged when
- * nothing moved, so committing twice is harmless. */
-export function commitRows<T>(history: RowHistory<T>, items: readonly { key: string; item: T }[], now: number, leaveMs: number): RowHistory<T> {
-  if (history.items !== items) return { items, rows: nextRows(history.rows, items, now, leaveMs, history.items == null) };
-  const rows = unfaded(history.rows, now, leaveMs);
+ * drawn become the next update's past, and rows faded by `cutoff` are dropped. A row
+ * that starts leaving here leaves from `now`. Committing with the time the render faded
+ * rows by (`shownRows`) keeps exactly the rows it drew, so a row is never dropped
+ * unseen by the drop timer. Unchanged when nothing moved, so committing twice is harmless. */
+export function commitRows<T>(history: RowHistory<T>, items: readonly { key: string; item: T }[], now: number, leaveMs: number,
+  cutoff = now): RowHistory<T> {
+  if (history.items !== items) return { items, rows: nextRows(history.rows, items, now, leaveMs, history.items == null, cutoff) };
+  const rows = unfaded(history.rows, cutoff, leaveMs);
   return rows.length === history.rows.length ? history : { items, rows };
 }

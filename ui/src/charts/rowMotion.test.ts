@@ -63,3 +63,31 @@ test('a row that is gone fades out where it was, then is dropped; one that comes
   assert.equal(nextDrop(nextRows(later, items('a', 'c'), 1450, 450), 450), null);
   assert.deepEqual(view(nextRows(leaving, items('a', 'b', 'c'), 1100, 450)), ['a:0:staying', 'b:1:staying', 'c:2:staying']);
 });
+
+test('rows already committed are drawn as the same array until one fades, so drawing again changes nothing', () => {
+  let history = commitRows(EMPTY_HISTORY, items('a', 'b'), 0, 450);
+  const next = items('a');
+  history = commitRows(history, next, 1000, 450);
+  assert.equal(shownRows(history, next, 1200, 450), history.rows, 'nothing has faded yet');
+  assert.notEqual(shownRows(history, next, 1450, 450), history.rows, 'a faded row is left out');
+  const kept = commitRows(history, next, 1200, 450);
+  assert.equal(kept, history, 'committing what is drawn changes nothing');
+});
+
+test('a commit keeps every row its render drew, faded only by the render’s clock, so the drop timer still sees it', () => {
+  let history = commitRows(EMPTY_HISTORY, items('a', 'b'), 0, 450);
+  history = commitRows(history, items('a'), 1000, 450);
+  // Another change commits at 1455, after b faded but before the drop timer moved the render's clock (still 0).
+  const changed = items('c', 'a');
+  assert.deepEqual(view(shownRows(history, changed, 0, 450)), ['c:0:entering', 'a:1:staying', 'b:1:leaving']);
+  const committed = commitRows(history, changed, 1455, 450, 0);
+  assert.deepEqual(view(committed.rows), ['c:0:entering', 'a:1:staying', 'b:1:leaving'], 'the row drawn is kept');
+  assert.equal(nextDrop(committed.rows, 450), 1450, 'so its drop is still timed');
+  assert.deepEqual(view(shownRows(committed, changed, 1466, 450)), ['c:0:entering', 'a:1:staying']);
+});
+
+test('with no time to fade, a row that goes is gone at once', () => {
+  const history = commitRows(EMPTY_HISTORY, items('a', 'b'), 0, 0);
+  assert.deepEqual(view(shownRows(history, items('a', 'c'), 10, 0)), ['a:0:staying', 'c:1:entering']);
+  assert.deepEqual(view(commitRows(history, items('a', 'c'), 10, 0).rows), ['a:0:staying', 'c:1:entering']);
+});

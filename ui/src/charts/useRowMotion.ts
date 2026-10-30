@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { commitRows, EMPTY_HISTORY, nextDrop, shownRows } from './rowMotion.ts';
 import type { MovingRow, RowHistory } from './rowMotion';
 
@@ -11,22 +11,23 @@ export const LEAVE_MS = 450;
  *
  * Rendering only reads committed state (`shownRows`): the history is updated after a
  * commit (`commitRows`, in a layout effect), so a StrictMode double render shows a new
- * row entering on both passes and an abandoned render leaves no trace. */
-export function useRowMotion<T>(items: readonly { key: string; item: T }[]): MovingRow<T>[] {
-  const [history, setHistory] = useState<RowHistory<T>>(EMPTY_HISTORY);
-  // The time rows are faded against: moved on by the drop timer, never read in render.
+ * row entering on both passes and an abandoned render leaves no trace. The history is
+ * held in a ref: what a render drew is already what the commit records, so recording it
+ * renders nothing again. Only a faded row's drop renders again. */
+export function useRowMotion<T>(items: readonly { key: string; item: T }[]): readonly MovingRow<T>[] {
+  const history = useRef<RowHistory<T>>(EMPTY_HISTORY);
+  // The time rows are faded against: moved on by the drop timer.
   const [clock, setClock] = useState(0);
-  const rows = shownRows(history, items, clock, LEAVE_MS);
+  const rows = shownRows(history.current, items, clock, LEAVE_MS);
   useLayoutEffect(() => {
-    setHistory(previous => commitRows(previous, items, performance.now(), LEAVE_MS));
-  }, [items, clock]);
-  // A fading row is dropped once it has faded.
-  const due = nextDrop(history.rows, LEAVE_MS);
-  useEffect(() => {
+    // Faded by the render's own clock: the commit keeps every row it drew, and the timer drops the rest.
+    history.current = commitRows(history.current, items, performance.now(), LEAVE_MS, clock);
+    // A fading row is dropped once it has faded.
+    const due = nextDrop(history.current.rows, LEAVE_MS);
     if (due == null) return;
     const timer = window.setTimeout(() => setClock(performance.now()), Math.max(0, due - performance.now()) + 16);
     return () => window.clearTimeout(timer);
-  }, [due]);
+  }, [items, clock]);
   return rows;
 }
 
