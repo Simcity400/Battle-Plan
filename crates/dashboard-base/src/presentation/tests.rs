@@ -153,6 +153,26 @@ fn preparation_and_requests_showing_visual_mods_keep_their_own_cache_entries() {
     }
 }
 
+/// Under visual mods the GUI registry is read ahead strictly, as a flag's shield reads it, so the
+/// first shield reads no interface file again.
+#[test]
+fn the_gui_registry_is_read_ahead_in_the_mode_shields_read_it() {
+    let (_machine, source, mut options) = machine("read_ahead_guis");
+    assert!(present(
+        &source,
+        &mut options,
+        &[choice("mod/art.mod", "Art")]
+    ));
+    let catalogue = crate::catalogue::bound_catalogue(&source, &options)
+        .unwrap()
+        .unwrap();
+    assert!(catalogue.content.layers.presentation().shows_visual_mods());
+    crate::products::read_ahead::warm_guis(&catalogue);
+    let loads = catalogue.content_loads();
+    drop(installed_content_core::content::strict(|| catalogue.guis().is_ok()));
+    assert_eq!(catalogue.content_loads(), loads);
+}
+
 /// Shows `selected` on `source`, as the service does from its campaign's settings, and admits
 /// the next request of content under it (`options`, as the service admits a request, its mount
 /// resolved at its entry).

@@ -28,9 +28,10 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
         .spawn(move || job_priority::confined(|| read(&source, options)));
 }
 
-/// Reads the politics content (the event feed, politics and special projects), then the effect
-/// description content (doctrine mastery, special projects and politics), each through the cache
-/// its products read, then the rest the catalogue reads lazily, which prepared answers kept on
+/// Reads the native GUI registry every country flag's shield is drawn with ([`warm_guis`]), then
+/// the politics content (the event feed, politics and special projects), then the effect description
+/// content (doctrine mastery, special projects and politics), each through the cache its products
+/// read, then the rest the catalogue reads lazily, which prepared answers kept on
 /// disk wait for ([`Catalogue::read_readers`]), then production lines' icon content where the
 /// store key stamps its inputs ([`production_lines::warm_icons`]), over the catalogue already
 /// bound for `options`: a product asking meanwhile waits for the same read, and a cache a request
@@ -45,7 +46,8 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     if let Some(source) = source.upgrade() {
         source.resolve_bound(&mut options);
     }
-    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 4] = [
+    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 5] = [
+        |_, _, catalogue| warm_guis(&catalogue),
         |source, _, catalogue| drop(politics_content::warm(source, catalogue)),
         |_, _, catalogue| {
             if let Ok(content) = catalogue.scripted_content() {
@@ -76,6 +78,16 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
             return;
         }
         step(&source, &options, catalogue);
+    }
+}
+
+/// Reads `catalogue`'s native GUI registry in the mode a flag's shield reads it: strictly while
+/// visual mods are shown, as every artwork transaction under them reads.
+pub(crate) fn warm_guis(catalogue: &Catalogue) {
+    if catalogue.content.layers.presentation().shows_visual_mods() {
+        installed_content_core::content::strict(|| drop(catalogue.guis()));
+    } else {
+        drop(catalogue.guis());
     }
 }
 
@@ -130,6 +142,7 @@ mod tests {
         let read = politics_content::politics_content(&source, &options).unwrap();
         assert!(Arc::ptr_eq(&warmed, &read));
         assert_eq!(politics_content::content_loads(&source), 1);
+        assert!(catalogue.guis_loaded());
         assert!(catalogue.scripted_content().unwrap().effects_read());
         assert!(catalogue.readers_read());
     }
