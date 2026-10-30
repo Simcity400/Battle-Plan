@@ -35,7 +35,7 @@ export function flagSpec(size: CountryFlagSize): FactSpec<string, Promise<Readon
   let spec = specs.get(size);
   if (!spec) {
     spec = {
-      product: 'country-flags', perRequest: 32,
+      product: 'country-flags', perRequest: 32, shared: true,
       params: (branchId, hour, tags) => ({ branchId, hour, tags, size }),
       extract: async data => new Map((data as CountryFlagReply).flags.map(image => [image.tag, flagImageUrl(image)] as const)),
     };

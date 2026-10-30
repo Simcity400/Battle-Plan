@@ -64,7 +64,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
             resolve(store.pickRead(wanted));
           };
           const done = () => { if (wanted.every(item => store.answered(item.hour, item.tag))) finish(); };
-          requests = new FactRequests<CountryStyle>(store, (plan, signal, onChunk) => readFacts(client, { ...ids, branchId }, STYLES, plan, signal, onChunk), done);
+          requests = new FactRequests<CountryStyle>(store, (plan, signal, onChunk) => readFacts(client, { ...ids, branchId, content }, STYLES, plan, signal, onChunk), done);
           controller.signal.addEventListener('abort', finish, { once: true });
           deadline = setTimeout(finish, FOUNDER_WAIT_MS);
           requests.want(wanted, hours, STYLES.perRequest);
@@ -78,7 +78,7 @@ function useCampaignFactions(client: DashboardClient, source: DashboardSource | 
         setState({ key, factions, leaderColours: leaderColoursRead, founders: new Map([...founders].map(([id, founder]) => [id, founder.tag])), warnings });
       }).catch(error => { if (!controller.signal.aborted) setState({ key, warnings: [], error: error instanceof Error ? error.message : String(error) }); });
     return () => controller.abort();
-  }, [client, source, key]);
+  }, [client, source, key, content]);
   return state.key === key ? state : { key, warnings: [] };
 }
 

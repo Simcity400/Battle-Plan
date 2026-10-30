@@ -18,7 +18,7 @@ export const FOLLOW_MS = 400;
 
 /** Styles from `country-styles`, which names at most 64 countries per request. */
 export const STYLES: FactSpec<CountryStyle> = {
-  product: 'country-styles', perRequest: 64,
+  product: 'country-styles', perRequest: 64, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.map(style => [style.tag, style] as const)),
 };

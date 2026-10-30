@@ -8,6 +8,7 @@ import { TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardSource } from './client';
 import { loadTransientProduct } from './products.ts';
 import { replySize, setReplySize } from './replySizes.ts';
+import { sharedFacts } from './sharedFacts.ts';
 
 /** A country at an hour. */
 export interface NameAt { hour: number; tag: string }
@@ -419,6 +420,10 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
   perRequest: number;
   /** Preserve displayed list order for artwork; other dated facts use time order. */
   requestOrder?: FactRequestOrder;
+  /** Each country's value is its own whatever else its request asked, so every store reading
+   * the spec on a recording shares what is asked and told (`sharedFacts`). Without it each store
+   * reads on its own, as a value carrying its reply's other facts (its warnings) must. */
+  shared?: boolean;
   params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
   extract: (data: unknown, params?: unknown, source?: FactSource) => Found;
 }
@@ -537,9 +542,11 @@ async function readChunk<V>(client: DashboardClient, source: FactSource, spec: F
   const found = new Map<string, V>();
   // Each failed country, and whether its request may be tried again.
   const failed = new Map<string, boolean>();
-  await readFacts(client, source, spec, pieces, signal, (_hour, part, values, again = true) => {
-    if (values) for (const [tag, value] of values) found.set(tag, value);
-    else for (const tag of part) failed.set(tag, again);
+  await readFacts(client, source, spec, pieces, signal, (_hour, part, values, again = true, partly) => {
+    if (values) {
+      for (const [tag, value] of values) found.set(tag, value);
+      for (const [tag, retry] of partly ?? []) failed.set(tag, retry);
+    } else for (const tag of part) failed.set(tag, again);
   }, recording);
   if (signal.aborted) return;
   const alike = new Set(failed.values());
@@ -549,20 +556,45 @@ async function readChunk<V>(client: DashboardClient, source: FactSource, spec: F
 }
 
 /** Reads a plan on the transient path, one request at a time, reporting each
- * chunk's values (null when its read failed: a gap or an error). Stops when aborted. */
+ * chunk's values (null when its read failed: a gap or an error; with the countries
+ * failed when only some did). Every store reading a `shared` spec on the recording
+ * shares what is asked and told (`sharedFacts`), so a country one has asked at an
+ * hour is never asked again while it is kept. Stops when aborted. */
 export async function readFacts<V>(client: DashboardClient, source: FactSource, spec: FactSpec<V, FactsFound<V>>,
   plan: FactPlan, signal: AbortSignal, onChunk: Parameters<FactRead<V>>[2], recording?: DashboardSource): Promise<void> {
-  for (const [hour, tags] of plan) {
-    let found: ReadonlyMap<string, V> | null = null;
-    let retryable = false;
+  if (!spec.shared) {
+    for (const [hour, tags] of plan) {
+      let found: ReadonlyMap<string, V> | null = null;
+      let retryable = false;
+      try {
+        const params = spec.params(source.branchId, hour, tags);
+        const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal, recording);
+        found = await spec.extract(data, params, source);
+      } catch (error) {
+        retryable = transientError(error);
+      }
+      if (signal.aborted) return;
+      onChunk(hour, tags, found, retryable);
+    }
+    return;
+  }
+  // Whether a recording is given chooses the product's route (`loadTransientProduct`).
+  const scope = JSON.stringify([source.revision, source.branchId, source.content ?? null, !!recording]);
+  const facts = sharedFacts<V>(client, source.sourceId, scope, spec, () => async (hour, tags, asked) => {
     try {
       const params = spec.params(source.branchId, hour, tags);
-      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal, recording);
-      found = await spec.extract(data, params, source);
+      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, asked, recording);
+      return await spec.extract(data, params, source);
     } catch (error) {
-      retryable = transientError(error);
+      return { failed: transientError(error) };
     }
-    if (signal.aborted) return;
-    onChunk(hour, tags, found, retryable);
+  });
+  for (const [hour, tags] of plan) {
+    const read = await facts.read(hour, tags, signal);
+    if (!read || signal.aborted) return;
+    const alike = new Set(read.failed.values());
+    if (!read.failed.size) onChunk(hour, tags, read.found);
+    else if (read.failed.size === tags.length && alike.size === 1) onChunk(hour, tags, null, [...alike][0]);
+    else onChunk(hour, tags, read.found, undefined, read.failed);
   }
 }

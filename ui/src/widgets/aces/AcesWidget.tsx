@@ -35,7 +35,7 @@ import './aces.css';
 const EMPTY: readonly AceRow[] = [];
 const WARNINGS: string[] = [];
 const PORTRAITS: FactSpec<AirAcePortrait> = {
-  product: 'air-ace-portraits', perRequest: Infinity,
+  product: 'air-ace-portraits', perRequest: Infinity, shared: true,
   params: (branchId, hour, ids) => ({ branchId, hour, ids }),
   extract: value => new Map(validatePortraits(value).portraits.map(p => [p.id, { ...p, image: p.image && drawableIcon(p.image) ? p.image : null }])),
 };

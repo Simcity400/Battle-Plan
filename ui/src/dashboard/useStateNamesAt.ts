@@ -8,7 +8,7 @@ import type { StateAt, StateLabel } from './stateNamesData';
 
 // State IDs use the same bounded per-hour request store as country facts.
 const NAMES: FactSpec<StateLabel> = {
-  product: 'place-names', perRequest: stateNameRequestOptions.perRequest,
+  product: 'place-names', perRequest: stateNameRequestOptions.perRequest, shared: true,
   params: (branchId, hour, states) => ({ branchId, places: [], states: states.map(state => ({ stateId: Number(state), hour })) }),
   extract: data => new Map(validateStateNamesReply(data).states.map(name => [String(name.stateId), { state: name.stateId, name: name.name, missing: name.missing }])),
 };

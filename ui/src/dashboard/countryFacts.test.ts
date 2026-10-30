@@ -130,3 +130,29 @@ test('per-hour reads go around the shared product cache, so they never evict wid
   await readFacts(client, { sourceId: 's', revision: 'v', branchId: '1' }, spec, [[0, ['GER']]], new AbortController().signal, () => {});
   assert.equal(calls.get('country-styles'), 302);
 });
+
+test('a shared spec asks a country at an hour once however many reads want it, an unshared one each time', async () => {
+  const asked: string[][] = [];
+  const client = { product: async (input: ProductRequest) => {
+    const tags = (input.params as { tags: string[] }).tags;
+    asked.push(tags);
+    return { sourceId: input.sourceId, revision: input.revision, product: input.product, data: { tags } };
+  } } as unknown as DashboardClient;
+  const own: FactSpec<string> = { product: 'country-styles', perRequest: 64, params: (branchId, hour, tags) => ({ branchId, hour, tags }),
+    extract: data => new Map((data as { tags: string[] }).tags.map(tag => [tag, `${tag}!`])) };
+  const shared: FactSpec<string> = { ...own, shared: true };
+  const source = { sourceId: 's', revision: 'v', branchId: '1' };
+  for (const [spec, expected] of [[shared, [['GER', 'ITA'], ['JAP']]], [own, [['GER', 'ITA'], ['ITA', 'JAP']]]] as const) {
+    asked.length = 0;
+    const told: string[] = [];
+    const tell = (_hour: number, tags: readonly string[], found: ReadonlyMap<string, string> | null) => {
+      for (const tag of tags) told.push(`${tag}=${found?.get(tag)}`);
+    };
+    await Promise.all([
+      readFacts(client, source, spec, [[0, ['GER', 'ITA']]], new AbortController().signal, tell),
+      readFacts(client, source, spec, [[0, ['ITA', 'JAP']]], new AbortController().signal, tell),
+    ]);
+    assert.deepEqual(asked, expected);
+    assert.deepEqual(told.sort(), ['GER=GER!', 'ITA=ITA!', 'ITA=ITA!', 'JAP=JAP!']);
+  }
+});

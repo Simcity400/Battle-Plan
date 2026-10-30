@@ -539,6 +539,28 @@ pub(crate) struct FlagFiles {
     )>,
 }
 
+/// Each of `images` drawn by `draw`, which draws a batch in one pass: a batch it refuses whole
+/// (its readback past the device's limit, say) is drawn flag by flag, so a flag fails only as it
+/// fails alone. The refusal of a batch of no flags is given back whole.
+fn draw_each(
+    images: &[&Rgba8Image],
+    draw: impl Fn(&[&Rgba8Image]) -> io::Result<Vec<Rgba8Image>>,
+) -> io::Result<Vec<io::Result<Rgba8Image>>> {
+    match draw(images) {
+        Ok(drawn) => Ok(drawn.into_iter().map(Ok).collect()),
+        Err(_) if images.len() > 1 => Ok(images
+            .iter()
+            .map(|image| {
+                draw(&[*image])?
+                    .pop()
+                    .ok_or_else(|| invalid("The shield drew no flag"))
+            })
+            .collect()),
+        Err(error) if images.is_empty() => Err(error),
+        Err(error) => Ok(vec![Err(error)]),
+    }
+}
+
 /// The file at `asset` of `layers` in set `set_index`, decoded at `cell`, once per `stack`.
 fn flag_file(
     files: &FlagFiles,
@@ -1007,7 +1029,6 @@ impl FlagContext {
             .map_or((&self.content.layers, &self.cells, &self.files), |style| {
                 style.flags_from(&self.content.layers, &self.cells, &self.files)
             });
-        let mut cache = FlagCache::over(Arc::clone(files));
         if let Some(style) = shield_style {
             warnings.extend(style.warnings.iter().cloned());
         }
@@ -1027,13 +1048,14 @@ impl FlagContext {
             };
             // A flag key is the recorded tag (any bytes but NUL, spaces
             // included) with a cosmetic tag or party token; one this reader
-            // cannot resolve costs only this country's flag.
+            // cannot resolve costs only this country's flag. Each country's search reports what
+            // it found as it would asked alone, so its refusal is its own whatever else is asked.
             let (found, findings) = find_flag(
                 flag_layers,
                 shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets),
                 cells,
                 &choice.candidates,
-                &mut cache,
+                &mut FlagCache::over(Arc::clone(files)),
             )?;
             let reasons: Vec<_> = findings
                 .iter()
@@ -1078,55 +1100,58 @@ impl FlagContext {
                 }
             }
         }
-        let drawn = match shield_style {
+        // Each flag drawn, or why it could not be.
+        let drawn: Vec<io::Result<Rgba8Image>> = match shield_style {
             Some(style) => {
+                let panel = request.size == CountryFlagSize::Panel;
                 let images: Vec<_> = shielded
                     .iter()
                     .map(|(_, _, image)| image.as_ref())
                     .collect();
-                style.draw(
-                    &self.content.layers,
-                    &images,
-                    request.size == CountryFlagSize::Panel,
-                )
-            }
-            None => Ok(shielded
-                .iter()
-                .map(|(_, _, image)| image.as_ref().clone())
-                .collect()),
-        };
-        match drawn {
-            Ok(images) => {
-                for ((tag, asset, _), image) in shielded.into_iter().zip(images) {
-                    let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
-                    let image = resize(&image, width, height);
-                    let key = flag_key(&asset, &image.pixels);
-                    match crate::catalogue::png_data_url(&image) {
-                        Ok(png) => flags.push(CountryFlagImage {
-                            tag,
-                            key,
-                            asset,
-                            width: image.width,
-                            height: image.height,
-                            png,
-                        }),
-                        Err(error) => unavailable.push(CountryFlagUnavailable {
-                            tag,
-                            reason: format!("flag artwork could not be encoded: {error}"),
-                        }),
+                match draw_each(&images, |batch| {
+                    style.draw(&self.content.layers, batch, panel)
+                }) {
+                    Ok(drawn) => drawn,
+                    // With no flag to draw, the shield's refusal is still the reply's to name.
+                    Err(error) => {
+                        warnings.push(format!("Shield artwork unavailable: {error}"));
+                        Vec::new()
                     }
                 }
             }
-            // The shield's passes differ only in the flag they sample, so a
-            // refused draw refuses every flag.
-            Err(error) => {
-                warnings.push(format!("Shield artwork unavailable: {error}"));
-                unavailable.extend(shielded.into_iter().map(|(tag, _, _)| {
-                    CountryFlagUnavailable {
-                        tag,
-                        reason: format!("Shield artwork unavailable: {error}"),
+            None => shielded
+                .iter()
+                .map(|(_, _, image)| Ok(image.as_ref().clone()))
+                .collect(),
+        };
+        for ((tag, asset, _), drawn) in shielded.into_iter().zip(drawn) {
+            let image = match drawn {
+                Ok(image) => image,
+                Err(error) => {
+                    let reason = format!("Shield artwork unavailable: {error}");
+                    if !warnings.contains(&reason) {
+                        warnings.push(reason.clone());
                     }
-                }));
+                    unavailable.push(CountryFlagUnavailable { tag, reason });
+                    continue;
+                }
+            };
+            let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
+            let image = resize(&image, width, height);
+            let key = flag_key(&asset, &image.pixels);
+            match crate::catalogue::png_data_url(&image) {
+                Ok(png) => flags.push(CountryFlagImage {
+                    tag,
+                    key,
+                    asset,
+                    width: image.width,
+                    height: image.height,
+                    png,
+                }),
+                Err(error) => unavailable.push(CountryFlagUnavailable {
+                    tag,
+                    reason: format!("flag artwork could not be encoded: {error}"),
+                }),
             }
         }
         Ok(CountryFlagReply {
@@ -1588,6 +1613,126 @@ mod tests {
                 None => assert!(reply.warnings.is_empty(), "{:?}", reply.warnings),
             }
         }
+    }
+
+    /// A country's refused flag gives the reason it gives asked alone, whatever else its request
+    /// asks: two countries naming one unreadable file, or one unresolvable name, each name it.
+    #[test]
+    fn each_countrys_flag_refusal_is_its_own_whatever_else_is_asked() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let mut truncated = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 0x28, 30, 20, 10, 255,
+        ];
+        truncated.pop();
+        let (catalogue, _folders) = crate::catalogue::texture_tests::texture_catalogue(
+            &[],
+            &[("gfx/flags/medium/mod_truncated.tga", truncated)],
+        );
+        let choices: [(&str, &str); 4] = [
+            ("AAA", "mod_truncated"),
+            ("BBB", "mod_truncated"),
+            ("CCC", "../escape"),
+            ("DDD", "../escape"),
+        ];
+        let context = FlagContext {
+            presentation: Default::default(),
+            options: ResolveOptions {
+                game_dir: "G".into(),
+                user_dir: "U".into(),
+                cache_dir: "C".into(),
+            },
+            content: Arc::clone(&catalogue.content),
+            cells: [[1, 1]; 3],
+            cell_fallbacks: BTreeSet::new(),
+            files: Arc::default(),
+            choices: choices
+                .iter()
+                .map(|&(tag, candidate)| {
+                    (
+                        tag.to_owned(),
+                        FlagChoice {
+                            raw: 0,
+                            tag: tag.to_owned(),
+                            candidates: vec![candidate.to_owned()],
+                            refusal: None,
+                        },
+                    )
+                })
+                .collect(),
+            branch_id: "1".into(),
+            hour: 0,
+            warnings: Vec::new(),
+        };
+        let reply = |tags: &[&str]| {
+            let request = CountryFlagParams {
+                branch_id: "1".into(),
+                hour: 0,
+                tags: tags.iter().map(|&tag| tag.to_owned()).collect(),
+                size: CountryFlagSize::Medium,
+            };
+            context
+                .reply(&request, None, &AtomicBool::new(false))
+                .unwrap()
+        };
+        let together = reply(&choices.map(|(tag, _)| tag));
+        for (tag, _) in choices {
+            let reason = |reply: &CountryFlagReply| {
+                reply
+                    .unavailable
+                    .iter()
+                    .find(|unavailable| unavailable.tag == tag)
+                    .map(|unavailable| unavailable.reason.clone())
+            };
+            let alone = reason(&reply(&[tag]));
+            assert!(
+                alone
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("read status")
+                        || reason.contains("cannot be resolved")),
+                "{tag}: {alone:?}"
+            );
+            assert_eq!(reason(&together), alone, "{tag}");
+        }
+    }
+
+    /// A batch the renderer refuses whole is drawn flag by flag, in order, each flag failing
+    /// only as it fails alone; a single flag's refusal is its own and an empty batch's given back.
+    #[test]
+    fn a_refused_shield_batch_is_drawn_flag_by_flag() {
+        let image = |value: u8| Rgba8Image {
+            width: 1,
+            height: 1,
+            pixels: vec![value; 4],
+        };
+        let images = [image(1), image(2), image(3)];
+        let batch: Vec<&Rgba8Image> = images.iter().collect();
+        let draw = |batch: &[&Rgba8Image]| -> io::Result<Vec<Rgba8Image>> {
+            match batch {
+                [] => Err(io::Error::other("no shield program")),
+                [image] if image.pixels[0] == 2 => Err(io::Error::other("refused")),
+                [image] => Ok(vec![(*image).clone()]),
+                _ => Err(io::Error::other("readback past the device's limit")),
+            }
+        };
+        let told = |drawn: Vec<io::Result<Rgba8Image>>| {
+            drawn
+                .into_iter()
+                .map(|drawn| drawn.map(|image| image.pixels[0]).map_err(|error| error.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            told(draw_each(&batch, &draw).unwrap()),
+            [Ok(1), Err("refused".to_owned()), Ok(3)]
+        );
+        assert_eq!(
+            told(draw_each(&batch[1..2], &draw).unwrap()),
+            [Err("refused".to_owned())]
+        );
+        assert_eq!(
+            draw_each(&[], &draw).unwrap_err().to_string(),
+            "no shield program"
+        );
     }
 
     #[test]

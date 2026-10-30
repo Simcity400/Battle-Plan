@@ -92,7 +92,7 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
 
 /** Names from `country-styles`, which names at most 64 countries per request. */
 const NAMES: FactSpec<string> = {
-  product: 'country-styles', perRequest: 64,
+  product: 'country-styles', perRequest: 64, shared: true,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
   extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => typeof style.name === 'string' ? [[style.tag, style.name] as const] : [])),
 };
