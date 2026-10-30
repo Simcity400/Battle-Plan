@@ -598,6 +598,7 @@ fn run() -> io::Result<()> {
     let (Some(recording), Some(columnar), Some(output)) = (recording, columnar, output) else {
         return Err(usage());
     };
+    dashboard::prepared::driver::registry::FamilyId::parse(&family)?;
     // These families have a row path here.
     if row
         && (prepared.is_some()

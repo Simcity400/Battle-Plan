@@ -72,10 +72,6 @@ impl Own for Subjects {
         "independent.subjects"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["subjects"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let Some(file) = load.read(&format!("subjects-{branch}"))? else {
             return Ok(Box::new(SubjectsBranch {
@@ -199,10 +195,6 @@ impl Own for PeaceOutcomes {
         "independent.peace"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["peace-deals"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let prepared = match load.read(&peace_state(branch))? {
             Some(file) => serde_json::from_reader(io::BufReader::new(file))?,
@@ -276,10 +268,6 @@ impl Own for Ideas {
 
     fn timing(&self) -> &'static str {
         "independent.ideas"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["idea-history"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

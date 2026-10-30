@@ -103,9 +103,6 @@ trait Sampled: Serialize + DeserializeOwned + Send + 'static {
     fn family() -> &'static prepass::Family;
     /// The timing row of its whole preparation.
     const TIMING: &'static str;
-    /// The product queries and series family kinds that wait only for its
-    /// coverage and refuse from its refusals.
-    const GATES: &'static [&'static str];
     /// Each hour its own thread observes, counted in tests.
     #[cfg(test)]
     const OBSERVED: &'static str;
@@ -222,7 +219,6 @@ impl Sampled for air_force::prepared::Prepared {
     }
 
     const TIMING: &'static str = "independent.air";
-    const GATES: &'static [&'static str] = &["air-force-size"];
     #[cfg(test)]
     const OBSERVED: &'static str = "air.observed";
     const RESUMES: bool = true;
@@ -314,7 +310,6 @@ impl Sampled for navy::prepared::Prepared {
     }
 
     const TIMING: &'static str = "independent.navy";
-    const GATES: &'static [&'static str] = &["navy-size"];
     #[cfg(test)]
     const OBSERVED: &'static str = "navy.observed";
     const RESUMES: bool = true;
@@ -403,7 +398,6 @@ impl Sampled for StabilityAccumulator {
     }
 
     const TIMING: &'static str = "independent.stability";
-    const GATES: &'static [&'static str] = &["country-stability", "stability-parts"];
     #[cfg(test)]
     const OBSERVED: &'static str = "stability.observed";
 
@@ -487,9 +481,6 @@ impl Sampled for equipment_losses::prepared::Prepared {
     }
 
     const TIMING: &'static str = "independent.equipment_losses";
-    /// Its replies name countries through the identity history and wait for
-    /// it too (`independent::JOINT`).
-    const GATES: &'static [&'static str] = &[];
     #[cfg(test)]
     const OBSERVED: &'static str = "equipment_losses.observed";
 
@@ -578,9 +569,6 @@ impl Sampled for supply_health::prepared::Prepared {
     }
 
     const TIMING: &'static str = "independent.supply";
-    /// Its replies name countries through the identity history and wait for
-    /// it too (`independent::JOINT`).
-    const GATES: &'static [&'static str] = &[];
     #[cfg(test)]
     const OBSERVED: &'static str = "supply.observed";
 
@@ -641,7 +629,6 @@ impl Sampled for party_history::prepared::Prepared {
     }
 
     const TIMING: &'static str = "independent.parties";
-    const GATES: &'static [&'static str] = &["party-history"];
     #[cfg(test)]
     const OBSERVED: &'static str = "parties.observed";
 
@@ -721,7 +708,7 @@ impl Sampled for party_history::prepared::Prepared {
 /// The `Sampled` impl of an economy family: each observes every accepted hour
 /// and rebuilds only where its watched tables changed or after a gap.
 macro_rules! economy_family {
-    ($type:ty, $family:ident, $timing:literal, $gates:expr, $observed:literal, $tables:expr,
+    ($type:ty, $family:ident, $timing:literal, $observed:literal, $tables:expr,
      |$state:ident, $frame:ident, $block:ident, $changes:ident| $observe:expr) => {
         impl Sampled for $type {
             fn family() -> &'static prepass::Family {
@@ -729,7 +716,6 @@ macro_rules! economy_family {
             }
 
             const TIMING: &'static str = $timing;
-            const GATES: &'static [&'static str] = $gates;
             #[cfg(test)]
             const OBSERVED: &'static str = $observed;
 
@@ -776,7 +762,6 @@ economy_family!(
     fuel_branches::Prepared,
     FUEL_BRANCHES_FAMILY,
     "independent.fuel_branches",
-    &[fuel_branches::QUERY],
     "fuel_branches.observed",
     fuel_branches::TABLES,
     |state, frame, _block, changes| state.observe_changes(frame, changes)
@@ -785,7 +770,6 @@ economy_family!(
     market::Prepared,
     MARKET_FAMILY,
     "independent.market",
-    &[market::HISTORY, market::LEDGER],
     "market.observed",
     market::tables(),
     |state, frame, block, changes| state.observe_changes(block.replay.format, frame, changes)
@@ -794,7 +778,6 @@ economy_family!(
     lend_lease_balance::Prepared,
     LEND_LEASE_BALANCE_FAMILY,
     "independent.lend_lease_balance",
-    &[lend_lease_balance::QUERY],
     "lend_lease_balance.observed",
     lend_lease_balance::TABLES,
     |state, frame, _block, changes| state.observe_changes(frame, changes)
@@ -803,7 +786,6 @@ economy_family!(
     production_catalogue::Prepared,
     PRODUCTION_CATALOGUE_FAMILY,
     "independent.production_catalogue",
-    &[production_catalogue::QUERY],
     "production_catalogue.observed",
     production_catalogue::tables(),
     |state, frame, block, changes| state.observe_changes(block.replay.format, frame, changes)
@@ -812,7 +794,6 @@ economy_family!(
     convoy_health::Prepared,
     CONVOYS_FAMILY,
     "independent.convoys",
-    &[convoy_health::QUERY],
     "convoys.observed",
     convoy_health::TABLES,
     |state, frame, _block, changes| state.observe_changes(frame, changes)
@@ -827,7 +808,6 @@ impl Sampled for politics_state::history::Prepared {
     }
 
     const TIMING: &'static str = "independent.politics_state";
-    const GATES: &'static [&'static str] = &[politics_state::history::QUERY];
     #[cfg(test)]
     const OBSERVED: &'static str = "politics_state.observed";
 
@@ -890,7 +870,6 @@ impl Sampled for Trade {
     }
 
     const TIMING: &'static str = "independent.trade";
-    const GATES: &'static [&'static str] = &["trade-flows"];
     #[cfg(test)]
     const OBSERVED: &'static str = "trade.observed";
 
@@ -959,7 +938,6 @@ impl Sampled for division_equipment::history::Prepared {
     }
 
     const TIMING: &'static str = "independent.division-equipment";
-    const GATES: &'static [&'static str] = &[division_equipment::history::QUERY];
     #[cfg(test)]
     const OBSERVED: &'static str = "division-equipment.observed";
 
@@ -1046,9 +1024,6 @@ impl Sampled for Territory {
     }
 
     const TIMING: &'static str = "independent.territory";
-    /// Its replies name countries through the identity history and wait for
-    /// it too (`independent::JOINT`).
-    const GATES: &'static [&'static str] = &[];
     #[cfg(test)]
     const OBSERVED: &'static str = "territory.observed";
 
@@ -1508,10 +1483,6 @@ impl<S: Sampled> Own for Entry<S> {
 
     fn timing(&self) -> &'static str {
         S::TIMING
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        S::GATES
     }
 
     /// A family that folds reads its blocks on pre-pass workers instead.

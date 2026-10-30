@@ -52,10 +52,6 @@ impl Own for Leaders {
         "independent.leaders"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["unit-leaders"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         // A branch it refused is never read again; one it has not committed
         // starts new, as hourly preparation's new branch state does.

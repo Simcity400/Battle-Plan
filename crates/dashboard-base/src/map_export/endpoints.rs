@@ -11,7 +11,7 @@ fn namespace(key: &Key, branch: BranchId) -> io::Result<Namespace> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    Namespace::new(&family, branch, "map-export-endpoints")
+    Namespace::new(&family, branch, ENDPOINT_FACTS)
 }
 fn limits(budget: &MemoryBudget) -> FactLimits {
     FactLimits {

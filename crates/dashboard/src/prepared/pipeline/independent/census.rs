@@ -535,7 +535,7 @@ fn observe_block<C: Census>(
 
 /// A family's continuation section of one branch.
 pub(super) fn continuation(family: &str, branch: u64) -> String {
-    format!("{family}-continuation-{branch}")
+    crate::prepared::driver::registry::continuation_section(family, branch)
 }
 
 /// Write a continuation, compressed as the hourly branch state holding it is.
@@ -609,7 +609,7 @@ impl<C: Census> Branch for CensusBranch<C> {
 
 /// Country factories: counts, ranks, parts, compositions and supplying
 /// reads. Faction totals of factories read them with the faction rosters
-/// and the identity history (`independent::JOINT`).
+/// and the identity history (`registry::QUERIES`).
 pub(in crate::prepared::pipeline) struct Factories;
 
 pub(in crate::prepared::pipeline) static FACTORIES: Factories = Factories;
@@ -621,11 +621,6 @@ impl Own for Factories {
 
     fn timing(&self) -> &'static str {
         "independent.factories"
-    }
-
-    /// Its queries wait for the identity history too (`independent::JOINT`).
-    fn gates(&self) -> &'static [&'static str] {
-        &[]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -648,11 +643,6 @@ impl Own for Nukes {
         "independent.nukes"
     }
 
-    /// Its queries wait for the identity history too (`independent::JOINT`).
-    fn gates(&self) -> &'static [&'static str] {
-        &[]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         CensusBranch::<country_nukes::prepared::Prepared>::load(load, branch)
     }
@@ -668,9 +658,6 @@ impl Own for Repairs {
     }
     fn timing(&self) -> &'static str {
         "independent.repairs"
-    }
-    fn gates(&self) -> &'static [&'static str] {
-        &["dockyard-spending"]
     }
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         CensusBranch::<dockyard_repairs::Prepared>::load(load, branch)

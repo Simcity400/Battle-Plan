@@ -23,7 +23,7 @@
 //! The feed's continuation, which hourly preparation keeps in its branch
 //! state, is saved as `event_feed-continuation-<branch>`; its facts series
 //! and catalogue are published where hourly preparation flushes them. Its
-//! query reads the pages of other families too (`independent::JOINT`).
+//! query reads the pages of other families too (`registry::QUERIES`).
 
 use super::{
     Block, Branch, Load, Observed, Own,
@@ -304,13 +304,6 @@ impl Own for Feed {
 
     fn timing(&self) -> &'static str {
         "independent.event_feed"
-    }
-
-    /// Its query waits for the families whose pages it reads too
-    /// (`independent::JOINT`).
-    /// The event-choice and decision lists read the feed's own facts alone.
-    fn gates(&self) -> &'static [&'static str] {
-        &["event-choices", "decisions"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

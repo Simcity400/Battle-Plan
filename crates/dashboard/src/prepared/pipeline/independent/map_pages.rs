@@ -17,9 +17,6 @@ impl Own for MapPages {
     fn timing(&self) -> &'static str {
         "independent.map_pages"
     }
-    fn gates(&self) -> &'static [&'static str] {
-        &[]
-    }
     fn paced(&self) -> bool {
         true
     }

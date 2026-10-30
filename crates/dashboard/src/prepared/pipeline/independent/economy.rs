@@ -433,7 +433,7 @@ fn observe_block(
 
 /// A family's continuation section of one branch.
 fn continuation(family: &str, branch: u64) -> String {
-    format!("{family}-continuation-{branch}")
+    crate::prepared::driver::registry::continuation_section(family, branch)
 }
 
 /// Write a continuation, compressed as the hourly branch state holding it is.
@@ -515,14 +515,6 @@ impl Own for Construction {
 
     fn timing(&self) -> &'static str {
         "independent.construction"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "construction-log",
-            "construction-log-manifest",
-            "construction-spending",
-        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -737,10 +729,6 @@ impl Own for Stockpile {
         "independent.stockpile"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["equipment-stockpile"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         Ok(Box::new(StockpileBranch {
             prepared: read(load, &continuation("stockpile", branch))?.unwrap_or_default(),
@@ -877,14 +865,6 @@ impl Own for Production {
 
     fn timing(&self) -> &'static str {
         "independent.production"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "production-select",
-            "production-spending",
-            "military-factory-spending",
-        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -1094,11 +1074,6 @@ impl Own for Experience {
         "independent.experience"
     }
 
-    /// Its series queries route by the family kind `country-experience`.
-    fn gates(&self) -> &'static [&'static str] {
-        &["country-experience"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         Ok(Box::new(ExperienceBranch {
             accumulator: read(load, &continuation("experience", branch))?.unwrap_or_default(),
@@ -1232,10 +1207,6 @@ impl Own for Fuel {
 
     fn timing(&self) -> &'static str {
         "independent.fuel"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["country-fuel"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

@@ -444,6 +444,49 @@ fn bytes(mut range: Range) -> Vec<u8> {
 }
 
 #[test]
+fn a_guarded_writer_and_its_stages_write_only_what_the_guard_admits() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("other", &b"before"[..]).unwrap();
+    let mut stage = writer.stage().unwrap();
+    stage.guard_sections(Arc::new(|section: &str| {
+        if section.starts_with("mine-") {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("not mine: {section}"),
+            ))
+        }
+    }));
+    stage.write("mine-a", &b"a"[..]).unwrap();
+    stage.write_at("mine-a", 0, &b"b"[..]).unwrap();
+    let mut nested = stage.fork().unwrap();
+    for refused in [
+        stage.write_at("other", 0, &b"after"[..]),
+        stage.write("other-new", &b"x"[..]).map(drop),
+        stage.ensure_section("other-empty"),
+        nested.write("other-nested", &b"x"[..]).map(drop),
+    ] {
+        assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+    nested.write("mine-nested", &b"n"[..]).unwrap();
+    for staged in nested.into_staged().unwrap() {
+        stage.adopt(staged).unwrap();
+    }
+    writer.adopt_all(stage.into_staged().unwrap()).unwrap();
+    // The parent stays unguarded.
+    writer.write_at("other", 0, &b"parent"[..]).unwrap();
+    writer.commit().unwrap();
+    let read = |section: &str| fixture.store.read(&key, section, 0).unwrap().map(bytes);
+    assert_eq!(read("mine-a").unwrap(), b"b");
+    assert_eq!(read("mine-nested").unwrap(), b"n");
+    assert_eq!(read("other").unwrap(), b"parent");
+    assert!(read("other-new").is_none() && read("other-nested").is_none());
+}
+
+#[test]
 fn write_replace_and_read_multiple_sections() {
     let fixture = Fixture::new();
     let key = fixture.key();

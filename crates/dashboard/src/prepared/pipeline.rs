@@ -1,5 +1,6 @@
 //! One accepted selected-frame walk, with domain state and cursor published together.
 
+use super::driver::{plan, registry};
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 use super::prepass::{self, Folded, Outcome, PrePass};
 use super::{Section, State};
@@ -136,571 +137,18 @@ pub struct Accepted {
 }
 
 pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section> {
-    [
-        ("focus", "National focus"),
-        ("focus-display", "Focus titles and icons"),
-        ("production", "Produced equipment"),
-        ("map", "Campaign map"),
-        ("country-measure", "Country balances"),
-        ("country-identities", "Country identities"),
-        ("army-size", "Army size"),
-        (
-            "volunteers-expeditionaries",
-            "Volunteers and expeditionaries",
-        ),
-        ("air-force-size", "Air force size"),
-        ("navy-size", "Navy size"),
-        ("country-nukes", "Nuclear arsenal"),
-        ("country-factories", "Factories"),
-        ("dockyard-repairs", "Dockyard repairs"),
-        ("supply-health", "Supply health"),
-        ("equipment-stockpile", "Equipment stockpile"),
-        ("country-groups", "Country groups"),
-        ("military-air-ledger", "Aircraft losses and bombing damage"),
-        ("air-aces", "Aces and portraits"),
-        ("raids", "Raid episodes and tallies"),
-        ("air-superiority", "Regional air scores"),
-        ("game-score", "Game score"),
-        ("construction", "Construction"),
-        ("resource-balance", "Resources"),
-        ("trade-flows", "Trade flows"),
-        ("land-battles", "Land battles"),
-        ("naval-battles", "Naval battles"),
-        ("division-log", "Division log"),
-        ("subjects", "Subject relations"),
-        ("autonomy", "Subject autonomy"),
-        ("world-tension", "World tension"),
-        ("wars", "Wars"),
-        ("idea-history", "Ideas and advisors"),
-        ("event-feed", "Event feed"),
-        ("party-history", "Parties and leaders"),
-        ("politics-state", "Elections, exiles and balances of power"),
-        ("unit-leaders", "Generals and admirals"),
-        ("country-stability", "Stability and war support"),
-        ("country-experience", "Experience"),
-        ("politics-ledger", "Political and command power accounting"),
-        (
-            "diplomacy-state",
-            "Opinions, pacts and diplomatic proposals",
-        ),
-        ("country-fuel", "Fuel and consumption"),
-        ("fuel-branches", "Fuel by military branch"),
-        ("market", "International market and lend-lease"),
-        ("lend-lease-balance", "Lend-lease balances"),
-        (
-            "production-catalogue",
-            "Licences, industrial organisations and designs",
-        ),
-        ("convoys", "Convoy and trade efficiency"),
-        ("territory", "Territory and regions"),
-        ("occupation", "Occupied states and occupation trends"),
-        ("land-owners", "Land-owning country catalogue"),
-        ("decryption", "Decryption"),
-        ("operative-placements", "Operative placements"),
-        ("agency-comparison", "Agency comparison"),
-        ("operatives-roster", "Operatives roster"),
-        ("espionage-log", "Espionage operations"),
-        ("research", "Research"),
-        ("peace-deals", "Peace deals and territory transfers"),
-        ("special-projects", "Special projects"),
-        ("war-casualties", "Casualties"),
-        ("equipment-losses", "Equipment losses"),
-        ("air-missions", "Air missions"),
-        ("air-statistics", "Air statistics"),
-        ("regional-weather", "Regional weather"),
-        ("minefields", "Minefields"),
-        ("naval-supremacy", "Naval supremacy"),
-        ("doctrine-mastery", "Doctrine mastery"),
-        ("occupation-reserve", "Occupation reserve manpower"),
-        ("intel-network-coverage", "Intel network coverage"),
-        ("naval-repairs", "Naval repairs"),
-        ("naval-refits", "Refits"),
-        ("country-styles", "Country names and colours"),
-        ("division-equipment", "Division equipment"),
-    ]
-    .into_iter()
-    .map(|(id, label)| Section {
-        id: id.into(),
-        label: label.into(),
-        state,
-        done: done.to_string(),
-        total: total.map(|value| value.to_string()),
-        error: None,
-    })
-    .collect()
+    registry::STATUS
+        .iter()
+        .map(|&(id, label)| Section {
+            id: id.into(),
+            label: label.into(),
+            state,
+            done: done.to_string(),
+            total: total.map(|value| value.to_string()),
+            error: None,
+        })
+        .collect()
 }
-
-/// One refusable prepared family. `name` is its observer name at the
-/// `time_family!` and lane call sites. A refusal also reaches `dependents`,
-/// whose observation reads this family's state. `queries` are the product keys
-/// and series family kinds whose replies read this family's pages.
-struct Family {
-    name: &'static str,
-    sections: &'static [&'static str],
-    dependents: &'static [&'static str],
-    queries: &'static [&'static str],
-}
-
-// The map and land-owner catalogue are recording-wide publication state, not
-// branch families: their errors still stop preparation.
-const FAMILIES: &[Family] = &[
-    Family {
-        name: "air-missions",
-        sections: &["air-missions"],
-        dependents: &[],
-        queries: &["air-missions"],
-    },
-    Family {
-        name: "air-statistics",
-        sections: &["air-statistics"],
-        dependents: &[],
-        queries: &["air-statistics"],
-    },
-    Family {
-        name: "regional-weather",
-        sections: &["regional-weather"],
-        dependents: &[],
-        queries: &["regional-weather"],
-    },
-    Family {
-        name: "minefields",
-        sections: &["minefields"],
-        dependents: &[],
-        queries: &["minefields"],
-    },
-    Family {
-        name: "naval-supremacy",
-        sections: &["naval-supremacy"],
-        dependents: &[],
-        queries: &["naval-supremacy"],
-    },
-    Family {
-        name: "doctrine-mastery",
-        sections: &["doctrine-mastery"],
-        dependents: &[],
-        queries: &["doctrine-mastery"],
-    },
-    Family {
-        name: "occupation-reserve",
-        sections: &["occupation-reserve"],
-        dependents: &[],
-        queries: &["occupation-reserve-manpower"],
-    },
-    Family {
-        name: "intel-network-coverage",
-        sections: &["intel-network-coverage"],
-        dependents: &[],
-        queries: &["intel-network-coverage"],
-    },
-    Family {
-        name: "naval-repairs",
-        sections: &["naval-repairs"],
-        dependents: &[],
-        queries: &["naval-repairs"],
-    },
-    Family {
-        name: "naval-refits",
-        sections: &["naval-refits"],
-        dependents: &[],
-        queries: &["naval-refits"],
-    },
-    // Read by interactive products through their coverage, never by a prepared query.
-    Family {
-        name: "country-styles",
-        sections: &["country-styles"],
-        dependents: &[],
-        queries: &[],
-    },
-    Family {
-        name: "division-equipment",
-        sections: &["division-equipment"],
-        dependents: &[],
-        queries: &["division-equipment-history"],
-    },
-    Family {
-        name: "faction_state",
-        sections: &["faction-state"],
-        dependents: &[],
-        queries: &["faction-state"],
-    },
-    Family {
-        name: "diplomacy_state",
-        sections: &["diplomacy-state"],
-        dependents: &[],
-        queries: &["diplomacy-state"],
-    },
-    Family {
-        name: "focus",
-        sections: &["focus", "focus-display"],
-        dependents: &[],
-        queries: &[
-            "focus-hour",
-            "focus-unavailable",
-            "focus-order-page",
-            "focus-completions",
-            "event-feed",
-        ],
-    },
-    Family {
-        name: "production",
-        sections: &["production"],
-        dependents: &[],
-        queries: &[
-            "production-select",
-            "production-spending",
-            "dockyard-spending",
-            "military-factory-spending",
-            "scoreboard",
-        ],
-    },
-    Family {
-        name: "measure",
-        sections: &["country-measure"],
-        dependents: &[],
-        queries: &["country-measure", "scoreboard"],
-    },
-    // Territory's owned-state observation is the only driver of the identity
-    // history; the feed observes it, and these queries read it through
-    // `country_history::prepared_branch_histories`.
-    Family {
-        name: "identities",
-        sections: &["country-identities"],
-        dependents: &["territory", "event_feed"],
-        queries: &[
-            "country-identities",
-            "unit-leaders",
-            "world-tension",
-            "supply-health",
-            "raids",
-            "scoreboard",
-            "faction-totals",
-            "naval-losses",
-            "equipment-losses",
-            "occupation-trend",
-            "agency-comparison",
-            "operatives-roster",
-        ],
-    },
-    Family {
-        name: "army",
-        sections: &["army-size", "volunteers-expeditionaries"],
-        dependents: &[],
-        queries: &["army-size", "volunteers-expeditionaries", "scoreboard"],
-    },
-    Family {
-        name: "air",
-        sections: &["air-force-size"],
-        dependents: &[],
-        queries: &["air-force-size", "scoreboard"],
-    },
-    Family {
-        name: "navy",
-        sections: &["navy-size"],
-        dependents: &[],
-        queries: &["navy-size", "scoreboard"],
-    },
-    Family {
-        name: "nukes",
-        sections: &["country-nukes"],
-        dependents: &[],
-        queries: &["country-nukes", "scoreboard", "event-feed"],
-    },
-    Family {
-        name: "factories",
-        sections: &["country-factories"],
-        dependents: &[],
-        queries: &["country-factories", "scoreboard", "faction-totals"],
-    },
-    Family {
-        name: "repairs",
-        sections: &["dockyard-repairs"],
-        dependents: &[],
-        queries: &["dockyard-spending"],
-    },
-    Family {
-        name: "supply",
-        sections: &["supply-health"],
-        dependents: &[],
-        queries: &["supply-health"],
-    },
-    Family {
-        name: "stockpile",
-        sections: &["equipment-stockpile"],
-        dependents: &[],
-        queries: &["equipment-stockpile"],
-    },
-    Family {
-        name: "groups",
-        sections: &["country-groups"],
-        dependents: &["air_superiority"],
-        queries: &["country-groups", "faction-totals", "event-feed"],
-    },
-    Family {
-        name: "air_ledger",
-        sections: &["military-air-ledger"],
-        dependents: &[],
-        queries: &["military-air-ledger"],
-    },
-    Family {
-        name: "aces",
-        sections: &["air-aces"],
-        dependents: &[],
-        queries: &["air-aces", "air-ace-portraits"],
-    },
-    Family {
-        name: "raids",
-        sections: &["raids"],
-        dependents: &[],
-        queries: &["raids"],
-    },
-    Family {
-        name: "air_superiority",
-        sections: &["air-superiority"],
-        dependents: &[],
-        queries: &["air-superiority"],
-    },
-    Family {
-        name: "game_score",
-        sections: &["game-score"],
-        dependents: &[],
-        queries: &["game-score"],
-    },
-    Family {
-        name: "construction",
-        sections: &["construction"],
-        dependents: &[],
-        queries: &[
-            "construction-log",
-            "construction-log-manifest",
-            "construction-spending",
-        ],
-    },
-    Family {
-        name: "resources",
-        sections: &["resource-balance"],
-        dependents: &[],
-        queries: &["resource-balance"],
-    },
-    Family {
-        name: "trade",
-        sections: &["trade-flows"],
-        dependents: &[],
-        queries: &["trade-flows"],
-    },
-    Family {
-        name: "land",
-        sections: &["land-battles"],
-        dependents: &[],
-        queries: &[
-            "land-battles",
-            "land-battles-manifest",
-            "land-battles-ranking",
-            "land-battle-course",
-        ],
-    },
-    Family {
-        name: "naval",
-        sections: &["naval-battles"],
-        dependents: &[],
-        queries: &[
-            "naval-battles",
-            "naval-battles-manifest",
-            "naval-battles-ranking",
-            "naval-battle-details",
-            "ships-sunk",
-            "ships-sunk-manifest",
-            "ships-sunk-battle-titles",
-            "naval-losses",
-        ],
-    },
-    Family {
-        name: "divisions",
-        sections: &["division-log"],
-        dependents: &[],
-        queries: &[
-            "division-log",
-            "division-log-manifest",
-            "division-log-totals",
-        ],
-    },
-    Family {
-        name: "subjects",
-        sections: &["subjects"],
-        dependents: &[],
-        queries: &["subjects", "event-feed"],
-    },
-    Family {
-        name: "autonomy",
-        sections: &["autonomy"],
-        dependents: &[],
-        queries: &["autonomy"],
-    },
-    Family {
-        name: "tension",
-        sections: &["world-tension"],
-        dependents: &[],
-        queries: &["world-tension"],
-    },
-    Family {
-        name: "wars",
-        sections: &["wars"],
-        dependents: &[],
-        queries: &["wars"],
-    },
-    Family {
-        name: "ideas",
-        sections: &["idea-history"],
-        dependents: &[],
-        queries: &["idea-history", "event-feed"],
-    },
-    Family {
-        name: "event_feed",
-        sections: &["event-feed"],
-        dependents: &[],
-        queries: &["event-feed", "event-choices", "decisions", "civil-wars"],
-    },
-    Family {
-        name: "parties",
-        sections: &["party-history"],
-        dependents: &[],
-        queries: &["party-history"],
-    },
-    Family {
-        name: "fuel_branches",
-        sections: &["fuel-branches"],
-        dependents: &[],
-        queries: &["fuel-branches"],
-    },
-    Family {
-        name: "market",
-        sections: &["market"],
-        dependents: &[],
-        queries: &["market-history", "market-ledger"],
-    },
-    Family {
-        name: "lend_lease_balance",
-        sections: &["lend-lease-balance"],
-        dependents: &[],
-        queries: &["lend-lease-balance"],
-    },
-    Family {
-        name: "production_catalogue",
-        sections: &["production-catalogue"],
-        dependents: &[],
-        queries: &["production-catalogue"],
-    },
-    Family {
-        name: "convoys",
-        sections: &["convoys"],
-        dependents: &[],
-        queries: &["convoy-health"],
-    },
-    Family {
-        name: "politics_state",
-        sections: &["politics-state"],
-        dependents: &[],
-        queries: &["politics-state-history", "civil-wars"],
-    },
-    Family {
-        name: "leaders",
-        sections: &["unit-leaders"],
-        dependents: &[],
-        queries: &["unit-leaders"],
-    },
-    Family {
-        name: "stability",
-        sections: &["country-stability"],
-        dependents: &[],
-        queries: &["country-stability", "stability-parts", "scoreboard"],
-    },
-    Family {
-        name: "experience",
-        sections: &["country-experience"],
-        dependents: &[],
-        queries: &["country-experience"],
-    },
-    Family {
-        name: "politics_ledger",
-        sections: &["politics-ledger"],
-        dependents: &[],
-        queries: &["politics-ledger"],
-    },
-    Family {
-        name: "fuel",
-        sections: &["country-fuel"],
-        dependents: &[],
-        queries: &["country-fuel"],
-    },
-    Family {
-        name: "territory",
-        sections: &["territory"],
-        dependents: &[],
-        queries: &["territory", "scoreboard", "faction-totals"],
-    },
-    Family {
-        name: "occupation",
-        sections: &["occupation"],
-        dependents: &[],
-        queries: &[
-            "occupied-states",
-            "occupied-states-manifest",
-            "occupation-trend",
-        ],
-    },
-    Family {
-        name: "intelligence",
-        sections: &[
-            "decryption",
-            "operative-placements",
-            "agency-comparison",
-            "operatives-roster",
-            "espionage-log",
-        ],
-        dependents: &[],
-        queries: &[
-            "decryption",
-            "operative-placements",
-            "agency-comparison",
-            "operatives-roster",
-            "espionage-log",
-        ],
-    },
-    Family {
-        name: "research",
-        sections: &["research"],
-        dependents: &[],
-        queries: &["research"],
-    },
-    Family {
-        name: "peace",
-        sections: &["peace-deals"],
-        dependents: &[],
-        queries: &["peace-deals"],
-    },
-    Family {
-        name: "projects",
-        sections: &["special-projects"],
-        dependents: &[],
-        queries: &["special-projects", "event-feed"],
-    },
-    Family {
-        name: "casualties",
-        sections: &["war-casualties"],
-        dependents: &[],
-        queries: &[
-            "war-casualties",
-            "casualty-breakdown",
-            "casualty-pairs",
-            "scoreboard",
-        ],
-    },
-    Family {
-        name: "equipment_losses",
-        sections: &["equipment-losses"],
-        dependents: &[],
-        queries: &["equipment-losses"],
-    },
-];
 
 /// A family's refusal of one branch's recorded data: the first refusing hour and
 /// the family's own error text, which its queries answer with. A dependent
@@ -772,9 +220,14 @@ impl Refused {
                 from: from.map(str::to_owned),
             },
         );
-        for row in FAMILIES.iter().filter(|row| row.name == family) {
-            for dependent in row.dependents {
-                self.refuse(dependent, hour, error.clone(), Some(from.unwrap_or(family)));
+        if let Some(row) = plan::current().family(family) {
+            for observer in row.observers {
+                self.refuse(
+                    observer.name(),
+                    hour,
+                    error.clone(),
+                    Some(from.unwrap_or(family)),
+                );
             }
         }
     }
@@ -1339,14 +792,14 @@ fn joint_coverage(
     source: &Source,
     content: Option<&ContentOptions>,
     branch: u64,
-    families: &[&'static str],
+    families: &[registry::FamilyId],
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Coverage>> {
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
     let mut walked = None;
     let mut joint: Option<Coverage> = None;
-    for (position, &family) in families.iter().enumerate() {
+    for (position, family) in families.iter().map(|family| family.name()).enumerate() {
         let extent = if independent::registered(family) {
             own_short(
                 family,
@@ -1360,8 +813,8 @@ fn joint_coverage(
         };
         let Some(extent) = extent else {
             // The families after it wait too, as far as this reply knows.
-            for &family in &families[position + 1..] {
-                super::coverage::note_short(gate_entry(family));
+            for family in &families[position + 1..] {
+                super::coverage::note_short(gate_entry(family.name()));
             }
             return Ok(None);
         };
@@ -1432,7 +885,10 @@ fn gate_entry(family: &'static str) -> &'static str {
 /// these.
 pub(crate) fn gate(product: &str) -> Vec<&'static str> {
     let mut entries: Vec<_> = match (independent::joint(product), independent::gating(product)) {
-        (Some(families), _) => families.iter().map(|&family| gate_entry(family)).collect(),
+        (Some(families), _) => families
+            .iter()
+            .map(|family| gate_entry(family.name()))
+            .collect(),
         (None, Some(family)) => vec![family],
         (None, None) => vec![super::coverage::WALK],
     };
@@ -1452,11 +908,12 @@ pub(crate) fn query_pages(
     product: &str,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
     let mut gates: std::collections::BTreeSet<_> = gate(product).into_iter().collect();
-    for family in FAMILIES
+    for family in plan::current()
+        .families()
         .iter()
         .filter(|family| family.queries.contains(&product))
     {
-        gates.insert(gate_entry(family.name));
+        gates.insert(gate_entry(family.id.name()));
     }
     gates
         .into_iter()
@@ -1480,11 +937,18 @@ pub(crate) fn published_pages(
     key: &store::SourceKey,
     branch: u64,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    let families: std::collections::BTreeSet<&str> = FAMILIES
+    let plan = plan::current();
+    let families: std::collections::BTreeSet<&str> = plan
+        .families()
         .iter()
-        .map(|family| family.name)
-        .chain(independent::names())
-        .chain(["production-lines"])
+        .map(|family| family.id.name())
+        .chain(plan.names())
+        .chain(
+            registry::JOBS
+                .iter()
+                .filter(|job| job.runner == registry::Runner::Beside)
+                .map(|job| job.name),
+        )
         .collect();
     std::iter::once(coverage_section(branch))
         .chain(
@@ -1542,7 +1006,8 @@ pub fn install_gates() {
 /// route refused, rather than with the family's earlier prepared data. A
 /// family prepared on its own keeps its refusals in its own page, which it
 /// publishes before the hourly walk reaches the refusing hour: its gated
-/// queries, and every query `FAMILIES` lists as reading it, refuse from there.
+/// queries, and every query the registry lists as reading it, refuse from
+/// there.
 pub(crate) fn refusal(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -1550,8 +1015,10 @@ pub(crate) fn refusal(
     query: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    let families: Vec<&Family> = FAMILIES
+    let families: Vec<&registry::Descriptor> = plan::current()
+        .families()
         .iter()
+        .copied()
         .filter(|family| family.queries.contains(&query))
         .collect();
     if families.is_empty()
@@ -1580,17 +1047,17 @@ pub(crate) fn refusal(
         Ok(Some(serde_json::from_reader(io::BufReader::new(file))?))
     };
     let walked = page(&coverage_section(branch))?;
-    // In `FAMILIES` order, as the hourly walk's page alone answers.
-    for family in families {
-        let own = if independent::registered(family.name) {
-            page(&independent::coverage_section(family.name, branch))?
+    // In registry order, as the hourly walk's page alone answers.
+    for family in families.into_iter().map(|family| family.id.name()) {
+        let own = if independent::registered(family) {
+            page(&independent::coverage_section(family, branch))?
         } else {
             None
         };
         if let Some(refusal) = [own.as_ref(), walked.as_ref()]
             .into_iter()
             .flatten()
-            .find_map(|page| page.refused.0.get(family.name))
+            .find_map(|page| page.refused.0.get(family))
         {
             return refused(refusal);
         }
@@ -1640,6 +1107,8 @@ fn reload_flushed() -> bool {
 #[cfg(test)]
 thread_local! {
     pub(super) static RELOAD_FLUSHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_RESTORED: std::cell::RefCell<Option<Vec<&'static str>>> =
+        const { std::cell::RefCell::new(None) };
     static TEST_ALL_TABLES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Flushed branches continued in memory into their next block.
     pub(super) static CONTINUED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -1655,21 +1124,8 @@ fn selected() -> &'static [TableId] {
     if independent::walks_own() {
         return &TableId::ALL;
     }
-    static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
-        let reads = [
-            crate::prepared_measure::TABLES,
-            map_snow::TABLES,
-            &crate::products::land_battles::CENSUS_TABLES,
-            crate::products::game_score::SCORE_TABLES,
-            crate::products::autonomy::TABLES,
-            crate::products::land_owners::TABLES,
-            &installed_content_country_names::country_names::TABLES,
-        ];
-        TableId::ALL
-            .into_iter()
-            .filter(|table| reads.iter().any(|tables| tables.contains(table)))
-            .collect()
-    });
+    static SELECTED: std::sync::LazyLock<Vec<TableId>> =
+        std::sync::LazyLock::new(|| plan::rows().walk_tables());
     &SELECTED
 }
 
@@ -1845,6 +1301,38 @@ fn metadata_prefix(
     }
     Ok(true)
 }
+/// Whether [`load_branch`] restores `family`'s saved state: the walk restores
+/// only what it goes on with ([`Refused::live`]).
+fn restores(refused: &Refused, family: &'static str) -> bool {
+    let live = refused.live(family);
+    #[cfg(test)]
+    if live {
+        TEST_RESTORED.with(|restored| {
+            if let Some(restored) = restored.borrow_mut().as_mut() {
+                restored.push(family);
+            }
+        });
+    }
+    live
+}
+
+/// Runs `run`, returning with its value every family whose saved state
+/// [`load_branch`] restored on this thread, in order.
+#[cfg(test)]
+fn with_test_restored<T>(run: impl FnOnce() -> T) -> (T, Vec<&'static str>) {
+    struct Reset(Option<Vec<&'static str>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_RESTORED.with(|restored| *restored.borrow_mut() = self.0.take());
+        }
+    }
+    let reset = Reset(TEST_RESTORED.with(|restored| restored.replace(Some(Vec::new()))));
+    let value = run();
+    let restored = TEST_RESTORED.with(|restored| restored.borrow_mut().take());
+    drop(reset);
+    (value, restored.unwrap_or_default())
+}
+
 /// Restores a branch continuation. A refused family's own pages are never read
 /// again: its state stays at its default and it is not observed for the branch.
 fn load_branch(
@@ -1873,7 +1361,9 @@ fn load_branch(
     if state.schema != SCHEMA {
         return Err(invalid("Unsupported prepared branch schema"));
     }
-    state.stability.restore(replay, branch)?;
+    if restores(refused, "stability") {
+        state.stability.restore(replay, branch)?;
+    }
     if independent::hourly("production") && state.production.schema != 1 {
         return Err(invalid("Unsupported prepared production state schema"));
     }
@@ -1893,10 +1383,10 @@ fn load_branch(
             replay, branch,
         ));
     }
-    if refused.live("measure") {
+    if restores(refused, "measure") {
         state.measure.validate_checkpoint()?;
     }
-    if refused.live("identities") {
+    if restores(refused, "identities") {
         // Kept under territory's name while the identities are prepared on their own.
         let section = format!("{}-{branch}", independent::kept_as("country-identities"));
         let file = match saved {
@@ -1906,7 +1396,7 @@ fn load_branch(
         .ok_or_else(|| invalid("Prepared country identities are missing"))?;
         state.identities = serde_json::from_reader(io::BufReader::new(file))?;
     }
-    if refused.live("groups") {
+    if restores(refused, "groups") {
         // Kept under a reader's names while the groups are prepared on their own.
         let section = format!("{}-{branch}", independent::kept_as("country-groups"));
         let file = match saved {
@@ -1918,7 +1408,7 @@ fn load_branch(
             io::BufReader::new(file),
         )?);
     }
-    if refused.live("air_ledger") {
+    if restores(refused, "air_ledger") {
         state.air_ledger = Box::new(
             crate::products::military_air_ledger::prepared::Prepared::read(
                 store, key, saved, branch,
@@ -1928,7 +1418,7 @@ fn load_branch(
             .air_ledger
             .read_catalogues(store, key, saved, branch)?;
     }
-    if refused.live("subjects") {
+    if restores(refused, "subjects") {
         let section = format!("subjects-{branch}");
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
@@ -1937,27 +1427,27 @@ fn load_branch(
         .ok_or_else(|| invalid("Prepared subjects are missing"))?;
         state.subjects = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
     }
-    if refused.live("autonomy") {
+    if restores(refused, "autonomy") {
         state.autonomy = Box::new(
             super::series::read_saved_catalogue(store, key, saved, "autonomy", branch)?
                 .ok_or_else(|| invalid("Prepared autonomy is missing"))?
                 .1,
         );
     }
-    if refused.live("tension") {
+    if restores(refused, "tension") {
         state.tension = Box::new(
             super::series::read_saved_catalogue(store, key, saved, "world-tension", branch)?
                 .ok_or_else(|| invalid("Prepared world tension is missing"))?
                 .1,
         );
     }
-    if refused.live("wars") {
+    if restores(refused, "wars") {
         state.wars = Box::new(crate::products::wars::prepared::Observer::restore(
             super::series::read_saved_catalogue(store, key, saved, "wars", branch)?
                 .ok_or_else(|| invalid("Prepared wars are missing"))?,
         ));
     }
-    if refused.live("ideas") {
+    if restores(refused, "ideas") {
         let section = format!("idea-history-{branch}");
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
@@ -1968,7 +1458,7 @@ fn load_branch(
             io::BufReader::new(file),
         )?);
     }
-    if refused.live("politics_ledger") {
+    if restores(refused, "politics_ledger") {
         let section = format!("politics-ledger-state-{branch}");
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
@@ -1979,7 +1469,7 @@ fn load_branch(
             io::BufReader::new(file),
         )?);
     }
-    if refused.live("occupation") {
+    if restores(refused, "occupation") {
         let section = format!("occupation-{branch}");
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
@@ -1990,7 +1480,7 @@ fn load_branch(
             io::BufReader::new(file),
         )?);
     }
-    if refused.live("parties") {
+    if restores(refused, "parties") {
         let section = format!("party-history-{branch}");
         let file = match saved {
             Some(previous) if previous != key => store.read_prefix(previous, key, &section, 0)?,
@@ -2001,24 +1491,24 @@ fn load_branch(
             io::BufReader::new(file),
         )?);
     }
-    if refused.live("aces") {
+    if restores(refused, "aces") {
         state.aces = Box::new(crate::products::air_aces::prepared::Prepared::resume(
             store, key, saved, replay, branch,
         )?);
     }
-    if refused.live("raids") {
+    if restores(refused, "raids") {
         state.raids = Box::new(crate::products::raids::prepared::Prepared::read(
             store, key, saved, branch,
         )?);
     }
-    if refused.live("air_superiority") {
+    if restores(refused, "air_superiority") {
         state.air_superiority = Box::new(
             crate::products::air_superiority::prepared::Prepared::read(store, key, saved, branch)?,
         );
     }
     // The append admission probe precedes the prefix's current-key binding.
     // Restore leaders when load_branch runs again after that publication.
-    if saved == Some(key) && refused.live("leaders") {
+    if saved == Some(key) && restores(refused, "leaders") {
         let (keys, metadata) = super::series::read_catalogue(store, key, "unit-leaders", branch)?
             .ok_or_else(|| invalid("Prepared leader catalogue is missing"))?;
         let file = store
@@ -2030,7 +1520,7 @@ fn load_branch(
             metadata,
         )?);
     }
-    if refused.live("intelligence") {
+    if restores(refused, "intelligence") {
         state.intelligence = Box::new(crate::products::intelligence_prepared::Observer::load(
             store, key, saved, branch,
         )?);
@@ -2184,6 +1674,15 @@ pub fn restore(
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Accepted>> {
+    super::driver::restore(source, content, cancelled)
+}
+
+/// [`restore`] of the row backends the driver selected.
+pub(super) fn restore_rows(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Accepted>> {
     check_cancel(cancelled)?;
     let (store, key) = super::files(source, content)?;
     if !store.is_reusable(&key)? {
@@ -2222,6 +1721,16 @@ pub fn walk_window() -> Option<(&'static str, Option<(usize, usize)>)> {
 }
 
 pub fn run(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+    accepted: impl FnMut(&Accepted),
+) -> io::Result<Accepted> {
+    super::driver::prepare(source, content, cancelled, accepted)
+}
+
+/// [`run`] on the row backends the driver selected.
+pub(super) fn prepare_rows(
     source: &Source,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
@@ -4814,7 +4323,7 @@ fn run_planned(
                     // identities while those are prepared on their own.
                     let identity_section = independent::kept_as("country-identities");
                     // Positions are the serial order. Identities' refusal reaches
-                    // event_feed and territory (`FAMILIES` dependents), which flush
+                    // event_feed and territory (registry observers), which flush
                     // after it, so they share its task; groups' dependent
                     // air_superiority flushes before groups.
                     let tasks = vec![
@@ -5809,23 +5318,21 @@ fn all_refused(state: &Checkpoint) -> BTreeMap<u64, Refused> {
 fn refused_sections(sections: &mut [Section], refused: &BTreeMap<u64, Refused>) {
     for (branch, families) in refused {
         for (name, refusal) in &families.0 {
-            let Some(family) = FAMILIES.iter().find(|family| family.name == name) else {
+            let Some(family) = plan::current().family(name) else {
                 continue;
             };
             let from = refusal
                 .from
                 .as_deref()
-                .and_then(|from| FAMILIES.iter().find(|family| family.name == from))
-                .map_or(String::new(), |from| {
-                    format!("{} refused: ", from.sections[0])
-                });
+                .and_then(|from| plan::current().family(from)?.status.first())
+                .map_or(String::new(), |row| format!("{row} refused: "));
             let reason = format!(
                 "Branch {branch} refused from hour {}: {from}{}",
                 refusal.hour, refusal.error
             );
             for section in sections
                 .iter_mut()
-                .filter(|section| family.sections.contains(&section.id.as_str()))
+                .filter(|section| family.status.contains(&section.id.as_str()))
             {
                 section.state = State::Failed;
                 section.error = Some(

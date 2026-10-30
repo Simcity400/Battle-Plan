@@ -15,9 +15,6 @@ impl Own for Factions {
     fn timing(&self) -> &'static str {
         "independent.faction_state"
     }
-    fn gates(&self) -> &'static [&'static str] {
-        &["faction-state"]
-    }
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let state = match load.read(&prepared::state_section(branch))? {
             Some(file) => {

@@ -4,10 +4,11 @@
 //! what the hourly walk skips, keeps and gates, and a family's deadline
 //! splits the quiet spans of blocks read by their changes. Group commits
 //! publish what each family committing alone publishes, in fewer store
-//! commits, and a family refused at adoption or failing its write inside a
-//! group leaves the others' batches committed.
+//! commits, and a family whose write is refused or fails inside a group
+//! leaves the others' batches committed.
 use super::family_lanes::{assert_payloads_equal, payloads};
 use super::*;
+use crate::prepared::driver::registry::{self, Descriptor, FamilyId, PrivateRead};
 use crate::prepared::{
     frame_changes::FrameChanges,
     prepass::{self, Extract, Family, Folded},
@@ -333,18 +334,6 @@ impl Own for Hours {
         self.timing
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        self.gates
-    }
-
-    fn kept(&self) -> &'static [(&'static str, &'static str)] {
-        self.kept
-    }
-
-    fn read_by(&self) -> &'static [&'static str] {
-        self.read_by
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let section = format!("synthetic-{}-state-{branch}", self.family.name);
         let saved = match load.read(&section)? {
@@ -460,11 +449,60 @@ static OWN_SUBJECTS: Hours = hours(
     "own-subjects",
 );
 
-fn registered(families: &[&'static Hours]) -> Vec<&'static dyn Own> {
-    families
-        .iter()
-        .map(|&family| family as &'static dyn Own)
-        .collect()
+/// Synthetic families prepared on their own, and the registry entries
+/// their gates, same-hour readers and `synthetic-<name>` sections make.
+struct Synthetic(Vec<&'static dyn Own>, Vec<&'static Descriptor>);
+
+fn registered(families: &[&'static Hours]) -> Synthetic {
+    let mut descriptors: Vec<&'static Descriptor> = Vec::new();
+    let mut shared = Vec::new();
+    for hours in families {
+        let name = hours.family.name;
+        let readers: Vec<FamilyId> = hours
+            .read_by
+            .iter()
+            .map(|&reader| FamilyId::new(reader))
+            .collect();
+        let named = registry::family_named(name)
+            .copied()
+            .unwrap_or(registry::family(name));
+        let mut sections = named.sections.to_vec();
+        sections.push(Box::leak(format!("synthetic-{name}").into_boxed_str()));
+        // A section several write belongs to the first.
+        if let Some(section) = hours.overlap
+            && !shared.contains(&section)
+        {
+            shared.push(section);
+            sections.push(section);
+        }
+        descriptors.push(Box::leak(Box::new(Descriptor {
+            gates: hours.gates,
+            private: (!hours.kept.is_empty()).then(|| PrivateRead {
+                readers: Box::leak(readers.into_boxed_slice()),
+                kept: hours.kept,
+            }),
+            sections: Box::leak(sections.into_boxed_slice()),
+            ..named
+        })));
+    }
+    for &reader in families.iter().flat_map(|hours| hours.read_by) {
+        if registry::family_named(reader).is_none()
+            && !descriptors.iter().any(|family| family.id.name() == reader)
+        {
+            descriptors.push(Box::leak(Box::new(registry::family(reader))));
+        }
+    }
+    Synthetic(
+        families
+            .iter()
+            .map(|&family| family as &'static dyn Own)
+            .collect(),
+        descriptors,
+    )
+}
+
+fn with_families<T>(families: &Synthetic, run: impl FnOnce() -> T) -> T {
+    independent::with_test_descriptors(&families.0, &families.1, run)
 }
 
 /// Branch 1 in `blocks` blocks of four hours (108 and 109 a gap before the
@@ -573,7 +611,7 @@ fn families_prepared_on_their_own_at_once_publish_what_they_publish_one_after_an
             forget("parity-alpha");
             forget("parity-beta");
             let apart = prepass::with_test_prepass(workers, None, || {
-                independent::with_test_families(&families, || {
+                with_families(&families, || {
                     independent::with_test_one_after_another(|| both(&mut fixture))
                 })
             });
@@ -586,7 +624,7 @@ fn families_prepared_on_their_own_at_once_publish_what_they_publish_one_after_an
             forget("parity-alpha");
             forget("parity-beta");
             let together = prepass::with_test_prepass(workers, None, || {
-                independent::with_test_families(&families, || both(&mut fixture))
+                with_families(&families, || both(&mut fixture))
             });
             // At once, each family folds on a thread of its own (a resumed
             // run may leave one family alone with blocks to prepare).
@@ -649,21 +687,18 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
     };
-    let reference =
-        independent::with_test_families(&registered(&[&WELL_ALPHA, &OTHER_BETA]), || {
-            let source = fixture.source("family-failure");
-            measured(&source).unwrap();
-            let payloads = payloads(&source, None);
-            clear(source);
-            beta_sections(&payloads)
-        });
+    let reference = with_families(&registered(&[&WELL_ALPHA, &OTHER_BETA]), || {
+        let source = fixture.source("family-failure");
+        measured(&source).unwrap();
+        let payloads = payloads(&source, None);
+        clear(source);
+        beta_sections(&payloads)
+    });
     assert!(!reference.is_empty());
     for alpha in [&FAILING_ALPHA, &REFUSING_ALPHA] {
         let source = fixture.source("family-failure");
         let result = prepass::with_test_prepass(2, None, || {
-            independent::with_test_families(&registered(&[alpha, &OTHER_BETA]), || {
-                measured(&source)
-            })
+            with_families(&registered(&[alpha, &OTHER_BETA]), || measured(&source))
         });
         let actual = payloads(&source, None);
         let label = alpha.key;
@@ -686,7 +721,7 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
             assert_eq!(page(&actual, "synthetic-alpha-1"), vec![100, 101, 102, 103]);
             assert_eq!(page(&actual, "synthetic-alpha-2"), vec![20, 21, 22, 23]);
             // Its gated product refuses from its own page, on that branch only.
-            independent::with_test_families(&registered(&[alpha, &OTHER_BETA]), || {
+            with_families(&registered(&[alpha, &OTHER_BETA]), || {
                 let error = refusal(&source, None, 1, "alpha-product", &flag).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::InvalidData);
                 assert_eq!(error.to_string(), "Injected refusal of alpha at hour 105");
@@ -697,7 +732,7 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
             // at that block's end; the refusing block has none.
             clear(source);
             let source = fixture.source("family-failure");
-            independent::with_test_families(&registered(&[alpha, &OTHER_BETA]), || {
+            with_families(&registered(&[alpha, &OTHER_BETA]), || {
                 run(&source, None, &flag, |_| {}).unwrap();
             });
             let batched = payloads(&source, None);
@@ -748,7 +783,7 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
         "air-superiority-group-changes"
     );
     assert_eq!(independent::gating("country-groups"), Some("groups"));
-    independent::with_test_families(&registered(&[&OWN_SUBJECTS, &PARITY_BETA]), || {
+    with_families(&registered(&[&OWN_SUBJECTS, &PARITY_BETA]), || {
         assert_eq!(independent::names(), ["beta", "subjects"]);
         // Read by no other family: skipped, without having refused.
         assert!(!independent::hourly("subjects"));
@@ -763,14 +798,14 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     });
     // A family kept for a reader stays in the walk, under the reader's names,
     // until the reader is prepared on its own too and makes its own read.
-    independent::with_test_families(&registered(&[&KEPT_ALPHA]), || {
+    with_families(&registered(&[&KEPT_ALPHA]), || {
         assert!(independent::hourly("alpha"));
         assert_eq!(
             independent::kept_as("alpha-section"),
             "reader-alpha-section"
         );
     });
-    independent::with_test_families(&registered(&[&KEPT_ALPHA, &OWN_READER]), || {
+    with_families(&registered(&[&KEPT_ALPHA, &OWN_READER]), || {
         assert!(!independent::hourly("alpha"));
         assert!(!independent::hourly("reader"));
     });
@@ -801,7 +836,7 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     };
     assert!(subjects(&hourly) > 0);
     let source = fixture.source("skipped");
-    independent::with_test_families(&registered(&[&OWN_SUBJECTS]), || {
+    with_families(&registered(&[&OWN_SUBJECTS]), || {
         // On lanes, so the parallel flush's helpers skip it too.
         lanes::with_test_lanes(4, None, || run(&source, None, &flag, |_| {})).unwrap();
         let own = payloads(&source, None);
@@ -823,7 +858,7 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     // A query reading a family prepared on its own (the event feed reads the
     // subjects) refuses with that family's refusal, kept only in its own page.
     let source = fixture.source("skipped");
-    independent::with_test_families(&registered(&[&REFUSING_SUBJECTS]), || {
+    with_families(&registered(&[&REFUSING_SUBJECTS]), || {
         run(&source, None, &flag, |_| {}).unwrap();
         let error = refusal(&source, None, 1, "event-feed", &flag).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
@@ -846,8 +881,8 @@ static GROUPED_ALPHA: Hours = hours(
 );
 static GROUPED_BETA: Hours = hours(&BETA, "independent.beta", &["beta-product"], "grouped-beta");
 static GROUPED_READER: Hours = hours(&READER, "independent.reader", &[], "grouped-reader");
-/// Both write `synthetic-shared` at every commit: adopted into one group,
-/// the second is refused.
+/// Both write `synthetic-shared` at every commit: it is the first's, so the
+/// second's write is refused.
 static SHARING_ALPHA: Hours = Hours {
     overlap: Some("synthetic-shared"),
     ..hours(
@@ -908,7 +943,7 @@ fn group_commits_publish_what_each_family_committing_alone_publishes() {
             let mut prepare = |grouping| {
                 independent::take_test_publications();
                 let payloads = prepass::with_test_prepass(workers, None, || {
-                    independent::with_test_families(&families, || {
+                    with_families(&families, || {
                         independent::with_test_grouping(grouping, || {
                             prepared_twice(&mut fixture, &first, &grown, resume)
                         })
@@ -973,7 +1008,7 @@ fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() 
             .map(|(key, bytes)| (key.clone(), bytes.clone()))
             .collect()
     };
-    let reference = independent::with_test_families(&registered(&[&SHARING_ALPHA]), || {
+    let reference = with_families(&registered(&[&SHARING_ALPHA]), || {
         let source = fixture.source("group-failure");
         measured(&source).unwrap();
         let payloads = payloads(&source, None);
@@ -986,12 +1021,12 @@ fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() 
         let label = format!("{workers} workers");
         let source = fixture.source("group-failure");
         independent::take_test_publications();
-        // Every group waits for every family still preparing, so the first
-        // holds all three: alpha (adopted first, in registry order), beta
-        // (refused, since alpha's batch created the section it shares) and
-        // the reader. The reader's second write fails; alpha goes on alone.
+        // Beta's first write is refused, since the section it shares is
+        // alpha's. Every group waits for every family still preparing, so
+        // the first holds alpha's and the reader's batches. The reader's
+        // second write fails; alpha goes on alone.
         let result = prepass::with_test_prepass(workers, None, || {
-            independent::with_test_families(&families, || {
+            with_families(&families, || {
                 independent::with_test_grouping(independent::Grouping::Together, || {
                     measured(&source)
                 })
@@ -999,13 +1034,13 @@ fn a_family_failing_inside_a_group_commit_leaves_the_others_batches_committed() 
         });
         let publications = independent::take_test_publications();
         let actual = payloads(&source, None);
-        // Beta's refusal at adoption is its own error, reported first in
-        // registry order; the reader's failure is its own too.
+        // Beta's refused write is its own error, reported first in registry
+        // order; the reader's failure is its own too.
         let error = result.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Other, "{label}");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{label}");
         assert_eq!(
             error.to_string(),
-            "parallel prepared writers overlapped in section synthetic-shared",
+            "Own(\"beta\") may not write synthetic-shared, which Family(FamilyId(\"alpha\")) publishes",
             "{label}"
         );
         // Nothing of beta's batch is listed.
@@ -1107,7 +1142,7 @@ fn walk_commits_while_a_family_is_still_folding_and_keeps_every_page() {
     let replay = recording(3, false);
     let mut fixture = Fixture::new(&replay);
     let families = registered(&[&OVERLAPPING_ALPHA]);
-    independent::with_test_families(&families, || {
+    with_families(&families, || {
         let source = fixture.source("walk-overlap");
         *OVERLAP.0.lock().unwrap() = Overlap::default();
         independent::with_test_one_after_another(|| measured(&source)).unwrap();
@@ -1192,7 +1227,7 @@ fn resume_separate_prefixes(family_leads: bool, append: bool) {
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("separate-prefixes");
     let families = registered(&[&OVERLAPPING_ALPHA]);
-    independent::with_test_families(&families, || {
+    with_families(&families, || {
         *OVERLAP.0.lock().unwrap() = Overlap {
             enabled: !family_leads,
             at: 110,
@@ -1414,7 +1449,7 @@ fn families_publish_multiple_batches_while_one_walk_batch_is_in_progress() {
     let replay = recording(3, false);
     let mut fixture = Fixture::new(&replay);
     let families = registered(&[&PUBLISHING_ALPHA]);
-    independent::with_test_families(&families, || {
+    with_families(&families, || {
         let source = fixture.source("walk-batch-publications");
         *BATCH_OVERLAP.0.lock().unwrap() = BatchOverlap::default();
         independent::with_test_one_after_another(|| measured(&source)).unwrap();
@@ -1552,7 +1587,7 @@ fn runner_walk_progresses_at_family_priority_while_a_family_is_still_running() {
     runner
         .submit(Arc::new(AtomicBool::new(false)), move |cancelled| {
             let result = JobPriority::run(Arc::new(AtomicBool::new(false)), || {
-                independent::with_test_families(&registered(&[&OVERLAPPING_ALPHA]), || {
+                with_families(&registered(&[&OVERLAPPING_ALPHA]), || {
                     let mut counted = 0;
                     let result = run_measured_through(
                         &worker_source,
@@ -1657,7 +1692,7 @@ fn a_familys_first_increment_publishes_while_another_family_is_still_flushing() 
     let replay = recording(1, false);
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("independent-first-increments");
-    independent::with_test_families(&registered(&[&FIRST_SLOW, &FIRST_FAST]), || {
+    with_families(&registered(&[&FIRST_SLOW, &FIRST_FAST]), || {
         independent::with_test_on_publish(
             |family, next| {
                 if family == "beta" {
@@ -1694,7 +1729,7 @@ fn a_declared_paced_family_runs_after_the_walk_in_serial_preparation() {
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("serial-declared-pace");
     static SERIAL_BETA: Hours = hours(&BETA, "independent.beta", &[], "serial-paced-beta");
-    independent::with_test_families(&registered(&[&SERIAL_BETA]), || {
+    with_families(&registered(&[&SERIAL_BETA]), || {
         independent::with_test_paced(&["beta"], || {
             independent::with_test_one_after_another(|| {
                 run(&source, None, &AtomicBool::new(false), |_| {})

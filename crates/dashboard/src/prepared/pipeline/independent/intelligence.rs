@@ -29,16 +29,6 @@ impl Own for Intelligence {
         "independent.intelligence"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "decryption",
-            "operative-placements",
-            "agency-comparison",
-            "operatives-roster",
-            "espionage-log",
-        ]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let state =
             intelligence_prepared::State::load(&mut |section: &str| load.read(section), branch)?;

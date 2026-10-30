@@ -2708,10 +2708,11 @@ fn section(name: &str, branch: u64) -> String {
     format!("{name}/{branch}")
 }
 
-const ENDPOINTS: &str = "production-endpoints-v1";
-const TIMES: &str = "production-times-v1";
-const STATE: &str = "production-state-v1";
-const CATALOGUE: &str = "production-catalogue-v1";
+/// The sections production's pages are kept in, each a branch's `{name}/{branch}`.
+pub const ENDPOINTS: &str = "production-endpoints-v1";
+pub const TIMES: &str = "production-times-v1";
+pub const STATE: &str = "production-state-v1";
+pub const CATALOGUE: &str = "production-catalogue-v1";
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ProductionCatalogue {
     schema: u32,

@@ -471,9 +471,9 @@ fn diplomacy_state_is_registered_and_prepared_on_its_own() {
     DiplomacyState::validate(&params).unwrap();
     assert_eq!(gate("diplomacy-state"), vec!["diplomacy_state"]);
     assert!(
-        FAMILIES
+        registry::FAMILIES
             .iter()
-            .any(|family| family.name == "diplomacy_state")
+            .any(|family| family.id.name() == "diplomacy_state")
     );
     independent::with_test_families(
         &[&independent::diplomacy::DIPLOMACY, &independent::IDENTITIES],

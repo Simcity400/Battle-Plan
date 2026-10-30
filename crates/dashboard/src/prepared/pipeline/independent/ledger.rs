@@ -159,10 +159,6 @@ impl Own for Ledger {
         tables()
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["politics-ledger"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let ledger = match load.read(&state_section(branch))? {
             Some(file) => prepared::Prepared::read(io::BufReader::new(file))?,

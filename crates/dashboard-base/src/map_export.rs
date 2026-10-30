@@ -35,6 +35,8 @@ pub struct Coverage {
 
 pub const STRIDE: Hour = 40;
 pub const PRODUCER_VERSION: u32 = 1;
+/// The private fact column of the endpoint index.
+pub const ENDPOINT_FACTS: &str = "map-export-endpoints";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {

@@ -15,9 +15,6 @@ impl Own for Weather {
     fn timing(&self) -> &'static str {
         "independent.regional-weather"
     }
-    fn gates(&self) -> &'static [&'static str] {
-        &["regional-weather"]
-    }
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let scan = match load.saved {
             Some(_) => crate::prepared::series::read_saved_catalogue::<Scan<block::Observer>>(

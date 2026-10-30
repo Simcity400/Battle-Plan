@@ -2433,6 +2433,9 @@ pub struct Staged {
     pack: Option<(u64, Shared)>,
 }
 
+/// Decides whether a writer may write a section: its error refuses the write.
+pub type SectionGuard = Arc<dyn Fn(&str) -> io::Result<()> + Send + Sync>;
+
 /// Owns one exclusive-open lock. Dropping it leaves the old manifest intact;
 /// packs no manifest lists are removed on the next writer open.
 pub struct Writer {
@@ -2456,6 +2459,8 @@ pub struct Writer {
     pins: Option<Arc<StageFiles>>,
     /// An adoption failed partway, so the transaction must not be published.
     incomplete: bool,
+    /// The sections it may write; its forks keep it.
+    guard: Option<SectionGuard>,
 }
 
 /// Each section name's position. A flat manifest may repeat a name: lookups keep the first, as readers do.
@@ -2494,7 +2499,18 @@ impl Writer {
             detached: None,
             pins: None,
             incomplete: false,
+            guard: None,
         }
+    }
+
+    /// Refuse, from now on, every write `guard` refuses, on this writer and
+    /// on the writers forked from it.
+    pub fn guard_sections(&mut self, guard: SectionGuard) {
+        self.guard = Some(guard);
+    }
+
+    fn admit(&self, section: &str) -> io::Result<()> {
+        self.guard.as_ref().map_or(Ok(()), |guard| guard(section))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -2558,6 +2574,7 @@ impl Writer {
             detached: None,
             pins: self.pins.clone(),
             incomplete: false,
+            guard: self.guard.clone(),
         })
     }
 
@@ -3080,6 +3097,7 @@ impl Writer {
         if section.is_empty() {
             return Err(invalid("empty section name"));
         }
+        self.admit(section)?;
         if self.position(section).is_none() {
             self.create_section(section);
             self.record(|_| Operation::Create(section.to_owned()));
@@ -3090,6 +3108,7 @@ impl Writer {
     /// Replaces one logical range with a new whole range, or appends the next.
     /// The old bytes and manifest remain untouched until manifest publication.
     pub fn write_at(&mut self, section: &str, range: u64, mut data: impl Read) -> io::Result<()> {
+        self.admit(section)?;
         let Some(index) = self.position(section) else {
             if range != 0 {
                 return Err(invalid(&format!(

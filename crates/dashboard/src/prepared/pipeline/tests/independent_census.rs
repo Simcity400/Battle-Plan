@@ -1343,10 +1343,11 @@ fn dockyard_repairs_fold_matches_hourly_through_daily_reads_gaps_holders_resume_
 #[test]
 fn dockyard_repairs_joint_gate_and_refusals_name_both_suppliers() {
     assert_eq!(
-        independent::joint("dockyard-spending"),
-        Some(&["production", "repairs"][..])
+        independent::joint("dockyard-spending")
+            .map(|suppliers| suppliers.iter().map(|id| id.name()).collect::<Vec<_>>()),
+        Some(vec!["production", "repairs"])
     );
-    assert_eq!(independent::census::REPAIRS.gates(), &["dockyard-spending"]);
+    assert_eq!(independent::gating("dockyard-spending"), Some("repairs"));
     let replay = repair_recording(12);
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("repairs-refusal");

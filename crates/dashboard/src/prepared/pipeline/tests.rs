@@ -21,6 +21,7 @@ mod catalogue_refusals;
 mod cold_defaults;
 mod columnar_fuel;
 mod commit_points;
+mod driver_plan;
 mod equipment_loss_pending;
 mod family_lanes;
 mod family_refusal;

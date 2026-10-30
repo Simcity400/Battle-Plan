@@ -71,12 +71,17 @@ impl std::fmt::Debug for Outcome {
     }
 }
 
-/// Every migrated family, in the order of every block's outcomes.
+/// Every migrated family the hourly walk prepares, in the order of every
+/// block's outcomes.
 pub(crate) fn families() -> Vec<&'static Family> {
-    vec![
+    let plan = super::driver::plan::current();
+    [
         &crate::products::resource_balance::prepared::FAMILY,
         &crate::products::army_size::prepared::FAMILY,
     ]
+    .into_iter()
+    .filter(|family| plan.backend(family.name) == Some(super::driver::plan::Backend::Walk))
+    .collect()
 }
 
 /// Whether migrated families are prepared through the pre-pass. Tests can

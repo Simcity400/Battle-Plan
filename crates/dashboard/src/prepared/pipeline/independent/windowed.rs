@@ -140,14 +140,6 @@ impl Own for Divisions {
         "independent.divisions"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "division-log",
-            "division-log-manifest",
-            "division-log-totals",
-        ]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let saved = load
             .read(&divisions_state(branch))?
@@ -410,19 +402,6 @@ impl Own for Naval {
 
     fn shared_tables(&self, _: &super::Phase<'_>) -> &'static [TableId] {
         naval_tables()
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "naval-battles",
-            "naval-battles-manifest",
-            "naval-battles-ranking",
-            "naval-battle-details",
-            "ships-sunk",
-            "ships-sunk-manifest",
-            "ships-sunk-battle-titles",
-            "naval-losses",
-        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

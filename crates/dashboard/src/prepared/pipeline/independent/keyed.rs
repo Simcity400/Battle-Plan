@@ -14,22 +14,16 @@ use dashboard_keyed::{Observer, Scan, block};
 use replay::container::Replay;
 use std::{any::Any, io, marker::PhantomData, sync::atomic::AtomicBool};
 
-/// One keyed family: its observer and the product queries its coverage
-/// gates.
+/// One keyed family: its observer and its timing row.
 pub(in crate::prepared::pipeline) struct Keyed<O> {
     timing: &'static str,
-    gates: &'static [&'static str],
     observer: PhantomData<fn() -> O>,
 }
 
 impl<O> Keyed<O> {
-    pub(in crate::prepared::pipeline) const fn new(
-        timing: &'static str,
-        gates: &'static [&'static str],
-    ) -> Self {
+    pub(in crate::prepared::pipeline) const fn new(timing: &'static str) -> Self {
         Self {
             timing,
-            gates,
             observer: PhantomData,
         }
     }
@@ -42,10 +36,6 @@ impl<O: Observer> Own for Keyed<O> {
 
     fn timing(&self) -> &'static str {
         self.timing
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        self.gates
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -155,37 +145,28 @@ use crate::products::{
 };
 
 pub(in crate::prepared::pipeline) static AIR_MISSIONS: Keyed<air_missions::AirMissionsObserver> =
-    Keyed::new("independent.air-missions", &["air-missions"]);
+    Keyed::new("independent.air-missions");
 pub(in crate::prepared::pipeline) static AIR_STATISTICS: Keyed<
     air_statistics::AirStatisticsObserver,
-> = Keyed::new("independent.air-statistics", &["air-statistics"]);
+> = Keyed::new("independent.air-statistics");
 pub(in crate::prepared::pipeline) use super::weather::WEATHER;
 pub(in crate::prepared::pipeline) static MINEFIELDS: Keyed<minefields::MinefieldsObserver> =
-    Keyed::new("independent.minefields", &["minefields"]);
+    Keyed::new("independent.minefields");
 pub(in crate::prepared::pipeline) static NAVAL_SUPREMACY: Keyed<
     naval_supremacy::NavalSupremacyObserver,
-> = Keyed::new("independent.naval-supremacy", &["naval-supremacy"]);
+> = Keyed::new("independent.naval-supremacy");
 pub(in crate::prepared::pipeline) static DOCTRINE_MASTERY: Keyed<
     doctrine_mastery::DoctrineMasteryObserver,
-> = Keyed::new("independent.doctrine-mastery", &["doctrine-mastery"]);
+> = Keyed::new("independent.doctrine-mastery");
 pub(in crate::prepared::pipeline) static OCCUPATION_RESERVE: Keyed<
     occupation_reserve::OccupationReserveObserver,
-> = Keyed::new(
-    "independent.occupation-reserve",
-    &["occupation-reserve-manpower"],
-);
+> = Keyed::new("independent.occupation-reserve");
 pub(in crate::prepared::pipeline) static INTEL_COVERAGE: Keyed<
     intel_coverage::IntelCoverageObserver,
-> = Keyed::new(
-    "independent.intel-network-coverage",
-    &["intel-network-coverage"],
-);
+> = Keyed::new("independent.intel-network-coverage");
 pub(in crate::prepared::pipeline) static NAVAL_REPAIRS: Keyed<naval_repairs::RepairsObserver> =
-    Keyed::new("independent.naval-repairs", &["naval-repairs"]);
+    Keyed::new("independent.naval-repairs");
 pub(in crate::prepared::pipeline) static NAVAL_REFITS: Keyed<naval_refits::RefitsObserver> =
-    Keyed::new("independent.naval-refits", &["naval-refits"]);
+    Keyed::new("independent.naval-refits");
 pub(in crate::prepared::pipeline) static COUNTRY_STYLES: Keyed<style_runs::StylesObserver> =
-    Keyed::new(
-        "independent.country-styles",
-        &["country-styles", "country-colours"],
-    );
+    Keyed::new("independent.country-styles");

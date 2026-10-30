@@ -66,6 +66,17 @@ impl<T: Resident> Resident for Interval<T> {
     }
 }
 
+/// Every private fact section is named `{SECTIONS}{family}/{branch}/{column}`,
+/// its part after another `/`.
+pub const SECTIONS: &str = "preparation-facts-v2/";
+
+/// The column the private fact section `section` belongs to.
+pub fn column(section: &str) -> Option<&str> {
+    let mut parts = section.strip_prefix(SECTIONS)?.splitn(4, '/');
+    let (_family, branch, column) = (parts.next()?, parts.next()?, parts.next()?);
+    (!branch.is_empty() && branch.bytes().all(|byte| byte.is_ascii_digit())).then_some(column)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Namespace {
     family: String,
@@ -89,11 +100,8 @@ impl Namespace {
             column: column.into(),
         })
     }
-    fn section(&self) -> String {
-        format!(
-            "preparation-facts-v2/{}/{}/{}",
-            self.family, self.branch, self.column
-        )
+    pub fn section(&self) -> String {
+        format!("{SECTIONS}{}/{}/{}", self.family, self.branch, self.column)
     }
 }
 #[derive(Clone, Copy, Debug)]

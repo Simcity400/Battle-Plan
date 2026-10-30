@@ -18,9 +18,6 @@ impl Own for Diplomacy {
     fn timing(&self) -> &'static str {
         "independent.diplomacy_state"
     }
-    fn gates(&self) -> &'static [&'static str] {
-        &["diplomacy-state"]
-    }
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let scan = load
             .read(&prepared::state_section(branch))?

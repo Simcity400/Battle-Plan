@@ -504,9 +504,9 @@ fn country_groups_answer_from_their_own_coverage_while_the_hourly_walk_accepts_n
                 "branch {branch}: the groups answer from their own coverage"
             );
             // A product only the hourly walk prepares still waits for it.
-            let waiting = FAMILIES
+            let waiting = registry::FAMILIES
                 .iter()
-                .filter(|family| !independent::registered(family.name))
+                .filter(|family| !independent::registered(family.id.name()))
                 .flat_map(|family| family.queries.iter().copied())
                 .find(|product| independent::gating(product).is_none())
                 .expect("a product of the hourly walk");

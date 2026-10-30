@@ -25,7 +25,7 @@ type Run<'a> = dyn FnMut(usize, &mut store::Writer, &mut Timings) -> Outcome + S
 /// One family's flush steps: each step's serial position and the family whose
 /// refusal skips it. A task's steps run in order on one thread, so each sees
 /// the task's earlier writes and refusals. A family whose refusal reaches a
-/// later step's family (its `FAMILIES` dependents) must share that task.
+/// later step's family (its registry observers) must share that task.
 pub(super) struct Task<'a> {
     steps: &'static [(usize, &'static str)],
     run: Box<Run<'a>>,

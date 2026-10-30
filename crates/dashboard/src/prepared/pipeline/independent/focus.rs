@@ -32,15 +32,6 @@ impl Own for Focus {
         "independent.focus"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "focus-hour",
-            "focus-unavailable",
-            "focus-order-page",
-            "focus-completions",
-        ]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let index = match load.read(&focus_state(branch))? {
             Some(file) => serde_json::from_reader(io::BufReader::new(file))?,

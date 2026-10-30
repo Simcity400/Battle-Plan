@@ -32,10 +32,6 @@ impl Own for AirSuperiority {
         "independent.air_superiority"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["air-superiority"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let prepared = if load.read(&format!("air-superiority-{branch}"))?.is_some() {
             Prepared::read(load.store, load.key, load.saved, branch)?

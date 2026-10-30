@@ -30,10 +30,6 @@ impl Own for AirLedger {
         "independent.air_ledger"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["military-air-ledger"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let prepared = if load
             .read(&format!("military-air-ledger-{branch}"))?
@@ -118,10 +114,6 @@ impl Own for Raids {
 
     fn timing(&self) -> &'static str {
         "independent.raids"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["raids"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -224,10 +216,6 @@ impl Own for Aces {
 
     fn timing(&self) -> &'static str {
         "independent.aces"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["air-aces", "air-ace-portraits"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

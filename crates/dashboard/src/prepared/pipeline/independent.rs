@@ -4,9 +4,10 @@
 //! and its progress in the checkpoint. Its queries answer from its own
 //! coverage, so it is ready while slower families still prepare.
 //!
-//! A family prepared on its own is a registry entry ([`Own`]): its pre-pass
-//! family, the products it gates, its branch state ([`Branch`]: load, fold or
-//! observe a block, flush, save) and the sections the hourly walk keeps for
+//! A family prepared on its own is a row implementation ([`Own`]) of a family
+//! the driver's registry describes: its pre-pass family and its branch state
+//! ([`Branch`]: load, fold or observe a block, flush, save). The registry
+//! holds the products it gates and the sections the hourly walk keeps for
 //! families that read its state in the same hour. Every registered family
 //! starts at once on one shared pool of pre-pass workers
 //! ([`prepass::Pool`]), sized as the hourly walk's and serving every
@@ -52,8 +53,11 @@
 
 use super::super::Section;
 use super::{
-    Accepted, Batches, Checkpoint, Coverage, CoveragePage, FAMILIES, FamilyTimings, Refused,
-    SCHEMA, lanes,
+    Accepted, Batches, Checkpoint, Coverage, CoveragePage, FamilyTimings, Refused, SCHEMA, lanes,
+};
+use crate::prepared::driver::{
+    plan::{self, Lane},
+    registry,
 };
 use crate::{
     Source,
@@ -140,26 +144,6 @@ pub(super) trait Own: Sync {
     }
     /// The timing row of its whole preparation.
     fn timing(&self) -> &'static str;
-    /// The product queries that wait only for its coverage, and refuse from
-    /// its refusals.
-    fn gates(&self) -> &'static [&'static str];
-    /// Sections the hourly walk keeps for families that read this family's
-    /// state in the same hour, as (its section, the name the walk keeps it
-    /// under). While any is declared, the hourly walk still observes the
-    /// family, for those readers alone; otherwise it skips it.
-    fn kept(&self) -> &'static [(&'static str, &'static str)] {
-        &[]
-    }
-    /// The families that read this family's state in the same hour, for
-    /// which the hourly walk keeps it ([`Self::kept`]). Once every one is
-    /// prepared on its own too, the walk skips this family: a reader prepared
-    /// on its own makes its own read of this family's state, on the frames
-    /// its own extract reads, under its own sections (as the walk's kept read
-    /// does now). None named keeps the family in the walk whatever the
-    /// registry holds.
-    fn read_by(&self) -> &'static [&'static str] {
-        &[]
-    }
     /// The tables its own thread reads from every block it observes hour by
     /// hour on the block read alone ([`Block::read_alone`]): every selection
     /// it reads is among them. Families that declare them read each block
@@ -375,8 +359,10 @@ struct Groups;
 
 static GROUPS: Groups = Groups;
 
-/// Every family prepared on its own, in registry order.
-static REGISTRY: &[&dyn Own] = &[
+/// The row implementation of every family that can be prepared on its own,
+/// in lane order: their threads start, the pool serves them and a group
+/// adopts their batches in this order.
+static ROWS: &[&dyn Own] = &[
     &map_pages::MAP_PAGES,
     &GROUPS,
     &IDENTITIES,
@@ -505,21 +491,6 @@ impl Own for Groups {
 
     fn timing(&self) -> &'static str {
         "independent.groups"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["country-groups"]
-    }
-
-    fn kept(&self) -> &'static [(&'static str, &'static str)] {
-        &[
-            ("country-groups", "air-superiority-groups"),
-            ("country-group-changes", "air-superiority-group-changes"),
-        ]
-    }
-
-    fn read_by(&self) -> &'static [&'static str] {
-        &["air_superiority"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -654,20 +625,6 @@ impl Own for Identities {
         "independent.identities"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &[crate::products::country_history::IDENTITIES_PRODUCT]
-    }
-
-    fn kept(&self) -> &'static [(&'static str, &'static str)] {
-        &[("country-identities", "territory-identities")]
-    }
-
-    /// Territory, prepared on its own, makes its own read of the history
-    /// ([`sampled`]).
-    fn read_by(&self) -> &'static [&'static str] {
-        &["territory"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let scan = match load.read(&identities_section(branch))? {
             Some(file) => serde_json::from_reader(io::BufReader::new(file))?,
@@ -759,10 +716,6 @@ impl Own for Wars {
         "independent.wars"
     }
 
-    fn gates(&self) -> &'static [&'static str] {
-        &["wars"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         Ok(Box::new(crate::products::wars::block::OwnBranch::load(
             load.store, load.key, load.saved, branch,
@@ -838,10 +791,6 @@ impl Own for Casualties {
 
     fn timing(&self) -> &'static str {
         "independent.casualties"
-    }
-
-    fn gates(&self) -> &'static [&'static str] {
-        &["war-casualties", "casualty-pairs", "casualty-breakdown"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -926,19 +875,24 @@ impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
     }
 }
 
-/// The registered families, or none while tests prepare every family hour
-/// by hour.
+/// The row implementations of the families the current plan prepares on
+/// their own, in lane order.
 fn registry() -> &'static [&'static dyn Own] {
     #[cfg(test)]
     {
-        if TEST_HOURLY.with(std::cell::Cell::get) {
+        if plan::test_hourly() {
             return &[];
         }
-        if let Some(families) = TEST_FAMILIES.with(std::cell::Cell::get) {
-            return families;
+        if let Some(rows) = TEST_ROWS.with(std::cell::Cell::get) {
+            return rows;
         }
     }
-    REGISTRY
+    ROWS
+}
+
+/// The families with a row implementation of their own, in lane order.
+pub(crate) fn row_names() -> Vec<&'static str> {
+    ROWS.iter().map(|own| own.family().name).collect()
 }
 
 pub(super) fn cost_tables(phase: &Phase<'_>) -> Vec<TableId> {
@@ -964,13 +918,26 @@ pub(super) fn runtime_inventory() -> serde_json::Value {
     borrowed.extend(prepass::families().into_iter().map(|family| family.name));
     borrowed.sort_unstable();
     borrowed.dedup();
-    let old: Vec<_> = FAMILIES
+    let families = plan::current().families();
+    let old: Vec<_> = families
         .iter()
-        .filter(|family| !borrowed.contains(&family.name))
-        .map(|family| family.name)
+        .map(|family| family.id.name())
+        .filter(|name| !borrowed.contains(name))
+        .collect();
+    let content: Vec<_> = families
+        .iter()
+        .filter(|family| family.content == registry::Content::Bound)
+        .map(|family| family.id.name())
+        .chain(
+            registry::JOBS
+                .iter()
+                .filter(|job| job.content == registry::Content::Bound)
+                .map(|job| job.name),
+        )
         .collect();
     serde_json::json!({"candidate_borrowed_extract_families":borrowed,
         "families_on_main_path":old,
+        "content_bound_families":content,
         "unchanged_nonfamily_jobs":["production_scans", "air_statistics_external", "map_export"],
         "store":"main store::Writer and existing publication/coverage/checkpoint drivers",
         "delivery":"one main watched read per prepass task, existing family-selected borrowed projections; old folds and reread fallbacks unchanged",
@@ -979,131 +946,45 @@ pub(super) fn runtime_inventory() -> serde_json::Value {
 
 /// The families prepared on their own, in name order (the checkpoint's).
 pub(super) fn names() -> Vec<&'static str> {
-    let mut names: Vec<_> = registry().iter().map(|own| own.family().name).collect();
-    names.sort_unstable();
-    names
+    plan::current().names()
 }
 
-/// Whether the hourly walk observes, flushes, saves and loads `family`:
-/// every family not prepared on its own, and one whose state another family
-/// reads in the same hour, which the walk keeps under that reader's names
-/// ([`kept_as`]).
+/// Whether the hourly walk observes, flushes, saves and loads `family`
+/// ([`plan::Plan::hourly`]).
 pub(super) fn hourly(family: &str) -> bool {
-    registry()
-        .iter()
-        .filter(|own| own.family().name == family)
-        .all(|own| {
-            !own.kept().is_empty()
-                && (own.read_by().is_empty()
-                    || own.read_by().iter().any(|reader| !registered(reader)))
-        })
+    plan::current().hourly(family)
 }
 
 /// Whether any family normally prepared on its own is observed by the walk.
 pub(super) fn walks_own() -> bool {
-    REGISTRY.iter().any(|own| hourly(own.family().name))
+    plan::current().walks_own()
 }
 
 /// Whether `family` is prepared on its own.
 pub(super) fn registered(family: &str) -> bool {
-    registry().iter().any(|own| own.family().name == family)
+    plan::current().registered(family)
 }
 
-/// The name the hourly walk keeps `section` under: a reader's own, while the
-/// family publishing it is prepared on its own; `section` otherwise.
+/// The name the hourly walk keeps `section` under ([`plan::Plan::kept_as`]).
 pub(super) fn kept_as(section: &'static str) -> &'static str {
-    registry()
-        .iter()
-        .flat_map(|own| own.kept())
-        .find(|(published, _)| *published == section)
-        .map_or(section, |&(_, kept)| kept)
+    plan::current().kept_as(section)
 }
 
-/// The family prepared on its own whose coverage `product`'s queries wait
-/// for, and whose refusals they answer with.
+/// The family prepared on its own, or job beside the families, whose
+/// coverage `product`'s queries wait for, and whose refusals they answer
+/// with.
 pub(super) fn gating(product: &str) -> Option<&'static str> {
-    if [
-        "production-lines",
-        "production-line-detail",
-        "production-line-breakdown",
-    ]
-    .contains(&product)
-    {
-        return Some("production-lines");
-    }
-
-    registry()
-        .iter()
-        .find(|own| own.gates().contains(&product))
-        .map(|own| own.family().name)
+    plan::current().gating(product)
 }
 
-/// Products whose replies read the pages of several families up to the
-/// hours they answer, with those families. Such a product waits for the
-/// coverage every one of them has: its own of a family prepared on its own,
-/// the hourly walk's of any other ([`joint`]). Its refusals are those of the
-/// families `FAMILIES` lists as read by it.
-const JOINT: &[(&str, &[&str])] = &[
-    ("operatives-roster", &["intelligence", "identities"]),
-    (
-        "agency-comparison-identities",
-        &["intelligence", "identities"],
-    ),
-    ("raids-tally", &["raids", "identities"]),
-    ("dockyard-spending", &["production", "repairs"]),
-    // Named through the identity history up to their coverage.
-    ("country-factories", &["factories", "identities"]),
-    ("country-nukes", &["nukes", "identities"]),
-    ("supply-health", &["supply", "identities"]),
-    ("equipment-losses", &["equipment_losses", "identities"]),
-    ("territory", &["territory", "identities"]),
-    // Factory faction totals read the faction rosters, the identity history
-    // and the factories (dense factory summaries read territory too, and
-    // wait for its coverage through their window).
-    (
-        crate::products::faction_totals::FACTORIES_GATE,
-        &["groups", "identities", "factories"],
-    ),
-    // Casualty lifetimes joined with the wars' app continuity.
-    ("casualty-breakdown", &["casualties", "wars"]),
-    // Territory faction totals read the faction rosters, the identity
-    // history and territory's pages.
-    (
-        <crate::products::faction_totals::FactionTotals as crate::products::Product>::KEY,
-        &["groups", "identities", "territory"],
-    ),
-    // Civil-war lists with the feed's annexations as outcome evidence.
-    ("civil-wars", &["politics_state", "event_feed"]),
-    // The feed's own facts and the changes it merges with them.
-    (
-        "event-feed",
-        &[
-            "event_feed",
-            "groups",
-            "subjects",
-            "ideas",
-            "focus",
-            "nukes",
-            "projects",
-        ],
-    ),
-];
-
-/// The families whose coverage `product`'s queries wait for together
-/// ([`JOINT`]), while any of them is prepared on its own; None otherwise,
-/// when the product waits as [`gating`] says.
-pub(super) fn joint(product: &str) -> Option<&'static [&'static str]> {
-    JOINT
-        .iter()
-        .find(|(name, _)| *name == product)
-        .map(|&(_, families)| families)
-        .filter(|families| families.iter().any(|family| registered(family)))
+/// The families whose coverage `product`'s queries wait for together, while
+/// any of them is prepared on its own; None otherwise, when the product waits
+/// as [`gating`] says.
+pub(super) fn joint(product: &str) -> Option<&'static [registry::FamilyId]> {
+    plan::current().joint(product)
 }
 
-/// A family's coverage page for one branch, with its refusals there.
-pub(super) fn coverage_section(family: &str, branch: u64) -> String {
-    format!("preparation-family-{family}-{branch}")
-}
+pub(super) use crate::prepared::driver::registry::coverage_section;
 
 /// A family's accepted progress: the next block it prepares and its refusals
 /// by branch, each from its first refusing hour.
@@ -1340,7 +1221,9 @@ impl Walk<'_, '_> {
                 return Err(lost_to(self.phase));
             }
             if guard.admits() {
-                return guard.writer.as_mut().ok_or_else(lost)?.stage();
+                let mut writer = guard.writer.as_mut().ok_or_else(lost)?.stage()?;
+                writer.guard_sections(plan::current().guard(Lane::Walk));
+                return Ok(writer);
             }
             let next = accepted_now(&guard, self.phase);
             guard = self
@@ -2322,6 +2205,7 @@ fn commit(
                 .0;
         }
     };
+    fork.guard_sections(plan::current().guard(Lane::Own(name)));
     // Join only after flushing: another family's ready increment must not wait for this batch.
     let publication = write(&mut fork)?;
     let staged = fork.into_staged()?;
@@ -2654,12 +2538,12 @@ pub(super) fn save_coverage(
 /// accepted blocks. Rows turn ready with the preparation that publishes them.
 pub(super) fn sections(rows: &mut [Section], state: &Checkpoint, total: usize) {
     for (name, progress) in &state.independent {
-        let Some(family) = FAMILIES.iter().find(|family| family.name == name.as_str()) else {
+        let Some(family) = plan::current().family(name) else {
             continue;
         };
         for row in rows
             .iter_mut()
-            .filter(|row| family.sections.contains(&row.id.as_str()))
+            .filter(|row| family.status.contains(&row.id.as_str()))
         {
             row.done = progress.next_block.to_string();
             row.total = Some(total.to_string());
@@ -2733,8 +2617,8 @@ struct TestContext {
 #[cfg(test)]
 #[derive(Clone, Copy)]
 pub(super) struct TestRegistry {
-    families: Option<&'static [&'static dyn Own]>,
-    hourly: bool,
+    rows: Option<&'static [&'static dyn Own]>,
+    plan: plan::TestSelection,
     paced: &'static [&'static str],
 }
 
@@ -2742,8 +2626,8 @@ pub(super) struct TestRegistry {
 #[cfg(test)]
 pub(super) fn test_registry() -> TestRegistry {
     TestRegistry {
-        families: TEST_FAMILIES.with(std::cell::Cell::get),
-        hourly: TEST_HOURLY.with(std::cell::Cell::get),
+        rows: TEST_ROWS.with(std::cell::Cell::get),
+        plan: plan::test_selection(),
         paced: TEST_PACED.with(std::cell::Cell::get),
     }
 }
@@ -2752,8 +2636,8 @@ pub(super) fn test_registry() -> TestRegistry {
 impl TestRegistry {
     /// Use these settings on this thread.
     pub(super) fn install(self) {
-        TEST_FAMILIES.with(|families| families.set(self.families));
-        TEST_HOURLY.with(|hourly| hourly.set(self.hourly));
+        TEST_ROWS.with(|rows| rows.set(self.rows));
+        plan::install_test(self.plan);
         TEST_PACED.with(|paced| paced.set(self.paced));
     }
 }
@@ -2857,9 +2741,8 @@ thread_local! {
     static TEST_OBSERVATION_HOOK: std::cell::RefCell<Option<lanes::Hook>> = const { std::cell::RefCell::new(None) };
     static TEST_GROUPING: std::cell::Cell<Grouping> = const { std::cell::Cell::new(Grouping::Natural) };
     static TEST_PUBLISHED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
-    static TEST_HOURLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_PACED: std::cell::Cell<&'static [&'static str]> = const { std::cell::Cell::new(&[]) };
-    static TEST_FAMILIES: std::cell::Cell<Option<&'static [&'static dyn Own]>> =
+    static TEST_ROWS: std::cell::Cell<Option<&'static [&'static dyn Own]>> =
         const { std::cell::Cell::new(None) };
     static TEST_ONE_AFTER_ANOTHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_ON_PUBLISH: std::cell::RefCell<OnPublish> = const { std::cell::RefCell::new(None) };
@@ -3003,7 +2886,7 @@ pub(super) fn with_test_paced<T>(names: &'static [&'static str], run: impl FnOnc
 /// Run `run` with every family prepared hour by hour, as before.
 #[cfg(test)]
 pub(super) fn with_test_hourly<T>(run: impl FnOnce() -> T) -> T {
-    crate::prepared::with_test_cell(&TEST_HOURLY, true, run)
+    plan::with_test_hourly(run)
 }
 
 /// Run `run` with only the registered families named `names` prepared on
@@ -3012,7 +2895,7 @@ pub(super) fn with_test_hourly<T>(run: impl FnOnce() -> T) -> T {
 /// families' own sections, pages and refusals in one mode only.
 #[cfg(test)]
 pub(super) fn with_test_only<T>(names: &[&str], run: impl FnOnce() -> T) -> T {
-    let families: Vec<&'static dyn Own> = REGISTRY
+    let families: Vec<&'static dyn Own> = ROWS
         .iter()
         .copied()
         .filter(|own| names.contains(&own.family().name))
@@ -3021,11 +2904,28 @@ pub(super) fn with_test_only<T>(names: &[&str], run: impl FnOnce() -> T) -> T {
     with_test_families(&families, run)
 }
 
-/// Run `run` with `families` as the families prepared on their own.
+/// Run `run` with `families` as the families prepared on their own, in
+/// that lane order.
 #[cfg(test)]
 pub(super) fn with_test_families<T>(families: &[&'static dyn Own], run: impl FnOnce() -> T) -> T {
-    let families: &'static [&'static dyn Own] = Box::leak(families.to_vec().into_boxed_slice());
-    crate::prepared::with_test_cell(&TEST_FAMILIES, Some(families), run)
+    with_test_descriptors(families, &[], run)
+}
+
+/// Run `run` with `rows` preparing their families on their own, in that
+/// lane order, and `descriptors` standing in for the registry's of their
+/// names or added to it.
+#[cfg(test)]
+pub(super) fn with_test_descriptors<T>(
+    rows: &[&'static dyn Own],
+    descriptors: &[&'static registry::Descriptor],
+    run: impl FnOnce() -> T,
+) -> T {
+    let rows: &'static [&'static dyn Own] = Box::leak(rows.to_vec().into_boxed_slice());
+    let names: Vec<_> = rows.iter().map(|own| own.family().name).collect();
+    let selected = plan::test_plan(descriptors, &names).expect("a consistent test plan");
+    crate::prepared::with_test_cell(&TEST_ROWS, Some(rows), || {
+        plan::with_test_plan(selected, run)
+    })
 }
 
 /// Run `run` with the families prepared on their own one after another, on

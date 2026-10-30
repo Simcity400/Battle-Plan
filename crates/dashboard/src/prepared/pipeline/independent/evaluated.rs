@@ -232,11 +232,6 @@ impl Own for Research {
         "independent.research"
     }
 
-    /// Its series and events route by the family kind `research`.
-    fn gates(&self) -> &'static [&'static str] {
-        &["research"]
-    }
-
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let prepared = match load.read(&research_state(branch))? {
             Some(file) => serde_json::from_reader(io::BufReader::new(file))?,
@@ -377,12 +372,6 @@ impl Own for Projects {
 
     fn timing(&self) -> &'static str {
         "independent.projects"
-    }
-
-    /// The event feed reads the projects' published completions when asked,
-    /// and refuses with them from this family's own page.
-    fn gates(&self) -> &'static [&'static str] {
-        &["special-projects"]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
@@ -596,16 +585,6 @@ impl Own for Occupation {
     /// Its own thread observes every block; an extract keeps nothing.
     fn laned(&self) -> bool {
         false
-    }
-
-    /// The window pages and manifest, and the trend's series by the family
-    /// kind `occupation-trend` (whose query also waits for the identities).
-    fn gates(&self) -> &'static [&'static str] {
-        &[
-            "occupied-states",
-            "occupied-states-manifest",
-            "occupation-trend",
-        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
