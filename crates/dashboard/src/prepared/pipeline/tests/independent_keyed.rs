@@ -206,6 +206,22 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
     query_with(&states_ready, &content, "air-missions", fourth);
     computing(None);
     assert_eq!(computed() - before, 10, "answered from disk where it is");
+    // A kept answer is served whatever the session read outside the recorded coverage, those
+    // reads joining the reply as they join a fresh one's. An answer computed while the session
+    // holds such a read is not kept, as it may have read those unverified bytes.
+    let outside = fixture.source("disk-outside");
+    read_ahead(&outside);
+    let outside_read = "gfx/event_pictures/outside_coverage.dds";
+    let layers = &outside.content(&content.options).unwrap().layers;
+    assert!(layers.read_uncovered(outside_read).is_err());
+    let served = query_with(&outside, &content, "air-missions", params.clone());
+    assert_eq!(computed() - before, 10, "served from disk there");
+    assert!(served.to_string().contains(outside_read), "{served}");
+    let size = kept();
+    let fifth = serde_json::json!({"branchId":"1","tag":"GER","view":"history","firstHour":14,"lastHour":16});
+    query_with(&outside, &content, "air-missions", fifth);
+    assert_eq!(computed() - before, 11);
+    assert_eq!(kept(), size, "not kept beside a read outside the coverage");
     // Preparing again after a Clear publishes new pages: the kept answer is not served.
     super::super::super::files(&later, Some(&content))
         .unwrap()
@@ -218,7 +234,7 @@ fn a_complete_prepared_answer_is_kept_on_disk_until_the_store_publishes_again() 
         query_with(&again, &content, "air-missions", params),
         prepared
     );
-    assert_eq!(computed() - before, 11, "computed for the new publication");
+    assert_eq!(computed() - before, 12, "computed for the new publication");
     super::super::super::files(&again, Some(&content))
         .unwrap()
         .0

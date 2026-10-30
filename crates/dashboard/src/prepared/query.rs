@@ -3102,9 +3102,6 @@ pub fn query(
     let answered = |previous: Option<std::sync::Arc<CachedQuery>>,
                     publication: String|
      -> io::Result<CachedQuery> {
-        // Content read outside the recorded coverage is reported on every reply, so no answer is
-        // served from or kept on disk while the read set holds any.
-        let covered = || !source.reply_reads_uncovered(content);
         // What an answer reports of the lazy readers it used, kept and served only once it is
         // what computing it now would report.
         let settled = |readers: &std::collections::BTreeSet<dashboard_text::catalogue::Reader>| {
@@ -3116,8 +3113,9 @@ pub fn query(
                     .is_some_and(|catalogue| catalogue.reports_settled(readers))
         };
         let stored = stored_answer(source, request, content, &store, &key, &publication)?;
-        if covered()
-            && let Some(kept) = stored
+        // Served whatever the session read outside the recorded coverage: a kept answer read
+        // none, and those reads join its reply as it is served, as they join a fresh one's.
+        if let Some(kept) = stored
                 .as_ref()
                 .and_then(crate::reply_cache::Entry::get)
                 .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
@@ -3135,13 +3133,14 @@ pub fn query(
         let answer = read(previous)?;
         // Only a complete answer under the binding the source still shows, whose computing
         // neither read nor added to the session's, is kept: any session's computing gives it and
-        // leaves the session as serving it does.
+        // leaves the session as serving it does. While the read set holds content outside the
+        // recorded coverage, computing may have read those unverified bytes, so nothing is kept.
         if let Some(entry) = stored
             && answer.short.is_empty()
             && !waits(&answer.data)
             && !answer.session
             && settled(&answer.readers)
-            && covered()
+            && !source.reply_reads_uncovered(content)
             && content.is_none_or(|content| source.still_admitted(content))
         {
             let kept = StoredQuery {
