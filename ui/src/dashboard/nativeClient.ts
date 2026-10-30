@@ -22,7 +22,12 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>): Pro
   const result = await invoke<unknown>(command, args);
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;
   const reply: unknown = JSON.parse(new TextDecoder().decode(result));
-  if (reply && typeof reply === 'object') replyLengths.set(reply, result.byteLength);
+  if (reply && typeof reply === 'object') {
+    replyLengths.set(reply, result.byteLength);
+    // A prepared reply's data is kept without its envelope.
+    const data: unknown = (reply as { data?: unknown }).data;
+    if (data && typeof data === 'object') replyLengths.set(data, result.byteLength);
+  }
   return reply as T;
 }
 

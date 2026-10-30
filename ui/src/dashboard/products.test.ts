@@ -193,6 +193,21 @@ test('the cache sizes a reply by the length its transport received, validated or
 });
 
 
+test('a prepared reply is sized by the length its transport received for its data', async () => {
+  const source = { id: 'sized', revision: '1' } as import('./client').DashboardSource;
+  let queries = 0;
+  const client = { preparedQuery: async () => {
+    queries++;
+    const data = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
+    // Received at the whole budget: once counted, it cannot be kept.
+    replyLengths.set(data, 64 * 1024 * 1024);
+    return data;
+  }, product: async () => { throw new Error('request-time group scan'); } } as unknown as DashboardClient;
+  await loadCountryGroups(client, source, '1', new AbortController().signal);
+  await loadCountryGroups(client, source, '1', new AbortController().signal);
+  assert.equal(queries, 2);
+});
+
 test('prepared country groups share the product cache, content revisions and source release', async () => {
   const source = { id: 'groups', revision: '1' } as import('./client').DashboardSource;
   const data = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [], countryIdentities: [], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };

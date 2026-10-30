@@ -17,13 +17,20 @@ import { useViewRead } from './viewRead.ts';
  * without serialising it again; a reply without one is measured by serialising. */
 export const replyLengths = new WeakMap<object, number>();
 
+/** The length `reply` was received at: its own, or its data's for a prepared reply, which is
+ * kept wrapped anew around the data the transport received. */
+function receivedLength(reply: ProductReply<unknown>): number | undefined {
+  const data: unknown = reply.data;
+  return replyLengths.get(reply) ?? (data !== null && typeof data === 'object' ? replyLengths.get(data) : undefined);
+}
+
 /** One shared, bounded cache of final product replies per client. One-shot
  * requests share native work; progressive replies and polling belong to each mount. */
 const caches = new WeakMap<DashboardClient, ResourceCache<ProductReply<unknown>>>();
 function cache(client: DashboardClient): ResourceCache<ProductReply<unknown>> {
   let entry = caches.get(client);
   if (!entry) {
-    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => (replyLengths.get(reply) ?? JSON.stringify(reply).length) * 2);
+    entry = new ResourceCache(128, 64 * 1024 * 1024, reply => (receivedLength(reply) ?? JSON.stringify(reply).length) * 2);
     caches.set(client, entry);
   }
   return entry;
@@ -55,7 +62,7 @@ export async function loadProduct<T>(client: DashboardClient, request: ProductRe
   const validated = (reply: ProductReply<unknown>): ProductReply<unknown> => {
     if (!validate) return reply;
     const value = { ...reply, data: validate(reply.data) };
-    const length = replyLengths.get(reply);
+    const length = receivedLength(reply);
     if (length !== undefined) replyLengths.set(value, length);
     return value;
   };
