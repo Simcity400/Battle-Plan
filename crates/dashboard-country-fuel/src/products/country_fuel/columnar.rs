@@ -3,14 +3,14 @@ use replay::{
     columnar_frames::{Views, metrics},
     columns,
     container::Replay,
-    segments::{self, Operator, State},
+    segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
     rows::{FuelDemandPartRow, RowCodec, TABLE_COUNT, TableRows},
 };
 use replay_frame::frame::TableView;
-use std::{any::Any, collections::HashMap};
+use std::{collections::HashMap, mem::size_of};
 
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
@@ -48,6 +48,17 @@ pub struct Hour {
 impl Hour {
     pub fn changed_countries(&self) -> usize {
         self.countries.len()
+    }
+}
+
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        self.countries
+            .iter()
+            .map(|country| country.tag.capacity())
+            .sum::<usize>()
+            + self.countries.capacity() * size_of::<Country>()
+            + self.unnamed.len() * size_of::<u32>()
     }
 }
 
@@ -147,7 +158,6 @@ pub struct Projector {
     by_country: BTreeMap<u32, BTreeMap<u128, Arc<FuelDemandPartRow>>>,
     reasons: Reasons,
     summaries: BTreeMap<u32, Summary>,
-    hours: Vec<Hour>,
 }
 
 impl Projector {
@@ -184,7 +194,6 @@ impl Projector {
             by_country: BTreeMap::new(),
             reasons: Reasons::default(),
             summaries: BTreeMap::new(),
-            hours: Vec::new(),
         })
     }
 
@@ -296,7 +305,9 @@ impl Projector {
 }
 
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let continuous = self.frontier.and_then(|at| at.checked_add(1)) == Some(hour.hour);
         let mut changed = [false; TABLE_COUNT];
@@ -540,7 +551,7 @@ impl Operator for Projector {
                 supplied,
             });
         }
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             format: self.format,
@@ -553,13 +564,9 @@ impl Operator for Projector {
             refresh_levels: changed[TableId::CountryFuel.index()]
                 || changed[TableId::CountryLinks.index()],
             countries_complete: self.countries_complete,
-        });
+        })?;
         self.frontier = Some(hour.hour);
         Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
     }
 }
 

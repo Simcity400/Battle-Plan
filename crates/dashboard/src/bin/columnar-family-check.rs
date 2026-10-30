@@ -2,7 +2,7 @@
 //! ([`replay::segments`]) and compares the sections it writes, byte for byte, with those a
 //! finished preparation of the same recording wrote, flushing at the hours that preparation
 //! flushed (its series batches' last hours). Reports the CPU per recorded hour of the
-//! projection (every worker) and of the ordered emission (the caller's thread), and of the
+//! projection (every worker) and of the ordered emission (the workers running it), and of the
 //! same walk with no operator, which the family's own cost is measured above. Without
 //! `--prepared` it only measures, flushing once at the end; `--row` folds army, fuel,
 //! diplomacy, equipment losses and occupation through their production block paths, both
@@ -22,7 +22,7 @@ use dashboard_land_battles::products::division_log;
 use dashboard_occupation::products::occupied_states;
 use dashboard_stability::products::country_stability::columnar as stability;
 use replay::{
-    columnar_frames::{Limits, Recording},
+    columnar_frames::{Limits, Recording, Segment},
     container::Replay,
     segments,
 };
@@ -336,75 +336,6 @@ impl Family {
         })
     }
 
-    fn observe(&mut self, hour: Box<dyn std::any::Any + Send>) -> io::Result<(u64, i32)> {
-        match self {
-            Self::Fuel(prepared, _) => {
-                let hour = *hour
-                    .downcast::<country_fuel::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                prepared.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::Diplomacy(prepared) => {
-                let hour = *hour
-                    .downcast::<diplomacy_state::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                prepared.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::EquipmentLosses(prepared) => {
-                let hour = *hour
-                    .downcast::<equipment_losses::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                prepared.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::Army(prepared) => {
-                let hour = *hour
-                    .downcast::<army_size::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                prepared.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::Stability(accumulator) => {
-                let hour = *hour
-                    .downcast::<stability::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                accumulator.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::Supply(prepared) => {
-                let hour = *hour
-                    .downcast::<supply_health::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                prepared.observe_projected(hour)?;
-                Ok(at)
-            }
-            Self::Occupation(emit, _) => {
-                let hour = *hour
-                    .downcast::<occupied_states::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                emit.observe(hour)?;
-                Ok(at)
-            }
-            Self::DivisionLog(scan) => {
-                let hour = *hour
-                    .downcast::<division_log::columnar::Hour>()
-                    .map_err(|_| invalid("A projection returned another hour"))?;
-                let at = (hour.branch, hour.hour);
-                scan.observe_projected(hour)?;
-                Ok(at)
-            }
-        }
-    }
-
     fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -443,87 +374,259 @@ impl Family {
     }
 }
 
-/// Splits one segment's projected hours, so each reaches its branch's state alone.
-fn hours(result: Box<dyn std::any::Any + Send>) -> io::Result<Vec<Box<dyn std::any::Any + Send>>> {
-    let result = match result.downcast::<Vec<country_fuel::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<diplomacy_state::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<equipment_losses::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<army_size::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<stability::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<supply_health::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    let result = match result.downcast::<Vec<occupied_states::columnar::Hour>>() {
-        Ok(hours) => return Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(result) => result,
-    };
-    match result.downcast::<Vec<division_log::columnar::Hour>>() {
-        Ok(hours) => Ok(hours.into_iter().map(|hour| Box::new(hour) as _).collect()),
-        Err(_) => Err(invalid("A projection returned another result")),
+/// A projected hour, kept by its branch's family state.
+trait Projected: segments::Item {
+    fn at(&self) -> (u64, i32);
+    fn observe(self, family: &mut Family) -> io::Result<()>;
+}
+
+fn another() -> io::Error {
+    invalid("A projection reached another family")
+}
+
+impl Projected for stability::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Stability(accumulator) = family else {
+            return Err(another());
+        };
+        accumulator.observe_projected(self)?;
+        Ok(())
     }
 }
 
-/// The branch an hour from [`hours`] belongs to.
-fn branch(hour: &(dyn std::any::Any + Send)) -> io::Result<u64> {
-    hour.downcast_ref::<occupied_states::columnar::Hour>()
-        .map(|hour| hour.branch)
-        .or_else(|| {
-            hour.downcast_ref::<equipment_losses::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<diplomacy_state::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<country_fuel::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<stability::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<army_size::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<supply_health::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .or_else(|| {
-            hour.downcast_ref::<division_log::columnar::Hour>()
-                .map(|hour| hour.branch)
-        })
-        .ok_or_else(|| invalid("A projection returned another hour"))
+impl Projected for supply_health::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Supply(prepared) = family else {
+            return Err(another());
+        };
+        prepared.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for division_log::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::DivisionLog(scan) = family else {
+            return Err(another());
+        };
+        scan.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for army_size::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Army(prepared) = family else {
+            return Err(another());
+        };
+        prepared.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for country_fuel::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Fuel(prepared, _) = family else {
+            return Err(another());
+        };
+        prepared.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for diplomacy_state::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Diplomacy(prepared) = family else {
+            return Err(another());
+        };
+        prepared.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for equipment_losses::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::EquipmentLosses(prepared) = family else {
+            return Err(another());
+        };
+        prepared.observe_projected(self)?;
+        Ok(())
+    }
+}
+
+impl Projected for occupied_states::columnar::Hour {
+    fn at(&self) -> (u64, i32) {
+        (self.branch, self.hour)
+    }
+
+    fn observe(self, family: &mut Family) -> io::Result<()> {
+        let Family::Occupation(emit, _) = family else {
+            return Err(another());
+        };
+        emit.observe(self)?;
+        Ok(())
+    }
+}
+
+/// The ordered emit's state: each branch's family state, flushed where the reference
+/// flushed, and the CPU it took.
+struct Emitting<'a> {
+    family: &'a str,
+    replay: &'a Replay,
+    prototype: Option<&'a supply_health::prepared::Prepared>,
+    occupation: Option<&'a occupied_states::prepared::Prepared>,
+    prepared: Option<&'a Path>,
+    row: bool,
+    block_ends: &'a BTreeMap<(u64, i32), usize>,
+    /// Each branch's row blocks' first hours, by their last.
+    block_starts: &'a BTreeMap<(u64, i32), i32>,
+    source: Option<&'a dashboard::Source>,
+    context: Option<&'a dashboard::config::LoadContext>,
+    writer: &'a mut store::Writer,
+    cancelled: &'a AtomicBool,
+    flushes: BTreeMap<u64, Vec<i32>>,
+    accumulators: BTreeMap<u64, Family>,
+    emit_ns: u64,
+    publish_ns: u64,
+}
+
+impl Emitting<'_> {
+    /// Keeps `hour` in its branch's state, flushing or publishing where the reference did.
+    fn observe(&mut self, hour: impl Projected) -> io::Result<()> {
+        let (branch, at) = hour.at();
+        if !self.flushes.contains_key(&branch) {
+            let mut hours = Vec::new();
+            if let Some(prepared) = self.prepared {
+                for section in Family::sections(self.family, branch).1 {
+                    hours.extend(flush_hours(prepared, &section)?);
+                }
+            } else if self.row {
+                hours.extend(
+                    self.block_ends
+                        .keys()
+                        .filter(|(at, _)| *at == branch)
+                        .map(|(_, hour)| *hour),
+                );
+            }
+            hours.sort_unstable();
+            hours.dedup();
+            self.flushes.insert(branch, hours);
+        }
+        let (family, prototype, occupation, replay) =
+            (self.family, self.prototype, self.occupation, self.replay);
+        let state = self
+            .accumulators
+            .entry(branch)
+            .or_insert_with(|| match (family, prototype) {
+                ("army", _) => Family::Army(Box::default()),
+                ("fuel", _) => Family::Fuel(Box::default(), replay.format),
+                ("diplomacy_state", _) => Family::Diplomacy(Box::default()),
+                ("equipment_losses", _) => Family::EquipmentLosses(Box::new(
+                    equipment_losses::prepared::Prepared::new(replay, branch, at),
+                )),
+                ("occupation", _) => Family::Occupation(
+                    Box::new(occupation.expect("configured occupation").emit()),
+                    Vec::new(),
+                ),
+                ("supply", Some(prototype)) => Family::Supply(Box::new(prototype.fresh())),
+                ("division-log", _) => {
+                    Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
+                }
+                _ => Family::Stability(StabilityAccumulator::default()),
+            });
+        hour.observe(state)?;
+        let publishing = cpu().1;
+        if let Family::EquipmentLosses(prepared) = state {
+            if self.block_ends.contains_key(&(branch, at)) {
+                prepared.finish_block(loss_block_last(self.replay, branch, at));
+            }
+        }
+        if let Family::Occupation(emit, held) = state
+            && let Some(&first) = self.block_starts.get(&(branch, at))
+        {
+            held.push(emit.hold_block(branch, first, at)?);
+        }
+        if let Family::DivisionLog(scan) = state {
+            // Its window, manifest and counts are published at each block's end.
+            if let (Some(&ordinal), Some(source), Some(context)) = (
+                self.block_ends.get(&(branch, at)),
+                self.source,
+                self.context,
+            ) {
+                scan.publish_block(
+                    source,
+                    context,
+                    self.writer,
+                    branch,
+                    ordinal,
+                    self.cancelled,
+                )?;
+            }
+        } else if self.flushes[&branch].binary_search(&at).is_ok() {
+            state.flush(self.writer, branch, self.cancelled)?;
+        }
+        self.publish_ns += cpu().1 - publishing;
+        Ok(())
+    }
+}
+
+/// The family's lane: `make`'s operators, and an emit keeping each hour they project in its
+/// branch's state.
+fn emitted<'a, O>(
+    name: &'a str,
+    make: impl Fn(&Segment) -> io::Result<O> + Sync + 'a,
+    emitting: &'a mut Emitting<'_>,
+) -> segments::Lane<'a>
+where
+    O: segments::Operator + 'a,
+    O::Output: Projected,
+{
+    segments::Lane::new(name, make, move |chunk: segments::Chunk<'_, O::Output>| {
+        let started = cpu().1;
+        for hour in chunk.items {
+            emitting.observe(hour)?;
+        }
+        emitting.emit_ns += cpu().1 - started;
+        Ok(())
+    })
 }
 
 /// Visits every hour and keeps nothing: the walk's own cost.
 struct Idle;
 
 impl segments::Operator for Idle {
-    fn hour(&mut self, _: &segments::Hour<'_>) -> io::Result<()> {
-        Ok(())
-    }
+    type Output = ();
 
-    fn take(&mut self) -> io::Result<Box<dyn std::any::Any + Send>> {
-        Ok(Box::new(()))
+    fn hour(&mut self, _: &segments::Hour<'_>, _: &mut dyn segments::Sink<()>) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -730,130 +833,100 @@ fn run() -> io::Result<()> {
     let written_key = store::SourceKey::capture(&recording, &[])?;
     let mut writer = store.replace(written_key.clone())?;
     let cancelled = AtomicBool::new(false);
-    let mut flushes: BTreeMap<u64, Vec<i32>> = BTreeMap::new();
-    let idle = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
-        Ok(vec![Box::new(Idle)])
-    };
+    let settings = segments::Settings::new(threads);
+    let scratch = segments::Folder::new(output.join("scratch"))?;
+    let cancellation = segments::Cancellation::default();
+    let idle = segments::Lane::new(
+        "idle",
+        |_: &Segment| Ok(Idle),
+        |_: segments::Chunk<'_, ()>| Ok(()),
+    );
     let walk_started = (Instant::now(), cpu().0);
-    segments::run(&file, threads, 2 * threads, &idle, &mut |_, _| Ok(()))?;
+    segments::run(&file, &settings, &scratch, &cancellation, vec![idle])?;
     let walk_wall = walk_started.0.elapsed().as_secs_f64();
     let walk_cpu = cpu().0 - walk_started.1;
 
     let wall = Instant::now();
     let (process_before, thread_before) = cpu();
-    let mut accumulators: BTreeMap<u64, Family> = BTreeMap::new();
-    let mut emit_ns = 0_u64;
-    let mut publish_ns = 0_u64;
-    let make = |_: &replay::columnar_frames::Segment| -> io::Result<segments::Operators> {
-        Ok(match (family.as_str(), &prototype) {
-            ("fuel", _) => vec![Box::new(country_fuel::columnar::Projector::new(&replay)?)],
-            ("diplomacy_state", _) => vec![Box::new(diplomacy_state::columnar::Projector::new(
-                replay.format,
-                replay.capture_mode,
-            )?)],
-            ("equipment_losses", _) => vec![Box::new(equipment_losses::columnar::Projector::new(
-                &replay,
-            )?)],
-            ("army", _) => vec![Box::new(
-                army_size::prepared::Prepared::default().projector(&replay)?,
-            )],
-            ("supply", Some(prepared)) => vec![Box::new(prepared.projector(replay.format)?)],
-            ("occupation", _) => vec![Box::new(
-                occupation
-                    .as_ref()
-                    .expect("configured occupation")
-                    .projector(replay.format, replay.capture_mode)?,
-            )],
-            ("division-log", _) => vec![Box::new(division_log::columnar::Projector::new(
-                replay.format,
-                replay.capture_mode,
-            )?)],
-            _ => vec![Box::new(stability::Projector::new(format)?)],
-        })
+    let mut emitting = Emitting {
+        family: &family,
+        replay: &replay,
+        prototype: prototype.as_ref(),
+        occupation: occupation.as_ref(),
+        prepared: prepared.as_deref(),
+        row,
+        block_ends: &block_ends,
+        block_starts: &block_starts,
+        source: source.as_ref(),
+        context: context.as_ref(),
+        writer: &mut writer,
+        cancelled: &cancelled,
+        flushes: BTreeMap::new(),
+        accumulators: BTreeMap::new(),
+        emit_ns: 0,
+        publish_ns: 0,
     };
-    segments::run(&file, threads, 2 * threads, &make, &mut |_, results| {
-        let started = cpu().1;
-        for result in results {
-            for hour in hours(result)? {
-                let branch = branch(&*hour)?;
-                if !flushes.contains_key(&branch) {
-                    let mut hours = Vec::new();
-                    if let Some(prepared) = &prepared {
-                        for section in Family::sections(&family, branch).1 {
-                            hours.extend(flush_hours(prepared, &section)?);
-                        }
-                    } else if row {
-                        hours.extend(
-                            block_ends
-                                .keys()
-                                .filter(|(at, _)| *at == branch)
-                                .map(|(_, hour)| *hour),
-                        );
-                    }
-                    hours.sort_unstable();
-                    hours.dedup();
-                    flushes.insert(branch, hours);
-                }
-                let state = accumulators.entry(branch).or_insert_with(|| {
-                    match (family.as_str(), &prototype) {
-                        ("army", _) => Family::Army(Box::default()),
-                        ("fuel", _) => Family::Fuel(Box::default(), replay.format),
-                        ("diplomacy_state", _) => Family::Diplomacy(Box::default()),
-                        ("equipment_losses", _) => Family::EquipmentLosses(Box::new(
-                            equipment_losses::prepared::Prepared::new(
-                                &replay,
-                                branch,
-                                hour.downcast_ref::<equipment_losses::columnar::Hour>()
-                                    .expect("equipment loss hour")
-                                    .hour,
-                            ),
-                        )),
-                        ("occupation", _) => Family::Occupation(
-                            Box::new(occupation.as_ref().expect("configured occupation").emit()),
-                            Vec::new(),
-                        ),
-                        ("supply", Some(prepared)) => Family::Supply(Box::new(prepared.fresh())),
-                        ("division-log", _) => {
-                            Family::DivisionLog(Box::new(division_log::Scan::new(replay.format)))
-                        }
-                        _ => Family::Stability(StabilityAccumulator::default()),
-                    }
-                });
-                let (_, at) = state.observe(hour)?;
-                let publishing = cpu().1;
-                if let Family::EquipmentLosses(prepared) = state {
-                    if block_ends.contains_key(&(branch, at)) {
-                        prepared.finish_block(loss_block_last(&replay, branch, at));
-                    }
-                }
-                if let Family::Occupation(emit, held) = state
-                    && let Some(&first) = block_starts.get(&(branch, at))
-                {
-                    held.push(emit.hold_block(branch, first, at)?);
-                }
-                if let Family::DivisionLog(scan) = state {
-                    // Its window, manifest and counts are published at each block's end.
-                    if let (Some(&ordinal), Some(source), Some(context)) =
-                        (block_ends.get(&(branch, at)), &source, &context)
-                    {
-                        scan.publish_block(
-                            source,
-                            context,
-                            &mut writer,
-                            branch,
-                            ordinal,
-                            &cancelled,
-                        )?;
-                    }
-                } else if flushes[&branch].binary_search(&at).is_ok() {
-                    state.flush(&mut writer, branch, &cancelled)?;
-                }
-                publish_ns += cpu().1 - publishing;
-            }
+    let lane = match (family.as_str(), &prototype) {
+        ("fuel", _) => emitted(
+            &family,
+            |_: &Segment| country_fuel::columnar::Projector::new(&replay),
+            &mut emitting,
+        ),
+        ("diplomacy_state", _) => emitted(
+            &family,
+            |_: &Segment| {
+                diplomacy_state::columnar::Projector::new(replay.format, replay.capture_mode)
+            },
+            &mut emitting,
+        ),
+        ("equipment_losses", _) => emitted(
+            &family,
+            |_: &Segment| equipment_losses::columnar::Projector::new(&replay),
+            &mut emitting,
+        ),
+        ("army", _) => emitted(
+            &family,
+            |_: &Segment| army_size::prepared::Prepared::default().projector(&replay),
+            &mut emitting,
+        ),
+        ("supply", Some(prototype)) => {
+            let format = replay.format;
+            emitted(
+                &family,
+                move |_: &Segment| prototype.projector(format),
+                &mut emitting,
+            )
         }
-        emit_ns += cpu().1 - started;
-        Ok(())
-    })?;
+        ("occupation", _) => {
+            let (format, mode) = (replay.format, replay.capture_mode);
+            let occupation = occupation.as_ref().expect("configured occupation");
+            emitted(
+                &family,
+                move |_: &Segment| occupation.projector(format, mode),
+                &mut emitting,
+            )
+        }
+        ("division-log", _) => emitted(
+            &family,
+            |_: &Segment| {
+                division_log::columnar::Projector::new(replay.format, replay.capture_mode)
+            },
+            &mut emitting,
+        ),
+        _ => emitted(
+            &family,
+            |_: &Segment| stability::Projector::new(format),
+            &mut emitting,
+        ),
+    };
+    let ran = segments::run(&file, &settings, &scratch, &cancellation, vec![lane])?;
+    let Emitting {
+        flushes,
+        mut accumulators,
+        mut emit_ns,
+        mut publish_ns,
+        ..
+    } = emitting;
     let final_publish = cpu().1;
     for (branch, accumulator) in &mut accumulators {
         if flushes.get(branch).is_none_or(Vec::is_empty) {
@@ -890,6 +963,19 @@ fn run() -> io::Result<()> {
         "emit_cpu_us_per_hour": emit_ns as f64 / 1e3 / hours,
         "emit_publish_cpu_us_per_hour": publish_ns as f64 / 1e3 / hours,
         "caller_cpu_us_per_hour": (thread_after - thread_before) as f64 / 1e3 / hours,
+        "run": {
+            "walks": ran.walks,
+            "chained": ran.chained,
+            "deferred": ran.deferred,
+            "segments_held": ran.segments,
+            "output_bytes_held": ran.output_bytes,
+            "carry_bytes_held": ran.carry_bytes,
+            "carry_scratch_bytes_held": ran.carry_scratch,
+            "parked": ran.parked,
+            "spilled": ran.spilled,
+            "loaded": ran.loaded,
+            "chunks_spilled": ran.chunks_spilled,
+        },
         "sections_written": written.len(),
         "scopes": scopes.then(replay_frame::cpu::snapshot),
     });

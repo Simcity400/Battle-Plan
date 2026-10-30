@@ -32,11 +32,12 @@ use replay_columnar::{
     state::{Cell, Kind as Column, Table},
     walk::{Dictionary, State},
 };
-use std::{io, sync::Arc};
+use std::{io, mem::size_of, sync::Arc};
 
 mod input;
 mod reader;
 pub use input::{Budget, Limits};
+pub(crate) use reader::Reads;
 pub use reader::{Damage, DamageScope, Recording, Run, Timings, Walker};
 
 #[cfg(test)]
@@ -140,6 +141,20 @@ pub fn metrics(manifest: &Manifest<'_>) -> Metrics {
     }
 }
 
+/// The bytes `view`'s rows, or its reason, hold.
+fn view_bytes(view: &TableView) -> usize {
+    match view {
+        TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.heap_bytes(),
+        TableView::Unavailable { reason } => reason.capacity(),
+        TableView::NotRecorded { .. } => 0,
+    }
+}
+
+/// The bytes `frame`'s views hold, each counted though another frame shares it.
+pub fn frame_heap_bytes(frame: &DecodedFrame) -> usize {
+    frame.tables.iter().map(|view| view_bytes(view)).sum()
+}
+
 /// The selected tables' views, carried from hour to hour as the walker advances.
 pub struct Views {
     selected: Vec<TableId>,
@@ -160,6 +175,20 @@ pub struct Views {
 }
 
 impl Views {
+    /// The bytes its views and buffers hold.
+    pub fn heap_bytes(&self) -> usize {
+        self.views
+            .iter()
+            .flatten()
+            .map(|view| view_bytes(view))
+            .sum::<usize>()
+            + self.slots.capacity() * size_of::<(u128, u32)>()
+            + (self.keys.capacity() + self.deleted.capacity()) * size_of::<u128>()
+            + self.patches.capacity() * size_of::<(u128, u32, u64)>()
+            + self.masks.capacity() * size_of::<(u128, u64)>()
+            + self.facts.capacity() * size_of::<TableUpdate>()
+    }
+
     /// Views of `tables` and Campaign, as a decoder of them reconstructs them.
     pub fn new(tables: &[TableId], format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
         let mut chosen = [false; TABLE_COUNT];

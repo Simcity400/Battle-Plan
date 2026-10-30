@@ -22,9 +22,9 @@ use super::{
 };
 use dashboard_text::metadata::{LinkTags, slot_read};
 use replay::{
-    columnar_frames::{Views, metrics},
+    columnar_frames::{Views, frame_heap_bytes, metrics},
     columns,
-    segments::{self, Operator, Start, State},
+    segments::{self, Item, Operator, Sink, Start, State},
 };
 use replay_data::{
     format::FormatVersion,
@@ -33,9 +33,9 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::{
-    any::Any,
     collections::{HashMap, HashSet},
     io,
+    mem::size_of,
 };
 
 /// The tables names and link tags read.
@@ -94,6 +94,22 @@ pub struct Hour {
     /// A walk's last hour, when its census was built before it: the name of each template its
     /// presentations name, as that build named it, for the walk after.
     pub(super) names: Option<HashMap<u64, Option<TemplateName>>>,
+}
+
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // What events' rows and presentations own is not counted.
+        let names = self.names.as_ref().map_or(0, |names| {
+            names.capacity() * size_of::<(u64, Option<TemplateName>)>()
+        });
+        self.warnings
+            .iter()
+            .map(|(reason, _)| reason.capacity())
+            .sum::<usize>()
+            + self.warnings.capacity() * size_of::<(String, usize)>()
+            + self.events.capacity() * size_of::<Projected>()
+            + names
+    }
 }
 
 /// One division's presentation operands.
@@ -196,7 +212,8 @@ pub struct Projector {
     census_template: Option<i32>,
     previous_hour: Option<i32>,
     shapes: [Option<Shape>; FOLLOWED.len()],
-    hours: Vec<Hour>,
+    /// The hour projected last, held back for the segment's end to name its templates.
+    pending: Option<Hour>,
 }
 
 /// A table's status at an hour, its missing rows and unavailable reason included: the row
@@ -322,7 +339,7 @@ impl Projector {
             census_template: Some(INHERITED),
             previous_hour: None,
             shapes: [None; FOLLOWED.len()],
-            hours: Vec::new(),
+            pending: None,
         })
     }
 
@@ -549,6 +566,8 @@ impl Projector {
 }
 
 impl Operator for Projector {
+    type Output = Hour;
+
     fn starts_at(&self, start: Start<'_>) -> bool {
         match start {
             Start::Restart(state) => {
@@ -617,7 +636,7 @@ impl Operator for Projector {
         Ok(())
     }
 
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let at = hour.hour;
         let mut warnings: Vec<(String, usize)> = Vec::new();
@@ -844,7 +863,7 @@ impl Operator for Projector {
             self.census_template = self.template_hour;
         }
         self.previous_hour = Some(at);
-        self.hours.push(Hour {
+        let projected = Hour {
             branch: hour.branch,
             hour: at,
             census,
@@ -854,16 +873,19 @@ impl Operator for Projector {
             events,
             warnings,
             names: None,
-        });
-        Ok(())
+        };
+        match self.pending.replace(projected) {
+            Some(before) => out.push(before),
+            None => Ok(()),
+        }
     }
 
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
+    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         // A census the walk built before the segment's last census hour named its
         // presentations then; one it never built is the restart's, which the walk before named.
         let last = self
-            .hours
-            .last()
+            .pending
+            .as_ref()
             .filter(|last| last.census)
             .map(|last| last.hour);
         let names = self
@@ -884,9 +906,27 @@ impl Operator for Projector {
                 }
                 names
             });
-        if let Some(last) = self.hours.last_mut() {
-            last.names = names;
+        match self.pending.take() {
+            Some(mut last) => {
+                last.names = names;
+                out.push(last)
+            }
+            None => Ok(()),
         }
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+    }
+
+    fn carried(&self) -> Option<usize> {
+        // The current frame's views are the naming views'.
+        let built = self.built.as_ref().map_or(0, |built| {
+            built.operands.capacity() * size_of::<(u64, Operands)>()
+                + built.frame.as_ref().map_or(0, frame_heap_bytes)
+        });
+        Some(
+            self.naming.heap_bytes()
+                + self.removals.heap_bytes()
+                + built
+                + self.live.capacity() * size_of::<u64>()
+                + self.deletions.capacity() * size_of::<(u64, (u32, u32, u8, Option<u8>))>(),
+        )
     }
 }

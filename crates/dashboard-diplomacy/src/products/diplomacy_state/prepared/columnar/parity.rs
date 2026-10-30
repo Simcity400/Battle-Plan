@@ -146,9 +146,8 @@ fn flush(prepared: &mut Prepared, fixture: &Fixture) {
     prepared.save(&mut writer, 1).unwrap();
     writer.commit().unwrap();
 }
-fn emit(projector: &mut Projector, prepared: &mut Prepared, fixture: &Fixture) {
-    let hours = *projector.take().unwrap().downcast::<Vec<Hour>>().unwrap();
-    for hour in hours {
+fn emit(hours: &mut Vec<Hour>, prepared: &mut Prepared, fixture: &Fixture) {
+    for hour in std::mem::take(hours) {
         let at = hour.hour;
         prepared.observe_projected(hour).unwrap();
         if at.rem_euclid(3) == 0 {
@@ -177,6 +176,7 @@ fn compare(
     let (mut row, mut projected) = (Prepared::default(), Prepared::default());
     let mut tracker = FrameChangeTracker::new();
     let mut projector = Projector::new(FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    let mut hours: Vec<Hour> = Vec::new();
     assert!(projector.starts_at(Start::Run { continues: false }));
     projector
         .start(Start::Run { continues: false }, 1, inputs[0].hour)
@@ -185,7 +185,7 @@ fn compare(
         let run = ordinal > 0 && inputs[ordinal - 1].hour.checked_add(1) != Some(input.hour);
         let opens = run || ordinal == 0 || restart == Some(ordinal);
         if ordinal > 0 && opens {
-            emit(&mut projector, &mut projected, &fixtures[1]);
+            emit(&mut hours, &mut projected, &fixtures[1]);
             if run {
                 walk = Synthetic::new(super::super::super::block::TABLES, 1, input.hour).unwrap();
             }
@@ -237,21 +237,24 @@ fn compare(
                 flush(&mut row, &fixtures[0]);
             }
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: u32::from(run),
-                    ordinal: ordinal as u32,
-                    starts: starts || opens,
-                    opens,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: u32::from(run),
+                        ordinal: ordinal as u32,
+                        starts: starts || opens,
+                        opens,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
     }
-    emit(&mut projector, &mut projected, &fixtures[1]);
+    emit(&mut hours, &mut projected, &fixtures[1]);
     flush(&mut row, &fixtures[0]);
     flush(&mut projected, &fixtures[1]);
     let expected = fixtures[0].payloads();
@@ -275,6 +278,7 @@ fn compare(
 fn one_projector(inputs: &[DecodedFrame]) -> Vec<Hour> {
     let mut walk = Synthetic::new(super::super::super::block::TABLES, 1, inputs[0].hour).unwrap();
     let mut projector = Projector::new(FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+    let mut hours: Vec<Hour> = Vec::new();
     projector
         .start(Start::Run { continues: false }, 1, inputs[0].hour)
         .unwrap();
@@ -282,21 +286,24 @@ fn one_projector(inputs: &[DecodedFrame]) -> Vec<Hour> {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens: starts,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap()
         })
         .unwrap();
     }
-    *projector.take().unwrap().downcast::<Vec<Hour>>().unwrap()
+    hours
 }
 fn script() -> Vec<DecodedFrame> {
     (0..34)
@@ -754,24 +761,27 @@ fn a_restart_builds_a_baseline_only_after_a_refused_hour() {
             walk.end(|_, _, _, _| ()).unwrap();
         }
         let mut projector = Projector::new(FormatVersion::CURRENT, CaptureMode::Full).unwrap();
+        let mut hours: Vec<Hour> = Vec::new();
         projector.start(Start::Restart(walk.state()), 1, 2).unwrap();
         write_hour(&mut walk, &inputs[2], None);
         walk.end(|state, manifest, frame, _| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: 2,
-                    starts: true,
-                    opens: true,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: 2,
+                        starts: true,
+                        opens: true,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap()
         })
         .unwrap();
-        let hours = *projector.take().unwrap().downcast::<Vec<Hour>>().unwrap();
         assert_eq!(hours[0].baseline, refused);
         let opinions = hours[0].opinions.as_ref().unwrap();
         assert!(opinions.current.is_empty());

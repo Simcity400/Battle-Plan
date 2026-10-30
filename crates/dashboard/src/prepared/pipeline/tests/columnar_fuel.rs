@@ -180,13 +180,8 @@ fn award_row(hour: i32) -> CountryFuelRow {
     }
 }
 
-fn emit(projector: &mut dyn Operator, prepared: &mut Prepared) -> Vec<usize> {
-    let hours = *projector
-        .take()
-        .unwrap()
-        .downcast::<Vec<columnar::Hour>>()
-        .unwrap();
-    hours
+fn emit(hours: &mut Vec<columnar::Hour>, prepared: &mut Prepared) -> Vec<usize> {
+    std::mem::take(hours)
         .into_iter()
         .map(|hour| {
             let handed = hour.changed_countries();
@@ -237,7 +232,8 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
     let fixtures = [Fixture::new(), Fixture::new()];
     let mut row = FuelReference::new(replay.format);
     let mut projected = Prepared::default();
-    let mut projector: Box<dyn Operator> = Box::new(projected.projector(replay).unwrap());
+    let mut projector = projected.projector(replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     assert!(projector.starts_at(Start::Run { continues: false }));
     assert!(projector.starts_at(Start::Run { continues: true }));
     projector
@@ -256,8 +252,8 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
             walk = Synthetic::new(columnar::TABLES, 1, input.hour).unwrap();
         }
         if block_start {
-            handed.extend(emit(&mut *projector, &mut projected));
-            projector = Box::new(projected.projector(replay).unwrap());
+            handed.extend(emit(&mut hours, &mut projected));
+            projector = projected.projector(replay).unwrap();
             let start = if run {
                 Start::Run { continues: true }
             } else {
@@ -269,16 +265,19 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
         write_hour(&mut walk, input, *read);
         walk.end(|state, manifest, frame, starts| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: u32::from(run),
-                    ordinal: ordinal as u32,
-                    starts: starts || block_start,
-                    opens: starts || block_start,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: u32::from(run),
+                        ordinal: ordinal as u32,
+                        starts: starts || block_start,
+                        opens: starts || block_start,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
@@ -287,7 +286,7 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
             .iter()
             .find(|block| block.last_hour == input.hour)
         {
-            handed.extend(emit(&mut *projector, &mut projected));
+            handed.extend(emit(&mut hours, &mut projected));
             row.block(&source, replay, block, &flag).unwrap();
             let mut writer = fixtures[0].writer();
             row.flush(&mut writer, replay, 1, &flag).unwrap();
@@ -299,7 +298,7 @@ fn parity(label: &str, inputs: &[(DecodedFrame, bool)], restarts: &[usize]) -> V
             writer.commit().unwrap();
         }
     }
-    handed.extend(emit(&mut *projector, &mut projected));
+    handed.extend(emit(&mut hours, &mut projected));
     assert_payloads_equal(&fixtures[1].payloads(), &fixtures[0].payloads(), label);
     handed
 }
@@ -764,7 +763,8 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
     let mut seen = BTreeSet::new();
     for (ordinal, block) in replay.index.iter().enumerate() {
         let prepared = projected.entry(block.branch).or_default();
-        let mut projector: Box<dyn Operator> = Box::new(prepared.projector(replay).unwrap());
+        let mut projector = prepared.projector(replay).unwrap();
+        let mut hours: Vec<columnar::Hour> = Vec::new();
         let start = Start::Run {
             continues: !seen.insert(block.branch),
         };
@@ -786,16 +786,19 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
                     );
                     walk.end(|state, manifest, frame, starts| {
                         projector
-                            .hour(&segments::Hour {
-                                branch: block.branch,
-                                hour: frame.hour,
-                                run: ordinal as u32,
-                                ordinal: at,
-                                starts,
-                                opens: starts,
-                                state,
-                                manifest,
-                            })
+                            .hour(
+                                &segments::Hour {
+                                    branch: block.branch,
+                                    hour: frame.hour,
+                                    run: ordinal as u32,
+                                    ordinal: at,
+                                    starts,
+                                    opens: starts,
+                                    state,
+                                    manifest,
+                                },
+                                &mut hours,
+                            )
                             .unwrap();
                     })
                     .unwrap();
@@ -805,7 +808,7 @@ fn branch_returns_reload_the_reference_and_keep_ordered_history() {
                 || Ok(()),
             )
             .unwrap();
-        emit(&mut *projector, prepared);
+        emit(&mut hours, prepared);
         let row = rows
             .entry(block.branch)
             .or_insert_with(|| FuelReference::new(replay.format));

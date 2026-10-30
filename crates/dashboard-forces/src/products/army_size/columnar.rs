@@ -8,14 +8,14 @@ use replay::{
     columnar_frames::{Views, metrics},
     columns,
     container::Replay,
-    segments::{self, Operator, State},
+    segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
     rows::{DivisionCensusRow, RowCodec, TABLE_COUNT, TableId, TableRows},
 };
 use replay_frame::frame::{DecodedFrame, TableView};
-use std::{any::Any, collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, io, mem::size_of, sync::Arc};
 
 type Parts = [Option<std::collections::BTreeMap<String, i64>>; 2];
 type Version = (u64, u64, [bool; 2]);
@@ -53,6 +53,25 @@ pub struct Hour {
     pub(super) aid: aid::Projection,
 }
 
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // Compositions are Arcs the projection holds too; aid's actors are not counted.
+        let identities = self.identities.as_ref().map_or(0, |identities| {
+            identities.capacity() * size_of::<(String, Identity)>()
+                + identities
+                    .iter()
+                    .map(|(tag, _)| tag.capacity())
+                    .sum::<usize>()
+        });
+        let reads: usize = self
+            .invalid_table_reads
+            .keys()
+            .map(|table| size_of::<(String, usize)>() + table.capacity())
+            .sum();
+        identities + self.countries.capacity() * size_of::<Country>() + reads
+    }
+}
+
 pub struct Projector {
     format: FormatVersion,
     gaps: Vec<(u64, i32, i32)>,
@@ -64,7 +83,6 @@ pub struct Projector {
     state: ScanState,
     aid: aid::Runtime,
     mixes: HashMap<String, Arc<Parts>>,
-    hours: Vec<Hour>,
 }
 
 fn shape(state: &State, table: TableId) -> Shape {
@@ -109,7 +127,6 @@ impl Projector {
             state: ScanState::new(true),
             aid: aid::Runtime::default(),
             mixes: HashMap::new(),
-            hours: Vec::new(),
         })
     }
 
@@ -186,7 +203,9 @@ impl Projector {
 // Every segment starts cold: a row block's first hour reads everything again, from the
 // runtime state its fold forgot at the block before's end.
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let continuous = self
             .scan
@@ -346,7 +365,7 @@ impl Operator for Projector {
                 track.segments.drain(..track.segments.len() - 1);
             }
         }
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             starts: hour.starts,
@@ -364,11 +383,6 @@ impl Operator for Projector {
             composition_unreadable: std::mem::take(&mut self.scan.composition_unreadable),
             invalid_table_reads: std::mem::take(&mut self.scan.invalid_table_reads),
             aid,
-        });
-        Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+        })
     }
 }

@@ -161,18 +161,9 @@ fn row_payloads(inputs: &[DecodedFrame], starts: &[usize], replay: &Replay) -> P
     fixture.payloads()
 }
 
-fn emit(
-    mut projector: Box<dyn Operator>,
-    prepared: &mut Prepared,
-    fixture: &Fixture,
-) -> Vec<usize> {
-    let hours = *projector
-        .take()
-        .unwrap()
-        .downcast::<Vec<columnar::Hour>>()
-        .unwrap();
+fn emit(hours: &mut Vec<columnar::Hour>, prepared: &mut Prepared, fixture: &Fixture) -> Vec<usize> {
     let mut handed = Vec::new();
-    for hour in hours {
+    for hour in std::mem::take(hours) {
         let at = hour.hour;
         handed.push(hour.countries.len());
         prepared.observe_projected(hour).unwrap();
@@ -205,7 +196,8 @@ fn parity_on(
     let fixtures = [Fixture::new(), Fixture::new()];
     let (mut row, mut projected) = (Prepared::default(), Prepared::default());
     let mut tracker = FrameChangeTracker::new();
-    let mut projector: Box<dyn Operator> = Box::new(projected.projector(&replay).unwrap());
+    let mut projector = projected.projector(&replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     projector
         .start(Start::Run { continues: false }, 1, inputs[0].hour)
         .unwrap();
@@ -215,8 +207,8 @@ fn parity_on(
         let run = ordinal > 0 && inputs[ordinal - 1].hour.checked_add(1) != Some(input.hour);
         if run {
             walk = Synthetic::new(TABLES, 1, input.hour).unwrap();
-            handed.extend(emit(projector, &mut projected, &fixtures[1]));
-            projector = Box::new(projected.projector(&replay).unwrap());
+            handed.extend(emit(&mut hours, &mut projected, &fixtures[1]));
+            projector = projected.projector(&replay).unwrap();
             assert!(projector.starts_at(Start::Run { continues: true }));
             projector
                 .start(Start::Run { continues: true }, 1, input.hour)
@@ -224,7 +216,7 @@ fn parity_on(
         }
         let mut cold = false;
         if restart == Some(ordinal) {
-            let mut next: Box<dyn Operator> = Box::new(projected.projector(&replay).unwrap());
+            let mut next = projected.projector(&replay).unwrap();
             cold = next.starts_at(Start::Restart(walk.state()));
             assert_eq!(cold, projector.starts_at(Start::Restart(walk.state())));
             if ordinal > 0
@@ -236,7 +228,7 @@ fn parity_on(
                 assert!(cold, "{label}: restart after a refused census");
             }
             if cold {
-                handed.extend(emit(projector, &mut projected, &fixtures[1]));
+                handed.extend(emit(&mut hours, &mut projected, &fixtures[1]));
                 next.start(Start::Restart(walk.state()), 1, input.hour)
                     .unwrap();
                 projector = next;
@@ -262,21 +254,24 @@ fn parity_on(
                 flush(&mut row, &fixtures[0]);
             }
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts: starts || cold,
-                    opens: starts || restart == Some(ordinal),
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts: starts || cold,
+                        opens: starts || restart == Some(ordinal),
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
     }
-    handed.extend(emit(projector, &mut projected, &fixtures[1]));
+    handed.extend(emit(&mut hours, &mut projected, &fixtures[1]));
     flush(&mut row, &fixtures[0]);
     flush(&mut projected, &fixtures[1]);
     let expected = fixtures[0].payloads();

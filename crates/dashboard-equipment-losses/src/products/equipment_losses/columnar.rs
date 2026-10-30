@@ -4,11 +4,11 @@ use dashboard_text::metadata::slot_read;
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Operator},
+    segments::{self, Item, Operator, Sink},
 };
 use replay_data::{format::FormatVersion, rows::*};
 use replay_frame::frame::TableView;
-use std::{any::Any, collections::HashSet, sync::Arc};
+use std::{collections::HashSet, mem::size_of, sync::Arc};
 
 mod naming;
 mod slots;
@@ -77,6 +77,71 @@ pub(super) struct Input {
     pub lend_read: bool,
     pub names: VariantHour,
     pub variants: Vec<(u64, RawVariant)>,
+}
+
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // Metadata and drains are Arcs the projector holds too.
+        self.input.as_ref().map_or(0, |input| {
+            let identities = input.identities.as_ref().map_or(0, |identities| {
+                identities.capacity() * size_of::<((u32, u32), bool)>()
+            });
+            let records: usize = input
+                .records
+                .iter()
+                .map(|(_, records)| records.heap())
+                .sum();
+            let unresolved: usize = input
+                .unresolved
+                .iter()
+                .map(|slots| slots.len() * size_of::<u32>())
+                .sum();
+            let variants: usize = input
+                .variants
+                .iter()
+                .map(|(_, variant)| {
+                    [&variant.token, &variant.display_name, &variant.suffix]
+                        .into_iter()
+                        .chain(&variant.name_tag)
+                        .chain(&variant.type_tag)
+                        .chain(&variant.design)
+                        .map(String::capacity)
+                        .sum::<usize>()
+                        + variant.refusals.capacity() * size_of::<(String, String)>()
+                        + variant
+                            .refusals
+                            .iter()
+                            .map(|(label, reason)| label.capacity() + reason.capacity())
+                            .sum::<usize>()
+                })
+                .sum();
+            identities
+                + input.memberships.capacity() * size_of::<(u32, Option<census::Membership>)>()
+                + input.records.capacity() * size_of::<(u32, Records)>()
+                + records
+                + unresolved
+                + input.variants.capacity() * size_of::<(u64, RawVariant)>()
+                + variants
+        })
+    }
+}
+
+impl Records {
+    fn heap(&self) -> usize {
+        let ships = self.ships.as_ref().map_or(0, |ships| {
+            ships
+                .keys()
+                .map(|key| size_of::<(ShipKey, (usize, i32, u64))>() + key.0.capacity())
+                .sum()
+        });
+        ships
+            + self.convoys.capacity() * size_of::<SunkConvoyRow>()
+            + self.convoys.iter().map(RowCodec::heap_bytes).sum::<usize>()
+            + self.lend.capacity() * size_of::<LendLeaseEquipmentRow>()
+            + self.lend.iter().map(RowCodec::heap_bytes).sum::<usize>()
+            + self.combat.capacity() * size_of::<CombatLogEquipmentRow>()
+            + self.combat.iter().map(RowCodec::heap_bytes).sum::<usize>()
+    }
 }
 
 struct Fields {
@@ -334,7 +399,6 @@ pub struct Projector {
     land: Arc<CoverageInputs>,
     metadata: Option<Arc<Metadata>>,
     cold: bool,
-    hours: Vec<Hour>,
     #[cfg(test)]
     log_reads: usize,
 }
@@ -360,7 +424,6 @@ impl Projector {
             land: Arc::default(),
             metadata: None,
             cold: true,
-            hours: Vec::new(),
             #[cfg(test)]
             log_reads: 0,
         })
@@ -832,7 +895,9 @@ impl Projector {
 }
 
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("equipment_losses.columnar", Some("equipment_losses"));
         let state = hour.state;
         let whole = hour.opens || self.cold;
@@ -876,12 +941,11 @@ impl Operator for Projector {
                 };
                 if !valid {
                     self.cold = true;
-                    self.hours.push(Hour {
+                    return out.push(Hour {
                         branch: hour.branch,
                         hour: hour.hour,
                         input: None,
                     });
-                    return Ok(());
                 }
             }
         }
@@ -1039,7 +1103,7 @@ impl Operator for Projector {
             let _cpu = replay_frame::cpu::scope("equipment_losses.columnar.output", None);
             let mut records: Vec<_> = records.into_iter().collect();
             records.sort_unstable_by_key(|item| item.0);
-            self.hours.push(Hour {
+            out.push(Hour {
                 branch: hour.branch,
                 hour: hour.hour,
                 input: Some(Input {
@@ -1065,14 +1129,10 @@ impl Operator for Projector {
                     names,
                     variants,
                 }),
-            });
+            })?;
         }
         self.cold = false;
         Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
     }
 }
 

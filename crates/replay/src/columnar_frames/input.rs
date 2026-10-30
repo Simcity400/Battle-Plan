@@ -39,7 +39,8 @@ impl Default for Limits {
 }
 
 /// What walkers' buffers hold at once, admitted in arrival order: a walker waits until those
-/// before it are admitted and its need fits, or no walker holds any.
+/// before it are admitted and its need fits, or no walker holds any; one that never waits
+/// takes its share then or not at all.
 pub struct Budget {
     limit: usize,
     queue: Mutex<Queue>,
@@ -117,15 +118,35 @@ impl Budget {
         }
     }
 
-    /// Wakes the walkers waiting, for those whose walk stopped to leave.
-    pub(super) fn wake(&self) {
-        drop(self.lock());
-        self.changed.notify_all();
+    /// `bytes` of the budget now, when no walker waits for its share and they fit, or no
+    /// walker holds any; none otherwise.
+    pub(super) fn try_enter(self: &Arc<Self>, bytes: usize) -> Option<Permit> {
+        let mut queue = self.lock();
+        let fits = queue.walkers == 0
+            || queue
+                .held
+                .checked_add(bytes)
+                .is_some_and(|held| held <= self.limit);
+        if !fits || !queue.waiting.is_empty() {
+            return None;
+        }
+        queue.held += bytes;
+        queue.walkers += 1;
+        Some(Permit {
+            budget: self.clone(),
+            bytes,
+        })
     }
 }
 
 #[cfg(test)]
 impl Budget {
+    /// Wakes the walkers waiting, for those whose walk stopped to leave.
+    pub(super) fn wake(&self) {
+        drop(self.lock());
+        self.changed.notify_all();
+    }
+
     /// Waits until `count` walkers wait for their share.
     pub(crate) fn wait_for_waiters(&self, count: usize) {
         let mut queue = self.lock();
@@ -137,20 +158,32 @@ impl Budget {
         }
     }
 
-    /// Waits until no walker waits for its share.
-    pub(crate) fn wait_for_no_waiters(&self) {
-        let mut queue = self.lock();
-        while !queue.waiting.is_empty() {
-            queue = self
-                .changed
-                .wait(queue)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
-
     /// The walkers holding a share.
     pub(crate) fn walkers(&self) -> usize {
         self.lock().walkers
+    }
+}
+
+impl Permit {
+    pub(super) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Grows its share to `bytes` now, when no walker waits for one and it fits beside the
+    /// others', or no other walker holds any; false otherwise.
+    pub(super) fn try_grow(&mut self, bytes: usize) -> bool {
+        let mut queue = self.budget.lock();
+        let others = queue.held - self.bytes;
+        let fits = queue.walkers == 1
+            || others
+                .checked_add(bytes)
+                .is_some_and(|held| held <= self.budget.limit);
+        if !fits || !queue.waiting.is_empty() {
+            return false;
+        }
+        queue.held = others + bytes;
+        self.bytes = bytes;
+        true
     }
 }
 
@@ -395,7 +428,12 @@ impl Decoder {
 
     /// The bytes it allocated.
     pub(super) fn held(&self) -> usize {
-        self.context.sizeof() + self.stored.capacity()
+        self.context() + self.stored.capacity()
+    }
+
+    /// The bytes its zstd context allocated.
+    pub(super) fn context(&self) -> usize {
+        self.context.sizeof()
     }
 
     /// The stored bytes it reads an extent into without growing.

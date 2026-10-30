@@ -9,16 +9,16 @@ use dashboard_text::metadata::tagged_countries;
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Operator, State},
+    segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::{
     format::FormatVersion,
     rows::{CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionStatusRow, TableId},
 };
 use std::{
-    any::Any,
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
+    mem::size_of,
     sync::Arc,
 };
 
@@ -59,6 +59,22 @@ pub struct Hour {
     pub all: bool,
 }
 
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // Tags are the projection's, shared.
+        let roster = match &self.roster {
+            Some(Ok(roster)) => {
+                roster.tagged.capacity() * size_of::<(Arc<str>, Option<(u32, u32)>)>()
+            }
+            _ => 0,
+        };
+        let tags = self.tags.as_ref().map_or(0, |tags| {
+            tags.capacity() * size_of::<String>() + tags.iter().map(String::capacity).sum::<usize>()
+        });
+        roster + tags + self.counts.len() * size_of::<(Arc<str>, Option<[u32; 3]>)>()
+    }
+}
+
 /// The columns a projection reads by name.
 struct Fields {
     country_tag: usize,
@@ -94,7 +110,6 @@ pub struct Projector {
     shape: Option<[(bool, bool); 2]>,
     /// Each division table's (complete, truncated, unavailable) status the hour before.
     statuses: Option<[(bool, bool, bool); 3]>,
-    hours: Vec<Hour>,
 }
 
 fn names(mask: u64, columns: &[usize]) -> bool {
@@ -161,7 +176,6 @@ impl Projector {
             countries_ok: None,
             shape: None,
             statuses: None,
-            hours: Vec::new(),
         })
     }
 
@@ -372,7 +386,9 @@ impl Projector {
 }
 
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let land_present = !columns::unavailable(state, TableId::DivisionLandInputs);
         // A division table's rows or status changed, as the row path's change facts say.
@@ -482,7 +498,7 @@ impl Operator for Projector {
                 counts.insert(Arc::clone(tag), self.counts(tag, valid));
             }
         }
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             roster,
@@ -493,12 +509,7 @@ impl Operator for Projector {
             owners_known: self.owners_known,
             counts,
             all,
-        });
-        Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+        })
     }
 }
 

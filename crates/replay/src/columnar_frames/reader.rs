@@ -9,7 +9,7 @@ use super::{
 };
 use crate::rows::{TABLE_COUNT, TableId};
 use replay_columnar::{
-    envelope::{self, Extent, IndexPage, Root, RunDirectory},
+    envelope::{self, Extent, IndexPage, RestartDirectory, Root, RunDirectory},
     framing,
     leaf::Reader,
     manifest::Manifest,
@@ -140,6 +140,17 @@ pub struct Run {
 impl Run {
     pub fn pages(&self) -> usize {
         self.pages.len()
+    }
+
+    /// The pages holding `segment`'s ordinals.
+    fn pages_of(&self, segment: &Segment) -> Range<usize> {
+        let first = self
+            .pages
+            .partition_point(|page| page.first < segment.first);
+        first
+            ..self
+                .pages
+                .partition_point(|page| page.first <= segment.last)
     }
 
     /// Run `index`'s directory at `extent` and its pages' restarts; None, with its damage
@@ -395,6 +406,53 @@ impl Recording {
         self.selected.get(table).copied().unwrap_or(false)
     }
 
+    /// Whether walks decode `extent`, a page's unit: the manifests, the selected tables', or
+    /// every one when they verify.
+    fn decodes(&self, extent: &Extent) -> bool {
+        extent.stream == framing::MANIFESTS
+            || self.verify
+            || self.selects(extent.stream as usize - 1)
+    }
+
+    /// The decoded bytes of `page`'s units that walks decode, together, and the most stored
+    /// bytes one of them takes.
+    fn unit_lengths(&self, page: &IndexPage) -> io::Result<(usize, usize)> {
+        let (mut raw, mut stored) = (0_usize, 0_usize);
+        for extent in page.units.iter().filter(|extent| self.decodes(extent)) {
+            let length = self
+                .source
+                .raw_length(extent)
+                .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
+            raw = raw.checked_add(length).ok_or_else(engine_allocation::oom)?;
+            stored =
+                stored.max(usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?);
+        }
+        Ok((raw, stored))
+    }
+
+    /// The most decoded and stored bytes one of the tables walks restore from `restart`, of
+    /// run `run`, takes.
+    fn table_lengths(&self, run: u32, restart: &RestartDirectory) -> io::Result<(usize, usize)> {
+        let (mut raw, mut stored) = (0_usize, 0_usize);
+        for table in &restart.tables {
+            if !self.selects(table.table as usize) {
+                continue;
+            }
+            let length = self.source.raw_length(&table.extent).map_err(|error| {
+                let scope = DamageScope::RestartTable {
+                    run,
+                    after: restart.after,
+                    table: table.table,
+                };
+                Damage::wrap(scope, error)
+            })?;
+            raw = raw.max(length);
+            stored = stored
+                .max(usize::try_from(table.extent.stored).map_err(|_| engine_allocation::oom())?);
+        }
+        Ok((raw, stored))
+    }
+
     /// Applies the selection to a walk's `state`, clearing any an earlier walk left.
     fn select_in(&self, state: &mut State) -> io::Result<()> {
         let skipped: [bool; TABLE_COUNT] = std::array::from_fn(|table| !self.selects(table));
@@ -527,9 +585,18 @@ impl Recording {
     }
 
     /// Wakes the walkers waiting for the budget, for those whose walk stopped to leave.
+    #[cfg(test)]
     pub(crate) fn wake(&self) {
         self.budget.wake();
     }
+}
+
+/// The most a walker's buffers hold for one segment's walk: decoded bytes, and stored bytes
+/// read from a file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Reads {
+    raw: usize,
+    stored: usize,
 }
 
 /// One piece of a stream's unit: the ordinals it covers and where its raw bytes sit in the
@@ -597,10 +664,14 @@ fn lap(clock: &mut Option<Instant>) -> u64 {
 
 /// What a worker walks a recording's segments with, kept from page to page and segment to
 /// segment: its decoder, its buffers, and the share of the budget they hold, which it gives
-/// back when it parks ([`Self::park`]) and before it waits for a larger one.
+/// back when it parks ([`Self::park`]) and, when it waits for its share, before it waits for
+/// a larger one.
 pub struct Walker<'r> {
     recording: &'r Recording,
-    stop: &'r AtomicBool,
+    budget: &'r Arc<Budget>,
+    /// What ends its wait for its share; none when it never waits, but takes a segment's
+    /// whole share before walking it ([`Self::hold`]).
+    stop: Option<&'r AtomicBool>,
     decoder: Decoder,
     /// The page read last.
     raw: Vec<u8>,
@@ -610,6 +681,8 @@ pub struct Walker<'r> {
     /// Each stream's unit in the arena.
     units: Vec<Option<Unit>>,
     permit: Option<Permit>,
+    /// What the walk its share was taken for reads.
+    reads: Option<Reads>,
     timed: bool,
     timings: Timings,
 }
@@ -617,8 +690,26 @@ pub struct Walker<'r> {
 impl<'r> Walker<'r> {
     /// A walker of `recording`, whose wait for the budget ends once `stop` is set.
     pub fn new(recording: &'r Recording, stop: &'r AtomicBool) -> io::Result<Self> {
+        Self::with(recording, &recording.budget, Some(stop))
+    }
+
+    /// A walker of `recording` under `budget` that never waits for its share:
+    /// [`Self::hold`] takes a walk's whole share before it starts, or cannot then.
+    pub(crate) fn without_waiting(
+        recording: &'r Recording,
+        budget: &'r Arc<Budget>,
+    ) -> io::Result<Self> {
+        Self::with(recording, budget, None)
+    }
+
+    fn with(
+        recording: &'r Recording,
+        budget: &'r Arc<Budget>,
+        stop: Option<&'r AtomicBool>,
+    ) -> io::Result<Self> {
         Ok(Self {
             recording,
+            budget,
             stop,
             decoder: Decoder::new()?,
             raw: Vec::new(),
@@ -626,6 +717,7 @@ impl<'r> Walker<'r> {
             pieces: Vec::new(),
             units: engine_allocation::collect_vec((0..=TABLE_COUNT).map(|_| None))?,
             permit: None,
+            reads: None,
             timed: false,
             timings: Timings::default(),
         })
@@ -647,11 +739,112 @@ impl<'r> Walker<'r> {
         self.arena = Vec::new();
         self.decoder.release();
         self.permit = None;
+        self.reads = None;
+    }
+
+    /// Whether it holds a share of the budget.
+    pub(crate) fn holds(&self) -> bool {
+        self.permit.is_some()
+    }
+
+    /// What walking `segment` holds in its buffers at most, from its pages' indexes: what the
+    /// walk reads of its restart's tables and of each page's units, and the indexes
+    /// themselves.
+    pub(crate) fn measure(&mut self, segment: &Segment) -> io::Result<Reads> {
+        let recording = self.recording;
+        let run = recording.run(segment.run)?;
+        let index =
+            |at: usize| usize::try_from(run.pages[at].stored).map_err(|_| engine_allocation::oom());
+        let kept = self.decoder.stored();
+        let (mut raw, mut stored) = (0_usize, 0_usize);
+        if let Some(at) = segment.restart {
+            let page = recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)?;
+            let restart = page
+                .restart
+                .as_ref()
+                .ok_or_else(|| invalid("The page holds no restart"))?;
+            (raw, stored) = recording.table_lengths(segment.run, restart)?;
+            stored = stored.max(index(at)?);
+        }
+        for at in run.pages_of(segment) {
+            let page = recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)?;
+            let (units, unit) = recording.unit_lengths(&page)?;
+            raw = raw.max(units);
+            stored = stored.max(unit).max(index(at)?);
+        }
+        // The indexes read here are no part of the share it holds.
+        if self.decoder.stored() > kept {
+            self.decoder.release();
+        }
+        let stored = if recording.source.reads_file() {
+            stored
+        } else {
+            0
+        };
+        Ok(Reads { raw, stored })
+    }
+
+    /// Takes the share of the budget a walk reading `reads` needs, its dictionary's too,
+    /// for a walker that never waits: false when it cannot now. A share it holds already
+    /// grows; its buffers fit within it as the walk starts.
+    pub(crate) fn hold(&mut self, reads: Reads) -> bool {
+        let share = [
+            reads.stored,
+            self.decoder.context(),
+            self.recording.dictionary_bytes,
+        ]
+        .into_iter()
+        .fold(reads.raw, usize::saturating_add);
+        let held = if let Some(permit) = &mut self.permit {
+            permit.bytes() >= share || permit.try_grow(share)
+        } else if let Some(permit) = self.budget.try_enter(share) {
+            self.permit = Some(permit);
+            true
+        } else {
+            false
+        };
+        if held {
+            self.reads = Some(reads);
+        }
+        held
+    }
+
+    /// Sizes its buffers for every read of the walk its share was taken for, within that
+    /// share, for a walker that never waits; one that waits sizes them read by read.
+    fn fit(&mut self) -> io::Result<()> {
+        if self.stop.is_some() {
+            return Ok(());
+        }
+        let (Some(permit), Some(reads)) = (&self.permit, self.reads) else {
+            return Err(io::Error::other(
+                "A walk starts without its share of the walkers' budget",
+            ));
+        };
+        if reads.raw <= self.arena.capacity() && reads.stored <= self.decoder.stored() {
+            return Ok(());
+        }
+        let kept = [
+            self.decoder.stored().max(reads.stored),
+            self.decoder.context(),
+            self.recording.dictionary_bytes,
+        ]
+        .into_iter()
+        .fold(self.arena.capacity().max(reads.raw), usize::saturating_add);
+        if kept > permit.bytes() {
+            self.arena = Vec::new();
+            self.decoder.release();
+        }
+        if self.arena.capacity() < reads.raw {
+            self.arena = Vec::new();
+            self.arena = engine_allocation::vec(reads.raw)?;
+        }
+        self.decoder.reserve(reads.stored)
     }
 
     /// Makes its buffers hold `raw` decoded and `stored` stored bytes under a share of the
     /// budget covering them, its dictionary's budget too. A walker needing a larger share
-    /// gives back what it holds before it waits for it.
+    /// gives back what it holds before it waits for it; one that never waits holds it
+    /// already.
     fn admit(&mut self, raw: usize, stored: usize) -> io::Result<()> {
         let stored = if self.recording.source.reads_file() {
             stored
@@ -662,6 +855,12 @@ impl<'r> Walker<'r> {
         {
             return Ok(());
         }
+        let Some(stop) = self.stop else {
+            return Err(io::Error::other(
+                "A walk reads more than the share of the walkers' budget its segment was \
+                 measured to need",
+            ));
+        };
         let raw = raw.max(self.arena.capacity());
         let stored = stored.max(self.decoder.stored());
         self.park();
@@ -669,7 +868,7 @@ impl<'r> Walker<'r> {
             .into_iter()
             .try_fold(raw, usize::checked_add)
             .ok_or_else(engine_allocation::oom)?;
-        let permit = self.recording.budget.enter(bytes, self.stop)?;
+        let permit = self.budget.enter(bytes, stop)?;
         self.arena = engine_allocation::vec(raw)?;
         self.decoder.reserve(stored)?;
         self.permit = Some(permit);
@@ -680,26 +879,12 @@ impl<'r> Walker<'r> {
     /// frames' lengths.
     fn load(&mut self, page: &IndexPage) -> io::Result<()> {
         let recording = self.recording;
-        let reads = |extent: &&Extent| {
-            extent.stream == framing::MANIFESTS
-                || recording.verify
-                || recording.selects(extent.stream as usize - 1)
-        };
-        let (mut raw, mut stored) = (0_usize, 0_usize);
-        for extent in page.units.iter().filter(reads) {
-            let length = recording
-                .source
-                .raw_length(extent)
-                .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
-            raw = raw.checked_add(length).ok_or_else(engine_allocation::oom)?;
-            stored =
-                stored.max(usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?);
-        }
+        let (raw, stored) = recording.unit_lengths(page)?;
         self.admit(raw, stored)?;
         self.arena.clear();
         self.pieces.clear();
         self.units.fill(None);
-        for extent in page.units.iter().filter(reads) {
+        for extent in page.units.iter().filter(|extent| recording.decodes(extent)) {
             let start = self.arena.len();
             self.decoder
                 .append(&recording.source, extent, &mut self.arena)
@@ -724,6 +909,7 @@ impl<'r> Walker<'r> {
     /// Puts into `state` what `segment`'s first hour applies to: its restart's tables, or
     /// empty tables at its run's start.
     pub fn begin(&mut self, segment: &Segment, state: &mut State) -> io::Result<()> {
+        self.fit()?;
         let Some(at) = segment.restart else {
             let recording = self.recording;
             let run = recording.shared(segment.run)?;
@@ -782,16 +968,7 @@ impl<'r> Walker<'r> {
             after: restart.after,
             table,
         };
-        let (mut raw, mut stored) = (0_usize, 0_usize);
-        for table in tables() {
-            let length = recording
-                .source
-                .raw_length(&table.extent)
-                .map_err(|error| Damage::wrap(scope(table.table), error))?;
-            raw = raw.max(length);
-            stored = stored
-                .max(usize::try_from(table.extent.stored).map_err(|_| engine_allocation::oom())?);
-        }
+        let (raw, stored) = recording.table_lengths(run, restart)?;
         self.admit(raw, stored)?;
         *state = State::new(schema()?)?;
         recording.select_in(state)?;
@@ -867,6 +1044,7 @@ impl<'r> Walker<'r> {
         state: &mut State,
         mut visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<bool> {
+        self.fit()?;
         let recording = self.recording;
         let run = recording.run(segment.run)?;
         let columns = engine_allocation::copy_vec(state.columns())?;
@@ -881,9 +1059,7 @@ impl<'r> Walker<'r> {
         };
         let hour = |ordinal: u64| i64::from(run.first_hour) + ordinal as i64;
         let mut first = true;
-        let pages = run.pages.partition_point(|page| page.first < segment.first)
-            ..run.pages.partition_point(|page| page.first <= segment.last);
-        for at in pages {
+        for at in run.pages_of(segment) {
             let page = recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)?;
             let scope = DamageScope::Page {
                 run: page.run,

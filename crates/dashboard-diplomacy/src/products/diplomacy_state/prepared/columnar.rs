@@ -88,6 +88,27 @@ pub struct Hour {
     queue: QueueRead,
 }
 
+impl replay::segments::Item for Hour {
+    fn heap(&self) -> usize {
+        use std::mem::size_of;
+        // Identities, values, rows and queues are Arcs the projection holds too.
+        let opinions = self.opinions.as_ref().map_or(0, |opinions| {
+            (opinions.current.capacity() + opinions.baseline.capacity()) * size_of::<Opinion>()
+        });
+        let tuples = self.tuples.as_ref().map_or(0, |tuples| {
+            (tuples.countries.capacity() + tuples.baseline_countries.capacity())
+                * size_of::<(u32, i32)>()
+                + (tuples.owners.capacity() + tuples.baseline_owners.capacity())
+                    * size_of::<TupleOwner>()
+                + tuples
+                    .orphans
+                    .as_ref()
+                    .map_or(0, |orphans| orphans.len() * size_of::<u32>())
+        });
+        opinions + tuples
+    }
+}
+
 /// `current` and `added`, whose indexes are not in `current`, in index order.
 fn merged<T>(
     mut current: Vec<T>,

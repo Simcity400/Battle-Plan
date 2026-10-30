@@ -6,15 +6,15 @@
 
 use replay::{
     columns,
-    segments::{self, Operator, State},
+    segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::rows::{
-    CountryCommandPowerRow, CountryLinkRow, CountryRow, CountryStabilityInputRow, TableId,
+    CountryCommandPowerRow, CountryLinkRow, CountryRow, CountryStabilityInputRow, RowCodec, TableId,
 };
 use std::{
-    any::Any,
     collections::{BTreeMap, BTreeSet},
     io,
+    mem::size_of,
     sync::Arc,
 };
 
@@ -48,6 +48,24 @@ pub struct Hour {
     pub countries: Vec<Projected>,
 }
 
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // Tags are the roster's, shared.
+        let valid = self.valid.as_ref().map_or(0, |valid| {
+            valid
+                .iter()
+                .map(|tag| size_of::<String>() + tag.capacity())
+                .sum()
+        });
+        self.countries
+            .iter()
+            .map(|country| country.row.heap_bytes())
+            .sum::<usize>()
+            + self.countries.capacity() * size_of::<Projected>()
+            + valid
+    }
+}
+
 /// The columns a projection reads by name.
 struct Fields {
     country_tag: usize,
@@ -65,7 +83,6 @@ pub struct Projector {
     slots: BTreeMap<u32, Vec<u32>>,
     /// Which of [`TABLES`] held rows the hour before.
     available: Option<[bool; 5]>,
-    hours: Vec<Hour>,
 }
 
 /// Whether a mask names any of `columns`; a column past the mask's 64 counts as named.
@@ -88,7 +105,6 @@ impl Projector {
             roster: BTreeMap::new(),
             slots: BTreeMap::new(),
             available: None,
-            hours: Vec::new(),
         })
     }
 
@@ -176,7 +192,9 @@ fn touched(state: &State, table: TableId, mut visit: impl FnMut(u128)) -> io::Re
 }
 
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let inputs_truncated = columns::truncated(state, TableId::CountryStabilityInputs);
         let available = [
@@ -276,16 +294,11 @@ impl Operator for Projector {
                 values,
             });
         }
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             valid,
             countries,
-        });
-        Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+        })
     }
 }

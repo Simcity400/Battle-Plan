@@ -271,20 +271,25 @@ fn published(
 /// `runs` of branch 1 prepared by the row path and by segment walks restarting before every
 /// hour of the first run: every section equal.
 fn parity(runs: &[Vec<DecodedFrame>]) {
+    use super::super::columnar::{Hour, Projector};
     let format = replay_data::format::FormatVersion::CURRENT;
-    let projector = || -> Box<dyn Operator> {
-        Box::new(super::super::columnar::Projector::new(format, CaptureMode::Full).unwrap())
+    // A walk's projector and the hours it projected.
+    let projector = || -> (Projector, Vec<Hour>) {
+        (
+            Projector::new(format, CaptureMode::Full).unwrap(),
+            Vec::new(),
+        )
     };
     // Split k restarts before the first run's hour k: a walk of its own from the state the
     // hour before left, or, where the projection cannot start, the walk before going on.
     // Split 0 walks every hour in one. Each split's last walk goes on into the later runs.
-    let mut splits: Vec<Vec<Box<dyn Operator>>> =
+    let mut splits: Vec<Vec<(Projector, Vec<Hour>)>> =
         (0..runs[0].len()).map(|_| vec![projector()]).collect();
     let mut frames = Vec::new();
     for (run, inputs) in (0..).zip(runs) {
         let mut walk = Synthetic::new(&TABLES, 1, inputs[0].hour).unwrap();
         for walks in &mut splits {
-            let walker = walks.last_mut().unwrap();
+            let (walker, _) = walks.last_mut().unwrap();
             if run == 0 {
                 walker
                     .start(Start::Run { continues: false }, 1, inputs[0].hour)
@@ -300,19 +305,21 @@ fn parity(runs: &[Vec<DecodedFrame>]) {
                     for (split, walks) in (0..).zip(&mut splits) {
                         let opens = ordinal == 0 || run == 0 && ordinal == split;
                         let starts = ordinal == 0 || opens && walks.len() > 1;
-                        walks
-                            .last_mut()
-                            .unwrap()
-                            .hour(&segments::Hour {
-                                branch: 1,
-                                hour: frame.hour,
-                                run,
-                                ordinal,
-                                starts,
-                                opens,
-                                state,
-                                manifest,
-                            })
+                        let (walker, hours) = walks.last_mut().unwrap();
+                        walker
+                            .hour(
+                                &segments::Hour {
+                                    branch: 1,
+                                    hour: frame.hour,
+                                    run,
+                                    ordinal,
+                                    starts,
+                                    opens,
+                                    state,
+                                    manifest,
+                                },
+                                hours,
+                            )
                             .unwrap();
                     }
                     frame.clone()
@@ -323,8 +330,8 @@ fn parity(runs: &[Vec<DecodedFrame>]) {
             {
                 let mut next = projector();
                 let restart = Start::Restart(walk.state());
-                if next.starts_at(restart) {
-                    next.start(restart, 1, frame.hour + 1).unwrap();
+                if next.0.starts_at(restart) {
+                    next.0.start(restart, 1, frame.hour + 1).unwrap();
                     walks.push(next);
                 }
             }
@@ -393,13 +400,9 @@ fn parity(runs: &[Vec<DecodedFrame>]) {
     );
     for (split, walks) in splits.into_iter().enumerate() {
         let mut projected = Vec::new();
-        for mut walk in walks {
-            let hours = walk
-                .take()
-                .unwrap()
-                .downcast::<Vec<super::super::columnar::Hour>>()
-                .unwrap();
-            projected.extend(*hours);
+        for (mut walker, mut hours) in walks {
+            walker.end(&mut hours).unwrap();
+            projected.extend(hours);
         }
         assert_eq!(projected.len(), inputs.len(), "restart at hour {split}");
         let mut projected = projected.into_iter();

@@ -5,14 +5,13 @@ use super::{
 use replay::{
     columnar_frames::{Views, metrics},
     columns,
-    segments::{self, Operator, Start, State},
+    segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence,
     rows::{IncomingDiplomaticActionRow, LexicalTokenRow, TABLE_COUNT},
     scope::CaptureMode,
 };
-use std::any::Any;
 
 struct Fields {
     country_tag: usize,
@@ -43,7 +42,6 @@ pub struct Projector {
     queue: Option<Arc<proposals::Queue>>,
     /// Whether the emit may admit a baseline at the next hour.
     baseline: bool,
-    hours: Vec<Hour>,
 }
 
 fn slice(hour: i32) -> u32 {
@@ -174,7 +172,6 @@ impl Projector {
             orphans_pending: true,
             queue: None,
             baseline: true,
-            hours: Vec::new(),
         })
     }
     /// Follows the hour's tables; whether the identities may have changed.
@@ -520,6 +517,7 @@ impl Projector {
     }
 }
 impl Operator for Projector {
+    type Output = Hour;
     fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
         // The emit admits a baseline only at its branch's first hour and after a refused one.
         self.baseline = match start {
@@ -531,7 +529,7 @@ impl Operator for Projector {
         };
         Ok(())
     }
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let state = hour.state;
         let naming = {
             let _cpu = replay_frame::cpu::scope("project", Some("diplomacy_state.tables"));
@@ -552,7 +550,7 @@ impl Operator for Projector {
         let Some(ids) = self.ids.clone() else {
             self.baseline = true;
             self.queue = None;
-            self.hours.push(Hour {
+            return out.push(Hour {
                 branch: hour.branch,
                 hour: hour.hour,
                 ids: None,
@@ -562,7 +560,6 @@ impl Operator for Projector {
                 tuples: None,
                 queue: QueueRead::Unavailable,
             });
-            return Ok(());
         };
         for raw in &self.opinions.touched {
             if let Some(country) = ids.index_of(*raw)
@@ -650,7 +647,7 @@ impl Operator for Projector {
                 Some(_) => QueueRead::Carried,
             }
         };
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             ids: naming.then_some(ids),
@@ -659,10 +656,6 @@ impl Operator for Projector {
             opinions,
             tuples,
             queue,
-        });
-        Ok(())
-    }
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+        })
     }
 }

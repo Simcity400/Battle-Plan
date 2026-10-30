@@ -186,13 +186,8 @@ fn flush(prepared: &mut Prepared, fixture: &Fixture) {
     writer.commit().unwrap();
 }
 
-fn emit(projector: &mut dyn Operator, prepared: &mut Prepared, fixture: &Fixture) {
-    let hours = *projector
-        .take()
-        .unwrap()
-        .downcast::<Vec<columnar::Hour>>()
-        .unwrap();
-    for hour in hours {
+fn emit(hours: &mut Vec<columnar::Hour>, prepared: &mut Prepared, fixture: &Fixture) {
+    for hour in std::mem::take(hours) {
         let at = hour.hour;
         prepared.observe_projected(hour).unwrap();
         if at % 3 == 0 {
@@ -228,6 +223,7 @@ fn parity_in_blocks(
     let mut projected = Prepared::new(&replay, 1, inputs[0].hour);
     let mut tracker = FrameChangeTracker::new();
     let mut projector = projected.projector(&replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, inputs[0].hour).unwrap();
     projector
         .start(Start::Run { continues: false }, 1, inputs[0].hour)
@@ -236,7 +232,7 @@ fn parity_in_blocks(
         let run = ordinal > 0 && inputs[ordinal - 1].hour.checked_add(1) != Some(input.hour);
         let opens = ordinal == 0 || restart == Some(ordinal) || run;
         if ordinal > 0 && opens {
-            emit(&mut projector, &mut projected, &fixtures[1]);
+            emit(&mut hours, &mut projected, &fixtures[1]);
             projector = projected.projector(&replay).unwrap();
             let start = if run {
                 Start::Run { continues: true }
@@ -272,21 +268,24 @@ fn parity_in_blocks(
                 flush(&mut row, &fixtures[0]);
             }
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: u32::from(run),
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: u32::from(run),
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
     }
-    emit(&mut projector, &mut projected, &fixtures[1]);
+    emit(&mut hours, &mut projected, &fixtures[1]);
     flush(&mut row, &fixtures[0]);
     flush(&mut projected, &fixtures[1]);
     let expected = fixtures[0].payloads();
@@ -699,21 +698,25 @@ fn unused_variant_change_payload_and_definition_fields_do_not_rebuild_names() {
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
     let prepared = Prepared::new(&replay, 1, 10);
     let mut projector = prepared.projector(&replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, 10).unwrap();
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens: starts,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
@@ -742,21 +745,25 @@ fn unchanged_combat_amounts_are_not_read_again_for_a_single_raw_owner() {
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
     let mut projector = Prepared::new(&replay, 1, 10).projector(&replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, 10).unwrap();
     for (ordinal, input) in inputs.iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens: starts,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();
@@ -822,21 +829,25 @@ fn naming_changes_wait_for_the_next_supplying_read_and_refresh_token_dependencie
     let replay =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![inputs[0].clone()])]).unwrap();
     let mut projector = Prepared::new(&replay, 1, first).projector(&replay).unwrap();
+    let mut hours: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(TABLES, 1, first).unwrap();
     for (ordinal, input) in inputs[..2].iter().enumerate() {
         write_hour(&mut walk, input, None);
         walk.end(|state, manifest, frame, starts| {
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: frame.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens: starts,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: frame.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                    },
+                    &mut hours,
+                )
                 .unwrap();
         })
         .unwrap();

@@ -7,7 +7,7 @@ use dashboard_text::triggers::inputs::{TableChange, TableChanges};
 use replay::{
     columnar_frames::{Views, metrics},
     columns,
-    segments::{self, Operator, State},
+    segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::rows::{DeltaRow, full_mask};
 use replay_data::{
@@ -16,9 +16,9 @@ use replay_data::{
     scope::CaptureMode,
 };
 use std::{
-    any::Any,
     cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
+    mem::size_of,
     sync::{Mutex, PoisonError},
 };
 
@@ -275,6 +275,36 @@ pub struct Hour {
     states: Vec<(u32, Option<Shipped>)>,
     read: Option<Read>,
     collaboration: Option<Collaboration>,
+}
+
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        // The naming, the progress and the samples' occupied countries are Arcs the projector
+        // holds too; refusals are not counted.
+        let states: usize = self
+            .states
+            .iter()
+            .filter_map(|(_, shipped)| shipped.as_ref()?.owner_refused.as_ref())
+            .map(|refused| {
+                size_of::<(String, String)>() + refused.0.capacity() + refused.1.capacity()
+            })
+            .sum();
+        let read = self.read.as_ref().map_or(0, |read| {
+            let samples: usize = read
+                .samples
+                .iter()
+                .map(|sample| {
+                    let collaboration = sample.collaboration.as_ref().map_or(0, |held| held.len());
+                    collaboration * size_of::<Collab>()
+                        + sample.fact.as_ref().map_or(0, |fact| fact.bytes.capacity())
+                })
+                .sum();
+            read.values.capacity() * size_of::<(u32, Option<StateValue>)>()
+                + read.samples.capacity() * size_of::<Sample>()
+                + samples
+        });
+        self.states.capacity() * size_of::<(u32, Option<Shipped>)>() + states + read
+    }
 }
 
 #[cfg(test)]
@@ -607,7 +637,6 @@ pub struct Projector {
     /// The collaboration progress, once this walk read it or knows there is
     /// none; until then the emit's carries on.
     progress: Option<Arc<Progress>>,
-    hours: Vec<Hour>,
 }
 
 fn mask(table: TableId, names: &[&str]) -> io::Result<u64> {
@@ -818,7 +847,6 @@ impl Projector {
             evaluated: false,
             garrisons_read: None,
             progress: None,
-            hours: Vec::new(),
         })
     }
 
@@ -1329,7 +1357,9 @@ impl Projector {
 }
 
 impl Operator for Projector {
-    fn hour(&mut self, hour: &segments::Hour<'_>) -> io::Result<()> {
+    type Output = Hour;
+
+    fn hour(&mut self, hour: &segments::Hour<'_>, out: &mut dyn Sink<Hour>) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("occupation projection", None);
         let version = self.format.version();
         let whole = hour.starts || hour.opens;
@@ -1456,7 +1486,7 @@ impl Operator for Projector {
                     (key as u32, row)
                 })
                 .collect();
-        self.hours.push(Hour {
+        out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
             valid,
@@ -1465,11 +1495,6 @@ impl Operator for Projector {
             states,
             read,
             collaboration,
-        });
-        Ok(())
-    }
-
-    fn take(&mut self) -> io::Result<Box<dyn Any + Send>> {
-        Ok(Box::new(std::mem::take(&mut self.hours)))
+        })
     }
 }

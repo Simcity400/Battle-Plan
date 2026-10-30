@@ -859,8 +859,8 @@ mod columnar_parity {
             defines: Some(defines),
             ..Default::default()
         };
-        let mut projector: Box<dyn Operator> =
-            Box::new(columnar.projector(FormatVersion::CURRENT).unwrap());
+        let mut projector = columnar.projector(FormatVersion::CURRENT).unwrap();
+        let mut projected: Vec<Hour> = Vec::new();
         let mut tracker = FrameChangeTracker::new();
         for (ordinal, hour) in (0..).zip(hours) {
             write(&mut walk, TableId::Countries, &hour.countries);
@@ -872,26 +872,28 @@ mod columnar_parity {
                 row.observe(frame, &tracker.observe(frame, FormatVersion::CURRENT))
                     .unwrap();
                 projector
-                    .hour(&segments::Hour {
-                        branch: 1,
-                        hour: frame.hour,
-                        run: 0,
-                        ordinal,
-                        starts,
-                        opens: starts,
-                        state,
-                        manifest,
-                    })
+                    .hour(
+                        &segments::Hour {
+                            branch: 1,
+                            hour: frame.hour,
+                            run: 0,
+                            ordinal,
+                            starts,
+                            opens: starts,
+                            state,
+                            manifest,
+                        },
+                        &mut projected,
+                    )
                     .unwrap();
             })
             .unwrap();
         }
-        let projected = projector.take().unwrap().downcast::<Vec<Hour>>().unwrap();
         let handed = projected
             .iter()
             .map(|hour| (hour.all, hour.counts.len()))
             .collect();
-        for hour in *projected {
+        for hour in projected {
             columnar.observe_projected(hour).unwrap();
         }
         let fixtures = [Fixture::new(), Fixture::new()];

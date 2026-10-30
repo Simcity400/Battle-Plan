@@ -344,13 +344,8 @@ fn write_hour(walk: &mut Synthetic, input: &DecodedFrame) {
     }
 }
 
-fn emit(projector: &mut dyn Operator, ordered: &mut columnar::Emit) {
-    let hours = *projector
-        .take()
-        .unwrap()
-        .downcast::<Vec<columnar::Hour>>()
-        .unwrap();
-    for hour in hours {
+fn emit(out: &mut Vec<columnar::Hour>, ordered: &mut columnar::Emit) {
+    for hour in std::mem::take(out) {
         ordered.observe(hour).unwrap();
     }
 }
@@ -442,6 +437,7 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
     let mut tracker = FrameChangeTracker::new();
     let tables = prototype.tables();
     let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
+    let mut out: Vec<columnar::Hour> = Vec::new();
     assert!(projector.starts_at(Start::Run { continues: false }));
     assert!(projector.starts_at(Start::Run { continues: true }));
     for (run, inputs) in runs.iter().enumerate() {
@@ -463,7 +459,7 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
         for (ordinal, input) in inputs.iter().enumerate() {
             let restarting = run == 0 && ordinal != 0 && placement.restarts.contains(&ordinal);
             if restarting {
-                emit(&mut projector, &mut actual);
+                emit(&mut out, &mut actual);
                 projector = prototype.projector(format, CaptureMode::Full).unwrap();
                 assert!(projector.starts_at(Start::Restart(walk.state())));
                 projector
@@ -487,16 +483,19 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
                     )
                     .unwrap();
                 projector
-                    .hour(&segments::Hour {
-                        branch: 1,
-                        hour: frame.hour,
-                        run: run as u32,
-                        ordinal: ordinal as u32,
-                        starts,
-                        opens: starts,
-                        state,
-                        manifest,
-                    })
+                    .hour(
+                        &segments::Hour {
+                            branch: 1,
+                            hour: frame.hour,
+                            run: run as u32,
+                            ordinal: ordinal as u32,
+                            starts,
+                            opens: starts,
+                            state,
+                            manifest,
+                        },
+                        &mut out,
+                    )
                     .unwrap();
             })
             .unwrap();
@@ -504,7 +503,7 @@ fn check(runs: &[Vec<DecodedFrame>], catalogue: Option<Arc<Catalogue>>, placemen
             if !opens {
                 continue;
             }
-            emit(&mut projector, &mut actual);
+            emit(&mut out, &mut actual);
             let mut writer = actual_store.writer();
             actual
                 .hold_block(1, first, input.hour)
@@ -668,22 +667,26 @@ fn missing_join_table_refuses_by_the_row_paths_name() {
     let mut projector = Prepared::default()
         .projector(format, CaptureMode::Full)
         .unwrap();
+    let mut out: Vec<columnar::Hour> = Vec::new();
     write_hour(&mut walk, &input);
     walk.end(|state, manifest, frame, starts| {
         let expected = Prepared::default()
             .observe_frame(frame, format, None)
             .unwrap_err();
         let actual = projector
-            .hour(&segments::Hour {
-                branch: 1,
-                hour: 100,
-                run: 0,
-                ordinal: 0,
-                starts,
-                opens: true,
-                state,
-                manifest,
-            })
+            .hour(
+                &segments::Hour {
+                    branch: 1,
+                    hour: 100,
+                    run: 0,
+                    ordinal: 0,
+                    starts,
+                    opens: true,
+                    state,
+                    manifest,
+                },
+                &mut out,
+            )
             .unwrap_err();
         assert_eq!(actual.to_string(), expected.to_string());
     })
@@ -809,6 +812,7 @@ fn triggered_laws_follow_reached_countries_hold_supplier_and_recover_after_gaps(
     let mut expected = prototype.fresh();
     let mut actual = prototype.emit();
     let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
+    let mut out: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
     let mut row_views =
         replay::columnar_frames::Views::new(&prototype.tables(), format, CaptureMode::Full)
@@ -831,25 +835,23 @@ fn triggered_laws_follow_reached_countries_hold_supplier_and_recover_after_gaps(
                     )
                     .unwrap();
                 projector
-                    .hour(&segments::Hour {
-                        branch: 1,
-                        hour: input.hour,
-                        run: 0,
-                        ordinal: ordinal as u32,
-                        starts,
-                        opens: starts,
-                        state,
-                        manifest,
-                    })
+                    .hour(
+                        &segments::Hour {
+                            branch: 1,
+                            hour: input.hour,
+                            run: 0,
+                            ordinal: ordinal as u32,
+                            starts,
+                            opens: starts,
+                            state,
+                            manifest,
+                        },
+                        &mut out,
+                    )
                     .unwrap();
             })
             .unwrap();
-            let projected = *projector
-                .take()
-                .unwrap()
-                .downcast::<Vec<columnar::Hour>>()
-                .unwrap();
-            for hour in projected {
+            for hour in std::mem::take(&mut out) {
                 work.push(hour.evaluated_states());
                 actual.observe(hour).unwrap();
             }
@@ -933,21 +935,25 @@ fn a_law_declared_on_too_few_reads_is_caught_on_both_paths() {
     };
     let projected = || {
         let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
+        let mut out: Vec<columnar::Hour> = Vec::new();
         let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
         for (ordinal, input) in hours.iter().enumerate() {
             write_hour(&mut walk, input);
             walk.end(|state, manifest, _, starts| {
                 projector
-                    .hour(&segments::Hour {
-                        branch: 1,
-                        hour: input.hour,
-                        run: 0,
-                        ordinal: ordinal as u32,
-                        starts,
-                        opens: starts,
-                        state,
-                        manifest,
-                    })
+                    .hour(
+                        &segments::Hour {
+                            branch: 1,
+                            hour: input.hour,
+                            run: 0,
+                            ordinal: ordinal as u32,
+                            starts,
+                            opens: starts,
+                            state,
+                            manifest,
+                        },
+                        &mut out,
+                    )
                     .unwrap();
             })
             .unwrap();
@@ -1130,6 +1136,7 @@ fn equipment_dictionary_and_partial_manpower_keep_absolute_strength_results() {
     let mut row = prototype.fresh();
     let mut projected = prototype.emit();
     let mut projector = prototype.projector(format, CaptureMode::Full).unwrap();
+    let mut out: Vec<columnar::Hour> = Vec::new();
     let mut walk = Synthetic::new(&prototype.tables(), 1, 100).unwrap();
     let mut tracker = FrameChangeTracker::new();
     for (ordinal, input) in inputs.iter().enumerate() {
@@ -1143,20 +1150,23 @@ fn equipment_dictionary_and_partial_manpower_keep_absolute_strength_results() {
             )
             .unwrap();
             projector
-                .hour(&segments::Hour {
-                    branch: 1,
-                    hour: input.hour,
-                    run: 0,
-                    ordinal: ordinal as u32,
-                    starts,
-                    opens: starts,
-                    state,
-                    manifest,
-                })
+                .hour(
+                    &segments::Hour {
+                        branch: 1,
+                        hour: input.hour,
+                        run: 0,
+                        ordinal: ordinal as u32,
+                        starts,
+                        opens: starts,
+                        state,
+                        manifest,
+                    },
+                    &mut out,
+                )
                 .unwrap();
         })
         .unwrap();
-        emit(&mut projector, &mut projected);
+        emit(&mut out, &mut projected);
         let snapshot = row.scan.snapshot();
         for value in [
             snapshot.states.states[0].runs.last().unwrap().value.clone(),
