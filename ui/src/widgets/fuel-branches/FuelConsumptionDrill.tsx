@@ -7,6 +7,7 @@ import type { PlaybackMode } from '../../charts/view';
 import FuelConsumptionBreakdown from '../fuel/FuelConsumptionBreakdown';
 import type { FuelConsumptionLevel, FuelConsumptionSelection } from '../fuel/fuelConsumption';
 import { usePreparedFuel } from '../fuel/preparedFuel';
+import { motionOf } from '../../charts/easing.ts';
 
 /** The Fuel widget's own current-consumption breakdown of one country at the drill's
  * date: its By military branch disclosure and each consumer's demand. */
@@ -24,6 +25,6 @@ export default function FuelConsumptionDrill({ runtime, track, tag, hour, extent
   return <FuelConsumptionBreakdown reply={reply} runtime={runtime} track={track} hour={hour} digits={digits}
     selection={selection} onSelection={setSelection} level={level} onLevel={setLevel}
     active={active} pickOwner={tag} extent={extent} playhead={hour} playback={'cursor' as PlaybackMode} afterPlayhead
-    windowHours={365 * 24} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+    windowHours={365 * 24} branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
     onPick={onPick} />;
 }

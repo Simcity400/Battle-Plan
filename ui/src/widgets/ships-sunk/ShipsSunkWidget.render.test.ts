@@ -11,7 +11,7 @@ test('an empty ships sunk log whose group hours are still being prepared is load
   const host = globalThis as typeof globalThis & { __sunkPending?: typeof state }; host.__sunkPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/ships-sunk/ShipsSunkWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__sunkPending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/productWindows.ts': 'export const useProductWindows = () => ({ data: new Map(), errors: new Map(), retry() {} });',

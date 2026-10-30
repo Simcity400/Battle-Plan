@@ -58,8 +58,8 @@ test('mounted force views keep witnessed actors through pending names and reject
     '/dashboard/model.ts': `export const resolveWindow = (widget, track, _tracks, hour) => ({ firstHour: track.branch.firstHour,
       lastHour: widget.time.mode === 'follow' ? hour : track.branch.lastHour });
       export const createWidget = () => { throw Error('Pin is outside this fixture'); };`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = (_clock, follow) => { globalThis.__forceNumeric.subscriptions.push(follow); };
-      export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = (clock, follow) => { globalThis.__forceNumeric.subscriptions.push(follow); return clock.getHour(); };
+      export const usePlaybackMotion = clock => clock.getSnapshot().hoursPerSecond;`,
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => globalThis.__forceNumeric.name + tag,
       color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });`,

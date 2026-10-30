@@ -14,7 +14,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { factionNameAt, noFactionMessage, useChosenFaction } from '../../dashboard/factionChoice';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS } from './definition';
@@ -25,11 +25,11 @@ import type { FactionRulesReply } from '../../generated/dashboard';
 const NO_WARNINGS: string[] = [];
 
 export default function FactionUpgradesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? Math.floor(window.lastHour) : null;
   const at = Math.floor(playhead ?? window?.lastHour ?? track?.branch.lastHour ?? 0);
   const { groups, pick } = useChosenFaction(widget, runtime, track, at, active);

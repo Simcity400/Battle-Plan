@@ -8,7 +8,7 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { chartRuns } from '../../dashboard/keyedHistory';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { measureField, LABELS, validateIntelCoverage } from './intelCoverageData';
 import type { Basis, IntelCoverageReply, Measure } from './intelCoverageData';
@@ -17,7 +17,7 @@ import { useIntelOptions } from './useIntelCoverage';
 /** One directed pair's chosen measure over the branch, held between reads. */
 export default function PairHistory({ widget, runtime, active, pair, hour }: WidgetProps & { pair: { owner: string; target: string } | null; hour: number }) {
   const tokens = useChartTokens();
-  const speed = usePlaybackSpeed(runtime.clock);
+  const speed = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Intel network history');
   const options = useIntelOptions(widget);
   const chosen = pair ?? (options.owner && options.target ? { owner: contentKey(String(options.owner)), target: contentKey(String(options.target)) } : null);

@@ -27,12 +27,12 @@ export function breakdownCountryChip({ widget, onSlot }: WidgetCountryChipProps,
  * Names are the recording's own; the tooltip previews three countries. It follows
  * playback only while its widget is in view. */
 export default function CountryChip({ widget, runtime, active }: Omit<WidgetCountryChipProps, 'onSlot'>) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow' && widget.countries.kind === 'group' && widget.countries.group.type === 'faction');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow' && widget.countries.kind === 'group' && widget.countries.group.type === 'faction');
   const settings = useCampaignSettings();
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const track = runtime.tracks.find(item => item.id === effective.trackIds[0]);
   const groups = useCountryGroups(runtime, track, widget.countries.kind === 'group');
-  const hour = track ? resolveWindow(effective, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? Number.NaN : undefined;
+  const hour = track ? resolveWindow(effective, track, runtime.tracks, playbackHour)?.lastHour ?? Number.NaN : undefined;
   const overrides = settings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
   const tags = selectedTags(widget.countries, track);
   const name = (tag: string) => track?.source.metadata.countries.find(country => country.tag === tag)?.name ?? 'Country name unavailable';

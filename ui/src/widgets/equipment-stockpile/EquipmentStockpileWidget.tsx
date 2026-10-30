@@ -51,6 +51,7 @@ import { pinnedGrouping, pinStockpileDrill, stockpileDrillGroup } from './stockp
 import type { StockpileMode } from './stockpileDrill';
 import { stockpileParityModel } from './stockpileParityModel';
 import './equipmentStockpile.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 /** Room for the names at the line ends, at the right of the plot. */
@@ -72,7 +73,8 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const { track, tag, data: reply, numbers: legacyNumbers, error, retry } = useEquipmentStockpile(widget, runtime, active, within);
   const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
     balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const windowHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const window = track && resolveWindow(widget, track, runtime.tracks, windowHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -174,7 +176,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
         : picked && detailData ? <StockpileDrill data={detailData} group={picked} hour={at} client={runtime.client} track={track} aliases={actor.spans}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active && (saved || shownDrill.breakdown !== null)}
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active && (saved || shownDrill.breakdown !== null)}
     pickOwner={detailPickOwner} onPick={hour => act(saved
       ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
     onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
@@ -298,7 +300,7 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
     <div className="stockpile-chart">
       <TimeChart label={`${shareMode ? 'Surplus as a share of need' : 'Equipment in stock'}: ${lines.map(line => labelAt(line.group, grouping, head)).join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         // The kit's axis rule: an auto-fitted axis holds zero, and log scale applies only
         // where every share shown is positive, as in every time chart.

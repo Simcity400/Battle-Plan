@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import type { HourWindow } from './model';
 
 // Widgets look hours up locally and the native map advances the same clock
@@ -48,7 +48,7 @@ export class PlaybackController {
     return Math.min(bounds.lastHour, position + Math.max(0, now - this.lastTime) / 1000 * hoursPerSecond);
   };
   getHour = () => this.snapshot.hour;
-  getSpeed = () => this.snapshot.hoursPerSecond;
+  getMotion = () => this.snapshot.playing ? this.snapshot.hoursPerSecond : undefined;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   subscribeHour = (listener: () => void) => { this.hourListeners.add(listener); return () => { this.hourListeners.delete(listener); }; };
 
@@ -134,12 +134,38 @@ export class PlaybackController {
   }
 }
 
-const noSubscription = () => () => {};
-export function usePlaybackHour(clock: PlaybackController, follow = true): number {
-  return useSyncExternalStore(follow ? clock.subscribeHour : noSubscription, clock.getHour, clock.getHour);
+/** A value of an outside store, as `read` returns it. A change reaches the component as a
+ * transition: input answers at once, and every component renders the change in one commit,
+ * in slices a newer change interrupts, each reading the value its own update carried. With
+ * `subscribe` null the value is read as rendered and nothing re-renders for it. */
+export function useTransitionValue<T>(subscribe: ((changed: () => void) => () => void) | null, read: () => T): T {
+  // `shown` is the running subscription's (numbered by `generation`) only once that subscription
+  // has set it; until then, and between subscriptions, the value is read. The first subscription
+  // of a mount is the first numbered, so a value read at mount is already its own.
+  const [shown, setShown] = useState(() => ({ read, value: read(), generation: subscribe ? 1 : 0 }));
+  const generation = useRef(0);
+  useEffect(() => {
+    // Unsubscribed, nothing held is current: a later subscription reads until it sets its own.
+    if (!subscribe) { generation.current++; return; }
+    const mine = ++generation.current;
+    const update = () => {
+      const value = read();
+      startTransition(() => setShown(previous => previous.read === read && previous.generation === mine && Object.is(previous.value, value)
+        ? previous : { read, value, generation: mine }));
+    };
+    update();
+    return subscribe(update);
+  }, [subscribe, read]);
+  return subscribe && shown.read === read && shown.generation === generation.current ? shown.value : read();
 }
 
-/** Speed changes publish while paused too; ticks with the same speed do not render. */
-export function usePlaybackSpeed(clock: PlaybackController): number {
-  return useSyncExternalStore(clock.subscribe, clock.getSpeed, clock.getSpeed);
+/** The clock's hour; unfollowed (pinned) widgets read it without re-rendering for it. */
+export function usePlaybackHour(clock: PlaybackController, follow = true): number {
+  return useTransitionValue(follow ? clock.subscribeHour : null, clock.getHour);
+}
+
+/** The rate charts ease at: the playback speed while playing, none while paused, so a jump,
+ * a scrub or a new selection is drawn at once. */
+export function usePlaybackMotion(clock: PlaybackController): number | undefined {
+  return useTransitionValue(clock.subscribe, clock.getMotion);
 }

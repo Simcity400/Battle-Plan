@@ -18,7 +18,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { AgencyComparisonReply, AgencyRankField } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
@@ -33,7 +33,7 @@ const rowKey = (row: AgencyRow) => row.key;
 
 function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);

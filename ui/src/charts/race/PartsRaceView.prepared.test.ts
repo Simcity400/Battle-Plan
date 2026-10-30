@@ -98,7 +98,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
       return { data, retry() {} }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], muted: "#777777", text: "#ffffff", surface: "#000000" }); export const useViewportHeight = () => 1000;',
     '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react';

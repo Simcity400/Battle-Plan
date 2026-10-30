@@ -7,13 +7,15 @@ import { useContentRevision } from './contentRevision';
 import { preparedSeriesQuery } from './preparedSeries';
 import type { IdeaHistoryFirstView } from './ideaHistoryReply';
 import { validateIdeaHistoryReply } from './ideaHistoryReply';
+import { usePlaybackHour } from './playback.ts';
 
 /** Prepared holdings with visibly approximate keyframe lanes beyond coverage;
  * the icon grid instead requests an exact held set at its displayed hour. */
 export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const through = window ? Math.floor(window.lastHour) : undefined;
   return { track, tag, ...usePreparedIdeaHistory(runtime.client, track, tag, through, widget.kind === 'national-spirits', active) };
 }

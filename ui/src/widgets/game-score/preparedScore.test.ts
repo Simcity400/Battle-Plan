@@ -23,7 +23,7 @@ test('prepared score table and race reuse exact rows and prepared holder continu
     '/widgets/game-score/usePreparedScore.ts': `export const usePreparedScore = () => globalThis.__scorePrepared;`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = () => ''; export const useCountryFactsRead = () => new Map();`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 104;',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({});',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => null;',

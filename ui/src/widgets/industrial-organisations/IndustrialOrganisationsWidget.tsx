@@ -21,7 +21,7 @@ import { gameWindow, withWindowDiagnostics } from '../../dashboard/gameWindows';
 import type { MioPolicySelection } from '../../dashboard/gameWindows';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { ProductionCatalogueReply } from '../../generated/dashboard';
@@ -41,7 +41,7 @@ const NAME_UNAVAILABLE = 'Organisation name unavailable';
  * game-window renderer provides one. */
 export default function IndustrialOrganisationsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

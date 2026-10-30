@@ -27,7 +27,7 @@ test('leaders of a group counted at an hour still being prepared are loading, no
     '/widgets/generals/portraits.ts': 'export const useLeaderPortraits = () => ({ at() {}, warnings: [] });',
     '/widgets/general-career/CareerView.tsx': 'export default () => null;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',

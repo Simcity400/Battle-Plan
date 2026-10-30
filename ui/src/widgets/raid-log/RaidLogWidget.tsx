@@ -30,13 +30,13 @@ const NO_ROWS: readonly LogRow<RaidAt>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr) auto';
 
 export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const { track, data, error, retry } = useRaids(widget, runtime, active, { view: 'log', tags: [], top: null });
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const inBranch = track !== undefined && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;

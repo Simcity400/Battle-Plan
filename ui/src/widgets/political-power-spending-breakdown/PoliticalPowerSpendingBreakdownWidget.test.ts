@@ -38,7 +38,7 @@ test('registered spending breakdown draws everything recorded, names unrecorded 
       export const useSpendingIdeaTooltips = () => ({infos: new Map(globalThis.__spendingBreakdown.data[0].ideaTooltips.ideas.map(info => [info.token, info])),
         art: new Map(), sources: {formats: new Map(), text: () => null, countryName: tag => tag, nameAt: (tag, hour) => {
           globalThis.__spendingBreakdown.namedAt.push(hour); return 'Dated ' + tag + ' at ' + hour; }}});`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = (_clock, active) => {globalThis.__spendingBreakdown.subscribed = active;};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = (clock, active) => {globalThis.__spendingBreakdown.subscribed = active; return clock.getHour();};',
     '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__spendingBreakdown.chart = props; return null;};',
   };
   const vite = await createServer({configFile: false, optimizeDeps: {noDiscovery: true},

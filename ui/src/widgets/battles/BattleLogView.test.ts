@@ -37,7 +37,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const fields = battleOptions([{ value: 'losses', label: 'Losses' }, { value: 'length', label: 'Duration' }]);
     const props = { widget: { id: 'battles', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 200 } }],
-        clock: { getHour: () => 125, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+        clock: { getHour: () => 125, getMotion: () => undefined, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
       adapter: { definition: { title: 'Battles', icon: 'target', options: fields }, product: 'battles',
         validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
         rows: () => [{ id: 'battle', provinceId: 1, windowIndex: 0, place: { hour: 100, name: 'Synthetic location' } }],
@@ -99,7 +99,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     let position = -850;
     const props = { widget: { id: 'battle', kind: 'naval-battles', trackIds: ['short'], countries: { kind: 'all' }, time: { mode: 'follow' } },
       runtime: { tracks: [{ id: 'short', axisOffset: 1000, source: { id: 'synthetic', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 200 } }],
-        clock: { getHour: () => position, getSpeed: () => 24, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+        clock: { getHour: () => position, getMotion: () => 24, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
       adapter: { definition: { title: 'Naval battles', icon: 'shield', options: [] }, product: 'naval-battles',
         validateManifest: (value: unknown) => value, validateWindow: (value: unknown) => value, validateRanking: (value: unknown) => value,
         rows: () => [], rankedRows: () => [], labels: {}, measures: [{ label: 'Ships sunk' }] } as unknown as BattleViewAdapter<never, never, never>,
@@ -157,7 +157,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const row = (provinceId: number) => ({ id: String(provinceId), provinceId, windowIndex: 0, start: null, end: null, sides: [], winner: { unknown: 'x' }, place: { hour: 100, name: null } });
     const props = { widget: { id: 'battles', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'campaign' }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: { id: '1', firstHour: 100, lastHour: 200 } }],
-        clock: { getHour: () => 125, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+        clock: { getHour: () => 125, getMotion: () => undefined, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
       adapter: { definition: { title: 'Battles', icon: 'target', options: [] }, product: 'battles', view,
         validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
         rows: () => host.__battleView!.rows, rankedRows: () => host.__battleView!.rows, labels: {}, measures: [{ label: 'losses' }, { label: 'size' }] },
@@ -193,7 +193,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
   try {
     const props = { widget: { id: 'battles', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'follow' }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: BRANCH }],
-        clock: { getHour: () => BRANCH.lastHour, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
+        clock: { getHour: () => BRANCH.lastHour, getMotion: () => undefined, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {},
       adapter: { definition: { title: 'Battles', icon: 'target', options: battleOptions([{ value: 'losses', label: 'Losses' }]) }, product: 'battles',
         validateManifest: (data: unknown) => data, validateWindow: (data: unknown) => data, validateRanking: (data: unknown) => data,
         // The one battle is GER's at hour 190: a human player there only if membership says so.

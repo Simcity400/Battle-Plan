@@ -37,7 +37,7 @@ test('actual country time views forward dated badges, keyboard stops and full ev
       return { labelAt: hour => tag => { const known = state.ready && wanted.some(read => read.hour === hour && read.tag === tag);
         return known ? { name: tag + ' at ' + hour, flagReason: 'Exact dated flag refused', flagPending: false }
           : { name: tag, flagPending: true }; }, revision: state.ready ? 1 : 0 }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => globalThis.__countryMarkerHeight ?? 1000; export const useChartTokens = () => ({ categories: ["green"], muted: "gray", fontSize: { body: 14 } });',
     '/charts/chartSummary.ts': 'export const drawApproximateSpans = (...args) => globalThis.__countrySummaryHelpers.drawApproximateSpans(...args); export const extentOfSummary = (...args) => globalThis.__countrySummaryHelpers.extentOfSummary(...args); export const pickSummaryLines = (...args) => globalThis.__countrySummaryHelpers.pickSummaryLines(...args); export const drawLineSummary = (_ctx, _frame, _tokens, summary) => globalThis.__countrySummaries.push(summary);',

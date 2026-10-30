@@ -19,7 +19,7 @@ import { preparedAt, variantDecimal } from '../../dashboard/economyHistory';
 import { EquipmentCell, EQUIPMENT_UNNAMED, useVariantArt } from '../../dashboard/EquipmentCell';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { DesignDetailReply, ProductionCatalogueReply } from '../../generated/dashboard';
@@ -53,7 +53,7 @@ export function useDesignChoices(widget: WidgetSpec, runtime: WidgetRuntime): Op
  * ones in a closed disclosure, each with when it and its obsolete flag were first read. */
 export default function EquipmentDesignsWidget({ widget, runtime, active, headerSlot, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

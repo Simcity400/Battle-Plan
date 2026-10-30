@@ -1,4 +1,5 @@
-import { useMemo, useSyncExternalStore } from 'react';
+import { useMemo } from 'react';
+import { useTransitionValue } from '../../dashboard/playback.ts';
 import type { PlaybackController } from '../../dashboard/playback';
 
 /** One shared playback clock; at most ten table updates/second while playing.
@@ -10,7 +11,6 @@ export function useTableHour(clock: PlaybackController, follow: boolean): number
     return {
       get: () => hour,
       subscribe: (notify: () => void) => {
-        if (!follow) return () => {};
         let timer: ReturnType<typeof setTimeout> | undefined;
         const publish = () => { timer = undefined; last = performance.now(); hour = clock.getHour(); notify(); };
         const stop = clock.subscribe(() => {
@@ -23,5 +23,5 @@ export function useTableHour(clock: PlaybackController, follow: boolean): number
       },
     };
   }, [clock, follow]);
-  return useSyncExternalStore(store.subscribe, store.get, store.get);
+  return useTransitionValue(follow ? store.subscribe : null, store.get);
 }

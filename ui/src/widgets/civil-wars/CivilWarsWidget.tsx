@@ -38,6 +38,7 @@ import { civilWarLanes, civilWarsAt, jumpHours, laneCountries, NAME_LOADING, NAM
   tooltipCountries, unknownLook, validateCivilWarsReply, warTooltip } from './civilWarsData';
 import type { CivilWarLaneInfo, Look } from './civilWarsData';
 import './civilWars.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const WORDS = { pending: NAME_LOADING, missing: NAME_NOT_KNOWN };
@@ -47,12 +48,12 @@ const pendingCountry = () => ({ name: NAME_LOADING });
  * default, with each side beneath it in its own colour and a breakaway indented
  * under the side it broke from. Playback looks up the one branch reply locally. */
 export default function CivilWarsWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -202,7 +203,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
       <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Civil wars" extent={extent} playhead={playhead} labelHour={at}
         preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active}
         unobserved={unread} pending={prefix?.pending} approximate={prefix?.approximate}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         onLaneActivate={activate} onLanesInView={onLanesInView}
         revision={`${revision}:${looks.revision}:${styles.size}:${flags.size}:${hover.revision}`} tooltip={tooltip}
         description={`${dayLabel(at)}: ${said.map(item => item.sides.length ? `${item.war}: ${item.sides.join('; ')}` : item.war).join('. ')}. Enter or Space expands or collapses a civil war. Arrow keys step through lanes and bars.`}

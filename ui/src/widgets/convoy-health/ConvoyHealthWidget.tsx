@@ -26,7 +26,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { preparedPending } from '../../dashboard/preparedPrefix';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -37,6 +37,7 @@ import type { ConvoyRow, ConvoyView } from './convoyData';
 import { DETAILS, OPTIONS } from './definition';
 import '../air-superiority-timeline/airSuperiorityTimeline.css';
 import './convoyHealth.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys('trade') };
@@ -45,8 +46,8 @@ const VALIDATORS = { regions: validateConvoys('regions'), trade: validateConvoys
  * day, or the trade efficiency each of its import deals gets, in Air superiority
  * timeline's heat strips. */
 export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const menu = useContextMenu('Convoy health');
   const options = resolveOptions(OPTIONS, widget.options);
@@ -54,7 +55,7 @@ export default function ConvoyHealthWidget({ widget, runtime, active, onDiagnost
   const count = typeof options.rowCount === 'number' && options.rowCount > 0 ? options.rowCount : 10;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? Math.floor(window.lastHour) : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -183,7 +184,7 @@ function ConvoyDrill({ row, runtime, track, hour, extent, active, scale, onPick,
       : <p className="drill-empty">Nothing was recorded for this row at this date.</p>}
     <Legend label="Lines" items={lines.map(line => ({ id: line.label, label: line.label, color: line.color }))} />
     <div className="convoy-health-drill-chart">
-      <TimeChart label={`${row.label} over time`} extent={extent} playhead={hour} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+      <TimeChart label={`${row.label} over time`} extent={extent} playhead={hour} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: percent ? 0 : null, yMax: percent ? 100 : null, log: false }}
         valueTicks={percent ? [0, 25, 50, 75, 100] : undefined} formatValue={percent ? value => `${value}%` : undefined} padding={{ right: 64 }}
         layers={layers} overlay={overlay} active={active} pickOwner={row.id} revision={`${row.id}:${lines.length}`}

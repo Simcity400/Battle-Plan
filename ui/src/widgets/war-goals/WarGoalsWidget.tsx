@@ -20,9 +20,9 @@ const EMPTY: string[] = [];
 const STANDING: Record<WargoalStanding, string> = { atWar: 'At war', sameFaction: 'Same faction' };
 
 export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window ? Math.floor(window.lastHour) : null;
   const tag = track ? selectedTags(widget.countries, track)[0] ?? null : null;
   // The last hour's goals stay shown, labelled with their own hour, while playback's newest is read.

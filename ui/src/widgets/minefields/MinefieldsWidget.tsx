@@ -25,7 +25,7 @@ import { chartRuns, countryPart } from '../../dashboard/keyedHistory';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { loadTransientProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -45,7 +45,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   // A drill that follows playback follows it whatever the widget's own time.
   const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Minefields');
@@ -167,7 +167,7 @@ function useReports(runtime: WidgetProps['runtime'], track: ReturnType<typeof us
   return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
 }
 
-function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsReply; error?: string; name: (tag: string) => string; hoursPerSecond: number }) {
+function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsReply; error?: string; name: (tag: string) => string; hoursPerSecond: number | undefined }) {
   const country = useCallback((part: string | null) => part === null ? 'Country name unavailable' : name(countryPart(part)?.tag ?? part), [name]);
   const columns = useMemo<readonly TableColumn<MineReport>[]>(() => [
     { key: 'ship', header: 'Ship', label: 'Ship', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.ship, render: row => row.ship ?? 'Ship name unavailable', renderMissing: true },

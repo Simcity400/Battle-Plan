@@ -17,7 +17,7 @@ test('the nuclear arsenal of a group at an hour still being prepared is loading,
   const host = globalThis as typeof globalThis & { __nukesPending?: typeof state }; host.__nukesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/nuclear-arsenal/NuclearArsenalWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__nukesPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ label: tag => ({ name: tag }), color: () => "#888" });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',
@@ -51,7 +51,7 @@ test('the nuclear arsenal of a group with no member found yet says what the mome
   const host = globalThis as typeof globalThis & { __nukesGap?: typeof state }; host.__nukesGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/nuclear-arsenal/NuclearArsenalWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__nukesGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ label: tag => ({ name: tag }), color: () => "#888" });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',

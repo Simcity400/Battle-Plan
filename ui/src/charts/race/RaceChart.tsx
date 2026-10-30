@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { font, LABEL_WEIGHT, VALUE_WEIGHT } from '../draw';
 import { easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { canvasImage } from '../images';
 import { countryFlagContent, drawCountryFlag } from '../countryFlag';
 import type { CountryFlagLook } from '../../components/CountryFlag';
@@ -87,6 +88,7 @@ export default function RaceChart(props: RaceChartProps) {
   const scrollTop = useRef(0);
   const latest = useRef(props);
   latest.current = props;
+  const motionNow = useMotionNow();
   const task = useRef<FrameTask | null>(null);
   // Who drives the hover: the pointer, or the keyboard's entry (read out).
   const hover = useRef<{ pointer: Pointer | null; keyed: string | null; menuKey: boolean }>({ pointer: null, keyed: null, menuKey: false });
@@ -134,7 +136,7 @@ export default function RaceChart(props: RaceChartProps) {
       if (element.height !== size.height) element.height = size.height;
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
 
-      const tau = easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion);
+      const tau = easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       state = stepRace(state, p.items, info.now, info.dt, tau);
       // Columns fitted to the widest name and value seen.
       if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; }

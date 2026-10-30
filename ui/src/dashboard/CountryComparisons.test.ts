@@ -13,7 +13,7 @@ test('country comparison headers retain neutral missing flags and request only m
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/CountryComparisons.tsx') || path.endsWith('/dashboard/useDiagnostics.ts')) return source.replace(/import \{ [^}]+ \} from 'react';/,
           'const useEffect = () => {}, useMemo = build => build(), useRef = current => ({ current }), useState = value => [value, () => {}];');
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
         if (path.endsWith('/dashboard/comparisonCountries.ts')) return `export const useComparisonCountries = () => ({
           countries: { tags: globalThis.__comparisonHeaders.tags }, retry() {}, pending: false });`;
         if (path.endsWith('/dashboard/countryFlagsAt.ts')) return `export const useCountryLabelsAt = (client, track, wanted) => {

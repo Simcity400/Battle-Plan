@@ -65,7 +65,7 @@ test('spirit fades and tooltips belong to their recorded context; dated tiles us
     '/dashboard/ideaHistory.ts': 'export const useIdeaHistory = () => globalThis.__spiritHistory;',
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => ({ infos: new Map(), sources: [], art: new Map() });',
     '/dashboard/ideaTooltip.ts': 'export const ideaTooltip = head => ({ ...head, rows: [] }); export const tooltipText = tip => tip.title;',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__spiritMenu = items; }, menu: null });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

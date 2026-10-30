@@ -164,7 +164,7 @@ test('actual Autonomy refuses false overlord absence while keeping known subject
       return { data: { ...data, metadata: data, exactHours: [30], summaries: {} }, geometryReady: true, onSummaryView() {}, navigate: async () => null };
     };`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__autonomyR2.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 25;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ surface: '#111111', text: '#ffffff', accent: '#aaaaaa' });",
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',

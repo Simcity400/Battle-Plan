@@ -5,6 +5,7 @@ import { mix, parseColor, readableText, toHex } from '../../shell/appearance/col
 import type { Rgb } from '../../shell/appearance/color';
 import { font } from '../draw';
 import { approach, easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
 import { backingSize, toLocal } from '../surface';
@@ -114,6 +115,7 @@ const free = (who: string) => { const current = tooltipStore.get(); return curre
 export default function Sunburst(props: SunburstProps) {
   const owner = useId();
   const tokens = useChartTokens();
+  const motionNow = useMotionNow();
   const canvas = useRef<HTMLCanvasElement>(null);
   const [focusPath, setFocusPath] = useState<readonly string[]>([]);
   const { tree, focus } = useMemo(() => {
@@ -183,7 +185,7 @@ export default function Sunburst(props: SunburstProps) {
       previousStretch = p.stretch;
       wasUnavailable = unavailable;
       if (unavailable) motion.clear();
-      const tau = snap ? 0 : easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion);
+      const tau = snap ? 0 : easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       const fade = tokens.reducedMotion ? 0 : tau * 1.2;
       const blend = tau > 0 ? 1 - Math.exp(-info.dt / tau) : 1;
       let moving = false;

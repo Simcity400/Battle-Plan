@@ -73,7 +73,7 @@ async function server(replacements: Record<string, string>) {
     }] });
 }
 const common = {
-  '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 24;',
+  '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
   '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: (tag, hour) => tag + " at " + hour, color: () => null, flag: () => undefined, flagReason: () => undefined, flagPending: () => false, revision: 0 });',
   '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted, active) => { if (active || wanted.length) throw new Error("This fixture has no country header target"); return { labelAt: () => () => { throw new Error("No country header label was requested"); }, revision: 0 }; };',
   '/charts/useChartTokens.ts': `const tokens = ${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))}; export const useChartTokens = () => tokens;`,

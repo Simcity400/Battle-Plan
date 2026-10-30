@@ -19,7 +19,7 @@ export default function TransferDrill({ rows, focus, labels, named, outside, ...
   rows: readonly TransferOccurrence[]; focus: string | null; labels: TransferLabels;
   /** A pinned breakdown names its country; the drill's header already does. */
   named: boolean; outside: boolean;
-  sort: Sort; setOption?: WidgetProps['setOption']; cellBars: boolean; density: 'comfortable' | 'compact'; narrow: NarrowTable; hoursPerSecond: number;
+  sort: Sort; setOption?: WidgetProps['setOption']; cellBars: boolean; density: 'comfortable' | 'compact'; narrow: NarrowTable; hoursPerSecond: number | undefined;
   tooltip: (row: TransferOccurrence) => TooltipContent; menu: (row: TransferOccurrence) => MenuItem[];
   onVisibleRows: (rows: readonly TransferOccurrence[]) => void;
 }) {

@@ -24,7 +24,7 @@ test('autonomy marks bootstrap bands and empty sampled or pending results before
   };
   const replacements: Record<string, string> = {
     '/dashboard/preparedSeries.ts': 'export const usePreparedWindow = () => ({ data: globalThis.__autonomyData, geometryReady: globalThis.__autonomyGeometryReady, retry() {}, onSummaryView() {}, navigate() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
@@ -111,7 +111,7 @@ test('a group counted at hours still being prepared is loading, not countries wi
   const host = globalThis as typeof globalThis & { __autonomyPending?: typeof state }; host.__autonomyPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/autonomy/AutonomyWidget.tsx', {
     '/dashboard/preparedSeries.ts': 'export const usePreparedWindow = () => ({ data: globalThis.__autonomyPending.data, geometryReady: true, retry() {}, onSummaryView() {}, navigate() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__autonomyPending.groups, retry() {} });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',

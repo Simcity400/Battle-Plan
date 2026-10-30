@@ -14,7 +14,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useLeaderPortraits } from './portraits';
 import { resolveWindow } from '../../dashboard/model';
@@ -48,7 +48,7 @@ export default function GeneralsWidget(props: WidgetProps) {
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
   const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
   const drill = drillOwner === owner ? savedDrill : CLOSED;
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const playback = useTableHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
@@ -136,7 +136,7 @@ export default function GeneralsWidget(props: WidgetProps) {
       hoursPerSecond={hoursPerSecond} />
       {!observed?.leaders && <p className="career-note">Some leaders are missing.</p>}
     </div>;
-  const clockHour = Math.floor(runtime.clock.getHour()) + track.axisOffset;
+  const clockHour = Math.floor(playback) + track.axisOffset;
   const pickedHour = drillHour(drill, clockHour) ?? hour;
   return <div ref={anchor} className="generals-widget"><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null}
     title="General career" day={formatDateTime(pickedHour)} following={drill.follow} canFollow anchor={anchor}

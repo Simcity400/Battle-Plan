@@ -12,7 +12,7 @@ import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, setToken } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -27,12 +27,12 @@ type PairItem = ButterflyItem & { data: RegionPair };
 /** Ours against the enemy's per region for one recorded air statistic, in the game's
  * current year window at the read behind the hour shown. */
 export default function AirStatisticsWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const { track, tag, channel: channelId, params, options, data, error, retry } = useAirStatistics(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const channel = data?.channels.find(item => item.id === channelId);
   const chosen = contentSet(options.regions).map(contentKey);

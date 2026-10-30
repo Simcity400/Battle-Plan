@@ -4,6 +4,7 @@ import { newId } from '../shell/ids.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContentRevision } from './contentRevision.ts';
 import { finalPreparedReply, preparationCoverage } from './preparedPrefix.ts';
+import { inFrame } from './frameUpdates.ts';
 
 export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-next-change' | 'events-page' | 'events-clusters';
 
@@ -251,27 +252,33 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
     const asked = wanted.current;
     const mine = { owner, lane, geometryKey: asked.geometryKey, shown: false, controller };
     flight.current = mine;
+    const live = () => !controller.signal.aborted && current.current === owner;
     const publish = (data: T) => {
-      if (controller.signal.aborted || current.current !== owner) return;
-      setSummaries({ owner, geometryKey: asked.geometryKey, seriesKey, data });
-      if (!mine.shown) { mine.shown = true; if (wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1); }
+      if (!live()) return;
+      inFrame(() => {
+        if (!live()) return;
+        setSummaries({ owner, geometryKey: asked.geometryKey, seriesKey, data });
+        // Shown once it lands: until then a moved view waits for it rather than replacing it.
+        if (!mine.shown) { mine.shown = true; if (wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1); }
+      });
     };
     void preparedWindowQuery(client,source,family,params,asked.viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
-      .catch(error => { if (!controller.signal.aborted && current.current === owner) setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: String(error) })); })
+      .catch(error => { if (live()) inFrame(() => live() && setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: String(error) }))); })
       .finally(() => {
         if (flight.current?.controller !== controller) return;
         flight.current = null;
-        if (!controller.signal.aborted && wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1);
+        if (!controller.signal.aborted && wanted.current.geometryKey !== asked.geometryKey) inFrame(() => setLanded(value => value + 1));
       });
   }, [owner, geometryKey, seriesKey, active, attempt, landed]);
   useEffect(() => () => { if (flight.current?.owner === owner) { flight.current.controller.abort(); flight.current = null; } }, [owner, active]);
   useEffect(() => {
     if (!source || !active) return;
     const controller = new AbortController();
-    const publish = (value: unknown) => { if (!controller.signal.aborted && current.current === owner) setStates({ owner, data: validate(value) }); };
+    const live = () => !controller.signal.aborted && current.current === owner;
+    const publish = (value: unknown) => { if (live()) { const data = validate(value); inFrame(() => live() && setStates({ owner, data })); } };
     void preparedSeriesQuery(client,source,'series-state',{...params,family:{kind:family},reads:readHours.map(hour=>({hour}))},controller.signal,attempt>0,
       undefined,undefined,publish).then(publish)
-      .catch(error=> {if(!controller.signal.aborted && current.current===owner)setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error:String(error)}));});
+      .catch(error=> {if(live()) inFrame(() => live() && setStates(previous => ({...(previous?.owner === owner ? previous : {}),owner,error:String(error)})));});
     return ()=>controller.abort();
   }, [owner, readKey, active, attempt]);
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }, series: PreparedBinding[] = []) => setView(previous => previous?.owner === owner

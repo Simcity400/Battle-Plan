@@ -36,14 +36,14 @@ const plural = (count: number, word: string) => `${usNumber.format(count)} ${wor
 export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const parity = useRef<HTMLDivElement>(null);
   const live = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && live);
+  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = logSettings(options);
   const actions = typeof options.actions === 'string' ? options.actions : '';
   const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
   // Before preparation covers the branch, the deals of its prepared prefix.
   const prefix = useMemo(() => preparedPrefix(data), [data]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const log = useMemo(() => data ? preparePeaceLog(data) : null, [data]);
   const filtered = useMemo(() => log ? filterPeaceLog(log, contentSet(actions).map(contentKey)) : null, [log, actions]);

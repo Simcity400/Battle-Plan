@@ -10,6 +10,7 @@ import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { FULL_FIT, barFraction, barMaximum, densityRowHeight, fitColumns, groupedRows, isMissing, nextSort, rankChanges, measuredRowOffsets, rowOffsets, scrollToShow, shownMotion, sortRows, treeRows, visibleRange } from './logic.ts';
 import type { ColumnFit, RankChange, Sort, TableGroup, TableTree, TreeRow } from './logic';
 import { cellContent, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
@@ -61,7 +62,7 @@ export interface TableProps<T> {
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
 export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, tree, unsorted = false, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
-  tooltip, onVisibleRows, parity, hoursPerSecond = 1, narrow = 'hide' }: TableProps<T>) {
+  tooltip, onVisibleRows, parity, hoursPerSecond, narrow = 'hide' }: TableProps<T>) {
   const owner = useId();
   const tokens = useChartTokens();
   const viewportHeight = useViewportHeight();
@@ -150,7 +151,8 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const moving = useRowMotion(items);
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
   const [departing, setDeparting] = useState(NO_KEYS);
-  const glideMs = easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion) * 2.5;
+  const motionNow = useMotionNow();
+  const glideMs = easeTau(tokens.motion, motionNow(hoursPerSecond), tokens.reducedMotion) * 2.5;
   const [ranks, setRanks] = useState<ReadonlyMap<string, RankChange>>(new Map());
   const rankSort = useRef('');
   const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
@@ -407,7 +409,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
   return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
     style={{ '--table-columns': grid, '--table-row-height': view.rowHeight > 0 ? `${view.rowHeight}px` : undefined,
-      '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion ? '0ms' : '300ms' } as CSSProperties}
+      '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion || motionNow(hoursPerSecond) === undefined ? '0ms' : '300ms' } as CSSProperties}
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table ref={tableElement} aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>

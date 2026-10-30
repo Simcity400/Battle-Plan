@@ -15,7 +15,7 @@ const replacements: Record<string, string> = {
   '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
   '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { factions: [{ id: '42', name: null,
     nameReason: 'Synthetic native naming refusal', names: [{ firstHour: 0, lastHour: 100, name: null, reason: 'Synthetic native naming refusal' }] }] } });`,
-  '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+  '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
 };
 const frameServer = () => createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
   server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'frame-render', enforce: 'pre',

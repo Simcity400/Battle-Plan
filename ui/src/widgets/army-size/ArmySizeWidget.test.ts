@@ -65,7 +65,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/productWindows.ts': `export const useProductWindows = () => ({ data: new Map([[0, ${JSON.stringify(reply)}]]), errors: new Map(), retry() {} });`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => { globalThis.__armyMarkerDemand = active; return { data: ${JSON.stringify(groups)} }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/charts/drill/DrillHost.tsx': 'export default props => { globalThis.__armyFocusSelector = props.returnFocus; return props.main; };',
     '/components/CountryPicker.tsx': 'export default () => null;',
     '/widgets/army-size/ArmyBreakdown.tsx': 'export default () => null;',

@@ -42,7 +42,7 @@ test('the actual occupation mix waits for a native country choice and keeps that
     export const useFollowedProduct = (client, request, moving, active, validate) => ({ ...useProduct(client, request, active, validate), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       const state = globalThis.__occupationHolderAdapter; state.groupsActive = active; return state.groups; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react'; export default props => {
       globalThis.__occupationHolderAdapter.chart = props; return createElement('div', null, props.beforeChart); };`,
     '/components/CountryPicker.tsx': 'export default props => { globalThis.__occupationHolderAdapter.picker = props; return null; };',

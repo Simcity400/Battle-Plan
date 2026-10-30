@@ -9,6 +9,7 @@ import type { DashboardClient, DashboardSource } from './client';
 import { loadTransientProduct } from './products.ts';
 import { replySize, setReplySize } from './replySizes.ts';
 import { sharedFacts } from './sharedFacts.ts';
+import { inFrame } from './frameUpdates.ts';
 
 /** A country at an hour. */
 export interface NameAt { hour: number; tag: string }
@@ -196,7 +197,7 @@ export interface FactClock {
 const REAL_CLOCK: FactClock = {
   now: () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
   after: (ms, run) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
-  frame: typeof requestAnimationFrame === 'function' ? run => { requestAnimationFrame(run); } : undefined,
+  frame: typeof requestAnimationFrame === 'function' ? inFrame : undefined,
 };
 
 /** The reads for one store: one request per hour and chunk of countries, or, batched,

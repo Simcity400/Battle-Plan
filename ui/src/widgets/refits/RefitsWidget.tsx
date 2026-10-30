@@ -11,7 +11,7 @@ import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { censusComplete, costRead, countText, derivedIcText, fixedText, hullShare, nativeIcText, percentText, refitShare, tokenName, yardsAt } from '../../dashboard/navalYards';
@@ -33,7 +33,7 @@ export const lineProgress = (at: YardsAt, line: string): number | null => refitS
  * its progress and the ships on it, in the game's order, under one totals line. */
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'lines');
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);

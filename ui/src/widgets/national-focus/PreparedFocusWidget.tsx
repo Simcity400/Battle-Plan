@@ -29,10 +29,10 @@ type Snapshot = PreparedFocusSnapshot;
 /** Repeated completions may share artwork, but never disclosure state. */
 const disclosureKey = (ordinal: number, artKey: string) => JSON.stringify([ordinal, artKey]);
 export default function PreparedFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const requested = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const requested = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(requested?.lastHour ?? 0);
   const live = widget.time.mode === 'follow';
   const moment = live || widget.time.mode === 'pin';

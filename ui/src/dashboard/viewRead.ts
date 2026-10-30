@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { inFrame } from './frameUpdates.ts';
 
 const owners = new WeakMap<object, number>();
 let ownersSeen = 0;
@@ -47,19 +48,25 @@ export function useViewRead<V, T>(reads: string | null, view: V | null | undefin
     flight.current = mine;
     const publish = (data: T) => {
       if (controller.signal.aborted) return;
-      setState({ lane, viewKey: asked.viewKey, data });
-      if (!mine.shown) { mine.shown = true; if (wanted.current.viewKey !== asked.viewKey) setLanded(value => value + 1); }
+      inFrame(() => {
+        if (controller.signal.aborted) return;
+        setState({ lane, viewKey: asked.viewKey, data });
+        // Shown once it lands: until then a moved view waits for it rather than replacing it.
+        if (!mine.shown) { mine.shown = true; if (wanted.current.viewKey !== asked.viewKey) setLanded(value => value + 1); }
+      });
     };
     // After Retry, reads may restart stopped preparation, as a retried product does.
     void reader.current(asked.view as V, controller.signal, publish, attempt > 0).then(publish, error => {
       // Kept data keeps the view it answers; only the failure is the asked view's.
-      if (!controller.signal.aborted) setState(previous => ({ lane, ...(previous?.lane === lane && previous.data !== undefined
-        ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: error instanceof Error ? error.message : String(error),
-        errorKey: asked.viewKey }));
+      if (!controller.signal.aborted) inFrame(() => {
+        if (!controller.signal.aborted) setState(previous => ({ lane, ...(previous?.lane === lane && previous.data !== undefined
+          ? { viewKey: previous.viewKey, data: previous.data } : { viewKey: asked.viewKey }), error: error instanceof Error ? error.message : String(error),
+          errorKey: asked.viewKey }));
+      });
     }).finally(() => {
       if (flight.current?.controller !== controller) return;
       flight.current = null;
-      if (!controller.signal.aborted && wanted.current.viewKey !== asked.viewKey) setLanded(value => value + 1);
+      if (!controller.signal.aborted && wanted.current.viewKey !== asked.viewKey) inFrame(() => setLanded(value => value + 1));
     });
     // The view's key is its identity; the view object is recreated each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps

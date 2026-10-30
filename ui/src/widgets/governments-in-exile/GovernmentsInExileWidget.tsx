@@ -19,7 +19,7 @@ import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
 import { loadTransientProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -87,7 +87,7 @@ function useDeployedAir(runtime: WidgetProps['runtime'], track: BoundTrack | und
 
 export default function GovernmentsInExileWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

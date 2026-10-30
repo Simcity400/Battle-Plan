@@ -17,7 +17,7 @@ test('Factories and Equipment produced register a breakdown slot and forward it 
           + "\nfunction CountryChip() { return 'Generic country'; }";
         if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });';
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({ retry() {} });';
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => 0;';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
         if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;";
       },
     }] });

@@ -47,7 +47,7 @@ test('actual SpecialProjects preserves literal roots, selected dated flag failur
         error: failed && globalThis.__projectErrors[failed.params.tag], retry() { globalThis.__projectRetries.push(failed?.params.tag ?? 'projects'); } }; };
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__projectWanted = wanted; return { labelAt: hour => tag => { globalThis.__projectLabels.push([hour, tag]); return globalThis.__projectFlag; } }; };',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__projectMenu = items; }, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__projectTimeline = props; return null; };',
@@ -305,7 +305,7 @@ test('Current comparison props remain stable during playback and wrapper hooks k
       transform(code, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({ data: globalThis.__projectStable.groups });';
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
         if (path.endsWith('/special-projects/SpecialProjectsWidget.tsx')) return code.replaceAll('useMemo(', 'globalThis.__projectStable.memo(').replaceAll('useContext(', 'globalThis.__projectStable.context(');
       } }] });
   try {
@@ -344,7 +344,7 @@ test('a reply answered from its prepared prefix lists what the prefix holds and 
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
     '/dashboard/products.ts': 'export const useProducts = (_client, requests, _active, validate) => ({ data: requests.map(() => validate(globalThis.__projectPrefix.reply)) }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__projectPrefix.timeline = props; return null; };',

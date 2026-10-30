@@ -33,7 +33,7 @@ test('eager focus and research parity models retain complete exact rows without 
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__eagerParityModels.kind === "national-focus" ? globalThis.__eagerParityModels.focus : globalThis.__eagerParityModels.research }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/parityRows.ts': `export const useParityRows = (_root, read) => {
       globalThis.__eagerParityModels.reads.push(read); };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

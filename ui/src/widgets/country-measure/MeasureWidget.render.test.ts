@@ -18,7 +18,7 @@ test('a group balance with no recorded line while membership is still being prep
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__measurePending.groups, retry() {} });',
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => ({ known: new Map(), data: { warnings: [] } });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = () => new Map();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }), revision: 0 });',

@@ -34,6 +34,7 @@ import type { DockyardViewChoice } from './definition';
 import { LEVELS, formatExactIc, monthLabel, reasonLabel } from './dockyardData';
 import type { Exact } from './dockyardData';
 import './dockyardSpending.css';
+import { motionOf } from '../../charts/easing.ts';
 
 /** One month's band amounts and what its tooltip adds. */
 export interface PurposeMonth { firstHour: number; lastHour: number; bands: readonly Exact[]; total: Exact; note?: string }
@@ -73,12 +74,12 @@ const sentence = (text: string) => text[0].toUpperCase() + text.slice(1);
 
 export function PurposeSpendingWidget<R extends ProductionSpendingReply & { months: readonly unknown[] }>(
   { kind, widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps & { kind: PurposeSpendingKind<R> }) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(kind.options, widget.options);
   const view: DockyardViewChoice = options.view === 'months' ? 'months' : 'circle';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
@@ -115,9 +116,9 @@ export function PurposeSpendingWidget<R extends ProductionSpendingReply & { mont
   else if (!shown) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (view === 'months') body = <PurposeMonths kind={kind} data={data} extent={[from ?? track.branch.firstHour, range ? hour : track.branch.lastHour]}
     playhead={widget.time.mode === 'follow' ? shown.hour : null} branchStart={track.branch.firstHour} decimals={decimals} digits={digits}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} />;
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} />;
   else body = <PurposeCircle kind={kind} data={data} shown={shown} requestedHour={hour} options={options} decimals={decimals} digits={digits}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} />;
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} />;
   return <>{header}{body}</>;
 }
 
@@ -129,7 +130,7 @@ function usePurposeColours(bands: readonly unknown[]): string[] {
 
 export function PurposeCircle<R extends ProductionSpendingReply & { months: readonly unknown[] }>({ kind, data, shown, requestedHour, options, decimals, digits, hoursPerSecond, active }: {
   kind: PurposeSpendingKind<R>; data: R; shown: SpendingWindow; requestedHour: number;
-  options: ReturnType<typeof resolveOptions>; decimals: number; digits: number; hoursPerSecond: number; active: boolean;
+  options: ReturnType<typeof resolveOptions>; decimals: number; digits: number; hoursPerSecond: number | undefined; active: boolean;
 }) {
   const settings = sunburstSettings(options);
   const colours = usePurposeColours(kind.bands);
@@ -160,7 +161,7 @@ export function PurposeCircle<R extends ProductionSpendingReply & { months: read
 
 export function PurposeMonths<R extends ProductionSpendingReply & { months: readonly unknown[] }>({ kind, data, extent, playhead, branchStart, decimals, digits, hoursPerSecond, active }: {
   kind: PurposeSpendingKind<R>; data: R; extent: [number, number]; playhead: number | null; branchStart: number;
-  decimals: number; digits: number; hoursPerSecond: number; active: boolean;
+  decimals: number; digits: number; hoursPerSecond: number | undefined; active: boolean;
 }) {
   const colours = usePurposeColours(kind.bands);
   const columns = useMemo(() => kind.columns(data, decimals), [kind, data, decimals]);

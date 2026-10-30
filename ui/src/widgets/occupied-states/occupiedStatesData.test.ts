@@ -196,7 +196,7 @@ test('actual occupation columns date hourly Owner looks and retain unknown nativ
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__occupiedR2.groups });',
     '/charts/table/useTableHour.ts': 'export const useTableHour = clock => clock.getHour();',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted) => {
       globalThis.__occupiedR2.wanted = wanted; return { labelAt: hour => tag => ({ name: tag + '@' + hour, flag: tag + '-flag@' + hour }) }; };`,

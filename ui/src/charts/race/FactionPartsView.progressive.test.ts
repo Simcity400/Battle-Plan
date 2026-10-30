@@ -17,7 +17,7 @@ test('faction member bands use the shared approximate union and drawing style', 
     '/dashboard/countryNamesAt.ts': 'export const useCountryFactsRead = () => new Map();',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({muted:'#888',surface:'#000',countryColours:'fixed'});",
     '/charts/race/factionPartColours.ts': `export const factionColourPlan = () => ({wanted:[],selection:new Map(),maxHours:0});
       export const factionColourKey = () => null; export const factionCountryColours = () => new Map(); export const heldFactionColours = () => new Map();`,

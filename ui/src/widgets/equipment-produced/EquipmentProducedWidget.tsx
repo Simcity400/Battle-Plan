@@ -57,7 +57,7 @@ export default function EquipmentProducedWidget(props: WidgetProps) {
 
 export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?: boolean }) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'lines' ? 'lines' : 'race';
@@ -67,7 +67,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   const included = useMemo(() => contentSet(options.included).map(contentKey), [options.included]);
   const refits = options.refits === true;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];

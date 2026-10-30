@@ -47,7 +47,7 @@ test('actual balance widget uses prepared viewport, exact hour and keyboard read
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry(){}});',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__preparedBalanceFixture.styles;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour,tag) => JSON.stringify([hour,tag]);
       export const useCountryNamesRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),row.tag]));`,

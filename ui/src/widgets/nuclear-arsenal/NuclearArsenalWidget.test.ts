@@ -36,7 +36,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/viewRead.ts': `export const useViewRead = (lane, view, _viewKey, active, read) => { let data;
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
       return { data, retry() {} }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',

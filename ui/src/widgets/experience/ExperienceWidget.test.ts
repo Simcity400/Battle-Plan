@@ -32,7 +32,7 @@ test('actual Experience keeps holder aliases, dated reached events and one end p
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__experienceIdentity.data, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__experienceIdentity.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 23; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryLooks.ts': `export const lookPlan = (_branch, tags, hour) => ({wanted: tags.map(tag => ({tag, hour})), maxHours: 16});
       export const useCountryLooks = (_client, _track, tags) => { globalThis.__experienceIdentity.looks = tags; return { color: () => [20, 50, 80], warnings: [] }; };`,
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = (_client, _track, wanted) =>

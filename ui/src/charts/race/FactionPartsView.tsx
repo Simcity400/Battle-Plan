@@ -6,7 +6,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { STYLES } from '../../dashboard/useCountriesAt';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import DrillParts from '../drill/DrillParts';
 import type { DrillPart } from '../drill/DrillParts';
 import { dayLabel, drawBands, drawPlayhead } from '../draw';
@@ -36,7 +36,7 @@ export default function FactionPartsView({ model, runtime, track, hour, followin
   navigation?: Pick<TimeChartProps, 'onNavigateHour' | 'keyboardHour' | 'keyboardRevision'>;
 }) {
   const tokens = useChartTokens();
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const [visible, setVisible] = useState<readonly string[]>([]);
   const onVisible = useCallback((ids: readonly string[]) => setVisible(before => before.length === ids.length
     && before.every((id, index) => id === ids[index]) ? before : ids), []);

@@ -54,6 +54,7 @@ import { tradeFlowsRequest, useTradeFlows } from './useTradeFlows';
 import { nodeTooltip, ribbonTooltip } from './tradeTooltip';
 import './tradeFlows.css';
 import TradeMarketView from './TradeMarketView';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 /** Ribbons the screen-reader description lists, largest first. */
@@ -76,8 +77,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const pinnedView = options.show === 'contributions';
   const [marketSelection, setMarketSelection] = useState<string | null>(null);
   const marketTrack = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const marketDrillHour = marketView && marketTrack && drill.breakdown !== null ? contributionHour(drill, marketTrack, runtime.clock.getHour()) ?? undefined : undefined;
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (!!drill.breakdown && drill.follow)));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (!!drill.breakdown && drill.follow)));
+  const marketDrillHour = marketView && marketTrack && drill.breakdown !== null ? contributionHour(drill, marketTrack, playbackHour) ?? undefined : undefined;
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const measure = (options.measure as Measure) ?? 'current';
@@ -89,7 +90,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const incoming = useTradeFlows(widget, runtime, active, marketDrillHour);
   const { track, all, resolved, groups, data, scope, retry } = incoming;
   const error = useHeldFailure(incoming.error, data !== undefined, retry);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const savedExtent = track && pinnedView ? contributionExtent(options.tradeExtent, track.branch) : null;
@@ -318,7 +319,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const known = useMemo(() => observedTradeSpans(data?.known ?? [], scope?.kind === 'countries' ? scope.unobserved : undefined), [data, scope]);
   const effectiveDrill = drill.breakdown ? drill : pinnedView
     ? { breakdown: 'contributions', follow: widget.time.mode === 'follow', hour: moment } : CLOSED;
-  const drillAt = track ? contributionHour(effectiveDrill, track, runtime.clock.getHour()) : null;
+  const drillAt = track ? contributionHour(effectiveDrill, track, playbackHour) : null;
   useEffect(() => { incoming.onReachedHour?.(effectiveDrill.breakdown !== null ? drillAt : null); }, [drillAt, effectiveDrill.breakdown, incoming.onReachedHour]);
   const headerTag = pinnedView && widget.countries.kind === 'tags' && widget.countries.tags.length === 1
     ? contributionCountryTag(identities, widget.countries.tags[0], chosenSelection, drillAt) : null;
@@ -436,7 +437,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     }}>All trades</button></div>
     <FlowDiagram label={`Trade flows: sellers to buyers${all ? ', all countries' : ''}`} nodes={flowNodes} links={flowLinks}
       stretch={measure === 'current' ? spanIndex : 'all'} scale={scale} slots={perSide + 1} hour={moment} onPick={openDrill}
-      hoursPerSecond={clock.hoursPerSecond} message={message} tooltip={tooltip} onContextMenu={onContextMenu} description={description} onCapacity={setCapacity}
+      hoursPerSecond={motionOf(clock)} message={message} tooltip={tooltip} onContextMenu={onContextMenu} description={description} onCapacity={setCapacity}
       onLabelPick={openLabel}
       active={active && !(effectiveDrill.breakdown && (pinnedView || options.drill !== 'popout'))} />
   </div>;
@@ -457,12 +458,12 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
         // A failed read of one hovered hour says so and can be retried; the country's history stays.
         : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour's trade" detail={countryPoint.error} onRetry={countryPoint.retry} />}
           <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
-          hour={countryShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
+          hour={countryShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(playbackHour) + track.axisOffset : null}
           colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}
           onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
           onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} /></>
       : chosenSelection && <TradeDrill flows={contributors} trade={trade} track={track} runtime={runtime} measure={measure} from={from}
-        hour={drillShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null}
+        hour={drillShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(playbackHour) + track.axisOffset : null}
         prepared={incoming} known={known} colours={resourceColour} tokens={tokens} identityNote={scope?.kind === 'countries' ? scope.identityNote : undefined} active={active && effectiveDrill.breakdown != null}
         onPick={hour => dispatchDrill(drill.breakdown ? { type: 'pick', hour } : { type: 'open', breakdown: 'contributions', hour, playing: false, playhead: null })}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />}

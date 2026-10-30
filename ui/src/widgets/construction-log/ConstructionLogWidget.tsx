@@ -42,7 +42,7 @@ const EVERY_TYPE = TYPES_FIELD?.kind === 'content-set' ? TYPES_FIELD.automatic :
  * start, build a level or end. */
 export default function ConstructionLogWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const live = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && live);
+  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = logSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -50,7 +50,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   // One country is named by the header chip, so its rows leave the country out.
   const oneCountry = widget.countries.kind === 'selected' || (widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const target = window?.lastHour ?? null;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const inBranch = target != null && track != null && target >= track.branch.firstHour && target <= track.branch.lastHour;

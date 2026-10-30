@@ -25,7 +25,7 @@ test('a group counted at an hour still being prepared is loading, not a moment n
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps & { family: 'bombing'; fields: typeof OPTIONS; title: string }> }>('/ui/src/dashboard/MilitaryAirView.tsx', {
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__airPending.data, track: globalThis.__airPending.track, retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__airPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, color: () => null, flag() {}, flagReason() {}, flagPending: () => false, revision: 0 });',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777777";',
     '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react'; export default props => props.state ?? (props.ranked.length ? null : createElement('p', null, props.empty));`,

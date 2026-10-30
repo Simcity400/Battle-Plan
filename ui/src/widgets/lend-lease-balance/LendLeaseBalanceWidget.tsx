@@ -25,7 +25,7 @@ import { groupReasonAt, preparedAt } from '../../dashboard/economyHistory';
 import { MEMBERSHIP_PREPARING, membersKnown } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { preparedPending } from '../../dashboard/preparedPrefix';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -43,14 +43,14 @@ type BalanceItem = ButterflyItem & { row: BalanceRow };
 /** Who props up whom: each country's cumulative lend-lease sent (right) and received
  * (left) in the game's own measures, ranked by both; a country opens its partners. */
 export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour2 = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const measure: BalanceMeasure = options.measure === 'fuel' ? 'fuel' : 'industry';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour2);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id]);
@@ -93,7 +93,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
     setPicked({ owner, holder: item.row.holder, tag: item.row.tag });
     dispatch({ type: 'open', breakdown: PARTNERS.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const playbackHour = Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0);
+  const playbackHour = Math.floor(playbackHour2) + (track?.axisOffset ?? 0);
   const at = drillHour(drill, playbackHour) ?? hour;
 
   if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
@@ -146,7 +146,7 @@ function Partners({ widget, runtime, active, holder, tag, measure, hour, onPick 
 }) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
   const request = { sourceId: track.source.id, revision: track.source.revision, product: LEND_LEASE_BALANCE, params: { branchId: track.branch.id, holder } };
   const { data, error, retry } = useProduct<LendLeaseBalanceReply>(runtime.client, request, active, validateLendLeaseBalance, track.source);

@@ -26,6 +26,7 @@ import { MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { placementChordMemo, placementTooltip, placementsAt, selectPlacements, validatePlacementsReply } from './placementsData';
 import type { PlacementChord } from './placementsData';
 import './placements.css';
+import { motionOf } from '../../charts/easing.ts';
 import { heldFacts } from '../../dashboard/countryTimeline.ts';
 
 const COLORS: FactSpec<[number, number, number]> = { product: 'country-styles', perRequest: 64, shared: true,
@@ -36,10 +37,10 @@ const COLORS: FactSpec<[number, number, number]> = { product: 'country-styles', 
 const NO_WARNINGS: string[] = [];
 
 export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens(), options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
   const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'operative-placements', params: runtime.client.preparedQuery
@@ -108,7 +109,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
   if (picked?.reason) return <>{groupNotice}<WidgetState kind="unavailable" message={picked.reason} /></>;
   return <div ref={root} className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
     <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} frameAt={frames.at} onError={setChartError}
-      hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
+      hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
       tooltip={(hit, data) => { const chord = frames.exact.get(data); return chord ? placementTooltip(hit, chord) : null; }}
       onContextMenu={(hit, data, x, y) => {
         const chord = frames.exact.get(data);

@@ -17,7 +17,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { POLITICS_HISTORY, preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -51,7 +51,7 @@ export function electionColumns(sortName: (tag: string) => string, label: Countr
 
 export default function NextElectionsWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

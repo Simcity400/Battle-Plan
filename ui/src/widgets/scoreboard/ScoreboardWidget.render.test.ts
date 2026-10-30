@@ -16,7 +16,7 @@ test('a scoreboard of a group with no member known at an hour still being prepar
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(registry)}, retry() {} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scoreboardPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 800;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
@@ -46,7 +46,7 @@ test('a scoreboard of a group with no member found yet says what the hour was on
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ data: request ? ${JSON.stringify(registry)} : undefined, retry() {} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scoreboardGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__scoreboardGap.hour;',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 800;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',

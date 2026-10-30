@@ -125,7 +125,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
         runs: [{ firstHour: 100, lastHour: 109, startsSegment: true, amountRaw: '0', reason: null }], warnings: [] })]]), errors: new Map(), retry() {} }; }`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => {
       const state = globalThis.__fuelCountryMount; return { data: active ? state.groups : undefined, error: active ? state.groupError : undefined, retry() {} }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__fuelCountryMount.hour; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__fuelCountryMount.hour; export const usePlaybackMotion = () => 24;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ accent: '#123', muted: '#888', categories: ['#123', '#456'] });
       export const useViewportHeight = () => 1000;`,
     '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react'; export default props => {

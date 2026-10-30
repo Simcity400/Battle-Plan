@@ -7,6 +7,7 @@ import { useHeldFailure } from '../../dashboard/heldFailures.ts';
 import { useViewRead } from '../../dashboard/viewRead.ts';
 import { validateResearchReply } from '../research/researchData.ts';
 import { researchGrants } from './researchGrants.ts';
+import { usePlaybackHour } from '../../dashboard/playback.ts';
 
 export function activeResearchReply(value: unknown, tag: string, hour: number) {
   const reply = value as { states?: { tag: string; hour: number; data: unknown; grants: unknown; preparing: string[] }[] };
@@ -17,9 +18,10 @@ export function activeResearchReply(value: unknown, tag: string, hour: number) {
 
 /** The reached slot state, independent of assignment history and its pages. */
 export function useActiveResearch(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window && Math.floor(window.lastHour);
   const { client } = runtime;
   const content = useContentRevision(client);

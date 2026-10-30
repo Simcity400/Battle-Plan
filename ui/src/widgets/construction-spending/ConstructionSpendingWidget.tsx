@@ -18,6 +18,7 @@ import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import type { ConstructionSpendingReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { LEVELS, footnote, formatSpent, hasConstruction, scaleDigits, spendingItems, validateSpendingReply } from './spendingData';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const ROOT = { id: 'all', label: 'All construction' };
@@ -26,12 +27,12 @@ const ROOT = { id: 'all', label: 'All construction' };
  * new buildings or repairs, then building type, then state. With Live on it
  * grows at recorded factory-output reads; off, the whole campaign. */
 export default function ConstructionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
@@ -75,5 +76,5 @@ export default function ConstructionSpendingWidget({ widget, runtime, active, on
   if (from != null && through != null && from > through) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!hasConstruction(items)) return <WidgetState kind="empty" icon="sunburst" message="No construction recorded" detail={footnote(data, items, preparedNote)} />;
   return <div ref={parityRoot} style={{ height: '100%' }}><Sunburst label="Construction spending" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={footnote(data, items, preparedNote)} /></div>;
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={footnote(data, items, preparedNote)} /></div>;
 }

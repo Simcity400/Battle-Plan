@@ -22,7 +22,7 @@ const transferKey = (row: TransferOccurrence) => row.key;
 
 interface Shared {
   labels: TransferLabels; sort: Sort; setOption?: WidgetProps['setOption'];
-  cellBars: boolean; density: 'comfortable' | 'compact'; hoursPerSecond: number; narrow: NarrowTable;
+  cellBars: boolean; density: 'comfortable' | 'compact'; hoursPerSecond: number | undefined; narrow: NarrowTable;
 }
 
 const countryCell = (labels: TransferLabels, side: TransferSide, quiet = false, suffix?: string) => {

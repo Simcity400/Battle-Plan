@@ -14,7 +14,7 @@ test('an empty roster at an hour whose group membership is still being prepared 
     '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
@@ -43,7 +43,7 @@ test('a roster of a group with no member found yet says what the hour was once r
     '/dashboard/products.ts': `export const useProduct = (_client, request) => ({ retry() {}, data: request ? { countries: [], agencyAbsent: [], warnings: [] } : undefined });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__operativesGap.hour;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
@@ -73,7 +73,7 @@ test('a roster published before its preparation failed stays in its widget frame
       export const useProduct = () => ({ data, error: held.useHeldFailure('Preparation stopped', data !== undefined, retry), retry });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',

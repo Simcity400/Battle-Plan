@@ -17,7 +17,7 @@ import { MEMBERSHIP_PREPARING, noMembersAt, rankedCandidates, resolveCountries }
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
@@ -34,7 +34,7 @@ const tieKey = (row: ScoreboardRow) => row.tag;
 
 export default function ScoreboardWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);

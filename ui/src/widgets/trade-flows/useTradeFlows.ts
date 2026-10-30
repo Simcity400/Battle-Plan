@@ -20,6 +20,7 @@ import { marketRequest, validateMarketReply } from './marketData';
 import type { PreparedTradeReply } from './tradeData';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { mergePreparedTrade, decodeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
+import { usePlaybackHour } from '../../dashboard/playback.ts';
 
 /** The trade flows product for a branch: every country's trade (null), or the deals of
  * the holders that ever had one of `tags`. */
@@ -31,6 +32,7 @@ export function tradeFlowsRequest(track: Pick<BoundTrack, 'source' | 'branch'>, 
  * the trade flows reply for them. Chosen countries narrow the product's scan to
  * their deals; a group counted at each hour is cut to its membership afterwards. */
 export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, marketHour?: number) {
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const marketView = widget.options?.view === 'market';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const grouped = widget.countries.kind === 'group';
@@ -38,7 +40,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const groups = useCountryGroups(runtime, track, active && (grouped || marketView && !all));
   const fallback = defaultCountryTag(track);
   const lastHour = track?.branch.lastHour ?? 0;
-  const selectionWindow = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const selectionWindow = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const selectionHour = marketView ? marketHour ?? Math.floor(selectionWindow?.lastHour ?? lastHour) : lastHour;
   const resolved = useMemo<ResolvedCountries | null>(() => all ? null
     : resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [all, widget.countries, fallback, groups.data, lastHour]);
@@ -52,7 +54,7 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const [navigationError, setNavigationError] = useState<{ key: string; error: string }>();
   const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => navigation.current?.abort(), [key, active]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const saved = track && contributionExtent(widget.options?.tradeExtent, track.branch);
   const first = saved?.[0] ?? (widget.time.mode === 'range' ? window?.firstHour : track?.branch.firstHour) ?? 0;
   const last = saved?.[1] ?? (widget.time.mode === 'range' ? window?.lastHour : track?.branch.lastHour) ?? 0;

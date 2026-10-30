@@ -52,7 +52,8 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries, options.show, options.drillOriginHour]);
   const dispatchDrill = useCallback((action: DrillAction) => dispatch({ key: resetKey, action }), [resetKey]);
   const choice = pendingChoice?.key === resetKey ? pendingChoice : null;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const moment = Math.floor(playhead ?? extent[1]);
@@ -94,8 +95,8 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const pinned = options.show === 'breakdown';
   const { drill, origin, tag: drillTag, hour: originHour } = nuclearDrillSelection(drillState, resetKey, selection, pinned, mixTag,
     typeof options.drillOriginHour === 'number' ? options.drillOriginHour : moment);
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
-  const followHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
+  const followHour = track ? Math.floor(drillPlaybackHour) + track.axisOffset : null;
   const drillAt = Math.floor((pinned && drill.breakdown == null ? moment : drillHour(drill, followHour ?? extent[1])) ?? moment);
   useEffect(() => { if (drillTag && origin == null) setOrigin({ key: resetKey, tag: drillTag, hour: originHour }); }, [resetKey, drillTag, origin, originHour]);
   const drillRequest = track && drillTag ? { sourceId: track.source.id, revision: track.source.revision,

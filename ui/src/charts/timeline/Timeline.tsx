@@ -8,6 +8,7 @@ import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
 import { canvasImageRead } from '../images';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { approach, easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { fitLabelWidth } from '../labels';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
@@ -147,6 +148,7 @@ export default function Timeline(props: TimelineProps) {
   const region = useRef(laneWindow(props.lanes.length, 0, window.innerHeight, props.rowHeight ?? ROW_HEIGHT, rows));
   const latest = useRef(props);
   latest.current = props;
+  const motionNow = useMotionNow();
   const hoverHour = useRef<number | null>(null);
   const notifyHover = (hour: number | null) => {
     if (hoverHour.current === hour) return;
@@ -355,7 +357,7 @@ export default function Timeline(props: TimelineProps) {
         zoomedFor = extentKey;
       }
       const target: [number, number] = view.x ? [view.x[0], view.x[1]] : [p.extent[0], p.extent[1]];
-      const tau = drag ? 0 : easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion);
+      const tau = drag ? 0 : easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       const glide = (current: number, goal: number) => goal + approach(current - goal, 0, info.dt, tau);
       x = eased ? [glide(eased[0], target[0]), glide(eased[1], target[1])] : target;
       if (keyed.current && (viewed.current?.[0] !== target[0] || viewed.current?.[1] !== target[1])) queueMicrotask(() => refreshKeyed.current());

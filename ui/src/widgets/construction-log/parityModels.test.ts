@@ -66,7 +66,7 @@ test('parity list models complete without sweeping offscreen dated labels or shi
     '/dashboard/useStateNamesAt.ts': `export const useStateNamesAt = (_client, _track, wanted) => {
       globalThis.__cheapParityModels.wantedStates = wanted;
       return (hour, state) => ({state, name: 'State ' + state + ' at ' + hour}); };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 6000;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({categories: ['#112233', '#223344', '#334455', '#445566', '#556677', '#667788']});`,
     '/charts/log/LogList.tsx': `import {createElement} from 'react'; export const PreparedLogCoverage = () => null; export default props => {

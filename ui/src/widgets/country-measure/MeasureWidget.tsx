@@ -63,6 +63,7 @@ import { usePreparedMeasure } from './preparedMeasure';
 import PreparedDropList from './PreparedDropList';
 import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
 import './measure.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
@@ -110,7 +111,8 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
   useEffect(() => { if (pinnedMode) setDrillMode(pinnedMode); }, [pinnedMode]);
   const drillAnchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const lastHour = track?.branch.lastHour ?? 0;
   const fallback = defaultCountryTag(track);
   const actorScope = useMemo(() => JSON.stringify(widget.countries), [widget.countries]);
@@ -364,7 +366,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
           : <PowerDrill client={runtime.client} source={track?.source} branchId={track?.branch.id} bindings={actorSpans ?? undefined} countryId={selectedCountry?.countryId} index={drillDetail} digits={digits} pickOwner={pickOwner} presentationReady={selectedLedger !== undefined} mode={mode} hour={at} visibleThrough={Math.floor(drillThrough)} extent={extent}
             within={null} countries={countrySegments}
             playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
-            branchStart={track?.branch.firstHour ?? 0} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens}
+            branchStart={track?.branch.firstHour ?? 0} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens}
             onPick={pick} onContextMenu={(hour, x, y) => track && menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />;
 
   const layers = useMemo<ChartLayer[]>(() => {
@@ -447,7 +449,7 @@ export default function MeasureWidget({ widget, runtime, active, countrySlot, on
     <div className="country-measure-chart">
       <TimeChart label={`${config.title} of ${series.map(item => labels.labelAt(Math.floor(head))(item.tag).name).join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         padding={{ right: options.endLabels ? CHART_LAYOUT.measureEndLabels : CHART_LAYOUT.right }} layers={layers} active={active} revision={`${head}:${data.branchId}:${series.length}:${viewport}:${labels.revision}:${digits}:${ledger.data ? 'details' : ledger.error ?? 'loading'}`}
         onViewChange={onViewChange}

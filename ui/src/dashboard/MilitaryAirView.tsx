@@ -26,7 +26,7 @@ import { createWidget, resolveWindow } from './model';
 import { NumericReply } from './numericReply';
 import { contentSet, resolveOptions } from './options';
 import type { OptionField } from './options';
-import { usePlaybackHour, usePlaybackSpeed } from './playback';
+import { usePlaybackHour, usePlaybackMotion } from './playback';
 import { useCountryGroups } from './useCountryGroups';
 import { useMilitaryAirLedger } from './useMilitaryAirLedger';
 import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, BOMBING_GAP_NOTE, ledgerCountries, ledgerCountryAt, ledgerDifference, ledgerLabel, ledgerPinnedIdentity, ledgerRuns, ledgerScale, ledgerSegmentAt, militaryAirAt, militaryAirIndex, militaryAirLineTooltip, militaryAirTooltip, militaryAirPreparing } from './militaryAirLedger';
@@ -55,15 +55,15 @@ const itemId = (row: LedgerRow) => {
 export default function MilitaryAirView({ widget, runtime, active, countrySlot = null, onDiagnostics, family, fields, title }: WidgetProps & {
   family: MilitaryAirReply['family']; fields: readonly OptionField[]; title: string;
 }) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens(), options = resolveOptions(fields, widget.options);
   const air = family === 'airLosses', metric = air ? options.measure === 'dealt' ? 'dealt' : 'taken' : 'total';
   const regions = contentSet(options.regions).map(Number), causes = contentSet(options.causes).map(Number);
   const { track, data, error, retry } = useMilitaryAirLedger(widget, runtime, family, active, { regions, causes, metric });
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groups = useCountryGroups(runtime, track, active && grouped);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
@@ -129,8 +129,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const [airDrill, dispatchAir] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
   const [airOwner, setAirOwner] = useState<typeof airScope | null>(null);
   const airState = airOwner === airScope ? airDrill : CLOSED_PARTS_RACE;
-  usePlaybackHour(runtime.clock, active && air && airState.breakdown != null && airState.follow);
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const airPlaybackHour = usePlaybackHour(runtime.clock, active && air && airState.breakdown != null && airState.follow);
+  const clockHour = track ? Math.floor(airPlaybackHour) + track.axisOffset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const airAt = Math.floor((airState.breakdown == null ? airState.hour ?? hour : drillHour(airState, clockHour)) ?? hour);
   const airChoices = airState.choices;
@@ -143,7 +143,9 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const airFollowing = airState.breakdown == null ? pinnedAir && widget.time.mode === 'follow' : airState.follow;
   const [bombingDrill, setDrill] = useState<{ owner: typeof airScope; tag: string; identity: string; dealt: boolean; hour: number | null } | null>(null);
   const drill = bombingDrill?.owner === airScope ? bombingDrill : null;
-  usePlaybackHour(runtime.clock, active && !air && !!drill && drill.hour === null);
+  const bombingPlaybackHour = usePlaybackHour(runtime.clock, active && !air && !!drill && drill.hour === null);
+  const bombingHour = track ? Math.floor(bombingPlaybackHour) + track.axisOffset : null;
+  const bombingLive = bombingHour != null && track && bombingHour >= track.branch.firstHour && bombingHour <= track.branch.lastHour ? bombingHour : null;
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(grouped ? groups.data?.warnings ?? [] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
@@ -246,12 +248,12 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
       </DrillHost>
     </div>;
   }
-  const shown = drill ? drill.hour ?? clockHour ?? hour : hour;
+  const shown = drill ? drill.hour ?? bombingHour ?? hour : hour;
   return <div ref={root} className="military-air-ledger">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={formatDateTime(shown)} following={drill?.hour === null}
-      canFollow={!!drill && liveHour != null} anchor={root}
+      canFollow={!!drill && bombingLive != null} anchor={root}
       onClose={() => { if (active && airPickRef.current === airPickOwner) setDrill(null); }}
-      onFollow={() => { if (active && airPickRef.current === airPickOwner && liveHour != null)
+      onFollow={() => { if (active && airPickRef.current === airPickOwner && bombingLive != null)
         setDrill(before => before?.owner === airScope ? { ...before, hour: null } : before); }}
       onPause={() => { if (active && airPickRef.current === airPickOwner)
         setDrill(before => before?.owner === airScope ? { ...before, hour: shown } : before); }}

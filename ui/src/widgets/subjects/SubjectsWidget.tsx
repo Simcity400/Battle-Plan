@@ -34,6 +34,7 @@ import { OPTIONS } from './definition';
 import { laneCountries, levelAt, levelColours, levelName, overlordTagAt, overlordViews, runNear, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData';
 import type { OverlordOrder, SubjectOrder } from './subjectsData';
 import './subjects.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -42,7 +43,7 @@ const NO_WARNINGS: string[] = [];
  * bar from when it became one to when it stopped, coloured by its level. Levels and
  * their names come from the campaign's content; colours follow their order. */
 export default function SubjectsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
@@ -55,7 +56,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   const groups = useCountryGroups(runtime, track, active);
   useParityRows(root, () => ({ kind: 'chart', label: 'Subject relations and levels', complete: !!data && !!groups.data,
     total: data?.runs.length ?? 0, rows: data?.runs ?? [], levels: data?.levels, unobserved: data?.unobserved }));
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -198,7 +199,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     {/* Shown for one level too: its colour is what the bars mean. */}
     {options.legend === true && <Legend label="Subject levels" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Overlords and subjects" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={options.names === true}
-      description={description} unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+      description={description} unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
       active={active} revision={`${revision}:${hover.revision}:${colours.size}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />

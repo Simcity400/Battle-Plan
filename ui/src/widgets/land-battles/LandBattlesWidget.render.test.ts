@@ -32,7 +32,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
   try {
     const props = { widget: { id: 'land', kind: 'land-battles', trackIds: ['main'], countries: humansBy('hour'), time: { mode: 'follow' }, options: {} },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1' }, branch: BRANCH }],
-        clock: { getHour: () => BRANCH.lastHour, getSpeed: () => 0, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+        clock: { getHour: () => BRANCH.lastHour, getMotion: () => undefined, subscribe: () => () => {} }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(module.default, props));
     const pending = render();
     assert.match(pending, /This range is still being prepared\./);

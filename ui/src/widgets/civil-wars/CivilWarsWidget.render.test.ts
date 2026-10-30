@@ -20,7 +20,7 @@ test('civil wars of a group counted at an hour still being prepared are loading,
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__civilPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, color() {}, revision: 0 });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsRead = () => new Map();',
     '/dashboard/useCountriesAt.ts': 'export const countryReadName = () => null; export const FLAGS = {}; export const STYLES = {}; export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',

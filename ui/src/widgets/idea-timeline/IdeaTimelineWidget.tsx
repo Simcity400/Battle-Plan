@@ -20,16 +20,17 @@ import { OPTIONS } from './definition';
 import { chosenCategory, lanesFor, lawLevel } from './ideaTimelineData';
 import type { HolderStyle, LawStyle } from './ideaTimelineData';
 import './ideaTimeline.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
 /** One idea category over time: a lane per law or designer slot and per advisor
  * seat, with each slot's holder at the playhead in the left column. */
 export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -74,7 +75,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   return <div className="idea-timeline">
     {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${contentTitle(category.name, category.token, 'Category name unavailable')} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
-      showIcons showNames unobserved={gaps} pending={prefix?.pending} approximate={data.approximate} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
+      showIcons showNames unobserved={gaps} pending={prefix?.pending} approximate={data.approximate} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {
         if (!span) return { title: lane.label, rows: [{ label: pendingAt(prefix, hour) ? 'Still being prepared' : inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty',
           value: dayLabel(hour), tone: 'muted' }] };

@@ -25,7 +25,7 @@ export default function PowerDrill({ client, source, branchId, bindings, country
   index: PowerBalanceIndex; digits?: number; pickOwner: unknown; presentationReady: boolean; mode: PowerBreakdown; hour: number | null; visibleThrough: number;
   extent: readonly [number, number]; within: readonly HourSpan[] | null; countries: readonly HourSpan[];
   playback: { playhead: number | null; mode: PlaybackMode; afterPlayhead: boolean; windowHours: number };
-  branchStart: number; hoursPerSecond: number; active: boolean; tokens: ChartTokens;
+  branchStart: number; hoursPerSecond: number | undefined; active: boolean; tokens: ChartTokens;
   onPick?: (hour: number) => void; onContextMenu: (hour: number, x: number, y: number) => void;
 }) {
   const prepared = usePreparedPowerParts(client, source, branchId, index.reply.tag, countryId, index.currency, mode, bindings, extent, hour, visibleThrough, active);

@@ -17,7 +17,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { countryMatch, countryMatchFilter, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -80,7 +80,7 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   { widget, runtime, active, onDiagnostics, setOption, adapter }: WidgetProps & { adapter: BattleViewAdapter<Row, Window, Ranking> }) {
   const live = widget.time.mode === 'follow';
   const playbackHour = useTableHour(runtime.clock, active && live);
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(adapter.definition.options ?? [], widget.options);
   const view = options.view === 'biggest' ? 'biggest' : 'log';

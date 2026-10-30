@@ -17,7 +17,7 @@ test('naval losses of a group at an hour still being prepared are loading, not u
   const host = globalThis as typeof globalThis & { __navalPending?: typeof state }; host.__navalPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/naval-losses/NavalLossesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__navalPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/widgets/naval-losses/preparedNaval.ts': `export const usePreparedNaval = () => ({ data: globalThis.__navalPending.reply, hour: ${BRANCH.lastHour}, summaries: new Map(), dense: false });`,
@@ -43,7 +43,7 @@ test('naval losses of a group with no member found yet say what the moment was o
   const host = globalThis as typeof globalThis & { __navalGap?: typeof state }; host.__navalGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/naval-losses/NavalLossesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__navalGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     // The members asked for, none: an empty reply at the hour asked; no reply without a request.

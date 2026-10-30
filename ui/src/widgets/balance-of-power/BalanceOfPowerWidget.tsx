@@ -39,10 +39,10 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
   const drillOpen = drill.breakdown !== null && !pinnedWeekly;
   const following = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && (following || drillOpen && drill.follow));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (following || drillOpen && drill.follow));
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
   const pinned = widget.time.mode === 'pin';
   const playhead = window && (following || pinned) ? window.lastHour : null;
@@ -70,7 +70,7 @@ function CountryBalances({ widget, runtime, active, setOption, onDiagnostics }: 
 
   // The hour's details: at the drilled day while a breakdown is open, else at the
   // playback date once playback rests there (for the members of a shared balance).
-  const liveHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const liveHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const drillAt = drillOpen ? drillHour(drill, liveHour) : null;
   const detailsAt = useSettledHour(drillOpen ? drillAt : at, SETTLE_MS, drillOpen ? !drill.follow : !following);
   const inside = detailsAt !== null && !!track && detailsAt >= track.branch.firstHour && detailsAt <= track.branch.lastHour;

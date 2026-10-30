@@ -62,6 +62,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
   // component's real event handlers, frame resolution and lifecycle effects run.
   const replacements: Record<string, string> = {
     '/charts/scheduler.ts': 'export const scheduler = globalThis.__timeChartObserver.scheduler;',
+    '/charts/liveMotion.ts': 'export const useMotionNow = () => given => given;',
     '/charts/tokens.ts': `export const CHART_LAYOUT = { right: 14 };
       export const readTokens = () => ({ fontSize: { small: 11 }, motion: 'snappy', reducedMotion: globalThis.__timeChartObserver.reducedMotion });
       export const subscribeTokens = () => () => {};`,

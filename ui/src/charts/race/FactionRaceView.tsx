@@ -54,11 +54,11 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     && before.every((warning, index) => warning === warnings[index]) ? before : warnings), []);
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'members';
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (pick?.follow ?? false)));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (pick?.follow ?? false)));
   const viewport = useViewportHeight();
   const view = options.view === 'lines' ? 'lines' : 'race';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window
@@ -122,7 +122,7 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     ? widget.countries.group.id : null) : current?.selected ?? null;
   const origin = (pinned ? saved?.origin : null) ?? current?.origin ?? moment;
   const follow = current?.follow ?? (pinned && widget.time.mode === 'follow');
-  const drillHour = follow && track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : current?.hour ?? moment;
+  const drillHour = follow && track ? Math.floor(playbackHour + track.axisOffset) : current?.hour ?? moment;
   const selectionValid = !pinned || !options[FACTION_SELECTION] || saved !== null;
   const selectedParams = params && selected && selectionValid ? { ...params, top: 1, factionId: selected, parts: true } : null;
   const partsProduct = usePreparedFactionTotals(runtime.client, track, selectedParams, drillHour, active && (pinned || current !== null), extent, origin);

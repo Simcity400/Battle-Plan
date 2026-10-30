@@ -12,7 +12,7 @@ import type { OptionValue } from './options';
 import { useProduct } from './products';
 import { useParityRows } from './parityRows';
 import { jumpItem } from '../charts/jump';
-import { usePlaybackSpeed } from './playback';
+import { usePlaybackMotion } from './playback';
 import { runAt } from '../charts/series';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import DatedCountryChip from './DatedCountryChip';
@@ -29,7 +29,7 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; options: Readonly<Record<string, OptionValue>>; active: boolean;
 }) {
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage breakdown actions');
   const index = useMemo(() => militaryAirIndex(data, NO_FILTERS), [data]);
   const row = useMemo(() => ledgerCountryAt(index, tag, from, hour, identity), [index, from, hour, tag, identity]);

@@ -7,6 +7,7 @@ import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMat
 import type { MarkCluster, MarkSummary } from './markSummary';
 import { clipToPlot, dayLabel, drawAxes, drawCrosshair, drawPlayhead, drawSelection, VALUE_LABEL_GAP, valueLabelWidth } from './draw';
 import { approach, easeTau } from './easing';
+import { useMotionNow } from './liveMotion.ts';
 import { keyTarget } from './rowNavigation';
 import { axisFraction, hitZone, keyedHour, plotFrame, pointerHour, STRIP_GAP, wheelSteps } from './frame';
 import { actionHour, hoverAt, keyedStop, keyStopMemo, NO_HOVER, pointerMenu, pointerTarget, reduceHover } from './hover';
@@ -143,6 +144,7 @@ export default function TimeChart(props: TimeChartProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
   latest.current = props;
+  const motionNow = useMotionNow();
   const [zoomed, setZoomed] = useState(false);
   // The event badges drawn right now, as text for assistive technology: they follow
   // the view (window, zoom, playhead), and change only when the drawn set does.
@@ -247,7 +249,7 @@ export default function TimeChart(props: TimeChartProps) {
       }
       const playback = p.playhead == null ? p.extent : playbackDomain(p.playback, p.extent, p.playhead, p.windowHours ?? 365 * 24, MIN_SPAN);
       const targetX = resolveX(view, p.axes, p.branchStart, playback);
-      const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion);
+      const tau = drag && drag.mode !== 'box' ? 0 : easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
       // Ease the distance to the target, not the absolute value: engine hours are large
       // enough that a relative snap threshold would jump the last tens of hours.
       const glide = (current: number, target: number) => target + approach(current - target, 0, info.dt, tau);

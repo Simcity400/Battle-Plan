@@ -19,6 +19,7 @@ test('timeline keyboard descriptions keep all 5,000 rows but decode only fitted 
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'timeline-fitted-flags', enforce: 'pre',
       transform(source, id) {
+        if (id.replaceAll('\\', '/').endsWith('/charts/liveMotion.ts')) return 'export const useMotionNow = () => given => given;';
         if (id.replaceAll('\\', '/').endsWith('/timeline/Timeline.tsx')) return source.replace(/import \{ ([^}]+) \} from 'react';/,
           'const { $1 } = globalThis.__timelineFlagHooks;');
       },

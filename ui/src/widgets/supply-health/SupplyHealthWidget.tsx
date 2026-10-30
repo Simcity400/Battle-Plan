@@ -26,7 +26,7 @@ import { MEMBERSHIP_PREPARING, resolveCountries } from '../../dashboard/groups';
 import { groupNumbers } from '../../dashboard/groupsReply';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { NumericReply } from '../../dashboard/numericReply';
 import { usePreparedSupply } from './preparedSupply';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -42,7 +42,7 @@ const hasSupplyActor = (series: Pick<SupplyHealthSeries, 'identities' | 'runs'>,
   series.identities === undefined ? runAt(series.runs, hour) !== null : runAt(series.identities, hour) !== null;
 
 export default function SupplyHealthWidget({ widget, runtime, active, headerSlot, countrySlot = null, onDiagnostics }: WidgetProps) {
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const body = useRef<HTMLDivElement>(null);
@@ -60,13 +60,13 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   const options = resolveOptions(definition.options, widget.options);
   const pinned = options.show === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const savedSelection = supplyCountrySelection(widget, track);
   const invalidSavedSelection = pinned && Object.hasOwn(widget.options ?? {}, 'drillOriginHour') && !savedSelection;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const stores = useMemo(() => ({ groups: new NumericReply<CountryGroupReply>(), groupWarnings: new NumericReply<string[]>(),
     numbers: new NumericReply<SupplyHealthReply>(), warnings: new NumericReply<string[]>() }), [runtime.client]);
   const sourceScope = JSON.stringify([track?.source.id, track?.branch.id]);
@@ -99,7 +99,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
     options.show, widget.options?.drillOriginHour]);
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const choices = drill.choices?.key === resetKey ? drill.choices : null;
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const drillAt = Math.floor((drill.breakdown === null && choices === null ? head : drillHour(drill, clockHour)) ?? head);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const follow = () => { if (active && track) dispatchDrill({ type: 'follow' }); };

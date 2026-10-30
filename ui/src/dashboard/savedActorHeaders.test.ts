@@ -109,7 +109,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
         flag: state.flag ? state.flag + '@' + hour : undefined, known: state.nameKnown, nameFailed: state.nameFailed, flagPending: state.flagPending, flagReason: state.flagReason }), revision: 0 }; };`,
     '/dashboard/campaignSettings.ts': 'export const useCampaignSettings = () => ({ campaigns: {} });',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__savedActorHeaders.content;',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__savedActorHeaders.hour; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__savedActorHeaders.hour; export const usePlaybackMotion = () => 24;',
     '/dashboard/WidgetSettingsMenu.tsx': 'export default () => null;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined,
       flagReason: () => undefined, flagPending: () => false, color: () => '#123' });`,

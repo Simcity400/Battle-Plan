@@ -17,7 +17,7 @@ test('factories of a group at an hour still being prepared are loading, not unre
   const host = globalThis as typeof globalThis & { __factoriesPending?: typeof state }; host.__factoriesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/factories/FactoriesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__factoriesPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/race/PartsRaceView.tsx': `export const usePreparedRace = () => ({ data: globalThis.__factoriesPending.reply, retry() {}, summaries: new Map() });`,
     '/charts/race/CountryPartsDrill.tsx': 'export default props => props.main(() => {}, true);',
     '/charts/race/CountryRaceView.tsx': 'export default props => { globalThis.__factoriesPending.view = props; return props.state ?? null; };',
@@ -48,7 +48,7 @@ test('factories of a group with no member found yet say what the moment was once
   const host = globalThis as typeof globalThis & { __factoriesGap?: typeof state }; host.__factoriesGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/factories/FactoriesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__factoriesGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     // No member to ask for: no request, so no reply.
     '/charts/race/PartsRaceView.tsx': `export const usePreparedRace = (_client, _track, request) => ({ data: request ? { series: [] } : undefined, retry() {}, summaries: new Map() });`,
     '/charts/race/CountryPartsDrill.tsx': 'export default props => props.main(() => {}, true);',

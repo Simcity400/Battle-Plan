@@ -37,6 +37,7 @@ import { partyMarkSummaries, usePreparedParty } from './preparedParty';
 import { usePartyParity } from './partyParity';
 import CountryPeople from '../country-people/CountryPeople';
 import './rulingParty.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -45,7 +46,7 @@ const NO_WARNINGS: string[] = [];
  * ruling party and elections as badges. */
 export default function RulingPartyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const parityRoot = useRef<HTMLDivElement>(null);
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
@@ -56,7 +57,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     product: 'politics-ledger', params: { branchId: track.branch.id, tag, view: 'governments' } } : null;
   const referenceGovernments = useProduct<PoliticsLedgerReply>(runtime.client, governmentRequest, active,
     reply => validateGovernmentLedger(reply, governmentRequest?.params));
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -203,7 +204,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
     <div className="ruling-party-chart">
       <TimeChart label={`Party popularity in ${tag}`} extent={extent} playhead={playhead}
         playback={(options.playback as PlaybackMode) ?? 'draw-in'} afterPlayhead={options.afterPlayhead === true} windowHours={365 * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }} layers={layers} active={active} revision={`${head}:${data.branchId}`}
         onSummaryView={party.enabled ? view => { party.onSummaryView(view); governments.onSummaryView(view); } : undefined}
         onHover={party.enabled ? hour => { setHover(hour); if (governments.enabled) governments.onHover(hour); } : undefined}

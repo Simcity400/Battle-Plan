@@ -40,12 +40,12 @@ const PALETTE: Record<number, number> = { 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34:
 export default function MarketLedgerWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   // The open drill may still show an earlier hour while its newest loads.
   const [drillShown, setDrillShown] = useState<number | undefined>();
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window ? Math.floor(window.lastHour) : null;
   // A date range's start bounds the ledger as its end does; otherwise it starts with the branch.
   const from = widget.time.mode === 'range' && window && track && hour !== null ? Math.min(Math.max(Math.floor(window.firstHour), track.branch.firstHour), hour) : null;

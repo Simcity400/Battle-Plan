@@ -25,6 +25,7 @@ import { bandGroups, countryParts, countryTotal, countryTrade, divergingExtent, 
 import type { CountryPart, TradeDirection } from './tradeCountry';
 import { coverageNote, knownSpanAt, measureNote, resourceName } from './tradeData';
 import type { Measure, TradeCountryFact, TradeData } from './tradeData';
+import { motionOf } from '../../charts/easing.ts';
 
 /** Partner lists longer than this scroll in a fixed window of rows. */
 const PLAIN_ROWS = 40;
@@ -199,7 +200,7 @@ export default function TradeCountryView({ prepared, holder, trade, resources, t
     {!!(dense.imports?.approximate.length || dense.exports?.approximate.length) && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="trade-drill-chart">
       <TimeChart label={`${measureNote(measure)} over time, exports above and imports below, by resource`} extent={extent} branchStart={track.branch.firstHour}
-        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
         onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={keyHours}
         formatValue={(value, ticks) => formatAxisValue(Math.abs(value), ticks.map(Math.abs))}

@@ -62,7 +62,7 @@ async function fixture(state: State, module: string, realCareer = false) {
       return { data: identity ? state.windows : new Map(), errors: new Map(), retry() {} };
     };`,
     '/dashboard/playback.ts': `export const usePlaybackHour = (_clock, active) => { globalThis.__landDrill.subscriptions.push(active); return globalThis.__landDrill.hour; };
-      export const usePlaybackSpeed = () => 0;`,
+      export const usePlaybackMotion = () => 0;`,
     '/charts/table/useTableHour.ts': `export const useTableHour = (_clock, active) => { globalThis.__landDrill.subscriptions.push(active); return globalThis.__landDrill.hour; };`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active = true) => {
       const state = globalThis.__landDrill; state.groupActive = active;

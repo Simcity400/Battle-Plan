@@ -33,6 +33,7 @@ test('timeline draws neutral artwork in dated slots with scroll offsets and plot
     get naturalWidth() { return state.loaded ? 20 : 0; } get naturalHeight() { return state.loaded ? 20 : 0; } } });
   const replacements: Record<string, string> = {
     '/charts/timeline/viewport.ts': `export * from '/ui/src/charts/timeline/viewport.ts?actual'; export const timelineViewport = () => globalThis.__timelineArt.viewport;`,
+    '/charts/liveMotion.ts': 'export const useMotionNow = () => given => given;',
     '/charts/images.ts': `export const canvasImageRead = () => source => source && globalThis.__timelineArt.loaded ? {naturalWidth: 20, naturalHeight: 20} : null;`,
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

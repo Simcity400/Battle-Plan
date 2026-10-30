@@ -16,6 +16,7 @@ test('prepared keyboard stops queue exact reads, use their hour for Jump, and di
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'prepared-navigation', enforce: 'pre',
       transform(source, id) {
+        if (id.replaceAll('\\', '/').endsWith('/charts/liveMotion.ts')) return 'export const useMotionNow = () => given => given;';
         if (id.replaceAll('\\', '/').endsWith('/timeline/Timeline.tsx')) return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__preparedNavigation;');
       },
     }] });

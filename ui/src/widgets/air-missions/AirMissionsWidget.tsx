@@ -13,7 +13,7 @@ import { jumpItem } from '../../charts/jump';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { loadTransientProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -36,7 +36,7 @@ const NO_ROWS: readonly MissionRow[] = [];
  * strategic region, wings counted once per region. */
 export default function AirMissionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const anchor = useRef<HTMLDivElement>(null);
   const { track, tag, options, data, error, retry } = useAirMissions(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
@@ -140,7 +140,7 @@ function useWings(runtime: WidgetProps['runtime'], track: ReturnType<typeof useA
   return state?.client === runtime.client && state.key === key ? state : { key, data: undefined, error: undefined };
 }
 
-function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWingsReply; error?: string; missions: readonly { id: string; name: string }[]; hoursPerSecond: number }) {
+function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWingsReply; error?: string; missions: readonly { id: string; name: string }[]; hoursPerSecond: number | undefined }) {
   const names = useMemo(() => new Map(missions.map(mission => [mission.id, mission.name])), [missions]);
   const columns = useMemo<readonly TableColumn<AirWing>[]>(() => [
     { key: 'name', header: 'Wing', label: 'Wing', width: 'minmax(var(--table-name-min), 2fr)', value: row => row.name ?? row.id,

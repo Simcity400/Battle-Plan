@@ -32,6 +32,7 @@ import type { CountryBalance, TransferOccurrence } from './territoryData';
 import { countryTooltip, transferRequest, transferTooltip } from './territoryTooltip';
 import type { TransferLabels, TransferTipRequest } from './territoryTooltip';
 import './territoryTransfers.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_TRANSFERS: readonly TransferOccurrence[] = [];
@@ -45,7 +46,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const [drillCountry, setDrillCountry] = useState<string | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
   const following = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (following || drill.breakdown != null && drill.follow));
   const { track, data, error, retry, preparing } = usePeaceDeals(widget, runtime, active);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.show === 'transfers' || options.show === TRANSFER_BREAKDOWN.id ? options.show : 'main';
@@ -56,7 +57,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const selectedId = track ? conferenceChoiceId(selectedToken, campaignKey, track.branch.id) : null;
   const storedSelection = useMemo(() => track ? transferSelection(String(options.selection ?? ''), campaignKey, track.branch.id) : null,
     [options.selection, track, campaignKey]);
-  const time = track ? transferTime(widget, track, runtime.tracks, runtime.clock.getHour(), pinned ? storedSelection?.fromOffset : null) : { moment: -Infinity, from: -Infinity };
+  const time = track ? transferTime(widget, track, runtime.tracks, playbackHour, pinned ? storedSelection?.fromOffset : null) : { moment: -Infinity, from: -Infinity };
   const { moment, from: rangeFrom } = time;
   const wholeCampaign = widget.time.mode === 'campaign';
   const transfers = useMemo(() => data && decodeTransfers(data), [data]);
@@ -138,7 +139,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const transferMenu = useCallback((row: TransferOccurrence) => track ? [jumpItem(runtime, track.id, row.afterHour)] : [], [runtime, track]);
 
   // The drill shows its country's transfers at its own day, which Follow can move.
-  const playhead = track ? Math.floor(runtime.clock.getHour() + track.axisOffset) : null;
+  const playhead = track ? Math.floor(playbackHour + track.axisOffset) : null;
   const drillAt = drill.breakdown ? drillHour(drill, playhead) ?? moment : moment;
   const drillThrough = transfers ? transferCutoff(transfers.hours, drillAt) : -Infinity;
   const drillReached = useMemo(() => drill.breakdown || pinned ? transfersAt(scoped, drillThrough, rangeFrom, wholeCampaign) : NO_TRANSFERS,
@@ -154,7 +155,7 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
   const transferSetOption = useMemo(() => setOption && ((key: string, value: OptionValue) =>
     setOption(key === 'tableSort' ? TRANSFER_SORT_KEY : key, value)), [setOption]);
   const tables = { labels, cellBars: options.cellBars !== false, density: options.density === 'compact' ? 'compact' as const : 'comfortable' as const, narrow: narrowTableOf(options),
-    hoursPerSecond: runtime.clock.getSnapshot().hoursPerSecond };
+    hoursPerSecond: motionOf(runtime.clock.getSnapshot()) };
   const transferSort = tableSortOf(options[TRANSFER_SORT_KEY], TRANSFER_SORT);
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;

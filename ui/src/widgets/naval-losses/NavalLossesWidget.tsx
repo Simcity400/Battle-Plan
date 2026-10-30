@@ -56,7 +56,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const params = track ? navalRequest(track.branch.id, resolved, kind, attribution, period) : null;
   const request = track && params && (params.top !== null || params.tags.length)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'naval-losses', params } : null;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const extent: [number, number] = track ? widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const playhead = (widget.time.mode === 'follow' || widget.time.mode === 'pin') && window ? window.lastHour : null;
@@ -116,14 +117,14 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const [chooserOwner, setChooserOwner] = useState<typeof pickOwner | null>(null);
   const [drillOrigin, setDrillOrigin] = useState<{ scope: typeof scope; tag: string; hour: number } | null>(null);
   const drill = drillOwner === scope && (!storedDrill.choices || chooserOwner === pickOwner) ? storedDrill : CLOSED_PARTS_RACE;
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'parts';
   const { tag: restoreTag, hour: restoreHour } = navalPinOrigin(widget, track);
   const restoreOrigin = restoreTag !== null;
   const restoreKnown = !!track && restoreTag !== null && restoreHour !== null && restoreHour >= track.branch.firstHour
     && restoreHour <= track.branch.lastHour && !!model?.identities?.keyAt(restoreTag, restoreHour);
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + (track.axisOffset ?? 0) : null;
+  const clockHour = track ? Math.floor(drillPlaybackHour) + (track.axisOffset ?? 0) : null;
   const liveHour = clockHour !== null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const selectedHour = Math.floor(drill.breakdown === null && !drill.choices ? moment : drillHour(drill, clockHour) ?? moment);
   const detailExtent: [number, number] = track ? [track.branch.firstHour, track.branch.lastHour] : extent;

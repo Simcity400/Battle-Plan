@@ -41,12 +41,12 @@ const cardHeight = (row: LogRow<ChoiceAt>) => 78 + 18 * Math.max(1, row.item.car
  * chosen, and every authored option with the chosen one marked. */
 export default function EventChoicesWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const live = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && live);
+  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const filtered = widget.countries.kind !== 'all';
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
     && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
   const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;

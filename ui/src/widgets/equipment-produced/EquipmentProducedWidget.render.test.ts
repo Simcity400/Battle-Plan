@@ -18,7 +18,7 @@ test('equipment produced by a group at an hour still being prepared is loading, 
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx', {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__producedPending.reply, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/widgets/equipment-produced/useProducedTypes.ts': 'export const useProducedTypeList = () => [];',
     '/widgets/equipment-produced/usePreparedProduction.ts': 'export const hasPreparedProduction = () => false; export const usePreparedProduction = () => ({});',
@@ -55,7 +55,7 @@ test('equipment produced by a group with no member found yet says what the momen
     // No member to ask for: no request, so no reply.
     '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request ? globalThis.__producedGap.reply : undefined, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/widgets/equipment-produced/useProducedTypes.ts': 'export const useProducedTypeList = () => [];',
     '/widgets/equipment-produced/usePreparedProduction.ts': 'export const hasPreparedProduction = () => false; export const usePreparedProduction = () => ({});',
@@ -81,7 +81,7 @@ test('an empty prepared race of a group waits only for membership at its own mom
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/equipment-produced/EquipmentProducedWidget.tsx', {
     '/dashboard/products.ts': 'export const useProduct = (_client, request) => { if (request) globalThis.__producedMoment.history++; return { retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__producedMoment.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/widgets/equipment-produced/useProducedTypes.ts': 'export const useProducedTypeList = () => [];',
     '/widgets/equipment-produced/usePreparedProduction.ts': 'export const hasPreparedProduction = () => true; export const usePreparedProduction = () => ({ pending: false, retry() {} });',

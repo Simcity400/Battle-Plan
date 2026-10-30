@@ -160,7 +160,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
           "import { useEffect, useMemo, useRef, useState } from 'react';",
           "import { useMemo } from 'react'; import { useEffect, useRef, useState } from 'focus-state';");
         if (path.endsWith('/dashboard/products.ts')) return code.replace("from 'react'", "from 'focus-state'");
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
         if (path.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0; export const contentRevision = () => ({ snapshot: () => 0 });';
         if (path.endsWith('/components/ContextMenu.tsx')) return `import { createElement } from 'react'; export const useContextMenu = label => ({
           menu: createElement('span', { 'data-row-menu': label }), open: () => {} });`;
@@ -272,7 +272,7 @@ test('Follow schedules the current and newest focus first while every time mode 
   host.__focusPriorities = fixture;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusPriorities.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted) => {

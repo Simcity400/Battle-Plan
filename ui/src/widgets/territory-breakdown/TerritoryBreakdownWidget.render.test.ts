@@ -24,7 +24,7 @@ test('the territory of a group counted at an hour still being prepared is loadin
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__breakdownPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, flagPending: () => false, flagReason: () => undefined });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ names: () => ({ name: null, reason: null }), colours: new Map(), warnings: [], loading: false });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',

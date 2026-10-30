@@ -18,16 +18,17 @@ import { historyLanes, spirits, startUnseen } from '../national-spirits/spiritsD
 import type { SpiritSort } from '../national-spirits/spiritsData';
 import { OPTIONS } from './definition';
 import './spiritHistory.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
 /** Every national spirit the country had: one lane per spirit from when it was
  * gained to when it ended; ongoing ones run to the playhead. */
 export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -82,7 +83,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   return <div className="spirit-history">
     {failure}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`National spirits of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
-      hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data} pending={prefix?.pending} approximate={data.approximate} unobserved={gaps}
+      hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={data} pending={prefix?.pending} approximate={data.approximate} unobserved={gaps}
       tooltip={(lane, span, hour, full) => {
         if (inSpans(data.approximate, hour) || span && inSpans(data.approximate, span.firstHour)) return { title: byToken.get(lane.id)?.name ?? lane.label,
           rows: [{ label: 'Approximate holding', value: 'Acquisition and removal dates still being prepared', tone: 'muted' }] };

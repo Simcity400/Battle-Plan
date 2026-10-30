@@ -10,7 +10,7 @@ import { jumpItem } from '../../charts/jump';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { pendingReplyAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { censusComplete, countText, fixedText, hullShare, percentText, tokenName, yardsAt } from '../../dashboard/navalYards';
@@ -29,7 +29,7 @@ const rowKey = (row: RepairRow) => row.key;
  * priority, and the ships queued there in the game's order with their hull. */
 export default function DockyardsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'ports');
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);

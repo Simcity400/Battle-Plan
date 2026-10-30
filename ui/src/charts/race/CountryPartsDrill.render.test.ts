@@ -35,7 +35,7 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
       return `import { createElement } from 'react';
         export const useProduct = (_, request, active, validate) => { if (request) globalThis.economyDrillRequests.push(request);
           return { data: request ? validate(globalThis.economyDrillReply) : undefined, retry() {} }; };
-        export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 24;
+        export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;
         export const useChartTokens = () => (${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))});
         export const useViewportHeight = () => 1000;
         export const useCountryColours = () => () => '#777';
@@ -50,7 +50,7 @@ const { default: CountryPartsDrill } = await vite.ssrLoadModule('/ui/src/charts/
 const track = { id: 'track', axisOffset: 0, branch: { id: 'branch', firstHour: 0, lastHour: 200 },
   source: { id: 'source', revision: 1, metadata: { countries: [] } } } as unknown as BoundTrack;
 const sought: number[] = [];
-const runtime = { client: {}, tracks: [track], clock: { getHour: () => 150, getSnapshot: () => ({ playing: false }), getSpeed: () => 24 },
+const runtime = { client: {}, tracks: [track], clock: { getHour: () => 150, getSnapshot: () => ({ playing: false }), getMotion: () => 24 },
   requestSeek: (_: string, hour: number) => sought.push(hour) } as unknown as WidgetRuntime;
 const widget = (tag: string, origin: number): WidgetSpec => ({ id: 'widget', kind: 'equipment-produced', configVersion: 1, title: 'Produced',
   trackIds: ['track'], countries: { kind: 'tags', tags: [tag] }, time: { mode: 'campaign' }, options: { show: 'breakdown', drillOriginHour: origin } });

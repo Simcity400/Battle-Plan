@@ -11,7 +11,7 @@ test('an empty event feed whose group hours are still being prepared is loading,
   const host = globalThis as typeof globalThis & { __feedPending?: typeof state }; host.__feedPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/event-feed/EventFeedWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__feedPending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"] });',
     '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => () => ({ name: "State" });',

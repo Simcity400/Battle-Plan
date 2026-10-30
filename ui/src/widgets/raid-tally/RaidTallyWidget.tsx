@@ -20,7 +20,7 @@ import type { TallyMetric } from './raidTallyData';
 
 const NO_WARNINGS: string[] = [];
 export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const metric = options.metric as TallyMetric;
   const view = options.view === 'lines' ? 'lines' : 'race';
@@ -32,7 +32,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
   const params = { view: 'tally' as const, tags: resolved.tags, top: resolved.top === undefined ? null : { count: resolved.top, metric } };
   const { data, error, retry } = useRaids(widget, runtime, active && (!grouped || !!groups.data), params);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const extent: [number, number] = track ? widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour] : [0, 1];
   const playhead = (widget.time.mode === 'follow' || widget.time.mode === 'pin') && window ? window.lastHour : null;
   const moment = Math.floor(playhead ?? extent[1]);

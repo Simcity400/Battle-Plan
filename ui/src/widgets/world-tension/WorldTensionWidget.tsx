@@ -45,6 +45,7 @@ import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutside
   countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import './worldTension.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 /** The layer of every country outside the top ones: a key no tag can be, as tags hold no NUL. */
@@ -62,11 +63,11 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (drill.breakdown != null && drill.follow)));
   const [selectedCause, setSelectedCause] = useState<string | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   // Chosen countries or a group narrow the layers; all countries by default.
   const groups = useCountryGroups(runtime, track, active);
   const lineage = useMemo(() => new Lineage(groups.data?.identityChanges ?? []), [groups.data?.identityChanges]);
@@ -80,7 +81,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const head = Math.floor(playhead ?? extent[1]);
   const pinnedDrill = options.show === 'breakdown';
   // Playback in this campaign's hours, as the overview's moment is.
-  const followHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const followHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const drillAt = Math.floor((pinnedDrill && drill.breakdown == null ? head : drillHour(drill, followHour ?? extent[1])) ?? head);
   const share = options.values !== 'recorded';
   const [hoverHour, setHoverHour] = useState<number | null>(null);
@@ -319,7 +320,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     <div className="world-tension-chart">
       <TimeChart label="World tension and the countries that generated it" extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }}
         // 0–100%, grown to whatever is drawn beyond it (negative parts, or sources past the cap), never cut.
         fitValues={shown => [Math.min(0, shown?.[0] ?? 0), Math.max(100, shown?.[1] ?? 100)]}

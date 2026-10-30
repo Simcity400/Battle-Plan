@@ -35,7 +35,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { NumericReply } from '../../dashboard/numericReply';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { preparedLossHour, preparedLossWindow, usePreparedLosses } from './preparedLosses';
 import type { PreparedLosses } from './preparedLosses';
 import { entryAt } from '../../dashboard/reads';
@@ -66,7 +66,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const setDrill = (next: DrillState | ((state: DrillState) => DrillState)) => setLocalDrill(before => ({ owner: bindingOwner,
     state: typeof next === 'function' ? next(before?.owner === bindingOwner ? before.state : CLOSED) : next }));
   const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const speed = usePlaybackSpeed(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
+  const speed = usePlaybackMotion(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
   const resolved = track ? resolveWindow(widget, track, runtime.tracks, playback) : null;
   const requestedView = track ? lossWindow(resolved, track.branch, widget.time.mode) : null;
   const saved = options.show === DETAIL.id, open = saved || drill.breakdown !== null;

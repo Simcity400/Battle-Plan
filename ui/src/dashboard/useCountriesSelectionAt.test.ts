@@ -38,6 +38,7 @@ async function fixture() {
           return { data: [], retry() { state.ledgerRetries++; } };
         };`;
         if (path.endsWith('/dashboard/useIdeaTooltips.ts')) return 'export const useIdeaTooltips = () => ({});';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
         if (path.endsWith('/dashboard/useCountriesSelectionAt.ts') || path.endsWith('/dashboard/usePoliticsSpending.ts')) {
           return source.replace(/\buseMemo(?:<[^;\n]*>)?\(/g, '((factory) => factory())(');
         }

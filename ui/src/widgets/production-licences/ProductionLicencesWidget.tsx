@@ -26,7 +26,7 @@ import { EQUIPMENT_UNNAMED } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -45,7 +45,7 @@ const PARAMS_VIEW = 'licences';
  * licensees right, a ribbon per pair; a country's flag or name opens its licences. */
 export default function ProductionLicencesWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

@@ -59,7 +59,7 @@ export function mergePreparedResource(a: PreparedResourceReply, b: PreparedResou
 /** Display geometry and exact moments share the same prepared adapter. */
 /** The widget's country and its resource balance reply. */
 export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, within?: readonly { firstHour: number; lastHour: number }[] | null) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
   const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
@@ -69,7 +69,7 @@ export function useResourceBalance(widget: WidgetSpec, runtime: WidgetRuntime, a
   const [navigationError, setNavigationError] = useState<{ key: string; error: string }>();
   const navigation = useRef<AbortController | null>(null);
   useEffect(() => () => navigation.current?.abort(), [key, active]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const prepared = !!runtime.client.preparedQuery;
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;

@@ -11,7 +11,7 @@ test('an empty raid log whose group hours are still being prepared is loading, n
   const host = globalThis as typeof globalThis & { __raidsPending?: typeof state }; host.__raidsPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/raid-log/RaidLogWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__raidsPending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/useRaids.ts': `export const useRaids = (widget, runtime) => ({ track: runtime.tracks[0],
       data: { available: true, episodes: [], types: [], warnings: [] }, retry() {} });`,

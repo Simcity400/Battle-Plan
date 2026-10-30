@@ -147,12 +147,12 @@ export default function ResearchWidget(props: WidgetProps) {
 function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const menu = useContextMenu('Research actions');
   const owner = useId();
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const actions = useContext(HeaderActionsSlot);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'list' ? 'list' : 'columns';
   const { track, tag, data, error, retry, preparing } = useResearchReply(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const moment = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const { categories } = useChartTokens();

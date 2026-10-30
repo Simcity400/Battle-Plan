@@ -11,12 +11,14 @@ import type { PowerCurrency, SpendingSelection } from './politicsSpending';
 import { useCountryGroups } from './useCountryGroups';
 import { useIdeaTooltips } from './useIdeaTooltips';
 import { resolveWindow } from './model';
+import { usePlaybackHour } from './playback.ts';
 
 const recordedIdentity = (tag: string) => tag;
 const NO_WARNINGS: readonly string[] = [];
 
 /** Selected windows use prepared daily runs and dated payments. */
 export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, totals = false, choices = false) {
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
@@ -39,7 +41,7 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
   // choices in the native matcher and clipping coverage to their holder spans.
   const tags = useMemo(() => !match.ready ? [] : selected.membership === null ? resolved.tags
     : [...new Set(selected.membership.map(run => run.tag))], [match.ready, selected, resolved.tags]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const from = widget.time.mode === 'range' ? window?.firstHour : undefined;
   const hour = choices ? track?.branch.lastHour : window?.lastHour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;

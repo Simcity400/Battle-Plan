@@ -50,7 +50,7 @@ test('actual economy group requests and open drills retain pending/name refreshe
     '/charts/race/CountryPartsDrill.tsx', '/charts/race/CountryRaceView.tsx'];
   const replacements: Record<string, string> = {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__economyGroup.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag, color: () => null, flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => (${JSON.stringify(tokensFromValues(() => '#777', 'sans-serif'))});

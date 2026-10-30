@@ -9,7 +9,7 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import DrillHost, { FollowControl } from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill, pinnedBreakdown } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
-import { easeTau } from '../../charts/easing';
+import { easeTau, motionOf } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
 import Timeline from '../../charts/timeline/Timeline';
@@ -55,14 +55,14 @@ const stopRowEvent = <E,>(handler: (event: E) => void) => (event: E & { stopProp
  * reads at a time: the live table's (and the next, so playback never waits) or the
  * one a history tooltip needs. */
 export default function ProductionLinesWidget({ widget, runtime, active, onDiagnostics, setOption, countrySlot }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const lines = useProductionLines(widget, runtime, active);
   const { track, tag, data, retry } = lines;
   const error = useHeldFailure(lines.error, data !== undefined, retry);
   const currentData = useRef(data);
   currentData.current = data;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const live = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && live ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -109,13 +109,13 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const actor = useProductionCountry(selectedCountry, runtime, track, active);
   const originHour = selectedCountry && track ? track.branch.firstHour + selectedCountry.originOffset : undefined;
   const breakdown = useLineBreakdown(runtime, track, selectedCountry?.tag, selectedCountry && actor.spans && (pinned || drill.breakdown) ? key : null, shownFactor, active, originHour);
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (pinned ? shownPinnedFollow : drill.breakdown != null && drill.follow));
+  const clockHour = track ? Math.floor(drillPlaybackHour) + track.axisOffset : null;
   const breakdownHour = pinned ? (shownPinnedFollow ? clockHour : shownPickedHour ?? shownHour ?? extent[1]) : drillHour(drill, clockHour);
   const selectedLineIndex = data?.lines.findIndex(line => line.key === key) ?? -1;
   const selectedLine = selectedLineIndex >= 0 ? data?.lines[selectedLineIndex] : null;
   const lineLabel = data && selectedLine && !firstViewLineReason(data) ? productionLineLabel(data, selectedLine, selectedLineIndex, breakdownHour ?? extent[1]) : 'Production line';
   const missingSavedDate = pinned && !shownPinnedFollow && shownPickedHour === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  usePlaybackHour(runtime.clock, active && (pinned ? shownPinnedFollow : drill.breakdown != null && drill.follow));
   useEffect(() => { setDrill(CLOSED); setLineKey(null); setPickedHour(null); setPinnedFollow(widget.time.mode === 'follow'); }, [runtime.client, track?.source.id, track?.source.revision, track?.branch.id, tag, widget.time]);
   const headerTag = actor.spans && breakdownHour !== null ? countryDrillTagAt(actor.spans, breakdownHour) : null;
   const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? 'Saved country selection unavailable. Open the breakdown again.'
@@ -168,7 +168,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
         ? 'This range is still being prepared.' : 'Loading production lines…'} />;
     return <LiveTable data={data} detail={detail} hour={hour} order={options.order as LineOrder} more={options.columns === 'more'} owner={`production-lines:${widget.id}`}
       windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
-      active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={jump} onBreakdown={openBreakdown} />;
+      active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={jump} onBreakdown={openBreakdown} />;
   };
   const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.retry} /> : null;
   const drillView = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
@@ -179,12 +179,12 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
         : <ProductionDrill key={`${key}:${selected}`} data={breakdown.data} selected={shownFactor}
           onFactor={value => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setFactor(value); if (pinned) setOption?.('factor', value); }} hour={breakdownHour} extent={extent}
-          playhead={(pinned ? shownPinnedFollow : drill.follow) ? clockHour : null} active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+          playhead={(pinned ? shownPinnedFollow : drill.follow) ? clockHour : null} active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
           onPick={hour => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; if (pinned) { setBodyOwner(owner); setPinnedFollow(false); setPickedHour(Math.floor(hour)); }
             else setDrill(state => reduceDrill(state, { type: 'pick', hour })); }} />;
   const main = data ? <>{playhead != null ? liveTable()
       : <History data={data} tag={tag} extent={extent} showEnded={options.ended !== 'hidden'} active={active}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={jump}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={jump}
         windows={windows.data} failed={windows.errors} hovered={hovered} onWant={setHovered} />}</> : null;
   return <div ref={anchor} className="production-lines">
     {pinned ? <>{pinnedHeader}<div className="drill-header">
@@ -222,7 +222,7 @@ function LiveTable({ data, detail, hour, order, more, owner, windows, active, ho
   data: ProductionLinesReply; detail: ProductionLineDetailReply; hour: number; order: LineOrder; more: boolean; owner: string; active: boolean;
   /** Where an organisation's policy window is read. */
   windows: Pick<ComponentProps<typeof GameWindowPopover>, 'client' | 'source' | 'branchId' | 'onDiagnostics'>;
-  hoursPerSecond: number; onMenu: (hour: number, x: number, y: number, key?: string) => void;
+  hoursPerSecond: number | undefined; onMenu: (hour: number, x: number, y: number, key?: string) => void;
   onBreakdown: (key: string, part: 'efficiency' | 'output', hour: number) => void;
 }) {
   const tokens = useChartTokens();
@@ -322,7 +322,7 @@ function LiveTable({ data, detail, hour, order, more, owner, windows, active, ho
  * asks for the window of reads behind its hour (`onWant`) and shows the line's
  * variant and factories until it arrives. */
 function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu, windows, failed, hovered, onWant }: {
-  data: ProductionLinesReply; tag: string; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number;
+  data: ProductionLinesReply; tag: string; extent: [number, number]; showEnded: boolean; active: boolean; hoursPerSecond: number | undefined;
   onMenu: (hour: number, x: number, y: number, key?: string) => void; windows: ReadonlyMap<number, ProductionLineDetailReply>; failed: ReadonlyMap<number, string>;
   hovered: number | null; onWant: (window: number) => void;
 }) {

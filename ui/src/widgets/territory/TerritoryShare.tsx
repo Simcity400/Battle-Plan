@@ -32,7 +32,7 @@ interface TerritoryShareProps {
   onPick?: (hour: number, key: string) => void;
   pickOwner?: unknown;
   active: boolean;
-  hoursPerSecond: number;
+  hoursPerSecond: number | undefined;
   onContextMenu: (x: number, y: number) => void;
 }
 

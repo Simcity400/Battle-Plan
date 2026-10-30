@@ -80,7 +80,7 @@ test('actual Naval Pin keeps its dated native actor and mounted callback lifetim
       };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__navalPinLifecycle.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {
       const state = globalThis.__navalPinLifecycle; state.labelRequests.push({ wanted, active });
       return { labelAt: hour => tag => state.labels[JSON.stringify([hour, tag])] ?? { name: tag + '@' + hour }, revision: 0 }; };`,

@@ -36,7 +36,7 @@ test('known zero naval rows render inside a wrapper that fills the widget height
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 1;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag,
       color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });`,
@@ -84,7 +84,7 @@ test('a February race pick retains its displayed zero month while Jump uses the 
       (p.onPick ?? p.onSelect)?.('mod country A'); p.onContextMenu?.('mod country A', 0, 0); return null;
     }`,
     '/charts/jump.ts': 'export const jumpItem = (runtime, _track, hour) => ({ run: () => runtime.requestSeek(hour) });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 1;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 1;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => tag,
       color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
@@ -133,7 +133,7 @@ test('an open naval drill keeps its chosen country and full history after Top N 
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/components/CountryPicker.tsx': `import { createElement } from 'react'; export default props => createElement('button', { 'data-selected': props.selectedTag }, props.selectedTag);`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456", "#654321"] });',
     '/charts/race/CountryRaceView.tsx': `import { createElement } from 'react';
@@ -185,7 +185,7 @@ test('Pin as widget keeps the picked February hour rather than the March display
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(reply)} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456", "#654321"] });',
     '/charts/race/CountryRaceView.tsx': 'export default function View() { return null; }',
     '/charts/drill/DrillHost.tsx': 'export default function Host(p) { p.onPin?.(); return null; }',
@@ -248,7 +248,7 @@ test('a queued drill history pick survives playback and artwork updates but reje
     '/dashboard/productWindows.ts': navalWindowFixture,
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__navalPick.reply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 1;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 1;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => globalThis.__navalPick.name + tag,
       color: () => [50, 100, 150], flag: () => globalThis.__navalPick.flag, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({
@@ -341,7 +341,7 @@ test('the actual Naval adapter holds overlapping drawn choices, follows the alig
         ? globalThis.__navalAdapter.detailReply : globalThis.__navalAdapter.reply : undefined });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = (_client, _track, wanted, active) => {
       if (active) globalThis.__navalAdapter.wanted.push(...wanted); return { labelAt: hour => tag => ({ name: tag + '@' + hour }), revision: 0 }; };`,
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456", "#654321"] });',

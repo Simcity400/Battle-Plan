@@ -40,14 +40,14 @@ const NO_KINDS: readonly never[] = [];
  * A row keeps its place while its status changes with playback. */
 export default function DecisionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const live = widget.time.mode === 'follow';
-  usePlaybackHour(runtime.clock, active && live);
+  const playbackHour = usePlaybackHour(runtime.clock, active && live);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const filtered = widget.countries.kind !== 'all';
   // One country is named by the header chip, so its rows leave the country out.
   const oneCountry = widget.countries.kind === 'selected' || (widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
     && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
   const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;

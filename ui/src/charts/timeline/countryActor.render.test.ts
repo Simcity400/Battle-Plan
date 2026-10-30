@@ -39,7 +39,7 @@ test('native world callers bind held names/flags to holder boundaries without re
   const replacements: Record<string, string> = {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__timelineActors.groups, retry() {} });',
     '/dashboard/products.ts': 'export const useProduct = (_client, request) => ({ data: request === null ? undefined : globalThis.__timelineActors.products[request.product], retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountriesAt.ts': `export const useCountriesAt = (_client, _track, _tags, _hour, _active, _names, segment) => {
       globalThis.__timelineActors.segment = segment; return { country: tag => ({ name: tag }), revision: 0 }; };`,
     '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, _hour, _active, segment) => {

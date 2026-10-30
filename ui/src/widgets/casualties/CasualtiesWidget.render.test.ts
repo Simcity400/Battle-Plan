@@ -10,7 +10,7 @@ import type { CasualtyReply, CountryGroupReply } from '../../generated/dashboard
 
 test('pending casualty state uses the shared preparation note without showing an empty result', async () => {
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 109; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123"] }); export const useViewportHeight = () => 1000;',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
@@ -37,7 +37,7 @@ test('casualties of a group at an hour still being prepared are loading, not non
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __casualtiesPending?: typeof state }; host.__casualtiesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/casualties/CasualtiesWidget.tsx', {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123"] }); export const useViewportHeight = () => 1000;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__casualtiesPending.groups, retry() {} });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, color: () => [1, 2, 3], flag() {}, flagPending: () => false, flagReason() {} });',
@@ -64,7 +64,7 @@ test('casualties of a group with no member found yet say what the hour was once 
   const state = { groups: { ...pendingGroups({ humans: [] }), unobserved: { humans: [{ firstHour: 140, lastHour: 150 }], factions: [], wars: [] } } as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __casualtiesGap?: typeof state }; host.__casualtiesGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/casualties/CasualtiesWidget.tsx', {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123"] }); export const useViewportHeight = () => 1000;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__casualtiesGap.groups, retry() {} });',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, color: () => [1, 2, 3], flag() {}, flagPending: () => false, flagReason() {} });',

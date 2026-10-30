@@ -36,7 +36,7 @@ test('dense ruling-party combines census, native and tail marks and chooses the 
     return [slot.value, (next: unknown) => { slot.value = typeof next === 'function' ? (next as (old: unknown) => unknown)(slot.value) : next; }];
   };
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/TimeChart.tsx': 'export default props => { globalThis.__politicsChart(props); return null; };',
     '/charts/Legend.tsx': 'export default () => null;',
     '/charts/tokens.ts': 'export const readTokens = () => ({ surface: "#101820" }); export const subscribeTokens = () => () => {};',

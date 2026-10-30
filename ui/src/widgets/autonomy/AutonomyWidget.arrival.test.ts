@@ -49,7 +49,7 @@ test('autonomy keeps its census unfinished in both arrival orders through usePre
   const hooks = hookCells();
   const host = globalThis as typeof globalThis & { __autonomyArrivalHooks?: typeof hooks; __autonomyArrivalTimeline?: TimelineProps };
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag() {}, revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',

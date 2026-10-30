@@ -36,6 +36,7 @@ import type { Campaign, Relocation } from './campaigns';
 import { recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
 import type { ParityHost } from './parityFixture';
+import { LiveMotion } from '../charts/liveMotion.ts';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
@@ -670,7 +671,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       <button type="button" className="icon-button small" aria-label="Dismiss notice" onClick={() => { setActionError(null); setWarning(null); }}><Icon name="close" /></button></div>}
     {saved && savedVisible && <div className="layout-saved" role="status"><Icon name="check" />{saved}</div>}
     <div className={`dash-grid-scroll${editing ? ' is-editing' : ''}`} ref={viewport}>
-      {active && <DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} />}
+      {active && <LiveMotion.Provider value={clock.getMotion}><DashboardGrid template={template} runtime={runtime} editing={editing} onLayouts={layoutsChanged} onApply={applyWidget} onRemove={removeWidget} /></LiveMotion.Provider>}
       {template.widgets.length === 0 && <div className="dash-empty dash-empty-dashboard"><span className="empty-icon"><Icon name="grid" /></span><strong>Make room for your campaign</strong><p>Choose Edit, then add widgets, or reset this page to its default arrangement.</p></div>}
     </div>
   </div>;

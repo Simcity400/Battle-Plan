@@ -25,7 +25,7 @@ test('trade of a group counted at an hour still being prepared is loading, not n
         return { track, all: false, resolved, groups: { data: groups, retry() {} }, data, scaleData: data, retry() {},
           scope: tradeScope(decodeTrade(data), widget.countries, resolved, groups, track.branch.lastHour, false) };
       };`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
@@ -70,7 +70,7 @@ test('one scale all campaign never fits the moment while its scale is unread or 
         return { track, all: true, resolved: null, groups: {}, data, scaleData, scaleError, retryScale() {}, retry() {},
           scope: tradeScope(decodeTrade(data), widget.countries, null, undefined, track.branch.lastHour, false) };
       };`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,
@@ -182,7 +182,7 @@ test('while playback reads its newest hour, the hour last read stays drawn with 
           hasExactHour: hour => hour === ${held}, reachedHour: globalThis.__tradeHeld.reachedHour,
           scope: tradeScope(decodeTrade(data), widget.countries, null, undefined, track.branch.lastHour, false) };
       };`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': `export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});
       export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });`,

@@ -35,13 +35,13 @@ const NO_ROWS: readonly LogRow<FeedEvent>[] = [];
 const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
 
 export default function EventFeedWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const tokens = useChartTokens();
   const filtered = widget.countries.kind !== 'all';
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
     && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
   const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;

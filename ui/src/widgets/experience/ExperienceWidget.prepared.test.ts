@@ -49,7 +49,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({retry(){},error:globalThis.__preparedExperienceFixture.groupError,data:globalThis.__preparedExperienceFixture.groupsHeld
       ? {warnings:[],capitulations:[],countryIdentities:globalThis.__preparedExperienceFixture.histories} : undefined});`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__preparedExperienceFixture.styles;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour,tag) => JSON.stringify([hour,tag]);
       export const useCountryNamesRead = (_client,_track,wanted) => new Map(wanted.map(row => [nameKey(row.hour,row.tag),row.tag]));`,

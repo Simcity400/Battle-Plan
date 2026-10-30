@@ -29,7 +29,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/productWindows.ts': `export const useWindowDisplay = () => { const state = globalThis.__acePresentation; return {
       data: { manifest: state.manifest, roster: state.detail, readHour: 100, preparing: state.preparing ? ['firstSeen','death'] : [] }, hour: 100 }; };`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 100;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',
@@ -89,7 +89,7 @@ test('aces read at an hour whose group membership is still being prepared are lo
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useWindowDisplay = () => ({ data: ${display}, hour: ${PENDING_HOUR} });`,
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${PENDING_HOUR};`,
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__acesPending.groups, retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag})});',

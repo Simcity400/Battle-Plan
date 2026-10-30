@@ -14,7 +14,7 @@ import { selectedTags } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { countryIdentityIndex } from '../../dashboard/countryIdentity';
@@ -35,13 +35,13 @@ const sideText = (side: SideTotal, participation: boolean) => !side.members.leng
   : participation ? `${amount(side.total * 100n)}%` : sideMagnitude(side) === 0n ? 'None yet' : amount(sideAmount(side));
 
 export default function WarContributionWidget({ widget, runtime, active, headerSlot, setOption, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const show: Show = options.show === 'totals' ? 'totals' : 'share';
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const viewpointTag = selectedTags(widget.countries, track)[0] ?? null;
   const structural = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',

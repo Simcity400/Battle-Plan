@@ -23,7 +23,7 @@ import { resolveOptions } from '../../dashboard/options';
 import { useFollowedProduct } from '../../dashboard/products';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useWindowDisplay } from '../../dashboard/productWindows';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { AirAcePortrait } from '../../generated/dashboard';
@@ -42,7 +42,7 @@ const PORTRAITS: FactSpec<AirAcePortrait> = {
 const keyOf = (row: AceRow) => row.key;
 export default function AcesWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const hourAt = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const speed = usePlaybackSpeed(runtime.clock);
+  const speed = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const content = useContentRevision(runtime.client);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);

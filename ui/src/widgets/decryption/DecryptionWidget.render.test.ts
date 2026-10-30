@@ -13,7 +13,7 @@ test('no decryption pair at an hour whose group membership is still being prepar
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__decryptionPending.groups, retry() {} });',
     '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { pairs: [], coverage: [{ firstHour: 0, lastHour: 200, complete: true }], warnings: [] } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/charts/useRowTooltips.ts': 'export const useRowTooltips = () => ({});',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

@@ -17,7 +17,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useReachedProduct } from '../../dashboard/reachedProduct';
 import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -36,7 +36,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const playback = useTableHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const options = resolveOptions(OPTIONS, widget.options);
@@ -94,7 +94,7 @@ export default function MostDecoratedWidget({ widget, runtime, active, setOption
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip}
     onVisibleRows={setVisible} hoursPerSecond={hoursPerSecond} menu={row => [{ label: 'Open service record', run: () => open(row) }]} />;
-  const pickedHour = drillHour(drill, Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0)) ?? hour;
+  const pickedHour = drillHour(drill, Math.floor(playback) + (track?.axisOffset ?? 0)) ?? hour;
   // The opened record may still show an earlier hour while the picked one loads.
   const [answered, setAnswered] = useState<number | undefined>();
   const shownHour = drill.breakdown ? answered ?? pickedHour : pickedHour;

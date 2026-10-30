@@ -23,7 +23,7 @@ import { nameKey, useCountryFactsRead, useCountryNamesAt } from '../../dashboard
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { preparedPrefix, preparedThrough } from '../../dashboard/preparedPrefix';
@@ -46,7 +46,7 @@ const LOSSES: TableColumn<LossRow> = { key: 'losses', header: 'Losses taken', la
 
 export default function CasualtiesBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const content = useContentRevision(runtime.client);
-  const speed = usePlaybackSpeed(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
+  const speed = usePlaybackMotion(runtime.clock), tokens = useChartTokens(), height = useViewportHeight();
   const options = resolveOptions(definition.options, widget.options);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Casualty breakdown actions');
@@ -62,7 +62,7 @@ export default function CasualtiesBreakdownWidget({ widget, runtime, active, onD
   const open = pinned || drill.breakdown !== null;
   const effectiveDrill = drill.breakdown ? drill : pinned
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
   const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);

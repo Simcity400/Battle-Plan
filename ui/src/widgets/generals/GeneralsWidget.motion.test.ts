@@ -94,11 +94,12 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
     '/widgets/general-career/CareerView.tsx': 'export default () => null;',
     '/dashboard/countryNamesAt.ts': 'export { nameKey } from "./countryFacts.ts"; export const useCountryFactsAt = () => globalThis.__leaderMotionHooks.portraits;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: globalThis.__leaderMotionHooks.labelAt });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 102;',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => globalThis.__leaderMotionHooks.tokens;',
     '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
+    '/charts/liveMotion.ts': 'export const useMotionNow = () => given => given;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null, open() {} });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

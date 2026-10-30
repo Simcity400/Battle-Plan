@@ -33,6 +33,7 @@ import { branchesAt, changeHours, chartCountryAt, consumersKnown, countryAt, emp
 import type { BranchAt } from './fuelBranchesData';
 import '../resource-balance/resourceBalance.css';
 import './fuelBranches.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 
@@ -48,10 +49,10 @@ function FuelBranchesCountry({ widget, runtime, active, onDiagnostics, within }:
   const viewport = useViewportHeight();
   const menu = useContextMenu('Fuel by branch actions');
   const owner = useId();
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: FUEL_BRANCHES,
     params: { branchId: track.branch.id, tags: [tag] } } : null;
@@ -87,7 +88,7 @@ function FuelBranchesCountry({ widget, runtime, active, onDiagnostics, within }:
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading fuel by branch…" />;
-  if (options.view === 'time') return <FuelBranchesOverTime data={data} tag={tag} hour={hour} widget={widget} runtime={runtime} active={active} amount={amount} within={within} />;
+  if (options.view === 'time') return <FuelBranchesOverTime data={data} tag={tag} hour={hour} playbackHour={playbackHour} widget={widget} runtime={runtime} active={active} amount={amount} within={within} />;
   if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
   if (!member) return <WidgetState kind="unavailable" message="This country is not in the group at this date." />;
   if (!country || !rows.length) return consumersKnown(data, hour)
@@ -140,8 +141,8 @@ function FuelBranchesCountry({ widget, runtime, active, onDiagnostics, within }:
 
 /** Each branch's received share of what it requested, as a line per branch on a
  * fixed 0–100% scale; hours without a request or a read are gaps. */
-function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount, within }: {
-  data: FuelBranchesReply; tag: string; hour: number; widget: WidgetProps['widget']; runtime: WidgetProps['runtime']; active: boolean;
+function FuelBranchesOverTime({ data, tag, hour, playbackHour, widget, runtime, active, amount, within }: {
+  data: FuelBranchesReply; tag: string; hour: number; playbackHour: number; widget: WidgetProps['widget']; runtime: WidgetProps['runtime']; active: boolean;
   amount: (raw: bigint | null) => string; within: ComparisonProps['within'];
 }) {
   const options = resolveOptions(OPTIONS, widget.options);
@@ -149,7 +150,7 @@ function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount
   const menu = useContextMenu('Fuel by branch actions');
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0])!;
-  const window = resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const extent: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour];
   // A reused tag is a different country: draw the holder shown at the playback date.
@@ -193,7 +194,7 @@ function FuelBranchesOverTime({ data, tag, hour, widget, runtime, active, amount
       <TimeChart label={`Fuel received by branch of ${tag}`} extent={extent} playhead={following && window ? window.lastHour : null}
         playback={options.playback === 'cursor' ? 'cursor' : options.playback === 'window' ? 'window' : 'draw-in'}
         afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: axis.top, log: false }} valueTicks={axis.ticks}
         formatValue={value => `${value}%`} padding={ends ? { right: 64 } : undefined}
         layers={layers} active={active} keyHours={keyHours} pickOwner={country}

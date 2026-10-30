@@ -21,7 +21,7 @@ test('tension sources of a group counted at an hour still being prepared are sai
   const { module, close } = await mountModule<{ default: ComponentType<WidgetProps> }>('/ui/src/widgets/world-tension/WorldTensionWidget.tsx', {
     '/dashboard/preparedSeries.ts': 'export const usePreparedWindow = () => ({ data: globalThis.__tensionPending.data, retry() {}, onSummaryView() {}, pickOwner: {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__tensionPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, flagPending: () => false, flagReason: () => undefined, color: () => null, revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => (${JSON.stringify(tokensFromValues(() => '#123456', 'sans-serif'))}); export const useViewportHeight = () => 500;`,

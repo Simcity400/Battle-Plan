@@ -34,6 +34,7 @@ import { contributionPercent, countryKey, formatContribution, formatTension, for
 import { mergePreparedTension, validatePreparedTension } from './preparedTension';
 import type { TensionModel } from './tensionData';
 import { tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionEventKeys, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill';
+import { motionOf } from '../../charts/easing.ts';
 
 /** The full native country stack. Event final amounts stay separate because the
  * product does not record source current amounts or per-read source presence. */
@@ -174,7 +175,7 @@ export default function TensionDrill({ model: reached, runtime, track, active, o
     </div>}
     <div className="world-tension-drill-chart"><TimeChart label="Country contributions over time" extent={extent} playhead={playhead}
       playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-      hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+      hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
       axes={{ xFrom: null, xTo: null, yMin: null, yMax: null, log: false }} layers={[pendingLayer(prepared.data?.pending), ...layers]} active={active}
       formatValue={formatTensionAxis} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision} onNavigateHour={prepared.onNavigateHour}
       onHover={setHoverHour}

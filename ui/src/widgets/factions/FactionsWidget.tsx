@@ -31,6 +31,7 @@ import { LEADER_GLYPH, factionGaps, factionLabel, factionLanes, factionViews, la
 import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
 import FactionDrill from './FactionDrill';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: readonly HourSpan[] = [];
@@ -40,14 +41,14 @@ const NO_SPANS: readonly HourSpan[] = [];
  * leave, the leader's stretch marked. Factions founded and dissolved partway through
  * are included; names, members and leaders come from the recording. */
 export default function FactionsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const viewport = useViewportHeight();
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const factionColours = useFactionColours(runtime.client, track?.source);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -193,7 +194,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     {/* Shown for one faction too: its swatch is where its colour is changed. */}
     {options.legend === true && <Legend label="Factions" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
-      unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
+      unobserved={unobserved} approximate={approximate} pending={prefix?.pending} bandMax={bandMax} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active}
       revision={`${revision}:${hover.revision}:${views.length}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}
       onLaneActivate={lane => { const about = info.get(lane.id); if (about && !about.member) setDrill(about.faction.id); }}

@@ -19,7 +19,7 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useParityRows } from '../../dashboard/parityRows';
 import { usePreparedScore } from './usePreparedScore';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -35,7 +35,7 @@ const tieKey = (row: ScoreRow) => row.tag;
 
 export default function GameScoreWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

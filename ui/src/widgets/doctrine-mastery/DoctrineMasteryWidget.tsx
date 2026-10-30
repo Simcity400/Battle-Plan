@@ -27,12 +27,12 @@ import './doctrineMastery.css';
 /** Each doctrine track's mastery against its reward thresholds, filling downward as the
  * game's track does, at the read behind the hour shown. */
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const anchor = useRef<HTMLDivElement>(null);
   const { track, tag, options, data, error, retry } = useDoctrineMastery(widget, runtime, active);
   const image = useSpriteArtwork(runtime, track, useMemo(() => doctrineIcons(data).map(doctrineSprite), [data]), active);
   const art = (key: string | null | undefined) => image(doctrineSprite(key));
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const at = useMemo(() => data && tag ? doctrinesAt(data, tag, hour) : null, [data, tag, hour]);
   const chosen = contentSet(options.folders).map(contentKey);

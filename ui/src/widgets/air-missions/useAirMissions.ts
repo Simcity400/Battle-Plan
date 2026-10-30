@@ -11,6 +11,7 @@ import { OPTIONS } from './definition';
 import { choiceHour, theatreChoices, useAirTheatres } from './useAirTheatres';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { airMissionsRequest } from '../../dashboard/widgetRequests';
+import { usePlaybackHour } from '../../dashboard/playback.ts';
 
 /** The country's prepared assignments over the branch, looked up locally at every hour. */
 export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
@@ -24,8 +25,9 @@ export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, activ
 
 /** Missions, regions and theatres as the recording names them, and the sortable columns. */
 export function useAirMissionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const { data, track, tag, options } = useAirMissions(widget, runtime, true);
-  const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, choiceHour(widget, runtime, track), true);
+  const theatres = useAirTheatres(runtime, track, 'air-missions', track && tag ? requests.airMissionsHistory(track.branch.id, tag) : null, choiceHour(widget, runtime, track, playbackHour), true);
   const missions = data?.missions ?? [];
   const icon = useSpriteArtwork(runtime, track, missions.map(mission => mission.icon), true);
   return {

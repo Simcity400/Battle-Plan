@@ -17,7 +17,7 @@ test('the raid tally of a group at an hour still being prepared is loading, not 
   const host = globalThis as typeof globalThis & { __raidPending?: typeof state }; host.__raidPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/raid-tally/RaidTallyWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__raidPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useRaids.ts': 'export const useRaids = () => ({ data: globalThis.__raidPending.reply, retry() {} });',
     '/charts/race/CountryRaceView.tsx': 'export default props => { globalThis.__raidPending.view = props; return null; };',
   });
@@ -47,7 +47,7 @@ test('the raid tally of a group with no member found yet says what the moment wa
   const host = globalThis as typeof globalThis & { __raidGap?: typeof state }; host.__raidGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/raid-tally/RaidTallyWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__raidGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     // The members asked for, none: the tally answers with no series; nothing is asked while inactive.
     '/dashboard/useRaids.ts': 'export const useRaids = (_widget, _runtime, active) => ({ data: active ? globalThis.__raidGap.reply : undefined, retry() {} });',
     '/charts/race/CountryRaceView.tsx': 'export default () => null;',

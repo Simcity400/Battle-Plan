@@ -49,7 +49,7 @@ async function fixture() {
         const state = globalThis.__combatLogDetails; state.request = request; return { data: state.reply }; };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`;
       if (path.endsWith('/dashboard/useCountryGroups.ts')) return 'export const useCountryGroups = () => ({data: globalThis.__combatLogDetails.groups});';
-      if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
+      if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
       if (path.endsWith('/land-battles/CombatLogDetails.tsx')) return source.replace(/\buseMemo(?:<[^;\n]*>)?\(/g, '((factory) => factory())(');
     } }] });
   const component = await vite.ssrLoadModule('/ui/src/widgets/land-battles/CombatLogDetails.tsx') as typeof import('./CombatLogDetails');
@@ -105,7 +105,7 @@ test('a retained Combat Log at an hour whose group membership is still being pre
   const { module, close } = await mountModule<typeof import('./CombatLogDetails')>('/ui/src/widgets/land-battles/CombatLogDetails.tsx', {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__combatLogPending.reply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__combatLogPending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
   });
   try {
     const runtime = { tracks: [{ id: 'main', axisOffset: 0, selectedTag: 'GER', branch: BRANCH, source: { id: 'source', revision: '1', metadata: { countries: [] } } }],

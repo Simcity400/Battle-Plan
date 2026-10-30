@@ -71,7 +71,7 @@ test('registered ruling-party renderer requests causes conditionally, respects P
   const requests: ProductRequest<Record<string, unknown>>[] = [];
   host.__governmentLedger = ledger; host.__governmentRequests = requests;
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/products.ts': `export const loadProduct = (client, request, _signal, validate, _source, _restart, publish) => {
       if (!publish) throw new Error('SSR must not navigate');
       const { data, error } = useProduct(client, request, true, validate); if (error) throw Error(error);

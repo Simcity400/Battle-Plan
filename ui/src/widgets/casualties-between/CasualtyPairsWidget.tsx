@@ -30,7 +30,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING, worldFilter, worldRequestTags } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -56,7 +56,7 @@ const AMOUNT: TableColumn<PairFlow> = { key: 'value', header: 'Casualties', labe
  * and again only when the rows, their labels or colours change. */
 const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, speed, height, onPick, runtime, trackId, narrow }: {
   rows: readonly PairFlow[]; label: CountryLabel; hour: number; colors: ReadonlyMap<string, string>;
-  columns: readonly TableColumn<PairFlow>[]; speed: number; height: number; onPick: (hour: number) => void;
+  columns: readonly TableColumn<PairFlow>[]; speed: number | undefined; height: number; onPick: (hour: number) => void;
   runtime: WidgetProps['runtime']; trackId: string; narrow: NarrowTable;
 }) {
   const subtotal = rows.some(row => row.incomplete);
@@ -81,7 +81,7 @@ const PairRows = memo(function PairRows({ rows, label, hour, colors, columns, sp
 export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const speed = usePlaybackSpeed(runtime.clock);
+  const speed = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(definition.options, widget.options);
   const tokens = useChartTokens(), height = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
@@ -97,7 +97,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   const open = pinned || drill.breakdown !== null;
   const effectiveDrill = drill.breakdown ? drill : pinned
     ? { breakdown: DETAIL.id, follow: widget.time.mode === 'follow', hour } : CLOSED;
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playback) + track.axisOffset : null;
   const detailHour = (open ? drillHour(effectiveDrill, clockHour) : hour) ?? hour;
   const outside = !!track && (hour < track.branch.firstHour || hour > track.branch.lastHour);
   const detailOutside = !!track && (detailHour < track.branch.firstHour || detailHour > track.branch.lastHour);

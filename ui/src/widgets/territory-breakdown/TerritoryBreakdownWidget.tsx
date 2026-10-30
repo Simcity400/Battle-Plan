@@ -22,12 +22,13 @@ import { measureOf, ruleOf, territoryColumn, territoryNote } from '../territory/
 import { breakdownItems, breakdownModel, breakdownSelectedWhole, breakdownWhole, mergeBreakdownReplies, validateBreakdownReply } from './breakdownData';
 import { LEVELS, OPTIONS } from './definition';
 import { useParityRows } from '../../dashboard/parityRows';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 export default function TerritoryBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const options = resolveOptions(OPTIONS, widget.options);
   const measure = measureOf(options.measure), rule = ruleOf(options.rule);
   const hour = window?.lastHour ?? 0, branchEnd = track?.branch.lastHour ?? 0;
@@ -103,6 +104,6 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }} authoritativeTotal={whole}
     stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}
     levels={levelsShown(options, LEVELS)} text={text} settings={sunburstSettings(options)} active={active}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} footnote={territoryNote(measure)}
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} footnote={territoryNote(measure)}
     onContextMenu={(_node, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, shown)])} />{menu.menu}</div>;
 }

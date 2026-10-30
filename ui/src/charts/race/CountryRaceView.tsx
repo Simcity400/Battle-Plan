@@ -10,7 +10,7 @@ import { countryCapitulationRows } from '../../dashboard/countryCapitulations';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import type { EventBadge } from '../badges';
 import { dayLabel, drawBands, drawLine, drawPlayhead, placeEndLabels } from '../draw';
 import { jumpItem } from '../jump';
@@ -116,7 +116,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, onSummaryView, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
   const tokens = useChartTokens();
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const menu = useContextMenu(chartLabels?.actions ?? `${label} actions`);
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';

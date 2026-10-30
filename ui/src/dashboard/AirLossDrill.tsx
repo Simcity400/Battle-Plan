@@ -20,7 +20,7 @@ import { useCountryLabelsAt } from './countryFlagsAt';
 import DatedCountryChip from './DatedCountryChip';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
-import { usePlaybackSpeed } from './playback';
+import { usePlaybackMotion } from './playback';
 import { AIR_LEDGER_NOTE, LEDGER_GAP_NOTE, airLossParts, ledgerCountryAt, ledgerFormat, ledgerScale, ledgerShare, ledgerSegmentAt, militaryAirTooltip } from './militaryAirLedger';
 import type { LedgerIndex } from './militaryAirLedger';
 
@@ -29,7 +29,7 @@ export default function AirLossDrill({ index, runtime, track, tag, identity, cou
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
   dealt: boolean; active: boolean; afterPlayhead: boolean; onPick: (hour: number) => void; pickOwner: unknown;
 }) {
-  const tokens = useChartTokens(), hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Aircraft loss history actions');
   const row = hour >= from && hour <= end ? ledgerCountryAt(index, tag, from, hour, identity) : null;
   const model = useMemo(() => airLossDrillHistory(index, identity, from, end, dealt), [index, identity, from, end, dealt]);

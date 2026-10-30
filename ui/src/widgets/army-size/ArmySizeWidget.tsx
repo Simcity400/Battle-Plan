@@ -51,7 +51,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const view = (options.view === 'breakdown' ? 'mix' : options.view) as RaceView;
   const pinned = options.view === 'breakdown';
   const [drill, dispatchDrill] = useReducer(reducePartsRaceDrill, CLOSED_PARTS_RACE);
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
   const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
@@ -59,7 +59,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const savedSelection = armyCountrySelection(widget, track);
   const invalidSavedSelection = pinned && Object.hasOwn(widget.options ?? {}, 'drillOriginHour') && !savedSelection;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
@@ -173,7 +173,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const choices = drill.choices?.key === resetKey ? drill.choices : null;
   useEffect(() => { dispatchDrill({ type: 'close' }); setDrillOrigin(null); }, [resetKey]);
   const drillTag = drill.breakdown;
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const drillAt = Math.floor((drill.breakdown === null && choices === null ? moment : drillHour(drill, clockHour)) ?? moment);
   const drillPlayhead = drill.breakdown !== null && drill.follow ? clockHour : playhead;
   const originHour = drillOrigin?.tag === drillTag ? drillOrigin.hour : drillAt;

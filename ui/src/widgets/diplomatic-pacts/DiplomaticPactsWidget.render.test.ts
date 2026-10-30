@@ -14,7 +14,7 @@ test('one country\'s agreements: still preparing is loading, none is said, and e
   const host = globalThis as typeof globalThis & { __agreements?: typeof state }; host.__agreements = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/diplomatic-pacts/DiplomaticPactsWidget.tsx', {
     '/dashboard/products.ts': 'export const useProduct = (_client, request) => { if (request) globalThis.__agreements.requests.push(request); return { data: request ? globalThis.__agreements.reply : undefined, retry() {} }; }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#112233"] });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: `Country ${tag}`, known: true }) });',
     '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__agreements.lanes = props.lanes; return null; };',

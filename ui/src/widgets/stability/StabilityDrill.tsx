@@ -46,7 +46,7 @@ export default function StabilityDrill({ reply, numbers, pickOwner, presentation
   readAt?: (hour: number) => number | null;
   /** The day shown, or null when none is chosen yet. */
   hour: number | null; onPick?: (hour: number) => void;
-  extent: readonly [number, number]; branchStart: number; hoursPerSecond: number; active: boolean; tokens: ChartTokens;
+  extent: readonly [number, number]; branchStart: number; hoursPerSecond: number | undefined; active: boolean; tokens: ChartTokens;
 }) {
   const viewport = useViewportHeight();
   const [hover,setHover] = useState<number|null>(null);

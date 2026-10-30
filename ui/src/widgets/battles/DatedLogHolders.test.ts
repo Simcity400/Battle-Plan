@@ -131,7 +131,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     const props = (kind: string, countries: CountrySelection): WidgetProps => ({
       widget: { id: kind, kind, trackIds: ['main'], countries, time: { mode: 'campaign' }, options: { chips: false, totals: true, countryRole: 'victim' } },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'synthetic' } },
-        branch: { id: '1', firstHour: 90, lastHour: 159 } }], clock: { getHour: () => 159, getSpeed: () => 24, subscribe: () => () => {} }, client: {} },
+        branch: { id: '1', firstHour: 90, lastHour: 159 } }], clock: { getHour: () => 159, getMotion: () => 24, subscribe: () => () => {} }, client: {} },
       active: true, onDiagnostics() {},
     } as unknown as WidgetProps);
     const cases = [['Z', 95, true], ['X', 105, true], ['Y', 115, true], ['X', 125, true],

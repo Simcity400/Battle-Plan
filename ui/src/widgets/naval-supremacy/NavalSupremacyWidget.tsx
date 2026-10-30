@@ -13,7 +13,7 @@ import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { keyedDays } from '../../dashboard/keyedDays';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { mix } from '../../shell/appearance/color';
@@ -30,7 +30,7 @@ const pendingCountry = () => ({ name: NAME_LOADING });
  * air superiority timeline's form, by the game's own control rule. */
 export default function NavalSupremacyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const menu = useContextMenu('Naval supremacy');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

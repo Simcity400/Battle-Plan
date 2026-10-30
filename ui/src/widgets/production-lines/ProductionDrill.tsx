@@ -15,7 +15,7 @@ import { modifierTooltip } from './productionData';
  * exact rows; only positive amounts draw stacked bands. Picking a day pins it. */
 export default function ProductionDrill({ data, selected, onFactor, hour, extent, playhead, active, hoursPerSecond, onPick }: {
   data: ProductionLineBreakdownReply; selected: string; onFactor: (factor: string) => void; hour: number | null;
-  extent: [number, number]; playhead: number | null; active: boolean; hoursPerSecond: number; onPick: (hour: number) => void;
+  extent: [number, number]; playhead: number | null; active: boolean; hoursPerSecond: number | undefined; onPick: (hour: number) => void;
 }) {
   const tokens = useChartTokens();
   const height = useViewportHeight();

@@ -97,9 +97,9 @@ function GroupFields({ widget, selection, reference, runtime, limits, onChange }
   widget: WidgetSpec; selection: Extract<CountrySelection, { kind: 'group' }>; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits;
   onChange: (countries: CountrySelection) => void;
 }) {
-  usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const settings = useCampaignSettings();
-  const hour = reference ? resolveWindow(widget, reference, runtime.tracks, runtime.clock.getHour())?.lastHour ?? Number.NaN : undefined;
+  const hour = reference ? resolveWindow(widget, reference, runtime.tracks, playbackHour)?.lastHour ?? Number.NaN : undefined;
   const overrides = settings.campaigns[reference?.source.metadata.campaignKey ?? '']?.factions;
   const groups = useCountryGroups(runtime, reference);
   const source = reference?.source;

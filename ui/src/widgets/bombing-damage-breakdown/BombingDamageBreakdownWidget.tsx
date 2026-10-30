@@ -13,11 +13,11 @@ import { OPTIONS } from './definition';
 const NO_WARNINGS: string[] = [];
 
 export default function BombingDamageBreakdownWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, data, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;

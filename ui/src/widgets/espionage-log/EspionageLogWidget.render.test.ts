@@ -11,7 +11,7 @@ test('an empty espionage log whose group hours are still being prepared is loadi
   const host = globalThis as typeof globalThis & { __espionagePending?: typeof state }; host.__espionagePending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/espionage-log/EspionageLogWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__espionagePending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/espionage-log/useEspionageLog.ts': `export const useEspionageWindows = () => ({ data: new Map(), errors: new Map(), retry() {} });
       export const useEspionageLog = (widget, runtime) => ({ track: runtime.tracks[0], retry() {}, data: { available: [{ firstHour: 0, lastHour: 200 }],

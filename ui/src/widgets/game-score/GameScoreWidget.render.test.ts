@@ -18,7 +18,7 @@ test('game scores of a group at an hour still being prepared are loading, not mi
   const host = globalThis as typeof globalThis & { __scorePending?: typeof state }; host.__scorePending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/game-score/GameScoreWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scorePending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryFactsRead = () => new Map();',
@@ -47,7 +47,7 @@ test('game scores of a group with no member found yet say what the hour was once
   const host = globalThis as typeof globalThis & { __scoreGap?: typeof state }; host.__scoreGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/game-score/GameScoreWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__scoreGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__scoreGap.hour;',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: [], muted: '#888' }); export const useViewportHeight = () => 800;",
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryFactsRead = () => new Map();',

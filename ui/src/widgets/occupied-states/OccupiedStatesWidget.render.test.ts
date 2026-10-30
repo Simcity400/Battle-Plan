@@ -24,7 +24,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/charts/table/Table.tsx': 'export const CellBar = () => null; export const CountryCell = () => null; export default () => null;',

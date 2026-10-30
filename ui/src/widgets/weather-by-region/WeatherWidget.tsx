@@ -17,7 +17,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { keyedDays } from '../../dashboard/keyedDays';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { finalPreparedReply, pendingAt, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { mix } from '../../shell/appearance/color';
@@ -36,7 +36,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   // A drill that follows playback follows it whatever the widget's own time.
   const playback = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const menu = useContextMenu('Weather by region');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

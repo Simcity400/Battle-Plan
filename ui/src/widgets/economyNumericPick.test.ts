@@ -67,8 +67,8 @@ test('economy and shared race picks keep their mounted numeric owner through con
         lastHour: track.branch.firstHour + widget.time.windows[track.id].lastOffset }
       : { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour };
       export const createWidget = () => { throw Error('Pin is outside this fixture'); };`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => {};
-      export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();
+      export const usePlaybackMotion = clock => clock.getSnapshot().hoursPerSecond;`,
     '/dashboard/countryLooks.ts': `export const useCountryLooks = () => ({ name: tag => globalThis.__economyNumeric.name + tag,
       color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }), revision: 0 });`,

@@ -17,7 +17,7 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
   host.__focusListReply = data;
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__focusListReply }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

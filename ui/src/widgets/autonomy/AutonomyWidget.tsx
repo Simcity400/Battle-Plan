@@ -37,6 +37,7 @@ import { absentAt, autonomyUnprepared, autonomyViews, chosenViews, clipSubject, 
 import type { SubjectLane } from './autonomyData';
 import { OPTIONS } from './definition';
 import './autonomy.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: { firstHour: number; lastHour: number }[] = [];
@@ -105,11 +106,11 @@ function paintLane(ctx: CanvasRenderingContext2D, lane: SubjectLane, geometry: L
  * playhead through every lane. Level names and order come from the recording's
  * content (its autonomy states); level colours are the palette in that order. */
 export default function AutonomyWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
@@ -262,7 +263,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     .map(tag => ({tag,firstHour:run.firstHour,lastHour:run.lastHour,startsSegment:run.startsSegment}))) ?? [] });
   return <div className="autonomy">
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
-      rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+      rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`} approximate={approximate} pending={pending}
       onHover={setHoverHour} onLanesInView={onLanesInView}
       onSummaryView={(view, visible) => prepared.onSummaryView(view,visible.map(lane => binding(lane.id)))}

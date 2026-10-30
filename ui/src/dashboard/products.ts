@@ -14,6 +14,7 @@ import { newId } from '../shell/ids.ts';
 import { finalPreparedReply } from './preparedPrefix.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
 import { useViewRead } from './viewRead.ts';
+import { inFrame } from './frameUpdates.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -160,14 +161,14 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
       const data = values.size === requests.length ? requests.map((_, index) => values.get(index)!) : undefined;
       if (!data && !failures.size) return;
       const errors = failures.size ? [...new Set(failures.values())] : undefined;
-      setState(previous => {
+      inFrame(() => controller.signal.aborted || setState(previous => {
         const kept = previous?.client === client && previous.key === key ? previous : undefined;
         const shown = data ?? kept?.data;
         const sameData = kept?.data === shown || !!shown && !!kept?.data && kept.data.every((value, index) => value === shown[index]);
         const before = kept?.errors ?? NO_ERRORS, after = errors ?? NO_ERRORS;
         const sameErrors = before.length === after.length && after.every((error, index) => error === before[index]);
         return kept && sameData && sameErrors ? kept : { client, key, data: shown, errors };
-      });
+      }));
     };
     requests.forEach((request, index) => {
       const publish = (value: T) => { if (!controller.signal.aborted) { values.set(index, value); commit(); } };
@@ -195,13 +196,13 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
   useEffect(() => {
     if (!active || !request || !key) return;
     const controller = new AbortController();
-    const publish = (data: T) => { if (!controller.signal.aborted) setState(previous =>
-      previous?.client === client && previous.key === key && previous.data === data && !previous.error ? previous : { client, key, data }); };
+    const publish = (data: T) => inFrame(() => controller.signal.aborted || setState(previous =>
+      previous?.client === client && previous.key === key && previous.data === data && !previous.error ? previous : { client, key, data }));
     void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(
       publish,
-      error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
+      error => inFrame(() => controller.signal.aborted || setState(previous => ({ client, key,
         data: previous?.client === client && previous.key === key ? previous.data : undefined,
-        error: error instanceof Error ? error.message : String(error) })); },
+        error: error instanceof Error ? error.message : String(error) }))),
     );
     return () => controller.abort();
     // The request object is recreated each render; its key is the identity.

@@ -14,7 +14,7 @@ test('no transfers while the group hours they are matched at are still being pre
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: globalThis.__transfersPending.groups, error: globalThis.__transfersPending.error,
       retry() { globalThis.__transfersPending.retries++; } });`,
     '/dashboard/usePeaceDeals.ts': 'export const usePeaceDeals = (widget, runtime) => ({ track: runtime.tracks[0], data: globalThis.__transfersPending.data, preparing: false, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => () => ({ name: "State" });',
   });

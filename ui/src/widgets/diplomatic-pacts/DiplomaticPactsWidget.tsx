@@ -20,17 +20,18 @@ import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import { aboutElsewhere, agreementLanes, agreementsOf, ownerReads } from './pactsData';
 import './diplomaticPacts.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 
 /** One country's diplomatic agreements over time: a section per kind of relation, split by
  * which side holds it, and a bar per partner from when it started to when it was last listed. */
 export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -103,7 +104,7 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
   return <div className="diplomatic-pacts">
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label="Diplomatic agreements" extent={extent} playhead={playhead}
       labelHour={at} lanes={lanes} showIcons={false} showNames={false} description={description} unobserved={data.unobserved} pending={prefix?.pending}
-      hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={looksKey}
+      hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={looksKey}
       onLanesInView={onLanesInView} tooltip={lane => tooltip(lane.id)}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     <PreparedKey pending={prefix?.pending} />

@@ -8,9 +8,9 @@ import { conferenceToken, transferConferenceLabel, visibleConferences } from './
 /** The same recorded dates and names as the Peace deals cards. Stored identity
  * is escaped so even a conference ID with spaces can be chosen. */
 export function useConferenceChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
-  usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const { track, data } = usePeaceDeals(widget, runtime, true);
-  const { moment: hour, from } = track ? transferTime(widget, track, runtime.tracks, runtime.clock.getHour()) : { moment: -Infinity, from: -Infinity };
+  const { moment: hour, from } = track ? transferTime(widget, track, runtime.tracks, playbackHour) : { moment: -Infinity, from: -Infinity };
   const choices = track ? visibleConferences(data?.deals ?? [], hour, from).map(deal => ({
     value: conferenceToken(track.source.metadata.campaignKey, track.branch.id, deal.id), label: transferConferenceLabel(deal) })) : [];
   // An ID kept from another campaign remains a visible, explicit missing choice.

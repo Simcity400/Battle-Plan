@@ -18,7 +18,7 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useParityRows } from '../../dashboard/parityRows';
 import { usePreparedCasualties } from './preparedCasualties';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -32,13 +32,13 @@ type CasualtyItem = ButterflyItem & { data: CountryCasualties };
 
 /** Current cumulative losses from the requested prepared hour. */
 function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   const race = options.view === 'race';
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
   const includeUnknown = options.includeUnknown === true;

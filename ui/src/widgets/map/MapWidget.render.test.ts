@@ -15,7 +15,7 @@ test('map load errors hide diagnostics and retain Retry; the displayed map keeps
       transform(_source, id) {
         const path = id.replaceAll('\\', '/');
         if (path.endsWith('/dashboard/geometry.ts')) return 'export const useMapState = () => globalThis.__mapReview;';
-        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => 105;';
+        if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = clock => clock.getHour();';
       },
     }] });
   try {

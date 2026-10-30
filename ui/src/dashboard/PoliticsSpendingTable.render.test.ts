@@ -46,7 +46,7 @@ for (const currency of ['Political', 'Command'] as const) test(`${currency} spen
       export const useSpendingChoices = () => ({}); export const useSpendingIdeaTooltips = () => undefined;`,
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: hour => tag => ({name: 'Dated ' + tag + ' at ' + hour, known: true})});`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => globalThis.__spendingTable.clock;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 1; export const usePlaybackHour = () => globalThis.__spendingTable.clock;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 1; export const usePlaybackHour = () => globalThis.__spendingTable.clock;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({categories: ['#123456', '#654321'], muted: '#888888'}); export const useViewportHeight = () => 800;`,
     '/charts/table/Table.tsx': 'export default props => {globalThis.__spendingTable.table = props; return null;}; export const CountryCell = () => null;',
   };
@@ -108,7 +108,7 @@ for (const kind of ['political-power-spending', 'political-power-spending-breakd
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/charts/table/useTableHour.ts': `export const useTableHour = () => ${BRANCH.lastHour};`,
-    '/dashboard/playback.ts': `export const usePlaybackSpeed = () => 0; export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackMotion = () => 0; export const usePlaybackHour = clock => clock.getHour();`,
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123456'], muted: '#888888' }); export const useViewportHeight = () => 800;`,
   });
   try {

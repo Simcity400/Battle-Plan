@@ -26,7 +26,7 @@ test('actual Supply main requests and flags require a dated actor while missing 
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyMainReply, retry() {} }); export const loadProduct = () => { throw new Error("Unexpected fact read"); }; export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = (_runtime, _track, active) => { globalThis.__supplyMarkerDemand = active; return { data: ${JSON.stringify(groups)} }; };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 20; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__supplyMainWanted = wanted; return { labelAt: hour => tag => { globalThis.__supplyMainLabelReads.push([hour, tag]); return { name: "Actor at " + hour, ...globalThis.__supplyMainFlag }; }, revision: 0 }; };',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ error: "bad", warning: "warn", positive: "good" });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
@@ -109,7 +109,7 @@ test('actual Supply picks and standalone selection require recorded identity whi
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__supplyIdentityReply, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 10; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = (_client, _track, wanted) => { globalThis.__supplyIdentityWanted = wanted; return { labelAt: hour => tag => ({ name: tag + " at " + hour }), revision: 0 }; };',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000; export const useChartTokens = () => ({ error: "bad", warning: "warn", positive: "good" });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

@@ -20,7 +20,7 @@ test('rendered faction members distinguish duplicate names and keep unknown rows
     '/dashboard/countryNamesAt.ts': 'export const useCountryFactsRead = () => new Map();',
     '/dashboard/useCountriesAt.ts': 'export const STYLES = 0;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: () => tag => ({name: tag === 'C' ? 'Distinct' : 'Same', flag: undefined})});`,
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({muted: '#888', surface: '#000', countryColours: 'fixed'});`,
     '/charts/race/factionPartColours.ts': `export const factionColourPlan = () => ({wanted: [], selection: new Map(), maxHours: 0});
       export const factionColourKey = () => null; export const factionCountryColours = () => new Map(); export const heldFactionColours = () => new Map();`,
@@ -68,7 +68,7 @@ test('faction races request and display numeric totals during a colour failure, 
       export const factionTotalsModel = () => ({series: new Map()}); export const factionLines = () => Array.from({length: 5000}, (_, index) => ({tag: 'faction-' + index, runs: [{firstHour: 0, lastHour: 10, value: 42}]}));
       export const factionLabelAt = () => 'Faction'; export const factionNameAt = () => 'Faction'; export const factionMemberLabelLimit = () => 1;
       export const factionTooltipForms = () => []; export const factionVisibleMemberTags = () => []; export const validateFactionTotalsReply = value => value;`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 10;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/preparedFactionTotals.ts': `const data = {series: [{id: '1', membership: [{firstHour: 0, lastHour: 100}]}], warnings: [], unit: 'Count', unavailableReason: null};
       export const usePreparedFactionTotals = (client, track, params) => ({data: params ? data : undefined, lineSummaries: new Map(), navigation: {},
         owner: globalThis.__factionRenderHooks.useMemo(() => ({}), [client, JSON.stringify(params)]), onSummaryView() {}, onReachHour() {}});`,

@@ -35,9 +35,9 @@ export function useAirTheatres(runtime: WidgetRuntime, track: BoundTrack | undef
 }
 
 /** The hour a widget's theatre choices are read at: the hour it shows (its pin, its range's
- * end, or playback while it follows), as its rows are read. */
-export function choiceHour(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined): number | null {
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+ * end, or `playbackHour` while it follows), as its rows are read. */
+export function choiceHour(widget: WidgetSpec, runtime: WidgetRuntime, track: BoundTrack | undefined, playbackHour: number): number | null {
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   return window ? Math.floor(window.lastHour) : track?.branch.lastHour ?? null;
 }
 

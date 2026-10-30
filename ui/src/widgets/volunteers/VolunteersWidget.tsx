@@ -26,7 +26,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -42,13 +42,13 @@ const unit = (kind: VolunteerKind, count: number) => kind === 'land' ? `${usNumb
 type Partner = LinkAt & { partner: string; partnerKey: string; direction: 'sent' | 'received' };
 
 export default function VolunteersWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const options = resolveOptions(OPTIONS, widget.options);
   const kind: VolunteerKind = options.kind === 'expeditionary' ? 'expeditionary' : 'land';
   const tokens = useChartTokens();
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   // The country choice is the shared one (`countryMatch`): countries by their native holders
   // and recorded identity history, so a tag a later country takes, or a rename, never changes

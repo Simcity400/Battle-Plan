@@ -26,10 +26,10 @@ export function ResearchWithDoctrines({ body: Body, ...props }: WidgetProps & { 
 
 function DoctrinePanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const [open, setOpen] = useState(false);
-  usePlaybackHour(runtime.clock, active && open && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && open && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window && Math.floor(window.lastHour);
   const request = track && tag && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour ? {
     sourceId: track.source.id, revision: track.source.revision, product: 'doctrines', params: { branchId: track.branch.id, tag, hour },

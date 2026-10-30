@@ -30,9 +30,9 @@ export default function CombatLogDetails(props: WidgetProps & { view: View }) {
   </details>;
 }
 export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps & { view: View }) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window ? Math.floor(window.lastHour) : null;
   const inBranch = !!track && hour !== null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const groups = useCountryGroups(runtime, track, active && widget.countries.kind !== 'all');

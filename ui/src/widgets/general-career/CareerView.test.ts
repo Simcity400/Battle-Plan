@@ -40,7 +40,7 @@ test('actual career renderer preserves growing zoom and supplies the shown label
     const props = { widget: { id: 'career', kind: 'general-career', trackIds: ['main'], countries: { kind: 'all' },
       time: { mode: 'follow' }, options: { leader: subjectToken('campaign', '21474841193') } },
       runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'campaign' } }, branch: { id: '1', firstHour: 100, lastHour: 500 } }],
-        clock: { getHour: () => hour, getSpeed: () => 24, subscribe: () => () => {} }, client: {} },
+        clock: { getHour: () => hour, getMotion: () => 24, subscribe: () => () => {} }, client: {} },
       active: true, onDiagnostics() {} } as unknown as WidgetProps;
     host.__careerTimelines = [];
     renderToStaticMarkup(createElement(Widget, props));

@@ -6,6 +6,7 @@ import { countryFlagContent, drawCountryFlag } from '../countryFlag';
 import type { CountryFlagLook } from '../../components/CountryFlag';
 import { revealRow } from '../../components/countryList';
 import { approach, approachAcrossGap, easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { nextRows } from '../rowMotion';
 import type { MovingRow } from '../rowMotion';
 import { scheduler } from '../scheduler';
@@ -66,6 +67,7 @@ interface Span { from: number; to: number }
  * motion and interaction. */
 export default function ButterflyChart<T extends ButterflyItem>(props: ButterflyProps<T>) {
   const tokens = useChartTokens();
+  const motionNow = useMotionNow();
   const viewport = useViewportHeight();
   const owner = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -102,7 +104,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
     const loaded = () => { if (task.current) scheduler.wake(task.current); };
     const frameTask: FrameTask = { frame: ({ dt, now }) => {
       const { props: p, tokens: t, viewport: room } = latest.current;
-      const tau = easeTau(t.motion, p.hoursPerSecond ?? 0, t.reducedMotion);
+      const tau = easeTau(t.motion, motionNow(p.hoursPerSecond), t.reducedMotion);
       if (items !== p.items) {
         rows = nextRows(rows, p.items.map(item => ({ key: item.id, item })), now, tau * 3, items == null);
         items = p.items;

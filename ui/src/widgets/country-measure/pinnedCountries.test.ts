@@ -102,7 +102,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
       if (active && lane != null && view != null) void read(view, new AbortController().signal, value => { data = value; });
       return {data, retry() {}}; };`,
     '/dashboard/useCountryGroups.ts': `const data = ${JSON.stringify(groups)}; export const useCountryGroups = (_runtime, _track, active) => ({data: active ? data : undefined, retry() {}});`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__pinnedCountries.clock; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => globalThis.__pinnedCountries.clock; export const usePlaybackMotion = () => 24;',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({revision: 0,
       labelAt: hour => tag => ({known: true, name: tag + '@' + hour, flag: 'flag:' + tag + '@' + hour})});
       export const flagReadSpec = () => ({}); export const flagReadMetadata = () => ({});`,

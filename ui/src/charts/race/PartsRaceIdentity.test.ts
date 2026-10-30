@@ -67,8 +67,8 @@ test('registered force breakdowns date their native headers and follow an indepe
           ? track.branch.firstHour + widget.time.lastOffset : window ? track.branch.firstHour + window.lastOffset : track.branch.lastHour }; };
       export const seekPositionFor = (track, hour) => hour >= track.branch.firstHour && hour <= track.branch.lastHour ? hour - track.axisOffset : null;
       export const createWidget = (kind, id) => ({ kind, id: 'new pin', configVersion: 1, trackIds: [id], options: {} });`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = (_clock, on) => { globalThis.__partsIdentity.subscriptions.push(on); };
-      export const usePlaybackSpeed = () => 24;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = (clock, on) => { globalThis.__partsIdentity.subscriptions.push(on); return clock.getHour(); };
+      export const usePlaybackMotion = () => 24;`,
     '/dashboard/products.ts': `const reply = request => request?.product === 'country-groups' ? undefined : request ? globalThis.__partsIdentity.reply : undefined;
       export const useProduct = (_client, request) => ({ data: reply(request), retry() {} });
       export const loadProduct = (_client, request, _signal, _validate, _source, _restart, publish) => {

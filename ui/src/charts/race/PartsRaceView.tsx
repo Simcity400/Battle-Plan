@@ -80,7 +80,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
   const chartOptions = useMemo(() => config.chartOptions?.(options) ?? options, [config.chartOptions, options]);
   const view = options.view as RaceView;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
@@ -122,8 +123,8 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     track?.source.metadata.campaignKey, widget.options?.holder, widget.options?.drillOriginHour]);
   const contextOwner = useMemo(() => ({ client: runtime.client, resetKey, pinned }), [runtime.client, resetKey, pinned]);
   const drill = storedDrill.owner === contextOwner ? storedDrill : CLOSED_PARTS_RACE;
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown != null && drill.follow));
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const drillPlaybackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown != null && drill.follow));
+  const clockHour = track ? Math.floor(drillPlaybackHour) + track.axisOffset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const drillAnchor = useRef<HTMLDivElement>(null);
   const tokens = useChartTokens();

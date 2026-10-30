@@ -19,7 +19,7 @@ test('supply of a group member over hours still being prepared is loading, not u
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/supply-health/SupplyHealthWidget.tsx', {
     '/widgets/supply-health/SupplyHealthWidget.tsx': widget,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__supplyPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ revision: 0, labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ categories: ['#123'], muted: '#888', surface: '#000' }); export const useViewportHeight = () => 1000;",
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

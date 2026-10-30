@@ -26,11 +26,11 @@ const EXIT_MS = 450;
 /** The country's national spirits at the playback moment, as the game's grid of
  * spirit icons. Spirits taken on pop in; spirits that end fade out. */
 export default function NationalSpiritsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const widgetOwner = useId();
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const held = data?.held?.hour === Math.floor(hour ?? NaN) ? data.held : undefined;
   // Each recorded holder starts a new segment, even when it reuses the same tag.

@@ -96,10 +96,10 @@ export function CurrentFocus({ order, art, state, live, reason, pending }: { ord
 
 export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   const menu = useContextMenu('National focus actions');
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const live = widget.time.mode === 'follow';
   // A pinned moment shows the focus in progress then, like Live but held still.

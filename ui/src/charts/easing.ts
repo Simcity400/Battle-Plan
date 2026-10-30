@@ -15,10 +15,15 @@ export function approachAcrossGap(current: number | null, target: number | null,
   return gap || current == null || target == null ? target : approach(current, target, dtMs, tauMs);
 }
 
-/** The easing time for the app's motion setting: shorter at high playback speeds so
- * shapes keep up, and none when the user asked for reduced motion. */
-export function easeTau(feel: MotionFeel, hoursPerSecond: number, reduced: boolean): number {
-  if (reduced) return 0;
+/** The rate charts ease at: the playback speed while playing, none while paused. */
+export const motionOf = (playback: { playing?: boolean; hoursPerSecond: number }): number | undefined =>
+  playback.playing ? playback.hoursPerSecond : undefined;
+
+/** The easing time for the app's motion setting while playback runs: shorter at high
+ * speeds so shapes keep up. None while paused (`hoursPerSecond` undefined), so a jump or
+ * a new selection is drawn at once, and none when the user asked for reduced motion. */
+export function easeTau(feel: MotionFeel, hoursPerSecond: number | undefined, reduced: boolean): number {
+  if (reduced || hoursPerSecond === undefined) return 0;
   const speedup = 1 + Math.log10(Math.max(1, hoursPerSecond / 24));
   return BASE_MS[feel] / speedup;
 }

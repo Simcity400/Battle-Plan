@@ -19,7 +19,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/productWindows.ts': `export function useProductWindows(_client, _identity, request, _wanted, _active, _validate, source) {
       globalThis.__breakdownRouting.push({ kind: 'window', request: request(0), source, identity: _identity });
       return { data: new Map(), errors: new Map(), retry() {} }; }`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => `${hour}:${tag}`; export const useCountryNamesAt = () => new Map(); export const useCountryFactsRead = () => new Map();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123"] }); export const useViewportHeight = () => 1000;',

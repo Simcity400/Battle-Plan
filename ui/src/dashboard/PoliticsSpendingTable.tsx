@@ -17,7 +17,7 @@ import { useCountryLabelsAt } from './countryFlagsAt';
 import { ideaTooltip } from './ideaTooltip';
 import { resolveWindow } from './model';
 import { contentSet, resolveOptions, setToken, toggleContentSet } from './options';
-import { usePlaybackSpeed } from './playback';
+import { usePlaybackMotion } from './playback';
 import { categoryChoices, monthLabel, spendLabel, spendingAt, spendingCostNotes, spendingCountryRequests, spendingGapNote, spendingGaps, spendingSummary,
   preparedSpendingTableRows, unknownCosts } from './politicsSpending';
 import type { PowerCurrency, SpendingTableRow } from './politicsSpending';
@@ -40,7 +40,7 @@ const ALL = '';
 export default function PoliticsSpendingTable({ currency, widget, runtime, active, onDiagnostics, setOptions, setOption }: WidgetProps & { currency: PowerCurrency }) {
   const parityRoot = useRef<HTMLDivElement>(null);
   const clockHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const options = resolveOptions(POLITICS_SPENDING_OPTIONS, widget.options);
   const digits = powerDecimals(options);

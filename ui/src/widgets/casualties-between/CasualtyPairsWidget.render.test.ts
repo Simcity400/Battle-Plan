@@ -21,7 +21,7 @@ test('casualty pairs of a group counted at an hour still being prepared are load
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/productWindows.ts': `export const useProductWindows = (_client, identity) => ({ data: identity ? new Map([[0, ${JSON.stringify(reply)}]]) : new Map(), errors: new Map(), retry() {} });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__pairsPending.groups, retry() {} });',
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour}; export const usePlaybackSpeed = () => 0;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;`,
     '/dashboard/countryFlagsAt.ts': 'export const flagReadSpec = () => ({}); export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryFactsAt = () => new Map();',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#777777";',

@@ -35,10 +35,10 @@ import './decryption.css';
 const NO_WARNINGS: string[] = [];
 
 export default function DecryptionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
   const first = track ? track.branch.firstHour + Math.floor((hour - track.branch.firstHour) / 24) * 24 : hour;
   const day = track && runtime.client.preparedQuery ? { firstHour: first, lastHour: Math.min(first + 23, track.branch.lastHour) } : null;

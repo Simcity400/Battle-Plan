@@ -22,6 +22,7 @@ import { preparedContributionStack, contributionAmounts, contributionHistory, co
 import { coverageNote, flowCountryAt, formatDays, knownHours, knownSpanAt, measureAmount, measureNote, resourceName } from './tradeData';
 import type { Flow, Measure, TradeData, TradeCountryFact } from './tradeData';
 import { TOOLTIP_LIMIT } from './tradeTooltip';
+import { motionOf } from '../../charts/easing.ts';
 
 /** The complete native holder/resource inventory, and the same measure over time. */
 export default function TradeDrill({ prepared, flows, trade, track, runtime, measure, from, hour, extent, playhead, known, colours, tokens, identityNote, active, onPick, onContextMenu }: {
@@ -123,7 +124,7 @@ export default function TradeDrill({ prepared, flows, trade, track, runtime, mea
     {!!dense?.approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="trade-drill-chart">
       <TimeChart label={`Selected trade contributors, ${measureNote(measure).toLowerCase()} over time`} extent={extent} branchStart={track.branch.firstHour}
-        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+        playhead={playhead} playback="cursor" afterPlayhead hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         axes={{ xFrom: null, xTo: null, yMin: 0, yMax: null, log: false }} layers={layers} onSummaryView={prepared?.onSummaryView} onHover={prepared?.onHover}
         onNavigateHour={onNavigateHour} keyboardHour={prepared?.keyboardHour} keyboardRevision={prepared?.keyboardRevision} keyHours={stack?.hours ?? measured?.hours}
         active={active} revision={dense ?? stack ?? measured} onPick={onPick} onContextMenu={onContextMenu}

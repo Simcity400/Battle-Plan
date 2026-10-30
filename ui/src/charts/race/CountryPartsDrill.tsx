@@ -54,17 +54,17 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const origin = storedOrigin?.owner === contextOwner ? storedOrigin.hour : null;
   const originTag = storedOrigin?.owner === contextOwner ? storedOrigin.tag : null;
   const setOrigin = (hour: number, tag: string) => setStoredOrigin({ owner: contextOwner, hour, tag });
-  usePlaybackHour(runtime.clock, active && drill.breakdown != null && drill.follow);
+  const playbackHour = usePlaybackHour(runtime.clock, active && drill.breakdown != null && drill.follow);
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'breakdown';
   useEffect(() => { dispatch({ type: 'close' }); setStoredOrigin(null); }, [contextOwner]);
   const tag = drill.breakdown ?? (pinned ? originTag ?? (widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : defaultTag) : null);
   const originHour = origin ?? (typeof widget.options?.drillOriginHour === 'number' ? widget.options.drillOriginHour : moment);
   const missingPinnedDate = pinned && drill.breakdown == null && (widget.time.mode === 'pin' || widget.time.mode === 'range')
-    && (!track || !resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()));
+    && (!track || !resolveWindow(widget, track, runtime.tracks, playbackHour));
   useEffect(() => { if (pinned && !missingPinnedDate && tag && origin == null) setStoredOrigin({ owner: contextOwner, hour: originHour, tag }); },
     [pinned, missingPinnedDate, tag, origin, originHour, contextOwner]);
-  const clockHour = track ? Math.floor(runtime.clock.getHour()) + track.axisOffset : null;
+  const clockHour = track ? Math.floor(playbackHour) + track.axisOffset : null;
   const liveHour = clockHour != null && track && clockHour >= track.branch.firstHour && clockHour <= track.branch.lastHour ? clockHour : null;
   const following = drill.breakdown == null ? widget.time.mode === 'follow' : drill.follow;
   const hour = Math.floor(drill.choices ? drill.hour ?? moment : drill.breakdown == null ? moment

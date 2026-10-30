@@ -17,7 +17,7 @@ test('lend-lease at an hour whose group membership is still being prepared is lo
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/lend-lease-balance/LendLeaseBalanceWidget.tsx', {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__lendLeasePending.data, retry() {} }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__lendLeasePending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => null, color: () => null });',
     '/charts/race/countryColours.ts': 'export const useCountryColours = () => () => "#123456";',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], text: "#ffffff", surface: "#000000", muted: "#777777" }); export const useViewportHeight = () => 1000;',

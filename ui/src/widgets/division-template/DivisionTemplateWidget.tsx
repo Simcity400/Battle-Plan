@@ -14,7 +14,7 @@ import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryNameAt, useReachedCountry, useReachedProduct } from '../../dashboard/reachedProduct';
 import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { withWindowDiagnostics } from '../../dashboard/gameWindows';
@@ -37,7 +37,7 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const playback = useTableHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const country = useReachedCountry(widget, runtime, hour, active, widget.options?.country, setOption);
@@ -114,7 +114,7 @@ export default function DivisionTemplateWidget({ widget, runtime, active, setOpt
     rankMarkers={false} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     onRowClick={snapshot ? open : undefined} tooltip={tooltip} hoursPerSecond={hoursPerSecond} />;
   const draw = snapshot;
-  const pickedHour = drillHour(drill, Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0)) ?? hour;
+  const pickedHour = drillHour(drill, Math.floor(playback) + (track?.axisOffset ?? 0)) ?? hour;
   return <div ref={anchor} className="division-template">{pill}
     {/* Outside the drill, so an open breakdown never hides a later failure. */}
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}

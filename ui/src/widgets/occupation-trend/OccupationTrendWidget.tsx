@@ -23,7 +23,7 @@ import type { OccupationMeasure, ShownMeasure } from './occupationTrendData';
 
 const NO_WARNINGS: string[] = [];
 export default function OccupationTrendWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view as RaceView;
   const shown = options.measure as ShownMeasure;
@@ -31,7 +31,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const collaboration = options.collaboration === true;
   const digits = Number(options.digits);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
     : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];

@@ -11,7 +11,7 @@ test('an empty event choices log whose group hours are still being prepared is l
   const host = globalThis as typeof globalThis & { __choicesPending?: typeof state }; host.__choicesPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/event-choices/EventChoicesWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__choicesPending.groups });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/event-feed/useScriptOccurrences.ts': `export const useScriptOccurrences = () => ({ data: { unavailable: [] }, pages: [], warnings: [], replies: [],
       errors: new Map(), total: null, identity: 'event-choices', prefix: null, onWantedPages() {}, retryPages() {} });`,

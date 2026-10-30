@@ -22,7 +22,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { POLITICS_HISTORY, preparedThroughHour, tagAt, unknownHours, valueAt } from '../../dashboard/politicsHistory';
 import { preparedPrefix } from '../../dashboard/preparedPrefix';
 import { useProduct } from '../../dashboard/products';
@@ -64,7 +64,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const following = widget.time.mode === 'follow';
   const playbackHour = useTableHour(runtime.clock, active && following);
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);

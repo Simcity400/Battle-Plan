@@ -33,7 +33,7 @@ test('the prepared widget supplies its settled page and description to one parit
     return [slot.value, (next: unknown) => { slot.value = typeof next === 'function' ? next(slot.value) : next; }];
   };
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open(){}, menu:null });',

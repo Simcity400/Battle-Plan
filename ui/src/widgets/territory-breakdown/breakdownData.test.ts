@@ -106,7 +106,7 @@ test('actual Territory breakdown forwards unknown current and final selection to
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__breakdownR2.data }); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: ${JSON.stringify(groups)} });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 15;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, flagPending: () => false, flagReason: () => undefined });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ names: () => ({ name: null, reason: null }), colours: new Map(), warnings: [], loading: false });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',

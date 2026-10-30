@@ -33,7 +33,7 @@ const NO_ROWS: readonly LogRow<SinkingItem>[] = [];
 const COLUMNS = 'var(--space-6) minmax(0, 1fr)';
 
 export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const manifest = useShipsSunk(widget, runtime, active);
@@ -42,7 +42,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
   const contentRevision = useContentRevision(runtime.client);
   const filtered = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && filtered);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const fallbackKey = JSON.stringify(selectedTags(widget.countries, track));

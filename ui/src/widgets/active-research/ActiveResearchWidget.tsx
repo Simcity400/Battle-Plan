@@ -46,10 +46,10 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const parity = useRef<HTMLElement>(null);
   const menu = useContextMenu('Active research actions');
   const owner = useId();
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const live = widget.time.mode === 'follow';
   const { track, tag, data: currentData, answeredHour, grants, error, retry, historyPreparing, countdownPreparing } = useActiveResearch(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window && Math.floor(window.lastHour);
   const history = useResearchReply(widget, runtime, active && !historyPreparing);
   const data = !historyPreparing && history.data && hour != null && !pendingAt(preparedPrefix(history.data), hour) ? history.data : currentData;

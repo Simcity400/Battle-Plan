@@ -16,7 +16,7 @@ import { formatDateTime } from './calendar';
 import { contentTitle } from './contentTitles';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
-import { usePlaybackSpeed } from './playback';
+import { usePlaybackMotion } from './playback';
 import { BOMBING_GAP_NOTE, leafAmount, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex } from './militaryAirLedger';
 import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
 
@@ -27,7 +27,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
   data: MilitaryAirReply; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   dealt: boolean; active: boolean; onPick: (hour: number) => void; pickOwner: unknown;
 }) {
-  const tokens = useChartTokens(), hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage history actions');
   const index = useMemo(() => militaryAirIndex(data, NO_FILTERS), [data]);
   const row = hour >= from && hour <= end ? ledgerCountryAt(index, tag, from, hour, identity) : null;

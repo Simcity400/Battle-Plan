@@ -30,8 +30,8 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
       export const useEffect = (effect, deps) => globalThis.airUseEffect?.(effect, deps);
       export const useChartTokens = () => (${JSON.stringify(tokensFromValues(() => '#8899aa', 'sans-serif'))});
       export const useViewportHeight = () => 1000;
-      export const usePlaybackHour = () => {};
-      export const usePlaybackSpeed = clock => clock.getSpeed();
+      export const usePlaybackHour = clock => clock.getHour();
+      export const usePlaybackMotion = clock => clock.getMotion();
       export const useContentRevision = () => 0;
       export const useProduct = (_, request) => { if (request) globalThis.airRequests.push(request); return { data: request?.params.view === 'timeline' ? globalThis.airTimeline : request?.params.view === 'moment' ? globalThis.airDay : request?.params.windowsOnly ? globalThis.airWindows : request?.params.view === 'choices' ? globalThis.airChoices : undefined, error: request?.params.view === 'moment' ? globalThis.airDayError : null, retry() {} }; };
       export const useFollowedProduct = (client, request, moving, ...rest) => { const product = useProduct(client, request, ...rest); return { ...product, moment: product.data === undefined ? undefined : JSON.stringify(moving.map(name => request.params[name])) }; };
@@ -59,7 +59,7 @@ function render(hour: number, mode = 'follow', options: Record<string, string | 
   const track = { selectedTag, id: 'track', axisOffset: 0, branch: { id: '1', firstHour, lastHour: 100, gaps: [] }, source: { id: 'source', revision: 1, metadata: { campaignKey: 'campaign', countries: playerTag ? [{ id: 7, tag: playerTag }] : [], playerCountryId: 7 } } };
   function Probe() {
     result = useAir({ widget: { countries: { kind: 'selected' }, kind: 'air-superiority-timeline', trackIds: ['track'], time: { mode } }, active: true, mapOptions: {}, onDiagnostics() {},
-      runtime: { client: shared.airClient ?? CLIENT, tracks: [track], clock: { getHour: () => hour, getSnapshot: () => ({ seekSequence: 0 }), getSpeed: () => 24 } } }, options, moment);
+      runtime: { client: shared.airClient ?? CLIENT, tracks: [track], clock: { getHour: () => hour, getSnapshot: () => ({ seekSequence: 0 }), getMotion: () => 24 } } }, options, moment);
     return null;
   }
   renderToStaticMarkup(createElement(Probe));

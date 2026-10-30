@@ -134,8 +134,8 @@ test('production tooltips name the hovered hour and lines name their own drawn e
   const replacements: Record<string, string> = {
     '/dashboard/products.ts': `export const useProduct = (_client, request) => request?.product === 'equipment-produced' ? ({ data: ${JSON.stringify(REPLY)} }) : {};
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => {};
-      export const usePlaybackSpeed = clock => clock.getSnapshot().hoursPerSecond;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();
+      export const usePlaybackMotion = clock => clock.getSnapshot().hoursPerSecond;`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({});',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, moment, _active, _segment, hours) => ({
       name: (tag, hour) => tag + ' at ' + (hour ?? hours?.get(tag) ?? moment), color: () => [50, 100, 150], flag: () => undefined, revision: 0 });`,

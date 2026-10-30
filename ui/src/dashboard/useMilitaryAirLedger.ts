@@ -4,11 +4,13 @@ import type { WidgetSpec } from './model';
 import { resolveWindow } from './model';
 import { useProduct } from './products';
 import { airCauseName, validateMilitaryAirReply } from './militaryAirLedger';
+import { usePlaybackHour } from './playback.ts';
 
 export function useMilitaryAirLedger(widget: WidgetSpec, runtime: WidgetRuntime, family: MilitaryAirReply['family'], active: boolean,
   query?: { regions?: readonly number[]; causes?: readonly number[]; metric: MilitaryAirMetric }) {
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const top = query && widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? { count: widget.countries.group.count, metric: query.metric } : null;
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'military-air-ledger', params: { branchId: track.branch.id, family,
     regions: query?.regions ?? [], causes: query?.causes ?? [], fromHour: widget.time.mode === 'range' ? window?.firstHour ?? null : null, top } } : null;

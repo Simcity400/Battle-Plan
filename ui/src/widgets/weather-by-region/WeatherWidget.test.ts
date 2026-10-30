@@ -37,7 +37,7 @@ async function mount() {
     '/charts/jump.ts': 'export const jumpItem = (_runtime, _track, hour) => ({ hour });',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open: (_x, _y, items) => { globalThis.__weather.menu = items; }, menu: null });',
     '/widgets/weather-by-region/RegionProvinces.tsx': 'export default props => { globalThis.__weather.drilled = props.hour; return null; };',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 239; export const usePlaybackSpeed = () => 1;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 1;',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['red', 'blue'], surface: 'surface', text: 'text', accent: 'accent', error: 'error',
       gapOpacity: 0.2, muted: 'muted', border: 'border', font: 'sans', fontSize: { small: 11 }, lineWidth: { grid: 1, series: 2 }, hatch: { spacing: 4 } });
       export const useViewportHeight = () => 800;`,

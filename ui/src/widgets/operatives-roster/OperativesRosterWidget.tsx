@@ -20,7 +20,7 @@ import { countryMatch, MEMBERSHIP_PREPARING, noMembersAt, resolveCountries } fro
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -37,7 +37,7 @@ const muted = (row: OperativeRow) => row.departed;
 
 export default function OperativesRosterWidget({ widget, runtime, active, setOption, onDiagnostics }: WidgetProps) {
   const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewportHeight = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);

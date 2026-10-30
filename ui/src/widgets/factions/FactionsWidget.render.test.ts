@@ -16,7 +16,7 @@ test('factions at an hour still being prepared are loading, neither no faction n
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/factions/FactionsWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__factionsPending.groups });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), names: () => ({ name: "Mod pact", reason: null }), warnings: [], setColour() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountriesAt.ts': 'export const useCountriesAt = () => ({ country: tag => ({ name: tag }), revision: 0 });',
     '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }) });',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: ["#123456"], text: "#ffffff", surface: "#000000", muted: "#777777" }); export const useViewportHeight = () => 1000;',

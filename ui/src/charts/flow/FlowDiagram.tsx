@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { mix } from '../../shell/appearance/color';
 import { font } from '../draw';
 import { easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { canvasImage } from '../images';
 import { countryTooltipContent, drawCountryFlag } from '../countryFlag';
 import { ellipsise, layoutEndLabels } from '../labels';
@@ -84,6 +85,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
   latest.current = props;
+  const motionNow = useMotionNow();
   const task = useRef<FrameTask | null>(null);
   const drawn = useRef<FlowFrame>({ nodes: [], links: [], settled: true });
   const drawnLabels = useRef<LabelBox[]>([]);
@@ -153,7 +155,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
       const snap = stretch !== p.stretch || tokens.reducedMotion || flowPlaybackSnap(playbackHour, p.playbackHour);
       stretch = p.stretch;
       playbackHour = p.playbackHour;
-      const frame = motion.step({ nodes: p.nodes, links: p.links }, geometry, info.dt, easeTau(tokens.motion, p.hoursPerSecond ?? 24, tokens.reducedMotion), snap);
+      const frame = motion.step({ nodes: p.nodes, links: p.links }, geometry, info.dt, easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion), snap);
       drawn.current = frame;
       drawnHour.current = Number.isSafeInteger(p.hour) ? p.hour! : null;
 

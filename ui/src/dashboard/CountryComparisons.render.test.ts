@@ -12,7 +12,7 @@ test('comparisons of a group with no member read yet are loading, and a group pr
   const host = globalThis as typeof globalThis & { __comparisonsPending?: typeof state }; host.__comparisonsPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps & { component: ComponentType<WidgetProps> }) => ReactElement }>('/ui/src/dashboard/CountryComparisons.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__comparisonsPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
   });
   try {

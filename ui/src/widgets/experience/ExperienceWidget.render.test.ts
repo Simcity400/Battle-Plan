@@ -15,7 +15,7 @@ test('a group with no recorded experience while membership is still being prepar
     '/dashboard/products.ts': `export const useProduct = () => ({ data: ${JSON.stringify(data)}, retry() {} });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__experiencePending.groups, retry() {} });',
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour}; export const usePlaybackSpeed = () => 0;`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 0;`,
     '/dashboard/countryLooks.ts': `export const lookPlan = (_branch, tags, hour) => ({ wanted: tags.map(tag => ({ tag, hour })), maxHours: 16 });
       export const useCountryLooks = () => ({ color: () => [20, 50, 80], warnings: [] });`,
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesRead = () => new Map();',

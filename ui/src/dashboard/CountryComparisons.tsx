@@ -19,9 +19,9 @@ const NO_WARNINGS: string[] = [];
 
 export default function CountryComparisons({ component: Component, ...props }: WidgetProps & { component: ComponentType<ComparisonProps> }) {
   const { widget, runtime, active, onDiagnostics } = props;
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const { track, countries, error, refreshError, retry, pending, contentPending } = useComparisonCountries(widget, runtime, active);
-  const hour = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : 0;
+  const hour = track ? resolveWindow(widget, track, runtime.tracks, playbackHour)?.lastHour ?? track.branch.lastHour : 0;
   const [notes, setNotes] = useState<ReadonlyMap<string, readonly string[]>>(new Map());
   const body = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ left: 0, width: 320 });

@@ -22,6 +22,7 @@ import type { BalanceHistory } from '../../generated/dashboard';
 import { BALANCE_UNAVAILABLE, balanceAt, balanceAxis, balanceLanes, balanceName, balanceStatusAt, exactValue, plotRuns, RANGE_UNAVAILABLE, rangeName,
   SIDE_UNAVAILABLE, sideName, statusText } from './balanceOfPowerData';
 import type { BalanceNames, BalanceSubject } from './balanceOfPowerData';
+import { motionOf } from '../../charts/easing.ts';
 
 /** The balance's in-game name in strong text, then its state in a muted line, as
  * Ruling party heads its chart. The key shows on hover; members when it is shared. */
@@ -119,7 +120,7 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     <BalanceHeadline name={name} token={balance.token} detail={statusText(status, balance, names)} members={membersText(members)} />
     <div className="balance-chart">
       <TimeChart label={`${name} of ${countryName}`} extent={[extent[0], extent[1]]} playhead={playhead} playback={playback.mode}
-        afterPlayhead={playback.afterPlayhead} windowHours={playback.windowHours} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+        afterPlayhead={playback.afterPlayhead} windowHours={playback.windowHours} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
         branchStart={track.branch.firstHour} axes={{ xFrom: null, xTo: null, yMin: axis.min, yMax: axis.max, log: false }} valueTicks={axis.ticks}
         layers={layers} active={active} pickOwner={pickOwner} keyHours={keyHours}
         revision={`${balance.token}:${at}:${limit}:${runs.length}:${pending.length}`}
@@ -130,7 +131,7 @@ export default function BalanceCountryView({ runtime, track, active, subject, na
     <PreparedKey pending={pending} />
     {timelineLanes.length > 1 && <div className="balance-lanes" style={{ height: AXIS_HEIGHT + Math.min(timelineLanes.length, 3) * ROW_HEIGHT }}>
       <Timeline label={`Balances of ${countryName}`} extent={[extent[0], Math.max(extent[0] + 1, extent[1] + 1)]} playhead={playhead} labelHour={at} lanes={timelineLanes} showIcons={false} showNames={false}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={`${balance.token}:${at}:${limit}`} pending={pending} unobserved={unknown}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} revision={`${balance.token}:${at}:${limit}`} pending={pending} unobserved={unknown}
         tooltip={(lane, span) => laneTooltip(lane, span)} labelMenu
         onContextMenu={(hour, x, y, lane) => menu.open(x, y, [
           ...lane && onChoose && lane.id !== balance.token ? [{ label: 'Show this balance', run: () => onChoose(lane.id) }] : [],

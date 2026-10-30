@@ -18,7 +18,7 @@ for (const completed of [false, true]) test(`research ${completed ? 'populated' 
   const replacements: Record<string, string> = {
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [] });',
     '/research/preparedResearch.ts': 'export const usePreparedResearch = () => ({ data: globalThis.__researchListReply });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/research/useTechnologyArtwork.ts': 'export const useTechnologyArtwork = () => ({ artwork: new Map(), warnings: [] });',
@@ -65,7 +65,7 @@ test('List parity preserves known row operands without serializing future slot b
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ categories: [] });',
     '/charts/table/Table.tsx': 'export default props => { globalThis.__researchTable = props; return null; };',
     '/research/preparedResearch.ts': 'export const usePreparedResearch = () => ({ data: globalThis.__researchListReply });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/research/useTechnologyArtwork.ts': 'export const useTechnologyArtwork = () => ({ artwork: new Map(), warnings: [] });',

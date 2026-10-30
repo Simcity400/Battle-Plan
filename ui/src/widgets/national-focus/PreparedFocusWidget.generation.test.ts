@@ -25,7 +25,7 @@ test('an obsolete focus page failure cannot replace a newer successful generatio
     return name === 'useRef' ? slot.value : [slot.value, (next: any) => { slot.value = typeof next === 'function' ? next(slot.value) : next; }];
   };
   const replacements: Record<string, string> = {
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

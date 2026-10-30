@@ -16,7 +16,7 @@ test('spirit tiles keep names and focus access with reserved fallback artwork', 
     '/dashboard/ideaHistory.ts': `export const useIdeaHistory = () => ({ track: { source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign' } },
       branch: { id: '1', firstHour: 100, lastHour: 200 }, axisOffset: 0 }, tag: 'mod_country', data: ${JSON.stringify(data)} });`,
     '/dashboard/useIdeaTooltips.ts': 'export const useIdeaTooltips = () => undefined;',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
   };
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

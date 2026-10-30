@@ -39,7 +39,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({data: globalThis.__rosterNativeOwners.groups});',
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: hour => tag =>
       ({name: tag, known: true, flag: 'flag-' + tag + '-at-' + hour})});`,
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 20;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({fontSize: {title: 16, small: 12}}); export const useViewportHeight = () => 1000;',
   };

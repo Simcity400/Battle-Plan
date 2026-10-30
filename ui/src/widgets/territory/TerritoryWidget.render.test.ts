@@ -19,7 +19,7 @@ test('territory of a group at an hour still being prepared is loading, not unrec
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/territory/TerritoryWidget.tsx', {
     '/charts/race/useRaceTooltip.ts': 'export const useRaceTooltip = () => ({ showTip() {}, tipWanted: [] });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__territoryPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, color: () => [1, 2, 3], flag() {}, flagPending: () => false, flagReason() {} });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), names: new Map(), warnings: [], loading: false, error: null });',
     '/dashboard/preparedFactionTotals.ts': 'export const usePreparedFactionTotals = () => ({ retry() {} });',
@@ -57,7 +57,7 @@ test('territory of a group with no member found yet says what the moment was onc
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/territory/TerritoryWidget.tsx', {
     '/charts/race/useRaceTooltip.ts': 'export const useRaceTooltip = () => ({ showTip() {}, tipWanted: [] });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__territoryGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, color: () => [1, 2, 3], flag() {}, flagPending: () => false, flagReason() {} });',
     '/dashboard/FactionColours.tsx': 'export const useFactionColours = () => ({ colours: new Map(), names: new Map(), warnings: [], loading: false, error: null });',
     '/dashboard/preparedFactionTotals.ts': 'export const usePreparedFactionTotals = () => ({ retry() {} });',

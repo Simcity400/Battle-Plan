@@ -38,7 +38,7 @@ test('actual bombing adapter forwards dated native flag status without labelling
   const replacements: Record<string, string> = {
     '/dashboard/useMilitaryAirLedger.ts': 'export const useMilitaryAirLedger = () => ({ data: globalThis.__militaryFlags.data, track: globalThis.__militaryFlags.track, retry() {} });',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {}; export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/dashboard/countryLooks.ts': `export const useCountryLooks = (_client, _track, _tags, _hour, _active, _segment, dates, exact) => {
       globalThis.__militaryFlags.wanted = [...dates]; globalThis.__militaryFlags.exact = exact;
       return { name: (tag, hour) => tag + ' at ' + hour, color: () => null,

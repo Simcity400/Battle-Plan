@@ -28,7 +28,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { MEMBERSHIP_PREPARING, membershipChanges, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackHour, usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CountryStyle, ExperienceReply } from '../../generated/dashboard';
@@ -51,14 +51,14 @@ const branchDash = (branch: typeof BRANCHES[number]) => lineDashes(BRANCHES.inde
 
 /** Banked experience, accepted daily gain or net change, with each branch shown. */
 export default function ExperienceWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const measure = options.measure as ExperienceMeasure;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
   const lastHour = track?.branch.lastHour ?? 0;

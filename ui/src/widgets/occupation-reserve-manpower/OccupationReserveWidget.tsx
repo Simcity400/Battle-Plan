@@ -42,11 +42,11 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   // A drill that follows playback follows it whatever the widget's own time.
-  usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || drill.breakdown !== null && drill.follow));
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -101,7 +101,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const pinnedHolder = pinned && options.holder ? contentKey(String(options.holder)) : null;
   const drilled = pinned ? pinnedHolder : drill.breakdown ? holder : null;
   // Playback in this campaign's hours, within its branch.
-  const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(runtime.clock.getHour()) + track.axisOffset, track.branch.lastHour)) : moment;
+  const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(playbackHour) + track.axisOffset, track.branch.lastHour)) : moment;
   const drillAt = pinned ? moment : drillHour(drill, clockHour);
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...groups.data?.warnings ?? []] : null);

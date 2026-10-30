@@ -36,6 +36,7 @@ import type { ProjectCard } from './specialProjectsData';
 import '../national-focus/nationalFocus.css';
 import './specialProjects.css';
 import ProjectDetails from './ProjectDetails';
+import { motionOf } from '../../charts/easing.ts';
 
 const ProjectTile = ({ icon }: { icon: string | null }) =>
   <span className="blueprint-tile">{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
@@ -102,13 +103,13 @@ function CurrentList({ reply, at, item, preparing = null, current = null, curren
 
 function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const parityRoot = useRef<HTMLDivElement>(null);
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const owner = useId();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'history' ? 'history' : 'live';
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = following && window ? window.lastHour : null;
   const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
@@ -216,7 +217,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
       : <WidgetState kind="empty" message="No special projects yet." />;
   else body = <><Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Special project history" extent={extent} playhead={playhead} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} active={active} revision={lanes}
     barHeight={18} pending={pending}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
     labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
@@ -237,7 +238,7 @@ const PROJECTS_UNRECORDED = 'Projects were not recorded.';
 
 export default function SpecialProjectsWidget(props: WidgetProps) {
   const view = props.widget.options?.view === 'history' ? 'history' : 'live';
-  usePlaybackHour(props.runtime.clock, props.active && props.widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(props.runtime.clock, props.active && props.widget.time.mode === 'follow');
   // The view switch sits beside Live, where the frame never clips it; a frame
   // without header actions (the catalogue preview) shows it beside the title.
   const actions = useContext(HeaderActionsSlot);
@@ -246,7 +247,7 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const fallback = defaultCountryTag(track);
   const selected = useMemo(() => projectCountries(props.widget.countries, fallback ? [fallback] : [], groups.data,
     track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 0), [props.widget.countries, fallback, groups.data, track]);
-  const window = track && resolveWindow(props.widget, track, props.runtime.tracks, props.runtime.clock.getHour());
+  const window = track && resolveWindow(props.widget, track, props.runtime.tracks, playbackHour);
   const at = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const tags = selected.tags.filter(tag => selected.match.matches(tag, at));
   const unknown = selected.unobserved.some(span => span.firstHour <= at && at <= span.lastHour);

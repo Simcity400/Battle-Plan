@@ -25,7 +25,7 @@ const replacements: Record<string, string> = {
       globalThis.__producedPath.prepared.push(request); return { ...globalThis.__producedPath.answer(request), retry() {} }; };`,
   '/dashboard/products.ts': `export const useProduct = (_client, request) => { if (request) globalThis.__producedPath.history.push(request); return { retry() {} }; };
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-  '/dashboard/playback.ts': 'export const usePlaybackHour = () => 2000;',
+  '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
   '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
   '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 480; export const useChartTokens = () => ({ categories: ["red", "blue"], muted: "grey" });',
   '/widgets/equipment-stockpile/useStockpileArtwork.ts': 'export const useStockpileArtwork = () => undefined;',

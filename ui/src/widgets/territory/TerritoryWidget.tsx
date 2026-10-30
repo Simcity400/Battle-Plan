@@ -38,6 +38,7 @@ import { usePreparedTerritory } from './preparedTerritory';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useRef } from 'react';
 import '../../charts/race/countryRace.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const GROUP_KEY = 'group';
@@ -63,7 +64,7 @@ export default function TerritoryWidget(props: WidgetProps) {
 function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactionPick, pickOwner }: WidgetProps & {
   onFactionPick?: (hour: number, id: string) => void; pickOwner?: unknown;
 }) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   // A world share of occupied land means nothing: the Occupied rule shows its race.
@@ -71,7 +72,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const measure = measureOf(options.measure);
   const rule = ruleOf(options.rule);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
@@ -216,7 +217,7 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
           membershipNote={factions ? id => factionMembershipNote(factionModel, id) : undefined}
           nameReason={factions ? id => factionNameReasonAt(factionModel, id, shownMoment, factionNames) ? 'Name unavailable' : null : undefined}
           hoverLabel={factions ? undefined : labels.labelAt(shownMoment)} onHover={factions ? undefined : tag => showTip(shownMoment, [tag])}
-          active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onContextMenu={(x, y) => jump(shownMoment, x, y)} />
+          active={active} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onContextMenu={(x, y) => jump(shownMoment, x, y)} />
       </div>{menu.menu}
     </div>;
   }

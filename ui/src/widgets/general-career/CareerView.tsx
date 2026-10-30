@@ -15,7 +15,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { careerCountryFacts, careerLanes, leaderAt, leaderName, careerEmptyEntry, recordedSince } from '../generals/generalsData';
 import { LeaderIdentity } from '../generals/LeaderIdentity';
@@ -31,7 +31,7 @@ export default function CareerView({ reference, hour, onPick, caption, widget, r
 }) {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const selection = useMemo(() => ({ kind: 'leader' as const, reference }), [reference]);
   const { data, error, retry } = useLeaders(runtime, widget.trackIds[0], selection, 'career', active);
   const prefix = useMemo(() => preparedPrefix(data), [data]);

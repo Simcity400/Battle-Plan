@@ -8,6 +8,7 @@ import { airStatisticsChannel, airStatisticsRequest } from '../../dashboard/widg
 import type { AirStatisticsReply } from './airStatisticsData';
 import { OPTIONS } from './definition';
 import { choiceHour, theatreChoices, useAirTheatres } from '../air-missions/useAirTheatres';
+import { usePlaybackHour } from '../../dashboard/playback.ts';
 
 /** The country's prepared statistics history: one request per country and channel, looked up
  * locally at every playback hour. */
@@ -24,8 +25,9 @@ export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, act
 
 /** Channels by their game names, and the regions and theatres the recording names. */
 export function useAirStatisticsChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const { data, options, track, params } = useAirStatistics(widget, runtime, true);
-  const theatres = useAirTheatres(runtime, track, 'air-statistics', params, choiceHour(widget, runtime, track), true);
+  const theatres = useAirTheatres(runtime, track, 'air-statistics', params, choiceHour(widget, runtime, track, playbackHour), true);
   const picked = new Set(contentSet(options.regions).map(contentKey));
   return {
     channel: (data?.channels ?? []).map(channel => ({ value: setToken(channel.id), label: `${statisticName(channel.ours)} / ${statisticName(channel.enemy)}` })),

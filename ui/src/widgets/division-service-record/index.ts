@@ -7,12 +7,14 @@ import { useCountriesSelectionAt } from '../../dashboard/useCountriesSelectionAt
 import { useReachedProduct } from '../../dashboard/reachedProduct';
 import { divisionChoices, validateDivisionCareers } from './careersData';
 import ServiceRecordWidget from './ServiceRecordWidget';
+import { usePlaybackHour } from '../../dashboard/playback.ts';
 
 /** Divisions of the chosen countries in service at the hour the record shows: the
  * widget's pinned or range end, or the playback hour while it follows. */
 function useDivisionChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
+  const playbackHour = usePlaybackHour(runtime.clock, widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const { countries, selectionReason } = useCountriesSelectionAt(widget, runtime, hour, true);
   const tags = countries === undefined ? undefined : countries === null ? null : [...countries].sort();

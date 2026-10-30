@@ -33,13 +33,13 @@ import { factoryDrillData, factoryDrillNumbers } from './factoryDrill';
 /** Factory counts retain their formulas and wording; the shared race owns their views. */
 export default function FactoriesWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics } = props;
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const view = (options.view as RaceView) ?? 'race';
   const mode = (options.count as CountMode) ?? 'free';
   const chosen = useMemo(() => contentSet(options.types), [options.types]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];

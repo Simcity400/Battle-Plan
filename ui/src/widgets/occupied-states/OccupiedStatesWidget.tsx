@@ -22,7 +22,7 @@ import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import { useProductWindows, useWindowDisplay } from '../../dashboard/productWindows';
-import { usePlaybackSpeed } from '../../dashboard/playback';
+import { usePlaybackMotion } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { OccupiedStatesManifestReply, OccupiedStatesReply } from '../../generated/dashboard';
@@ -42,7 +42,7 @@ const rowKey = (row: OccupiedRow) => row.key;
 export default function OccupiedStatesWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const follow = widget.time.mode === 'follow';
   const playbackHour = useTableHour(runtime.clock, active && follow);
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewportHeight = useViewportHeight();
   const contentRevision = useContentRevision(runtime.client);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);

@@ -9,7 +9,7 @@ import type { WidgetSpec } from './model';
 import { resolveWindow } from './model';
 import { contentKey, contentSet, setToken } from './options';
 import type { OptionValue } from './options';
-import { usePlaybackHour, usePlaybackSpeed } from './playback';
+import { usePlaybackHour, usePlaybackMotion } from './playback';
 import { useFollowedProduct, useProduct } from './products';
 import { defaultCountryTag, selectedTags } from './countrySelection';
 import { useProductWindows } from './productWindows';
@@ -37,8 +37,8 @@ const choicesReply = (value: unknown) => { const reply = validateAirReply(value)
 
 export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  usePlaybackHour(runtime.clock, true);
-  const hour = Math.floor(track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour : 0);
+  const playbackHour = usePlaybackHour(runtime.clock, true);
+  const hour = Math.floor(track ? resolveWindow(widget, track, runtime.tracks, playbackHour)?.lastHour ?? track.branch.lastHour : 0);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-superiority', params: { branchId: track.branch.id, view: 'choices' } } : null;
   const product = useProduct<AirChoices>(runtime.client, request, true, choicesReply, track?.source);
   const countries = product.data?.countries ?? NO_COUNTRIES;
@@ -56,11 +56,11 @@ export function useAirChoices(widget: WidgetSpec, runtime: WidgetRuntime): Optio
 export function useAir(props: WidgetProps, options: Readonly<Record<string, OptionValue>>, moment: boolean) {
   const { widget, runtime, active, onDiagnostics } = props;
   const contentRevision = useContentRevision(runtime.client);
-  usePlaybackHour(runtime.clock, active);
-  const hoursPerSecond = usePlaybackSpeed(runtime.clock);
+  const playbackHour = usePlaybackHour(runtime.clock, active);
+  const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const playhead = window ? moment || widget.time.mode === 'follow' || widget.time.mode === 'pin' ? window.lastHour : Math.floor(runtime.clock.getHour()) + (track?.axisOffset ?? 0) : null;
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
+  const playhead = window ? moment || widget.time.mode === 'follow' || widget.time.mode === 'pin' ? window.lastHour : Math.floor(playbackHour) + (track?.axisOffset ?? 0) : null;
   const hour = Math.floor(playhead ?? track?.branch.lastHour ?? 0);
   const firstHour = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
   const lastHour = !moment && widget.time.mode === 'campaign' ? track?.branch.lastHour ?? 1 : widget.time.mode === 'range' && window ? window.lastHour : playhead ?? track?.branch.lastHour ?? 1;

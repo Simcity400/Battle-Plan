@@ -70,6 +70,7 @@ import { usePreparedScalarParity } from '../country-measure/usePreparedScalarPar
 import { percentSummary, usePreparedStability } from './preparedStability';
 import { drawLineSummary, pickSummaryLines } from '../../charts/chartSummary';
 import './stability.css';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const NO_FLAGS: readonly string[] = [];
@@ -113,7 +114,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const localHour = localPick?.owner === bindingOwner ? localPick.hour : undefined;
   const setLocalHour = (hour: number | null) => setLocalPick({ owner: bindingOwner, hour });
   const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || pinnedMeasure !== null && localHour === null || (drill.breakdown !== null && drill.follow)));
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active && (widget.countries.kind === 'group' || pinnedMeasure !== null || drill.breakdown !== null));
   const fallback = defaultCountryTag(track);
@@ -406,7 +407,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
                   playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} extent={extent}
                   within={null} readAt={drillReadAt} onPick={hour => setLocalHour(Math.floor(hour))}
                   onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
-                  branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />;
+                  branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} />;
     return <div className="stability is-pinned">
       {countryHeader}
       {drillAt !== null && <p className="chart-line-key">{formatDateTime(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
@@ -460,7 +461,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         onSummaryView={prepared.enabled || preparedParties.enabled ? view=>{if(prepared.enabled)prepared.onSummaryView(view);if(preparedParties.enabled)preparedParties.onSummaryView(view);} : undefined}
         onNavigateHour={prepared.enabled ? prepared.onNavigateHour : undefined} keyboardHour={prepared.keyboardHour} keyboardRevision={prepared.keyboardRevision}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 100, log: false }} fitValues={zoom ? zoomRange : undefined}
         padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drillOpen && options.drill !== 'popout')}
         pickOwner={pickOwner} revision={`${head}:${looks.revision}:${drillLabels.revision}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
@@ -611,7 +612,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
           : <StabilityDrill preparedBinding={preparedPartsBinding} onPreparedDiagnostics={setPreparedPartsNotes} reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
             within={null} readAt={drillReadAt}
             onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
-            extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />}
+            extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} tokens={tokens} />}
       {parts.error && partsData && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
     </DrillHost>
     {menu.menu}

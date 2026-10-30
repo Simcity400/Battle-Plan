@@ -44,6 +44,7 @@ import { usePreparedFuel, scaledFuelSummary, fuelSummaryStrip, useFuelSeriesPari
 import { fuelCountrySpans, fuelCountryToken, readFuelCountry } from './fuelCountry';
 import type { FuelCountrySelection } from './fuelCountry';
 import { formatFuel, fuelChoiceKey, fuelDecimals, fuelNumbers, fuelRuns, fuelTooltips, fuelView, validateFuelReply } from './fuelData';
+import { motionOf } from '../../charts/easing.ts';
 
 const STRIP_SHARE = 0.28;
 
@@ -55,7 +56,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const options = resolveOptions(OPTIONS, widget.options);
   const digits = fuelDecimals(options);
   const { track, countries, pending, contentPending: groupContentPending, error: groupError, refreshError: groupRefreshError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const heldExtent = track && options.show !== 'main' ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
   const extent: [number, number] = heldExtent ?? (track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour]
@@ -260,7 +261,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const chart = track && chosen ? {
     active: active && (!!saved || drill.breakdown !== null), pickOwner: detailPickOwner, extent,
     playhead: drill.breakdown !== null && drill.follow ? actualHour : playhead, playback: options.playback as PlaybackMode, afterPlayhead: options.afterPlayhead === true,
-    windowHours: Number(options.windowDays ?? 365) * 24, branchStart: track.branch.firstHour, hoursPerSecond: runtime.clock.getSnapshot().hoursPerSecond,
+    windowHours: Number(options.windowDays ?? 365) * 24, branchStart: track.branch.firstHour, hoursPerSecond: motionOf(runtime.clock.getSnapshot()),
     within: actorWithin ?? countries.membership?.get(chosen.tag), onPick: (hour: number) => {
       if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner) return;
       setDrillOwner(pickOwner); dispatch(saved

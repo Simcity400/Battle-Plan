@@ -51,7 +51,7 @@ test('actual prepared race adapter passes full global extent and real page offse
         if (request?.limit > 0) globalThis.__producedRaceFixture.request = request;
         return { data: globalThis.__producedRaceFixture.page, hour: 12, pending: false, retry() {} };
       };`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 12;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ retry() {} });',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 480; export const useChartTokens = () => ({ categories: ["red", "blue"], muted: "grey" });',
     '/charts/race/CountryPartsDrill.tsx': 'export default props => props.main(() => {}, true);',

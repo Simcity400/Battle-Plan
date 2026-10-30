@@ -20,7 +20,7 @@ test('special projects of a group counted at hours still being prepared are load
     '/dashboard/products.ts': `export const useProducts = (_client, requests) => ({ data: requests.length ? requests.map(() => (${JSON.stringify(reply)})) : undefined, retry() {} });
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default () => null;',
@@ -52,7 +52,7 @@ test('live special projects of a group with no member found yet say what the mom
     // Nothing asked, nothing answered.
     '/dashboard/products.ts': 'export const useProducts = (_client, requests) => ({ data: requests.length ? [] : undefined, retry() {} }); export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/charts/useChartTokens.ts': 'export const useViewportHeight = () => 1000;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/timeline/Timeline.tsx': 'export default () => null;',

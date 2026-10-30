@@ -14,7 +14,7 @@ test('no election at an hour whose group membership is still being prepared is l
     '/dashboard/products.ts': `export const useProduct = () => ({ retry() {}, data: { lastHour: 200, known: [{ firstHour: 0, lastHour: 200 }], elections: globalThis.__electionsPending.elections, holders: [], warnings: [] } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
     '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
-    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackMotion = () => 0;',
     '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
     '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',

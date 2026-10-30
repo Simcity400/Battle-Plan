@@ -34,7 +34,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({ data: { countryIdentities: [
       { tag: 'AAA', identities: [{ firstHour: 100, lastHour: 109, slot: 7, countryId: 77 }] }] } });`,
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackSpeed = () => 24;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour(); export const usePlaybackMotion = () => 24;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
     '/charts/useChartTokens.ts': `export const useChartTokens = () => ({ categories: ['#123'], positive: '#080', warning: '#880',
       error: '#800', surface: '#000', text: '#fff' }); export const useViewportHeight = () => 1000;`,

@@ -31,11 +31,11 @@ import './intelCoverage.css';
  * each cell the chosen recorded measure of the owner's network in the target. */
 export default function IntelCoverageWidget(props: WidgetProps) {
   const { widget, runtime, active, onDiagnostics, setOption } = props;
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const anchor = useRef<HTMLDivElement>(null);
   const { track, options, data, error, retry, grouped, groups, roots, chosen, aliases, touching } = useIntelCoverage(widget, runtime, active);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const measure = (options.measure as Measure) ?? 'covered';
   const basis = (options.basis as Basis) ?? 'controlled';

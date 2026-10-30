@@ -17,7 +17,7 @@ test('occupation trends of a group at an hour still being prepared are loading, 
   const host = globalThis as typeof globalThis & { __occupationPending?: typeof state }; host.__occupationPending = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/occupation-trend/OccupationTrendWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__occupationPending.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/widgets/occupation-trend/preparedOccupation.ts': `export const usePreparedOccupation = () => ({ data: globalThis.__occupationPending.reply, retry() {},
       lineSummaries: new Map(), onSummaryMembership() {} });`,
     '/components/CountryPicker.tsx': 'export default () => null;',
@@ -41,7 +41,7 @@ test('occupation trends of a group with no member found yet say what the moment 
   const host = globalThis as typeof globalThis & { __occupationGap?: typeof state }; host.__occupationGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/occupation-trend/OccupationTrendWidget.tsx', {
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__occupationGap.groups, retry() {} });',
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 0;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     // No member to ask for: no request, so no reply.
     '/widgets/occupation-trend/preparedOccupation.ts': `export const usePreparedOccupation = (_client, _track, params) => ({
       data: params ? { branchId: '1', decimals: 5, warnings: [], series: [] } : undefined, retry() {}, lineSummaries: new Map(), onSummaryMembership() {} });`,

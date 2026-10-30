@@ -19,6 +19,7 @@ import { usePoliticsSpending, useSpendingIdeaTooltips } from '../../dashboard/us
 import { OPTIONS } from './definition';
 import { preparedThrough } from '../../dashboard/preparedPrefix';
 import { useParityRows } from '../../dashboard/parityRows';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
@@ -34,14 +35,14 @@ export function gainNote(gain: PowerGain | null, digits: number): string | null 
 
 export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const parityRoot = useRef<HTMLDivElement>(null);
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
   const { track, tags, data, finalData, error, groupError, retry, ready, reason, known, selection, groupWarnings, shownHour } = usePoliticsSpending(widget, runtime, active, true);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour;
@@ -97,5 +98,5 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
     return <div ref={parityRoot} style={{ height: '100%' }}>{groupNotice}<WidgetState kind="empty" icon="sunburst" message="No political power spent in this period." detail={notes.length ? notes.join(' ') : undefined} /></div>;
   }
   return <div ref={parityRoot} style={{ height: '100%' }}>{groupNotice}<Sunburst label="Political power spending breakdown" items={items} root={ROOT} levels={levels} text={text} settings={settings}
-    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} footnote={notes.length ? notes.join(' ') : undefined} tooltip={tooltip} /></div>;
+    hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active} footnote={notes.length ? notes.join(' ') : undefined} tooltip={tooltip} /></div>;
 }

@@ -12,7 +12,7 @@ import DrillHost from '../../charts/drill/DrillHost';
 import DrillParts from '../../charts/drill/DrillParts';
 import { CLOSED, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
 import { dayLabel, drawGapFill, drawLine } from '../../charts/draw';
-import { easeTau } from '../../charts/easing';
+import { easeTau, motionOf } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import { drawGapSummary, drawLineSummary, extentOfSummary, pickSummaryLines } from '../../charts/chartSummary';
@@ -129,7 +129,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const error = useHeldFailure(incoming.error, reply !== undefined, retry);
   const data = useMemo(() => reply && within ? { ...reply, series: reply.series.map(series => ({ ...series, runs: clipToSpans(series.runs, within) })),
     trades: clipResourceTrades(reply.trades, within), dealHours: clipToSpans(reply.dealHours, within) } : reply, [reply, within]);
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const saved = options.show === BREAKDOWN.id;
   const savedCountry = useMemo<ResourceCountrySelection | null>(() => {
     if (!saved || !track) return null;
@@ -223,7 +223,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} onPick={open} />
       : <BalanceBars data={data} tokens={tokens} hour={head} order={options.order as RowOrder} scale={options.scale === 'moment' ? 'moment' : 'campaign'}
         hideEmpty={options.hideEmpty === true} owner={`resource-balance:${widget.id}:${tag}`} breakdown={breakdown} onPartners={onPartners} active={active}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
   </>;
   const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
@@ -232,7 +232,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     : selectedCountry && actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
     : picked && detailData ? <ResourceBreakdown data={detailData} resource={picked} hour={drillAt} tokens={tokens}
     extent={extent} playhead={drill.breakdown !== null && drill.follow ? actualHour : playhead} playback={options.playback as PlaybackMode} afterPlayhead={options.afterPlayhead === true}
-    windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+    windowHours={Number(options.windowDays ?? 365) * 24} branchStart={track.branch.firstHour} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
     active={active} runtime={runtime} track={track} pickOwner={detailPickOwner}
     onSummaryView={incoming.onSummaryView && picked ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, [picked.id]); } : undefined} onHover={incoming.onHover}
     onNavigateHour={incoming.onNavigateHour && picked ? (action, from, x, until) => incoming.onNavigateHour!([picked.id], action, from, x, until) : undefined}
@@ -268,7 +268,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
 function BalanceBars({ data, tokens, hour, order, scale, hideEmpty, owner, breakdown, onPartners, active, hoursPerSecond, onMenu, onPick }: {
   data: ResourceBalanceReply; tokens: ChartTokens; hour: number; order: RowOrder; scale: 'campaign' | 'moment'; hideEmpty: boolean; owner: string;
   breakdown: (resource: ResourceInfo, hour: number) => TooltipContent | null; onPartners: PartnerTargets; active: boolean;
-  hoursPerSecond: number; onMenu: (hour: number, x: number, y: number) => void;
+  hoursPerSecond: number | undefined; onMenu: (hour: number, x: number, y: number) => void;
   onPick: (resource: ResourceInfo, hour: number) => void;
 }) {
   const campaignScale = useMemo(() => {
@@ -462,7 +462,7 @@ function OverTime({ data, numbers, within, incoming, tokens, viewport, options, 
     <div className="resource-chart" onPointerLeave={() => onPartners(null)}>
       <TimeChart label={`Resource supply and demand: ${lines.map(line => resourceName(line.resource)).join(', ')}`} extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
-        hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
+        hoursPerSecond={motionOf(runtime.clock.getSnapshot())} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: options.yMin as number | null, yMax: options.yMax as number | null, log: options.log === true }}
         layers={layers} active={active} revision={`${head}:${data.branchId}:${chosen.join(' ')}:${shade}:${partnersRevision}:${viewport}`}
         onSummaryView={incoming?.onSummaryView ? view => { const shown = viewWithin(view, extent); if (shown) incoming.onSummaryView!(shown, chosenInfo.map(item => item.id)); } : undefined} onHover={incoming?.onHover}

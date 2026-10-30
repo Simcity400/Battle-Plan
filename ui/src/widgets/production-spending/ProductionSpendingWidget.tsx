@@ -19,6 +19,7 @@ import { NumericReply } from '../../dashboard/numericReply';
 import { OPTIONS } from './definition';
 import type { FactoryKind } from './definition';
 import { LEVELS, UNIT, formatAppliedIc, noProductionAt, preparedWindow, productionSpendingItems, spendingEmptyLabel, spendingFinals, spendingTotal, validateProductionSpendingReply } from './spendingData';
+import { motionOf } from '../../charts/easing.ts';
 
 const NO_WARNINGS: string[] = [];
 const ROOTS: Record<FactoryKind, { id: string; label: string }> = {
@@ -26,13 +27,13 @@ const ROOTS: Record<FactoryKind, { id: string; label: string }> = {
 };
 
 export default function ProductionSpendingWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
   const settings = sunburstSettings(options);
   const kind: FactoryKind = options.factories === 'dockyards' ? 'dockyards' : 'military';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour;
   const range = widget.time.mode === 'range';
   const from = range ? window?.firstHour ?? null : null;
@@ -88,7 +89,7 @@ export default function ProductionSpendingWidget({ widget, runtime, active, onDi
   else if (!shown) body = <WidgetState kind="loading" label="This range is still being prepared." />;
   else if (noProductionAt(data, shown.hour) && spendingTotal(data, shown, kind).exact === 0n) body = <WidgetState kind="empty" icon="sunburst" message="No military production yet." detail={footnote} />;
   else body = <Sunburst label={widget.title} items={items} root={ROOTS[kind]} levels={levels} text={text} settings={settings}
-    authoritativeTotal={spendingTotal(data, shown, kind)} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
+    authoritativeTotal={spendingTotal(data, shown, kind)} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
     active={active} footnote={footnote} />;
   return <div ref={root} style={{ display: 'contents' }}>{body}</div>;
 }

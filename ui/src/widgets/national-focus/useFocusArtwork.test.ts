@@ -339,7 +339,7 @@ test('native focus details request only opened dated rows and preserve static de
       staticText: [{ token: 'plain', name: '', description: 'Static recorded description' }], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = (_report, warnings) => { globalThis.__focusDetails.diagnostics = warnings; };',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusDetails.content;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
@@ -435,7 +435,7 @@ test('a closing row keeps the description it showed while its demand is released
       artwork: [{ token: 'scoped', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => globalThis.__focusShown.content;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
@@ -520,7 +520,7 @@ test('repeated completions of one focus read at one hour open and close independ
       artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], continuousStaticText: [], warnings: [],
     } });
 export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
     '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',

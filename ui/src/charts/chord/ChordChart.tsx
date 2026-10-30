@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { font } from '../draw';
 import { easeTau } from '../easing';
+import { useMotionNow } from '../liveMotion.ts';
 import { NO_HOVER, pointerMenu, reduceHover } from '../hover';
 import type { HoverState } from '../hover';
 import { canvasImage } from '../images';
@@ -39,6 +40,7 @@ export interface ChordChartProps {
 export default function ChordChart(props: ChordChartProps) {
   const owner = useId(), canvas = useRef<HTMLCanvasElement>(null);
   const tokens = useChartTokens(), viewportHeight = useViewportHeight();
+  const motionNow = useMotionNow();
   const latest = useRef({ props, tokens, viewportHeight });
   latest.current = { props, tokens, viewportHeight };
   const task = useRef<FrameTask | null>(null);
@@ -128,7 +130,7 @@ export default function ChordChart(props: ChordChartProps) {
       if (element.width !== size.width || element.height !== size.height) { element.width = size.width; element.height = size.height; }
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0); context.clearRect(0, 0, width, height);
       surface = chordSurface(width, height);
-      const eased = motion.advance(dt, easeTau(t.motion, p.hoursPerSecond ?? 0, t.reducedMotion));
+      const eased = motion.advance(dt, easeTau(t.motion, motionNow(p.hoursPerSecond), t.reducedMotion));
       layout = layoutChord(eased.data, motion.presence, eased.ringPresence);
       if (hover.pointer) {
         const local = toLocal(hover.pointer.clientX, hover.pointer.clientY, rect, width, height);

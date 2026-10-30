@@ -34,7 +34,7 @@ async function renderer(groupsStub = false) {
   const replacements: Record<string, string> = {
     '/widgets/construction-log/useConstructionLog.ts': `export const useConstructionLog = () => ({...globalThis.__constructionArt, hour: 110,
       retry() {}, onDrawn() {}});`,
-    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 110;',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = clock => clock.getHour();',
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({retry() {}});',
     // A name not read yet has no \`known\`; the others were read.
     '/dashboard/countryFlagsAt.ts': `export const useCountryLabelsAt = () => ({labelAt: () => tag => tag === 'pending country'
@@ -129,7 +129,7 @@ test('a log whose group membership is still being prepared over its hours is loa
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/construction-log/ConstructionLogWidget.tsx', {
     '/widgets/construction-log/useConstructionLog.ts': `export const useConstructionLog = () => ({ manifest: globalThis.__constructionPending.manifest,
       log: globalThis.__constructionPending.log, hour: ${BRANCH.lastHour}, retry() {}, onDrawn() {} });`,
-    '/dashboard/playback.ts': `export const usePlaybackHour = () => ${BRANCH.lastHour};`,
+    '/dashboard/playback.ts': `export const usePlaybackHour = clock => clock.getHour();`,
     '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__constructionPending.groups, retry() {} });',
     '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag, known: true }) });',
     '/dashboard/useStateNamesAt.ts': 'export const useStateNamesAt = () => (_hour, state) => ({ state, name: "Synthetic location" });',

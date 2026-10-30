@@ -45,7 +45,7 @@ export interface BattleLogProps<T extends BattleRow> {
   cellBars: boolean;
   rankMarkers: boolean;
   narrow?: NarrowTable;
-  hoursPerSecond: number;
+  hoursPerSecond: number | undefined;
   menu: (row: T) => MenuItem[];
   empty: string;
   note?: string | ((row: T) => string);
