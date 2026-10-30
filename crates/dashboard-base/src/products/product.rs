@@ -78,6 +78,9 @@ pub trait Product: 'static {
     /// Whether it answers a hover or label at one hour (one block at most): served on its
     /// own threads, so a whole-recording scan never delays it.
     const INTERACTIVE: bool = false;
+    /// Whether a reply depends on this machine (its displays, settings outside the content, its
+    /// GPU), which no kept reply's identity captures: such a reply is never kept on disk.
+    const MACHINE_DEPENDENT: bool = false;
     type Params: DeserializeOwned + TS + 'static;
     type Reply: Serialize + TS + ReplyWarnings + 'static;
 

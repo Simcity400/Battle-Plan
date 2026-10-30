@@ -2555,6 +2555,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shader-pipeline",
  "store",
  "test-unify",
  "ts-rs",

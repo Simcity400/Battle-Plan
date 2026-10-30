@@ -151,6 +151,42 @@ fn refuse<P: Product>(
     Err(prepared_only(P::KEY))
 }
 
+/// How long an interactive reply must take to compute to be kept between sessions: one read
+/// back from disk takes a few milliseconds, and quicker hover answers are not worth the writes.
+// Tests choose their own threshold ([`KEEP_AFTER`]).
+#[cfg_attr(test, allow(dead_code))]
+const KEEP_INTERACTIVE_AFTER: std::time::Duration = std::time::Duration::from_millis(25);
+
+#[cfg(test)]
+thread_local! {
+    /// [`KEEP_INTERACTIVE_AFTER`] as this thread's test sets it: none is kept unless it does,
+    /// so no test's outcome turns on how fast it ran.
+    static KEEP_AFTER: std::cell::Cell<std::time::Duration> =
+        const { std::cell::Cell::new(std::time::Duration::MAX) };
+}
+
+fn keep_after() -> std::time::Duration {
+    #[cfg(test)]
+    return KEEP_AFTER.get();
+    #[cfg(not(test))]
+    KEEP_INTERACTIVE_AFTER
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether artwork failed to draw, as this thread's test sets it: other tests' draws fail
+    /// on machines without a GPU or shader compiler.
+    static DRAW_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether artwork failed to draw in this process ([`shader_pipeline::artwork::draw_failed`]).
+fn draw_failed() -> bool {
+    #[cfg(test)]
+    return DRAW_FAILED.get();
+    #[cfg(not(test))]
+    shader_pipeline::artwork::draw_failed()
+}
+
 fn load_json<P: Product>(
     source: &Source,
     lease_id: &str,
@@ -184,8 +220,8 @@ fn load_json<P: Product>(
         Some(_) => source.reply_reads_uncovered(context.content.as_ref()),
         None => source.reads_uncovered(),
     };
-    // Whole-recording replies persist between sessions; hover answers are quicker to compute.
-    let entry = (!P::INTERACTIVE && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
+    // Replies persist between sessions, interactive ones once slow to compute.
+    let entry = (!P::MACHINE_DEPENDENT && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
         .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
         .flatten();
     let mut reply = bounded_json(
@@ -211,10 +247,12 @@ fn load_json<P: Product>(
             // The reply names what it refused and drew in the recording's style itself, with
             // what the shared loads it reused noted, never what other consumers did: the same
             // whichever replies ran before it.
+            let started = std::time::Instant::now();
             let mut own = crate::catalogue::OwnRefusals::default();
             let data = crate::catalogue::own_refusals(&mut own, || {
                 P::load(source, &params, context, cancelled)
             });
+            let computing = started.elapsed();
             let mut data = data.map_err(|error| error.to_string())?;
             if P::CONTENT_DEPENDENT {
                 source.append_reply_warnings(data.warnings_mut(), context.content.as_ref());
@@ -228,14 +266,25 @@ fn load_json<P: Product>(
             // Kept under the identity it was drawn with (the recording's own for recorded-only
             // work, whatever is selected), and only while its admission still holds the source's
             // current binding: a reply of a binding the source has left is not kept.
-            if let Some(entry) = &entry
+            if let Some(entry) = entry
                 && !reads_uncovered()
+                // A fallback or drawing diagnostic joins every reply's warnings when first noted,
+                // which a reply served from disk would leave out.
+                && own.fallbacks().is_empty()
+                && !crate::prepared::query::drawn(source, context.content.as_ref())
                 && context
                     .content
                     .as_ref()
                     .is_none_or(|content| source.still_admitted(content))
             {
-                entry.put(&data);
+                // A failed draw may be this machine's, which a later run may draw: no interactive
+                // answer is kept once one has failed.
+                if !P::INTERACTIVE {
+                    entry.put(&data);
+                } else if computing >= keep_after() && !draw_failed() {
+                    let json = data.clone();
+                    entry.put_later(json.len(), move || Some(json));
+                }
             }
             data
         }
@@ -423,6 +472,8 @@ mod recording_tests;
 mod casualty_route_tests;
 #[cfg(test)]
 mod own_refusal_tests;
+#[cfg(test)]
+mod kept_reply_tests;
 #[cfg(test)]
 mod presentation_tests;
 #[cfg(test)]

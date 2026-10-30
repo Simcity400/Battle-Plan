@@ -108,7 +108,7 @@ struct CachedQuery {
 
 /// Whether the content bound for `content` holds a drawing diagnostic. Memoised artwork replays
 /// none of its own, so only an empty set shows an answer drew none.
-fn drawn(source: &Source, content: Option<&ContentOptions>) -> bool {
+pub(crate) fn drawn(source: &Source, content: Option<&ContentOptions>) -> bool {
     content
         .and_then(|content| source.bound_content(&content.options))
         .is_some_and(|content| !content.layers.shader_warning_lines().is_empty())

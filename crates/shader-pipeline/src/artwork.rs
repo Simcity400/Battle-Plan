@@ -53,6 +53,23 @@ struct Renderer {
 
 static RENDERER: OnceLock<Result<Mutex<Renderer>, String>> = OnceLock::new();
 
+/// Whether any artwork failed to draw in this process: a failure may be this machine's (its GPU,
+/// its shader compiler) rather than the content's, and what refused it answers later draws too.
+static DRAW_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether any artwork failed to draw in this process ([`DRAW_FAILED`]): an answer drawn since may
+/// hold a refusal another run, on a machine that can draw it, would not.
+pub fn draw_failed() -> bool {
+    DRAW_FAILED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+fn noted<T>(drawn: Result<T, String>) -> Result<T, String> {
+    if drawn.is_err() {
+        DRAW_FAILED.store(true, std::sync::atomic::Ordering::Release);
+    }
+    drawn
+}
+
 #[derive(Default)]
 struct Inputs {
     map_size: OnceLock<Result<[u32; 2], String>>,
@@ -106,6 +123,14 @@ pub fn render_layers(
 /// into the flag's cell ([`crate::atlas`]): only then does the flag drawn from a page of its
 /// own at `[0, 0, 1, 1]` draw what the game's atlas cell draws.
 pub fn flag_rectangle_mapped(
+    layers: &ResolvedLayers,
+    effect: &[u8],
+    decode: Decode,
+) -> Result<(), String> {
+    noted(flag_rectangle_checked(layers, effect, decode))
+}
+
+fn flag_rectangle_checked(
     layers: &ResolvedLayers,
     effect: &[u8],
     decode: Decode,
@@ -205,6 +230,14 @@ pub fn render_batch(
 
 /// Each target's draws, and whether they compose into a layer ([`render_layers`]).
 fn render_targets(
+    layers: &ResolvedLayers,
+    targets: Vec<(bool, Vec<Draw>)>,
+    decode: Decode,
+) -> Result<Vec<Rgba8Image>, String> {
+    noted(draw_targets(layers, targets, decode))
+}
+
+fn draw_targets(
     layers: &ResolvedLayers,
     targets: Vec<(bool, Vec<Draw>)>,
     decode: Decode,
@@ -923,5 +956,13 @@ Effect Up { VertexShader=V PixelShader=P }
         assert!(replacement.technique("Up").is_none());
         assert!(replacement.technique("Changed").is_some());
         assert!(super::globals(&fresh, Decode::default()).is_err());
+    }
+
+    /// A draw that fails, for whatever reason, is noted for the whole process.
+    #[test]
+    fn a_failed_draw_is_noted() {
+        let layers = ResolvedLayers::default();
+        assert!(render_layers(&layers, vec![Vec::new()], Decode::default()).is_err());
+        assert!(draw_failed());
     }
 }

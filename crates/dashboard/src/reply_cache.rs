@@ -1,5 +1,5 @@
-//! Whole-recording product replies kept on disk between sessions, so reopening a
-//! campaign answers its widgets without reading the recording again.
+//! Product replies kept on disk between sessions (an interactive one once it was slow to
+//! compute), so reopening a campaign answers its widgets without reading the recording again.
 //!
 //! A reply is a pure function of the recording, this build, the request, the
 //! game content the recording pins by hash (or the installed bytes of a layer that
@@ -8,7 +8,9 @@
 //! changes when a mod is installed, updated or removed). An entry is keyed by
 //! all of them. A reply that read content outside the
 //! recorded coverage depends on unverified local files: it is never stored, and
-//! nothing is served while such reads are being reported. The folder is
+//! nothing is served while such reads are being reported. Nor is a reply stored whose
+//! computing noted a fallback or a drawing diagnostic, which joins every reply's warnings
+//! when first noted. The folder is
 //! disposable: an unreadable entry is a miss, and the least recently used
 //! entries go once the folder passes [`LIMIT`].
 

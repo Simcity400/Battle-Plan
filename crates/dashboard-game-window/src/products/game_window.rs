@@ -116,6 +116,8 @@ impl Product for GameWindow {
     const KEY: &'static str = "game-window";
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
+    // Laid out for this machine's displays and drawn on its GPU.
+    const MACHINE_DEPENDENT: bool = true;
     type Params = GameWindowParams;
     type Reply = GameWindowReply;
 
