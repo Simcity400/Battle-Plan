@@ -653,14 +653,62 @@ fn answer_within(
     hour: Option<i32>,
     budget: usize,
 ) -> io::Result<UnitLeadersReply> {
-    let mut reply = careers.clone();
-    if params.view == LeaderView::Leaderboard
-        && let Some(hour) = hour
-    {
-        leaderboard_at(&mut reply, hour);
-    }
+    // A leaderboard copies only what its hour keeps of the careers.
+    let reply = match hour {
+        Some(hour) if params.view == LeaderView::Leaderboard => leaderboard_from(careers, hour),
+        _ => careers.clone(),
+    };
     reply_bytes_within(&reply, budget)?;
     Ok(reply)
+}
+
+/// Every leader's whole career ([`all_careers`]) with when each one's battles became visible,
+/// read once and answering every selection and hour by projecting it.
+pub struct Careers {
+    all: UnitLeadersReply,
+    /// Each leader's [`visible_battles`], in `all`'s order.
+    visible: Vec<[Option<Vec<i64>>; 3]>,
+}
+
+impl Careers {
+    /// [`all_careers`] of `branch_id`, with every leader's visible battles.
+    pub fn read(
+        store: &store::Store,
+        key: &store::SourceKey,
+        branch_id: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Self>> {
+        Ok(all_careers(store, key, branch_id, cancelled)?.map(|all| Self {
+            visible: all.leaders.iter().map(visible_battles).collect(),
+            all,
+        }))
+    }
+
+    /// `params`' selection, a leaderboard cut at `hour` in the same pass, copying only what the
+    /// reply keeps.
+    pub fn answer(
+        &self,
+        params: &UnitLeadersParams,
+        history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+        hour: Option<i32>,
+    ) -> io::Result<UnitLeadersReply> {
+        let mut reply = project_at(&self.all, params, history, hour, Some(&self.visible));
+        // As the request spells its branch, whichever spelling read the careers.
+        reply.branch_id.clone_from(&params.branch_id);
+        reply_bytes_within(&reply, MAX_REPLY_BYTES)?;
+        Ok(reply)
+    }
+}
+
+/// Every leader's whole career as the branch's prepared family last published them: what any
+/// selection but a roster's choices projects ([`careers`], [`answer_from`]).
+pub fn all_careers(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch_id: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<UnitLeadersReply>> {
+    careers(store, key, &full_params(branch_id), None, cancelled)
 }
 
 /// A selection's leaders as every hour asks for them, before a leaderboard is cut at its hour
@@ -672,6 +720,11 @@ pub fn careers(
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
+    // Every leader's career is the same whatever is selected; a selection only projects it.
+    if params.view != LeaderView::Choices && *params != full_params(&params.branch_id) {
+        return Ok(all_careers(store, key, &params.branch_id, cancelled)?
+            .map(|all| project(&all, params, history)));
+    }
     let branch = params.branch_id.parse().expect("validated leader branch");
     let Some((keys, metadata)) =
         series::read_catalogue::<Metadata>(store, key, "unit-leaders", branch)?

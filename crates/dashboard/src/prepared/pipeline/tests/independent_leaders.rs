@@ -695,12 +695,18 @@ fn every_hour_of_a_selection_shares_its_careers() {
         let at = |hour: i32| {
             serde_json::json!({"branchId":"1", "view":"leaderboard", "selection":{"kind":"all"}, "hour":hour})
         };
+        let read = || super::super::super::query::CAREERS_READ.with(std::cell::Cell::get);
+        let before = read();
         let early = query(&source, "unit-leaders", at(105));
         let late = query(&source, "unit-leaders", at(LAST));
-        let computed = || {
-            dashboard_base::prepared::query::observations::usage(&source, "unit-leaders:careers").2
-        };
-        assert_eq!(computed(), 1, "the second hour cuts the careers the first computed");
+        let mut land = at(LAST);
+        land["leaders"] = serde_json::json!("land");
+        query(&source, "unit-leaders", land);
+        assert_eq!(
+            read() - before,
+            1,
+            "later hours and selections project the careers the first read"
+        );
         // Each hour answers as a source computing it alone does.
         let fresh = fixture.source("leader-hours-fresh");
         assert_eq!(query(&fresh, "unit-leaders", at(105)), early);

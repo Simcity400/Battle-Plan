@@ -915,6 +915,27 @@ pub(crate) fn query_pages(
     {
         gates.insert(gate_entry(family.id.name()));
     }
+    pages_of(store, key, branch, gates)
+}
+
+/// [`query_pages`] of a query's own gates alone, without the families it reads through
+/// another's supply.
+pub(crate) fn gate_pages(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    product: &str,
+) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
+    pages_of(store, key, branch, gate(product))
+}
+
+/// The publication identity of each of `gates` on `branch`.
+fn pages_of(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    gates: impl IntoIterator<Item = &'static str>,
+) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
     gates
         .into_iter()
         .map(|family| {

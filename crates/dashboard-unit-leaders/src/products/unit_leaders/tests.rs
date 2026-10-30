@@ -2064,6 +2064,63 @@ fn a_leaderboard_at_an_hour_keeps_what_that_hour_shows() {
     }
 }
 
+/// A leaderboard projected at an hour in one pass is the projection cut at that hour afterwards,
+/// whatever leaders it selects.
+#[test]
+fn a_leaderboard_projected_at_an_hour_is_the_projection_cut_there() {
+    let mut scanned = scan_fixture(2, 2, 3, false);
+    let first_hour = scanned.first_hour;
+    for leader in &mut scanned.leaders {
+        record_battles(leader, first_hour, 40);
+    }
+    // Every other role commands at sea, so each kind selects some leaders and leaves others.
+    for role in scanned.roles.iter_mut().skip(1).step_by(2) {
+        role.kind = engine_native::cunit_leader::KIND_NAVY;
+    }
+    let last = scanned
+        .leaders
+        .iter()
+        .filter_map(|leader| leader.runs.last())
+        .map(|run| run.last_hour)
+        .max()
+        .unwrap();
+    let visible: Vec<_> = scanned.leaders.iter().map(visible_battles).collect();
+    let owner = scanned
+        .roles
+        .iter()
+        .find_map(|role| role.owner.clone())
+        .unwrap();
+    let selections = [
+        LeaderSelection::All,
+        LeaderSelection::Leader {
+            reference: scanned.leaders[1].reference.clone(),
+        },
+        LeaderSelection::Countries { tags: vec![owner] },
+    ];
+    for selection in selections {
+        for leaders in [LeaderKinds::All, LeaderKinds::Land, LeaderKinds::Navy] {
+            let params = UnitLeadersParams {
+                selection: selection.clone(),
+                leaders,
+                ..all_params()
+            };
+            for hour in [first_hour - 1, first_hour, first_hour + 400, (first_hour + last) / 2, last, last + 1] {
+                let mut cut = project(&scanned, &params, None);
+                leaderboard_at(&mut cut, hour);
+                let cut = serde_json::to_value(&cut).unwrap();
+                for kept in [None, Some(visible.as_slice())] {
+                    assert_eq!(
+                        serde_json::to_value(project_at(&scanned, &params, None, Some(hour), kept))
+                            .unwrap(),
+                        cut,
+                        "{selection:?} {leaders:?} at {hour}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Raw battles as the scan keeps them: unknown starts before the recording,
 /// shared hours, delayed reads, undecided battles and results read before or
 /// after their participation.

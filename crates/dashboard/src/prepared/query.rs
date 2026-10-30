@@ -124,6 +124,8 @@ thread_local! {
     /// Run as each answer is computed under content, standing in for what its product notes.
     pub(crate) static COMPUTING: std::cell::Cell<Option<fn(&Source, &ContentOptions)>> =
         const { std::cell::Cell::new(None) };
+    /// Every leader's careers this thread read rather than took from their slot ([`all_careers`]).
+    pub(crate) static CAREERS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// What a complete answer kept on disk between sessions ([`stored_answer`]) keeps beside its
@@ -269,6 +271,52 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "convoy-health" => "queries:convoy-health",
         _ => return None,
     })
+}
+
+/// Every leader's career on one branch as its family last published them, kept in a slot of its
+/// own rather than the observation cache, whose least recently used entries other products'
+/// reads displace: every selection and hour of the leaders' widgets is projected from it.
+#[derive(Default)]
+struct AllCareers(
+    Option<(
+        store::SourceKey,
+        u64,
+        Vec<(String, Option<[u64; 3]>)>,
+        std::sync::Arc<Option<crate::products::unit_leaders::prepared::Careers>>,
+    )>,
+);
+
+/// [`crate::products::unit_leaders::prepared::Careers`] of `branch`, read once per publication
+/// of the leaders' own family: the identities a selection reads are applied as it is answered.
+fn all_careers(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    branch_id: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<std::sync::Arc<Option<crate::products::unit_leaders::prepared::Careers>>> {
+    let pages = super::pipeline::gate_pages(store, key, branch, "unit-leaders")?;
+    let state = source.state::<AllCareers>();
+    // Held while they are read, so the leaders' widgets asking at once read them once.
+    let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
+    check_cancel(cancelled)?;
+    if let Some((held, held_branch, held_pages, careers)) = &kept.0
+        && held == key
+        && *held_branch == branch
+        && *held_pages == pages
+    {
+        return Ok(std::sync::Arc::clone(careers));
+    }
+    #[cfg(test)]
+    CAREERS_READ.with(|count| count.set(count.get() + 1));
+    let careers = std::sync::Arc::new(crate::products::unit_leaders::prepared::Careers::read(
+        store, key, branch_id, cancelled,
+    )?);
+    // A cancelled read may have stopped short of a whole one.
+    check_cancel(cancelled)?;
+    kept.0 = Some((key.clone(), branch, pages, std::sync::Arc::clone(&careers)));
+    Ok(careers)
 }
 
 /// Whether a reply is pending (null) or partial (its coverage is missing or
@@ -1750,8 +1798,22 @@ fn query_data(
             let Some(prefix) = prefix else {
                 return Ok(Value::Null);
             };
-            // Every hour asks a selection's same careers, kept until the leaders or the
-            // countries' identities publish again; only a leaderboard is cut at its hour.
+            if params.view != crate::products::unit_leaders::LeaderView::Choices {
+                let careers =
+                    all_careers(source, &store, &key, branch, &params.branch_id, cancelled)?;
+                let mut reply = (*careers)
+                    .as_ref()
+                    .map(|careers| careers.answer(&params, history.as_deref(), hour))
+                    .transpose()?;
+                if let Some(reply) = &mut reply {
+                    crate::products::unit_leaders::present_traits(source, content, &mut reply.traits)?;
+                }
+                let mut data = serde_json::to_value(reply)?;
+                prefix.mark(&mut data)?;
+                return Ok(data);
+            }
+            // A roster's choices are kept until the leaders or the countries' identities publish
+            // again.
             let mut pages = super::pipeline::query_pages(&store, &key, branch, "unit-leaders")?;
             pages.extend(super::pipeline::query_pages(
                 &store,

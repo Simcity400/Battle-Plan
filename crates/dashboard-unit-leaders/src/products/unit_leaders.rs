@@ -4210,6 +4210,12 @@ fn record_outcome(outcomes: &mut BattleOutcomes, key: (u8, u64), result: (i32, i
 /// supplying read; a result also waits for its own date and read. Without
 /// recorded results, wins and losses stay absent, as in the career.
 fn visible_battle_hours(leader: &LeaderCareer) -> [Option<Vec<i64>>; 3] {
+    visible_battles(leader).map(|hours| hours.map(sorted_deltas))
+}
+
+/// When each of `leader`'s participations, known wins and known losses became visible, each list
+/// sorted: what [`visible_battle_hours`] codes, and a leaderboard at an hour counts by search.
+pub(crate) fn visible_battles(leader: &LeaderCareer) -> [Option<Vec<i64>>; 3] {
     let starts = leader
         .battle_starts
         .as_deref()
@@ -4242,11 +4248,16 @@ fn visible_battle_hours(leader: &LeaderCareer) -> [Option<Vec<i64>>; 3] {
                         .push(visible.max(i64::from(hour)).max(i64::from(read)));
                 }
             }
-            results.map(|visible| Some(sorted_deltas(visible)))
+            results.map(|mut visible| {
+                visible.sort_unstable();
+                Some(visible)
+            })
         }
         _ => [None, None],
     };
-    [Some(sorted_deltas(fought)), won, lost]
+    let mut fought = fought;
+    fought.sort_unstable();
+    [Some(fought), won, lost]
 }
 
 /// Sorts hours into the battle-start coding: first absolute, then deltas.
@@ -4266,6 +4277,20 @@ fn project(
     params: &UnitLeadersParams,
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
 ) -> UnitLeadersReply {
+    project_at(scanned, params, history, None, None)
+}
+
+/// [`project`], a leaderboard cut at `at` as [`leaderboard_at`] cuts it, copying only what the
+/// hour keeps of each career; its battles are counted from `visible`, each leader's
+/// [`visible_battles`] in `scanned`'s order, when given.
+pub(crate) fn project_at(
+    scanned: &UnitLeadersReply,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    at: Option<i32>,
+    visible: Option<&[[Option<Vec<i64>>; 3]]>,
+) -> UnitLeadersReply {
+    let at = at.filter(|_| params.view == LeaderView::Leaderboard);
     let requested: BTreeSet<_> = match &params.selection {
         LeaderSelection::Countries { tags } => history
             .map_or_else(
@@ -4305,7 +4330,8 @@ fn project(
     let leaders: Vec<_> = scanned
         .leaders
         .iter()
-        .filter(|leader| {
+        .enumerate()
+        .filter(|(_, leader)| {
             leader.runs.iter().any(|run| {
                 params
                     .leaders
@@ -4332,7 +4358,53 @@ fn project(
                 }),
             }
         })
-        .map(|leader| {
+        .filter_map(|(position, leader)| {
+            if let Some(hour) = at {
+                let index = leader.runs.partition_point(|run| run.last_hour < hour);
+                let run = leader.runs.get(index).filter(|run| run.first_hour <= hour)?;
+                let computed;
+                let [fought, won, lost] = match visible {
+                    Some(visible) => &visible[position],
+                    None => {
+                        computed = visible_battles(leader);
+                        &computed
+                    }
+                };
+                let count = |hours: &Option<Vec<i64>>| {
+                    hours.as_ref().map(|hours| {
+                        let shown = hours.partition_point(|&shown| shown <= i64::from(hour));
+                        u32::try_from(shown).expect("battle count fits the reply")
+                    })
+                };
+                return Some(LeaderCareer {
+                    reference: leader.reference.clone(),
+                    runs: vec![run.clone()],
+                    trait_gains: leader
+                        .trait_gains
+                        .iter()
+                        .filter(|gain| gain.hour <= hour)
+                        .cloned()
+                        .collect(),
+                    commands: Vec::new(),
+                    battle_starts: None,
+                    battle_start_read_hours: None,
+                    unknown_battle_starts: None,
+                    battle_won: None,
+                    battle_result_hours: None,
+                    battle_result_read_hours: None,
+                    fought_hours: None,
+                    won_hours: None,
+                    lost_hours: None,
+                    partial_from: leader.partial_from,
+                    at_hour: Some(LeaderAtHour {
+                        hour,
+                        first_seen_hour: leader.runs[0].first_hour,
+                        fought: count(fought).expect("leaderboard participations"),
+                        won: count(won),
+                        lost: count(lost),
+                    }),
+                });
+            }
             let runs = if choices {
                 let mut last = leader
                     .runs
@@ -4351,7 +4423,7 @@ fn project(
             } else {
                 Default::default()
             };
-            LeaderCareer {
+            Some(LeaderCareer {
                 reference: leader.reference.clone(),
                 runs,
                 trait_gains: if choices {
@@ -4381,7 +4453,7 @@ fn project(
                 lost_hours,
                 partial_from: leader.partial_from,
                 at_hour: None,
-            }
+            })
         })
         .collect();
     let mut reply = UnitLeadersReply {
@@ -4391,10 +4463,15 @@ fn project(
         people: Vec::new(),
         roles: Vec::new(),
         traits: Vec::new(),
-        observed: if choices {
-            Vec::new()
-        } else {
-            scanned.observed.clone()
+        observed: match at {
+            _ if choices => Vec::new(),
+            Some(hour) => scanned
+                .observed
+                .iter()
+                .filter(|span| span.first_hour <= hour && hour <= span.last_hour)
+                .cloned()
+                .collect(),
+            None => scanned.observed.clone(),
         },
         selection_tags: match &params.selection {
             LeaderSelection::Countries { .. } => Some(requested.into_iter().collect()),
@@ -4492,49 +4569,85 @@ fn compact(
 /// covering it, its trait gains through it and its battle counts then, and the
 /// reply only the observation span covering it.
 pub fn leaderboard_at(reply: &mut UnitLeadersReply, hour: i32) {
-    let count = |hours: &Option<Vec<i64>>| {
-        let mut at = 0_i64;
-        hours.as_deref().map(|deltas| {
-            let shown = deltas
-                .iter()
-                .take_while(|delta| {
-                    at += **delta;
-                    at <= i64::from(hour)
-                })
-                .count();
-            u32::try_from(shown).expect("battle count fits the reply")
+    *reply = leaderboard_from(reply, hour);
+}
+
+/// The battles of `hours`, coded as a career's `fought_hours` (the first absolute, then deltas),
+/// that became visible by `hour`.
+fn counted_through(hours: &Option<Vec<i64>>, hour: i32) -> Option<u32> {
+    let mut at = 0_i64;
+    hours.as_deref().map(|deltas| {
+        let shown = deltas
+            .iter()
+            .take_while(|delta| {
+                at += **delta;
+                at <= i64::from(hour)
+            })
+            .count();
+        u32::try_from(shown).expect("battle count fits the reply")
+    })
+}
+
+/// [`leaderboard_at`] of `careers`, copying only what the hour keeps of them.
+pub fn leaderboard_from(careers: &UnitLeadersReply, hour: i32) -> UnitLeadersReply {
+    let leaders = careers
+        .leaders
+        .iter()
+        .filter_map(|leader| {
+            let index = leader.runs.partition_point(|run| run.last_hour < hour);
+            let run = leader.runs.get(index).filter(|run| run.first_hour <= hour)?;
+            Some(LeaderCareer {
+                reference: leader.reference.clone(),
+                runs: vec![run.clone()],
+                trait_gains: leader
+                    .trait_gains
+                    .iter()
+                    .filter(|gain| gain.hour <= hour)
+                    .cloned()
+                    .collect(),
+                commands: leader.commands.clone(),
+                battle_starts: leader.battle_starts.clone(),
+                battle_start_read_hours: leader.battle_start_read_hours.clone(),
+                unknown_battle_starts: leader.unknown_battle_starts.clone(),
+                battle_won: leader.battle_won.clone(),
+                battle_result_hours: leader.battle_result_hours.clone(),
+                battle_result_read_hours: leader.battle_result_read_hours.clone(),
+                fought_hours: None,
+                won_hours: None,
+                lost_hours: None,
+                partial_from: leader.partial_from,
+                at_hour: Some(LeaderAtHour {
+                    hour,
+                    first_seen_hour: leader.runs[0].first_hour,
+                    fought: counted_through(&leader.fought_hours, hour)
+                        .expect("leaderboard participations"),
+                    won: counted_through(&leader.won_hours, hour),
+                    lost: counted_through(&leader.lost_hours, hour),
+                }),
+            })
         })
+        .collect();
+    let mut reply = UnitLeadersReply {
+        branch_id: careers.branch_id.clone(),
+        first_hour: careers.first_hour,
+        leaders,
+        people: Vec::new(),
+        roles: Vec::new(),
+        traits: Vec::new(),
+        observed: careers
+            .observed
+            .iter()
+            .filter(|span| span.first_hour <= hour && hour <= span.last_hour)
+            .cloned()
+            .collect(),
+        results_missing: careers.results_missing.clone(),
+        navy_commands_missing: careers.navy_commands_missing.clone(),
+        selection_tags: careers.selection_tags.clone(),
+        preparing: careers.preparing.clone(),
+        warnings: careers.warnings.clone(),
     };
-    reply.leaders.retain_mut(|leader| {
-        let index = leader.runs.partition_point(|run| run.last_hour < hour);
-        if leader
-            .runs
-            .get(index)
-            .is_none_or(|run| run.first_hour > hour)
-        {
-            return false;
-        }
-        leader.at_hour = Some(LeaderAtHour {
-            hour,
-            first_seen_hour: leader.runs[0].first_hour,
-            fought: count(&leader.fought_hours).expect("leaderboard participations"),
-            won: count(&leader.won_hours),
-            lost: count(&leader.lost_hours),
-        });
-        leader.runs = vec![leader.runs.swap_remove(index)];
-        leader.trait_gains.retain(|gain| gain.hour <= hour);
-        leader.fought_hours = None;
-        leader.won_hours = None;
-        leader.lost_hours = None;
-        true
-    });
+    compact(&mut reply, &careers.people, &careers.roles, &careers.traits);
     reply
-        .observed
-        .retain(|span| span.first_hour <= hour && hour <= span.last_hour);
-    let people = std::mem::take(&mut reply.people);
-    let roles = std::mem::take(&mut reply.roles);
-    let traits = std::mem::take(&mut reply.traits);
-    compact(reply, &people, &roles, &traits);
 }
 
 impl Product for UnitLeaders {
