@@ -12,7 +12,7 @@
 use super::SlicedRow;
 use crate::{
     codec::{invalid_static as invalid, put_varint},
-    rows::{TableId, TableRows},
+    rows::{ChangedRows, TableId, TableRows, count_header},
 };
 use engine_allocation as allocation;
 use std::{io, ops::Range};
@@ -247,6 +247,35 @@ impl SliceUpdate {
         output: &mut Vec<u8>,
         deleted: &mut Vec<u8>,
     ) -> io::Result<bool> {
+        self.encode_changes_with(previous, output, deleted, None)
+    }
+
+    /// [`Self::encode_changes`], recording in `changed` each row of an owner update it
+    /// writes (its index in the update's rows beside its baseline row's) and each key it
+    /// deletes; it writes nothing when no row changed. Range and key updates are not
+    /// recorded.
+    pub fn encode_changes_recorded(
+        &self,
+        previous: &TableRows,
+        output: &mut Vec<u8>,
+        deleted: &mut Vec<u8>,
+        changed: &mut ChangedRows,
+    ) -> io::Result<bool> {
+        self.encode_changes_with(previous, output, deleted, Some(changed))
+    }
+
+    fn encode_changes_with(
+        &self,
+        previous: &TableRows,
+        output: &mut Vec<u8>,
+        deleted: &mut Vec<u8>,
+        mut changed: Option<&mut ChangedRows>,
+    ) -> io::Result<bool> {
+        if (!self.ranges.is_empty() || !self.keys.is_empty())
+            && let Some(changed) = changed.as_deref_mut()
+        {
+            changed.lose();
+        }
         if !self.ranges.is_empty() {
             return self
                 .rows
@@ -269,11 +298,16 @@ impl SliceUpdate {
             listed: &[u32],
             output: &mut Vec<u8>,
             deleted: &mut Vec<u8>,
+            mut changed: Option<&mut ChangedRows>,
         ) -> io::Result<bool> {
             u32::try_from(fresh.len()).map_err(|_| invalid("too many rows"))?;
-            allocation::reserve(output, 8)?;
-            let count_at = output.len();
-            output.extend_from_slice(&0_u32.to_le_bytes());
+            u32::try_from(previous.len()).map_err(|_| invalid("too many rows"))?;
+            // A recorded merge writes its header only once a row differs.
+            let start = output.len();
+            let mut count_at = None;
+            if changed.is_none() {
+                count_at = Some(count_header(output)?);
+            }
             let mut changed_count = 0_u32;
             let mut changed_key = 0_u128;
             deleted.clear();
@@ -284,8 +318,11 @@ impl SliceUpdate {
             for &owner in listed {
                 let old = owner_range_from(previous, next_old, owner);
                 next_old = old.end;
+                let old_start = old.start;
                 let old = &previous[old];
-                let new = &fresh[take_owner(fresh, &mut next_fresh, owner)];
+                let new = take_owner(fresh, &mut next_fresh, owner);
+                let new_start = new.start;
+                let new = &fresh[new];
                 if old == new {
                     continue;
                 }
@@ -293,32 +330,54 @@ impl SliceUpdate {
                     deleted,
                     allocation::mul(old.len(), (R::KEY_BITS as usize).div_ceil(7).max(1))?,
                 )?;
-                let mut old = old.iter().peekable();
-                for row in new {
+                let mut old = old.iter().enumerate().peekable();
+                for (at, row) in new.iter().enumerate() {
                     let key = row.key();
-                    while let Some(gone) = old.next_if(|previous| previous.key() < key) {
+                    while let Some((_, gone)) = old.next_if(|(_, previous)| previous.key() < key) {
                         put_varint(deleted, gone.key() - deleted_key);
                         deleted_key = gone.key();
                         deleted_count += 1;
+                        if let Some(changed) = &mut changed {
+                            changed.remove(gone.key());
+                        }
                     }
-                    let baseline = old.next_if(|previous| previous.key() == key);
-                    if baseline == Some(row) {
+                    let baseline = old.next_if(|(_, previous)| previous.key() == key);
+                    if baseline.is_some_and(|(_, baseline)| baseline == row) {
                         continue;
                     }
-                    if row.encode_change(baseline, changed_key, output)? {
+                    if count_at.is_none() {
+                        count_at = Some(count_header(output)?);
+                    }
+                    if row.encode_change(baseline.map(|(_, baseline)| baseline), changed_key, output)? {
                         changed_count += 1;
                         changed_key = key;
+                        if let Some(changed) = &mut changed {
+                            // Both lengths were checked to fit 32 bits above.
+                            let before = baseline.map(|(before, _)| (old_start + before) as u32);
+                            changed.pair((new_start + at) as u32, before);
+                        }
                     }
                 }
-                for gone in old {
+                for (_, gone) in old {
                     put_varint(deleted, gone.key() - deleted_key);
                     deleted_key = gone.key();
                     deleted_count += 1;
+                    if let Some(changed) = &mut changed {
+                        changed.remove(gone.key());
+                    }
                 }
             }
             if next_fresh != fresh.len() {
                 return Err(invalid("slice update holds an unlisted owner's row"));
             }
+            if changed.is_some() && changed_count == 0 && deleted_count == 0 {
+                output.truncate(start);
+                return Ok(false);
+            }
+            let count_at = match count_at {
+                Some(at) => at,
+                None => count_header(output)?,
+            };
             output[count_at..count_at + 4].copy_from_slice(&changed_count.to_le_bytes());
             allocation::reserve(output, allocation::add(4, deleted.len())?)?;
             output.extend_from_slice(&deleted_count.to_le_bytes());
@@ -328,7 +387,7 @@ impl SliceUpdate {
         sliced_pair!(
             previous,
             &self.rows,
-            |old, new, _wrap| encode(old, new, &self.owners, output, deleted),
+            |old, new, _wrap| encode(old, new, &self.owners, output, deleted, changed),
             Err(invalid("slice update rows differ from the baseline type"))
         )
     }
@@ -612,6 +671,33 @@ mod tests {
         }
     }
 
+    /// A recorded owner update whose listed owners read their rows again unchanged writes
+    /// nothing, needs no room and records nothing.
+    #[test]
+    fn a_recorded_reread_of_unchanged_owners_grows_nothing() {
+        let previous = TableRows::ResearchInputs(grouped(0));
+        let fresh = TableRows::ResearchInputs(
+            grouped(0)
+                .into_iter()
+                .filter(|row| row.country % 7 == 3)
+                .collect(),
+        );
+        let update = SliceUpdate::new(&previous, fresh, |owner| owner % 7 == 3, |_| true).unwrap();
+        assert!(!update.owners().is_empty());
+        let mut output = vec![9_u8; 5];
+        output.shrink_to_fit();
+        let capacity = output.capacity();
+        let mut changed = ChangedRows::default();
+        assert!(
+            !update
+                .encode_changes_recorded(&previous, &mut output, &mut Vec::new(), &mut changed)
+                .unwrap()
+        );
+        assert_eq!(output.capacity(), capacity);
+        assert_eq!(output, vec![9_u8; 5]);
+        assert!(changed.pairs.is_empty() && changed.removed.is_empty() && !changed.lost);
+    }
+
     #[test]
     fn updates_of_large_owner_groups_encode_and_apply_the_merged_table() {
         let previous = TableRows::ResearchInputs(grouped(0));
@@ -664,6 +750,29 @@ mod tests {
                 "{step}"
             );
             assert_eq!(actual, expected, "{step}");
+            // Recorded: the same bytes when a row changed and none otherwise, and the rows it
+            // wrote and the keys it deleted, by key, those the merged table's diff records.
+            let (mut recorded, mut rows) = (Vec::new(), ChangedRows::default());
+            let wrote = update
+                .encode_changes_recorded(&previous, &mut recorded, &mut deleted, &mut rows)
+                .unwrap();
+            assert_eq!(wrote, changed, "{step}");
+            assert_eq!(recorded, if changed { expected } else { Vec::new() }, "{step}");
+            let mut whole = ChangedRows::default();
+            merged
+                .encode_changes_recorded(&previous, &mut Vec::new(), &mut Vec::new(), &mut whole)
+                .unwrap();
+            let keys = |table: &TableRows, at: u32| table.iter().nth(at as usize).unwrap().key();
+            let by_key = |table: &TableRows, written: &ChangedRows| {
+                written
+                    .pairs
+                    .iter()
+                    .map(|&(at, before)| (keys(table, at), before.map(|before| keys(&previous, before))))
+                    .collect::<Vec<_>>()
+            };
+            assert!(!rows.lost, "{step}");
+            assert_eq!(by_key(&update.rows, &rows), by_key(&merged, &whole), "{step}");
+            assert_eq!(rows.removed, whole.removed, "{step}");
             let mut applied = previous.clone();
             update.apply(&mut applied).unwrap();
             assert_eq!(applied, merged, "{step}");

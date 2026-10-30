@@ -36,6 +36,11 @@ pub(crate) fn wait() {
     GATE.wait(CAP);
 }
 
+/// Whether the game is in its hourly tick, for work another thread can finish instead.
+pub(crate) fn ticking() -> bool {
+    GATE.ticking.load(Ordering::SeqCst) != 0
+}
+
 pub(crate) fn status() -> Value {
     GATE.status()
 }

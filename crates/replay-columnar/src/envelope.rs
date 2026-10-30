@@ -146,6 +146,8 @@ pub mod epoch {
     pub const RECOVERY_RESUME: u8 = 6;
     /// Hours refused by load admission, then resumed.
     pub const ADMISSION_REFUSAL: u8 = 7;
+    /// The row recording's write of the hours before failed; the writer started again.
+    pub const WRITE_FAILURE: u8 = 8;
 }
 
 /// Where one extent is and what it holds.

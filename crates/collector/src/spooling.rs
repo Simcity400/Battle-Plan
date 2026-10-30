@@ -696,6 +696,8 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     projection_scratch: ProjectionScratch,
     lexical_conversion: LexicalConversionStats,
     history_lease: Option<File>,
+    /// The campaign's columnar recording, written beside the rows.
+    columnar: crate::columnar::Columnar,
 }
 
 impl Campaign {
@@ -724,6 +726,7 @@ impl Campaign {
         }
         let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
+        let columnar = crate::columnar::Columnar::open(&directory, id, session);
         Ok(Self {
             validation_refusals: ValidationRefusals::default(),
             directory,
@@ -759,12 +762,14 @@ impl Campaign {
             projection_scratch: ProjectionScratch::default(),
             lexical_conversion: LexicalConversionStats::default(),
             history_lease: history_file,
+            columnar,
         })
     }
 }
 
 impl<B: SegmentBackend> Campaign<B> {
     fn reset_after_write_failure(&mut self) {
+        self.columnar.interrupt();
         self.spool.invalidate();
         self.disk_branch = None;
         self.encoder = FrameEncoder::new();
@@ -1514,7 +1519,15 @@ impl<B: SegmentBackend> Campaign<B> {
         };
         work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
-        let span = span.switch(crate::spool_phases::Phase::Write);
+        let span = span.switch(crate::spool_phases::Phase::Columnar);
+        let lanes = crate::columnar::Lanes::new(helpers);
+        let row = replay::native_frame::RowFrame {
+            baselines: Some(&self.encoder),
+            keyframe: prepared.frame().keyframe(),
+            changed: prepared.changed_rows(),
+        };
+        let columnar = self.columnar.prepare(prepared.input(), row, &lanes);
+        let mut span = span.switch(crate::spool_phases::Phase::Write);
         let encoded = prepared.take_frame();
         // Rotate only at an already encoded keyframe; never reset the capture encoder for packing.
         let rotate = restarting || encoded.keyframe();
@@ -1543,6 +1556,11 @@ impl<B: SegmentBackend> Campaign<B> {
         if queued {
             // No other hour can observe this staged baseline before admission succeeds.
             self.commit_baseline(prepared)?;
+            if let Some(hour) = columnar {
+                span = span.switch(crate::spool_phases::Phase::Columnar);
+                self.columnar.commit(hour, true, &lanes);
+                span = span.switch(crate::spool_phases::Phase::Write);
+            }
             set_viewed(&mut work.viewed, viewed_flag(&self.encoder))?;
             work.staged = Some(crate::spool_writer::Output::<B>::stage_frame(
                 context, encoded, rotate,
@@ -1554,6 +1572,11 @@ impl<B: SegmentBackend> Campaign<B> {
                 return Err(io::ErrorKind::OutOfMemory.into());
             }
             self.commit_baseline(prepared)?;
+            if let Some(hour) = columnar {
+                span = span.switch(crate::spool_phases::Phase::Columnar);
+                self.columnar.commit(hour, false, &lanes);
+                span = span.switch(crate::spool_phases::Phase::Write);
+            }
             self.tracker.record_hour(branch, hour)?;
             #[cfg(feature = "alloc-fault-injection")]
             crate::allocation::committed_hour();
@@ -3501,6 +3524,7 @@ impl Processor {
         campaign.line_output.written(line_output_receipt);
         campaign.construction_ic.written(construction_ic_receipt);
         campaign.tracker.record_hour(branch, clock.hour)?;
+        campaign.columnar.complete(branch, clock.hour);
         witness.bind(&mut self.stats.order_counters, &Ok(()));
         #[cfg(feature = "alloc-fault-injection")]
         crate::allocation::committed_hour();
@@ -3946,7 +3970,16 @@ impl Processor {
             } else {
                 0
             };
-            match campaign.detach(unknown) {
+            let detached = campaign.detach(unknown);
+            // Optional work is skipped once an allocation failed: the rows' detach first.
+            let exhausted = crate::allocation::failed()
+                || detached
+                    .as_ref()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::OutOfMemory);
+            if !exhausted {
+                campaign.columnar.finish();
+            }
+            match detached {
                 Ok(()) if unknown != 0 => self.unknown_pending = 0,
                 Ok(()) => {}
                 Err(error) => {
@@ -4189,6 +4222,8 @@ impl Processor {
                 "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
                 "sizing_phases": crate::spool_phases::SIZING.status(self.session.qpc_frequency),
                 "tick_gate": crate::tick_gate::status(),
+                "columnar": self.campaigns.values().filter_map(|campaign| campaign.columnar.status()).collect::<Vec<_>>(),
+                "columnar_finished": crate::columnar::finished_status(),
                 "conversion_helper": self.helper.is_some(),
                 "conversion_helpers": usize::from(self.helper.is_some()) + usize::from(self.second_helper.is_some()),
                 "conversion_helper_scope": "conversion_helper: whether a persistent helper converts the map tables and the helper packs beside the spool thread; conversion_helpers: how many started, the second converting lane 1 of the helper packs; with none the spool thread converts every table itself",
@@ -7897,6 +7932,7 @@ mod tests {
                 projection_scratch: ProjectionScratch::default(),
                 lexical_conversion: LexicalConversionStats::default(),
                 history_lease: None,
+                columnar: crate::columnar::Columnar::off(),
             },
             store,
         )

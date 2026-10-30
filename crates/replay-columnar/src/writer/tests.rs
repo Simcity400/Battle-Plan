@@ -111,6 +111,7 @@ fn holds(reader: &Table, dictionary: &mut Dictionary, rows: &[(u128, [Input<'_>;
                     assert_eq!(held, Some(Cell::Bytes(id)), "key {key} column {column}");
                 }
                 Input::Unrecorded => assert!(!reader.recorded(column, slot)),
+                Input::Kept => {}
             }
         }
     }
@@ -749,6 +750,7 @@ fn batched<'r, 'c: 'r>(
                 Input::Value(cell) => batch.value(column, cell)?,
                 Input::Text(text) => batch.text(column, text)?,
                 Input::Unrecorded => batch.unrecorded(column)?,
+                Input::Kept => batch.kept(column)?,
             }
         }
     }

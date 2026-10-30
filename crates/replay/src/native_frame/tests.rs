@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     columnar_frames::{Views, schema},
-    frame::{DecodedFrame, FrameDecoder, FrameEncoder},
+    frame::{DecodedFrame, FrameDecoder, FrameEncoder, TableSegment},
     rows::{CountryRow, DivisionRow, ResearchInputRow, TableRows, sample_extended_table, tables},
 };
 use replay_columnar::{manifest::Manifest, walk::State, writer::Work};
@@ -23,6 +23,9 @@ struct Paths {
     /// The same hours clearing and finishing every column of every staged table, and
     /// staging hours of no rows: the same bytes again.
     swept: FrameWriter,
+    /// The same hours, each prepared and committed on three threads, its complete tables diffed
+    /// with the row encoder's baselines: the same bytes again.
+    laned: FrameWriter,
     state: State,
     views: Views,
     tables: Vec<TableId>,
@@ -41,11 +44,19 @@ impl Paths {
             writer: FrameWriter::new().unwrap(),
             rows: FrameWriter::with_staging(native_columns::Staging::Rows).unwrap(),
             swept: FrameWriter::with_sweep(Sweep::Every).unwrap(),
+            laned: FrameWriter::new().unwrap(),
             state: State::new(schema().unwrap()).unwrap(),
             views: Views::new(tables, FormatVersion::CURRENT, mode).unwrap(),
             tables: tables.to_vec(),
             mode,
         }
+    }
+
+    /// The row recording restarts, as a restarted spool does, while the columnar run goes on:
+    /// its next hour is a keyframe.
+    fn restart_rows(&mut self) {
+        self.encoder = FrameEncoder::new();
+        self.decoder = FrameDecoder::new();
     }
 
     /// The paths' frame of the given tables' inputs, read or not.
@@ -64,10 +75,34 @@ impl Paths {
     /// The hour as the row recording decodes it, and as the columnar one walks it.
     fn hour(&mut self, input: FrameInput) -> (DecodedFrame, DecodedFrame) {
         let first = input.hour == 1;
-        let prepared = self.writer.hour(&input).unwrap();
-        let staged = self.rows.hour(&input).unwrap();
-        let swept = self.swept.hour(&input).unwrap();
-        for other in [&staged, &swept] {
+        // The row frame first, as the spool prepares it: its keyframe refuses a truncated read.
+        // Every other hour encodes the tables as segments, as the spool's helpers do.
+        let mut segments: [Option<TableSegment>; TABLE_COUNT] = std::array::from_fn(|_| None);
+        if input.hour % 2 == 0 {
+            let context = self.encoder.frame_context(input.branch, input.hour, first);
+            for &table in &self.tables {
+                let segment = self.encoder.encode_segment(&context, table, &input.tables[table.index()]);
+                segments[table.index()] = Some(segment.unwrap());
+            }
+        }
+        let mut row_frame = self.encoder.prepare_bytes_with(input.clone(), first, &mut segments).unwrap();
+        let keyframe = row_frame.frame().keyframe();
+        let plain = Some(RowFrame {
+            baselines: None,
+            keyframe,
+            changed: &[],
+        });
+        let prepared = self.writer.hour_on(&input, &[], plain, &OneThread).unwrap();
+        let staged = self.rows.hour_on(&input, &[], plain, &OneThread).unwrap();
+        let swept = self.swept.hour_on(&input, &[], plain, &OneThread).unwrap();
+        // Diffed with the row encoder's baselines, which it has not yet committed this hour to.
+        let baselines = Some(RowFrame {
+            baselines: Some(&self.encoder),
+            keyframe,
+            changed: row_frame.changed_rows(),
+        });
+        let laned = self.laned.hour_on(&input, &[], baselines, &Threads).unwrap();
+        for other in [&staged, &swept, &laned] {
             assert_eq!(other.manifest, prepared.manifest, "hour {}", input.hour);
             assert!(other.sections().eq(prepared.sections()), "hour {}", input.hour);
         }
@@ -80,9 +115,29 @@ impl Paths {
         self.writer.commit(prepared).unwrap();
         self.rows.commit(staged).unwrap();
         self.swept.commit(swept).unwrap();
-        same_restarts(&mut [&mut self.writer, &mut self.rows, &mut self.swept]);
-        let encoded = self.encoder.encode_input(input, first).unwrap();
-        (self.decoder.apply(&encoded).unwrap(), columnar)
+        self.laned.commit_on(laned, &Threads).unwrap();
+        same_restarts(&mut [&mut self.writer, &mut self.rows, &mut self.swept, &mut self.laned]);
+        let encoded = row_frame.take_frame();
+        self.encoder.commit(row_frame).unwrap();
+        (self.decoder.apply(&encoded.decode().unwrap()).unwrap(), columnar)
+    }
+}
+
+/// The calling thread and two others, each running the job at once.
+struct Threads;
+
+impl Lanes for Threads {
+    fn count(&self) -> usize {
+        3
+    }
+
+    fn run(&self, job: &(dyn Fn() + Sync)) {
+        std::thread::scope(|scope| {
+            for _ in 1..self.count() {
+                scope.spawn(job);
+            }
+            job();
+        });
     }
 }
 
@@ -565,6 +620,26 @@ fn a_truncated_first_hour_walks_as_the_keyframe_refusal() {
     paths.check(3, vec![(truncated(vec![country(2, 21)]), true)]);
 }
 
+/// A shared table read again as a new allocation writes only the rows that differ from the
+/// last committed hour's, and a membership change writes it complete; both walk as the rows.
+#[test]
+fn a_reread_shared_table_writes_only_its_differing_rows() {
+    let mut paths = Paths::new();
+    let shared = |rows: Vec<CountryRow>| TableInput::SharedComplete(Arc::new(TableRows::Countries(rows)));
+    let others = || {
+        (
+            divisions(vec![division(1, 1_000)]),
+            TableInput::Sampled(TableView::Complete(TableRows::ResearchInputs(vec![input(1, 0, 5)]))),
+        )
+    };
+    let (divisions_1, research_1) = others();
+    paths.check(1, vec![(shared(vec![country(1, 10), country(2, 20)]), true), (divisions_1, true), (research_1, true)]);
+    let (divisions_2, research_2) = others();
+    paths.check(2, vec![(shared(vec![country(1, 10), country(2, 25)]), true), (divisions_2, true), (research_2, true)]);
+    let (divisions_3, research_3) = others();
+    paths.check(3, vec![(shared(vec![country(1, 10), country(2, 25), country(3, 30)]), true), (divisions_3, true), (research_3, true)]);
+}
+
 /// Complete tables arriving hour after hour in the order they are held: unchanged, changed in
 /// place with a FILL, with rows coming and going, and held again.
 #[test]
@@ -716,6 +791,8 @@ struct Converters {
     converted: FrameWriter,
     rows: FrameWriter,
     swept: FrameWriter,
+    /// The converter's hours on three threads.
+    laned: FrameWriter,
     encoder: FrameEncoder,
     decoder: FrameDecoder,
 }
@@ -733,6 +810,7 @@ fn recorded_hour(
         converted,
         rows,
         swept,
+        laned,
         encoder,
         decoder,
     } = writers;
@@ -754,7 +832,8 @@ fn recorded_hour(
     let actual = converted.hour_with(&input, &recorded).unwrap();
     let staged = rows.hour_with(&input, &recorded).unwrap();
     let every = swept.hour_with(&input, &recorded).unwrap();
-    for other in [&actual, &staged, &every] {
+    let on_lanes = laned.hour_on(&input, &recorded, None, &Threads).unwrap();
+    for other in [&actual, &staged, &every, &on_lanes] {
         assert_eq!(other.manifest, expected.manifest, "hour {hour}");
         assert!(other.sections().eq(expected.sections()), "hour {hour}");
     }
@@ -762,6 +841,7 @@ fn recorded_hour(
     converted.commit(actual).unwrap();
     rows.commit(staged).unwrap();
     swept.commit(every).unwrap();
+    laned.commit_on(on_lanes, &Threads).unwrap();
 }
 
 /// A recorded delta's keys write what its complete rows write, and are not taken where the
@@ -774,6 +854,7 @@ fn a_recorded_delta_writes_what_its_complete_rows_write() {
         converted: FrameWriter::new().unwrap(),
         rows: FrameWriter::with_staging(native_columns::Staging::Rows).unwrap(),
         swept: FrameWriter::with_sweep(Sweep::Every).unwrap(),
+        laned: FrameWriter::new().unwrap(),
         encoder: FrameEncoder::new(),
         decoder: FrameDecoder::new(),
     };
@@ -872,9 +953,10 @@ fn a_recorded_delta_writes_what_its_complete_rows_write() {
         converted,
         rows,
         swept,
+        laned,
         ..
     } = &mut writers;
-    same_restarts(&mut [live, converted, rows, swept]);
+    same_restarts(&mut [live, converted, rows, swept, laned]);
 }
 
 /// A delta naming a key its complete rows do not hold ends the run.
@@ -895,13 +977,130 @@ fn a_delta_key_without_its_row_is_refused() {
     assert!(writer.hour(&frame(2, tables())).is_err());
 }
 
+/// Hours whose tables bring strings the run has not used, in rows and in refusals, prepared on
+/// lanes: each such table is prepared again in table order, and every writer's bytes, strings
+/// and restarts are the ones a single thread writes.
+#[test]
+fn new_strings_on_lanes_are_interned_in_table_order() {
+    let mut paths = Paths::new();
+    let named = |id: u32, hour: i32| CountryRow {
+        tag: format!("H{hour}C{id}").into_bytes(),
+        ..country(id, 10 + i64::from(id))
+    };
+    for hour in 1..=6 {
+        let mut rows = vec![country(1, 10), named(2, hour), named(3, hour / 2)];
+        if hour % 2 == 0 {
+            rows.push(named(4, hour));
+        }
+        let research = if hour == 4 {
+            unavailable(&format!("not read at hour {hour}"))
+        } else {
+            TableInput::Sampled(TableView::Complete(TableRows::ResearchInputs(vec![
+                input(1, 0, 5),
+                input(u32::try_from(hour).unwrap(), 1, 7),
+            ])))
+        };
+        paths.check(
+            hour,
+            vec![
+                (countries(rows), true),
+                (divisions(vec![division(1, 1_000 + i64::from(hour))]), hour % 3 != 0),
+                (research, true),
+            ],
+        );
+    }
+}
+
+/// Complete tables diffed with the row encoder's baselines write what their complete rows
+/// write: a few changed rows, rows that came and went, a densely changed hour after which the
+/// table is written complete, and diffs again once its dense hours passed.
+#[test]
+fn complete_tables_diffed_with_the_encoders_baselines_write_their_complete_bytes() {
+    let mut paths = Paths::new();
+    let divisions_at = |hour: i32| {
+        let mut ids: Vec<u64> = (1..=20).collect();
+        if hour >= 3 {
+            ids.retain(|&id| id != 2);
+            ids.push(21);
+        }
+        let changed = (hour as u64 % 20) + 1;
+        ids.into_iter()
+            .map(|id| {
+                let base = if hour >= 4 { 3_000_000 } else { 1_000_000 };
+                let moved = (hour >= 2 && id == 5) || (hour >= 3 && id == 7) || (hour > 4 && id == changed);
+                division(id, base + id as i64 * 100_000 + if moved { i64::from(hour) * 1_000_000 } else { 0 })
+            })
+            .collect()
+    };
+    for hour in 1..=30 {
+        let mut members = vec![country(1, 10), country(2, 20 + i64::from(hour % 3))];
+        if hour % 4 == 0 {
+            members.push(country(3, 30));
+        }
+        paths.check(
+            hour,
+            vec![
+                (countries(members), true),
+                (divisions(divisions_at(hour)), true),
+                (
+                    TableInput::Sampled(TableView::Complete(TableRows::ResearchInputs(vec![input(1, 0, 5)]))),
+                    hour % 2 == 0,
+                ),
+            ],
+        );
+    }
+}
+
+/// A dense table of opaque cells, diffed with the row encoder's baselines: every row's counter
+/// changes each hour while its opaque cells mostly do not, so its rows are written beside their
+/// previous rows and the unchanged opaque cells kept, with the bytes the complete rows write;
+/// a row that comes ends the alignment and the table is written complete.
+#[test]
+fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
+    use crate::rows::{
+        RailCooldownRow, RailwayBuildingHealth, RailwayBuildingState, RailwaySelectionInputs,
+        Recorded,
+    };
+    let mut paths = Paths::of(&[TableId::RailCooldowns], CaptureMode::Full);
+    let row = |province: u32, hour: i32| RailCooldownRow {
+        province,
+        cooldown_ticks: 100 - hour,
+        building: Recorded::Value(Some(RailwayBuildingState {
+            building: Some(RailwayBuildingHealth {
+                level: if hour >= 5 && province == 3 { 2 } else { 1 },
+                healthy: 1,
+                partial: None,
+            }),
+        })),
+        selection: if province == 7 && hour < 3 {
+            Recorded::NotRecorded
+        } else {
+            Recorded::Value(Some(RailwaySelectionInputs {
+                levels: Some(vec![1, 2, i32::from(hour >= 4 && province == 2)]),
+                pair_count: Some(2),
+                building_level: Some(Some(1)),
+            }))
+        },
+        selection_hour: Recorded::Value(Some(hour)),
+    };
+    for hour in 1..=7 {
+        let provinces = if hour == 7 { 1..=11 } else { 1..=10 };
+        let rows = provinces.map(|province| row(province, hour)).collect();
+        paths.check(
+            hour,
+            vec![(TableInput::Sampled(TableView::Complete(TableRows::RailCooldowns(rows))), true)],
+        );
+    }
+}
+
 /// A row recording's hours converted from the views and sample hours they decode to, as the
-/// converter converts them, in runs that may start where the recording's does not; and the
-/// converted run's walk.
+/// converter converts them, in runs that may start where the recording's does not, on one
+/// thread and on three; and the converted run's walk.
 struct Conversion {
     encoder: FrameEncoder,
     decoder: FrameDecoder,
     writer: FrameWriter,
+    laned: FrameWriter,
     state: State,
     views: Views,
     /// The next hour starts the converted run.
@@ -914,6 +1113,7 @@ impl Conversion {
             encoder: FrameEncoder::new(),
             decoder: FrameDecoder::new(),
             writer: FrameWriter::new().unwrap(),
+            laned: FrameWriter::new().unwrap(),
             state: State::new(schema().unwrap()).unwrap(),
             views: Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap(),
             starts: true,
@@ -923,6 +1123,7 @@ impl Conversion {
     /// Starts another converted run at the next hour, as a cut does; the recording goes on.
     fn cut(&mut self) {
         self.writer = FrameWriter::new().unwrap();
+        self.laned = FrameWriter::new().unwrap();
         self.state = State::new(schema().unwrap()).unwrap();
         self.views = Views::new(&TABLES, FormatVersion::CURRENT, CaptureMode::Full).unwrap();
         self.starts = true;
@@ -955,6 +1156,9 @@ impl Conversion {
             })
             .collect();
         let prepared = self.writer.hour_with(&input, &recorded).unwrap();
+        let on_lanes = self.laned.hour_on(&input, &recorded, None, &Threads).unwrap();
+        assert_eq!(on_lanes.manifest, prepared.manifest, "hour {hour}");
+        assert!(on_lanes.sections().eq(prepared.sections()), "hour {hour}");
         let walked = {
             let manifest = Manifest::read(&prepared.manifest, self.writer.columns()).unwrap();
             let sections: Vec<&[u8]> = prepared.sections().map(|(_, bytes)| bytes).collect();
@@ -962,6 +1166,7 @@ impl Conversion {
             self.views.advance(&self.state, &manifest, self.starts).unwrap()
         };
         self.writer.commit(prepared).unwrap();
+        self.laned.commit_on(on_lanes, &Threads).unwrap();
         self.starts = false;
         (decoded, walked)
     }
@@ -1045,4 +1250,217 @@ fn a_cut_runs_first_hour_keeps_a_truncated_view_and_the_recordings_sample_hours(
         false,
     );
     same(&TABLES, &decoded, &walked);
+}
+
+/// A run starting where the row encoder writes no keyframe, as at a gap the rows recorded
+/// through, keeps a truncated read truncated, as the row recording decodes it; a run starting
+/// at a row keyframe refuses it, as the keyframe does.
+#[test]
+fn a_truncated_first_hour_is_refused_only_at_a_row_keyframe() {
+    let truncated = || {
+        TableInput::Sampled(TableView::Truncated {
+            rows: TableRows::Countries(vec![country(1, 10)]),
+            missing: 2,
+        })
+    };
+    let input = || {
+        frame(
+            5,
+            [
+                (truncated(), true),
+                (divisions(vec![division(1, 1_000)]), true),
+                (unavailable("none"), true),
+            ],
+        )
+    };
+    let countries = TableId::Countries.index();
+    let mut through = FrameWriter::new().unwrap();
+    let row = Some(RowFrame {
+        baselines: None,
+        keyframe: false,
+        changed: &[],
+    });
+    let hour = through.hour_on(&input(), &[], row, &OneThread).unwrap();
+    assert_eq!(hour.statuses()[countries], Status::Truncated { missing: 2 });
+    through.commit(hour).unwrap();
+    let mut keyed = FrameWriter::new().unwrap();
+    let row = Some(RowFrame {
+        baselines: None,
+        keyframe: true,
+        changed: &[],
+    });
+    let hour = keyed.hour_on(&input(), &[], row, &OneThread).unwrap();
+    assert!(matches!(hour.statuses()[countries], Status::Unavailable { .. }));
+    keyed.commit(hour).unwrap();
+}
+
+/// The calling thread and two others, which take four of an hour's step's tables between them
+/// and stop, as helpers do when the game starts its tick; the caller takes tables only once
+/// both stopped, and finishes the step.
+struct Stopping {
+    caller: std::thread::ThreadId,
+    taken: std::sync::atomic::AtomicUsize,
+    stopped: std::sync::atomic::AtomicUsize,
+    /// Steps whose helpers both stopped with tables left.
+    steps: std::sync::atomic::AtomicUsize,
+}
+
+impl Lanes for Stopping {
+    fn count(&self) -> usize {
+        3
+    }
+
+    fn run(&self, job: &(dyn Fn() + Sync)) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.taken.store(0, SeqCst);
+        self.stopped.store(0, SeqCst);
+        std::thread::scope(|scope| {
+            scope.spawn(job);
+            scope.spawn(job);
+            job();
+        });
+        if self.stopped.load(SeqCst) == 2 {
+            self.steps.fetch_add(1, SeqCst);
+        }
+    }
+
+    fn proceeds(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        if std::thread::current().id() == self.caller {
+            let waited = std::time::Instant::now();
+            while self.stopped.load(SeqCst) < 2 {
+                assert!(waited.elapsed() < std::time::Duration::from_secs(10), "helpers never stopped");
+                std::thread::yield_now();
+            }
+            return true;
+        }
+        if self.taken.fetch_add(1, SeqCst) < 4 {
+            return true;
+        }
+        self.stopped.fetch_add(1, SeqCst);
+        false
+    }
+}
+
+/// Lanes that stop part way through an hour's preparation and commit leave the rest to the
+/// caller, with the bytes and restarts one thread writes.
+#[test]
+fn lanes_that_stop_leave_their_tables_to_the_caller() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    let lanes = Stopping {
+        caller: std::thread::current().id(),
+        taken: AtomicUsize::new(0),
+        stopped: AtomicUsize::new(0),
+        steps: AtomicUsize::new(0),
+    };
+    let mut alone = FrameWriter::new().unwrap();
+    let mut laned = FrameWriter::new().unwrap();
+    for hour in 1..=4 {
+        let tag = |id: u32| CountryRow {
+            tag: format!("H{hour}C{id}").into_bytes(),
+            ..country(id, 10 + i64::from(hour))
+        };
+        let input = frame(
+            hour,
+            [
+                (countries(vec![tag(1), country(2, 20)]), true),
+                (divisions(vec![division(1, 1_000_000 * i64::from(hour))]), true),
+                (unavailable(&format!("refused at {hour}")), true),
+            ],
+        );
+        let expected = alone.hour(&input).unwrap();
+        let actual = laned.hour_on(&input, &[], None, &lanes).unwrap();
+        assert_eq!(actual.manifest, expected.manifest, "hour {hour}");
+        assert!(actual.sections().eq(expected.sections()), "hour {hour}");
+        alone.commit(expected).unwrap();
+        laned.commit_on(actual, &lanes).unwrap();
+        same_restarts(&mut [&mut alone, &mut laned]);
+    }
+    // Every hour's preparation and commit stopped its helpers with tables left.
+    assert_eq!(lanes.steps.load(SeqCst), 8);
+}
+
+/// An unread table the row encoder writes at a keyframe, as after a spool restart within a
+/// columnar run, has no sample hour in either recording, though its rows did not change.
+#[test]
+fn an_unread_table_at_a_row_keyframe_keeps_no_sample() {
+    let mut paths = Paths::new();
+    let tables = |read: bool| {
+        vec![
+            (countries(vec![country(1, 10)]), read),
+            (divisions(vec![division(1, 1_000_000)]), true),
+            (unavailable("none"), true),
+        ]
+    };
+    paths.check(1, tables(true));
+    paths.check(2, tables(false));
+    paths.restart_rows();
+    paths.check(3, tables(false));
+    paths.check(4, tables(false));
+}
+
+/// The row encoder's baselines are taken only when they are the writer's last committed hour:
+/// a writer that missed an hour the encoder committed writes what its own rows give.
+#[test]
+fn a_baseline_of_an_hour_the_writer_missed_is_not_taken() {
+    let mut encoder = FrameEncoder::new();
+    let mut diffed = FrameWriter::new().unwrap();
+    let mut plain = FrameWriter::new().unwrap();
+    for hour in 1..=5 {
+        // A heavy cell changes at the hour the writers miss, and keeps its new value.
+        let second = CountryRow {
+            tag: if hour >= 4 { b"XX".to_vec() } else { b"C002".to_vec() },
+            ..country(2, 20)
+        };
+        let input = frame(
+            hour,
+            [
+                (countries(vec![country(1, 10), second]), true),
+                (divisions(vec![division(1, 1_000_000)]), true),
+                (unavailable("none"), true),
+            ],
+        );
+        let mut row_frame = encoder.prepare_bytes(input.clone(), hour == 1).unwrap();
+        if hour != 4 {
+            let keyframe = row_frame.frame().keyframe();
+            let with_baselines = Some(RowFrame {
+                baselines: Some(&encoder),
+                keyframe,
+                changed: row_frame.changed_rows(),
+            });
+            let without = Some(RowFrame {
+                baselines: None,
+                keyframe,
+                changed: &[],
+            });
+            let actual = diffed.hour_on(&input, &[], with_baselines, &OneThread).unwrap();
+            let expected = plain.hour_on(&input, &[], without, &OneThread).unwrap();
+            assert_eq!(actual.manifest, expected.manifest, "hour {hour}");
+            assert!(actual.sections().eq(expected.sections()), "hour {hour}");
+            diffed.commit(actual).unwrap();
+            plain.commit(expected).unwrap();
+        }
+        let _ = row_frame.take_frame();
+        encoder.commit(row_frame).unwrap();
+    }
+    same_restarts(&mut [&mut diffed, &mut plain]);
+}
+
+/// A complete table whose rows all go, through the row encoder's recorded deletions, and come
+/// again writes what its complete rows write.
+#[test]
+fn a_complete_table_emptied_and_refilled_writes_its_complete_bytes() {
+    let mut paths = Paths::new();
+    let held: [&[u64]; 6] = [&[1, 2, 3], &[1, 2, 3], &[], &[], &[2], &[2, 4]];
+    for (hour, ids) in (1..).zip(held) {
+        let rows = ids.iter().map(|&id| division(id, 1_000_000)).collect();
+        paths.check(
+            hour,
+            vec![
+                (countries(vec![country(1, 10)]), true),
+                (divisions(rows), true),
+                (unavailable("none"), true),
+            ],
+        );
+    }
 }

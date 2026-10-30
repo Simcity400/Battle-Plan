@@ -198,7 +198,7 @@ mod tests {
     fn agree<T: RowCodec>(table: TableId, rows: &[T], previous: &[T], keys: &[u128]) {
         let mut whole = vec![7];
         let mut whole_deleted = vec![9];
-        let whole_result = encode_changes_typed(rows, previous, &mut whole, &mut whole_deleted)
+        let whole_result = encode_changes_typed(rows, previous, &mut whole, &mut whole_deleted, None)
             .map_err(|e| e.to_string());
         let changed: Vec<T> = rows
             .iter()

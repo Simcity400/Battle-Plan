@@ -97,7 +97,7 @@ fn division_status_mask_recording_cost() {
                     }
                 }
                 let mut encoded = Vec::new();
-                encode_changes_typed(&next, &previous, &mut encoded, &mut Vec::new()).unwrap();
+                encode_changes_typed(&next, &previous, &mut encoded, &mut Vec::new(), None).unwrap();
                 let mut input = Decoder::new(&encoded);
                 let rows = input.u32().unwrap();
                 changed += rows as usize;

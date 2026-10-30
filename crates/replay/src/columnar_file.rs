@@ -7,7 +7,7 @@
 use replay_columnar::{
     envelope::{self, Extent, IndexPage, RestartDirectory, RestartTable, RunDirectory},
     framing,
-    leaf::Writer as Bytes,
+    leaf::{Reader, Writer as Bytes},
     manifest::Status,
     state::{Bits, Column, Table},
 };
@@ -16,6 +16,9 @@ use zstd::zstd_safe::{CCtx, CParameter};
 
 #[cfg(test)]
 mod tests;
+
+/// A campaign's finished columnar recording in its spool directory, written beside the rows.
+pub const CAMPAIGN_FILE: &str = "columnar.h4col";
 
 /// Compression and restart cadence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +76,137 @@ pub struct Finished<W> {
     pub walker_memory: Vec<usize>,
     /// Raw bytes of every page, directory and the root.
     pub index_bytes: u64,
+}
+
+/// The capture a file's runs belong to, which the root's control records hold: enough to
+/// pair the file with exactly the row recording of the same capture and the hours of it the
+/// file covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    pub campaign_id: Vec<u8>,
+    /// The content identity, as the row recording encodes it.
+    pub content: Vec<u8>,
+    pub capture_mode: u8,
+    /// The row recording's sessions the file's runs belong to, in recording order, each as
+    /// the row recording encodes it.
+    pub sessions: Vec<Vec<u8>>,
+    /// Each run's index in `sessions`.
+    pub run_sessions: Vec<u32>,
+    /// Where writing stopped short of the rows, when it did.
+    pub stop: Option<Stop>,
+}
+
+/// The columnar writer stopped while the rows went on: the hours after `last_hour` of
+/// `branch` are not in the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stop {
+    pub branch: u64,
+    /// The last hour the file holds on `branch`; none when it holds none of it.
+    pub last_hour: Option<i32>,
+    pub reason: String,
+}
+
+impl Capture {
+    const VERSION: u64 = 1;
+
+    pub fn write(&self) -> io::Result<Vec<u8>> {
+        let mut out = Bytes::new();
+        out.varint(Self::VERSION)?;
+        for bytes in [&self.campaign_id, &self.content] {
+            out.varint(bytes.len() as u64)?;
+            out.raw(bytes)?;
+        }
+        out.varint(u64::from(self.capture_mode))?;
+        out.varint(self.sessions.len() as u64)?;
+        for session in &self.sessions {
+            out.varint(session.len() as u64)?;
+            out.raw(session)?;
+        }
+        out.varint(self.run_sessions.len() as u64)?;
+        for &session in &self.run_sessions {
+            out.varint(u64::from(session))?;
+        }
+        match &self.stop {
+            None => out.varint(0)?,
+            Some(stop) => {
+                out.varint(1)?;
+                out.varint(stop.branch)?;
+                out.varint(stop.last_hour.map_or(0, |hour| (hour as u32 as u64) + 1))?;
+                out.varint(stop.reason.len() as u64)?;
+                out.raw(stop.reason.as_bytes())?;
+            }
+        }
+        Ok(out.into_bytes())
+    }
+
+    pub fn read(bytes: &[u8]) -> io::Result<Self> {
+        let mut reader = Reader::new(bytes);
+        if reader.varint()? != Self::VERSION {
+            return Err(invalid("Unknown capture record version"));
+        }
+        let owned = |reader: &mut Reader<'_>| -> io::Result<Vec<u8>> {
+            let length = usize::try_from(reader.varint()?)
+                .map_err(|_| invalid("A capture field passes the address space"))?;
+            engine_allocation::copy_vec(reader.raw(length)?)
+        };
+        let campaign_id = owned(&mut reader)?;
+        let content = owned(&mut reader)?;
+        let capture_mode = u8::try_from(reader.varint()?)
+            .map_err(|_| invalid("A capture mode passes a byte"))?;
+        let count = |reader: &mut Reader<'_>| -> io::Result<usize> {
+            let count = usize::try_from(reader.varint()?)
+                .map_err(|_| invalid("A capture count passes the address space"))?;
+            if count > bytes.len() {
+                return Err(invalid("A capture count passes its record"));
+            }
+            Ok(count)
+        };
+        let sessions_count = count(&mut reader)?;
+        let mut sessions = engine_allocation::vec(sessions_count)?;
+        for _ in 0..sessions_count {
+            sessions.push(owned(&mut reader)?);
+        }
+        let runs_count = count(&mut reader)?;
+        let mut run_sessions = engine_allocation::vec(runs_count)?;
+        for _ in 0..runs_count {
+            let session = u32::try_from(reader.varint()?)
+                .map_err(|_| invalid("A run's session passes 2^32"))?;
+            if session as usize >= sessions.len() {
+                return Err(invalid("A run names no session of the capture"));
+            }
+            run_sessions.push(session);
+        }
+        let stop = match reader.varint()? {
+            0 => None,
+            1 => {
+                let branch = reader.varint()?;
+                let last_hour = match reader.varint()? {
+                    0 => None,
+                    hour => Some(
+                        u32::try_from(hour - 1)
+                            .map_err(|_| invalid("A stop's hour passes 2^32"))? as i32,
+                    ),
+                };
+                let reason = String::from_utf8(owned(&mut reader)?)
+                    .map_err(|_| invalid("A stop's reason is not UTF-8"))?;
+                Some(Stop {
+                    branch,
+                    last_hour,
+                    reason,
+                })
+            }
+            _ => return Err(invalid("Unknown capture stop marker")),
+        };
+        reader.finish()?;
+        Ok(Self {
+            campaign_id,
+            content,
+            capture_mode,
+            sessions,
+            run_sessions,
+            stop,
+        })
+    }
 }
 
 /// What a closed position wrote.
@@ -342,14 +476,13 @@ impl<W: Write + Seek> FileWriter<W> {
             .ok_or_else(|| invalid("Only a full unit position closes early"))
     }
 
-    /// Closes the run's last position, short or not, and writes the run's directory.
+    /// Closes the run's last position, short or not, and writes the run's directory. A full
+    /// last position whose restart was due closes without one: a restart only lets a walk
+    /// start there, and the run ends anyway.
     pub fn finish_run(&mut self) -> io::Result<Closed> {
         self.usable()?;
-        let Some(run) = self.run.as_ref() else {
+        if self.run.is_none() {
             return Ok(Closed::default());
-        };
-        if run.full.is_some_and(|restart| restart) {
-            return Err(invalid("A due restart closes its position first"));
         }
         let result = self.end_run();
         self.poison(result)
@@ -384,8 +517,29 @@ impl<W: Write + Seek> FileWriter<W> {
 
     /// Finishes the run under way, then appends the root and the footer naming it. The
     /// caller makes the file durable.
-    pub fn finish(mut self) -> io::Result<Finished<W>> {
+    pub fn finish(self) -> io::Result<Finished<W>> {
+        self.finish_with(None)
+    }
+
+    /// [`Self::finish`], the root's control records holding `capture`, which names a session
+    /// for every run.
+    pub fn finish_with_capture(self, capture: &Capture) -> io::Result<Finished<W>> {
+        self.finish_with(Some(capture))
+    }
+
+    fn finish_with(mut self, capture: Option<&Capture>) -> io::Result<Finished<W>> {
         self.finish_run()?;
+        let mut controls = Vec::new();
+        if let Some(capture) = capture {
+            if capture.run_sessions.len() != self.runs.len() {
+                return Err(invalid("A capture names a session for every run"));
+            }
+            let bytes = capture.write()?;
+            self.index_bytes += bytes.len() as u64;
+            let window_log = self.settings.window_log;
+            engine_allocation::reserve(&mut controls, 1)?;
+            controls.push(self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?);
+        }
         let identity = self
             .identity
             .take()
@@ -394,7 +548,7 @@ impl<W: Write + Seek> FileWriter<W> {
             identity,
             revision: 1,
             runs: std::mem::take(&mut self.runs),
-            controls: Vec::new(),
+            controls,
         }
         .write()?;
         self.index_bytes += root.len() as u64;
@@ -558,9 +712,8 @@ impl<W: Write + Seek> FileWriter<W> {
         engine_allocation::reserve(&mut tables, states.len())?;
         for (table, state) in states.iter().enumerate() {
             if let Some(&id) = state.ids.iter().find(|&&id| id >= ids) {
-                return Err(invalid(format!(
-                    "Table {table}'s restart references dictionary id {id} past the run's {ids}"
-                )));
+                let _ = (table, id);
+                return Err(invalid("A table's restart references a dictionary id past the run's"));
             }
             let stream = u32::try_from(table).map_err(|_| invalid("Tables pass 2^32"))?;
             let extent = self.extent(
@@ -708,9 +861,15 @@ fn set(bits: &mut [u64], table: usize) {
 }
 
 fn zstd_error(code: usize) -> io::Error {
-    io::Error::other(zstd::zstd_safe::get_error_name(code))
+    invalid(zstd::zstd_safe::get_error_name(code))
 }
 
-fn invalid(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
+/// Kind-only while a capture runs, whatever diagnostic scope encloses it: the live writer
+/// must not allocate to fail. Offline writers keep the message.
+fn invalid(message: &'static str) -> io::Error {
+    if engine_allocation::capture_active() {
+        io::Error::from(io::ErrorKind::InvalidData)
+    } else {
+        io::Error::new(io::ErrorKind::InvalidData, message)
+    }
 }

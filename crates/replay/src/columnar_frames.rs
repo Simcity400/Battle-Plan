@@ -53,10 +53,11 @@ fn invalid(what: impl Into<String>) -> io::Error {
 
 /// Every schema table's column kinds, in the recording's table order.
 pub fn schema() -> io::Result<Vec<Vec<Column>>> {
-    TableId::ALL
-        .iter()
-        .map(|table| crate::native_columns::columns(table.schema()))
-        .collect()
+    let mut schema = engine_allocation::vec(TableId::ALL.len())?;
+    for table in TableId::ALL {
+        schema.push(crate::native_columns::columns(table.schema())?);
+    }
+    Ok(schema)
 }
 
 /// `slot`'s cell in `column` in the wire form a row's field codec reads: a text cell's

@@ -164,6 +164,8 @@ pub enum Input<'a> {
     Text(&'a [u8]),
     /// The recording did not record this cell.
     Unrecorded,
+    /// The cell the held row already holds: neither compared nor written. Only a held row's.
+    Kept,
 }
 
 /// The sample hour a table's view holds after an hour.
@@ -231,6 +233,8 @@ struct Cells {
     bytes: Vec<u8>,
     /// The rows whose cell the recording did not record, ascending.
     unrecorded: Vec<u32>,
+    /// The rows whose cell is the one their held row holds, ascending.
+    kept: Vec<u32>,
 }
 
 fn optional(kind: Kind) -> bool {
@@ -248,6 +252,7 @@ impl Cells {
         self.u64s.clear();
         self.bytes.clear();
         self.unrecorded.clear();
+        self.kept.clear();
     }
 
     /// The end of the items a `kind` column's cells take so far.
@@ -457,6 +462,23 @@ impl Batch {
         push(&mut cells.words, end)
     }
 
+    /// The current row's cell of `column`, which its held row already holds: the hour leaves
+    /// it as it is, without comparing it. Only a held row's cell can be kept.
+    #[inline]
+    pub fn kept(&mut self, column: usize) -> io::Result<()> {
+        let kind = *self
+            .kinds
+            .get(column)
+            .ok_or_else(|| invalid_static("A batch column is past the schema"))?;
+        let (cells, row) = self.next(column, kind)?;
+        push(&mut cells.kept, row as u32)?;
+        if optional(kind) {
+            presence(cells, row, false)?;
+        }
+        let end = cells.end(kind);
+        push(&mut cells.words, end)
+    }
+
     /// The current row's cell of `column`, which the recording did not record.
     #[inline]
     pub fn unrecorded(&mut self, column: usize) -> io::Result<()> {
@@ -578,9 +600,10 @@ impl Staged<'_> {
         mut change: impl FnMut(&mut Pending, usize, u32, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
         let mut skipped = self.cells.unrecorded.iter().copied().peekable();
+        let mut kept = self.cells.kept.iter().copied().peekable();
         for (row, &slot) in (0u32..).zip(self.slots) {
             let recorded = skipped.next_if_eq(&row).is_none();
-            if slot == NEW {
+            if kept.next_if_eq(&row).is_some() || slot == NEW {
                 continue;
             }
             let was = !self.marked.is_some_and(|bits| bits.get(slot));
@@ -1169,6 +1192,11 @@ fn cell_kind(cell: &Cell<'_>) -> Kind {
     }
 }
 
+/// A kept cell names no held row to keep.
+fn kept_insert() -> io::Error {
+    invalid_static("A kept cell's row is not held")
+}
+
 /// The value an unrecorded inserted cell holds: never read, since the cell is unrecorded.
 fn placeholder(kind: Kind) -> Cell<'static> {
     match kind {
@@ -1279,8 +1307,8 @@ pub struct TableWriter {
     /// A batch's held slot of each row, or [`NEW`], and its new rows.
     slots: Vec<u32>,
     insert_rows: Vec<u32>,
-    /// Each text column's next unrecorded row while a batch is staged.
-    cursors: Vec<usize>,
+    /// Each text column's next unrecorded and next kept row while a batch is staged.
+    cursors: Vec<(usize, usize)>,
     order: Order,
     parts: Parts,
     /// A bit per column whose per-hour buffers (staged cells, runs, insert values and
@@ -1765,6 +1793,7 @@ impl Hour<'_> {
         let kind = self.writer.kinds[column];
         let cell = match input {
             Input::Unrecorded => return Ok(None),
+            Input::Kept => return Err(kept_insert()),
             Input::Text(bytes) if kind == Kind::Bytes => {
                 Cell::Bytes(self.dictionary.intern(bytes)?)
             }
@@ -1805,6 +1834,9 @@ impl Hour<'_> {
             Some(slot) => {
                 self.mark_seen(slot)?;
                 for (column, &input) in cells.iter().enumerate() {
+                    if matches!(input, Input::Kept) {
+                        continue;
+                    }
                     let cell = self.resolve(column, input)?;
                     let recorded = self.writer.table.recorded(column, slot);
                     match cell {
@@ -1970,7 +2002,12 @@ impl Hour<'_> {
                 mark_dirty(dirty, column);
             }
             compared?;
+            let mut kept = cells.kept.iter().peekable();
             for (index, &row) in (0u32..).zip(insert_rows.iter()) {
+                while kept.next_if(|&&kept| kept < row).is_some() {}
+                if kept.peek() == Some(&&row) {
+                    return Err(kept_insert());
+                }
                 let cell = match cells.cell(kind, row) {
                     Some(cell) => cell,
                     None => {
@@ -1990,11 +2027,18 @@ impl Hour<'_> {
         engine_allocation::resize_default(cursors, texts.len())?;
         let mut index = 0u32;
         for (row, &slot) in (0u32..).zip(slots) {
-            for (&column, next) in texts.iter().zip(cursors.iter_mut()) {
+            for (&column, (next, next_kept)) in texts.iter().zip(cursors.iter_mut()) {
                 let cells = &columns[column];
                 let recorded = cells.unrecorded.get(*next) != Some(&row);
                 if !recorded {
                     *next += 1;
+                }
+                if cells.kept.get(*next_kept) == Some(&row) {
+                    *next_kept += 1;
+                    if slot == NEW {
+                        return Err(kept_insert());
+                    }
+                    continue;
                 }
                 let text = &cells.bytes[cells.span(row as usize)];
                 if slot == NEW {

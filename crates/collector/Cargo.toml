@@ -239,6 +239,7 @@ engine-resources.workspace = true
 engine-scripts.workspace = true
 engine-stability.workspace = true
 engine-visibility.workspace = true
+replay-columnar.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true

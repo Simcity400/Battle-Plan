@@ -284,3 +284,89 @@ fn refused_hours_leave_the_file_whole_and_restarts_wait_for_the_commit() {
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), 3);
 }
+
+/// Every run start reason reads back as written, each run from empty tables, and the root's
+/// capture names a session for each.
+#[test]
+fn runs_keep_their_start_reasons_and_the_root_names_their_sessions() {
+    let epochs = [
+        envelope::epoch::START,
+        envelope::epoch::BRANCH,
+        envelope::epoch::GAP,
+        envelope::epoch::CONTINUATION,
+        envelope::epoch::WRITE_FAILURE,
+    ];
+    let mut file = FileWriter::create(
+        Cursor::new(Vec::new()),
+        identity(),
+        schema().unwrap().iter().map(Vec::len).collect(),
+        Settings::RECORDING,
+    )
+    .unwrap();
+    for (run, &epoch) in epochs.iter().enumerate() {
+        let hour = 1 + 10 * run as i32;
+        let mut writer = FrameWriter::new().unwrap();
+        file.start_run(1, epoch, hour).unwrap();
+        let prepared = writer.hour(&frame(hour)).unwrap();
+        let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
+        assert_eq!(file.hour(given(&prepared, &sections)).unwrap(), Position::Open);
+        drop(sections);
+        writer.commit(prepared).unwrap();
+    }
+    let capture = Capture {
+        campaign_id: b"columnar file test".to_vec(),
+        content: vec![1, 2, 3],
+        capture_mode: CaptureMode::Full.byte(),
+        sessions: vec![b"first".to_vec(), b"second".to_vec()],
+        run_sessions: vec![0, 0, 0, 1, 1],
+        stop: Some(Stop {
+            branch: 1,
+            last_hour: Some(41),
+            reason: "stopped in this test".into(),
+        }),
+    };
+    let bytes = file.finish_with_capture(&capture).unwrap().file.into_inner();
+    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    assert!(recording.damage().is_empty(), "{:?}", recording.damage());
+    let read: Vec<u8> = (0..epochs.len() as u32)
+        .map(|run| recording.run(run).unwrap().epoch)
+        .collect();
+    assert_eq!(read, epochs);
+    let mut state = State::new(schema().unwrap()).unwrap();
+    let mut starts = 0;
+    recording
+        .walk(&mut state, |_, _, first| {
+            starts += usize::from(first);
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(starts, epochs.len());
+    assert_eq!(recording.capture().unwrap(), Some(capture));
+}
+
+#[test]
+fn a_capture_reads_back_and_refuses_a_run_without_its_session() {
+    let capture = Capture {
+        campaign_id: b"campaign".to_vec(),
+        content: Vec::new(),
+        capture_mode: 0,
+        sessions: vec![b"only".to_vec()],
+        run_sessions: vec![0, 0],
+        stop: None,
+    };
+    assert_eq!(Capture::read(&capture.write().unwrap()).unwrap(), capture);
+    let orphan = Capture {
+        run_sessions: vec![0, 1],
+        ..capture.clone()
+    };
+    assert!(Capture::read(&orphan.write().unwrap()).is_err());
+    let mut file = FileWriter::create(
+        Cursor::new(Vec::new()),
+        identity(),
+        schema().unwrap().iter().map(Vec::len).collect(),
+        Settings::RECORDING,
+    )
+    .unwrap();
+    file.start_run(1, envelope::epoch::START, 1).unwrap();
+    assert!(file.finish_with_capture(&capture).is_err(), "two runs named for one");
+}

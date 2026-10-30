@@ -591,6 +591,12 @@ pub trait RowsVisit {
     fn rows<R: RowCodec>(self, rows: &[R]) -> Self::Output;
 }
 
+/// A visit of two tables' rows of the same type at once.
+pub trait RowsPairVisit {
+    type Output;
+    fn rows<R: RowCodec>(self, rows: &[R], other: &[R]) -> Self::Output;
+}
+
 pub trait RowCodec: Default + Clone + Eq {
     fn try_clone(&self) -> io::Result<Self>;
     /// Copy admitted rows without repeating their key/nested validation.
@@ -603,6 +609,12 @@ pub trait RowCodec: Default + Clone + Eq {
     fn key(&self) -> u128;
     fn check_key_fields(&self) -> io::Result<()>;
     fn not_recorded_fields(&self) -> u64;
+    /// A bit per schema field that differs from `previous`'s; every bit for a row type that
+    /// does not compare its fields.
+    fn differing_fields(&self, previous: &Self) -> u64 {
+        let _ = previous;
+        u64::MAX
+    }
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str));
     /// Each schema field in order as the wire holds it: stepped fields in their step's
     /// units, a field this row did not record as [`Field::NotRecorded`], a restored
@@ -803,6 +815,11 @@ macro_rules! define_tables {
             pub fn visit<V: RowsVisit>(&self, visit: V) -> V::Output {
                 match self { $(Self::$table(rows) => visit.rows(rows)),+ }
             }
+            /// `visit` over this table's rows and `other`'s, when both are the same table;
+            /// otherwise the visit back.
+            pub fn visit_pair<V: RowsPairVisit>(&self, other: &TableRows, visit: V) -> Result<V::Output, V> {
+                match (self, other) { $((Self::$table(rows), Self::$table(others)) => Ok(visit.rows(rows, others))),+, _ => Err(visit) }
+            }
             pub fn inline_bytes(&self) -> usize {
                 match self { $(Self::$table(rows) => rows.len() * std::mem::size_of::<$row>()),+ }
             }
@@ -899,7 +916,15 @@ macro_rules! define_tables {
             }
             pub fn encode_changes(&self, previous: &Self, output: &mut Vec<u8>, deleted: &mut Vec<u8>) -> io::Result<bool> {
                 match (self, previous) {
-                    $((Self::$table(rows), Self::$table(previous)) => encode_changes_typed(rows, previous, output, deleted)),+,
+                    $((Self::$table(rows), Self::$table(previous)) => encode_changes_typed(rows, previous, output, deleted, None)),+,
+                    _ => Err(invalid("table rows have different types")),
+                }
+            }
+            /// [`Self::encode_changes`], recording in `changed` each row it writes and each
+            /// key it deletes; it writes nothing when no row changed.
+            pub fn encode_changes_recorded(&self, previous: &Self, output: &mut Vec<u8>, deleted: &mut Vec<u8>, changed: &mut ChangedRows) -> io::Result<bool> {
+                match (self, previous) {
+                    $((Self::$table(rows), Self::$table(previous)) => encode_changes_typed(rows, previous, output, deleted, Some(changed))),+,
                     _ => Err(invalid("table rows have different types")),
                 }
             }
@@ -1929,55 +1954,121 @@ fn decode_typed<T: RowCodec>(count: usize, input: &mut Decoder<'_>) -> io::Resul
     }
     Ok(rows)
 }
+/// The rows a change encoding wrote, each as its index beside its baseline row's (none for a new
+/// row), and the keys it deleted, in key order. Recording is advisory: one that cannot grow is
+/// dropped ([`ChangedRows::lost`]) while the encoding goes on.
+#[derive(Debug, Default)]
+pub struct ChangedRows {
+    pub pairs: Vec<(u32, Option<u32>)>,
+    pub removed: Vec<u128>,
+    pub lost: bool,
+}
+
+impl ChangedRows {
+    pub(crate) fn pair(&mut self, row: u32, baseline: Option<u32>) {
+        if !self.lost && allocation::advisory(|| allocation::reserve(&mut self.pairs, 1)).is_ok() {
+            self.pairs.push((row, baseline));
+        } else {
+            self.lose();
+        }
+    }
+
+    pub(crate) fn remove(&mut self, key: u128) {
+        if !self.lost && allocation::advisory(|| allocation::reserve(&mut self.removed, 1)).is_ok() {
+            self.removed.push(key);
+        } else {
+            self.lose();
+        }
+    }
+
+    pub(crate) fn lose(&mut self) {
+        self.lost = true;
+        self.pairs = Vec::new();
+        self.removed = Vec::new();
+    }
+}
+
+/// A change encoding's row count, zero until its rows are counted, with room for its deletion
+/// count; returns where the count is.
+pub(crate) fn count_header(output: &mut Vec<u8>) -> io::Result<usize> {
+    allocation::reserve(output, 8)?;
+    let at = output.len();
+    output.extend_from_slice(&0_u32.to_le_bytes());
+    Ok(at)
+}
+
 fn encode_changes_typed<T: RowCodec>(
     rows: &[T],
     previous: &[T],
     output: &mut Vec<u8>,
     deleted: &mut Vec<u8>,
+    mut changed: Option<&mut ChangedRows>,
 ) -> io::Result<bool> {
     u32::try_from(rows.len()).map_err(|_| invalid("too many rows"))?;
     u32::try_from(previous.len()).map_err(|_| invalid("too many rows"))?;
     // Size a row only after the merge establishes that it changed. Walking
     // every nested payload here repeats work for the often-quiet baseline.
-    allocation::reserve(output, 8)?;
-    let count_at = output.len();
-    output.extend_from_slice(&0_u32.to_le_bytes());
+    // A recorded merge writes its header only once a row differs, so a table
+    // that did not change needs no room.
+    let start = output.len();
+    let mut count_at = None;
+    if changed.is_none() {
+        count_at = Some(count_header(output)?);
+    }
     let mut changed_count = 0_u32;
     let mut changed_key = 0_u128;
     deleted.clear();
     let mut deleted_count = 0_u32;
     let mut deleted_key = 0_u128;
-    let mut delete = |key| -> io::Result<()> {
+    let mut delete = |key, changed: &mut Option<&mut ChangedRows>| -> io::Result<()> {
         allocation::reserve(deleted, (T::KEY_BITS as usize).div_ceil(7).max(1))?;
         put_varint(deleted, key - deleted_key);
         deleted_key = key;
         deleted_count += 1;
+        if let Some(changed) = changed {
+            changed.remove(key);
+        }
         Ok(())
     };
-    let mut old = previous.iter().peekable();
-    for row in rows {
+    let mut old = previous.iter().enumerate().peekable();
+    for (at, row) in rows.iter().enumerate() {
         let key = row.key();
-        while old.peek().is_some_and(|previous| previous.key() < key) {
-            delete(old.next().unwrap().key())?;
+        while old.peek().is_some_and(|(_, previous)| previous.key() < key) {
+            delete(old.next().unwrap().1.key(), &mut changed)?;
         }
-        let baseline = if old.peek().is_some_and(|previous| previous.key() == key) {
+        let baseline = if old.peek().is_some_and(|(_, previous)| previous.key() == key) {
             old.next()
         } else {
             None
         };
         // Both tables were validated before this merge. Preserve the cheap
         // unchanged-row exit instead of entering the larger field encoder.
-        if baseline == Some(row) {
+        if baseline.is_some_and(|(_, baseline)| baseline == row) {
             continue;
         }
-        if row.encode_change(baseline, changed_key, output)? {
+        if count_at.is_none() {
+            count_at = Some(count_header(output)?);
+        }
+        if row.encode_change(baseline.map(|(_, baseline)| baseline), changed_key, output)? {
             changed_count += 1;
             changed_key = key;
+            if let Some(changed) = &mut changed {
+                // Both lengths were checked to fit 32 bits above.
+                changed.pair(at as u32, baseline.map(|(before, _)| before as u32));
+            }
         }
     }
-    for row in old {
-        delete(row.key())?;
+    for (_, row) in old {
+        delete(row.key(), &mut changed)?;
     }
+    if changed.is_some() && changed_count == 0 && deleted_count == 0 {
+        output.truncate(start);
+        return Ok(false);
+    }
+    let count_at = match count_at {
+        Some(at) => at,
+        None => count_header(output)?,
+    };
     output[count_at..count_at + 4].copy_from_slice(&changed_count.to_le_bytes());
     allocation::reserve(output, allocation::add(4, deleted.len())?)?;
     output.extend_from_slice(&deleted_count.to_le_bytes());
@@ -2836,6 +2927,11 @@ macro_rules! typed_codec {
             fn not_recorded_fields(&self) -> u64 {
                 let mut mask = 0;
                 $(if matches!(self.$($field)+.field(), Field::NotRecorded) { mask |= 1 << $index; })+
+                mask
+            }
+            fn differing_fields(&self, previous: &Self) -> u64 {
+                let mut mask = 0;
+                $(if self.$($field)+ != previous.$($field)+ { mask |= 1 << $index; })+
                 mask
             }
             // Key initializers also serve rows with nested fields.
@@ -4140,12 +4236,56 @@ mod tests {
                 previous_key = *key;
             }
             let mut actual = Vec::new();
+            let any = !changed.is_empty() || !deleted.is_empty();
             assert_eq!(
-                encode_changes_typed(&new, &old, &mut actual, &mut scratch).unwrap(),
-                !changed.is_empty() || !deleted.is_empty()
+                encode_changes_typed(&new, &old, &mut actual, &mut scratch, None).unwrap(),
+                any
             );
             assert_eq!(actual, expected);
+            // Recorded: the same bytes when a row changed, none otherwise, and each written
+            // row beside its baseline row, with the deleted keys.
+            let mut recorded = Vec::new();
+            let mut rows = ChangedRows::default();
+            assert_eq!(
+                encode_changes_typed(&new, &old, &mut recorded, &mut scratch, Some(&mut rows))
+                    .unwrap(),
+                any
+            );
+            assert_eq!(recorded, if any { expected } else { Vec::new() });
+            let pairs: Vec<(u32, Option<u32>)> = new
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| changed.iter().any(|delta| delta.key == row.key()))
+                .map(|(at, row)| {
+                    let before = old.iter().position(|before| before.id == row.id);
+                    (at as u32, before.map(|before| before as u32))
+                })
+                .collect();
+            assert_eq!((rows.pairs, rows.removed, rows.lost), (pairs, deleted, false));
         }
+    }
+
+    /// A recorded merge of a table equal to its baseline writes nothing and needs no room, as
+    /// the unchanged form it leaves the encoder to write does not.
+    #[test]
+    fn a_recorded_merge_of_an_unchanged_table_grows_nothing() {
+        let rows = TableRows::States(vec![StateRow {
+            id: 3,
+            owner: 2,
+            ..StateRow::default()
+        }]);
+        let mut output = vec![9_u8; 5];
+        output.shrink_to_fit();
+        let capacity = output.capacity();
+        let mut changed = ChangedRows::default();
+        assert!(
+            !rows
+                .encode_changes_recorded(&rows, &mut output, &mut Vec::new(), &mut changed)
+                .unwrap()
+        );
+        assert_eq!(output.capacity(), capacity);
+        assert_eq!(output, vec![9_u8; 5]);
+        assert!(changed.pairs.is_empty() && changed.removed.is_empty() && !changed.lost);
     }
     fn division() -> DivisionRow {
         DivisionRow {

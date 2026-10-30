@@ -665,6 +665,7 @@ dependencies = [
  "proc-macro2",
  "recorder-replay",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-derive",
  "replay-frame",

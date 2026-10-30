@@ -2998,6 +2998,9 @@ fn finalize_campaign(
         &mut hand,
     )?;
     if let Some(recording) = &outcome.replay {
+        if !unsaved {
+            publish_columnar(campaign_dir, recording);
+        }
         let replay = held_recording(recording)?;
         let mut report =
             merge_reports(checkpointed, outcome.report.take(), &replay)?.unwrap_or_default();
@@ -3037,6 +3040,47 @@ fn finalize_campaign(
         }
     }
     Ok(outcome)
+}
+
+/// Moves the session's finished columnar recording beside `recording`, named for the session:
+/// a recording continues across sessions, and each session's columnar file holds its own
+/// hours. A move that fails is reported and leaves the file where it was.
+fn publish_columnar(campaign_dir: &Path, recording: &Path) {
+    let source = campaign_dir.join(replay::columnar_file::CAMPAIGN_FILE);
+    if !source.is_file() {
+        return;
+    }
+    let (Some(stem), Some(session)) = (
+        recording.file_stem(),
+        campaign_dir.parent().and_then(Path::file_name),
+    ) else {
+        return;
+    };
+    let mut name = stem.to_os_string();
+    name.push(".");
+    name.push(session);
+    name.push(".h4col");
+    let target = recording.with_file_name(name);
+    let moved = fs::rename(&source, &target).or_else(|_| {
+        // Another volume: copy beside the target, then publish it by name.
+        let mut staged = target.clone().into_os_string();
+        staged.push(".partial");
+        let staged = PathBuf::from(staged);
+        let copied = fs::copy(&source, &staged)
+            .and_then(|_| replay::publication::sync_file(&staged))
+            .and_then(|_| fs::rename(&staged, &target));
+        if copied.is_err() {
+            let _ = fs::remove_file(&staged);
+        }
+        copied.and_then(|_| fs::remove_file(&source))
+    });
+    match moved {
+        Ok(()) => println!("Columnar recording: {}", target.display()),
+        Err(error) => eprintln!(
+            "Columnar recording not moved beside {}: {error}",
+            recording.display()
+        ),
+    }
 }
 
 /// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.

@@ -80,6 +80,13 @@ impl RowCodec for SharedDivisionHistoryRow {
     fn not_recorded_fields(&self) -> u64 {
         self.as_ref().not_recorded_fields()
     }
+    fn differing_fields(&self, previous: &Self) -> u64 {
+        if Arc::ptr_eq(self, previous) {
+            0
+        } else {
+            self.as_ref().differing_fields(previous)
+        }
+    }
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         self.as_ref().visit_nested_field_gaps(visit)
     }
@@ -285,6 +292,13 @@ impl RowCodec for SharedDivisionPanelSourceRow {
     }
     fn not_recorded_fields(&self) -> u64 {
         self.as_ref().not_recorded_fields()
+    }
+    fn differing_fields(&self, previous: &Self) -> u64 {
+        if Arc::ptr_eq(self, previous) {
+            0
+        } else {
+            self.as_ref().differing_fields(previous)
+        }
     }
     fn visit_nested_field_gaps(&self, visit: &mut dyn FnMut(&'static str)) {
         self.as_ref().visit_nested_field_gaps(visit)

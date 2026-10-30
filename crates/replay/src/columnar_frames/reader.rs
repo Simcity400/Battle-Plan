@@ -125,6 +125,8 @@ struct Restart {
 /// its readable pages hold.
 pub struct Run {
     pub branch: u64,
+    /// Why the run starts ([`envelope::epoch`]); every run starts from empty tables.
+    pub epoch: u8,
     pub first_hour: i32,
     pub ordinals: u32,
     index: u32,
@@ -222,6 +224,7 @@ impl Run {
         }
         Ok(Some(Self {
             branch: directory.branch,
+            epoch: directory.epoch,
             first_hour: directory.first_hour,
             ordinals: directory.ordinals,
             index,
@@ -313,6 +316,8 @@ pub struct Recording {
     source: Arc<Source>,
     /// The identity block every run's chain starts from.
     identity: Vec<u8>,
+    /// The root's control records' extents.
+    controls: Box<[Extent]>,
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     damage: Box<[Damage]>,
@@ -382,6 +387,7 @@ impl Recording {
         }
         Ok(Self {
             identity: root.identity.chain_bytes()?,
+            controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&root.controls)?)?,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
             segments: engine_allocation::boxed_slice(segments)?,
@@ -465,6 +471,18 @@ impl Recording {
     }
 
     /// Why each run directory or page that cannot be read is refused.
+    /// The capture the file's runs belong to, as the root's control records hold it; none
+    /// when the root holds none.
+    pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
+        let Some(extent) = self.controls.iter().find(|extent| extent.stream == 0) else {
+            return Ok(None);
+        };
+        let mut decoder = Decoder::new()?;
+        let mut raw = Vec::new();
+        decoder.append(&self.source, extent, &mut raw)?;
+        crate::columnar_file::Capture::read(&raw).map(Some)
+    }
+
     pub fn damage(&self) -> &[Damage] {
         &self.damage
     }

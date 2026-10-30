@@ -6,7 +6,7 @@ use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
     codec::{invalid_static as invalid, put_bytes, put_string},
     format::FormatVersion,
-    rows::{TableId, TableRows, TableSchema},
+    rows::{ChangedRows, TableId, TableRows, TableSchema},
 };
 use engine_allocation as allocation;
 use std::{
@@ -82,6 +82,8 @@ impl Default for Baselines {
 pub struct PreparedFrame {
     frame: Option<EncodedFrame>,
     source: FrameInput,
+    /// Each complete table diffed with its baseline, by index, with the rows that diff wrote.
+    changed: Vec<(usize, ChangedRows)>,
     unchanged: [bool; TABLE_COUNT],
     revision: u64,
     encoder: u64,
@@ -96,6 +98,17 @@ impl PreparedFrame {
     /// Move the bytes to the spool without copying; retain the pending baselines.
     pub fn take_frame(&mut self) -> EncodedFrame {
         self.frame.take().expect("prepared record already taken")
+    }
+
+    /// The input as encoded: rows rounded and refused tables rewritten.
+    pub fn input(&self) -> &FrameInput {
+        &self.source
+    }
+
+    /// Each complete table the frame wrote as changes from its baseline, by table index in
+    /// ascending order, with the rows those changes wrote and the keys they deleted.
+    pub fn changed_rows(&self) -> &[(usize, ChangedRows)] {
+        &self.changed
     }
 }
 
@@ -119,6 +132,7 @@ pub struct TableSegment {
     table: TableId,
     bytes: Vec<u8>,
     unchanged: bool,
+    changed: Option<ChangedRows>,
 }
 
 /// What a commit no longer holds: replaced baselines and rows, and inputs it
@@ -229,6 +243,17 @@ impl FrameEncoder {
     /// The latest committed complete rows of `T` and the hour that supplied
     /// them. `None` when this encoder holds no complete baseline for `T`: never
     /// committed, or truncated or unavailable at its last sample.
+    /// The complete rows table `table`'s baseline holds.
+    pub fn committed_rows(&self, table: TableId) -> Option<&TableRows> {
+        let (_, rows) = self.state.tables[table.index()].as_ref()?;
+        Some(rows.as_ref())
+    }
+
+    /// The branch and hour of the last committed frame.
+    pub fn last_committed(&self) -> Option<(BranchId, Hour)> {
+        Some((self.state.branch?, self.state.last_hour?))
+    }
+
     pub fn committed<T: TableSchema>(&self) -> Option<(Hour, &[T::Row])> {
         let (hour, values) = self.state.tables[T::ID.index()].as_ref()?;
         Some((*hour, values.as_ref().rows::<T>()?))
@@ -333,6 +358,7 @@ impl FrameEncoder {
         keyframe: bool,
         output: &mut Vec<u8>,
         deleted: &mut Vec<u8>,
+        changed: &mut Option<ChangedRows>,
     ) -> io::Result<bool> {
         validate_complete(table, values, hour).map_err(row_validation)?;
         let Some((baseline, previous)) = self.state.tables[table.index()]
@@ -344,18 +370,21 @@ impl FrameEncoder {
             values.encode_rows(output).map_err(row_encoding)?;
             return Ok(false);
         };
+        // The merge finds equal rows itself, so an unchanged table writes no change.
         let start = output.len();
-        if values != previous.as_ref() {
-            output.push(1);
-            output.extend_from_slice(&baseline.to_le_bytes());
-            if values
-                .encode_changes(previous.as_ref(), output, deleted)
-                .map_err(row_encoding)?
-            {
-                return Ok(false);
-            }
-            output.truncate(start);
+        output.push(1);
+        output.extend_from_slice(&baseline.to_le_bytes());
+        let mut rows = ChangedRows::default();
+        let written = values
+            .encode_changes_recorded(previous.as_ref(), output, deleted, &mut rows)
+            .map_err(row_encoding)?;
+        if !rows.lost {
+            *changed = Some(rows);
         }
+        if written {
+            return Ok(false);
+        }
+        output.truncate(start);
         output.push(2);
         output.extend_from_slice(&baseline.to_le_bytes());
         Ok(true)
@@ -447,9 +476,9 @@ impl FrameEncoder {
         if context.encoder != self.identity || context.revision != self.revision {
             return Err(invalid("segment context does not name this encoder state"));
         }
-        let (mut bytes, mut deleted) = (Vec::new(), Vec::new());
+        let (mut bytes, mut deleted, mut changed) = (Vec::new(), Vec::new(), None);
         let unchanged = crate::codec::with_error_details(|| {
-            self.encode_table(context, table, input, &mut bytes, &mut deleted)
+            self.encode_table(context, table, input, &mut bytes, &mut deleted, &mut changed)
                 .map_err(|error| crate::codec::error_context(error, format_args!("{table:?}")))
         })?;
         Ok(TableSegment {
@@ -457,6 +486,7 @@ impl FrameEncoder {
             table,
             bytes,
             unchanged,
+            changed,
         })
     }
 
@@ -523,11 +553,13 @@ impl FrameEncoder {
         output.extend_from_slice(&source.metrics.pool_bytes.to_le_bytes());
         output.extend_from_slice(&source.metrics.dropped_frames.to_le_bytes());
         let mut unchanged = [false; TABLE_COUNT];
+        let mut changed_rows = Vec::new();
         let mut deleted = std::mem::take(&mut self.deleted);
         for table in TableId::ALL {
             if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
             }
+            let mut changed = None;
             unchanged[table.index()] = match segments[table.index()].take() {
                 Some(segment) => {
                     if segment.context != context || segment.table != table {
@@ -535,6 +567,7 @@ impl FrameEncoder {
                     }
                     allocation::reserve(&mut output, segment.bytes.len())?;
                     output.extend_from_slice(&segment.bytes);
+                    changed = segment.changed;
                     segment.unchanged
                 }
                 None => {
@@ -546,6 +579,7 @@ impl FrameEncoder {
                         &source.tables[table.index()],
                         &mut output,
                         &mut deleted,
+                        &mut changed,
                     );
                     match result {
                         Err(error)
@@ -559,6 +593,7 @@ impl FrameEncoder {
                             let reason = refuse(table, error)?;
                             output.truncate(start);
                             deleted.clear();
+                            changed = None;
                             source.tables[table.index()] = TableView::Unavailable { reason }.into();
                             self.encode_table(
                                 &context,
@@ -566,6 +601,7 @@ impl FrameEncoder {
                                 &source.tables[table.index()],
                                 &mut output,
                                 &mut deleted,
+                                &mut changed,
                             )?
                         }
                         result => result.map_err(|error| {
@@ -574,6 +610,13 @@ impl FrameEncoder {
                     }
                 }
             };
+            // Diagnostics for the columnar writer beside the rows: a recording that cannot
+            // be held is left out.
+            if let Some(changed) = changed
+                && allocation::advisory(|| allocation::reserve(&mut changed_rows, 1)).is_ok()
+            {
+                changed_rows.push((table.index(), changed));
+            }
         }
         self.deleted = deleted;
         Ok(PreparedFrame {
@@ -584,6 +627,7 @@ impl FrameEncoder {
                 bytes: output,
             }),
             source,
+            changed: changed_rows,
             unchanged,
             revision,
             encoder: self.identity,
@@ -600,6 +644,7 @@ impl FrameEncoder {
         view: &TableInput,
         output: &mut Vec<u8>,
         deleted: &mut Vec<u8>,
+        changed: &mut Option<ChangedRows>,
     ) -> io::Result<bool> {
         let FrameContext {
             branch,
@@ -622,7 +667,7 @@ impl FrameEncoder {
                     output.extend_from_slice(&baseline.to_le_bytes());
                     true
                 } else {
-                    self.encode_complete(table, values, hour, keyframe, output, deleted)?
+                    self.encode_complete(table, values, hour, keyframe, output, deleted, changed)?
                 }
             }
             TableInput::ComparedEqual(token) => {
@@ -675,10 +720,14 @@ impl FrameEncoder {
                 let start = output.len();
                 output.push(1);
                 output.extend_from_slice(&token.baseline.to_le_bytes());
-                if update
-                    .encode_changes(previous, output, deleted)
-                    .map_err(row_encoding)?
-                {
+                let mut rows = ChangedRows::default();
+                let written = update
+                    .encode_changes_recorded(previous, output, deleted, &mut rows)
+                    .map_err(row_encoding)?;
+                if !rows.lost {
+                    *changed = Some(rows);
+                }
+                if written {
                     false
                 } else {
                     output.truncate(start);
@@ -688,7 +737,7 @@ impl FrameEncoder {
                 }
             }
             TableInput::Sampled(TableView::Complete(values)) => {
-                self.encode_complete(table, values, hour, keyframe, output, deleted)?
+                self.encode_complete(table, values, hour, keyframe, output, deleted, changed)?
             }
             TableInput::Sampled(TableView::Truncated { rows, missing }) => {
                 validate_rows(table, rows).map_err(row_validation)?;

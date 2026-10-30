@@ -25,6 +25,7 @@ pub(crate) enum Phase {
     Recycle,
     Compare,
     Encode,
+    Columnar,
     Write,
     Commit,
     Observers,
@@ -36,7 +37,7 @@ pub(crate) enum Phase {
 }
 
 impl Phase {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Receive,
         Self::Observe,
         Self::ConvertCore,
@@ -47,6 +48,7 @@ impl Phase {
         Self::Recycle,
         Self::Compare,
         Self::Encode,
+        Self::Columnar,
         Self::Write,
         Self::Commit,
         Self::Observers,
@@ -69,6 +71,7 @@ impl Phase {
             Self::Recycle => "recycle",
             Self::Compare => "compare",
             Self::Encode => "encode",
+            Self::Columnar => "columnar",
             Self::Write => "write",
             Self::Commit => "commit",
             Self::Observers => "observers",
@@ -107,6 +110,9 @@ impl Phase {
             }
             Self::Encode => {
                 "frame encoding against the campaign baselines; with the helpers, their share of the larger tables is in helper_phases"
+            }
+            Self::Columnar => {
+                "the columnar recording's hour: its tables prepared and committed, with the helpers' share in helper_phases"
             }
             Self::Write => {
                 "context, clock witness and frame records: framing, CRC, speculative baseline staging and owned writer-queue admission; waits only for byte backpressure or rare segment barriers"
@@ -151,6 +157,11 @@ impl Totals {
         if phase != Phase::Wait {
             crate::tick_gate::wait();
         }
+        self.span_now(phase)
+    }
+
+    /// [`Self::span`] started at once, also in the game's tick.
+    pub(crate) fn span_now(&self, phase: Phase) -> Span<'_> {
         Span {
             totals: self,
             phase,

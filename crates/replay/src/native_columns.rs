@@ -97,11 +97,20 @@ impl RowCells {
         self.staging
     }
 
-    /// Adds `row` to the batch, each wire field its cell.
-    fn batch_row<R: RowCodec>(&mut self, row: &R) -> io::Result<()> {
+    /// Adds `row` to the batch, each wire field its cell, or kept where `kept` names it.
+    fn batch_row<R: RowCodec>(&mut self, row: &R, kept: u64) -> io::Result<()> {
         let batch = &mut self.batch;
         batch.key(row.key())?;
-        row.visit_wire(&mut |column, field| put(batch, column, field))
+        if kept == 0 {
+            return row.visit_wire(&mut |column, field| put(batch, column, field));
+        }
+        row.visit_wire(&mut |column, field| {
+            if column < MAX_FIELDS && kept >> column & 1 != 0 {
+                batch.kept(column)
+            } else {
+                put(batch, column, field)
+            }
+        })
     }
 
     fn take(&mut self, field: Field<'_>) -> io::Result<Entry> {
@@ -178,8 +187,8 @@ impl RowCells {
         })
     }
 
-    /// Hands `row` to `hour` as its wire fields' cells.
-    pub fn row<R: RowCodec>(&mut self, hour: &mut Hour<'_>, row: &R) -> io::Result<()> {
+    /// Hands `row` to `hour` as its wire fields' cells, or kept where `kept` names it.
+    pub fn row<R: RowCodec>(&mut self, hour: &mut Hour<'_>, row: &R, kept: u64) -> io::Result<()> {
         self.entries.clear();
         self.bytes.clear();
         self.u32s.clear();
@@ -211,6 +220,11 @@ impl RowCells {
                 }
                 Entry::Unrecorded => Input::Unrecorded,
             };
+        }
+        for (column, input) in inputs.iter_mut().enumerate().take(self.entries.len()) {
+            if kept >> column & 1 != 0 {
+                *input = Input::Kept;
+            }
         }
         hour.row(row.key(), &inputs[..self.entries.len()])
     }
@@ -283,6 +297,25 @@ pub enum TableInput<'a, R> {
         read: bool,
         sample: Sample,
     },
+    /// [`TableInput::Changes`] with each changed row beside the row its held row holds:
+    /// `pairs` names a row of `rows` and its row of `previous`, or none for a new row. A
+    /// field equal to its previous row's is kept rather than compared; `removed` are gone.
+    Paired {
+        rows: &'a [R],
+        previous: &'a [R],
+        pairs: &'a [(u32, Option<u32>)],
+        removed: &'a [u128],
+        read: bool,
+        sample: Sample,
+    },
+    /// Every row of a complete table, each at its place in `previous`, the rows the held
+    /// table holds: a field equal to its previous row's is kept rather than compared.
+    Aligned {
+        rows: &'a [R],
+        previous: &'a [R],
+        read: bool,
+        sample: Sample,
+    },
     /// A captured walk: every row of a complete table, or the rows a partial walk read,
     /// with `missing` rows it could not enumerate.
     Snapshot {
@@ -311,7 +344,7 @@ fn visit<R: RowCodec>(
     coverage: Coverage<'_>,
     rows: &[R],
 ) -> io::Result<Prepared> {
-    stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(Ok))
+    stage(writer, dictionary, cells, coverage, rows.len(), rows.iter().map(|row| Ok((row, None))))
 }
 
 /// The section of an hour that changed the rows at `keys` of key-ordered `rows` and
@@ -326,37 +359,63 @@ fn visit_keyed<R: RowCodec>(
 ) -> io::Result<Prepared> {
     let changed = keys.iter().map(|&key| {
         rows.binary_search_by_key(&key, R::key)
-            .map(|at| &rows[at])
+            .map(|at| (&rows[at], None))
             .map_err(|_| invalid_static("A changed key names no row"))
     });
     stage(writer, dictionary, cells, Coverage::Changes { removed }, keys.len(), changed)
 }
 
-/// The section of an hour's `count` rows, staged as `cells` says.
+/// The section of an hour's `count` rows, staged as `cells` says. A row beside the row its
+/// held row holds keeps the text, list and opaque fields equal to that row's.
 fn stage<'r, R: RowCodec + 'r>(
     writer: &mut TableWriter,
     dictionary: Strings<'_>,
     cells: &mut RowCells,
     coverage: Coverage<'_>,
     count: usize,
-    rows: impl Iterator<Item = io::Result<&'r R>>,
+    rows: impl Iterator<Item = io::Result<(&'r R, Option<&'r R>)>>,
 ) -> io::Result<Prepared> {
+    let heavy = heavy(writer.kinds());
+    let kept = |row: &R, previous: Option<&R>| -> io::Result<u64> {
+        match previous {
+            Some(previous) if previous.key() != row.key() => {
+                Err(invalid_static("A row's previous row has another key"))
+            }
+            Some(previous) if heavy != 0 => Ok(!row.differing_fields(previous) & heavy),
+            _ => Ok(0),
+        }
+    };
     match cells.staging {
         Staging::Columns => {
             cells.batch.begin(writer.kinds(), count)?;
             for row in rows {
-                cells.batch_row(row?)?;
+                let (row, previous) = row?;
+                cells.batch_row(row, kept(row, previous)?)?;
             }
             writer.prepare(dictionary, coverage, &cells.batch)
         }
         Staging::Rows => {
             let mut hour = writer.begin(dictionary, coverage)?;
             for row in rows {
-                cells.row(&mut hour, row?)?;
+                let (row, previous) = row?;
+                cells.row(&mut hour, row, kept(row, previous)?)?;
             }
             hour.finish()
         }
     }
+}
+
+/// The columns a kept cell saves work in: text, lists and opaque values, which are copied and
+/// compared by their items.
+fn heavy(kinds: &[Column]) -> u64 {
+    kinds
+        .iter()
+        .take(MAX_FIELDS)
+        .enumerate()
+        .filter(|(_, kind)| {
+            matches!(kind, Column::Bytes | Column::U32List | Column::U64List | Column::Opaque)
+        })
+        .fold(0, |mask, (column, _)| mask | 1 << column)
 }
 
 /// Writes one table's hour from what its producer holds. Nothing held changes until
@@ -378,6 +437,7 @@ pub fn table_hour<'d, R: RowCodec>(
         && match &input {
             TableInput::Changes { rows, removed, .. } => rows.is_empty() && removed.is_empty(),
             TableInput::Keyed { keys, removed, .. } => keys.is_empty() && removed.is_empty(),
+            TableInput::Paired { pairs, removed, .. } => pairs.is_empty() && removed.is_empty(),
             _ => false,
         };
     Ok(match input {
@@ -385,7 +445,9 @@ pub fn table_hour<'d, R: RowCodec>(
             prepared: None,
             evidence: evidence(Status::Complete, read, sample),
         },
-        TableInput::Changes { read, sample, .. } | TableInput::Keyed { read, sample, .. }
+        TableInput::Changes { read, sample, .. }
+        | TableInput::Keyed { read, sample, .. }
+        | TableInput::Paired { read, sample, .. }
             if unchanged =>
         {
             TableHour {
@@ -418,6 +480,67 @@ pub fn table_hour<'d, R: RowCodec>(
             prepared: Some(visit_keyed(writer, dictionary, cells, rows, keys, removed)?),
             evidence: evidence(Status::Complete, read, sample),
         },
+        TableInput::Paired {
+            rows,
+            previous,
+            pairs,
+            removed,
+            read,
+            sample,
+        } => {
+            let changed = pairs.iter().map(|&(at, before)| {
+                let row = rows
+                    .get(at as usize)
+                    .ok_or_else(|| invalid_static("A changed row is past the table"))?;
+                let previous = match before {
+                    Some(before) => Some(
+                        previous
+                            .get(before as usize)
+                            .ok_or_else(|| invalid_static("A previous row is past the table"))?,
+                    ),
+                    None => None,
+                };
+                Ok((row, previous))
+            });
+            TableHour {
+                prepared: Some(stage(
+                    writer,
+                    dictionary,
+                    cells,
+                    Coverage::Changes { removed },
+                    pairs.len(),
+                    changed,
+                )?),
+                evidence: evidence(Status::Complete, read, sample),
+            }
+        }
+        TableInput::Aligned {
+            rows,
+            previous,
+            read,
+            sample,
+        } => {
+            if rows.len() != previous.len() {
+                return Err(invalid_static(
+                    "Aligned rows differ in count from their previous rows",
+                ));
+            }
+            let aligned = rows
+                .iter()
+                .zip(previous)
+                .map(|(row, previous)| Ok((row, Some(previous))));
+            TableHour {
+                prepared: Some(stage(
+                    writer,
+                    dictionary,
+                    cells,
+                    Coverage::Complete,
+                    rows.len(),
+                    aligned,
+                )?),
+                evidence: evidence(Status::Complete, read, sample),
+            }
+        }
         TableInput::Snapshot {
             rows,
             partial,
