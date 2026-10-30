@@ -456,6 +456,36 @@ impl Store {
         self.read_named(key, section, range)
     }
 
+    /// The identity [`Self::read`] would open `section`'s range `range` under, without opening its
+    /// pack: what a key over published ranges needs.
+    pub fn range_id(
+        &self,
+        key: &SourceKey,
+        section: &str,
+        range: u64,
+    ) -> io::Result<Option<RangeId>> {
+        if let Some(session) = self.scoped(key) {
+            return session.range_id(section, range);
+        }
+        if !key.recording_current()? {
+            return Ok(None);
+        }
+        // Cleanup may remove an entry log between the manifest read and its open, as for a read.
+        for _ in 0..2 {
+            let Some(catalog) = self.catalog()? else {
+                return Ok(None);
+            };
+            if !self.matches_bound(&catalog, key)? {
+                return Ok(None);
+            }
+            match listed(&catalog, section, range) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                result => return result,
+            }
+        }
+        Ok(None)
+    }
+
     /// Opens requested ranges in order with one manifest read.
     #[cfg(test)]
     pub fn read_many(
@@ -876,6 +906,21 @@ thread_local! {
     static SCOPES: std::cell::RefCell<Vec<Session>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The identity [`lookup`] opens `section`'s range `range` under, without opening its pack.
+fn listed(catalog: &Catalog, section: &str, range: u64) -> io::Result<Option<RangeId>> {
+    let Some(index) = catalog
+        .header
+        .sections
+        .iter()
+        .position(|s| s.name == section)
+    else {
+        return Ok(None);
+    };
+    Ok(catalog
+        .entry(index, range)?
+        .map(|id| if id.len == 0 { RangeId::EMPTY } else { id }))
+}
+
 /// Looks up one listed range and opens its pack, sharing handles in `opened`.
 fn lookup(
     directory: &Path,
@@ -952,6 +997,40 @@ impl Session {
         Ok(self.read_counted(section, range)?.1)
     }
 
+    /// [`Store::range_id`] through this session's manifest, or the current one once a writer has
+    /// removed an entry log it lists, as [`Self::read_counted`] continues.
+    pub fn range_id(&self, section: &str, range: u64) -> io::Result<Option<RangeId>> {
+        for retry in [false, true] {
+            let catalog = Arc::clone(&self.0.catalog.lock().unwrap());
+            match listed(&catalog, section, range) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound && !retry => {
+                    if !self.advance()? {
+                        return Ok(None);
+                    }
+                }
+                result => return result,
+            }
+        }
+        Ok(None)
+    }
+
+    /// Moves this session to the current manifest, when it is still bound to the session's key.
+    fn advance(&self) -> io::Result<bool> {
+        let state = &self.0;
+        let store = Store {
+            directory: state.directory.clone(),
+            source: Mutex::default(),
+        };
+        let Some(current) = store.catalog()? else {
+            return Ok(false);
+        };
+        if !store.matches_bound(&current, &state.key)? {
+            return Ok(false);
+        }
+        *state.catalog.lock().unwrap() = Arc::new(current);
+        Ok(true)
+    }
+
     /// The range and its section's published count.
     pub fn read_counted(&self, section: &str, range: u64) -> io::Result<(u64, Option<Range>)> {
         let state = &self.0;
@@ -961,17 +1040,9 @@ impl Session {
             match lookup(&state.directory, &catalog, section, range, &mut opened) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound && !retry => {
                     drop(opened);
-                    let store = Store {
-                        directory: state.directory.clone(),
-                        source: Mutex::default(),
-                    };
-                    let Some(current) = store.catalog()? else {
-                        return Ok((0, None));
-                    };
-                    if !store.matches_bound(&current, &state.key)? {
+                    if !self.advance()? {
                         return Ok((0, None));
                     }
-                    *state.catalog.lock().unwrap() = Arc::new(current);
                 }
                 result => return result,
             }

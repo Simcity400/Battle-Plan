@@ -1467,8 +1467,8 @@ pub(crate) fn query_pages(
                 independent::coverage_section(family, branch)
             };
             let id = store
-                .read(key, &section, 0)?
-                .map(|file| file.id().cache_key());
+                .range_id(key, &section, 0)?
+                .map(|id| id.cache_key());
             Ok((section, id))
         })
         .collect()
@@ -1494,8 +1494,8 @@ pub(crate) fn published_pages(
         )
         .map(|section| {
             let id = store
-                .read(key, &section, 0)?
-                .map(|file| file.id().cache_key());
+                .range_id(key, &section, 0)?
+                .map(|id| id.cache_key());
             Ok((section, id))
         })
         .collect()

@@ -3285,3 +3285,53 @@ fn saved_source_follows_new_publication_and_does_not_cache_rejections() {
     fixture.store.clear().unwrap();
     assert!(fixture.store.saved_key().unwrap().is_none());
 }
+
+/// A range's identity is the one a read opens it under, named with no pack opened, in a scope and
+/// outside: empty for an empty range, none for an absent one.
+#[test]
+fn a_ranges_identity_is_named_without_opening_its_pack() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("a", &b"bytes"[..]).unwrap();
+    writer.write("empty", &b""[..]).unwrap();
+    writer.commit().unwrap();
+    let named = |section, range| fixture.store.range_id(&key, section, range).unwrap();
+    let read = |section, range| {
+        fixture
+            .store
+            .read(&key, section, range)
+            .unwrap()
+            .map(|range| range.id())
+    };
+    let before = counters::now();
+    let ids = [named("a", 0), named("empty", 0), named("a", 1), named("absent", 0)];
+    assert_eq!((counters::now() - before).pack_opens, 0);
+    assert_eq!(ids, [read("a", 0), read("empty", 0), None, None]);
+    assert_eq!(ids[1], Some(RangeId::EMPTY));
+    let scope = fixture.store.scope(&key).unwrap();
+    let before = counters::now();
+    let scoped = [named("a", 0), named("empty", 0)];
+    assert_eq!((counters::now() - before).pack_opens, 0);
+    assert_eq!(scoped, [ids[0], ids[1]]);
+    drop(scope);
+    // A session whose manifest a writer replaced, and whose entry log the next writer removed,
+    // names the current manifest's range, as its read continues there.
+    let logs = || {
+        fixture
+            .names()
+            .into_iter()
+            .filter(|name| name.starts_with("entries_"))
+            .collect::<Vec<_>>()
+    };
+    let fresh = fixture.store.session(&key).unwrap().unwrap();
+    let before = logs();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("a", &b"replaced"[..]).unwrap();
+    writer.commit().unwrap();
+    drop(fixture.store.extend(&key).unwrap());
+    assert!(before.iter().any(|log| !logs().contains(log)), "{before:?}");
+    let replaced = fresh.range_id("a", 0).unwrap();
+    assert_ne!(replaced, ids[0]);
+    assert_eq!(replaced, read("a", 0));
+}
