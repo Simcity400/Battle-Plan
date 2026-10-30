@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forgetTimelines, heldFacts, heldStyles, validateCountryFacts } from './countryTimeline.ts';
+import { colourOf, coloursIn, forgetTimelines, heldFacts, heldStyles, heldTimeline, validateCountryFacts, watchTimeline } from './countryTimeline.ts';
+import { answerHeld } from './countryNamesAt.ts';
 import { FactRequests, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
 import type { FactSpec } from './countryFacts';
 import type { CountryFactsReply, CountryStyle, CountryStyleReply } from '../generated/dashboard';
@@ -16,13 +17,13 @@ const REPLY: CountryFactsReply = {
   warnings: ['content'],
 };
 
-/** A client answering `country-facts` with `reply`, complete, counting what it is asked. */
-function facts(reply: CountryFactsReply = REPLY) {
+/** A client answering `country-facts` with `reply`, complete unless preparation is still `growing`, counting what it is asked. */
+function facts(reply: CountryFactsReply = REPLY, growing = false) {
   const asked: unknown[] = [];
   const client = {
     preparedQuery: async (_source: DashboardSource, product: string, params: unknown) => {
       asked.push([product, params]);
-      return { ...reply, coverage: { firstHour: 10, lastHour: 40, complete: true }, pending: [] };
+      return { ...reply, coverage: { firstHour: 10, lastHour: 40, complete: !growing }, pending: growing ? [{ firstHour: 41, lastHour: 60 }] : [] };
     },
   } as unknown as DashboardClient;
   return { client, asked };
@@ -41,15 +42,16 @@ test('a held timeline answers every hour it holds, as country-styles would, and 
   assert.equal(at(15, ['GER'])?.get('GER')?.name, 'German Reich');
   assert.deepEqual(at(36, ['GER'])?.get('GER'),
     { tag: 'GER', name: 'German Reich', color: null, warnings: ['content', 'GER: no recorded map colour'] });
-  // Not yet a country, then one; a tag never a country is not one either.
+  // Not yet a country, then one; a tag never a country is not one either. Each style carries only its own reason.
   assert.deepEqual(at(31, ['D01', 'ENG'])?.get('D01'), { tag: 'D01', name: null, color: null,
-    warnings: ['content', 'D01: not a country at this hour', 'ENG: not a country at this hour'] });
+    warnings: ['content', 'D01: not a country at this hour'] });
+  assert.deepEqual(at(31, ['D01', 'ENG'])?.get('ENG')?.warnings, ['content', 'ENG: not a country at this hour']);
   assert.equal(at(32, ['D01'])?.get('D01')?.name, 'Germany');
   // An hour no known span holds is asked for.
   for (const hour of [9, 21, 29, 41]) assert.equal(at(hour, ['GER']), undefined, String(hour));
   assert.equal(asked.length, 1, 'the timeline is read once');
   // A spec's lookup leaves out what its reply's extract leaves out.
-  assert.deepEqual([...heldFacts(style => style.name)(client, source, recording, 31, ['GER', 'D01'])!], [['GER', 'German Reich']]);
+  assert.deepEqual([...heldFacts(style => style.name)(heldTimeline(client, source)!, 31, ['GER', 'D01'])!], [['GER', 'German Reich']]);
   // Without the recording there is nothing to read it from.
   assert.equal(heldStyles(client, source, undefined, 12, ['GER']), undefined);
   forgetTimelines(client, 'timeline');
@@ -132,4 +134,74 @@ test('a timeline still being read survives forgetting what settled, and another 
   forgetTimelines(client, 'settled', true);
   assert.equal(heldStyles(client, source, recording, 12, ['GER']), undefined, 'a settled timeline is forgotten');
   assert.equal(asked, 4);
+});
+
+test('watchers are told as a timeline arrives and as it is forgotten, and reading it never asks for it', async () => {
+  const { client, asked } = facts();
+  let told = 0;
+  const stop = watchTimeline(client, source, () => told++);
+  assert.equal(heldTimeline(client, source), undefined);
+  assert.equal(asked.length, 0, 'reading what is held asks for nothing');
+  heldStyles(client, source, recording, 12, ['GER']);
+  assert.equal(told, 0, 'nothing held changed while it is read');
+  await settle();
+  assert.equal(told, 1);
+  assert.equal(heldTimeline(client, source)?.reply.names[0], 'Germany');
+  assert.equal(heldTimeline(client, { ...source, content: 1 }), undefined, 'another content holds nothing yet');
+  heldStyles(client, source, recording, 12, ['GER']);
+  assert.equal(told, 1, 'an hour it holds changes nothing');
+  forgetTimelines(client, 'timeline');
+  assert.equal(told, 2);
+  stop();
+  heldStyles(client, source, recording, 12, ['GER']);
+  await settle();
+  assert.equal(told, 2, 'a watcher that stopped is told nothing');
+});
+
+test('the hours a held timeline holds are answered at once, each keeping its identity, and only the rest are left to read', async () => {
+  const { client } = facts();
+  const wanted = [{ hour: 12, tag: 'GER' }, { hour: 12, tag: 'ENG' }, { hour: 25, tag: 'GER' }, { hour: 36, tag: 'GER' }];
+  const pick = heldFacts(({ tag, name, color }) => ({ tag, name, color }));
+  const none = answerHeld(pick, undefined, wanted, undefined);
+  assert.equal(none.rest, wanted, 'without a timeline everything is read');
+  assert.equal(none.answered.size, 0);
+  heldStyles(client, source, recording, 12, ['GER']);
+  await settle();
+  const timeline = heldTimeline(client, source)!;
+  const first = answerHeld(pick, timeline, wanted, undefined);
+  assert.deepEqual(first.rest, [{ hour: 25, tag: 'GER' }], 'an hour no known span holds is read');
+  assert.deepEqual(first.answered.get(nameKey(12, 'GER')), { tag: 'GER', name: 'Germany', color: [0x33, 0x66, 0x99] });
+  const names = answerHeld(heldFacts(style => style.name), timeline, [{ hour: 12, tag: 'ENG' }], undefined);
+  assert.equal(names.answered.get(nameKey(12, 'ENG')), null, 'a country the timeline gives nothing for is answered with nothing');
+  assert.equal(first.answered.get(nameKey(36, 'GER'))?.color, null);
+  const again = answerHeld(pick, timeline, [...wanted].reverse(), first.answered);
+  assert.equal(again.answered.get(nameKey(12, 'GER')), first.answered.get(nameKey(12, 'GER')), 'an answer keeps its identity');
+  assert.equal(answerHeld(pick, timeline, [{ hour: 13, tag: 'GER' }], first.answered).rest.length, 0, 'nothing left to read');
+  assert.equal(answerHeld(undefined, timeline, wanted, undefined).rest, wanted, 'a spec without a lookup reads everything');
+});
+
+test('a held timeline gives each country its packed map colour, one object per colour, kept as it grows and released with it', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 0 });
+  // Preparation still covers more, so an hour the timeline does not hold reads it again once its wait is over.
+  const { client } = facts(REPLY, true);
+  heldStyles(client, source, recording, 12, ['GER']);
+  await settle();
+  const timeline = heldTimeline(client, source)!;
+  assert.deepEqual([...coloursIn(timeline, 12, ['GER', 'D01'])!], [['GER', 0x336699], ['D01', -1]]);
+  assert.equal(coloursIn(timeline, 36, ['GER'])!.get('GER'), -1, 'a run without a recorded colour has none');
+  assert.equal(coloursIn(timeline, 25, ['GER']), undefined);
+  const colour = colourOf(timeline, 0x336699);
+  assert.deepEqual(colour, { color: [0x33, 0x66, 0x99] });
+  assert.equal(colourOf(timeline, 0x336699), colour, 'every country and hour drawn in a colour shares it');
+  // A re-read while preparation grows keeps the table; a forgotten timeline takes it with it.
+  t.mock.timers.tick(60_000);
+  heldStyles(client, source, recording, 25, ['GER']);
+  await settle();
+  const grown = heldTimeline(client, source)!;
+  assert.notEqual(grown, timeline);
+  assert.equal(colourOf(grown, 0x336699), colour);
+  forgetTimelines(client, 'timeline');
+  heldStyles(client, source, recording, 12, ['GER']);
+  await settle();
+  assert.notEqual(colourOf(heldTimeline(client, source)!, 0x336699), colour);
 });

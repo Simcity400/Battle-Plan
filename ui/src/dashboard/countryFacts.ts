@@ -10,6 +10,8 @@ import { loadTransientProduct } from './products.ts';
 import { replySize, setReplySize } from './replySizes.ts';
 import { sharedFacts } from './sharedFacts.ts';
 import { inFrame } from './frameUpdates.ts';
+import { askTimeline } from './countryTimeline.ts';
+import type { HeldLookup } from './countryTimeline';
 
 /** A country at an hour. */
 export interface NameAt { hour: number; tag: string }
@@ -444,9 +446,9 @@ export interface FactSpec<V, Found extends FactsFound<V> = ReadonlyMap<string, V
   shared?: boolean;
   params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
   extract: (data: unknown, params?: unknown, source?: FactSource) => Found;
-  /** The values a timeline the client holds gives at an hour (`heldFacts`), or undefined when it
-   * does not hold the hour, which is then asked for. */
-  held?: (client: DashboardClient, source: FactSource, recording: DashboardSource | undefined, hour: number, tags: readonly string[]) => ReadonlyMap<string, V> | undefined;
+  /** The values the recording's country timeline gives at an hour (`heldFacts`), or undefined when
+   * it does not hold the hour, which is then asked for. */
+  held?: HeldLookup<V>;
 }
 
 /** A product read for a whole plan in one request, for facts wanted at many hours at once. */
@@ -465,6 +467,8 @@ export interface BatchFactSpec<V> {
   /** How large a plan's request is, as its parameters select; a size that fit is
    * learned and later plans sliced in it. Without it, the hour and country pairs. */
   size?: (plan: FactPlan) => number;
+  /** The values the recording's country timeline gives at an hour, as `FactSpec.held`. */
+  held?: HeldLookup<V>;
 }
 
 /** Reads a plan in one request on the transient path, telling every chunk in plan
@@ -583,7 +587,11 @@ async function readChunk<V>(client: DashboardClient, source: FactSource, spec: F
  * hour is never asked again while it is kept. Stops when aborted. */
 export async function readFacts<V>(client: DashboardClient, source: FactSource, spec: FactSpec<V, FactsFound<V>>,
   plan: FactPlan, signal: AbortSignal, onChunk: Parameters<FactRead<V>>[2], recording?: DashboardSource): Promise<void> {
-  const held = (hour: number, tags: readonly string[]) => spec.held?.(client, source, recording, hour, tags);
+  const held = (hour: number, tags: readonly string[]) => {
+    if (!spec.held || !recording) return undefined;
+    const timeline = askTimeline(client, source, recording, hour);
+    return timeline && spec.held(timeline, hour, tags);
+  };
   if (!spec.shared) {
     for (const [hour, tags] of plan) {
       const known = held(hour, tags);

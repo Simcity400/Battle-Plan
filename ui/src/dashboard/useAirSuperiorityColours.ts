@@ -12,6 +12,8 @@ import { lookHour } from './countryLooks.ts';
 import { airSegmentAt, sideAt } from './airSuperiority.ts';
 import type { AirMoment, AirTimeline } from './airSuperiority';
 import type { ChartTokens } from '../charts/tokens';
+import { colourOf, coloursIn } from './countryTimeline.ts';
+import type { HeldLookup } from './countryTimeline';
 
 type Reply = AirMoment | AirTimeline;
 /** A country's recorded map colour at an hour. */
@@ -52,15 +54,26 @@ export function colourHours(reply: CountryColourReply, plan: FactPlan): Map<numb
   return hours;
 }
 
-/** Colours for every day of a timeline in one `country-colours` request, not one
- * request per day. A single hour (a day Follow adds) is read on the interactive path
- * as before; a reply too large for one request is read again in halves. */
+/** Colours the country timeline holds, as `colourHours` gives them, one object per recorded colour: a country with
+ * no recorded colour is left out. */
+const heldColours: HeldLookup<CountryColour> = (timeline, hour, tags) => {
+  const packed = coloursIn(timeline, hour, tags);
+  if (!packed) return undefined;
+  const found = new Map<string, CountryColour>();
+  for (const [tag, colour] of packed) if (colour >= 0) found.set(tag, colourOf(timeline, colour));
+  return found;
+};
+
+/** Colours for every day of a timeline the country timeline does not hold, in one
+ * `country-colours` request, not one request per day. A single hour (a day Follow adds)
+ * is read on the interactive path; a reply too large for one request is read again in halves. */
 export const COLOURS: BatchFactSpec<CountryColour> = {
   product: 'country-colours', batch: true, single: STYLES, oversize: COUNTRY_COLOURS_OVER_BUDGET,
   params: (branchId, plan) => ({ branchId, hours: [...new Set(plan.map(([hour]) => hour))], tags: [...new Set(plan.flatMap(([, tags]) => tags))].sort() }),
   // The request reads every country it names at every hour it names.
   size: plan => new Set(plan.map(([hour]) => hour)).size * new Set(plan.flatMap(([, tags]) => tags)).size,
   extract: (data, plan) => colourHours(data as CountryColourReply, plan),
+  held: heldColours,
 };
 /** The country reads colouring one displayed hour, by `nameKey`: each side's and the viewpoint's. */
 export interface AirColourSources { sides: Map<string, string>; viewpoint?: string }
