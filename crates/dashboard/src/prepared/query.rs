@@ -19,7 +19,7 @@ use crate::{
     Source,
     metadata::check_cancel,
     products::{ContentOptions, Product},
-    transport::{ProductRequest, bounded_json},
+    transport::{MAX_REPLY_BYTES, ProductRequest, bounded_json},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,7 +82,6 @@ struct Reply<'a> {
     source_id: &'a str,
     revision: &'a str,
     product: &'a str,
-    data: served::Served<'a>,
     /// For a pending or partial reply ([`waits`]), the preparation status
     /// entries it waits for: `walk` for the hourly walk's coverage, or a
     /// family prepared on its own, listed under its name in the status's
@@ -90,10 +89,14 @@ struct Reply<'a> {
     /// has elapsed, or immediately when every gate completes.
     #[serde(skip_serializing_if = "Option::is_none")]
     gate: Option<Vec<&'static str>>,
+    /// Written after the rest, as the answer's text ([`served::Served::write`]).
+    data: (),
 }
 
 struct CachedQuery {
-    data: Value,
+    data: served::Answer,
+    /// Whether `data` is pending or partial ([`waits`]).
+    waits: bool,
     short: std::collections::BTreeSet<&'static str>,
     summaries: super::series::SummaryCache,
     /// What computing `data` drew in the recording's style because the source's visual mods
@@ -123,10 +126,10 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// A complete answer as it is kept on disk between sessions ([`stored_answer`]).
+/// What a complete answer kept on disk between sessions ([`stored_answer`]) keeps beside its
+/// text ([`served::Answer::keep`]).
 #[derive(Serialize, Deserialize)]
 struct StoredQuery {
-    data: Value,
     fallbacks: std::collections::BTreeSet<String>,
     readers: std::collections::BTreeSet<dashboard_text::catalogue::Reader>,
 }
@@ -3087,8 +3090,15 @@ pub fn query(
             super::coverage::waiting(|| query_data(source, request, content, cancelled))
         });
         let fallbacks = noted.fallbacks().clone();
+        let data = data?;
         Ok(CachedQuery {
-            data: data?,
+            waits: waits(&data),
+            data: served::Answer::new(
+                &data,
+                content_warning_paths(&request.product, name),
+                request.product == crate::products::division_equipment::history::QUERY,
+                cancelled,
+            )?,
             short,
             summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
             // A fallback joins the stack's read warnings, which every reply names, when first
@@ -3115,19 +3125,21 @@ pub fn query(
         let stored = stored_answer(source, request, content, &store, &key, &publication)?;
         // Served whatever the session read outside the recorded coverage: a kept answer read
         // none, and those reads join its reply as it is served, as they join a fresh one's.
-        if let Some(kept) = stored
+        if let Some((kept, stored)) = stored
                 .as_ref()
                 .and_then(crate::reply_cache::Entry::get)
-                .and_then(|json| serde_json::from_str::<StoredQuery>(&json).ok())
-            && settled(&kept.readers)
+                .and_then(served::Answer::kept::<StoredQuery>)
+            && settled(&stored.readers)
         {
             return Ok(CachedQuery {
-                data: kept.data,
+                data: kept,
+                // Only a complete answer is kept.
+                waits: false,
                 short: Default::default(),
                 summaries: Default::default(),
-                fallbacks: kept.fallbacks,
+                fallbacks: stored.fallbacks,
                 session: false,
-                readers: kept.readers,
+                readers: stored.readers,
             });
         }
         let answer = read(previous)?;
@@ -3137,19 +3149,17 @@ pub fn query(
         // recorded coverage, computing may have read those unverified bytes, so nothing is kept.
         if let Some(entry) = stored
             && answer.short.is_empty()
-            && !waits(&answer.data)
+            && !answer.waits
             && !answer.session
             && settled(&answer.readers)
             && !source.reply_reads_uncovered(content)
             && content.is_none_or(|content| source.still_admitted(content))
         {
             let kept = StoredQuery {
-                data: answer.data.clone(),
                 fallbacks: answer.fallbacks.clone(),
                 readers: answer.readers.clone(),
             };
-            let bytes = dashboard_base::prepared::query::observations::json_bytes(&kept.data);
-            entry.put_later(bytes, move || serde_json::to_string(&kept).ok());
+            entry.put_later(answer.data.bytes(), answer.data.keep(kept));
         }
         Ok(answer)
     };
@@ -3198,7 +3208,7 @@ pub fn query(
                     bytes.heap(&reply.short);
                     bytes.heap(&reply.fallbacks);
                     std::mem::size_of::<CachedQuery>()
-                        + dashboard_base::prepared::query::observations::json_bytes(&reply.data)
+                        + reply.data.bytes()
                         + bytes.total() as usize
                         + reply.summaries.bytes()
                 },
@@ -3213,30 +3223,37 @@ pub fn query(
     check_cancel(cancelled)?;
     // What a pending or partial reply waits for: the coverage it found short,
     // or, when it consulted none, the coverage its product waits for.
-    let gate = waits(&answer.data).then(|| {
+    let gate = answer.waits.then(|| {
         if answer.short.is_empty() {
             super::pipeline::gate(name)
         } else {
             answer.short.iter().copied().collect()
         }
     });
-    let data = served::Served::new(
-        source,
-        &request.product,
-        name,
-        &answer.data,
-        content,
-        &answer.fallbacks,
-    );
-    bounded_json(
+    let data = served::Served::new(source, &answer.data, content, &answer.fallbacks);
+    let mut reply = bounded_json(
         &Reply {
             source_id: &request.source_id,
             revision: &request.revision,
             product: &request.product,
-            data,
             gate,
+            data: (),
         },
         cancelled,
     )
-    .map_err(crate::invalid)
+    .map_err(crate::invalid)?;
+    // The answer's text takes the place of the null its field serialized as.
+    reply.truncate(reply.len() - "null}".len());
+    let length = data.len() + 1;
+    if reply.len() + length > MAX_REPLY_BYTES {
+        return Err(crate::invalid(
+            "Projected response exceeds the transport byte budget",
+        ));
+    }
+    reply
+        .try_reserve_exact(length)
+        .map_err(|_| crate::invalid("Not enough memory for projected response"))?;
+    data.write(&mut reply);
+    reply.push('}');
+    Ok(reply)
 }

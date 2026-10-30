@@ -1,195 +1,405 @@
 use super::*;
-use serde::ser::{SerializeMap, SerializeSeq};
-use std::collections::HashMap;
+use std::{io::Write as _, sync::Arc};
 
-pub(super) struct Served<'a> {
-    data: &'a Value,
-    patches: HashMap<*const Value, Option<Value>>,
-    served: Option<Value>,
+/// An answer's data as the JSON text its replies serve, written once, with where a reply
+/// changes it ([`Marks`]): a reply copies the rest of the text as it is, never parsing it.
+pub(super) struct Answer {
+    text: Arc<String>,
+    marks: Marks,
 }
+
+/// Where a reply changes an answer's text, as byte ranges of it.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Marks {
+    /// The values the product's warning paths reach ([`content_warning_paths`]), in text order,
+    /// none inside another.
+    lists: Vec<(usize, usize)>,
+    /// Which of `lists` takes the lines every reply adds: the first value the first path
+    /// reaching any reaches.
+    first: Option<usize>,
+    /// Where the root's `served` field goes, for a reply that adds one.
+    served: Option<Field>,
+}
+
+/// A root field's place: the range of text it replaces, empty where it is inserted, and the
+/// commas it needs before and after.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct Field {
+    start: usize,
+    end: usize,
+    before: bool,
+    after: bool,
+}
+
+impl Answer {
+    /// `data` as JSON within the reply budget, stopping once `cancelled`, marking the values
+    /// `paths` reach and, when `served`, where a root `served` field goes.
+    pub(super) fn new(
+        data: &Value,
+        paths: &[&[&str]],
+        served: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        let mut writer = Writer {
+            text: Vec::new(),
+            cancelled,
+            reached: Vec::new(),
+            served: None,
+        };
+        let active: Vec<(usize, &[&str])> = paths.iter().copied().enumerate().collect();
+        if let Err(error) = writer.value(data, &active, served) {
+            // A cancelled write stops as every cancelled request does.
+            check_cancel(cancelled)?;
+            return Err(error);
+        }
+        let first = (0..paths.len()).find_map(|path| {
+            writer
+                .reached
+                .iter()
+                .filter(|reached| reached.0 == path)
+                .map(|&(_, start, end, list)| (start, end, list))
+                .min()
+        });
+        // Only a list is replaced.
+        let mut lists: Vec<_> = writer
+            .reached
+            .iter()
+            .filter(|reached| reached.3)
+            .map(|&(_, start, end, _)| (start, end))
+            .collect();
+        lists.sort_unstable_by_key(|&(start, end)| (start, std::cmp::Reverse(end)));
+        lists.dedup();
+        // A list inside another one is written as part of it.
+        let mut after = 0;
+        lists.retain(|&(start, end)| {
+            let outside = start >= after;
+            if outside {
+                after = end;
+            }
+            outside
+        });
+        let first = first
+            .filter(|&(_, _, list)| list)
+            .and_then(|(start, end, _)| lists.iter().position(|&list| list == (start, end)));
+        let text = String::from_utf8(writer.text).map_err(io::Error::other)?;
+        Ok(Self {
+            text: Arc::new(text),
+            marks: Marks {
+                lists,
+                first,
+                served: writer.served,
+            },
+        })
+    }
+
+    /// The bytes it holds.
+    pub(super) fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.text.capacity()
+            + self.marks.lists.capacity() * std::mem::size_of::<(usize, usize)>()
+    }
+
+    /// What keeps it on disk with `rest`: its text, then a line of `rest` and its marks.
+    pub(super) fn keep<T: Serialize + Send + 'static>(
+        &self,
+        rest: T,
+    ) -> impl FnOnce() -> Option<String> + Send + 'static {
+        let text = Arc::clone(&self.text);
+        let marks = self.marks.clone();
+        move || {
+            let line = serde_json::to_string(&(rest, marks)).ok()?;
+            let mut json = String::with_capacity(text.len() + 1 + line.len());
+            json.push_str(&text);
+            json.push('\n');
+            json.push_str(&line);
+            Some(json)
+        }
+    }
+
+    /// An answer [`Self::keep`] kept, with what it kept beside it; none when the marks do not
+    /// fit the text.
+    pub(super) fn kept<T: serde::de::DeserializeOwned>(mut json: String) -> Option<(Self, T)> {
+        // JSON text holds no raw line break, so the last one ends the data.
+        let line = json.rfind('\n')?;
+        let (rest, marks): (T, Marks) = serde_json::from_str(&json[line + 1..]).ok()?;
+        json.truncate(line);
+        let fits = |start: usize, end: usize| {
+            start <= end
+                && end <= json.len()
+                && json.is_char_boundary(start)
+                && json.is_char_boundary(end)
+        };
+        let mut after = 0;
+        for &(start, end) in &marks.lists {
+            if start < after || start == end || !fits(start, end) {
+                return None;
+            }
+            after = end;
+        }
+        if marks.first.is_some_and(|first| first >= marks.lists.len())
+            || marks
+                .served
+                .is_some_and(|field| !fits(field.start, field.end))
+        {
+            return None;
+        }
+        Some((
+            Self {
+                text: Arc::new(json),
+                marks,
+            },
+            rest,
+        ))
+    }
+}
+
+/// Writes an answer's text within the reply budget, stopping once the request is cancelled, as
+/// [`bounded_json`] does, noting where the warning paths reach and the root's `served` place.
+struct Writer<'c> {
+    text: Vec<u8>,
+    cancelled: &'c AtomicBool,
+    /// The index of a path with the range of a value it reaches, and whether that is a list.
+    reached: Vec<(usize, usize, usize, bool)>,
+    served: Option<Field>,
+}
+
+impl io::Write for Writer<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        // Never `Interrupted`, which `write_all` retries.
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("Dashboard request was cancelled"));
+        }
+        if self.text.len() + bytes.len() > MAX_REPLY_BYTES {
+            return Err(crate::invalid(
+                "Projected response exceeds the transport byte budget",
+            ));
+        }
+        self.text
+            .try_reserve(bytes.len())
+            .map_err(|_| crate::invalid("Not enough memory for projected response"))?;
+        self.text.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Writer<'_> {
+    /// Writes `value`, which each path in `active` reached with what of it is left to follow,
+    /// and, when `served`, notes where its `served` field goes.
+    fn value<'p>(
+        &mut self,
+        value: &Value,
+        active: &[(usize, &'p [&'p str])],
+        served: bool,
+    ) -> io::Result<()> {
+        let start = self.text.len();
+        let follows = |keyed: bool| {
+            active
+                .iter()
+                .any(|(_, rest)| rest.first().is_some_and(|first| (*first != "*") == keyed))
+        };
+        match value {
+            Value::Object(fields) if served || follows(true) => {
+                self.write_all(b"{")?;
+                for (index, (key, field)) in fields.iter().enumerate() {
+                    if index > 0 {
+                        self.write_all(b",")?;
+                    }
+                    let at = self.text.len();
+                    if served && self.served.is_none() && key.as_str() > "served" {
+                        self.served = Some(Field {
+                            start: at,
+                            end: at,
+                            before: false,
+                            after: true,
+                        });
+                    }
+                    serde_json::to_writer(&mut *self, key)?;
+                    self.write_all(b":")?;
+                    self.value(field, &following(active, key, false), false)?;
+                    if served && self.served.is_none() && key == "served" {
+                        self.served = Some(Field {
+                            start: at,
+                            end: self.text.len(),
+                            before: false,
+                            after: false,
+                        });
+                    }
+                }
+                if served && self.served.is_none() {
+                    let at = self.text.len();
+                    self.served = Some(Field {
+                        start: at,
+                        end: at,
+                        before: !fields.is_empty(),
+                        after: false,
+                    });
+                }
+                self.write_all(b"}")?;
+            }
+            Value::Array(items) if follows(false) => {
+                let next = following(active, "*", true);
+                self.write_all(b"[")?;
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        self.write_all(b",")?;
+                    }
+                    self.value(item, &next, false)?;
+                }
+                self.write_all(b"]")?;
+            }
+            value => serde_json::to_writer(&mut *self, value)?,
+        }
+        let list = value.is_array();
+        for &(path, rest) in active {
+            if rest.is_empty() {
+                self.reached.push((path, start, self.text.len(), list));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The paths in `active` whose next step is `segment`, a key, or every item when `wildcard`,
+/// with what of each is left after it.
+fn following<'p>(
+    active: &[(usize, &'p [&'p str])],
+    segment: &str,
+    wildcard: bool,
+) -> Vec<(usize, &'p [&'p str])> {
+    active
+        .iter()
+        .filter_map(|&(path, rest)| match rest.split_first() {
+            Some((first, rest)) if (*first == "*") == wildcard && *first == segment => {
+                Some((path, rest))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A reply's data: its answer's text with each warning list refreshed and the served lines added.
+pub(super) struct Served<'a> {
+    answer: &'a Answer,
+    /// Each of the answer's lists as served, as JSON; none for one that is not a list.
+    lists: Vec<Option<String>>,
+    /// The root `served` field's value, as JSON.
+    served: Option<String>,
+}
+
 impl<'a> Served<'a> {
     pub(super) fn new(
         source: &Source,
-        product: &str,
-        name: &str,
-        data: &'a Value,
+        answer: &'a Answer,
         content: Option<&ContentOptions>,
         fallbacks: &std::collections::BTreeSet<String>,
     ) -> Self {
-        let paths = content_warning_paths(product, name);
-        let mut reply = Self::decorate(data, paths, Vec::new(), |warnings| {
+        let lines = served_lines(source, content, fallbacks);
+        let mut reply = Self::decorate(answer, lines, |warnings| {
             source.append_stack_warnings(warnings);
             source.append_changed_warnings(warnings, content);
         });
-        reply.add_lines(paths, served_lines(source, content, fallbacks));
-        if product == crate::products::division_equipment::history::QUERY && data.is_object() {
-            reply.served = Some(Value::from(
-                crate::products::division_equipment::history::served_lines(source, content),
-            ));
-            reply.patches.entry(data).or_insert(None);
+        if answer.marks.served.is_some() {
+            reply.served = Some(
+                Value::from(crate::products::division_equipment::history::served_lines(
+                    source, content,
+                ))
+                .to_string(),
+            );
         }
         reply
     }
 
     fn decorate(
-        data: &'a Value,
-        paths: &[&[&str]],
+        answer: &'a Answer,
         lines: Vec<String>,
         mut refresh: impl FnMut(&mut Vec<String>),
     ) -> Self {
-        let mut patches = HashMap::new();
-        for path in paths {
-            patch_at(data, path, &mut patches, &mut |value| {
-                let Value::Array(original) = value else {
+        let mut lists: Vec<Option<Vec<Value>>> = answer
+            .marks
+            .lists
+            .iter()
+            .map(|&(start, end)| {
+                let Ok(Value::Array(original)) = serde_json::from_str(&answer.text[start..end])
+                else {
                     return None;
                 };
                 let strings: Option<Vec<String>> = original
                     .iter()
                     .map(|line| line.as_str().map(str::to_owned))
                     .collect();
-                let warnings: Vec<Value> = match strings {
+                Some(match strings {
                     Some(mut strings) => {
                         refresh(&mut strings);
                         strings.into_iter().map(Value::String).collect()
                     }
-                    None => original.clone(),
-                };
-                Some(Value::Array(warnings))
-            });
+                    None => original,
+                })
+            })
+            .collect();
+        if let Some(Some(warnings)) = answer.marks.first.and_then(|first| lists.get_mut(first)) {
+            for line in lines {
+                if !warnings.iter().any(|kept| kept.as_str() == Some(&line)) {
+                    warnings.push(Value::String(line));
+                }
+            }
         }
-        let mut reply = Self {
-            data,
-            patches,
+        Self {
+            answer,
+            lists: lists
+                .into_iter()
+                .map(|list| list.map(|list| Value::Array(list).to_string()))
+                .collect(),
             served: None,
-        };
-        reply.add_lines(paths, lines);
-        reply
+        }
     }
 
-    fn add_lines(&mut self, paths: &[&[&str]], lines: Vec<String>) {
-        if lines.is_empty() {
-            return;
-        }
-        for path in paths {
-            if let Some(first) = first_target(self.data, path) {
-                let Some(Some(Value::Array(warnings))) =
-                    self.patches.get_mut(&(first as *const Value))
-                else {
-                    break;
-                };
-                for line in lines {
-                    if !warnings.iter().any(|kept| kept.as_str() == Some(&line)) {
-                        warnings.push(Value::String(line));
-                    }
-                }
-                break;
-            }
-        }
-    }
-}
-fn first_target<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
-    match path.split_first() {
-        None => Some(value),
-        Some((&"*", rest)) => value
-            .as_array()?
+    /// The served data's text, piece by piece.
+    fn pieces(&self) -> Vec<&str> {
+        let text = self.answer.text.as_str();
+        let marks = &self.answer.marks;
+        let mut splices: Vec<(usize, usize, [&str; 4])> = marks
+            .lists
             .iter()
-            .find_map(|item| first_target(item, rest)),
-        Some((key, rest)) => first_target(value.get(*key)?, rest),
-    }
-}
-fn patch_at(
-    value: &Value,
-    path: &[&str],
-    patches: &mut HashMap<*const Value, Option<Value>>,
-    replace: &mut impl FnMut(&Value) -> Option<Value>,
-) -> bool {
-    let changed = match path.split_first() {
-        None => match replace(value) {
-            Some(replacement) => {
-                patches.insert(value, Some(replacement));
-                return true;
-            }
-            None => return false,
-        },
-        Some((&"*", rest)) => {
-            let mut changed = false;
-            for item in value.as_array().into_iter().flatten() {
-                changed |= patch_at(item, rest, patches, replace);
-            }
-            changed
+            .zip(&self.lists)
+            .filter_map(|(&(start, end), list)| Some((start, end, [list.as_deref()?, "", "", ""])))
+            .collect();
+        if let (Some(field), Some(served)) = (marks.served, &self.served) {
+            let comma = |needed: bool| if needed { "," } else { "" };
+            splices.push((
+                field.start,
+                field.end,
+                [comma(field.before), "\"served\":", served.as_str(), comma(field.after)],
+            ));
+            splices.sort_by_key(|&(start, ..)| start);
         }
-        Some((key, rest)) => value
-            .get(*key)
-            .is_some_and(|next| patch_at(next, rest, patches, replace)),
-    };
-    if changed {
-        patches.entry(value).or_insert(None);
-    }
-    changed
-}
-struct View<'a, 'b> {
-    data: &'a Value,
-    reply: &'b Served<'a>,
-}
-impl Serialize for Served<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        View {
-            data: self.data,
-            reply: self,
-        }
-        .serialize(serializer)
-    }
-}
-impl Serialize for View<'_, '_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Unchanged subtrees use Value's serializer directly, including large row/point arrays.
-        match self.reply.patches.get(&(self.data as *const Value)) {
-            None => return self.data.serialize(serializer),
-            Some(Some(value)) => return value.serialize(serializer),
-            Some(None) => {}
-        }
-        match self.data {
-            Value::Array(rows) => {
-                let mut output = serializer.serialize_seq(Some(rows.len()))?;
-                for data in rows {
-                    output.serialize_element(&View {
-                        data,
-                        reply: self.reply,
-                    })?;
-                }
-                output.end()
+        let mut pieces = Vec::with_capacity(splices.len() * 5 + 1);
+        let mut at = 0;
+        for (start, end, replacement) in splices {
+            // Marks never overlap; a kept one that would is left as it is.
+            if start < at {
+                continue;
             }
-            Value::Object(fields) => {
-                let mut served = std::ptr::eq(self.data, self.reply.data)
-                    .then_some(self.reply.served.as_ref())
-                    .flatten();
-                let mut output = serializer.serialize_map(Some(
-                    fields.len() + usize::from(served.is_some() && !fields.contains_key("served")),
-                ))?;
-                for (key, data) in fields {
-                    if served.is_some() && key.as_str() >= "served" {
-                        output.serialize_entry("served", served.take().unwrap())?;
-                    }
-                    if key == "served"
-                        && std::ptr::eq(self.data, self.reply.data)
-                        && self.reply.served.is_some()
-                    {
-                        continue;
-                    }
-                    output.serialize_entry(
-                        key,
-                        &View {
-                            data,
-                            reply: self.reply,
-                        },
-                    )?;
-                }
-                if let Some(served) = served {
-                    output.serialize_entry("served", served)?;
-                }
-                output.end()
-            }
-            value => value.serialize(serializer),
+            pieces.push(&text[at..start]);
+            pieces.extend(replacement);
+            at = end;
+        }
+        pieces.push(&text[at..]);
+        pieces
+    }
+
+    /// The bytes [`Self::write`] appends.
+    pub(super) fn len(&self) -> usize {
+        self.pieces().iter().map(|piece| piece.len()).sum()
+    }
+
+    /// Appends the served data's text to `reply`, which has room for it.
+    pub(super) fn write(&self, reply: &mut String) {
+        for piece in self.pieces() {
+            reply.push_str(piece);
         }
     }
 }
