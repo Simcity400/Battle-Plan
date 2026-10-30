@@ -40,6 +40,11 @@ struct StateEntry {
     append: Option<fn(&SharedState) -> SharedState>,
 }
 
+/// The recording's own presentation as last mounted, over the content it was mounted on
+/// ([`Source::recorded_presented`]).
+#[derive(Default)]
+struct RecordedMount(Option<(Weak<ResolvedContent>, Arc<Presented>)>);
+
 /// The content resolved for the folders last asked for, with its read set, and the content of
 /// earlier folders while work still holds it: asked for again, that is reused, so all work on
 /// one folders reads, and reports, one read set.
@@ -702,17 +707,27 @@ impl Source {
     }
 
     /// The recording's own artwork for these folders: no visual mod mounted, for prepared
-    /// families whose stored payloads hold artwork.
+    /// families whose stored payloads hold artwork. One mount per recorded content, so what
+    /// artwork keeps by its mount (flag files, cells) lasts across requests.
     pub fn recorded_presented(&self, options: &ResolveOptions) -> io::Result<Arc<Presented>> {
         let recorded = self.content(options)?;
-        Presented::mount(
+        let state = self.state::<RecordedMount>();
+        let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
+        // The weak handle keeps the content's allocation, so its address names it alone.
+        if let Some((content, presented)) = &kept.0
+            && std::ptr::eq(content.as_ptr(), Arc::as_ptr(&recorded))
+        {
+            return Ok(Arc::clone(presented));
+        }
+        let presented = Arc::new(Presented::mount(
             &recorded,
             options,
             &self.replay,
             &Presentation::default(),
             &std::sync::atomic::AtomicBool::new(false),
-        )
-        .map(Arc::new)
+        )?);
+        kept.0 = Some((Arc::downgrade(&recorded), Arc::clone(&presented)));
+        Ok(presented)
     }
 
     /// A product's own cache for this source, created on first use. Requests

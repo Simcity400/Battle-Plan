@@ -86,6 +86,29 @@ fn a_reply_reports_its_own_folders_read_set_whatever_is_bound_meanwhile() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// The recording's own presentation is mounted once per content, so what artwork keeps by its
+/// mount lasts across requests; other folders' content gets a mount of its own.
+#[test]
+fn the_recordings_own_presentation_is_mounted_once_per_content() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root =
+        std::env::temp_dir().join(format!("hoi4-source-recorded-mount-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (source, context) =
+        crate::test_fixtures::source_with_content(vec![source(1, 100, Some(1))], &root);
+    let old = context.content.unwrap();
+    let mut new = old.clone();
+    new.options.cache_dir = root.join("other-cache");
+    let first = source.recorded_presented(&old.options).unwrap();
+    assert!(Arc::ptr_eq(&first, &source.recorded_presented(&old.options).unwrap()));
+    let other = source.recorded_presented(&new.options).unwrap();
+    assert!(!Arc::ptr_eq(&first.content, &other.content));
+    assert!(Arc::ptr_eq(&other, &source.recorded_presented(&new.options).unwrap()));
+    drop((first, other));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn the_catalogue_names_countries_when_content_is_known_and_shows_tags_otherwise() {
     let mut frame = source(1, 100, Some(1));
