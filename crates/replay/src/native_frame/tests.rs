@@ -80,9 +80,11 @@ impl Paths {
         let mut segments: [Option<TableSegment>; TABLE_COUNT] = std::array::from_fn(|_| None);
         if input.hour % 2 == 0 {
             let context = self.encoder.frame_context(input.branch, input.hour, first);
+            // A table the spool cannot encode alone, such as one its capture mode does not
+            // record, is encoded with the frame.
             for &table in &self.tables {
                 let segment = self.encoder.encode_segment(&context, table, &input.tables[table.index()]);
-                segments[table.index()] = Some(segment.unwrap());
+                segments[table.index()] = segment.ok();
             }
         }
         let mut row_frame = self.encoder.prepare_bytes_with(input.clone(), first, &mut segments).unwrap();
@@ -1073,7 +1075,7 @@ fn unchanged_opaque_cells_of_a_dense_table_are_kept_with_the_complete_bytes() {
             }),
         })),
         selection: if province == 7 && hour < 3 {
-            Recorded::NotRecorded
+            Recorded::Value(None)
         } else {
             Recorded::Value(Some(RailwaySelectionInputs {
                 levels: Some(vec![1, 2, i32::from(hour >= 4 && province == 2)]),
