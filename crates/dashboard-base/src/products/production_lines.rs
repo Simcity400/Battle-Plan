@@ -1509,6 +1509,24 @@ pub fn preparation_icons(source: &Source, context: &LoadContext) -> Option<Arc<I
     scan_content(source, context, &mut Vec::new()).1
 }
 
+/// Loads the icon content before a reply asks for it, only where the store key stamps every file
+/// it reads: a read outside the recorded coverage is reported on every reply.
+pub fn warm_icons(source: &Source, context: &LoadContext) {
+    if inputs_stamped(source, context) {
+        drop(scan_content(source, context, &mut Vec::new()));
+    }
+}
+
+/// Whether the store key stamps every file the icon content would read now
+/// ([`equipment_icon::inputs_stamped`]).
+fn inputs_stamped(source: &Source, context: &LoadContext) -> bool {
+    context
+        .content()
+        .and_then(|content| source.content(&content.options))
+        .and_then(|content| crate::products::equipment_icon::inputs_stamped(&content.layers))
+        .unwrap_or(false)
+}
+
 /// Whether the prepared icon choices are those the icon content would make now: icon
 /// content loaded alike, with the same inputs outside the recorded content's hash.
 /// Which sprites and files exist is not among them: each reply answers that
@@ -1537,14 +1555,7 @@ fn pictures_serve(
     stamped: bool,
     visual: Option<&str>,
 ) -> bool {
-    let stamped_now = || {
-        context
-            .content()
-            .and_then(|content| source.content(&content.options))
-            .and_then(|content| crate::products::equipment_icon::inputs_stamped(&content.layers))
-            .unwrap_or(false)
-    };
-    if pictured && stamped && stamped_now() {
+    if pictured && stamped && inputs_stamped(source, context) {
         return true;
     }
     let (_, icons) = scan_content(source, context, &mut Vec::new());

@@ -4109,3 +4109,43 @@ fn stamped_reads_open_listed_covered_files() {
     assert!(!listed.iter().any(|path| path.ends_with("map/music/continent.txt")));
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A password request is stamped by the encrypted record it opens, whose name coverage may skip
+/// where the request's spelling (`music$secret`) does not.
+#[test]
+fn a_password_request_is_stamped_by_its_records_name() {
+    let root = std::env::temp_dir().join(format!(
+        "stamped-password-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let stamped = |file: &str, name: &[u8], request: &str| {
+        let mut bytes = include_bytes!("testdata/zipcrypto_stored.zip").to_vec();
+        for at in 0..bytes.len() {
+            if bytes[at..].starts_with(b"gfx/interface/e.dds") {
+                bytes[at..at + name.len()].copy_from_slice(name);
+            }
+        }
+        let archive = root.join(file);
+        fs::write(&archive, bytes).unwrap();
+        let mut layers = ResolvedLayers {
+            layers: vec![archive_layer("mod", &archive, &[])],
+            ..ResolvedLayers::default()
+        };
+        layers.finish().unwrap();
+        layers.stamped(request).unwrap()
+    };
+    assert!(stamped(
+        "covered.zip",
+        b"gfx/interface/e.dds",
+        "gfx/interface/e.dds$secret"
+    ));
+    assert!(!stamped(
+        "skipped.zip",
+        b"gfx/interface/music",
+        "gfx/interface/music$secret"
+    ));
+    fs::remove_dir_all(&root).unwrap();
+}

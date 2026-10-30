@@ -1,5 +1,5 @@
 //! The content many pages' first replies wait for, read ahead once a source opens.
-use super::{ContentOptions, politics_content};
+use super::{ContentOptions, LoadContext, politics_content, production_lines};
 use crate::{
     catalogue::{self, Catalogue},
     source::Source,
@@ -31,9 +31,10 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
 /// Reads the politics content (the event feed, politics and special projects), then the effect
 /// description content (doctrine mastery, special projects and politics), each through the cache
 /// its products read, then the rest the catalogue reads lazily, which prepared answers kept on
-/// disk wait for ([`Catalogue::read_readers`]), over the catalogue already bound for `options`: a
-/// product asking meanwhile waits for the same read, and a cache a request kept for another
-/// catalogue is left as it is.
+/// disk wait for ([`Catalogue::read_readers`]), then production lines' icon content where the
+/// store key stamps its inputs ([`production_lines::warm_icons`]), over the catalogue already
+/// bound for `options`: a product asking meanwhile waits for the same read, and a cache a request
+/// kept for another catalogue is left as it is.
 /// It holds the source only while a step runs, and no step starts once the source is dropped or
 /// `options`' binding is retired or replaced. A failure is left for the products to report.
 fn read(source: &Weak<Source>, mut options: ContentOptions) {
@@ -44,14 +45,22 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
     if let Some(source) = source.upgrade() {
         source.resolve_bound(&mut options);
     }
-    let steps: [fn(&Source, Arc<Catalogue>); 3] = [
-        |source, catalogue| drop(politics_content::warm(source, catalogue)),
-        |_, catalogue| {
+    let steps: [fn(&Source, &ContentOptions, Arc<Catalogue>); 4] = [
+        |source, _, catalogue| drop(politics_content::warm(source, catalogue)),
+        |_, _, catalogue| {
             if let Ok(content) = catalogue.scripted_content() {
                 drop(content.effects());
             }
         },
-        |_, catalogue| catalogue.read_readers(),
+        |_, _, catalogue| catalogue.read_readers(),
+        |source, options, _| {
+            production_lines::warm_icons(
+                source,
+                &LoadContext {
+                    content: Some(options.clone()),
+                },
+            );
+        },
     ];
     for step in steps {
         let Some(source) = source.upgrade() else {
@@ -66,7 +75,7 @@ fn read(source: &Weak<Source>, mut options: ContentOptions) {
         if retired(&options) {
             return;
         }
-        step(&source, catalogue);
+        step(&source, &options, catalogue);
     }
 }
 
@@ -78,15 +87,24 @@ mod tests {
     /// A source bound to a content folder, admitted for work ahead of a request as an open
     /// admits it, its content resolved as the open resolves it.
     fn opened() -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
+        opened_with(&[])
+    }
+
+    /// [`opened`] over `files` besides its own.
+    fn opened_with(
+        files: &[(&str, &str)],
+    ) -> (Arc<Source>, ContentOptions, catalogue::tests::Folder) {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let (_catalogue, folder) = catalogue::tests::folder_catalogue(&[
+        let mut all = vec![
             (
                 "common/defines/work.lua",
                 "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},\
                  NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
             ),
             ("common/ideas/work.txt", "ideas={country={mod_a={}}}"),
-        ]);
+        ];
+        all.extend_from_slice(files);
+        let (_catalogue, folder) = catalogue::tests::folder_catalogue(&all);
         let frame = crate::test_fixtures::source(1, 100, Some(1));
         let (source, context) = crate::test_fixtures::source_with_content(vec![frame], &folder.0);
         let source = Arc::new(source);
@@ -114,6 +132,29 @@ mod tests {
         assert_eq!(politics_content::content_loads(&source), 1);
         assert!(catalogue.scripted_content().unwrap().effects_read());
         assert!(catalogue.readers_read());
+    }
+
+    /// Icon content that reads a file outside the recorded coverage is left for a product to ask
+    /// for: every reply reports such a read.
+    #[test]
+    fn icon_content_reading_outside_coverage_is_not_read_ahead() {
+        let (source, options, _folder) = opened_with(&[
+            (
+                "map/default.map",
+                "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=music/continent.txt",
+            ),
+            ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+            ("map/music/continent.txt", "continents={synthetic_continent}"),
+        ]);
+        read(&Arc::downgrade(&source), options.clone());
+        assert!(!source.reads_uncovered());
+        drop(production_lines::preparation_icons(
+            &source,
+            &LoadContext {
+                content: Some(options),
+            },
+        ));
+        assert!(source.reads_uncovered());
     }
 
     #[test]

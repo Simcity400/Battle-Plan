@@ -1865,6 +1865,16 @@ impl ResolvedLayer {
         }
     }
 
+    /// The name a read of `request` takes from this layer: an archive record's own, which a
+    /// password request (`name$password`) does not spell, else `request`.
+    fn record_name<'a>(&'a self, request: &'a [u8]) -> &'a [u8] {
+        self.lookup
+            .archive
+            .as_ref()
+            .and_then(|archive| archive.mounted.lookup(request))
+            .map_or(request, |(entry, _)| entry.name.as_slice())
+    }
+
     /// Whether this archive layer's one lookup of `request` reaches a link record.
     fn reaches_link(&self, request: &[u8]) -> bool {
         self.lookup
@@ -2575,8 +2585,8 @@ impl ResolvedLayers {
 
     /// Whether a read of `relative` opens a file the store key stamps
     /// ([`Self::recorded_source_files`]): a recorded layer's listed covered file or a covered
-    /// record of its archive, as the read's own lookup resolves it, so a Windows alias of a
-    /// folder coverage skips is none.
+    /// record of its archive, as the read's own lookup resolves it, so neither a Windows alias
+    /// of a folder coverage skips nor a password request of a record it skips is one.
     pub fn stamped(&self, relative: &str) -> io::Result<bool> {
         let Some(path) = sanitize(relative.as_bytes()) else {
             return Ok(false);
@@ -2586,7 +2596,7 @@ impl ResolvedLayers {
         };
         let layer = &self.layers[hit.layer];
         Ok(layer.overlay.is_none()
-            && self.covered_path(&hit.path)
+            && self.covered_path(layer.record_name(&hit.path))
             && match layer.source {
                 LayerSource::Folder(_) => {
                     layer.lookup.folders.get(&hit.path.to_ascii_lowercase()) == Some(&hit.path)
@@ -2772,12 +2782,7 @@ impl ResolvedLayers {
                 self.verify_passed(&relative, Some(file.layer), observed)?;
                 observed.at(file.layer);
                 let layer = &self.layers[file.layer];
-                let path = layer
-                    .lookup
-                    .archive
-                    .as_ref()
-                    .and_then(|archive| archive.mounted.lookup(&file.path))
-                    .map_or(file.path.as_slice(), |(entry, _)| entry.name.as_slice());
+                let path = layer.record_name(&file.path);
                 // A visual mod's bytes are reported as its own, never as recorded content.
                 let uncovered = !self.covered_path(path) && layer.overlay.is_none();
                 if uncovered
