@@ -716,6 +716,32 @@ fn a_viewpoint_walks_where_the_published_walk_refused_an_hour() {
     });
 }
 
+/// The prepared lane refuses a read needing its hour's recorded frame, so it
+/// must refuse before walking: the sampled lane walks it again.
+#[test]
+fn a_wars_read_of_an_hours_frame_is_refused_on_the_prepared_lane_before_it_walks() {
+    use crate::products::wars::walks_decoded_inputs as decoded;
+    let replay = scenario(6, true);
+    let mut fixture = Fixture::new(&replay);
+    let request = json!({"branchId": "1", "viewpointTag": "TWO", "reads": [{"hour": 110}]});
+    own(|| {
+        let source = fixture.source("wars-read-first");
+        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+        drop(source);
+        // A source of its own holds no frame, so the hour's must be decoded.
+        let source = fixture.source("wars-read-first");
+        let before = decoded();
+        let (_, refused) = dashboard_base::prepared::query::progressive::without_block_decodes(
+            || query(&source, "wars", request.clone()),
+        );
+        assert!(refused, "the hour's frame is read from the recording");
+        assert_eq!(decoded(), before, "refused before walking");
+        query(&source, "wars", request.clone()).unwrap();
+        assert!(decoded() > before, "the sampled read walks");
+        clear(source);
+    });
+}
+
 #[test]
 fn wars_and_casualties_prepared_on_their_own_refuse_where_hourly_preparation_does() {
     let replay = scenario(6, true);

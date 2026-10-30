@@ -2205,6 +2205,22 @@ fn query_data(
             let context = crate::products::LoadContext {
                 content: content.cloned(),
             };
+            // Read first: a prepared attempt needing the hours' frames is refused before it
+            // walks. Any other failure is told after the walk's, as before.
+            let current = match crate::products::wars::prepared::current(
+                source,
+                &request.params,
+                &context,
+                cancelled,
+            ) {
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock
+                        && progressive::block_decodes_disabled() =>
+                {
+                    return Err(error);
+                }
+                current => current,
+            };
             let mut data = crate::products::wars::prepared::query(
                 source,
                 &request.params,
@@ -2213,12 +2229,7 @@ fn query_data(
                 &context,
                 cancelled,
             )?;
-            let current = crate::products::wars::prepared::current(
-                source,
-                &request.params,
-                &context,
-                cancelled,
-            )?;
+            let current = current?;
             if !current.is_empty()
                 && let Some(reply) = data.as_object_mut()
             {
