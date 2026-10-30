@@ -1,7 +1,12 @@
 use crate::{ProductContent, ProductInputs, witness::ContentReads};
 use dashboard_text::triggers::LeaderRoles;
 use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData};
-use std::{collections::BTreeMap, io, path::Path, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use viewer_foundation::{
     errors::invalid,
     map::{
@@ -17,6 +22,8 @@ use viewer_foundation::{
 pub struct Loader {
     layers: ResolvedLayers,
     pub reads: ContentReads,
+    /// Where the localisation's parses are kept between runs, if anywhere.
+    cache_dir: Option<PathBuf>,
 }
 
 impl Loader {
@@ -24,7 +31,15 @@ impl Loader {
         Self {
             layers: layers.clone(),
             reads: ContentReads::new(layers),
+            cache_dir: None,
         }
+    }
+
+    /// Keeps the localisation's parses in `cache_dir` between runs
+    /// ([`installed_content_localisation::localisation::read_cached`]).
+    pub fn with_cache(mut self, cache_dir: &Path) -> Self {
+        self.cache_dir = Some(cache_dir.to_path_buf());
+        self
     }
 
     pub fn reader(&self, layers: &ResolvedLayers, purpose: &str) -> ResolvedLayers {
@@ -146,13 +161,14 @@ impl Loader {
         stack: &ResolvedLayers,
         language: &str,
     ) -> io::Result<Arc<installed_content_localisation::localisation::Localisation>> {
-        let localisation = self.result(
-            installed_content_localisation::localisation::read(
-                &self.reader(stack, "localisation"),
-                language,
-            )
-            .map(Arc::new),
-        )?;
+        let reader = self.reader(stack, "localisation");
+        let read = match &self.cache_dir {
+            Some(cache_dir) => {
+                installed_content_localisation::localisation::read_cached(&reader, language, cache_dir)
+            }
+            None => installed_content_localisation::localisation::read(&reader, language),
+        };
+        let localisation = self.result(read.map(Arc::new))?;
         for note in localisation
             .logged
             .iter()

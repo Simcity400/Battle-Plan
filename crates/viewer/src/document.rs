@@ -1523,7 +1523,8 @@ impl Document {
                 },
             }
         }
-        let product_loader = map_products::loader::Loader::new(&content.layers);
+        let product_loader =
+            map_products::loader::Loader::new(&content.layers).with_cache(&options.cache_dir);
         Self::load_product_content(
             path,
             options,

@@ -11,9 +11,9 @@ use std::sync::{Arc, PoisonError, Weak, atomic::Ordering};
 #[derive(Default)]
 struct ReadAhead(bool);
 
-/// Reads ahead, on a thread of its own, the content pages' first replies wait for ([`read`]). It
-/// runs at the priority of the work the user waits for: a product asking for what it reads
-/// waits for the same read, so a read held below that priority would hold the product back.
+/// Reads ahead, on a thread of its own, the content pages' first replies wait for ([`read`]), on
+/// half the processors ([`job_priority::confined`]): the page shown answers on the others, and a
+/// product asking for what it reads waits for the same read, held at that product's priority.
 pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
     {
         let state = source.state::<ReadAhead>();
@@ -25,7 +25,7 @@ pub fn warm_in_background(source: &Arc<Source>, options: ContentOptions) {
     let source = Arc::downgrade(source);
     let _ = std::thread::Builder::new()
         .name("page content read-ahead".into())
-        .spawn(move || read(&source, options));
+        .spawn(move || job_priority::confined(|| read(&source, options)));
 }
 
 /// Reads the politics content (the event feed, politics and special projects), then the effect

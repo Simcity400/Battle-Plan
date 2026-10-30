@@ -6,6 +6,10 @@
 //! A thread's priority does not pass to the threads it starts, so every
 //! preparation thread is started with [`JobPriority::current`] and enters it
 //! first with [`JobPriority::enter`].
+//!
+//! Work read ahead of the user runs at the user's priority on half the
+//! processors instead ([`confined`]), so a request that comes to wait for it
+//! never waits behind other work, and the rest is left to the user's.
 
 pub mod accounting;
 
@@ -21,6 +25,217 @@ thread_local! {
     static JOB: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     /// The thread runs in background mode, and so do the threads it starts.
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    /// The processors the thread's confined work runs on, and so do the threads it starts.
+    static CONFINED: Cell<Option<Processors>> = const { Cell::new(None) };
+}
+
+/// Runs `work`, and every thread it starts with [`JobPriority::current`] or [`Caller::current`],
+/// on half the cores the calling thread may run on: work ahead of the user, which leaves the
+/// other half to the work the user waits for and runs at its priority, so a request that comes to
+/// wait for it never waits behind other work. A system of more than one processor group, whose
+/// threads a group affinity cannot restore, runs it unconfined.
+pub fn confined<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Processors>, Option<Processors>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONFINED.set(self.0);
+            if let Some(processors) = self.1 {
+                processors.enter();
+            }
+        }
+    }
+    let all = Processors::current().filter(|_| Processors::one_group());
+    let _restore = Restore(CONFINED.get(), all);
+    if let Some(half) = all.and_then(Processors::half) {
+        CONFINED.set(Some(half));
+        half.enter();
+    }
+    work()
+}
+
+/// A set of processors a thread may run on, within its processor group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Processors {
+    mask: usize,
+    group: u16,
+}
+
+impl Processors {
+    /// The processors the calling thread may run on.
+    fn current() -> Option<Self> {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::{
+                SystemInformation::GROUP_AFFINITY,
+                Threading::{GetCurrentThread, GetThreadGroupAffinity},
+            };
+            let mut affinity: GROUP_AFFINITY = std::mem::zeroed();
+            (GetThreadGroupAffinity(GetCurrentThread(), &mut affinity) != 0).then_some(Self {
+                mask: affinity.Mask,
+                group: affinity.Group,
+            })
+        }
+        #[cfg(not(windows))]
+        None
+    }
+
+    /// Whether the system has a single processor group.
+    fn one_group() -> bool {
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Threading::GetActiveProcessorGroupCount() == 1
+        }
+        #[cfg(not(windows))]
+        false
+    }
+
+    /// The processors the process may run on, in a system of one processor group.
+    fn process() -> Option<Self> {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+            let (mut process, mut system) = (0, 0);
+            (GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) != 0)
+                .then_some(Self {
+                    mask: process,
+                    group: 0,
+                })
+        }
+        #[cfg(not(windows))]
+        None
+    }
+
+    /// The upper half of these processors' cores, whole; none of a single core.
+    fn half(self) -> Option<Self> {
+        let cores: Vec<usize> = cores(self.group)
+            .into_iter()
+            .map(|core| core & self.mask)
+            .filter(|core| *core != 0)
+            .collect();
+        Some(Self {
+            mask: upper_half(cores)?,
+            ..self
+        })
+    }
+
+    /// Runs the calling thread on these processors.
+    fn enter(self) {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::{
+                SystemInformation::GROUP_AFFINITY,
+                Threading::{GetCurrentThread, SetThreadGroupAffinity},
+            };
+            let affinity = GROUP_AFFINITY {
+                Mask: self.mask,
+                Group: self.group,
+                Reserved: [0; 3],
+            };
+            SetThreadGroupAffinity(GetCurrentThread(), &affinity, std::ptr::null_mut());
+        }
+    }
+
+    /// Enters the confined processors of the thread that started this one's work, or leaves a
+    /// confinement earlier work left for the process's processors.
+    fn confine(processors: Option<Self>) {
+        match processors {
+            Some(processors) => {
+                CONFINED.set(Some(processors));
+                processors.enter();
+            }
+            None => {
+                if CONFINED.take().is_some()
+                    && let Some(all) = Self::process()
+                {
+                    all.enter();
+                }
+            }
+        }
+    }
+}
+
+/// The upper half of `cores`, each a mask of one core's processors; none of a single core.
+fn upper_half(mut cores: Vec<usize>) -> Option<usize> {
+    if cores.len() < 2 {
+        return None;
+    }
+    cores.sort_unstable();
+    let kept = cores.len() / 2;
+    Some(cores[cores.len() - kept..].iter().fold(0, |mask, core| mask | core))
+}
+
+/// Each core of processor group `group`, as the mask of its processors.
+fn cores(group: u16) -> Vec<usize> {
+    #[cfg(windows)]
+    unsafe {
+        use std::mem::{offset_of, size_of};
+        use windows_sys::Win32::System::SystemInformation::{
+            GROUP_AFFINITY, GetLogicalProcessorInformationEx, LOGICAL_PROCESSOR_RELATIONSHIP,
+            PROCESSOR_RELATIONSHIP, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+        };
+        type Record = SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX;
+        let mut length = 0;
+        GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &mut length);
+        let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
+        if GetLogicalProcessorInformationEx(
+            RelationProcessorCore,
+            buffer.as_mut_ptr().cast(),
+            &mut length,
+        ) == 0
+        {
+            return Vec::new();
+        }
+        // A core's record is shorter than its type, whose union holds larger relationships: each
+        // field is read where it lies, within the record's own size.
+        let bytes = std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), length as usize);
+        let field = |at: usize, offset: usize, size: usize| bytes.get(at + offset..)?.get(..size);
+        let relationship = (
+            offset_of!(Record, Relationship),
+            size_of::<LOGICAL_PROCESSOR_RELATIONSHIP>(),
+        );
+        let processor = offset_of!(Record, Anonymous);
+        let masks = processor + offset_of!(PROCESSOR_RELATIONSHIP, GroupMask);
+        let mut cores = Vec::new();
+        let mut at = 0;
+        while let (Some(kind), Some(size)) = (
+            field(at, relationship.0, relationship.1),
+            field(at, offset_of!(Record, Size), size_of::<u32>()),
+        ) {
+            let kind = kind.as_ptr().cast::<LOGICAL_PROCESSOR_RELATIONSHIP>().read_unaligned();
+            let size = size.as_ptr().cast::<u32>().read_unaligned() as usize;
+            if size == 0 || at + size > bytes.len() {
+                break;
+            }
+            let count = field(
+                at,
+                processor + offset_of!(PROCESSOR_RELATIONSHIP, GroupCount),
+                size_of::<u16>(),
+            )
+            .map(|count| count.as_ptr().cast::<u16>().read_unaligned());
+            if kind == RelationProcessorCore
+                && let Some(count) = count
+            {
+                for index in 0..usize::from(count) {
+                    let offset = masks + index * size_of::<GROUP_AFFINITY>();
+                    if offset + size_of::<GROUP_AFFINITY>() > size {
+                        break;
+                    }
+                    let mask = bytes[at + offset..].as_ptr().cast::<GROUP_AFFINITY>();
+                    let mask = mask.read_unaligned();
+                    if mask.Group == group {
+                        cores.push(mask.Mask);
+                    }
+                }
+            }
+            at += size;
+        }
+        cores
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = group;
+        Vec::new()
+    }
 }
 
 /// Run the calling thread in background mode from now on, at the lowest CPU, I/O and memory
@@ -86,12 +301,12 @@ pub enum Level {
 /// flag is shared with the job's progress, so a job the user joins stops
 /// lowering the threads it starts from then on.
 #[derive(Clone, Debug, Default)]
-pub struct JobPriority(Option<Arc<AtomicBool>>, bool);
+pub struct JobPriority(Option<Arc<AtomicBool>>, bool, Option<Processors>);
 
 impl JobPriority {
     /// The job this thread works for, to hand to a thread it starts.
     pub fn current() -> Self {
-        JOB.with(|job| Self(job.borrow().clone(), BACKGROUND.get()))
+        JOB.with(|job| Self(job.borrow().clone(), BACKGROUND.get(), CONFINED.get()))
     }
 
     /// Run `work` at the coordinator level for the job whose flag is
@@ -132,6 +347,7 @@ impl JobPriority {
     /// the thread that started it is.
     pub fn enter(self, level: Level) {
         let lowered = self.background();
+        Processors::confine(self.2);
         JOB.with(|job| *job.borrow_mut() = self.0);
         if self.1 {
             background_thread();
@@ -164,8 +380,9 @@ impl Caller {
         }
     }
 
-    /// Enter the caller's job at the caller's priority on a new thread.
+    /// Enter the caller's job at the caller's priority on a new thread, on its processors.
     pub fn enter(self) {
+        Processors::confine(self.job.2);
         JOB.with(|job| *job.borrow_mut() = self.job.0);
         #[cfg(windows)]
         unsafe {
@@ -383,5 +600,87 @@ mod tests {
             !JobPriority::current().background(),
             "the job ends with its run"
         );
+    }
+
+    #[test]
+    fn half_the_cores_are_the_upper_half_whole() {
+        assert_eq!(upper_half(vec![0b11, 0b1100, 0b11_0000]), Some(0b11_0000));
+        assert_eq!(
+            upper_half(vec![0b1100_0000, 0b11, 0b1100, 0b11_0000]),
+            Some(0b1111_0000)
+        );
+        assert_eq!(upper_half(vec![0b1, 0b10]), Some(0b10));
+        assert_eq!(upper_half(vec![0b11]), None);
+    }
+
+    /// The half is whole cores of the system's own topology.
+    #[test]
+    #[cfg(windows)]
+    fn half_the_processors_never_splits_a_core() {
+        let all = Processors::current().unwrap();
+        if let Some(half) = all.half() {
+            for core in cores(all.group) {
+                let kept = core & all.mask & half.mask;
+                assert!(kept == 0 || kept == core & all.mask, "{core:#x} split by {half:?}");
+            }
+        }
+    }
+
+    /// Confined work and the threads it starts run on half the processors, and the thread runs
+    /// on all of them again afterwards.
+    #[test]
+    #[cfg(windows)]
+    fn confined_work_and_its_threads_run_on_half_the_processors() {
+        std::thread::spawn(|| {
+            let all = Processors::current().unwrap();
+            let half = all.half();
+            let (inside, helper, job) = confined(|| {
+                let caller = Caller::current();
+                let job = JobPriority::current();
+                (
+                    Processors::current(),
+                    std::thread::spawn(move || {
+                        caller.enter();
+                        Processors::current()
+                    })
+                    .join()
+                    .unwrap(),
+                    std::thread::spawn(move || {
+                        job.enter(Level::Normal);
+                        Processors::current()
+                    })
+                    .join()
+                    .unwrap(),
+                )
+            });
+            let confined = half.filter(|_| Processors::one_group()).or(Some(all));
+            assert_eq!((inside, helper, job), (confined, confined, confined));
+            assert_eq!(Processors::current(), Some(all));
+            assert_eq!(CONFINED.get(), None);
+            // A thread that ran confined work and then enters unconfined work leaves it.
+            let unconfined = JobPriority::current();
+            let left = std::thread::spawn(move || {
+                confined_thread(|| unconfined.enter(Level::Normal));
+                Processors::current()
+            })
+            .join()
+            .unwrap();
+            let expected = if confined == Some(all) {
+                Some(all)
+            } else {
+                Processors::process()
+            };
+            assert_eq!(left, expected);
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Runs `then` on a thread confined as one a confined thread started is.
+    #[cfg(windows)]
+    fn confined_thread(then: impl FnOnce()) {
+        let caller = confined(Caller::current);
+        caller.enter();
+        then();
     }
 }

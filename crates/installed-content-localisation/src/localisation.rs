@@ -1239,10 +1239,12 @@ pub fn read_cached(
     language: &str,
     cache_dir: &std::path::Path,
 ) -> io::Result<Localisation> {
-    let Some(build) = build() else {
+    let Some((program, build)) = build() else {
         return read(layers, language);
     };
-    let path = cache_dir.join(format!("localisation-{language}.bin"));
+    let build = *build;
+    // Each program keeps its own: the dashboard and the map, each another build, read at once.
+    let path = cache_dir.join(format!("localisation-{language}-{program}.bin"));
     let memo = std::fs::read(&path)
         .ok()
         .and_then(|bytes| decode_memo(&bytes, build, language))
@@ -1275,19 +1277,23 @@ pub fn read_cached(
     Ok(localisation)
 }
 
-/// This build, as the running executable's size and modification time, read once: a parse kept
-/// by another build is parsed again.
-fn build() -> Option<(u64, u128)> {
-    static BUILD: std::sync::OnceLock<Option<(u64, u128)>> = std::sync::OnceLock::new();
-    *BUILD.get_or_init(|| {
-        let metadata = std::env::current_exe().ok()?.metadata().ok()?;
-        let modified = metadata
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        Some((metadata.len(), modified.as_nanos()))
-    })
+/// The running program's name and this build, as its executable's size and modification time,
+/// read once: a parse kept by another build is parsed again.
+fn build() -> Option<&'static (String, (u64, u128))> {
+    static BUILD: std::sync::OnceLock<Option<(String, (u64, u128))>> = std::sync::OnceLock::new();
+    BUILD
+        .get_or_init(|| {
+            let executable = std::env::current_exe().ok()?;
+            let program = executable.file_stem()?.to_str()?.to_owned();
+            let metadata = executable.metadata().ok()?;
+            let modified = metadata
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?;
+            Some((program, (metadata.len(), modified.as_nanos())))
+        })
+        .as_ref()
 }
 
 fn put_text(out: &mut Vec<u8>, text: &str) {
@@ -1440,14 +1446,15 @@ mod tests {
             "\u{feff}l_french:\n key:0 \"premier\"\n",
         )
         .unwrap();
-        let memo = cache.join("localisation-english.bin");
+        let (program, build) = build().unwrap();
+        let build = *build;
+        let memo = cache.join(format!("localisation-english-{program}.bin"));
         let layers = ResolvedLayers::from_folders(&[(&game, &[][..])]).unwrap();
         let cold = read(&layers, "english").unwrap();
         assert_eq!(cold.get("key"), Some("first"));
         assert!(!cold.duplicates.is_empty());
         assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
         let written = std::fs::read(&memo).unwrap();
-        let build = build().unwrap();
         assert_eq!(decode_memo(&written, build, "english").unwrap().len(), 3);
         // A warm read reads the same and leaves the memo as it was.
         assert_eq!(read_cached(&layers, "english", &cache).unwrap(), cold);
