@@ -172,6 +172,16 @@ pub struct Snapshot<'a, P> {
     _lease: Lease<'a>,
     pub(crate) event_walk: Option<crate::events::EventWalk<'a>>,
 }
+/// The identity of the publication rooted at `id`, before any is expected of it: what an
+/// owner compares to learn whether it may resume the publication.
+pub fn root_identity<'a>(
+    io: &mut impl PageRead,
+    cache: &'a Cache<'a>,
+    id: PageId,
+) -> io::Result<Identity> {
+    Ok(Reader::open(io, cache, id)?.root().identity)
+}
+
 impl<'a, P: PageRead> Snapshot<'a, P> {
     pub fn open(
         mut io: P,

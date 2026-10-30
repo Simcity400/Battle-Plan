@@ -686,9 +686,9 @@ fn economy_ledgers_prepared_on_their_own_refuse_where_hourly_preparation_does() 
                 let page: CoveragePage =
                     serde_json::from_slice(&own[&(independent::coverage_section(family, 1), 0)])
                         .unwrap();
-                assert_eq!(page.refused.0[family].hour, hour, "{label}");
-                assert_eq!(page.refused.0[family].hour, expected.hour, "{label}");
-                assert_eq!(page.refused.0[family].error, expected.error, "{label}");
+                assert_eq!(page.refused[family].hour, hour, "{label}");
+                assert_eq!(page.refused[family].hour, expected.hour, "{label}");
+                assert_eq!(page.refused[family].error, expected.error, "{label}");
                 assert!(page.coverage.complete, "{label}");
                 let flag = AtomicBool::new(false);
                 let error = refusal(&source, None, 1, product, &flag).unwrap_err();

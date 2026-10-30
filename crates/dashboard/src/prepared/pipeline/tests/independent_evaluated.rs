@@ -22,7 +22,7 @@ type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
 /// Day 1000's first hour: branch 1 starts here, branch 2 two hundred hours
 /// later.
-const BASE: i32 = 1000 * 24;
+pub(super) const BASE: i32 = 1000 * 24;
 
 /// The offset of `hour` from its branch's start.
 fn offset(branch: u64, hour: i32) -> i32 {
@@ -112,7 +112,7 @@ fn research_at(branch: u64, hour: i32) -> DecodedFrame {
 // marker closes and reopens; the dictionary gains a token at +36, inside a
 // block, so its view is a new allocation there. The holder's balances
 // change every hour.
-fn projects_at(branch: u64, hour: i32) -> DecodedFrame {
+pub(super) fn projects_at(branch: u64, hour: i32) -> DecodedFrame {
     let at = offset(branch, hour);
     let mut frame = crate::test_fixtures::source(branch, hour, Some(i64::from(hour) * 1000));
     // A quiet complete roster carries; repeated unavailable observations are revisited.
@@ -687,9 +687,9 @@ fn evaluated_families_prepared_on_their_own_refuse_where_hourly_preparation_does
                     &own[&(independent::coverage_section(case.family, 1), 0)],
                 )
                 .unwrap();
-                assert_eq!(page.refused.0[case.family].hour, hour, "{label}");
-                assert_eq!(page.refused.0[case.family].hour, expected.hour, "{label}");
-                assert_eq!(page.refused.0[case.family].error, expected.error, "{label}");
+                assert_eq!(page.refused[case.family].hour, hour, "{label}");
+                assert_eq!(page.refused[case.family].hour, expected.hour, "{label}");
+                assert_eq!(page.refused[case.family].error, expected.error, "{label}");
                 assert!(page.coverage.complete, "{label}");
                 let flag = AtomicBool::new(false);
                 let error = refusal(&source, None, 1, case.query, &flag).unwrap_err();

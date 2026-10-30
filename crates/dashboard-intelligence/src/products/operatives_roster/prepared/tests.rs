@@ -580,21 +580,6 @@ struct IdentityProgress(Option<dashboard_base::prepared::coverage::Coverage>);
 /// Identity preparation advances independently of the roster's accepted pages.
 struct IdentityGates;
 impl dashboard_base::prepared::coverage::Gates for IdentityGates {
-    fn product_coverage(
-        &self,
-        source: &Source,
-        content: Option<&dashboard_base::products::ContentOptions>,
-        branch: u64,
-        product: &str,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Option<dashboard_base::prepared::coverage::Coverage>> {
-        if product == dashboard_base::products::country_history::IDENTITIES_PRODUCT
-            && let Some(coverage) = source.state::<IdentityProgress>().lock().unwrap().0.clone()
-        {
-            return Ok(Some(coverage));
-        }
-        dashboard_base::prepared::coverage::coverage(source, content, branch, cancelled)
-    }
     fn refusal(
         &self,
         _source: &Source,
@@ -604,6 +589,39 @@ impl dashboard_base::prepared::coverage::Gates for IdentityGates {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         dashboard_base::metadata::check_cancel(cancelled)
+    }
+    fn ranges(
+        &self,
+        source: &Source,
+        content: Option<&dashboard_base::products::ContentOptions>,
+        branch: u64,
+        product: &str,
+        _through: Option<i32>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<dashboard_base::prepared::coverage::Ranges> {
+        let coverage = match source.state::<IdentityProgress>().lock().unwrap().0.clone() {
+            Some(coverage)
+                if product == dashboard_base::products::country_history::IDENTITIES_PRODUCT =>
+            {
+                Some(coverage)
+            }
+            _ => dashboard_base::prepared::coverage::published_walk(
+                source, content, branch, cancelled,
+            )?,
+        };
+        Ok(dashboard_base::prepared::coverage::Ranges {
+            coverage,
+            holes: Vec::new(),
+        })
+    }
+    fn walk(
+        &self,
+        source: &Source,
+        content: Option<&dashboard_base::products::ContentOptions>,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<dashboard_base::prepared::coverage::Coverage>> {
+        dashboard_base::prepared::coverage::published_walk(source, content, branch, cancelled)
     }
 }
 

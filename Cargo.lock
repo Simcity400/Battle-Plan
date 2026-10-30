@@ -3710,6 +3710,7 @@ dependencies = [
  "engine-native",
  "replay",
  "replay-data",
+ "replay-frame",
  "replay-identity",
  "store",
  "test-unify",

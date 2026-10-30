@@ -422,6 +422,8 @@ coverage: PreparedCoverage,
  * answers every requested hour.
  */
 pending: Array<HourSpan>, };
+export type PreparedUnavailable = "lost" | "refused";
+export type PreparedHole = { firstHour: number, lastHour: number, family: string, unavailable: PreparedUnavailable, reason: string, };
 export type PreparationPreferences = { backgroundEnabled: boolean, };
 export type PreparedFocusArt = { artwork: Artwork, reason: string | null, };
 export type PreparedFocusPages = { sampled?: boolean, first: string, count: string, rows: string, };

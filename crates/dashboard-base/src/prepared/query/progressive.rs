@@ -942,6 +942,7 @@ fn tail_cached_selected(
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
     check_cancel(cancelled)?;
+    let window = declared(window);
     if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
         return Ok(TailData::default());
     }
@@ -1095,6 +1096,7 @@ pub fn points_cached(
     for hour in hours
         .iter()
         .copied()
+        .filter(|&hour| crate::prepared::coverage::sampled(hour))
         .collect::<std::collections::BTreeSet<_>>()
     {
         check_cancel(cancelled)?;
@@ -1132,6 +1134,14 @@ pub fn points_cached(
     Ok(result)
 }
 
+/// `window` ending before the declared request's first hole: no sampled read reaches it.
+fn declared(window: (i32, i32)) -> (i32, i32) {
+    (
+        window.0,
+        crate::prepared::coverage::sampled_through(Some(window.1)).unwrap_or(window.1),
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn tail(
     source: &Source,
@@ -1148,6 +1158,7 @@ pub fn tail(
     BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
 )> {
     check_cancel(cancelled)?;
+    let window = declared(window);
     if coverage.is_some_and(|coverage| coverage.complete) || window.0 > window.1 {
         return Ok((BTreeMap::new(), Vec::new(), BTreeMap::new()));
     }
@@ -1400,6 +1411,7 @@ pub fn state_tail(
     let hours = hours
         .iter()
         .copied()
+        .filter(|&hour| crate::prepared::coverage::sampled(hour))
         .collect::<std::collections::BTreeSet<_>>();
     let blocks = source
         .replay_ref()
@@ -1533,6 +1545,7 @@ fn state_tail_recorded_bounded(
     let hours = hours
         .iter()
         .copied()
+        .filter(|&hour| crate::prepared::coverage::sampled(hour))
         .collect::<std::collections::BTreeSet<_>>();
     let blocks = source
         .replay_ref()

@@ -12,6 +12,7 @@ use crate::{
     metadata::check_cancel,
     products::{ContentOptions, LoadContext},
 };
+use dashboard_base::prepared::gates;
 use dashboard_base::prepared::timing::{FamilyTimings, family_time, finish_timing, start_timing};
 use replay::{
     container::BlockIndex, container::Replay, container::ReplayCursor, container::ReplayStream,
@@ -150,20 +151,12 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         .collect()
 }
 
-/// A family's refusal of one branch's recorded data: the first refusing hour and
-/// the family's own error text, which its queries answer with. A dependent
-/// refusal names the family it came `from`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Refusal {
-    hour: i32,
-    error: String,
-    from: Option<String>,
-}
+pub(crate) use dashboard_base::prepared::coverage::Refusal;
 
 /// One branch's refused families, by family name.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-struct Refused(BTreeMap<String, Refusal>);
+pub(crate) struct Refused(pub(crate) BTreeMap<String, Refusal>);
 
 /// True when a family's own error refuses the recorded data rather than
 /// stopping preparation (I/O, cancellation and panics still stop it).
@@ -303,8 +296,14 @@ struct Checkpoint {
     display_failures: u64,
     /// Families that refused a branch's recorded data, by branch.
     refused: BTreeMap<u64, Refused>,
+    /// The hourly walk's version stamp ([`plan::Plan::walk_stamp`]): under
+    /// another, the walk and every family prepare again.
+    walk_version: u64,
+    /// The version stamp of each family prepared on its own, by name
+    /// ([`plan::Plan::stamp`]): under another, that family alone prepares again.
+    versions: BTreeMap<String, u64>,
     /// Families prepared on their own ([`independent`]), by name, with their
-    /// progress. Preparation of other families starts over when these differ.
+    /// progress.
     #[serde(default)]
     independent: BTreeMap<String, independent::Progress>,
     #[serde(default)]
@@ -744,72 +743,153 @@ fn family_coverages(
     families
 }
 /// A branch's published coverage page, carrying its family refusals so a
-/// query reads both from one small page. The reply's coverage stays unchanged.
-#[derive(Serialize, Deserialize)]
-struct CoveragePage {
-    #[serde(flatten)]
-    coverage: Coverage,
-    #[serde(default, skip_serializing_if = "refused_none")]
-    refused: Refused,
+/// query reads both from one small page.
+pub(crate) use dashboard_base::prepared::coverage::Page as CoveragePage;
+/// A family's coverage page on `branch` as its publication `frontier` leaves
+/// it: the hours it processed, complete once nothing more of the branch is
+/// the family's to prepare, with its refusal of the branch.
+pub(crate) fn write_family_page(
+    writer: &mut store::Writer,
+    family: &str,
+    branch: u64,
+    frontier: &dashboard_base::prepared::roots::Frontier,
+) -> io::Result<()> {
+    let mut refused = BTreeMap::new();
+    if let Some(end) = &frontier.end
+        && end.held == dashboard_base::prepared::roots::Held::Refused
+    {
+        refused.insert(
+            family.to_owned(),
+            Refusal {
+                hour: end.hour,
+                error: end.reason.clone(),
+                from: end.from.clone(),
+            },
+        );
+    }
+    json(
+        writer,
+        &independent::coverage_section(family, branch),
+        &CoveragePage {
+            coverage: Coverage {
+                schema: SCHEMA,
+                first_hour: frontier.first_hour,
+                last_hour: frontier.last_hour,
+                complete: frontier.terminal(),
+            },
+            refused,
+        },
+    )
 }
-fn refused_none(refused: &Refused) -> bool {
-    refused.0.is_empty()
+/// The gates of `source`'s store the query this thread runs pinned, else its
+/// current ones; None while none is decoded, when every gate is pending.
+fn current_gates(
+    source: &Source,
+    content: Option<&ContentOptions>,
+) -> io::Result<Option<std::sync::Arc<gates::Published>>> {
+    let (store, key) = super::files(source, content)?;
+    Ok(gates::current(&store, &key))
+}
+/// Whether `gate`, `name`'s on its branch, was published under the stamp the
+/// plan gives `name` now: by its root's identity, else by the versions the row
+/// preparation published with it. A store no row preparation published to
+/// holds no row versions to compare; a job keeps versions of its own.
+fn stamped(published: &gates::Published, gate: &gates::Gate, name: &str) -> io::Result<bool> {
+    let plan = plan::current();
+    if let Some(root) = gate.publication()? {
+        return Ok(Some(root.identity.schema) == plan.stamp(name));
+    }
+    Ok(match (published.versions()?, plan.family(name)) {
+        (Some(versions), Some(_)) => versions.families.get(name).copied() == plan.stamp(name),
+        _ => true,
+    })
+}
+/// The coverage page the family or job `name` published for `branch`, as
+/// `published` holds it, while it is of the version the plan gives `name`: a
+/// page of another version is pending until its family is prepared again.
+fn own_published<'p>(
+    published: &'p gates::Published,
+    name: &str,
+    branch: u64,
+) -> io::Result<Option<&'p CoveragePage>> {
+    let Some(gate) = published.gate(branch, name) else {
+        return Ok(None);
+    };
+    let Some(page) = gate.page()? else {
+        return Ok(None);
+    };
+    Ok(stamped(published, gate, name)?.then_some(page))
+}
+/// The hourly walk's coverage page on `branch`, while it is of the walk's
+/// version.
+fn walk_page(published: &gates::Published, branch: u64) -> io::Result<Option<&CoveragePage>> {
+    let Some(page) = published.walk(branch).map_or(Ok(None), gates::Gate::page)? else {
+        return Ok(None);
+    };
+    Ok(match published.versions()? {
+        Some(versions) => (versions.walk == plan::current().walk_stamp()).then_some(page),
+        None => Some(page),
+    })
 }
 /// The coverage page a family prepared on its own published for `query`'s
 /// branch, when `query` waits only for that family.
-fn family_page(
-    store: &store::Store,
-    key: &store::SourceKey,
+fn family_page<'p>(
+    published: &'p gates::Published,
     branch: u64,
     query: &str,
-) -> io::Result<Option<(&'static str, CoveragePage)>> {
+) -> io::Result<Option<(&'static str, &'p CoveragePage)>> {
     let Some(family) = independent::gating(query) else {
         return Ok(None);
     };
-    Ok(own_page(store, key, family, branch)?.map(|page| (family, page)))
+    Ok(own_published(published, family, branch)?.map(|page| (family, page)))
 }
 /// The coverage page `family`, prepared on its own, published for `branch`.
+#[cfg(test)]
 fn own_page(
     store: &store::Store,
     key: &store::SourceKey,
     family: &str,
     branch: u64,
 ) -> io::Result<Option<CoveragePage>> {
-    let Some(file) = store.read(key, &independent::coverage_section(family, branch), 0)? else {
+    let Some(mut file) = store.read(key, &independent::coverage_section(family, branch), 0)? else {
         return Ok(None);
     };
-    let page: CoveragePage = serde_json::from_reader(io::BufReader::new(file))?;
-    if page.coverage.schema != SCHEMA || page.coverage.first_hour > page.coverage.last_hour {
-        return Err(invalid("Unsupported prepared coverage schema"));
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    CoveragePage::parse(&bytes).map(Some)
+}
+/// The hourly walk's coverage on `branch` as `published` holds it, noted as
+/// short for the query collecting what it waits for when absent or incomplete
+/// ([`super::coverage::waiting`]).
+fn walked(published: &gates::Published, branch: u64) -> io::Result<Option<Coverage>> {
+    let coverage = walk_page(published, branch)?.map(|page| page.coverage.clone());
+    if !coverage.as_ref().is_some_and(|coverage| coverage.complete) {
+        super::coverage::note_short(super::coverage::WALK);
     }
-    Ok(Some(page))
+    Ok(coverage)
 }
 /// The coverage every one of `families` has on `branch`
 /// ([`independent::joint`]): its own of each prepared on its own, the
 /// branch's of any other; through the least of their last hours, complete
 /// when every one is. None until every one has accepted some.
 fn joint_coverage(
-    source: &Source,
-    content: Option<&ContentOptions>,
+    published: &gates::Published,
     branch: u64,
     families: &[registry::FamilyId],
-    cancelled: &AtomicBool,
 ) -> io::Result<Option<Coverage>> {
-    check_cancel(cancelled)?;
-    let (store, key) = super::files(source, content)?;
-    let mut walked = None;
+    let mut walk = None;
     let mut joint: Option<Coverage> = None;
     for (position, family) in families.iter().map(|family| family.name()).enumerate() {
         let extent = if independent::registered(family) {
             own_short(
                 family,
-                own_page(&store, &key, family, branch)?.map(|page| page.coverage),
+                own_published(published, family, branch)?.map(|page| page.coverage.clone()),
             )
         } else {
-            if walked.is_none() {
-                walked = Some(coverage(source, content, branch, cancelled)?);
+            if walk.is_none() {
+                walk = Some(walked(published, branch)?);
             }
-            walked.clone().flatten()
+            walk.clone().flatten()
         };
         let Some(extent) = extent else {
             // The families after it wait too, as far as this reply knows.
@@ -835,7 +915,8 @@ fn joint_coverage(
 /// its own ([`independent::joint`]); that of the family prepared on its own
 /// whose registry entry gates the product ([`independent::gating`]); the
 /// branch's otherwise; None before any is accepted. A product gated so is
-/// answered while the hourly walk prepares.
+/// answered while the hourly walk prepares. Read from the gates the query
+/// pinned, for the hours it declared ([`super::coverage::product_coverage`]).
 pub(crate) fn product_coverage(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -843,16 +924,23 @@ pub(crate) fn product_coverage(
     product: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Coverage>> {
+    install_gates();
+    super::coverage::product_coverage(source, content, branch, product, cancelled)
+}
+/// [`product_coverage`] as `published` holds it.
+pub(crate) fn published_coverage(
+    published: &gates::Published,
+    branch: u64,
+    product: &str,
+) -> io::Result<Option<Coverage>> {
     if let Some(families) = independent::joint(product) {
-        return joint_coverage(source, content, branch, families, cancelled);
+        return joint_coverage(published, branch, families);
     }
     if independent::gating(product).is_none() {
-        return coverage(source, content, branch, cancelled);
+        return walked(published, branch);
     }
-    check_cancel(cancelled)?;
-    let (store, key) = super::files(source, content)?;
-    Ok(match family_page(&store, &key, branch, product)? {
-        Some((family, page)) => own_short(family, Some(page.coverage)),
+    Ok(match family_page(published, branch, product)? {
+        Some((family, page)) => own_short(family, Some(page.coverage.clone())),
         None => {
             if let Some(family) = independent::gating(product) {
                 super::coverage::note_short(family);
@@ -860,6 +948,76 @@ pub(crate) fn product_coverage(
             None
         }
     })
+}
+/// The hours of `product`'s suppliers on `branch` through `through` (the
+/// branch's end when None) that their publications will not answer, in hour
+/// order: each supplier's first hole, from which no reply needing earlier
+/// observations answers, and every hour after its branch ended for it.
+pub(crate) fn published_holes(
+    published: &gates::Published,
+    branch: u64,
+    product: &str,
+    through: Option<i32>,
+) -> io::Result<Vec<super::coverage::Hole>> {
+    let mut suppliers: Vec<&'static str> =
+        match (independent::joint(product), independent::gating(product)) {
+            (Some(families), _) => families.iter().map(|family| family.name()).collect(),
+            (None, Some(family)) => vec![family],
+            (None, None) => Vec::new(),
+        };
+    suppliers.extend(
+        plan::current()
+            .families()
+            .iter()
+            .filter(|family| family.queries.contains(&product))
+            .map(|family| family.id.name()),
+    );
+    suppliers.sort_unstable();
+    suppliers.dedup();
+    let mut holes = Vec::new();
+    for family in suppliers {
+        let Some(gate) = published.gate(branch, family) else {
+            continue;
+        };
+        let Some(root) = gate.publication()? else {
+            continue;
+        };
+        // A publication of another version is pending as a whole ([`stamped`]).
+        if !stamped(published, gate, family)? {
+            continue;
+        }
+        let unanswered =
+            dashboard_base::prepared::roots::holes(root, i32::MIN, through.unwrap_or(i32::MAX));
+        holes.extend(
+            unanswered
+                .iter()
+                .filter_map(|interval| super::coverage::Hole::of(family, interval)),
+        );
+    }
+    holes.sort_by(|a, b| {
+        (a.first_hour, a.last_hour, &a.family).cmp(&(b.first_hour, b.last_hour, &b.family))
+    });
+    Ok(holes)
+}
+/// What `product`'s queries read on `branch` through `through`, as
+/// `published` holds it: the coverage they wait for, ending before the first
+/// hole there, and the holes.
+pub(crate) fn gated(
+    published: &gates::Published,
+    branch: u64,
+    product: &str,
+    through: Option<i32>,
+) -> io::Result<super::coverage::Ranges> {
+    let holes = published_holes(published, branch, product, through)?;
+    let mut coverage = published_coverage(published, branch, product)?;
+    if let (Some(coverage), Some(first)) = (coverage.as_mut(), holes.first()) {
+        coverage.last_hour = coverage
+            .last_hour
+            .min(first.first_hour.saturating_sub(1))
+            .max(coverage.first_hour.saturating_sub(1));
+        coverage.complete = false;
+    }
+    Ok(super::coverage::Ranges { coverage, holes })
 }
 /// `extent`, the coverage of `family` prepared on its own, noted as short
 /// for the query collecting what it waits for when absent or incomplete
@@ -898,12 +1056,11 @@ pub(crate) fn gate(product: &str) -> Vec<&'static str> {
 }
 
 /// Publication identities of every declared supplier of a query: its gates
-/// and the families whose refusals it reads. One query scope pins these pages
-/// and the data they publish to the same manifest. A replacement, including a
-/// refusal or Clear followed by preparation, changes its identity.
+/// and the families whose refusals it reads, as the pinned gates hold them.
+/// A replacement, including a refusal or Clear followed by preparation,
+/// changes its identity.
 pub(crate) fn query_pages(
-    store: &store::Store,
-    key: &store::SourceKey,
+    published: &gates::Published,
     branch: u64,
     product: &str,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
@@ -915,55 +1072,56 @@ pub(crate) fn query_pages(
     {
         gates.insert(gate_entry(family.id.name()));
     }
-    pages_of(store, key, branch, gates)
+    pages_of(published, branch, gates)
 }
 
 /// [`query_pages`] of a query's own gates alone, without the families it reads through
 /// another's supply.
 pub(crate) fn gate_pages(
-    store: &store::Store,
-    key: &store::SourceKey,
+    published: &gates::Published,
     branch: u64,
     product: &str,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    pages_of(store, key, branch, gate(product))
+    pages_of(published, branch, gate(product))
 }
 
-/// The publication identity of each of `gates` on `branch`.
+/// The publication identity of each of `entries` on `branch`.
 fn pages_of(
-    store: &store::Store,
-    key: &store::SourceKey,
+    published: &gates::Published,
     branch: u64,
-    gates: impl IntoIterator<Item = &'static str>,
+    entries: impl IntoIterator<Item = &'static str>,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    gates
+    Ok(entries
         .into_iter()
         .map(|family| {
-            let section = if family == super::coverage::WALK {
-                coverage_section(branch)
+            if family == super::coverage::WALK {
+                let id = published.walk(branch).and_then(gates::Gate::id);
+                (coverage_section(branch), id)
             } else {
-                independent::coverage_section(family, branch)
-            };
-            let id = store
-                .range_id(key, &section, 0)?
-                .map(|id| id.cache_key());
-            Ok((section, id))
+                let id = published.gate(branch, family).and_then(gates::Gate::id);
+                (independent::coverage_section(family, branch), id)
+            }
         })
-        .collect()
+        .collect())
 }
 /// The coverage page of the hourly walk and of every family on `branch`, registered or not,
 /// production lines' among them: every publication to the branch replaces one of them.
 pub(crate) fn published_pages(
-    store: &store::Store,
-    key: &store::SourceKey,
+    published: &gates::Published,
     branch: u64,
 ) -> io::Result<Vec<(String, Option<[u64; 3]>)>> {
-    let plan = plan::current();
-    let families: std::collections::BTreeSet<&str> = plan
+    pages_of(
+        published,
+        branch,
+        std::iter::once(super::coverage::WALK).chain(gate_names()),
+    )
+}
+/// Every family and job beside them the plan lets publish a gate of its own.
+fn gate_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = plan::current()
         .families()
         .iter()
         .map(|family| family.id.name())
-        .chain(plan.names())
         .chain(
             registry::JOBS
                 .iter()
@@ -971,36 +1129,15 @@ pub(crate) fn published_pages(
                 .map(|job| job.name),
         )
         .collect();
-    std::iter::once(coverage_section(branch))
-        .chain(
-            families
-                .into_iter()
-                .map(|family| independent::coverage_section(family, branch)),
-        )
-        .map(|section| {
-            let id = store
-                .range_id(key, &section, 0)?
-                .map(|id| id.cache_key());
-            Ok((section, id))
-        })
-        .collect()
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 /// The gates readers below the dashboard ask ([`super::coverage::Gates`]):
 /// [`product_coverage`] and [`refusal`].
 struct Gates;
 
 impl super::coverage::Gates for Gates {
-    fn product_coverage(
-        &self,
-        source: &Source,
-        content: Option<&ContentOptions>,
-        branch: u64,
-        product: &str,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Option<Coverage>> {
-        product_coverage(source, content, branch, product, cancelled)
-    }
-
     fn refusal(
         &self,
         source: &Source,
@@ -1011,16 +1148,59 @@ impl super::coverage::Gates for Gates {
     ) -> io::Result<()> {
         refusal(source, content, branch, query, cancelled)
     }
+
+    fn ranges(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        product: &str,
+        through: Option<i32>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<super::coverage::Ranges> {
+        check_cancel(cancelled)?;
+        match current_gates(source, content)? {
+            Some(published) => gated(&published, branch, product, through),
+            None => {
+                for entry in gate(product) {
+                    super::coverage::note_short(entry);
+                }
+                Ok(super::coverage::Ranges::default())
+            }
+        }
+    }
+
+    fn walk(
+        &self,
+        source: &Source,
+        content: Option<&ContentOptions>,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Option<Coverage>> {
+        check_cancel(cancelled)?;
+        match current_gates(source, content)? {
+            Some(published) => walked(&published, branch),
+            None => {
+                super::coverage::note_short(super::coverage::WALK);
+                Ok(None)
+            }
+        }
+    }
 }
 
 /// Installs the pipeline's [`Gates`] for readers below the dashboard; the
-/// pipeline, the query route and the service install them before reading.
-pub fn install_gates() {
+/// pipeline, the query route and the service install them before reading. The
+/// right to declare queries is the query route's ([`super::query::query`]).
+pub fn install_gates() -> &'static super::coverage::Entry {
     static GATES: Gates = Gates;
-    super::coverage::install_gates(&GATES);
+    static ENTRY: std::sync::OnceLock<super::coverage::Entry> = std::sync::OnceLock::new();
+    let entry = ENTRY.get_or_init(|| {
+        super::coverage::install_gates(&GATES).expect("the pipeline installs the process's gates")
+    });
     dashboard_base::products::country_styles::install_style_runs(
         &crate::products::style_runs::PREPARED_STYLES,
     );
+    entry
 }
 /// Every prepared query of a refused family on this branch, and every query
 /// reading one, answers with that family's refusal exactly as its product
@@ -1036,6 +1216,28 @@ pub(crate) fn refusal(
     query: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
+    check_cancel(cancelled)?;
+    let Some(published) = current_gates(source, content)? else {
+        return Ok(());
+    };
+    let through = super::coverage::declared().through;
+    match refusal_from(&published, branch, query)? {
+        Some((hour, error)) if through.is_none_or(|through| through >= hour) => {
+            Err(io::Error::new(io::ErrorKind::InvalidData, error))
+        }
+        _ => Ok(()),
+    }
+}
+/// The refusal `query` answers on `branch` with when it asks a refused
+/// family's hours ([`super::query::query`]), as `published` holds the
+/// refusals: the earliest refusing hour of the families it reads, with the
+/// error of the first refusing one, its gate's then the others' in registry
+/// order.
+pub(crate) fn refusal_from(
+    published: &gates::Published,
+    branch: u64,
+    query: &str,
+) -> io::Result<Option<(i32, String)>> {
     let families: Vec<&registry::Descriptor> = plan::current()
         .families()
         .iter()
@@ -1046,44 +1248,37 @@ pub(crate) fn refusal(
         && independent::gating(query).is_none()
         && independent::joint(query).is_none()
     {
-        return Ok(());
+        return Ok(None);
     }
-    check_cancel(cancelled)?;
-    let (store, key) = super::files(source, content)?;
-    let refused = |refusal: &Refusal| -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            refusal.error.clone(),
-        ))
+    let mut found: Option<(i32, String)> = None;
+    let mut note = |refusal: &Refusal| {
+        found = Some(match found.take() {
+            Some((hour, error)) => (hour.min(refusal.hour), error),
+            None => (refusal.hour, refusal.error.clone()),
+        });
     };
-    if let Some((family, page)) = family_page(&store, &key, branch, query)?
-        && let Some(refusal) = page.refused.0.get(family)
+    if let Some((family, page)) = family_page(published, branch, query)?
+        && let Some(refusal) = page.refused.get(family)
     {
-        return refused(refusal);
+        note(refusal);
     }
-    let page = |section: &str| -> io::Result<Option<CoveragePage>> {
-        let Some(file) = store.read(&key, section, 0)? else {
-            return Ok(None);
-        };
-        Ok(Some(serde_json::from_reader(io::BufReader::new(file))?))
-    };
-    let walked = page(&coverage_section(branch))?;
+    let walk = walk_page(published, branch)?;
     // In registry order, as the hourly walk's page alone answers.
     for family in families.into_iter().map(|family| family.id.name()) {
         let own = if independent::registered(family) {
-            page(&independent::coverage_section(family, branch))?
+            own_published(published, family, branch)?
         } else {
             None
         };
-        if let Some(refusal) = [own.as_ref(), walked.as_ref()]
+        if let Some(refusal) = [own, walk]
             .into_iter()
             .flatten()
-            .find_map(|page| page.refused.0.get(family))
+            .find_map(|page| page.refused.get(family))
         {
-            return refused(refusal);
+            note(refusal);
         }
     }
-    Ok(())
+    Ok(found)
 }
 fn save_coverage(
     writer: &mut store::Writer,
@@ -1108,7 +1303,7 @@ fn save_coverage(
         &coverage_section(branch),
         &CoveragePage {
             coverage,
-            refused: refused.cloned().unwrap_or_default(),
+            refused: refused.map(|refused| refused.0.clone()).unwrap_or_default(),
         },
     )
 }
@@ -1185,6 +1380,8 @@ fn zero_checkpoint(replay: &Replay, content: Option<&ContentOptions>) -> io::Res
         display_error: None,
         display_failures: 0,
         refused: BTreeMap::new(),
+        walk_version: plan::current().walk_stamp(),
+        versions: stamps(),
         independent: independent::names()
             .iter()
             .map(|&name| (name.to_owned(), independent::Progress::default()))
@@ -1261,15 +1458,11 @@ fn metadata_prefix(
     }
     // Every publisher owns a committed prefix of the same recorded index;
     // their cursors need not coincide or be ordered relative to one another.
-    if !state
+    // Publishers whose version changed are taken back by [`restamp`].
+    if state
         .independent
-        .keys()
-        .map(String::as_str)
-        .eq(independent::names().iter().copied())
-        || state
-            .independent
-            .values()
-            .any(|family| family.next_block > state.index.len())
+        .values()
+        .any(|family| family.next_block > state.index.len())
     {
         return Ok(false);
     }
@@ -1322,6 +1515,110 @@ fn metadata_prefix(
     }
     Ok(true)
 }
+/// The version stamp of each family the plan prepares on its own, by name.
+fn stamps() -> BTreeMap<String, u64> {
+    let plan = plan::current();
+    independent::names()
+        .into_iter()
+        .filter_map(|name| Some((name.to_owned(), plan.stamp(name)?)))
+        .collect()
+}
+
+/// What a loaded checkpoint's publishers lose to changed versions: the hourly
+/// walk's whole prefix, and the families prepared on their own named here.
+#[derive(Default)]
+struct Stale {
+    walk: bool,
+    families: Vec<String>,
+}
+
+impl Stale {
+    fn is_empty(&self) -> bool {
+        !self.walk && self.families.is_empty()
+    }
+}
+
+/// Takes back the progress of every publisher whose version stamp changed:
+/// each family prepared on its own whose stamp moved, or that the plan no
+/// longer prepares on its own, prepares again alone; the hourly walk, whose
+/// families and jobs share one cursor and branch state, prepares again from
+/// its first block. Every other family keeps what it accepted. What they lose
+/// the next transaction clears ([`clear_stale`]).
+fn restamp(state: &mut Checkpoint) -> Stale {
+    let names = independent::names();
+    let stamps = stamps();
+    let mut stale: Vec<String> = state
+        .independent
+        .keys()
+        .filter(|name| !names.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    for &name in &names {
+        if state.versions.get(name) != stamps.get(name) || !state.independent.contains_key(name) {
+            stale.push(name.to_owned());
+        }
+    }
+    let mut kept = std::mem::take(&mut state.independent);
+    state.independent = names
+        .iter()
+        .map(|&name| {
+            let progress = if stale.iter().any(|stale| stale == name) {
+                independent::Progress::default()
+            } else {
+                kept.remove(name).unwrap_or_default()
+            };
+            (name.to_owned(), progress)
+        })
+        .collect();
+    state.versions = stamps;
+    stale.sort_unstable();
+    stale.dedup();
+    let walk_stamp = plan::current().walk_stamp();
+    let walk = state.walk_version != walk_stamp;
+    if walk {
+        state.cursor = Cursor {
+            next_block: 0,
+            previous: None,
+        };
+        state.map = Default::default();
+        state.refused.clear();
+        state.walk_version = walk_stamp;
+    }
+    Stale {
+        walk,
+        families: stale,
+    }
+}
+
+/// Clears every section a publisher of `stale` publishes, before the
+/// transaction writes any: they prepare again from their first block.
+fn clear_stale(writer: &mut store::Writer, stale: &Stale) -> io::Result<()> {
+    if stale.is_empty() {
+        return Ok(());
+    }
+    let plan = plan::current();
+    let cleared = |owner: Option<plan::Owner>| match owner {
+        Some(plan::Owner::Family(family)) => {
+            stale.families.iter().any(|name| name == family.name())
+                || (stale.walk && plan.backend(family.name()) == Some(plan::Backend::Walk))
+        }
+        Some(plan::Owner::Walk) => stale.walk,
+        Some(plan::Owner::Job(job)) => {
+            stale.walk && registry::job(job).is_some_and(|job| job.runner == registry::Runner::Walk)
+        }
+        _ => false,
+    };
+    let owned: Vec<String> = writer
+        .section_names()
+        .filter(|section| cleared(plan.owner(section)))
+        .map(str::to_owned)
+        .collect();
+    for section in owned {
+        writer.clear(&section)?;
+    }
+    Ok(())
+}
+
 /// Whether [`load_branch`] restores `family`'s saved state: the walk restores
 /// only what it goes on with ([`Refused::live`]).
 fn restores(refused: &Refused, family: &'static str) -> bool {
@@ -1713,6 +2010,7 @@ pub(super) fn restore_rows(
         return Ok(None);
     };
     if !metadata_prefix(&state, source.replay_ref(), content)?
+        || !restamp(&mut state.clone()).is_empty()
         || !state.forward_complete(source.replay_ref().index.len())
         || !side::complete(source, content, &store, &key)?
     {
@@ -2116,6 +2414,10 @@ fn run_planned(
         }
         _ => None,
     };
+    let mut loaded = loaded;
+    let stale = loaded
+        .as_mut()
+        .map_or_else(Stale::default, |(state, _)| restamp(state));
     let owners_started = start_timing(&family_timings);
     let mut land_owners = if loaded
         .as_ref()
@@ -2152,6 +2454,8 @@ fn run_planned(
         false,
     );
     let snow_unstarted = match loaded.as_ref() {
+        // The walk prepares again from its first block, and its map export with it.
+        Some(_) if stale.walk => true,
         Some((state, _)) if !state.accepted_walk() => !map_export.has_history(
             &store,
             &key,
@@ -2614,6 +2918,7 @@ fn run_planned(
     if current_checkpoint != planned_checkpoint {
         return Ok(None);
     }
+    clear_stale(&mut writer, &stale)?;
     if metadata_dirty {
         if snow_unstarted {
             map_export.initialise(&mut writer)?;
@@ -2647,9 +2952,11 @@ fn run_planned(
             )?;
         }
     }
-    if saved.as_ref().is_some_and(|previous| previous != &key) {
-        // Bind the accepted prefix to the grown recording before observing any
-        // frame, so preparation reads its earlier ranges with current-key reads.
+    if saved.as_ref().is_some_and(|previous| previous != &key) || !stale.is_empty() {
+        // Bind the accepted prefix to the grown recording, and publish what
+        // changed versions cleared, before observing any frame: preparation
+        // reads its earlier ranges with current-key reads, and no publisher
+        // prepared again reads back what it published under its old version.
         bytes = time_family!(
             family_timings,
             "checkpoint",
@@ -5277,6 +5584,14 @@ fn write_checkpoint_state(
     state.gaps = gaps(replay)?;
     state.refused.retain(|_, refused| !refused.0.is_empty());
     write_map_progress(writer, &state.map)?;
+    json(
+        writer,
+        super::coverage::VERSIONS,
+        &super::coverage::Versions {
+            walk: state.walk_version,
+            families: state.versions.clone(),
+        },
+    )?;
     // write_at replaces the old checkpoint; exclude its own size from the new
     // stored total, then add the serialized new file after writing it.
     let prior_checkpoint = writer

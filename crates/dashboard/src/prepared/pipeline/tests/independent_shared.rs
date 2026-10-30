@@ -450,7 +450,7 @@ fn families_reading_together_refuse_where_each_reading_alone_refuses() {
                     &together[&(independent::coverage_section(family, 1), 0)],
                 )
                 .unwrap();
-                assert_eq!(page.refused.0[family].hour, BASE + at, "{label}");
+                assert_eq!(page.refused[family].hour, BASE + at, "{label}");
             }
         }
     }
@@ -487,7 +487,7 @@ fn each_block_is_read_once_for_every_family_observing_it_hour_by_hour() {
                 )
                 .unwrap();
                 assert!(
-                    page.refused.0.is_empty(),
+                    page.refused.is_empty(),
                     "{label}: {family} refused branch {branch}: {:?}",
                     page.refused
                 );

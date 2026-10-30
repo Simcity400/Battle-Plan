@@ -489,7 +489,6 @@ fn family_refusals(source: &Source, own: bool) -> BTreeMap<u64, Option<Refusal>>
                     serde_json::from_reader::<_, CoveragePage>(std::io::BufReader::new(file))
                         .unwrap()
                         .refused
-                        .0
                         .get("focus")
                         .cloned()
                 })

@@ -2529,7 +2529,11 @@ pub(super) fn save_coverage(
         &coverage_section(family, branch),
         &CoveragePage {
             coverage,
-            refused: progress.refused.get(&branch).cloned().unwrap_or_default(),
+            refused: progress
+                .refused
+                .get(&branch)
+                .map(|refused| refused.0.clone())
+                .unwrap_or_default(),
         },
     )
 }

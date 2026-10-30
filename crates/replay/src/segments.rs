@@ -859,7 +859,7 @@ enum Begun {
     /// The state its first hour applies to, after walking this many segments for it.
     Ready(usize),
     /// The restart it begins at is damaged: the walk goes back to begin before it.
-    Back(io::Error),
+    Back,
     /// Nothing says what its first hour applies to.
     Lost(io::Error),
     Stopped,
@@ -1171,7 +1171,7 @@ impl<'r, 'a> Run<'r, 'a> {
             // A segment with a restart follows another of its run.
             Err(error) if Damage::of(&error).is_some() => {
                 return Ok(if self.segments[from].restart.is_some() {
-                    Begun::Back(error)
+                    Begun::Back
                 } else {
                     Begun::Lost(error)
                 });
@@ -1493,7 +1493,7 @@ impl<'r, 'a> Run<'r, 'a> {
                 Ok(Begun::Stopped) => return Ok(None),
                 Err(_) if self.stopped() => return Ok(None),
                 Err(error) => return Err(error),
-                Ok(Begun::Back(_)) => {
+                Ok(Begun::Back) => {
                     self.back(at, from, lanes)?;
                     return Ok(None);
                 }
@@ -1661,7 +1661,6 @@ impl<'r, 'a> Run<'r, 'a> {
         let culprit = Cell::new(None);
         let context = Context {
             shared: &self.shared,
-            at,
             reserved: &reserved,
             culprit: &culprit,
         };
@@ -1755,7 +1754,7 @@ impl<'r, 'a> Run<'r, 'a> {
                         Ok(Begun::Stopped) => return Ok(None),
                         // A walk gone on from the one before needs a walk of the segments
                         // before that its share does not hold: it goes back, as begun cold.
-                        Ok(Begun::Back(_)) => {
+                        Ok(Begun::Back) => {
                             self.resume(at, from, walking, failures, (derived, rewalks))?;
                             return Ok(None);
                         }

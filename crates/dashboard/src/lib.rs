@@ -105,6 +105,8 @@ pub fn typescript_contract() -> String {
         prepared::Reply::decl(),
         prepared::pipeline::Coverage::decl(),
         prepared::prefix::Prefix::decl(),
+        prepared::coverage::Unavailable::decl(),
+        prepared::coverage::Hole::decl(),
         prepared::Preferences::decl(),
         prepared_focus::PresentedFocus::decl(),
         prepared_focus::Pages::decl(),

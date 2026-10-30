@@ -1,9 +1,13 @@
 //! The preparation driver: the one family registry, the plan selecting the
-//! backend of every family ([`plan::current`]), and the entry ordinary
-//! preparation and its restoration go through. Every backend is a row
-//! backend: the hourly walk, or a family's row implementation of its own.
+//! backend of every family ([`plan::current`]), the publication every family
+//! commits through ([`publication`]), and the entry ordinary preparation and
+//! its restoration go through. Every backend is a row backend: the hourly
+//! walk, or a family's row implementation of its own.
 
 pub(crate) mod plan;
+// The segment driver commits through it; ordinary preparation is still the row walk's.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod publication;
 pub mod registry;
 
 use super::pipeline::{self, Accepted};

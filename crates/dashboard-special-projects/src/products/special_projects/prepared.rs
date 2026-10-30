@@ -1814,9 +1814,11 @@ struct Interval {
     last: i32,
     observation: Observation,
 }
+/// The project observations of `key` through `through`, each interval ending by then.
 fn intervals(
     reader: &mut Reader<'_>,
     key: u64,
+    through: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<Interval>> {
     let mut result = Vec::new();
@@ -1825,7 +1827,7 @@ fn intervals(
     let mut cursor = 0;
     loop {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let page = reader.events(&[key], i32::MIN, i32::MAX, cursor, 256)?;
+        let page = reader.events(&[key], i32::MIN, through, cursor, 256)?;
         if page
             .cursor
             .is_some_and(|next| next <= cursor || page.rows.is_empty())
@@ -1841,7 +1843,7 @@ fn intervals(
             let stored = serde_json::from_value(row.row)?;
             result.push(Interval {
                 first: row.hour,
-                last: run.last_hour,
+                last: run.last_hour.min(through),
                 observation: looks.observation(reader, stored)?,
             });
         }
@@ -1852,9 +1854,11 @@ fn intervals(
     }
     Ok(result)
 }
+/// The identity runs of `key` through `through`, each ending by then.
 fn identities(
     reader: &mut Reader<'_>,
     key: u64,
+    through: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<CountryIdentityRun>> {
     let _cpu = replay_frame::cpu::scope_phase("projects:query_identities");
@@ -1862,7 +1866,7 @@ fn identities(
     let mut cursor = 0;
     loop {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let page = reader.events(&[key], i32::MIN, i32::MAX, cursor, 256)?;
+        let page = reader.events(&[key], i32::MIN, through, cursor, 256)?;
         if page
             .cursor
             .is_some_and(|next| next <= cursor || page.rows.is_empty())
@@ -1878,7 +1882,8 @@ fn identities(
                 .ok_or_else(|| {
                     dashboard_core::invalid("Prepared project identity has no interval")
                 })?
-                .last_hour;
+                .last_hour
+                .min(through);
             identities.push(identity);
         }
         let Some(next) = page.cursor else {
@@ -1989,10 +1994,12 @@ fn apply_interval(
     builder.last = Some((interval.observation.identity, last));
 }
 
+/// The reply `params` ask of the prepared pages, their history read through `through` alone.
 fn complete_reply(
     store: &store::Store,
     source_key: &store::SourceKey,
     params: &SpecialProjectsParams,
+    through: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<SpecialProjectsReply>> {
     let branch = params.country().branch();
@@ -2003,12 +2010,12 @@ fn complete_reply(
     };
     let mut reader = Reader::new(store, source_key, section(branch), cancelled)?;
     let selected_intervals = match keys.get(&params.tag) {
-        Some(&key) => intervals(&mut reader, key, cancelled)?,
+        Some(&key) => intervals(&mut reader, key, through, cancelled)?,
         None => Vec::new(),
     };
     let mut history = country_history::RecordedHistories::default();
     let mut all_ids = match metadata.progress.get(&params.tag) {
-        Some(country) => identities(&mut reader, country.identity, cancelled)?,
+        Some(country) => identities(&mut reader, country.identity, through, cancelled)?,
         None => Vec::new(),
     };
     let mut selected_country = country_history::RecordedCountry::default();
@@ -2022,7 +2029,12 @@ fn complete_reply(
         }
         if let Some(root_keys) = metadata.progress.get(root) {
             let mut country = country_history::RecordedCountry::default();
-            country.identities = Arc::new(identities(&mut reader, root_keys.identity, cancelled)?);
+            country.identities = Arc::new(identities(
+                &mut reader,
+                root_keys.identity,
+                through,
+                cancelled,
+            )?);
             history.countries.insert(root.clone(), country);
         }
     }
@@ -2174,16 +2186,22 @@ fn complete_reply(
 
 /// The prepared reply, its art kept as the operands preparation recorded
 /// ([`super::present_reply`] draws it).
+/// `params`' reply from the prepared pages, their history read through `through`: the last hour
+/// of the prefix the query admitted.
 pub fn query(
     params: serde_json::Value,
     store: &store::Store,
     source_key: &store::SourceKey,
+    through: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<SpecialProjectsReply> {
     let params: SpecialProjectsParams = serde_json::from_value(params)?;
     SpecialProjects::validate(&params).map_err(dashboard_core::invalid)?;
-    Ok(complete_reply(store, source_key, &params, cancelled)?
-        .unwrap_or_else(|| build_reply(Builder::default(), &params.country(), false, Vec::new()).0))
+    Ok(
+        complete_reply(store, source_key, &params, through, cancelled)?.unwrap_or_else(|| {
+            build_reply(Builder::default(), &params.country(), false, Vec::new()).0
+        }),
+    )
 }
 
 /// Current cards use preparation's observation, presentation and episode

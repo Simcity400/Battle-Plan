@@ -487,7 +487,6 @@ fn refusals_of(source: &Source, family: &str, own: bool) -> BTreeMap<u64, Option
                         serde_json::from_reader::<_, CoveragePage>(std::io::BufReader::new(file))
                             .unwrap()
                             .refused
-                            .0
                             .get(family)
                             .cloned()
                     })
@@ -897,7 +896,7 @@ fn stagger(source: &Source, section: &str, last_hour: i32) {
                 last_hour,
                 complete: false,
             },
-            refused: Refused::default(),
+            refused: Default::default(),
         },
     )
     .unwrap();

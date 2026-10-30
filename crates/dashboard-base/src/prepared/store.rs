@@ -106,6 +106,9 @@ pub fn files(
     // Establish the manifest binding once; query reads retain it through this
     // source-local key rather than revisiting the resolved content inputs.
     store.is_reusable(&key)?;
+    // The folder's publication is decoded once here, whichever key it is under; each later
+    // publication decodes its own. One that cannot be decoded leaves its queries pending.
+    super::gates::refresh(&store);
     *cache = Some((options, Arc::clone(&store), key.clone()));
     Ok((store, key))
 }
@@ -127,8 +130,10 @@ pub fn refresh_saved_binding(
     Ok(key)
 }
 
-/// Shared host/native directory identity for every revision of one recording.
+/// Shared host/native directory identity for every revision of one recording. Every
+/// publication to it is decoded as it is made ([`super::gates`]).
 pub fn recording_store(path: &Path) -> std::io::Result<Arc<store::Store>> {
+    super::gates::decode_publications();
     Ok(Arc::new(store::Store::local(recording_identity(path)?)?))
 }
 

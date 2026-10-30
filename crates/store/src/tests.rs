@@ -3378,3 +3378,105 @@ fn a_ranges_identity_is_named_without_opening_its_pack() {
     assert_ne!(replaced, ids[0]);
     assert_eq!(replaced, read("a", 0));
 }
+
+#[test]
+fn a_cleared_section_lists_none_of_its_ranges_and_frees_their_bytes() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for range in 0..3_u64 {
+        writer.write("dropped", &range.to_le_bytes()[..]).unwrap();
+        writer.write("kept", &range.to_be_bytes()[..]).unwrap();
+    }
+    writer.commit().unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    assert_eq!(
+        writer.section_names().collect::<Vec<_>>(),
+        ["dropped", "kept"]
+    );
+    let mut fork = writer.fork().unwrap();
+    assert_eq!(
+        fork.clear("dropped").unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    drop(fork);
+    // A stage that saw the old ranges is refused once they are cleared.
+    let mut stage = writer.stage().unwrap();
+    stage.write("dropped", &b"stale"[..]).unwrap();
+    let stale = stage.into_staged().unwrap();
+    writer.clear("dropped").unwrap();
+    writer.clear("absent").unwrap();
+    assert_eq!(writer.payload_bytes_change(), -24);
+    for staged in stale {
+        assert!(writer.adopt(staged).is_err());
+    }
+    drop(writer);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.clear("dropped").unwrap();
+    assert_eq!(writer.write("dropped", &b"new"[..]).unwrap(), 0);
+    assert!(
+        writer.clear("dropped").is_err(),
+        "a section the transaction wrote is not cleared"
+    );
+    writer.commit().unwrap();
+    assert_eq!(fixture.store.range_count(&key, "dropped").unwrap(), Some(1));
+    assert_eq!(
+        bytes(fixture.store.read(&key, "dropped", 0).unwrap().unwrap()),
+        b"new"
+    );
+    assert!(fixture.store.read(&key, "dropped", 1).unwrap().is_none());
+    for range in 0..3_u64 {
+        assert_eq!(
+            bytes(fixture.store.read(&key, "kept", range).unwrap().unwrap()),
+            range.to_be_bytes()
+        );
+    }
+    // Every byte the cleared ranges held left the packs the manifest lists.
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    let live: u64 = catalog.packs().unwrap().iter().map(|pack| pack.live).sum();
+    assert_eq!(live, 3 + 3 * 8);
+}
+
+#[test]
+fn a_pinned_scope_reads_its_own_publication_or_fails_as_superseded() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"first"[..]).unwrap();
+    writer.commit().unwrap();
+    let pinned = fixture.store.session(&key).unwrap().unwrap().snapshot();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.write_at("pages", 0, &b"second"[..]).unwrap();
+    writer.commit().unwrap();
+    {
+        let scope = pinned.scope();
+        assert_eq!(
+            bytes(fixture.store.read(&key, "pages", 0).unwrap().unwrap()),
+            b"first",
+            "a pinned scope never moves to the later manifest"
+        );
+        assert!(!scope.superseded());
+        let current = fixture.store.current().unwrap().unwrap();
+        assert!(current.key() == &key);
+        assert_eq!(
+            bytes(current.read("pages", 0).unwrap().unwrap()),
+            b"second",
+            "the current publication is read whatever this thread pinned"
+        );
+    }
+    // The next writer removes the files the current manifest no longer lists.
+    drop(fixture.store.extend(&key).unwrap());
+    {
+        let scope = pinned.scope();
+        let error = fixture.store.read(&key, "pages", 0).unwrap_err();
+        assert!(is_superseded(&error), "{error}");
+        assert!(
+            scope.superseded(),
+            "the scope remembers what its reader may have swallowed"
+        );
+    }
+    assert!(is_superseded(&pinned.read("pages", 0).unwrap_err()));
+    // An ordinary session goes on to the current manifest.
+    let current = fixture.store.session(&key).unwrap().unwrap().snapshot();
+    assert_eq!(bytes(current.read("pages", 0).unwrap().unwrap()), b"second");
+}

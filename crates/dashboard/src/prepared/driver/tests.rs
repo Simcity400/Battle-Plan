@@ -802,3 +802,50 @@ fn a_plan_refuses_what_its_registry_or_backends_cannot_prepare() {
         "a spelling of two families"
     );
 }
+
+#[test]
+fn a_stamp_moves_with_its_family_s_version_and_its_same_hour_suppliers_alone() {
+    let rows = plan::rows();
+    let own = crate::prepared::pipeline::independent::row_names();
+    let bumped = |name: &str, version: u32| -> &'static Descriptor {
+        Box::leak(Box::new(Descriptor {
+            version,
+            ..*registry::family_named(name).unwrap()
+        }))
+    };
+    let plan = plan::test_plan(&[bumped("identities", 2)], &own).unwrap();
+    for (name, moved) in [
+        ("identities", true),
+        ("territory", true),
+        ("event_feed", true),
+        ("groups", false),
+        ("air_superiority", false),
+        ("stability", false),
+    ] {
+        assert_eq!(plan.stamp(name) != rows.stamp(name), moved, "{name}");
+    }
+    assert_eq!(plan.walk_stamp(), rows.walk_stamp());
+    let plan = plan::test_plan(&[bumped("groups", 3)], &own).unwrap();
+    assert_ne!(plan.stamp("air_superiority"), rows.stamp("air_superiority"));
+    assert_eq!(plan.stamp("identities"), rows.stamp("identities"));
+    // A family the walk prepares moves the walk's stamp, and no other family's.
+    let plan = plan::test_plan(&[bumped("army", 2)], &own).unwrap();
+    assert_ne!(plan.walk_stamp(), rows.walk_stamp());
+    assert_eq!(plan.stamp("stability"), rows.stamp("stability"));
+    assert_eq!(rows.stamp("nonexistent"), None);
+    for (section, owner) in [
+        ("preparation-root-stability-3", Some(family("stability"))),
+        (
+            "preparation-ledger-division-equipment-0",
+            Some(family("division-equipment")),
+        ),
+        ("preparation-state-map-pages-2", Some(family("map-pages"))),
+        (
+            "preparation-carry-production-lines-1",
+            Some(Owner::Job("production-lines")),
+        ),
+        ("preparation-root-unknown-1", None),
+    ] {
+        assert_eq!(rows.owner(section), owner, "{section}");
+    }
+}

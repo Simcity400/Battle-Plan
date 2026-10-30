@@ -159,12 +159,11 @@ impl<'r> Shared<'r> {
     }
 }
 
-/// A walk's view of what its families share: the segment it walks, what it reserved, and the
-/// family whose code runs, which the run's own code it calls back into clears.
+/// A walk's view of what its families share: what it reserved, and the family whose code runs,
+/// which the run's own code it calls back into clears.
 #[derive(Clone, Copy)]
 pub(super) struct Context<'c> {
     pub(super) shared: &'c Shared<'c>,
-    pub(super) at: usize,
     pub(super) reserved: &'c Reserved<'c>,
     pub(super) culprit: &'c Cell<Option<usize>>,
 }

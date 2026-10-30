@@ -688,7 +688,7 @@ fn family_refusals(source: &Source, own: bool) -> BTreeMap<u64, BTreeMap<String,
                         serde_json::from_reader::<_, CoveragePage>(std::io::BufReader::new(file))
                             .unwrap()
                     });
-                if let Some(refusal) = page.and_then(|page| page.refused.0.get(family).cloned()) {
+                if let Some(refusal) = page.and_then(|page| page.refused.get(family).cloned()) {
                     refused.insert(family.to_owned(), refusal);
                 }
             }

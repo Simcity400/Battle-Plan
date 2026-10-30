@@ -1242,7 +1242,6 @@ fn chunks_close_at_their_size_and_spill_past_the_budget() {
         let mut walking = lane.erased.fresh(&segment).unwrap();
         let context = Context {
             shared: &shared,
-            at,
             reserved: &reserved,
             culprit: &culprit,
         };

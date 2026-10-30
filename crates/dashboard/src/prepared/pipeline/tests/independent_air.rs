@@ -526,8 +526,8 @@ fn air_ledger_prepared_on_its_own_refuses_where_hourly_preparation_does() {
                 &actual[&(independent::coverage_section("air_ledger", 1), 0)],
             )
             .unwrap();
-            assert_eq!(page.refused.0["air_ledger"].hour, 105, "{mode}");
-            assert_eq!(page.refused.0["air_ledger"].error, refusal.error, "{mode}");
+            assert_eq!(page.refused["air_ledger"].hour, 105, "{mode}");
+            assert_eq!(page.refused["air_ledger"].error, refusal.error, "{mode}");
             let params = serde_json::json!({"branchId": "1", "family": "airLosses"});
             let error = query(&source, "military-air-ledger", params).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{mode}");

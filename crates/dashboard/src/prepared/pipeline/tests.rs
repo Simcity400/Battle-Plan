@@ -53,6 +53,7 @@ mod forward_windows;
 mod parallel_flush;
 mod prepass_parity;
 mod production_scans;
+mod publication_gates;
 mod reply_gates;
 mod serialization_order;
 mod map_export;

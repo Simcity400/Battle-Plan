@@ -1,6 +1,7 @@
 //! The backend preparing each family, checked against the registry once, and
 //! everything that follows from it: what the hourly walk observes, what each
-//! product waits for and refuses with, and which writer publishes a section.
+//! product waits for and refuses with, which writer publishes a section, and
+//! the version stamp a family's publications are prepared under.
 
 use super::registry::{self, Descriptor, FamilyId, Runner};
 use replay_data::rows::TableId;
@@ -281,6 +282,58 @@ impl Plan {
             .filter(|suppliers| suppliers.iter().any(|id| self.registered(id.name())))
     }
 
+    /// `name`'s version stamp: its own version, and those of the families
+    /// whose same-hour state it observes or reads privately, through theirs,
+    /// under the layout every family shares. A store keeps a family's
+    /// publications only under its stamp; None for a family the plan lacks.
+    pub(crate) fn stamp(&self, name: &str) -> Option<u64> {
+        let mut hash = blake3::Hasher::new();
+        hash.update(&crate::prepared::coverage::SCHEMA.to_le_bytes());
+        let mut seen = vec![self.family(name)?.id];
+        let mut at = 0;
+        while let Some(&id) = seen.get(at) {
+            at += 1;
+            let family = self.family(id.name())?;
+            hash.update(id.name().as_bytes());
+            hash.update(&[0]);
+            hash.update(&family.version.to_le_bytes());
+            for supplier in &self.families {
+                let supplies = supplier.observers.contains(&id)
+                    || supplier
+                        .private
+                        .is_some_and(|read| read.readers.contains(&id));
+                if supplies && !seen.contains(&supplier.id) {
+                    seen.push(supplier.id);
+                }
+            }
+        }
+        Some(digest(&hash))
+    }
+
+    /// The hourly walk's stamp: that of every family it prepares and the
+    /// version of every job it runs. They share its cursor and branch state,
+    /// so a change of any prepares them all again.
+    pub(crate) fn walk_stamp(&self) -> u64 {
+        let mut hash = blake3::Hasher::new();
+        hash.update(&crate::prepared::coverage::SCHEMA.to_le_bytes());
+        for family in &self.families {
+            if self.backend(family.id.name()) == Some(Backend::Walk)
+                && let Some(stamp) = self.stamp(family.id.name())
+            {
+                hash.update(family.id.name().as_bytes());
+                hash.update(&stamp.to_le_bytes());
+            }
+        }
+        for job in registry::JOBS
+            .iter()
+            .filter(|job| job.runner == Runner::Walk)
+        {
+            hash.update(job.name.as_bytes());
+            hash.update(&job.version.to_le_bytes());
+        }
+        digest(&hash)
+    }
+
     /// The families prepared on their own, in name order.
     pub(crate) fn names(&self) -> Vec<&'static str> {
         let mut names: Vec<_> = self.own.iter().map(|id| id.name()).collect();
@@ -327,6 +380,9 @@ impl Plan {
             return Some(Owner::Walk);
         }
         if let Some(name) = registry::coverage_owner(section) {
+            return self.publisher(name);
+        }
+        if let Some((name, _)) = dashboard_base::prepared::roots::owner(section) {
             return self.publisher(name);
         }
         if let Some(column) = dashboard_base::prepared::facts::column(section) {
@@ -392,6 +448,12 @@ impl Plan {
             )),
         })
     }
+}
+
+fn digest(hash: &blake3::Hasher) -> u64 {
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..8]);
+    u64::from_le_bytes(bytes)
 }
 
 static ROWS: LazyLock<Plan> =

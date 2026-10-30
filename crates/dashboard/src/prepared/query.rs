@@ -7,6 +7,8 @@ mod profile_tests;
 pub(crate) use dashboard_base::prepared::query::progressive;
 
 #[cfg(test)]
+mod admission_tests;
+#[cfg(test)]
 mod factions_tests;
 #[cfg(test)]
 mod forces_tests;
@@ -21,9 +23,13 @@ use crate::{
     products::{ContentOptions, Product},
     transport::{MAX_REPLY_BYTES, ProductRequest, bounded_json},
 };
+use dashboard_base::prepared::gates;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io, sync::atomic::AtomicBool};
+use std::{
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -89,6 +95,10 @@ struct Reply<'a> {
     /// has elapsed, or immediately when every gate completes.
     #[serde(skip_serializing_if = "Option::is_none")]
     gate: Option<Vec<&'static str>>,
+    /// The requested hours the families it reads will not answer, and why
+    /// (`PreparedHole`): never pending, never shown as values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holes: Option<&'a [super::coverage::Hole]>,
     /// Written after the rest, as the answer's text ([`served::Served::write`]).
     data: (),
 }
@@ -98,6 +108,8 @@ struct CachedQuery {
     /// Whether `data` is pending or partial ([`waits`]).
     waits: bool,
     short: std::collections::BTreeSet<&'static str>,
+    /// The holes the gates it read found in the hours it answers.
+    holes: Vec<super::coverage::Hole>,
     summaries: super::series::SummaryCache,
     /// What computing `data` drew in the recording's style because the source's visual mods
     /// could not supply it, named on every reply served from it.
@@ -166,7 +178,7 @@ fn stored_answer(
     source: &Source,
     request: &ProductRequest,
     content: Option<&ContentOptions>,
-    store: &store::Store,
+    published: &gates::Published,
     key: &store::SourceKey,
     publication: &str,
 ) -> io::Result<Option<crate::reply_cache::Entry>> {
@@ -187,7 +199,7 @@ fn stored_answer(
     });
     let mut pages = Vec::new();
     for branch in branches {
-        pages.extend(super::pipeline::published_pages(store, key, branch)?);
+        pages.extend(super::pipeline::published_pages(published, branch)?);
     }
     let executable = engine_executable::executable_tables::is_initialized().then(|| {
         let identity = engine_executable::executable_tables::get().identity();
@@ -290,13 +302,14 @@ struct AllCareers(
 /// of the leaders' own family: the identities a selection reads are applied as it is answered.
 fn all_careers(
     source: &Source,
+    published: &gates::Published,
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
     branch_id: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<std::sync::Arc<Option<crate::products::unit_leaders::prepared::Careers>>> {
-    let pages = super::pipeline::gate_pages(store, key, branch, "unit-leaders")?;
+    let pages = super::pipeline::gate_pages(published, branch, "unit-leaders")?;
     let state = source.state::<AllCareers>();
     // Held while they are read, so the leaders' widgets asking at once read them once.
     let mut kept = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -441,6 +454,330 @@ fn series_coverage(product: &str, params: &Value) -> io::Result<(Option<i32>, bo
         },
         _ => unreachable!("only explicit series products reach this helper"),
     }
+}
+
+/// What a product request asks of its branch, as its request type names its hours.
+#[derive(Clone, Copy, Debug)]
+enum Hours {
+    /// Every hour of the branch: it names none, or its readers read history past the hours it
+    /// names, or bound their own within it.
+    Branch,
+    /// One hour: its own, or the last of the window it names.
+    At(i32),
+    /// The recording block window at this index ([`Source::block_windows`]).
+    Block(usize),
+    /// The espionage log's daily transport window at this index.
+    Day(usize),
+    /// The hours through the field `to` names (the branch's end while the request names none),
+    /// none of which it asks from the hours the fields `before` name, when it names them.
+    Range {
+        before: &'static [&'static str],
+        to: &'static str,
+    },
+    /// State reads, each naming its hour.
+    Reads,
+}
+
+impl Hours {
+    /// What `request` asks, as its product's request type names its hours. An hour it names
+    /// malformed asks every hour, and its product refuses it as before. Every product has its
+    /// own entry: one without is no prepared query.
+    fn of(request: &ProductRequest) -> io::Result<Self> {
+        let params = &request.params;
+        let named = |field: &str| params.get(field).is_some_and(|value| !value.is_null());
+        let view = |view: &str| params.get("view").and_then(Value::as_str) == Some(view);
+        let hour = |field: &str| {
+            params
+                .get(field)
+                .and_then(Value::as_i64)
+                .and_then(|hour| i32::try_from(hour).ok())
+                .map_or(Self::Branch, Self::At)
+        };
+        let index = |field: &str| {
+            params
+                .get(field)
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+        };
+        let range = |before: &'static [&'static str], to: &'static str| Self::Range { before, to };
+        Ok(match request.product.as_str() {
+            "series-state" => Self::Reads,
+            "series-summary" | "events-page" | "events-clusters" => range(&["from"], "to"),
+            "series-next-change" => range(&["firstHour", "from"], "lastHour"),
+            "event-feed"
+            | "event-choices"
+            | "decisions"
+            | "division-log-totals"
+            | "decryption"
+            | "operative-placements"
+            | "agency-comparison"
+            | "operatives-roster" => range(&["firstHour"], "lastHour"),
+            "equipment-stockpile" if !named("navigation") => range(&["from"], "to"),
+            "politics-ledger" if !named("navigation") && !named("marks") && !named("within") => {
+                range(&["from"], "hour")
+            }
+            "idea-history" if named("through") => range(&["hour"], "through"),
+            "naval-losses" if named("hour") => hour("hour"),
+            "air-aces" if view("roster") => hour("hour"),
+            "diplomacy-state" if view("opinions") => hour("hour"),
+            "unit-leaders" if view("leaderboard") => hour("hour"),
+            "focus-hour" | "focus-unavailable" | "focus-order-page" | "production-select"
+            | "ships-sunk" | "idea-history" => hour("hour"),
+            "naval-losses" | "casualty-breakdown" | "casualty-pairs" | "occupied-states" => {
+                index("window").map_or(Self::Branch, Self::Block)
+            }
+            "espionage-log" => index("window").map_or(Self::Branch, Self::Day),
+            "production-line-detail" => params
+                .get("window")
+                .and_then(Value::as_i64)
+                .and_then(|window| window.checked_add(1))
+                .and_then(|window| {
+                    window.checked_mul(i64::from(crate::products::production_lines::DETAIL_HOURS))
+                })
+                .and_then(|hour| i32::try_from(hour - 1).ok())
+                .map_or(Self::Branch, Self::At),
+            // Histories, manifests, catalogues and views of the whole branch; views whose
+            // readers read history past the hour they name (careers and choices, special
+            // projects' episodes, ledger navigation); and products whose readers bound their own
+            // hours within it: battle and construction windows, cumulative spending a later hour
+            // can revise.
+            dashboard_base::products::country_styles::FACTS_PRODUCT
+            | "production-lines"
+            | "production-line-breakdown"
+            | "diplomacy-state"
+            | "party-history"
+            | "fuel-branches"
+            | "market-history"
+            | "market-ledger"
+            | "lend-lease-balance"
+            | "production-catalogue"
+            | "convoy-health"
+            | "civil-wars"
+            | "politics-state-history"
+            | "politics-ledger"
+            | "scoreboard"
+            | "equipment-stockpile"
+            | "equipment-losses"
+            | "land-battles"
+            | "land-battles-manifest"
+            | "land-battles-ranking"
+            | "land-battle-course"
+            | "naval-battles"
+            | "naval-battles-manifest"
+            | "naval-battles-ranking"
+            | "naval-battle-details"
+            | "division-log"
+            | "division-log-manifest"
+            | "ships-sunk-manifest"
+            | "ships-sunk-battle-titles"
+            | "volunteers-expeditionaries"
+            | "army-size"
+            | "supply-health"
+            | "land-owners"
+            | "country-identities"
+            | "air-missions"
+            | "air-statistics"
+            | "regional-weather"
+            | "minefields"
+            | "naval-supremacy"
+            | "doctrine-mastery"
+            | "occupation-reserve-manpower"
+            | "intel-network-coverage"
+            | "naval-repairs"
+            | "naval-refits"
+            | "division-equipment-history"
+            | "air-superiority"
+            | "raids"
+            | "air-aces"
+            | "air-ace-portraits"
+            | "military-air-ledger"
+            | "construction-log"
+            | "construction-log-manifest"
+            | "construction-spending"
+            | "resource-balance"
+            | "trade-flows"
+            | "production-spending"
+            | "dockyard-spending"
+            | "military-factory-spending"
+            | "wars"
+            | "subjects"
+            | "occupied-states-manifest"
+            | "unit-leaders"
+            | "faction-state"
+            | "special-projects"
+            | "country-groups"
+            | "focus-completions"
+            | "focus-static-text" => Self::Branch,
+            product => return Err(crate::invalid(format!("Unknown prepared query: {product}"))),
+        })
+    }
+
+    /// The hour or range its window index names on `branch`, the branch the request names.
+    fn resolve(self, source: &Source, branch: Option<u64>) -> Self {
+        let windows = branch.map_or(&[][..], |branch| source.block_windows(branch));
+        let window = match self {
+            Self::Block(index) => windows.get(index).copied(),
+            Self::Day(index) => match (windows.first(), windows.last()) {
+                (Some(first), Some(last)) => crate::products::espionage_log::day_window(
+                    first.first_hour,
+                    last.last_hour,
+                    index,
+                ),
+                _ => None,
+            },
+            hours => return hours,
+        };
+        window.map_or(Self::Branch, |window| Self::At(window.last_hour))
+    }
+
+    /// The last hour it asks in `params`; None for every hour of the branch.
+    fn through(self, params: &Value) -> Option<i32> {
+        let parse = |value: &Value| {
+            value
+                .as_f64()
+                .map(f64::ceil)
+                .filter(|hour| (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(hour))
+                .map(|hour| hour as i32)
+        };
+        match self {
+            Self::Branch | Self::Block(_) | Self::Day(_) => None,
+            Self::At(hour) => Some(hour),
+            Self::Range { to, .. } => params.get(to).and_then(parse),
+            Self::Reads => params
+                .get("reads")?
+                .as_array()?
+                .iter()
+                .map(|read| read.get("hour").and_then(parse))
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .max(),
+        }
+    }
+
+    /// `params` asking only the hours before `hole`, the first hole its gate leaves in them:
+    /// nothing it asks from the hole on is answered, since those values need observations the
+    /// hole lacks. Only fields the request names are rewritten: a range ends before the hole and
+    /// a state keeps only its reads before it, while hours it does not name end where its
+    /// coverage, cut before the hole, ends. None when what it asks lies from the hole on.
+    fn before(self, params: &Value, hole: i32) -> io::Result<Option<Value>> {
+        let Some(last) = hole.checked_sub(1) else {
+            return Ok(None);
+        };
+        let invalid = || crate::invalid("Invalid prepared query hours");
+        let after = |value: Option<&Value>| {
+            value
+                .and_then(Value::as_f64)
+                .map(|hour| hour.ceil() > f64::from(last))
+        };
+        let mut params = params.clone();
+        match self {
+            Self::Branch | Self::Block(_) | Self::Day(_) => Ok(Some(params)),
+            Self::At(hour) => Ok((hour <= last).then_some(params)),
+            Self::Range { before, to } => {
+                if before
+                    .iter()
+                    .any(|field| after(params.get(*field)) == Some(true))
+                {
+                    return Ok(None);
+                }
+                if after(params.get(to)) == Some(true) {
+                    params
+                        .as_object_mut()
+                        .ok_or_else(invalid)?
+                        .insert(to.to_owned(), Value::from(last));
+                }
+                Ok(Some(params))
+            }
+            Self::Reads => {
+                let reads = params
+                    .get_mut("reads")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(invalid)?;
+                reads.retain(|read| {
+                    read.get("hour")
+                        .and_then(Value::as_f64)
+                        .is_some_and(|hour| hour <= f64::from(last))
+                });
+                Ok((!reads.is_empty()).then_some(params))
+            }
+        }
+    }
+}
+
+/// A request its entry point admitted ([`admit`]): the only way to its product's readers.
+struct Admitted<'a> {
+    request: &'a ProductRequest,
+    /// What its gate answers for its hours.
+    ranges: super::coverage::Ranges,
+}
+
+/// The one way a query reaches its product's readers. The hours its request names ([`Hours`])
+/// answer with the refusal of a family it reads when they reach that refusal; else they are asked
+/// of its gate, cut before the gate's first hole there and declared, so that every reader answers
+/// for them alone ([`super::coverage::Entry::declare`]).
+fn admit(
+    source: &Source,
+    request: &ProductRequest,
+    content: Option<&ContentOptions>,
+    branch: Option<u64>,
+    name: &str,
+    published: &gates::Published,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    let entry = super::pipeline::install_gates();
+    let hours = Hours::of(request)?.resolve(source, branch);
+    let through = hours.through(&request.params);
+    let Some(branch) = branch else {
+        let admitted = Admitted {
+            request,
+            ranges: super::coverage::Ranges::default(),
+        };
+        let declared = super::coverage::Declared {
+            through,
+            before: None,
+        };
+        return entry.declare(declared, || {
+            query_data(source, &admitted, content, cancelled)
+        });
+    };
+    if let Some((hour, error)) = super::pipeline::refusal_from(published, branch, name)?
+        && through.is_none_or(|through| through >= hour)
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, error));
+    }
+    // A series request waits for its family kind's coverage; factory faction totals wait only for
+    // the families they read.
+    let gate = if name == "faction-totals" {
+        crate::products::faction_totals::gate(&request.params)
+    } else {
+        name
+    };
+    let ranges = match super::coverage::ranges(source, content, branch, gate, through, cancelled) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+            super::coverage::Ranges::default()
+        }
+        other => other?,
+    };
+    let before = ranges.holes.first().map(|hole| hole.first_hour);
+    let clipped;
+    let request = match before {
+        Some(hole) => match hours.before(&request.params, hole)? {
+            Some(params) => {
+                clipped = ProductRequest {
+                    params,
+                    ..request.clone()
+                };
+                &clipped
+            }
+            None => return Ok(Value::Null),
+        },
+        None => request,
+    };
+    let admitted = Admitted { request, ranges };
+    let declared = super::coverage::Declared { through, before };
+    entry.declare(declared, || {
+        query_data(source, &admitted, content, cancelled)
+    })
 }
 
 /// A casualty state request whose reads past `prefix` are read at its last
@@ -630,10 +967,11 @@ fn economy(
 
 fn query_data(
     source: &Source,
-    request: &ProductRequest,
+    admitted: &Admitted<'_>,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
+    let request = admitted.request;
     let (store, key) = super::files(source, content)?;
     dashboard_base::prepared::query::observations::bind(source, &key);
     Ok(match request.product.as_str() {
@@ -1833,8 +2171,16 @@ fn query_data(
                 return Ok(Value::Null);
             };
             if params.view != crate::products::unit_leaders::LeaderView::Choices {
-                let careers =
-                    all_careers(source, &store, &key, branch, &params.branch_id, cancelled)?;
+                let published = pinned(&store, &key)?;
+                let careers = all_careers(
+                    source,
+                    &published,
+                    &store,
+                    &key,
+                    branch,
+                    &params.branch_id,
+                    cancelled,
+                )?;
                 let mut reply = (*careers)
                     .as_ref()
                     .map(|careers| careers.answer(&params, history.as_deref(), hour))
@@ -1848,18 +2194,17 @@ fn query_data(
             }
             // A roster's choices are kept until the leaders or the countries' identities publish
             // again.
-            let mut pages = super::pipeline::query_pages(&store, &key, branch, "unit-leaders")?;
+            let published = pinned(&store, &key)?;
+            let mut pages = super::pipeline::query_pages(&published, branch, "unit-leaders")?;
             pages.extend(super::pipeline::query_pages(
-                &store,
-                &key,
+                &published,
                 branch,
                 "country-identities",
             )?);
-            let identities = format!("country-identities-{branch}");
-            let identity = store
-                .read(&key, &identities, 0)?
-                .map(|file| file.id().cache_key());
-            pages.push((identities, identity));
+            pages.push((
+                gates::identities_section(branch),
+                published.identities(branch),
+            ));
             let careers = dashboard_base::prepared::query::observations::scope(
                 source,
                 "unit-leaders:careers",
@@ -1938,10 +2283,16 @@ fn query_data(
             let context = crate::products::LoadContext {
                 content: content.cloned(),
             };
+            // Their history ends where the admitted prefix does, before any hole its pages go on
+            // after; nothing of it is admitted without one.
+            let through = prefix
+                .as_ref()
+                .map_or(i32::MIN, |prefix| prefix.coverage.last_hour);
             let mut reply = crate::products::special_projects::prepared::query(
                 request.params.clone(),
                 &store,
                 &key,
+                through,
                 cancelled,
             )?;
             if let Some(hour) = params.hour
@@ -2346,6 +2697,8 @@ fn query_data(
                 Some("faction-totals") => crate::products::faction_totals::gate(&request.params),
                 _ => family.unwrap_or(product),
             };
+            let (hour, complete) = series_coverage(product, &request.params)?;
+            let accepted = admitted.ranges.coverage.clone();
             if family == Some("game-score") && product == "series-state" {
                 return crate::products::game_score::prepared::state(
                     source,
@@ -2405,7 +2758,6 @@ fn query_data(
                 );
             }
             if family == Some("research") && product == "events-page" {
-                let (hour, _) = series_coverage(product, &request.params)?;
                 let prefix = super::prefix::read_or_empty(
                     source, content, "research", branch, hour, cancelled,
                 )?;
@@ -2423,12 +2775,6 @@ fn query_data(
                 prefix.mark(&mut data)?;
                 return Ok(data);
             }
-            let (hour, complete) = series_coverage(product, &request.params)?;
-            let accepted =
-                match super::pipeline::product_coverage(source, content, branch, gate, cancelled) {
-                    Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-                    other => other?,
-                };
             // Banked experience is a daily read held until the next: its
             // sampler carries its own scan from hour to hour, and navigation
             // samples a long tail at each block's first read. Gains and changes need
@@ -3141,12 +3487,59 @@ pub fn query(
     if source.key().revision != request.revision {
         return Err(crate::invalid("Prepared query recording revision changed"));
     }
-    // The whole query reads one verified manifest: the source key is checked
-    // once, and ranges in one pack share a handle.
     let (store, key) = super::files(source, content)?;
-    let _scope = store.scope(&key)?;
-    // A query routes by its series family kind, or else by its product key.
-    let name = match request.product.as_str() {
+    let name = route(request);
+    // The whole query reads one publication: its gates, decoded when it was
+    // published, and its pages through that publication alone. A query whose
+    // files a later publication removed starts again on that one.
+    let mut tried: Option<Arc<gates::Published>> = None;
+    loop {
+        let current = gates::current(&store, &key);
+        let Some(published) = current.filter(|current| {
+            tried
+                .as_ref()
+                .is_none_or(|tried| !Arc::ptr_eq(tried, current))
+        }) else {
+            return pending(request, name, cancelled);
+        };
+        // Every read of the store under the query's key reads this publication alone; a store
+        // publishing nothing to the key is pinned as an empty one.
+        let scope = published.scope();
+        let held = gates::pin(&published);
+        #[cfg(test)]
+        ON_PINNED.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
+        let answer = answer(
+            source,
+            request,
+            content,
+            cancelled,
+            (Arc::clone(&store), key.clone()),
+            Arc::clone(&published),
+            name,
+        );
+        // Whatever its readers made of a file they missed, it is no answer of one publication.
+        if !scope.superseded() {
+            return answer;
+        }
+        drop((held, scope));
+        tried = Some(published);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Run each time a query has pinned its publication, before it answers from it.
+    pub(crate) static ON_PINNED: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What a query routes by: its series family kind, or else its product key.
+fn route(request: &ProductRequest) -> &str {
+    match request.product.as_str() {
         "series-state" | "series-summary" | "series-next-change" | "events-page"
         | "events-clusters" => request
             .params
@@ -3155,7 +3548,41 @@ pub fn query(
             .and_then(Value::as_str)
             .unwrap_or_default(),
         product => product,
-    };
+    }
+}
+
+/// The reply of a query whose store's publication could not be decoded: pending, waiting for what
+/// its product waits for, with no reader run.
+fn pending(request: &ProductRequest, name: &str, cancelled: &AtomicBool) -> io::Result<String> {
+    bounded_json(
+        &Reply {
+            source_id: &request.source_id,
+            revision: &request.revision,
+            product: &request.product,
+            gate: Some(super::pipeline::gate(name)),
+            holes: None,
+            data: (),
+        },
+        cancelled,
+    )
+    .map_err(crate::invalid)
+}
+
+/// The gates the query this thread runs pinned.
+fn pinned(store: &store::Store, key: &store::SourceKey) -> io::Result<Arc<gates::Published>> {
+    gates::current(store, key).ok_or_else(|| crate::invalid("Prepared gates are read in a query"))
+}
+
+/// [`query`]'s reply from `published`, the publication pinned on this thread.
+fn answer(
+    source: &Source,
+    request: &ProductRequest,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+    (store, key): (Arc<store::Store>, store::SourceKey),
+    published: Arc<gates::Published>,
+    name: &str,
+) -> io::Result<String> {
     let _cpu = matches!(request.product.as_str(), "series-summary" | "series-state").then(|| {
         replay_frame::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
     });
@@ -3165,9 +3592,6 @@ pub fn query(
         .or_else(|| request.params.get("selection")?.get("branchId"))
         .and_then(Value::as_str)
         .and_then(|id| branch(source, id).ok());
-    if let Some(branch) = branch {
-        super::pipeline::refusal(source, content, branch, name, cancelled)?;
-    }
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
     let read = |previous: Option<std::sync::Arc<CachedQuery>>| -> io::Result<CachedQuery> {
@@ -3178,17 +3602,24 @@ pub fn query(
         // The answer names its own refusals, with those the shared loads it reused noted, never
         // the session's: the same whichever answers ran before it.
         let mut noted = dashboard_text::catalogue::OwnRefusals::default();
-        let (data, short) = dashboard_text::catalogue::own_refusals(&mut noted, || {
+        let ((data, holes), short) = dashboard_text::catalogue::own_refusals(&mut noted, || {
             #[cfg(test)]
             if let (Some(note), Some(content)) = (COMPUTING.with(std::cell::Cell::get), content) {
                 note(source, content);
             }
-            super::coverage::waiting(|| query_data(source, request, content, cancelled))
+            super::coverage::waiting(|| {
+                super::coverage::with_holes(|| {
+                    admit(
+                        source, request, content, branch, name, &published, cancelled,
+                    )
+                })
+            })
         });
         let fallbacks = noted.fallbacks().clone();
         let data = data?;
         Ok(CachedQuery {
             waits: waits(&data),
+            holes,
             data: served::Answer::new(
                 &data,
                 content_warning_paths(&request.product, name),
@@ -3218,7 +3649,7 @@ pub fn query(
                     })
                     .is_some_and(|catalogue| catalogue.reports_settled(readers))
         };
-        let stored = stored_answer(source, request, content, &store, &key, &publication)?;
+        let stored = stored_answer(source, request, content, &published, &key, &publication)?;
         // Served whatever the session read outside the recorded coverage: a kept answer read
         // none, and those reads join its reply as it is served, as they join a fresh one's.
         if let Some((kept, stored)) = stored
@@ -3232,6 +3663,7 @@ pub fn query(
                 // Only a complete answer is kept.
                 waits: false,
                 short: Default::default(),
+                holes: Vec::new(),
                 summaries: Default::default(),
                 fallbacks: stored.fallbacks,
                 session: false,
@@ -3245,6 +3677,7 @@ pub fn query(
         // recorded coverage, computing may have read those unverified bytes, so nothing is kept.
         if let Some(entry) = stored
             && answer.short.is_empty()
+            && answer.holes.is_empty()
             && !answer.waits
             && !answer.session
             && settled(&answer.readers)
@@ -3268,27 +3701,21 @@ pub fn query(
         };
         let publication = {
             let _phase = replay_frame::cpu::scope_phase("query:publication");
-            let mut pages = super::pipeline::query_pages(&store, &key, branch, name)?;
+            let mut pages = super::pipeline::query_pages(&published, branch, name)?;
             if supplier != name {
-                pages.extend(super::pipeline::query_pages(
-                    &store, &key, branch, supplier,
-                )?);
+                pages.extend(super::pipeline::query_pages(&published, branch, supplier)?);
             }
             // Identity pages and their coverage can advance independently of the
             // numeric supplier. The supplier's unchanged gate alone is not a proof
             // that naming and exactness are unchanged.
             pages.extend(super::pipeline::query_pages(
-                &store,
-                &key,
+                &published,
                 branch,
                 "country-identities",
             )?);
-            let identities = format!("country-identities-{branch}");
             pages.push((
-                identities.clone(),
-                store
-                    .read(&key, &identities, 0)?
-                    .map(|file| file.id().cache_key()),
+                gates::identities_section(branch),
+                published.identities(branch),
             ));
             (pages, reply_presentation(content))
         };
@@ -3304,6 +3731,7 @@ pub fn query(
                     bytes.heap(&reply.short);
                     bytes.heap(&reply.fallbacks);
                     std::mem::size_of::<CachedQuery>()
+                        + reply.holes.capacity() * std::mem::size_of::<super::coverage::Hole>()
                         + reply.data.bytes()
                         + bytes.total() as usize
                         + reply.summaries.bytes()
@@ -3333,6 +3761,7 @@ pub fn query(
             revision: &request.revision,
             product: &request.product,
             gate,
+            holes: (!answer.holes.is_empty()).then_some(answer.holes.as_slice()),
             data: (),
         },
         cancelled,

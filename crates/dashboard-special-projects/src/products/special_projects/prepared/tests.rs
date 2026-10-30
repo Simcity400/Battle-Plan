@@ -39,7 +39,7 @@ fn compare(
     context: &LoadContext,
 ) -> SpecialProjectsReply {
     let flag = AtomicBool::new(false);
-    let mut actual = complete_reply(&fixture.store, &fixture.key, params, &flag)
+    let mut actual = complete_reply(&fixture.store, &fixture.key, params, i32::MAX, &flag)
         .unwrap()
         .unwrap();
     // Both draw the art preparation kept as operands, as the request shows it.
@@ -94,7 +94,7 @@ fn consecutive_project_progress_changes_match_hourly_reply_bytes() {
             .collect::<Vec<_>>(),
         [(100, 100, 1), (101, 101, 71)]
     );
-    let actual = complete_reply(&fixture.store, &fixture.key, &params, &flag)
+    let actual = complete_reply(&fixture.store, &fixture.key, &params, i32::MAX, &flag)
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -923,6 +923,7 @@ fn compare_completions(fixture: &Fixture, source: &Source, context: &LoadContext
         &fixture.store,
         &fixture.key,
         &params("opaque-1"),
+        i32::MAX,
         &AtomicBool::new(false),
     )
     .unwrap()
@@ -2245,9 +2246,15 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
         )
         .unwrap();
     publish(&fixture, &mut prepared);
-    let mut actual = complete_reply(&fixture.store, &fixture.key, &params("opaque-1"), &flag)
-        .unwrap()
-        .unwrap();
+    let mut actual = complete_reply(
+        &fixture.store,
+        &fixture.key,
+        &params("opaque-1"),
+        i32::MAX,
+        &flag,
+    )
+    .unwrap()
+    .unwrap();
     // Both draw the art preparation kept as operands, as the request shows it.
     crate::products::special_projects::present_reply(
         &appended,

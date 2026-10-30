@@ -48,10 +48,12 @@ pub fn progressive_query(
     Autonomy::validate(&params).map_err(dashboard_core::invalid)?;
     let requested: Requested = serde_json::from_value(value.clone())?;
     let branch = params.branch_id.parse().expect("validated autonomy branch");
-    let accepted = match dashboard_base::prepared::coverage::coverage(
+    // Its family's coverage for the hours the request names, ending before its first hole.
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
         source,
         context.content.as_ref(),
         branch,
+        "autonomy",
         cancelled,
     ) {
         Err(error) if error.kind() == io::ErrorKind::InvalidData => None,

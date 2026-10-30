@@ -531,7 +531,6 @@ fn superiority_refusals(source: &Source, own: bool) -> BTreeMap<u64, Option<Refu
                         serde_json::from_reader::<_, CoveragePage>(std::io::BufReader::new(file))
                             .unwrap()
                             .refused
-                            .0
                             .get("air_superiority")
                             .cloned()
                     })

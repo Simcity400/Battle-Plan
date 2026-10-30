@@ -1,12 +1,14 @@
-//! The prepared store's shared pages: published coverage, binary series and
-//! event batches, frame changes, group sums, the hours a family prepared on
-//! its own keeps from a block, progressive queries and replies answered from
-//! a prepared prefix. The dashboard's pipeline writes them; products read them.
+//! The prepared store's shared pages: published coverage and the gates decoded
+//! from it, each family's publication roots and ledgers, binary series and event batches, frame
+//! changes, group sums, the hours a family prepared on its own keeps from a
+//! block, progressive queries and replies answered from a prepared prefix. The
+//! dashboard's pipeline writes them; products read them.
 
 pub mod coverage;
 pub mod entries;
 pub mod facts;
 pub mod frame_changes;
+pub mod gates;
 pub mod group_sum;
 pub mod kept;
 #[cfg(any(test, feature = "test-support"))]
@@ -15,6 +17,7 @@ pub mod pages;
 pub mod prefix;
 pub mod prepass;
 pub use job_priority as priority;
+pub mod roots;
 pub mod series;
 pub mod state_census;
 mod store;

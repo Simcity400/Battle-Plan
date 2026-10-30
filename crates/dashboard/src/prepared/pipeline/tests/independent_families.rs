@@ -715,7 +715,7 @@ fn a_family_that_fails_or_refuses_leaves_the_others_coverage_and_pages_committed
             assert_eq!(page(&actual, "synthetic-alpha-1"), vec![100, 101, 102, 103]);
         } else {
             result.unwrap();
-            assert_eq!(coverage.refused.0["alpha"].hour, 105, "{label}");
+            assert_eq!(coverage.refused["alpha"].hour, 105, "{label}");
             assert!(coverage.coverage.complete, "{label}");
             // A refused branch's pages are not saved again.
             assert_eq!(page(&actual, "synthetic-alpha-1"), vec![100, 101, 102, 103]);

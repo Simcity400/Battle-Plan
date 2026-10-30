@@ -558,9 +558,9 @@ fn refusals(family: Windowed) {
             let page: CoveragePage =
                 serde_json::from_slice(&own[&(independent::coverage_section(family.name, 1), 0)])
                     .unwrap();
-            assert_eq!(page.refused.0[family.name].hour, hour, "{label}");
-            assert_eq!(page.refused.0[family.name].hour, expected.hour, "{label}");
-            assert_eq!(page.refused.0[family.name].error, expected.error, "{label}");
+            assert_eq!(page.refused[family.name].hour, hour, "{label}");
+            assert_eq!(page.refused[family.name].hour, expected.hour, "{label}");
+            assert_eq!(page.refused[family.name].error, expected.error, "{label}");
             assert!(page.coverage.complete, "{label}");
             let flag = AtomicBool::new(false);
             let gated = if family.name == "divisions" {

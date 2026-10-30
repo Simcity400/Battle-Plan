@@ -81,6 +81,50 @@ pub fn is_writer_busy(error: &io::Error) -> bool {
             .get_ref()
             .is_some_and(|inner| inner.is::<WriterBusy>())
 }
+
+#[derive(Debug)]
+struct Superseded;
+
+impl std::fmt::Display for Superseded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a later publication replaced the one this read is pinned to")
+    }
+}
+
+impl std::error::Error for Superseded {}
+
+fn superseded() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, Superseded)
+}
+
+/// Whether a read pinned to one publication ([`Snapshot::scope`]) failed because a later
+/// publication removed a file it needs: the reader starts again on the current one.
+pub fn is_superseded(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<Superseded>())
+}
+
+/// What is told of each publication and Clear of any store in this process: the store's
+/// folder, and the publication now current there, as it was committed and under the key it was
+/// committed with, or why it could not be read back; None after a Clear.
+pub type Published = fn(&Path, Option<io::Result<Snapshot>>);
+
+static PUBLISHED: std::sync::OnceLock<Published> = std::sync::OnceLock::new();
+
+/// Tells `hook` of every later publication and Clear in this process, in the thread that made
+/// it, once its manifest is in place and before any file it lists can be removed. The first
+/// hook installed stays.
+pub fn on_publication(hook: Published) {
+    let _ = PUBLISHED.set(hook);
+}
+
+fn published(directory: &Path, publication: impl FnOnce() -> Option<io::Result<Snapshot>>) {
+    if let Some(hook) = PUBLISHED.get() {
+        hook(directory, publication());
+    }
+}
 /// The manifest is a small root naming each section's runs of entries in
 /// append-only entry logs, with the section names in a names file. Manifests
 /// of an older layout (one flat file of every entry, or one file per range)
@@ -382,6 +426,11 @@ impl Store {
         &self.directory
     }
 
+    /// The folder this store keeps its files in, which identifies it.
+    pub fn folder(&self) -> &Path {
+        &self.directory
+    }
+
     pub fn local(campaign: Uuid) -> io::Result<Self> {
         Ok(Self {
             directory: local_root()?.join(campaign.to_string()),
@@ -408,8 +457,8 @@ impl Store {
 
     /// Reads just the manifest header, never enumerating or opening pack files.
     pub fn is_reusable(&self, key: &SourceKey) -> io::Result<bool> {
-        if self.scoped(key).is_some() {
-            return Ok(true);
+        if let Some(session) = self.scoped(key) {
+            return Ok(session.is_published());
         }
         match self.catalog()? {
             Some(catalog) => self.matches(&catalog, key),
@@ -686,7 +735,7 @@ impl Store {
     /// published one. Its reads repeat neither.
     pub fn session(&self, key: &SourceKey) -> io::Result<Option<Session>> {
         if let Some(session) = self.scoped(key) {
-            return Ok(Some(session));
+            return Ok(session.is_published().then_some(session));
         }
         let Some(catalog) = self.catalog()? else {
             return Ok(None);
@@ -694,12 +743,28 @@ impl Store {
         if !self.matches(&catalog, key)? {
             return Ok(None);
         }
-        Ok(Some(Session(Arc::new(SessionState {
-            directory: self.directory.clone(),
-            key: key.clone(),
-            catalog: Mutex::new(Arc::new(catalog)),
-            opened: Mutex::default(),
-        }))))
+        Ok(Some(Session::new(
+            self.directory.clone(),
+            key.clone(),
+            Arc::new(catalog),
+            false,
+        )))
+    }
+
+    /// The publication the manifest names now, under the key it was committed with, whichever
+    /// key asks and whatever this thread pinned; None before the first commit and after a Clear.
+    pub fn current(&self) -> io::Result<Option<Snapshot>> {
+        let Some(catalog) = self.catalog()? else {
+            return Ok(None);
+        };
+        let key = match self.source_key(&catalog) {
+            // A manifest whose source is gone is no key's, as every read of it finds.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            result => result?,
+        };
+        Ok(Some(
+            Session::new(self.directory.clone(), key, Arc::new(catalog), false).snapshot(),
+        ))
     }
 
     /// Until the guard drops, this thread's reads of `key` through any store of
@@ -708,12 +773,11 @@ impl Store {
     /// manifest for `key`, reads stay unscoped.
     pub fn scope(&self, key: &SourceKey) -> io::Result<Scope> {
         let session = self.session(key)?;
-        let installed = session.is_some();
-        if let Some(session) = session {
-            SCOPES.with(|scopes| scopes.borrow_mut().push(session));
+        if let Some(session) = &session {
+            SCOPES.with(|scopes| scopes.borrow_mut().push(session.clone()));
         }
         Ok(Scope {
-            installed,
+            session,
             _thread: std::marker::PhantomData,
         })
     }
@@ -800,6 +864,7 @@ impl Store {
                 old_count: s.count,
                 added: Vec::new(),
                 replaced: BTreeMap::new(),
+                cleared: false,
             })
             .collect();
         let source = (previous == &key).then_some(base.header.source);
@@ -822,6 +887,7 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             result => result?,
         }
+        published(&self.directory, || None);
         *self.source.lock().unwrap() = None;
         self.cleanup(None)
     }
@@ -972,9 +1038,31 @@ struct SessionState {
     key: SourceKey,
     catalog: Mutex<Arc<Catalog>>,
     opened: Mutex<Opened>,
+    /// It never moves to a later manifest: a read needing a file a later publication removed
+    /// fails as superseded ([`is_superseded`]).
+    pinned: bool,
+    /// Whether a read of it failed so.
+    superseded: AtomicBool,
 }
 
 impl Session {
+    fn new(directory: PathBuf, key: SourceKey, catalog: Arc<Catalog>, pinned: bool) -> Self {
+        Self(Arc::new(SessionState {
+            directory,
+            key,
+            catalog: Mutex::new(catalog),
+            opened: Mutex::default(),
+            pinned,
+            superseded: AtomicBool::new(false),
+        }))
+    }
+
+    /// Whether it lists a publication: a view of a store publishing nothing to its key lists
+    /// none ([`Snapshot::empty`]).
+    fn is_published(&self) -> bool {
+        !self.0.catalog.lock().unwrap().is_empty()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             session: self.clone(),
@@ -1017,6 +1105,10 @@ impl Session {
     /// Moves this session to the current manifest, when it is still bound to the session's key.
     fn advance(&self) -> io::Result<bool> {
         let state = &self.0;
+        if state.pinned {
+            state.superseded.store(true, Ordering::Relaxed);
+            return Err(superseded());
+        }
         let store = Store {
             directory: state.directory.clone(),
             source: Mutex::default(),
@@ -1052,11 +1144,74 @@ impl Session {
 }
 
 /// One immutable publication; disappearing packs fail without switching its catalogue.
+#[derive(Clone)]
 pub struct Snapshot {
     session: Session,
     catalog: Arc<Catalog>,
 }
 impl Snapshot {
+    /// What `folder` publishes to `key` while it holds no publication of `key`'s: nothing. Its
+    /// scope answers every read of `key` as a store without a manifest does, reading no file.
+    pub fn empty(folder: &Path, key: SourceKey) -> Self {
+        let folder = folder.to_owned();
+        let catalog = Arc::new(Catalog::empty(folder.clone()));
+        Session::new(folder, key, catalog, false).snapshot()
+    }
+
+    /// The publication a commit under `key` has just made `directory`'s current one.
+    fn committed(directory: &Path, key: &SourceKey) -> io::Result<Self> {
+        count!(manifest_reads);
+        let catalog = Catalog::open(&directory.join(MANIFEST))?
+            .ok_or_else(|| invalid("the manifest a commit published is missing"))?;
+        Ok(Session::new(directory.to_owned(), key.clone(), Arc::new(catalog), false).snapshot())
+    }
+
+    /// The key it publishes to: the one it was committed with.
+    pub fn key(&self) -> &SourceKey {
+        &self.session.0.key
+    }
+
+    /// The store folder it is a publication of.
+    pub fn folder(&self) -> &Path {
+        &self.session.0.directory
+    }
+
+    /// Installs this publication for this thread's reads of its key through any store of its
+    /// folder, as [`Store::scope`] does, without reading the manifest again and without ever
+    /// moving to a later one: a read needing a file a later publication removed fails as
+    /// superseded ([`is_superseded`]).
+    pub fn scope(&self) -> Scope {
+        let state = &self.session.0;
+        let pinned = Session::new(
+            state.directory.clone(),
+            state.key.clone(),
+            Arc::clone(&self.catalog),
+            true,
+        );
+        SCOPES.with(|scopes| scopes.borrow_mut().push(pinned.clone()));
+        Scope {
+            session: Some(pinned),
+            _thread: std::marker::PhantomData,
+        }
+    }
+
+    /// The identity of `section`'s range `range` in this publication, without opening its pack.
+    pub fn range_id(&self, section: &str, range: u64) -> io::Result<Option<RangeId>> {
+        match listed(&self.catalog, section, range) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(superseded()),
+            result => result,
+        }
+    }
+
+    /// The sections this publication lists, in order.
+    pub fn section_names(&self) -> impl Iterator<Item = &str> {
+        self.catalog
+            .header
+            .sections
+            .iter()
+            .map(|entry| entry.name.as_str())
+    }
+
     pub fn range_count(&self, section: &str) -> Option<u64> {
         self.catalog
             .header
@@ -1067,27 +1222,41 @@ impl Snapshot {
     }
     pub fn read(&self, section: &str, range: u64) -> io::Result<Option<Range>> {
         let state = &self.session.0;
-        Ok(lookup(
+        match lookup(
             &state.directory,
             &self.catalog,
             section,
             range,
             &mut state.opened.lock().unwrap(),
-        )?
-        .1)
+        ) {
+            Ok((_, range)) => Ok(range),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(superseded()),
+            Err(error) => Err(error),
+        }
     }
 }
 
 /// Keeps a [`Store::scope`] session installed on this thread until dropped.
 #[must_use]
 pub struct Scope {
-    installed: bool,
+    session: Option<Session>,
     _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Scope {
+    /// Whether a read through this scope needed a file a later publication removed
+    /// ([`Snapshot::scope`]): whatever its reader made of that failure, it did not read the whole
+    /// of its publication.
+    pub fn superseded(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.0.superseded.load(Ordering::Relaxed))
+    }
 }
 
 impl Drop for Scope {
     fn drop(&mut self) {
-        if self.installed {
+        if self.session.is_some() {
             SCOPES.with(|scopes| scopes.borrow_mut().pop());
         }
     }
@@ -1611,6 +1780,27 @@ fn decode_names(bytes: &[u8], count: u64) -> io::Result<Vec<String>> {
 }
 
 impl Catalog {
+    /// Lists nothing, under no source.
+    fn empty(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            header: Header {
+                source: Uuid::nil(),
+                sections: Vec::new(),
+            },
+            names: (0, 0),
+            runs: Vec::new(),
+            logs: Vec::new(),
+            packs: Vec::new(),
+            entries: Entries::Logs(Mutex::default()),
+        }
+    }
+
+    /// Whether it is [`Self::empty`]: every published source is a random one.
+    fn is_empty(&self) -> bool {
+        self.header.source.is_nil()
+    }
+
     fn open(path: &Path) -> io::Result<Option<Self>> {
         // A writer that replaced the manifest and a later writer open may
         // remove the names file between reading the root and opening it:
@@ -2125,6 +2315,8 @@ struct PendingSection {
     old_count: u64,
     added: Vec<RangeId>,
     replaced: BTreeMap<u64, RangeId>,
+    /// [`Writer::clear`] dropped its published ranges: the commit lists none of them.
+    cleared: bool,
 }
 
 impl PendingSection {
@@ -2134,6 +2326,7 @@ impl PendingSection {
             old_count: 0,
             added: Vec::new(),
             replaced: BTreeMap::new(),
+            cleared: false,
         }
     }
 
@@ -2461,6 +2654,8 @@ pub struct Writer {
     incomplete: bool,
     /// The sections it may write; its forks keep it.
     guard: Option<SectionGuard>,
+    /// Published ranges [`Writer::clear`] dropped, whose bytes leave their packs at commit.
+    dropped: Vec<RangeId>,
 }
 
 /// Each section name's position. A flat manifest may repeat a name: lookups keep the first, as readers do.
@@ -2500,6 +2695,7 @@ impl Writer {
             pins: None,
             incomplete: false,
             guard: None,
+            dropped: Vec::new(),
         }
     }
 
@@ -2511,6 +2707,63 @@ impl Writer {
 
     fn admit(&self, section: &str) -> io::Result<()> {
         self.guard.as_ref().map_or(Ok(()), |guard| guard(section))
+    }
+
+    /// The sections this transaction lists, in order, cleared ones included.
+    pub fn section_names(&self) -> impl Iterator<Item = &str> {
+        self.sections.iter().map(|section| &*section.name)
+    }
+
+    /// `section`'s range count in this transaction; None when it lists no such section.
+    /// Unlike a read, it records no dependency for adoption: count only sections you own.
+    pub fn range_count(&self, section: &str) -> io::Result<Option<u64>> {
+        self.position(section)
+            .map(|index| self.sections[index].count())
+            .transpose()
+    }
+
+    /// Drops every published range of `section`, so its next write is its range 0 and the
+    /// commit lists none of the old ones, whose bytes leave their packs. Only an ordinary
+    /// writer clears, and only a section this transaction has not changed: a stage or fork
+    /// that saw the old ranges is refused at adoption, as for any replaced range.
+    pub fn clear(&mut self, section: &str) -> io::Result<()> {
+        if self.fork.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a forked prepared writer cannot clear a section",
+            ));
+        }
+        self.admit(section)?;
+        let Some(index) = self.position(section) else {
+            return Ok(());
+        };
+        let pending = &self.sections[index];
+        if !pending.added.is_empty() || !pending.replaced.is_empty() {
+            return Err(invalid(
+                "a prepared section is cleared before its transaction writes it",
+            ));
+        }
+        let count = pending.old_count;
+        let mut dropped = Vec::with_capacity(to_usize(count)?);
+        let mut bytes = 0_u64;
+        for range in 0..count {
+            let id = self
+                .slot_id(index, range, Slot::Published)?
+                .ok_or_else(|| invalid("missing prepared range"))?;
+            bytes = bytes
+                .checked_add(id.len)
+                .ok_or_else(|| invalid("prepared byte count overflow"))?;
+            dropped.push(id);
+        }
+        self.bytes_replaced = self
+            .bytes_replaced
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("prepared byte count overflow"))?;
+        self.dropped.extend(dropped);
+        let pending = &mut self.sections[index];
+        pending.old_count = 0;
+        pending.cleared = true;
+        Ok(())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -2575,6 +2828,7 @@ impl Writer {
             pins: self.pins.clone(),
             incomplete: false,
             guard: self.guard.clone(),
+            dropped: Vec::new(),
         })
     }
 
@@ -3370,7 +3624,7 @@ impl Writer {
         let mut section_runs = Vec::with_capacity(self.sections.len());
         for (index, section) in self.sections.iter().enumerate() {
             let mut runs = match base {
-                Some(base) if index < base_sections => base.runs[index].clone(),
+                Some(base) if index < base_sections && !section.cleared => base.runs[index].clone(),
                 _ => Vec::new(),
             };
             let relocated = if scan {
@@ -3480,7 +3734,7 @@ impl Writer {
             .collect();
         // The packs this transaction lists that no fork flushed, its log and
         // its names, flushed before the root that names them.
-        let mut durable: Vec<_> = table
+        let mut syncing: Vec<_> = table
             .keys()
             .filter_map(|id| fresh.get(id))
             .filter(|shared| !shared.durable)
@@ -3502,7 +3756,7 @@ impl Writer {
                 live,
                 size: live,
             });
-            durable.push(Arc::new(file));
+            syncing.push(Arc::new(file));
             written += to_usize(live)?;
         }
         drop(log);
@@ -3529,7 +3783,7 @@ impl Writer {
             file.set_len(names_bytes)?;
             write_all_at(&file, &appended, names_bytes)?;
             names_bytes += appended.len() as u64;
-            durable.push(Arc::new(file));
+            syncing.push(Arc::new(file));
             written += appended.len();
         }
         let mut records: Vec<_> = table
@@ -3543,10 +3797,10 @@ impl Writer {
                 live: moved.size,
                 size: moved.size,
             });
-            durable.push(moved.file);
+            syncing.push(moved.file);
         }
         records.sort_by_key(|record| record.id);
-        sync_packs(&durable)?;
+        sync_packs(&syncing)?;
         #[cfg(test)]
         if tests::TERMINATE_BEFORE_ROOT.get() {
             return Err(io::Error::other("simulated termination before the root"));
@@ -3575,10 +3829,16 @@ impl Writer {
         #[cfg(test)]
         tests::MANIFEST_BYTES.set(tests::MANIFEST_BYTES.get() + written);
         let _ = written;
-        publish(&self.directory.join(MANIFEST), |file| file.write_all(&root))?;
+        let manifest = self.directory.join(MANIFEST);
+        put(&manifest, |file| file.write_all(&root))?;
+        // The new manifest is visible: it is this key's from now on, also when its flush fails.
         *self.key.binding.lock().unwrap() = Some((self.directory.clone(), source, true));
         self.key.rejected.store(false, Ordering::Release);
-        Ok(())
+        let flushed = durable(&manifest);
+        published(&self.directory, || {
+            Some(Snapshot::committed(&self.directory, &self.key))
+        });
+        flushed
     }
 
     /// Listed and total bytes of every pack the new manifest will name.
@@ -3595,6 +3855,10 @@ impl Writer {
             table.entry(id).or_insert((0, shared.size));
         }
         let accounting = || invalid("prepared pack accounting does not match its ranges");
+        for old in self.dropped.iter().filter(|id| id.len != 0) {
+            let (live, _) = table.get_mut(&old.pack).ok_or_else(accounting)?;
+            *live = live.checked_sub(old.len).ok_or_else(accounting)?;
+        }
         for (index, section) in self.sections.iter().enumerate() {
             for &range in section.replaced.keys() {
                 let old = self
@@ -3662,6 +3926,13 @@ fn sync_packs(files: &[Arc<File>]) -> io::Result<()> {
 }
 
 fn publish(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+    put(path, write)?;
+    durable(path)
+}
+
+/// Writes `path` whole and puts it in place: readers see it once this returns, before it is
+/// flushed.
+fn put(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
     let mut file = OpenOptions::new()
         .write(true)
@@ -3684,8 +3955,7 @@ fn publish(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::
             "prepared storage requires POSIX replacement",
         ));
     }
-    drop(file);
-    durable(path)
+    Ok(())
 }
 
 /// Flushes a published file and its directory. Test builds with `test-support`

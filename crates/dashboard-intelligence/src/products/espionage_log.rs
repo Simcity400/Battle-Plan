@@ -1066,6 +1066,19 @@ fn present(
     Ok(())
 }
 
+/// The daily transport window `index` of a branch from `first` to `last`, as the log lists its
+/// days: what an [`EspionageLogParams::window`] names.
+pub fn day_window(first: i32, last: i32, index: usize) -> Option<HourSpan> {
+    let start = i64::try_from(index)
+        .ok()?
+        .checked_mul(24)?
+        .checked_add(i64::from(first))?;
+    (start <= i64::from(last)).then(|| HourSpan {
+        first_hour: start as i32,
+        last_hour: (start + 23).min(i64::from(last)) as i32,
+    })
+}
+
 /// Transport windows follow the daily census granularity, independent of native
 /// allocation or recording block size. There is no country/episode/run cap.
 fn metadata_windows(first: i32, last: i32) -> Vec<HourSpan> {

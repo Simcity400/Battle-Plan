@@ -107,6 +107,7 @@ pub fn blocks_after<T: Send + Sync + 'static>(
     mut visit: impl FnMut(&[HourSpan], &T) -> io::Result<bool>,
 ) -> io::Result<Vec<HourSpan>> {
     check_cancel(cancelled)?;
+    let through = crate::prepared::coverage::sampled_through(through);
     let replay = source.replay_ref();
     let mut blocks: Vec<(&BlockIndex, Vec<HourSpan>)> = replay
         .index

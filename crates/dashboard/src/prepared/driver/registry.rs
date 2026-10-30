@@ -1,6 +1,6 @@
-//! Every prepared family and recording-wide job, once: its identity, status
-//! rows, query suppliers, same-hour dependents, private reads, sections,
-//! tables, content and the backends able to prepare it.
+//! Every prepared family and recording-wide job, once: its identity, version,
+//! status rows, query suppliers, same-hour dependents, private reads,
+//! sections, tables, content and the backends able to prepare it.
 
 use crate::products::{self, parts_race_prepared::Family as _};
 use dashboard_keyed::Observer as _;
@@ -55,6 +55,10 @@ pub(crate) struct PrivateRead {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Descriptor {
     pub id: FamilyId,
+    /// The version of its algorithm and of what it publishes: raise it when
+    /// either changes, and a store keeps every other family and prepares it
+    /// again alone, with the families observing it in the same hour.
+    pub version: u32,
     /// Other spellings, which tools accept for it.
     pub aliases: &'static [&'static str],
     /// The status rows it reports to.
@@ -83,6 +87,7 @@ pub(crate) struct Descriptor {
 pub(crate) const fn family(name: &'static str) -> Descriptor {
     Descriptor {
         id: FamilyId::new(name),
+        version: 1,
         aliases: &[],
         status: &[],
         queries: &[],
@@ -112,6 +117,8 @@ pub(crate) enum Runner {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Job {
     pub name: &'static str,
+    /// As a family's [`Descriptor::version`].
+    pub version: u32,
     pub runner: Runner,
     /// Products that wait only for its coverage.
     pub gates: &'static [&'static str],
@@ -847,6 +854,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
 pub(crate) static JOBS: &[Job] = &[
     Job {
         name: "map",
+        version: 1,
         runner: Runner::Walk,
         gates: &[],
         sections: &["map.checkpoints", "map.gaps", "map.resume"],
@@ -855,6 +863,7 @@ pub(crate) static JOBS: &[Job] = &[
     },
     Job {
         name: "map-export",
+        version: 1,
         runner: Runner::Walk,
         gates: &[],
         sections: &["map-export"],
@@ -863,6 +872,7 @@ pub(crate) static JOBS: &[Job] = &[
     },
     Job {
         name: "land-owners",
+        version: 1,
         runner: Runner::Walk,
         gates: &[],
         sections: &["land-owners"],
@@ -871,6 +881,7 @@ pub(crate) static JOBS: &[Job] = &[
     },
     Job {
         name: "production-lines",
+        version: 1,
         runner: Runner::Beside,
         gates: &[
             "production-lines",
@@ -1058,15 +1069,12 @@ pub(crate) fn job(name: &str) -> Option<&'static Job> {
 
 /// A family's coverage page for one branch, with its refusals there.
 pub(crate) fn coverage_section(family: &str, branch: u64) -> String {
-    format!("{COVERAGE}{family}-{branch}")
+    dashboard_base::prepared::coverage::family_section(family, branch)
 }
-
-const COVERAGE: &str = "preparation-family-";
 
 /// The family or job whose coverage page `section` is.
 pub(crate) fn coverage_owner(section: &str) -> Option<&str> {
-    let (name, branch) = section.strip_prefix(COVERAGE)?.rsplit_once('-')?;
-    digits(branch).then_some(name)
+    dashboard_base::prepared::coverage::family_of(section).map(|(name, _)| name)
 }
 
 /// A family's continuation, which the walk keeps in its branch state.
@@ -1085,10 +1093,12 @@ pub(crate) fn continuation_owner(section: &str) -> Option<&str> {
 /// The hourly walk's own sections of a branch: its coverage and its state.
 pub(crate) const WALK: &[&str] = &["preparation-coverage-", "preparation-branch-"];
 
-/// Sections only the commit coordinator writes: the checkpoint, the map
-/// binding, the side-work roster and the recording's metadata.
+/// Sections only the commit coordinator writes: the checkpoint and the
+/// versions published with it, the map binding, the side-work roster and the
+/// recording's metadata.
 pub(crate) const COORDINATOR: &[&str] = &[
     "preparation-checkpoint-v1",
+    dashboard_base::prepared::coverage::VERSIONS,
     "preparation-map-progress-v1",
     "preparation-side-work-v1",
     "source-metadata-v1",

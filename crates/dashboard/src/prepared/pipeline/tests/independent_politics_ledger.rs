@@ -398,13 +398,13 @@ fn politics_ledger_prepared_on_its_own_refuses_where_hourly_preparation_does() {
                 &own[&(independent::coverage_section("politics_ledger", 1), 0)],
             )
             .unwrap();
-            assert_eq!(page.refused.0["politics_ledger"].hour, hour, "{label}");
+            assert_eq!(page.refused["politics_ledger"].hour, hour, "{label}");
             assert_eq!(
-                page.refused.0["politics_ledger"].hour, expected.hour,
+                page.refused["politics_ledger"].hour, expected.hour,
                 "{label}"
             );
             assert_eq!(
-                page.refused.0["politics_ledger"].error, expected.error,
+                page.refused["politics_ledger"].error, expected.error,
                 "{label}"
             );
             assert!(page.coverage.complete, "{label}");
@@ -934,13 +934,13 @@ fn politics_ledger_folding_dense_blocks_refuses_where_hourly_preparation_does() 
         let page: CoveragePage =
             serde_json::from_slice(&own[&(independent::coverage_section("politics_ledger", 1), 0)])
                 .unwrap();
-        assert_eq!(page.refused.0["politics_ledger"].hour, hour, "{label}");
+        assert_eq!(page.refused["politics_ledger"].hour, hour, "{label}");
         assert_eq!(
-            page.refused.0["politics_ledger"].hour, expected.hour,
+            page.refused["politics_ledger"].hour, expected.hour,
             "{label}"
         );
         assert_eq!(
-            page.refused.0["politics_ledger"].error, expected.error,
+            page.refused["politics_ledger"].error, expected.error,
             "{label}"
         );
         let flag = AtomicBool::new(false);

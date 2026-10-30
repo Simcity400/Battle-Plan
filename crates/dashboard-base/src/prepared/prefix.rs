@@ -7,12 +7,15 @@
 //! gate's `coverage` and `pending`: the requested recorded hours after the
 //! prefix, which later preparation answers. A value inside an answered row
 //! that needs history the prefix has not reached stays unknown, with the
-//! product's `preparing` reason.
+//! product's `preparing` reason. Nor is any hour answered from a family's
+//! first hole in the requested hours on: those values need the observations
+//! the hole lacks. The query's reply names the holes, and they are never
+//! pending.
 //! Accepted coverage does not prove finality for backdated observations or
 //! branch-wide classifications. Such products mark their revisable hours
 //! approximate, or independently prove a closed window before claiming it exact.
 
-use super::coverage::{self, Coverage};
+use super::coverage::{self, Coverage, Hole};
 use crate::{
     Source,
     products::{ContentOptions, country_groups::HourSpan},
@@ -88,6 +91,27 @@ impl Prefix {
         self.pending = subtract(&self.pending, approximate);
     }
 
+    /// This prefix short of the first of `holes`: no hour from it on is
+    /// answered or pending, since its values need observations the hole lacks.
+    pub fn before(mut self, holes: &[Hole]) -> Self {
+        let Some(first) = holes.iter().map(|hole| hole.first_hour).min() else {
+            return self;
+        };
+        let last = first.saturating_sub(1);
+        if self.coverage.complete || last < self.coverage.last_hour {
+            self.coverage.last_hour = self
+                .coverage
+                .last_hour
+                .min(last.max(self.coverage.first_hour.saturating_sub(1)));
+            self.coverage.complete = false;
+        }
+        self.pending.retain(|span| span.first_hour < first);
+        if let Some(span) = self.pending.last_mut() {
+            span.last_hour = span.last_hour.min(last);
+        }
+        self
+    }
+
     /// Adds the prefix's fields to a reply's root object; null and other
     /// replies are left as they are.
     pub fn mark(&self, data: &mut Value) -> io::Result<()> {
@@ -132,7 +156,8 @@ impl Prefix {
 }
 
 /// The prefix `gate`'s queries answer `branch` from, for a request through
-/// `requested` ([`Prefix::new`]); None before the gate accepts any hour.
+/// `requested` ([`Prefix::new`]), short of the first hole there; None before
+/// the gate accepts any hour.
 pub fn read(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -141,10 +166,10 @@ pub fn read(
     requested: Option<i32>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Prefix>> {
-    Ok(
-        coverage::product_coverage(source, content, branch, gate, cancelled)?
-            .map(|coverage| Prefix::new(source, branch, coverage, requested)),
-    )
+    let ranges = coverage::ranges(source, content, branch, gate, requested, cancelled)?;
+    Ok(ranges
+        .coverage
+        .map(|coverage| Prefix::new(source, branch, coverage, requested).before(&ranges.holes)))
 }
 
 /// A prefix reply before the first publication has no accepted hour. Its
@@ -157,13 +182,14 @@ pub fn read_or_empty(
     requested: Option<i32>,
     cancelled: &AtomicBool,
 ) -> io::Result<Prefix> {
-    let accepted = coverage::product_coverage(source, content, branch, gate, cancelled)?;
+    let ranges = coverage::ranges(source, content, branch, gate, requested, cancelled)?;
     Ok(Prefix::new(
         source,
         branch,
-        extent(source, branch, accepted)?,
+        extent(source, branch, ranges.coverage)?,
         requested,
-    ))
+    )
+    .before(&ranges.holes))
 }
 
 /// Accepted preparation coverage, or an empty extent immediately before the

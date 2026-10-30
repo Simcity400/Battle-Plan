@@ -318,7 +318,9 @@ fn ordinary_preparation_goes_through_the_driver_and_answers_from_its_plan() {
         }
     }
 
-    let (store, key) = super::super::super::files(&source, None).unwrap();
+    let (store, key) = crate::prepared::files(&source, None).unwrap();
+    let published =
+        dashboard_base::prepared::gates::current(&store, &key).expect("the store's decoded gates");
     let family = |name: &str| independent::coverage_section(name, 1);
     let walk = crate::prepared::coverage::coverage_section(1);
     for (product, pages) in [
@@ -357,7 +359,7 @@ fn ordinary_preparation_goes_through_the_driver_and_answers_from_its_plan() {
         ("army-size", vec![walk.clone()]),
         ("production-line-detail", vec![family("production-lines")]),
     ] {
-        let pinned = query_pages(&store, &key, 1, product).unwrap();
+        let pinned = query_pages(&published, 1, product).unwrap();
         assert_eq!(
             pinned
                 .iter()

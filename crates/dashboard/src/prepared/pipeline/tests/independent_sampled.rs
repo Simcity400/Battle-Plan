@@ -606,9 +606,9 @@ fn refusals(family: Sampled) {
             let page: CoveragePage =
                 serde_json::from_slice(&own[&(independent::coverage_section(family.name, 1), 0)])
                     .unwrap();
-            assert_eq!(page.refused.0[family.name].hour, hour, "{label}");
-            assert_eq!(page.refused.0[family.name].hour, expected.hour, "{label}");
-            assert_eq!(page.refused.0[family.name].error, expected.error, "{label}");
+            assert_eq!(page.refused[family.name].hour, hour, "{label}");
+            assert_eq!(page.refused[family.name].hour, expected.hour, "{label}");
+            assert_eq!(page.refused[family.name].error, expected.error, "{label}");
             assert!(page.coverage.complete, "{label}");
             let flag = AtomicBool::new(false);
             let error = refusal(&source, None, 1, family.gated, &flag).unwrap_err();
@@ -880,7 +880,7 @@ fn territory_records_an_identities_refusal_as_hourly_preparation_does() {
         let page: CoveragePage =
             serde_json::from_slice(&own[&(independent::coverage_section("territory", 1), 0)])
                 .unwrap();
-        assert_eq!(&page.refused.0["territory"], expected);
+        assert_eq!(&page.refused["territory"], expected);
     });
     clear(source);
 }
@@ -1564,7 +1564,7 @@ fn territory_readers_wait_for_territory_coverage_while_the_branch_is_ahead() {
                     last_hour,
                     complete,
                 },
-                refused: Refused::default(),
+                refused: Default::default(),
             },
         )
         .unwrap();
