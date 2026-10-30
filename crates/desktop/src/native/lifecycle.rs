@@ -37,21 +37,94 @@ pub(super) struct Process {
     _job: Job,
 }
 
+impl super::Inner {
+    /// Tells the frontend a viewer stopped or could not start: its status, and each dashboard map
+    /// its views wait on, with why.
+    fn publish_stopped(&self, app: &AppHandle) {
+        self.publish(app);
+        if let Some(views) = &self.dashboard_views {
+            let states: Vec<_> = views
+                .iter()
+                .map(|view| DashboardMapState {
+                    id: view.id.clone(),
+                    requested_sequence: view.sequence,
+                    error: self.status.error.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            let _ = app.emit("dashboard-map-state", states);
+        }
+    }
+}
+
 impl NativeHost {
+    /// Starts a viewer unless one runs or is starting, on a thread of its own: creating its
+    /// process takes a third of a second, which the caller, the main thread for a command, does
+    /// not wait for. Meanwhile it reports running and not ready; a start that fails reports why.
     pub(crate) fn ensure_started(&self, window: &WebviewWindow) -> Result<(), String> {
+        use tauri::Manager;
+        let popout = {
+            let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+            if inner.process.is_some() || inner.starting {
+                return Ok(());
+            }
+            if inner.shutting_down {
+                return Err("The application is closing".into());
+            }
+            inner.starting = true;
+            inner.status.running = true;
+            inner.status.ready = false;
+            inner.status.error = None;
+            inner.popout.is_some()
+        };
+        // Read here: off the main thread a window getter waits on it, which may wait on this lock.
+        // A pop-out's parent is its own window, already known.
+        let own = (!popout).then(|| {
+            window
+                .hwnd()
+                .map(|hwnd| hwnd.0 as usize)
+                .map_err(|e| e.to_string())
+        });
+        let host = self.clone();
+        let window = window.clone();
+        thread::spawn(move || {
+            let started = host.start(&window, own);
+            let mut inner = host.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            inner.starting = false;
+            if let Err(error) = started
+                && inner.process.is_none()
+            {
+                inner.status.running = false;
+                inner.status.ready = false;
+                if !inner.shutting_down {
+                    inner.status.error = Some(error);
+                }
+                inner.publish_stopped(window.app_handle());
+            } else {
+                inner.publish(window.app_handle());
+            }
+            drop(inner);
+            host.shared.1.notify_all();
+        });
+        Ok(())
+    }
+
+    fn start(
+        &self,
+        window: &WebviewWindow,
+        own: Option<Result<usize, String>>,
+    ) -> Result<(), String> {
         use std::os::windows::process::CommandExt;
         use tauri::Manager;
         use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-        // Existing viewers need no disk reads. Preference resolution itself reads
-        // host status, so release this lock before it and recheck before spawning.
-        let since = {
-            let inner = self.shared.0.lock().map_err(|e| e.to_string())?;
-            if inner.process.is_some() {
-                return Ok(());
-            }
-            inner.display_sent
-        };
+        // Preference resolution itself reads host status, so no lock is held across it.
+        let since = self
+            .shared
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .display_sent;
         let display = crate::video::launch_actions(window)?;
         // The host owns the content folders; the viewer reads none of its own.
         // Unreadable preferences start it without folders, and Settings shows why.
@@ -62,15 +135,11 @@ impl NativeHost {
             crate::video::current_map_diagnostics(&window.state::<crate::video::VideoState>());
         let saved_muted =
             crate::video::current_map_muted(&window.state::<crate::video::VideoState>());
-        let mut inner = self.shared.0.lock().map_err(|e| e.to_string())?;
-        // A change saved after the reads above has already reached
-        // `set_diagnostics` or `set_folders`, which keep it under this lock.
-        let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
-        let folders = launch_folders(inner.folders.as_ref(), saved_folders.as_ref());
-        let muted = inner.muted.unwrap_or(saved_muted);
-        if inner.process.is_some() {
-            return Ok(());
-        }
+        let inner = self.shared.0.lock().map_err(|e| e.to_string())?;
+        // A change saved after the reads above has already reached `set_folders`, which keeps
+        // it under this lock; one saved while the process is created is sent once it runs.
+        let applied = inner.folders.clone();
+        let folders = launch_folders(applied.as_ref(), saved_folders.as_ref());
         if inner.shutting_down {
             return Err("The application is closing".into());
         }
@@ -85,7 +154,7 @@ impl NativeHost {
         }
         let parent = match &inner.popout {
             Some(window) => window.parent,
-            None => window.hwnd().map_err(|e| e.to_string())?.0 as usize,
+            None => own.unwrap_or_else(|| Err("The map's window has no handle".into()))?,
         };
         // A pop-out shows only what the app sends it; the app's own command line (a recording,
         // an hour, a camera) belongs to the main viewer.
@@ -97,6 +166,7 @@ impl NativeHost {
         } else {
             std::env::args_os().skip(1).collect()
         };
+        drop(inner);
         let mut child = Command::new(&executable)
             .args(forwarded)
             .args(folders)
@@ -127,6 +197,20 @@ impl NativeHost {
             .stderr
             .take()
             .ok_or("Native viewer error pipe is missing")?;
+        let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.shutting_down {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("The application is closing".into());
+        }
+        // Choices saved while the process was created, which `set_diagnostics`, `set_muted`
+        // and `set_folders` kept without sending.
+        let diagnostics = inner.diagnostics.unwrap_or(saved_diagnostics);
+        let muted = inner.muted.unwrap_or(saved_muted);
+        let moved = inner
+            .folders
+            .clone()
+            .filter(|config| applied.as_ref() != Some(config));
         if inner.generation > 0 {
             inner.restore_commands();
         }
@@ -162,6 +246,15 @@ impl NativeHost {
             .pending
             .actions
             .push_back(dashboard::protocol::MapAction::Mute { muted });
+        if let Some(config) = moved {
+            inner
+                .pending
+                .actions
+                .push_back(dashboard::protocol::MapAction::Folders {
+                    game: config.game_dir.to_string_lossy().into_owned(),
+                    user: config.user_dir.to_string_lossy().into_owned(),
+                });
+        }
         inner.process = Some(Process { child, _job: job });
         drop(inner);
 
@@ -391,19 +484,7 @@ impl NativeHost {
                                 None => reason,
                             });
                         }
-                        inner.publish(app);
-                        if let Some(views) = &inner.dashboard_views {
-                            let states: Vec<_> = views
-                                .iter()
-                                .map(|view| DashboardMapState {
-                                    id: view.id.clone(),
-                                    requested_sequence: view.sequence,
-                                    error: inner.status.error.clone(),
-                                    ..Default::default()
-                                })
-                                .collect();
-                            let _ = app.emit("dashboard-map-state", states);
-                        }
+                        inner.publish_stopped(app);
                     }
                 }
             };
@@ -441,6 +522,12 @@ impl NativeHost {
         loop {
             let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
             let Some(process) = inner.process.as_mut() else {
+                // A start under way closes the process it created once it sees the shutdown.
+                if inner.starting && Instant::now() < deadline {
+                    drop(inner);
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
                 break;
             };
             if process.child.try_wait().ok().flatten().is_some() {

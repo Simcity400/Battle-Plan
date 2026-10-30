@@ -40,6 +40,8 @@ pub struct HostStatus {
 #[derive(Default)]
 struct Inner {
     process: Option<Process>,
+    /// A viewer's process is being created ([`NativeHost::ensure_started`]).
+    starting: bool,
     generation: u64,
     status: HostStatus,
     bounds: Option<ViewBounds>,
@@ -356,11 +358,12 @@ impl NativeHost {
         self.queue_once(dashboard::protocol::MapAction::RefreshVisualMods);
     }
 
-    /// Queues `action` for the running viewer unless one of its kind already waits; nothing when
-    /// no viewer runs or it is shutting down.
+    /// Queues `action` for the running or starting viewer unless one of its kind already waits;
+    /// nothing when no viewer runs or it is shutting down. A starting viewer may read its settings
+    /// before its process is installed, so the notice is kept for it.
     fn queue_once(&self, action: dashboard::protocol::MapAction) {
         let mut inner = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.process.is_none() || inner.shutting_down {
+        if (inner.process.is_none() && !inner.starting) || inner.shutting_down {
             return;
         }
         let kind = std::mem::discriminant(&action);
