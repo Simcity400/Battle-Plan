@@ -15,6 +15,8 @@ import type { ScriptPage } from './scriptOccurrences';
 interface PageInfo { cursor: string | null; start: number; end: number; count: number; tally: number | null; final: boolean; cards: number | null }
 const NO_WARNINGS: string[] = [];
 const PAGE_SIZE = 256;
+/** The page a new hour asks first, as the event feed's (`FIRST_PAGE_SIZE` there). */
+const FIRST_PAGE_SIZE = 64;
 /** A page counted under another visibility: estimated by its cards, its tally unknown, until read again. */
 const recount = (info: PageInfo): PageInfo => ({ ...info, count: info.cards ?? info.count, tally: null });
 
@@ -30,9 +32,9 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   tally: (rows: readonly LogRow<T>[]) => number) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const request = (cursor: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product,
-    params: { branchId: track!.branch.id, firstHour, lastHour, cursor, pageSize: PAGE_SIZE, kinds: [...kinds] } });
-  const first = useFollowedProduct<ScriptPage>(runtime.client, track && hour !== null ? request(null, hour) : null, ['lastHour'], active, validateScriptPage, track?.source);
+  const request = (cursor: string | null, lastHour: number | null, pageSize = PAGE_SIZE) => ({ sourceId: track!.source.id, revision: track!.source.revision, product,
+    params: { branchId: track!.branch.id, firstHour, lastHour, cursor, pageSize, kinds: [...kinds] } });
+  const first = useFollowedProduct<ScriptPage>(runtime.client, track && hour !== null ? request(null, hour, FIRST_PAGE_SIZE) : null, ['lastHour'], active, validateScriptPage, track?.source);
   // The page chain follows the hour the first page answers.
   const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   // A first page answered from the prepared prefix reads back from the prefix's
@@ -45,7 +47,7 @@ export function useScriptOccurrences<T>(runtime: WidgetRuntime, track: BoundTrac
   // `shown` is the visibility cut the pages were counted under.
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string; shown?: typeof at }>({ owner, pages: [] });
   const initial: PageInfo = { cursor: null, start: Math.max(firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0,
-    count: PAGE_SIZE, tally: null, final: false, cards: null };
+    count: FIRST_PAGE_SIZE, tally: null, final: false, cards: null };
   const kept = chain.owner === owner && chain.pages.length ? chain.pages : null;
   const descriptors = !kept ? [initial] : chain.shown === at ? kept : kept.map(recount);
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });

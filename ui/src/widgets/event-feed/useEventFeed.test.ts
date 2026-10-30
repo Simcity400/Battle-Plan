@@ -84,6 +84,7 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
     const render = (client: DashboardClient, chosen = filter, prepareAll = false, hour = 400) => { cursor = 0;
       return useEventFeed({ client } as WidgetRuntime, track, true, hour, chosen, 'same-filter', prepareAll); };
     let feed = render(a); hooks.commit(); feed = render(a); hooks.commit();
+    assert.equal((hooks.first as { params: { pageSize: number } }).params.pageSize, 64, 'a new hour asks first for a screenful');
     assert.equal(feed.pages[0].count, 0, 'an empty filtered first page stays complete');
     assert.equal(feed.pages[1].rows, undefined, 'a continuation keeps older matches reachable');
     feed.onWantedPages(['1']); render(a);

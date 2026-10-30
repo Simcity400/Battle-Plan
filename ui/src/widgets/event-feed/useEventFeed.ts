@@ -12,6 +12,9 @@ import type { FeedEvent, FeedFilter, PreparedFeedPage } from './eventFeedData';
 interface PageInfo { cursor: string | null; start: number; end: number; count: number }
 const NO_WARNINGS: string[] = [];
 const PAGE_SIZE = 256;
+/** The page a new hour asks first: more rows than a tall log shows, so the hour answers without
+ * presenting rows nobody sees yet; older rows follow in whole pages as the log is scrolled. */
+const FIRST_PAGE_SIZE = 64;
 
 /** Native dates page backward while every cursor retains the same Live read bound.
  * Only demanded payloads stay held; small cursor/count descriptors survive eviction. */
@@ -19,10 +22,10 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   hour: number | null, filter: FeedFilter, filterKey: string, prepareAll = false) {
   const content = useContentRevision(runtime.client);
   const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, content]) : null;
-  const request = (cursor: string | null, lastHour: number | null) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
+  const request = (cursor: string | null, lastHour: number | null, pageSize = PAGE_SIZE) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'event-feed',
     params: { branchId: track!.branch.id, firstHour: filter.firstHour, lastHour,
-      categories: [...filter.categories], observations: filter.observations === true, cursor, pageSize: PAGE_SIZE } });
-  const first = useFollowedProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null, hour) : null, ['lastHour'], active, validateEventFeedPage, track?.source);
+      categories: [...filter.categories], observations: filter.observations === true, cursor, pageSize } });
+  const first = useFollowedProduct<PreparedFeedPage>(runtime.client, track && hour !== null ? request(null, hour, FIRST_PAGE_SIZE) : null, ['lastHour'], active, validateEventFeedPage, track?.source);
   // The page chain follows the hour the first page answers; rows still stop at `hour`.
   const read = first.data && first.moment ? (JSON.parse(first.moment) as [number | null])[0] : hour;
   // A first page answered from the prepared prefix reads back from the prefix's
@@ -33,7 +36,7 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
   const current = useRef(owner); current.current = owner;
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: string }>({ owner, pages: [] });
-  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: PAGE_SIZE };
+  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: FIRST_PAGE_SIZE };
   const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
   const completeDemand = import.meta.env.MODE === 'parity' && prepareAll;
