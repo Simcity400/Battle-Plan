@@ -66,10 +66,6 @@ test('actual cipher label reads finish during fast playback and retain only thei
           if (path.endsWith('/useThrottled.ts')) code = code.replaceAll('Date.now()', 'globalThis.__cipherCountryHooks.now')
             .replace('setTimeout(show, wait)', 'globalThis.__cipherCountryHooks.after(show, wait)')
             .replace('clearTimeout(timer)', 'globalThis.__cipherCountryHooks.clear(timer)');
-          if (path.endsWith('/countryFlagsAt.ts')) {
-            const start = code.indexOf('export function flagImageUrl('), end = code.indexOf('/** One reading spec', start);
-            code = code.slice(0, start) + "export function flagImageUrl(image) { return `data:synthetic-${image.pixels[0]}`; }\n" + code.slice(end);
-          }
           return code;
         }
         if (path.endsWith('/contentRevision.ts')) return source.replace(
@@ -117,7 +113,7 @@ test('actual cipher label reads finish during fast playback and retain only thei
     await settle(); view = render(124);
     assert.equal(first.calls.length, 2, 'the unfinished flag read stays wanted after names arrive');
     first.calls.find(call => call.input.product === 'country-flags')!.answer({ flags: [
-      { tag: 'Owner', width: 1, height: 1, pixels: [7, 0, 0, 255] },
+      { tag: 'Owner', key: 'synthetic#7', width: 1, height: 1, png: 'data:synthetic-7' },
     ], unavailable: [{ tag: 'Target', reason: 'Native target sprite unavailable at 100' }] });
     await settle(); view = render(124);
     const shown = view.labels.pair(view.row);
@@ -133,7 +129,7 @@ test('actual cipher label reads finish during fast playback and retain only thei
     assert.equal(view.labels.pair(view.row).hour, 100, 'an earlier completed look stays valid in the same segment');
     for (const call of unfinished) call.answer(call.input.product === 'country-styles'
       ? { styles: [{ tag: 'Owner', name: 'Future owner', color: null }] }
-      : { flags: [{ tag: 'Owner', width: 1, height: 1, pixels: [9, 0, 0, 255] }], unavailable: [] });
+      : { flags: [{ tag: 'Owner', key: 'synthetic#9', width: 1, height: 1, png: 'data:synthetic-9' }], unavailable: [] });
     await settle(); view = render(110);
     assert.equal(view.labels.pair(view.row).owner.name, 'Owner at 100');
     assert.equal(view.labels.pair(view.row).owner.flag, 'data:synthetic-7');

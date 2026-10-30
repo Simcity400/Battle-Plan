@@ -52,7 +52,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
   };
   const host = globalThis as typeof globalThis & { __countryLabelHooks?: typeof fixture };
   host.__countryLabelHooks = fixture;
-  // Only the hook dispatcher, throttle clock and pixel-to-URL surface are synthetic. Fact stores,
+  // Only the hook dispatcher and throttle clock are synthetic. Fact stores,
   // request planning, cancellation, native envelopes and flag extraction are real.
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'country-label-hooks-fixture', enforce: 'pre',
@@ -64,10 +64,6 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
           .replace('clearTimeout(timer)', 'globalThis.__countryLabelHooks.cancel(timer)');
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
           'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
-        if (path.endsWith('/dashboard/countryFlagsAt.ts')) {
-          const start = source.indexOf('export function flagImageUrl('), end = source.indexOf('/** One reading spec', start);
-          return source.slice(0, start) + "export function flagImageUrl(image) { return `data:synthetic-${image.pixels[0]}`; }\n" + source.slice(end);
-        }
         return source;
       },
     }] });
@@ -86,7 +82,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch', firstHour: 0, lastHour: 100,
       gaps: [{ firstHour: 50, lastHour: 50 }] } } as unknown as Pick<BoundTrack, 'source' | 'branch'>;
     const tags = Array.from({ length: 5000 }, (_, i) => `C${String(i).padStart(5, '0')}`), visible = tags.slice(0, 4);
-    const image = (tag: string) => ({ tag, width: 1, height: 1, pixels: [7, 0, 0, 255] });
+    const image = (tag: string) => ({ tag, key: 'synthetic#7', width: 1, height: 1, png: 'data:synthetic-7' });
     const flagCalls = (calls: ReturnType<typeof transport>['calls']) => calls.filter(call => call.input.product === 'country-flags');
     const a = transport();
     const wording = { pending: 'Loading\u2026', missing: 'Not recorded' };
@@ -177,7 +173,7 @@ test('actual dated lane and hover hooks retain flag metadata and empty names wit
       && (call.input.params as { hour: number }).hour === hour)!;
     const answerAlias = (hour: number, name: string, pixel: number) => {
       atHour('country-styles', hour).answer({ styles: [{ tag: 'A', name, color: null }] });
-      atHour('country-flags', hour).answer({ flags: [{ ...image('A'), pixels: [pixel, 0, 0, 255] }], unavailable: [] });
+      atHour('country-flags', hour).answer({ flags: [{ ...image('A'), key: `synthetic#${pixel}`, png: `data:synthetic-${pixel}` }], unavailable: [] });
     };
     renderAlias(10); fixture.commit(); await settle(); answerAlias(10, 'Original A', 7); await settle();
     assert.equal(renderAlias(10).country('A').name, 'Original A');

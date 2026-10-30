@@ -6,51 +6,27 @@ import type { FactSpec, NameAt } from './countryFacts';
 import { nameKey, useCountryFactsAt, useCountryFactsRead, useCountryNamesRead } from './countryNamesAt.ts';
 import type { BoundTrack } from './model';
 
-/** Encoded flags, shared by every widget and hour showing the same artwork, least
- * recently used dropped past this many UTF-16 bytes. Holders keep their own string,
- * so dropping one never blanks a flag shown. */
-const ENCODED_BYTES = 16 * 1024 * 1024;
-const encoded = new Map<string, { url: Promise<string | undefined>; bytes: number }>();
-let encodedBytes = 0;
+/** Flag URLs by picture, so every reply, hour and widget showing one holds one string, least
+ * recently used dropped past this many UTF-16 bytes. Holders keep their own string, so dropping
+ * one never blanks a flag shown. */
+const SHARED_BYTES = 16 * 1024 * 1024;
+const shared = new Map<string, string>();
+let sharedBytes = 0;
 
-function encode(image: CountryFlagImage): Promise<string | undefined> {
-  if (typeof document === 'undefined') return Promise.resolve(undefined);
-  const canvas = document.createElement('canvas');
-  canvas.width = image.width;
-  canvas.height = image.height;
-  const context = canvas.getContext('2d');
-  if (!context) return Promise.resolve(undefined);
-  context.putImageData(new ImageData(Uint8ClampedArray.from(image.pixels), image.width, image.height), 0, 0);
-  // The PNG is compressed off the main thread, then read back as a data URL.
-  return new Promise(resolve => canvas.toBlob(blob => {
-    if (!blob) { resolve(undefined); return; }
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : undefined);
-    reader.onerror = () => resolve(undefined);
-    reader.readAsDataURL(blob);
-  }));
-}
-
-/** A flag's pixels as an image URL, for places that take an image (tooltip rows):
- * encoded once per `scope` (recording, content and size) and picture (`key`, which tells the
- * visual mods' file from the recording's of one path). */
-export function flagImageUrl(image: CountryFlagImage, scope = ''): Promise<string | undefined> {
-  const key = JSON.stringify([scope, image.key, image.width, image.height]);
-  const known = encoded.get(key);
-  if (known) { encoded.delete(key); encoded.set(key, known); return known.url; }
-  const entry = { url: encode(image), bytes: 0 };
-  encoded.set(key, entry);
-  void entry.url.then(url => {
-    if (encoded.get(key) !== entry) return;
-    entry.bytes = (url?.length ?? 0) * 2;
-    encodedBytes += entry.bytes;
-    for (const [oldest, held] of encoded) {
-      if (encodedBytes <= ENCODED_BYTES || oldest === key) break;
-      encoded.delete(oldest);
-      encodedBytes -= held.bytes;
-    }
-  });
-  return entry.url;
+/** A flag as an image URL, for places that take an image (tooltip rows): the PNG its reply
+ * carries, the one string kept for its picture (`key`, its file and pixels, at its size). */
+export function flagImageUrl(image: CountryFlagImage): string {
+  const key = JSON.stringify([image.key, image.width, image.height]);
+  const known = shared.get(key);
+  if (known !== undefined) { shared.delete(key); shared.set(key, known); return known; }
+  shared.set(key, image.png);
+  sharedBytes += image.png.length * 2;
+  for (const [oldest, url] of shared) {
+    if (sharedBytes <= SHARED_BYTES || oldest === key) break;
+    shared.delete(oldest);
+    sharedBytes -= url.length * 2;
+  }
+  return image.png;
 }
 
 /** One reading spec per flag size (a `country-flags` request draws at most 32 countries). */
@@ -61,15 +37,7 @@ export function flagSpec(size: CountryFlagSize): FactSpec<string, Promise<Readon
     spec = {
       product: 'country-flags', perRequest: 32,
       params: (branchId, hour, tags) => ({ branchId, hour, tags, size }),
-      extract: async (data, _params, source) => {
-        const scope = JSON.stringify([source?.sourceId, source?.revision, source?.content, size]);
-        const flags = (data as CountryFlagReply).flags;
-        const urls = await Promise.all(flags.map(image => flagImageUrl(image, scope)));
-        return new Map(flags.flatMap((image, index) => {
-          const url = urls[index];
-          return url ? [[image.tag, url] as const] : [];
-        }));
-      },
+      extract: async data => new Map((data as CountryFlagReply).flags.map(image => [image.tag, flagImageUrl(image)] as const)),
     };
     specs.set(size, spec);
   }
@@ -81,11 +49,11 @@ const readingSpecs = new Map<CountryFlagSize, FactSpec<FlagRead, Promise<Readonl
 export function flagReadSpec(size: CountryFlagSize): FactSpec<FlagRead, Promise<ReadonlyMap<string, FlagRead>>> {
   let spec = readingSpecs.get(size);
   if (!spec) {
-    const pixels = flagSpec(size);
-    spec = { ...pixels, extract: async (data, params, source) => {
+    const urls = flagSpec(size);
+    spec = { ...urls, extract: async (data, params, source) => {
       const reply = data as CountryFlagReply;
       const found = new Map<string, FlagRead>();
-      for (const [tag, url] of await pixels.extract(reply, params, source)) found.set(tag, { url });
+      for (const [tag, url] of await urls.extract(reply, params, source)) found.set(tag, { url });
       for (const missing of reply.unavailable ?? []) if (!found.has(missing.tag)) found.set(missing.tag, { reason: missing.reason });
       return found;
     } };

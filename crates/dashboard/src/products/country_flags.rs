@@ -94,8 +94,8 @@ pub struct CountryFlagImage {
     pub key: String,
     pub width: u32,
     pub height: u32,
-    /// Straight-alpha RGBA bytes, at most 128 pixels on the longer side.
-    pub pixels: Vec<u8>,
+    /// The flag as a PNG data URL, at most 128 pixels on the longer side.
+    pub png: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -1101,14 +1101,20 @@ impl FlagContext {
                     let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
                     let image = resize(&image, width, height);
                     let key = flag_key(&asset, &image.pixels);
-                    flags.push(CountryFlagImage {
-                        tag,
-                        key,
-                        asset,
-                        width: image.width,
-                        height: image.height,
-                        pixels: image.pixels,
-                    });
+                    match crate::catalogue::png_data_url(&image) {
+                        Ok(png) => flags.push(CountryFlagImage {
+                            tag,
+                            key,
+                            asset,
+                            width: image.width,
+                            height: image.height,
+                            png,
+                        }),
+                        Err(error) => unavailable.push(CountryFlagUnavailable {
+                            tag,
+                            reason: format!("flag artwork could not be encoded: {error}"),
+                        }),
+                    }
                 }
             }
             // The shield's passes differ only in the flag they sample, so a
@@ -1138,6 +1144,21 @@ impl FlagContext {
 mod tests {
     use super::*;
     use replay_frame::frame::DecodedFrame;
+
+    /// A reply flag's straight-alpha RGBA, decoded from its PNG.
+    fn decoded(image: &CountryFlagImage) -> Vec<u8> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(image.png.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(pixels.len(), (image.width * image.height * 4) as usize);
+        pixels
+    }
 
     fn flag_frame(
         original: replay_data::rows::Recorded<Option<Vec<u8>>>,
@@ -1807,7 +1828,7 @@ mod tests {
         let pixel = |reply: &CountryFlagReply, x: u32, y: u32| {
             let image = &reply.flags[0];
             let at = ((y * image.width + x) * 4) as usize;
-            <[u8; 4]>::try_from(&image.pixels[at..at + 4]).unwrap()
+            <[u8; 4]>::try_from(&decoded(image)[at..at + 4]).unwrap()
         };
         let mut drawn = Vec::new();
         for size in [CountryFlagSize::Shield, CountryFlagSize::Panel] {
@@ -1950,9 +1971,10 @@ mod tests {
                 .unwrap();
             assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable);
             let image = &reply.flags[0];
+            let pixels = decoded(image);
             let pixel = |x: u32, y: u32| {
                 let at = ((y * image.width + x) * 4) as usize;
-                <[u8; 4]>::try_from(&image.pixels[at..at + 4]).unwrap()
+                <[u8; 4]>::try_from(&pixels[at..at + 4]).unwrap()
             };
             (pixel(4, 4), pixel(0, 4))
         });

@@ -3,13 +3,13 @@ import { validateProductReply } from './client.ts';
 import { contentRevision } from './contentRevision.ts';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply } from '../generated/dashboard';
 
-/** A list flag as the picker keeps it: pixels as bytes, not a JSON number array. */
+/** A list flag as the picker keeps it: its picture as the PNG data URL the reply carries. */
 export interface StoredFlag {
   tag: string;
   asset: string;
   width: number;
   height: number;
-  pixels: Uint8ClampedArray;
+  png: string;
 }
 
 /** Bytes for the flags the picker keeps, close to the product cache's own budget. */
@@ -18,12 +18,12 @@ export const FLAG_STORE_BYTES = 64 * 1024 * 1024;
 const ENTRY_OVERHEAD_BYTES = 96;
 
 function storedBytes(key: string, value: StoredFlag | null): number {
-  const strings = key.length + (value ? value.tag.length + value.asset.length : 0);
-  return ENTRY_OVERHEAD_BYTES + strings * 2 + (value?.pixels.byteLength ?? 0);
+  const strings = key.length + (value ? value.tag.length + value.asset.length + value.png.length : 0);
+  return ENTRY_OVERHEAD_BYTES + strings * 2;
 }
 
 export function storedFlag(image: CountryFlagImage): StoredFlag {
-  return { tag: image.tag, asset: image.asset, width: image.width, height: image.height, pixels: Uint8ClampedArray.from(image.pixels) };
+  return { tag: image.tag, asset: image.asset, width: image.width, height: image.height, png: image.png };
 }
 
 /** One list flag per country and observation hour, bounded by bytes. Kept apart

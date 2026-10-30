@@ -558,9 +558,9 @@ asset: string,
  */
 key: string, width: number, height: number,
 /**
- * Straight-alpha RGBA bytes, at most 128 pixels on the longer side.
+ * The flag as a PNG data URL, at most 128 pixels on the longer side.
  */
-pixels: Array<number>, };
+png: string, };
 export type CountryFlagUnavailable = { tag: string, reason: string, };
 export type CountryFlagParams = { branchId: string, hour: number, tags: Array<string>, size: CountryFlagSize, };
 export type CountryFlagReply = { branchId: string, hour: number, size: CountryFlagSize, flags: Array<CountryFlagImage>, unavailable: Array<CountryFlagUnavailable>, warnings: Array<string>, };

@@ -66,33 +66,14 @@ test('dated labels forward the hour limit to both reads and distinguish pending,
   } finally { delete host.__labelFixture; }
 });
 
-test('one flag artwork is encoded once for every hour and widget showing it, and again for other content', async () => {
-  let encoded = 0;
-  const page = globalThis as unknown as Record<string, unknown>;
-  Object.assign(page, {
-    ImageData: class {},
-    document: { createElement: () => ({ getContext: () => ({ putImageData() {} }),
-      toBlob: (done: (blob: Blob) => void) => done(new Blob([`png ${++encoded}`], { type: 'image/png' })) }) },
-    FileReader: class { result: string | null = null; onload = () => {}; onerror = () => {};
-      readAsDataURL(blob: Blob) { void blob.text().then(text => { this.result = `data:${text}`; this.onload(); }); } },
-  });
-  try {
-    const image = (tag: string) => ({ tag, asset: 'gfx/flags/small/MOD_mod ideology.tga', key: 'gfx/flags/small/MOD_mod ideology.tga#9',
-      width: 1, height: 1, pixels: [9, 8, 7, 255] });
-    const source = { sourceId: 'source', revision: 'revision', branchId: 'branch', content: 0 };
-    const first = await flagSpec('small').extract({ flags: [image('A'), image('B')] }, undefined, source);
-    const later = await flagSpec('small').extract({ flags: [image('A')] }, undefined, { ...source, branchId: 'other branch' });
-    assert.equal(encoded, 1);
-    assert.equal(first.get('B'), first.get('A'));
-    assert.equal(later.get('A'), 'data:png 1');
-    assert.equal((await flagSpec('small').extract({ flags: [image('A')] }, undefined, { ...source, content: 1 })).get('A'), 'data:png 2');
-    assert.equal((await flagSpec('medium').extract({ flags: [image('A')] }, undefined, source)).get('A'), 'data:png 3');
-    // The same file shown in other pixels (the recording's where the mods' cannot draw) is
-    // another picture, encoded apart.
-    const restyled = { ...image('C'), key: 'gfx/flags/small/MOD_mod ideology.tga#7', pixels: [7, 8, 9, 255] };
-    const both = await flagSpec('small').extract({ flags: [image('A'), restyled] }, undefined, source);
-    assert.equal(both.get('A'), 'data:png 1');
-    assert.equal(both.get('C'), 'data:png 4');
-    assert.equal(encoded, 4);
-  } finally { for (const name of ['ImageData', 'document', 'FileReader']) delete page[name]; }
+test('a flag is shown as the PNG its reply carries, one string per picture for every reply showing it', async () => {
+  const image = (tag: string, key: string, png: string) => ({ tag, asset: 'gfx/flags/small/MOD_mod ideology.tga', key, width: 1, height: 1, png });
+  const source = { sourceId: 'source', revision: 'revision', branchId: 'branch', content: 0 };
+  const first = await flagSpec('small').extract({ flags: [image('A', 'mod#9', 'data:image/png;base64,QQ=='), image('B', 'mod#7', 'data:image/png;base64,Qg==')] },
+    undefined, source);
+  assert.deepEqual([...first], [['A', 'data:image/png;base64,QQ=='], ['B', 'data:image/png;base64,Qg==']]);
+  // A later reply's copy of a picture already held gives the string kept for it; a new picture its own.
+  const later = await flagSpec('small').extract({ flags: [image('C', 'mod#9', 'data:image/png;base64,later'), image('D', 'mod#5', 'data:image/png;base64,RA==')] },
+    undefined, { ...source, branchId: 'other branch' });
+  assert.deepEqual([...later], [['C', 'data:image/png;base64,QQ=='], ['D', 'data:image/png;base64,RA==']]);
 });

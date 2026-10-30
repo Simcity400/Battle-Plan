@@ -7,14 +7,15 @@ import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentatio
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
 
-/** Straight-alpha RGBA, as a product reply carries it or as the flag store keeps it. */
-export interface FlagPixels { width: number; height: number; pixels: ArrayLike<number> }
+/** A flag to draw: a PNG data URL, as a flag reply carries it and the flag store keeps it, or
+ * straight-alpha RGBA, as the recorder's status carries it. */
+export type FlagImage = { width: number; height: number } & ({ png: string } | { pixels: ArrayLike<number> });
 
-/** Content flags are small (82x52 in vanilla): each is drawn from its pixels' canvas at
- * its shown size and screen density with smoothing, so a stretched flag blends rather
- * than shows its pixels. One observer serves every flag shown, after layout, when it
- * appears and whenever it resizes. */
-const shown = new WeakMap<Element, HTMLCanvasElement>();
+/** Content flags are small (82x52 in vanilla): each is drawn from its picture at its shown
+ * size and screen density with smoothing, so a stretched flag blends rather than shows its
+ * pixels. One observer serves every flag shown, after layout, when it appears and whenever it
+ * resizes. */
+const shown = new WeakMap<Element, { picture: CanvasImageSource; width: number; height: number }>();
 let resized: ResizeObserver | undefined;
 function drawFlags(entries: readonly ResizeObserverEntry[]) {
   for (const { target } of entries) {
@@ -27,24 +28,44 @@ function drawFlags(entries: readonly ResizeObserverEntry[]) {
     if (!context) continue;
     context.imageSmoothingQuality = 'high';
     const fitted = fitCountryFlag(source.width, source.height, target.width, target.height);
-    context.drawImage(source, fitted.x, fitted.y, fitted.width, fitted.height);
+    context.drawImage(source.picture, fitted.x, fitted.y, fitted.width, fitted.height);
   }
 }
 
-export function CountryFlag({ image }: { image?: FlagPixels }) {
+/** Shows `image` on `element` from now on, until the returned stop: the flag it showed is
+ * cleared at once, so a picture that cannot be decoded leaves an empty frame, never the flag
+ * it replaces. */
+export function showFlag(element: HTMLCanvasElement, image: FlagImage): () => void {
+  let live = true;
+  element.getContext('2d')?.clearRect(0, 0, element.width, element.height);
+  const show = (picture: CanvasImageSource) => {
+    if (!live) return;
+    shown.set(element, { picture, width: image.width, height: image.height });
+    resized ??= new ResizeObserver(drawFlags);
+    resized.observe(element);
+  };
+  if ('png' in image) {
+    const picture = new Image();
+    picture.src = image.png;
+    // Decoded off the main thread, the flag is drawn once its picture is ready.
+    void picture.decode().then(() => show(picture), () => {});
+  } else {
+    const pixels = image.pixels instanceof Uint8ClampedArray ? image.pixels : Uint8ClampedArray.from(image.pixels);
+    const picture = document.createElement('canvas');
+    picture.width = image.width;
+    picture.height = image.height;
+    picture.getContext('2d')?.putImageData(new ImageData(pixels as Uint8ClampedArray<ArrayBuffer>, image.width, image.height), 0, 0);
+    show(picture);
+  }
+  return () => { live = false; resized?.unobserve(element); shown.delete(element); };
+}
+
+export function CountryFlag({ image }: { image?: FlagImage }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const element = canvas.current;
     if (!element || !image) return;
-    const pixels = image.pixels instanceof Uint8ClampedArray ? image.pixels : Uint8ClampedArray.from(image.pixels);
-    const source = document.createElement('canvas');
-    source.width = image.width;
-    source.height = image.height;
-    source.getContext('2d')?.putImageData(new ImageData(pixels as Uint8ClampedArray<ArrayBuffer>, image.width, image.height), 0, 0);
-    shown.set(element, source);
-    resized ??= new ResizeObserver(drawFlags);
-    resized.observe(element);
-    return () => { resized?.unobserve(element); shown.delete(element); };
+    return showFlag(element, image);
   }, [image]);
   return image ? <canvas ref={canvas} className="country-flag country-flag-art" width={image.width} height={image.height} aria-hidden="true" />
     : <span className="country-flag country-flag-unavailable" aria-hidden="true" />;
