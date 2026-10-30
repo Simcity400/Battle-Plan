@@ -23,7 +23,7 @@ const reply = (rows: EventFeedRow[] = []): EventFeedReply => ({ branchId: '1', f
     milestones: rows.filter(row => row.category === 'milestones').length + (rows.length ? 0 : 1),
   } }], rows, items: [], modifiers: [], texts: [], unavailable: [], warnings: [] });
 const named = { token: 'mod/item', name: 'A modded item', description: null,
-  icon: 'data:image/png;base64,AA==', idea: null };
+  icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', idea: null };
 
 test('scripted fires, news and sub-day decision lifecycles retain distinct occurrences and compact identities', () => {
   const kinds = ['scriptEventFired', 'newsEventFired', 'eventOptionSelected', 'decisionSelected',

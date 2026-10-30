@@ -163,7 +163,7 @@ pub struct LeaderArtwork {
     pub character: IdeaCharacter,
     /// Null when the saved name needs runtime scope or nothing names the character.
     pub name: Option<String>,
-    /// A PNG data URL; null when the portrait is not known.
+    /// An artwork URL; null when the portrait is not known.
     pub portrait: Option<String>,
     /// Why `portrait` is null.
     pub portrait_missing: Option<String>,

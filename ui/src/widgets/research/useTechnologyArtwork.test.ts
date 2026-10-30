@@ -84,7 +84,7 @@ test('technology artwork reports failed batches without losing successful text a
     const tokens = researchArtworkTokens(researchAt(history, 150), 150, true);
     const render = () => { cursor = 0; return useTechnologyArtwork(client, track, tokens, true); };
     const art = (token: string): Artwork => ({ token, name: token === 'tech07' ? '' : 'Stored literal title', description: '', baseDurationDays: null,
-      icon: 'data:image/png;base64,AA==' });
+      icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' });
     assert.deepEqual(render().warnings, [], 'pending image work is not a refusal');
     fixture.commit(); await settle();
     assert.equal(calls.length, 2);

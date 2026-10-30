@@ -353,7 +353,7 @@ function busy(count: number) {
     availableRaw: 2000 + sum(imports) - sum(exports) - 3, afterProjectsRaw: 2000 + sum(imports) - sum(exports) - 3, productionRaw: -40 }));
   return { balance, deals: { imports, exports } };
 }
-const HEAD = { title: 'Steel', icon: 'data:image/png;base64,', subtitle: 'Per day · 1 Jan 1936' };
+const HEAD = { title: 'Steel', icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', subtitle: 'Per day · 1 Jan 1936' };
 
 test('a resource’s tooltip fits any window with its surplus or deficit shown', () => {
   // The review's case: a 300px window and many deals each way.

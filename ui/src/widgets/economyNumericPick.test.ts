@@ -186,7 +186,7 @@ test('economy and shared race picks keep their mounted numeric owner through con
         groupReply = { ...group, factions: group.factions.map(faction => ({ ...faction, name: 'Other faction name',
           names: faction.names.map(name => ({ ...name, name: 'Other faction name' })) })) };
         if (Array.isArray(labels)) { labels[0].consumerNames = ['Other ground name', 'Other air name', 'Other sea name']; labels[0].warnings = ['Content refusal']; }
-        else { labels.resources[0].name = 'Other resource name'; labels.resources[0].icon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMIWPDhPwAGBALgx3AGRgAAAABJRU5ErkJggg=='; labels.warnings = ['Content refusal']; }
+        else { labels.resources[0].name = 'Other resource name'; labels.resources[0].icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png'; labels.warnings = ['Content refusal']; }
         const renamed = render(labels);
         assert.equal(mounted, canvas);
         assert.equal(renamed.chart.pickOwner, first.chart.pickOwner);

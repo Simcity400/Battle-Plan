@@ -1254,13 +1254,7 @@ mod artwork_tests {
         let defines = SharedDefines::default();
         let texts = presentations::Texts::new(&frame, 9, &cat, &defines);
         let resolved = definition(&frame, Some(1), Some(&texts), Some(&definitions), &lexical);
-        assert!(
-            resolved
-                .icon
-                .as_ref()
-                .unwrap()
-                .starts_with("data:image/png;base64,")
-        );
+        assert!(dashboard_text::artwork::url_bytes(resolved.icon.as_ref().unwrap()).is_some());
         assert_eq!(resolved.name.as_deref(), Some("Mod goal"));
         let unresolved = definition(&frame, Some(2), Some(&texts), Some(&definitions), &lexical);
         assert!(unresolved.icon.is_none());

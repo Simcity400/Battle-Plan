@@ -147,7 +147,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
     state.flagReason = 'The flag request failed.'; render();
     assert.match(renderToStaticMarkup(image()), /Flag unavailable/);
-    state.flag = 'data:image/png;base64,synthetic'; state.flagReason = undefined; render();
+    state.flag = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png'; state.flagReason = undefined; render();
     const loaded = image() as ReactElement<{ onError: () => void }>;
     assert.equal(loaded.type, 'img'); loaded.props.onError();
     assert.match(renderToStaticMarkup(image()), /Flag unavailable/);

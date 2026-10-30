@@ -46,21 +46,15 @@ pub fn texture_catalogue(
 }
 
 pub fn png_bytes(image: &Rgba8Image) -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .decode(
-            png_data_url(image)
-                .unwrap()
-                .strip_prefix("data:image/png;base64,")
-                .unwrap(),
-        )
+    crate::artwork::url_bytes(&png_url(image).unwrap())
         .unwrap()
+        .to_vec()
 }
 
+/// The image an artwork URL names.
 pub fn from_url(url: &str) -> Rgba8Image {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(url.strip_prefix("data:image/png;base64,").unwrap())
-        .unwrap();
-    let mut reader = png::Decoder::new(io::Cursor::new(bytes))
+    let bytes = crate::artwork::url_bytes(url).unwrap();
+    let mut reader = png::Decoder::new(io::Cursor::new(&*bytes))
         .read_info()
         .unwrap();
     let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
@@ -441,7 +435,7 @@ fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
         force_pow2_textures: true,
     };
     for frame in 0..3 {
-        let across = png_data_url(
+        let across = png_url(
             &native_frame(
                 &read_texture(layers, "gfx/mod/sheet.png", decode).unwrap(),
                 sprite("GFX_mod_sheet").facts.kind.plain().unwrap(),

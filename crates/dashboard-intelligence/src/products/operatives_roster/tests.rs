@@ -1189,7 +1189,7 @@ fn a_kept_first_view_is_drawn_as_each_selection_shows_it() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|entry| entry.as_str().unwrap().starts_with("data:image/png;base64,"))
+            .all(|entry| dashboard_text::artwork::url_bytes(entry.as_str().unwrap()).is_some())
     };
     select(&source, &mut options, &[]);
     let data = shown(&selected(&options));

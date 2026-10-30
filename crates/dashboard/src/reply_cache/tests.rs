@@ -565,3 +565,41 @@ fn a_write_queued_before_its_folder_is_cleared_or_past_the_queue_is_not_made() {
     assert!(written("kept"), "queued after the clear");
     clear(&root).unwrap();
 }
+
+fn artwork_entry(root: &Path) -> Entry {
+    Entry {
+        path: root.join("recording").join("artwork.zst"),
+        key: "artwork".into(),
+    }
+}
+
+#[test]
+fn an_entry_carries_the_images_its_reply_names_to_a_later_process() {
+    let root = root("artwork");
+    let entry = artwork_entry(&root);
+    let shown = crate::artwork::png_url(&installed_content_image::Rgba8Image {
+        width: 1,
+        height: 1,
+        pixels: vec![10, 20, 30, 255],
+    })
+    .unwrap();
+    let reply = json!({ "icons": [shown, shown] }).to_string();
+    entry.put(&reply);
+    // Another process's table, which never drew the image.
+    let later = Table::new(crate::artwork::base());
+    assert!(later.url_bytes(&shown).is_none());
+    assert_eq!(entry.get_in(&later).as_deref(), Some(reply.as_str()));
+    assert_eq!(later.url_bytes(&shown), crate::artwork::url_bytes(&shown));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_reply_naming_an_image_it_cannot_carry_is_not_written() {
+    let root = root("artwork-missing");
+    let entry = artwork_entry(&root);
+    let missing = format!("{}{}.png", crate::artwork::base(), "7f".repeat(16));
+    entry.put(&json!({ "icon": missing }).to_string());
+    assert!(!entry.path.exists());
+    assert!(entry.get().is_none());
+    let _ = fs::remove_dir_all(root);
+}

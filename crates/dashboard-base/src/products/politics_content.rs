@@ -511,7 +511,7 @@ impl PoliticsContent {
             })
     }
 
-    /// A sprite's first frame as a PNG data URL, or None when the content has no
+    /// A sprite's first frame as its artwork URL, or None when the content has no
     /// such sprite or texture. A name that is not a sprite and not a `GFX_` name is
     /// a texture path, as authored portraits may give one.
     pub fn sprite_png(&self, name: &str) -> io::Result<Option<String>> {
@@ -743,7 +743,7 @@ impl PoliticsContent {
         self.defines(&named).then_some(named)
     }
 
-    /// A recorded portrait entry as a PNG data URL (kind 0 a sprite, kind 1 a
+    /// A recorded portrait entry as its artwork URL (kind 0 a sprite, kind 1 a
     /// texture path), or why it cannot be shown: a sprite content lacks or a
     /// texture that does not load is one the game replaces with a generated
     /// portrait.
@@ -1096,7 +1096,7 @@ fn texture_path(text: &str) -> String {
         .join("/")
 }
 
-/// A sprite's first frame drawn through `catalogue` as a PNG data URL, or None when it has no
+/// A sprite's first frame drawn through `catalogue` as its artwork URL, or None when it has no
 /// such sprite or texture. A name that is not a sprite and not a `GFX_` name is a texture path,
 /// as authored portraits may give one.
 pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result<Option<String>> {

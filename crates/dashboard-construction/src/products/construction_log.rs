@@ -424,7 +424,7 @@ pub struct BuildingInfo {
     /// Its script name; null when the recorded dictionary lacks it.
     pub token: Option<String>,
     pub name: Option<String>,
-    /// A PNG data URL: the construction queue's picture of it.
+    /// An artwork URL: the construction queue's picture of it.
     pub icon: Option<String>,
 }
 

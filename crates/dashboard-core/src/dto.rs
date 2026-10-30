@@ -143,6 +143,6 @@ pub struct Artwork {
     pub name: Option<String>,
     pub description: Option<String>,
     pub base_duration_days: Option<f64>,
-    /// A PNG data URL of the first authored sprite frame.
+    /// The artwork URL of the first authored sprite frame.
     pub icon: Option<String>,
 }

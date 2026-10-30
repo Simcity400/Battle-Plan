@@ -94,7 +94,7 @@ pub struct CountryFlagImage {
     pub key: String,
     pub width: u32,
     pub height: u32,
-    /// The flag as a PNG data URL, at most 128 pixels on the longer side.
+    /// The flag as its artwork URL, at most 128 pixels on the longer side.
     pub png: String,
 }
 
@@ -1139,7 +1139,7 @@ impl FlagContext {
             let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
             let image = resize(&image, width, height);
             let key = flag_key(&asset, &image.pixels);
-            match crate::catalogue::png_data_url(&image) {
+            match crate::artwork::png_url(&image) {
                 Ok(png) => flags.push(CountryFlagImage {
                     tag,
                     key,
@@ -1172,11 +1172,8 @@ mod tests {
 
     /// A reply flag's straight-alpha RGBA, decoded from its PNG.
     fn decoded(image: &CountryFlagImage) -> Vec<u8> {
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(image.png.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        let bytes = crate::artwork::url_bytes(&image.png).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&*bytes))
             .read_info()
             .unwrap();
         let mut pixels = vec![0; reader.output_buffer_size().unwrap()];

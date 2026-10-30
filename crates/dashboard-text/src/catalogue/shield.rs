@@ -359,7 +359,7 @@ mod tests {
             .draw(layers, &[&flag, &flag], Decode::default())
             .unwrap();
         assert_eq!(drawn.len(), 2);
-        let drawn = from_url(&png_data_url(&drawn[0]).unwrap());
+        let drawn = from_url(&png_url(&drawn[0]).unwrap());
         assert_eq!([drawn.width, drawn.height], [6, 4]);
         for y in 0..4 {
             for x in 0..6 {
@@ -392,7 +392,7 @@ mod tests {
         let bare = load("GFX_bare_shield")
             .draw(layers, &[&flag], Decode::default())
             .unwrap();
-        let bare = from_url(&png_data_url(&bare[0]).unwrap());
+        let bare = from_url(&png_url(&bare[0]).unwrap());
         assert_eq!([bare.width, bare.height], [4, 2]);
         assert_eq!(&bare.pixels[..4], [200, 0, 0, 255]);
         assert_eq!(bare.pixels[3 * 4 + 3], 0);

@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { runAt } from '../../charts/series.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { Span } from '../../charts/series';
@@ -51,7 +52,7 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.resources) && reply.resources.every((item, index) => Number.isInteger(item.id) && typeof item.token === 'string' && item.token.length > 0
       && Number.isInteger(item.ordinal) && item.ordinal >= 1 && (index === 0 || reply.resources[index - 1].id < item.id)
-      && (item.name === null || typeof item.name === 'string') && (item.icon === null || (typeof item.icon === 'string' && item.icon.startsWith('data:image/png;base64,'))))
+      && (item.name === null || typeof item.name === 'string') && (item.icon === null || artworkUrlValue(item.icon)))
     && Array.isArray(reply.countries) && reply.countries.every((tag, index) => typeof tag === 'string' && tag.length > 0 && (index === 0 || compareTags(reply.countries[index - 1], tag) < 0))
     && Array.isArray(reply.countryIdentities) && reply.countryIdentities.every((country, index) => typeof country.tag === 'string' && country.tag.length > 0
       && (index === 0 || compareTags(reply.countryIdentities[index - 1].tag, country.tag) < 0)

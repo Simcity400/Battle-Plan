@@ -52,7 +52,7 @@ pub struct SpriteImage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
-    /// A PNG data URL, or null with a named, counted refusal.
+    /// An artwork URL, or null with a named, counted refusal.
     pub icon: Option<String>,
 }
 

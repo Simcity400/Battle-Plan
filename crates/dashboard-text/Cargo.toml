@@ -43,6 +43,7 @@ replay-derive.workspace = true
 replay-frame.workspace = true
 job-priority.workspace = true
 base64 = "0.22.1"
+blake3.workspace = true
 dashboard-core.workspace = true
 installed-content-save.workspace = true
 png.workspace = true

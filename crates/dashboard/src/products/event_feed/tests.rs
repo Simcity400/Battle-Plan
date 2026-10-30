@@ -421,7 +421,7 @@ fn event_feed_mod_focus_and_law_keep_content_artwork_without_technology_events()
         assert!(
             item.icon
                 .as_deref()
-                .is_some_and(|icon| icon.starts_with("data:image/png;base64,")),
+                .is_some_and(|icon| crate::artwork::url_bytes(icon).is_some()),
             "{kind:?}: {:?}",
             reply.warnings
         );

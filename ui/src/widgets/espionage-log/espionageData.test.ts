@@ -12,7 +12,7 @@ import { contentKey } from '../../dashboard/options.ts';
 import { keepWanted } from '../../dashboard/productWindows.ts';
 import { countryMatch } from '../../dashboard/groups.ts';
 
-const icon = 'data:image/png;base64,YQ==';
+const icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 const run = (firstHour: number, lastHour: number, ownerTag = 'SYNTHETIC_OWNER'): EspionageOperationRun => ({ firstHour, lastHour, readHour: firstHour,
   ownerTag, targetTag: 'SYNTHETIC_TARGET', typeKey: 'mod operation/été', phaseCount: 4, autoRepeat: false, durationDays: 8, assignedSlots: 3,
   preparationRatio: 35001, elapsedDays: 2, currentPhase: 0, terminal: false, autoCommence: true, startHour: 12, operatives: ['123', '456'], operativeNames: null });

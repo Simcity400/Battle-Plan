@@ -2719,7 +2719,6 @@ dependencies = [
 name = "dashboard-base"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "content-witness",
  "dashboard-base",
@@ -2782,7 +2781,6 @@ dependencies = [
 name = "dashboard-construction"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
@@ -3709,7 +3707,12 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "engine-allocation",
+ "engine-native",
+ "replay",
+ "replay-data",
+ "replay-identity",
  "store",
+ "test-unify",
  "zstd",
 ]
 
@@ -3824,6 +3827,7 @@ name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "blake3",
  "crc32fast",
  "dashboard-core",
  "dashboard-text",
@@ -3879,7 +3883,6 @@ dependencies = [
 name = "dashboard-unit-leaders"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "blake3",
  "dashboard-base",
  "dashboard-core",

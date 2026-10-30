@@ -47,7 +47,7 @@ pub struct ResourceInfo {
     /// Which declaration of its token this is, from 1, in the game's order.
     pub ordinal: u32,
     pub name: Option<String>,
-    /// A PNG data URL; null when content has no icon for it.
+    /// An artwork URL; null when content has no icon for it.
     pub icon: Option<String>,
 }
 
@@ -722,7 +722,6 @@ fn infos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine;
     use std::{fs, path::Path};
 
     /// A true-colour Targa strip, one solid colour per frame, each frame 2 × 2.
@@ -754,12 +753,10 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
-    /// The first pixel of a PNG data URL.
+    /// The first pixel of the image an artwork URL names.
     fn first_pixel(url: &str) -> [u8; 3] {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(url.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        let bytes = dashboard_text::artwork::url_bytes(url).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&*bytes))
             .read_info()
             .unwrap();
         let mut pixels = vec![0; reader.output_buffer_size().unwrap()];

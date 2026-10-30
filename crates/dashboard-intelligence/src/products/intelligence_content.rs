@@ -612,7 +612,7 @@ mod tests {
             artwork
                 .icon
                 .as_deref()
-                .is_some_and(|icon| icon.starts_with("data:image/png;base64,")),
+                .is_some_and(|icon| dashboard_text::artwork::url_bytes(icon).is_some()),
             "{reason:?}"
         );
         assert_eq!(

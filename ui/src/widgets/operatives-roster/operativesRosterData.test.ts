@@ -10,7 +10,7 @@ import { departureText, operativeLabelHour, operativeMoments, operativeName, ope
 const operativeTooltip = (reply: OperativeRosterReply, row: Parameters<typeof flaggedOperativeTooltip>[1], shownHour: number, name: (tag: string, hour: number) => string) =>
   flaggedOperativeTooltip(reply, row, shownHour, (tag, hour) => ({ name: name(tag, hour) }));
 
-const fixture = (): OperativeRosterReply => ({ branchId: '1', operations: [], agencyAbsent: [], artwork: ['data:image/png;base64,cG9ydHJhaXQ='], reasons: ['Portrait link not recorded', 'Mission art unavailable', 'Experience denominator unavailable', 'Assignment operands not recorded'], warnings: [], countries: [{ tag: 'MOD owner',
+const fixture = (): OperativeRosterReply => ({ branchId: '1', operations: [], agencyAbsent: [], artwork: ['http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png'], reasons: ['Portrait link not recorded', 'Mission art unavailable', 'Experience denominator unavailable', 'Assignment operands not recorded'], warnings: [], countries: [{ tag: 'MOD owner',
   identities: [{ firstHour: 100, lastHour: 199, slot: 1, countryId: 7 }, { firstHour: 220, lastHour: 300, slot: 1, countryId: 7 }],
   observed: [{ firstHour: 100, lastHour: 123, readHour: 100 }, { firstHour: 124, lastHour: 199, readHour: 124 },
     { firstHour: 220, lastHour: 300, readHour: 220 }],

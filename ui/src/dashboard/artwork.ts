@@ -1,13 +1,11 @@
 import type { Artwork } from '../generated/dashboard';
+import { artworkUrlValue } from './payload.ts';
 
-/** Longest icon data URL a widget draws; the products scale content art well below it. */
-export const MAX_ICON_URL = 128 * 1024;
-
-/** An icon a widget can draw: a bounded PNG data URL from a product reply. Any
+/** An icon a widget can draw: the artwork URL of a product reply's image. Any
  * other value is missing art, which the widget shows with its placeholder, so one
- * oversized or malformed mod icon never refuses the whole reply. */
+ * malformed icon never refuses the whole reply. */
 export function drawableIcon(icon: unknown): string | null {
-  return typeof icon === 'string' && icon.length <= MAX_ICON_URL && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(icon) ? icon : null;
+  return artworkUrlValue(icon) ? icon : null;
 }
 
 /** Whether a reply's artwork entry has the product's shape (token, name,

@@ -15,7 +15,7 @@ import { definition as spendingBreakdown } from '../widgets/political-power-spen
 import { NO_SPENDING_CATEGORIES, POLITICS_SPENDING_OPTIONS } from './politicsSpendingOptions.ts';
 import { contentSet, parseStoredOptions, resolveOptions, toggleContentSet } from './options.ts';
 
-const ICON = 'data:image/png;base64,YQ==';
+const ICON = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 const item = (id = 'mod/law'): LedgerSpendItem => ({ id, groupId: 'law:mod-law', name: 'A modded law', action: 'A modded law', icon: ICON,
   tooltipToken: null, character: null, targetTag: null, targetName: null, unknown: null });
 const spend = (overrides: Partial<LedgerSpend> = {}): LedgerSpend => ({ id: 'charge:1', hour: 10, readHour: 12, sequence: '1', ordinal: 0,

@@ -10,8 +10,9 @@
 //! recorded coverage depends on unverified local files: it is never stored, and
 //! nothing is served while such reads are being reported. Nor is a reply stored whose
 //! computing noted a fallback or a drawing diagnostic, which joins every reply's warnings
-//! when first noted. The folder is
-//! disposable: an unreadable entry is a miss, and the least recently used
+//! when first noted. An entry carries the images its reply names, which a hit gives this
+//! process's artwork table; a reply naming one the table does not keep is not stored. The folder
+//! is disposable: an unreadable entry is a miss, and the least recently used
 //! entries go once the folder passes [`LIMIT`].
 
 use std::{
@@ -30,12 +31,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Source,
+    artwork::Table,
     products::{ContentOptions, LoadContext},
 };
 
 /// The folder's size limit; pruning keeps three quarters of it.
 pub const LIMIT: u64 = 1 << 30;
-const MAGIC: &[u8; 4] = b"HRC2";
+const MAGIC: &[u8; 4] = b"HRC3";
 const ENTRY_BUDGET: usize = crate::transport::MAX_REPLY_BYTES;
 
 /// Bytes stored since the folder was last measured, so pruning walks it rarely.
@@ -151,13 +153,14 @@ impl Entry {
         let language = settings.language().ok()?;
         let decode = settings.texture_decode();
         let key = format!(
-            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}\n{:?}\n{changed}",
+            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}\n{:?}\n{}\n{changed}",
             String::from_utf8_lossy(MAGIC),
             build()?,
             content.options.game_dir.display(),
             content.options.user_dir.display(),
             content.allow_unverified,
             content.presentation,
+            crate::artwork::base(),
         );
         let name = hex(&Sha256::digest(key.as_bytes())[..16]);
         let path = folder(&content.options)
@@ -168,6 +171,11 @@ impl Entry {
 
     /// The stored reply JSON, or none.
     pub(crate) fn get(&self) -> Option<String> {
+        self.get_in(Table::shared())
+    }
+
+    /// The stored reply JSON, its images given to `artwork`, or none.
+    fn get_in(&self, artwork: &Table) -> Option<String> {
         let mut bytes = Vec::new();
         fs::File::open(&self.path)
             .ok()?
@@ -185,15 +193,26 @@ impl Entry {
         }
         let mut decoder = zstd::stream::read::Decoder::new(body).ok()?;
         decoder.window_log_max(ENTRY_BUDGET.ilog2()).ok()?;
-        let mut json = Vec::new();
+        let mut body = Vec::new();
         decoder
             .take(ENTRY_BUDGET as u64 + 1)
-            .read_to_end(&mut json)
+            .read_to_end(&mut body)
             .ok()?;
-        if json.len() > ENTRY_BUDGET {
+        if body.len() > ENTRY_BUDGET {
             return None;
         }
-        let json = String::from_utf8(json).ok()?;
+        let (count, mut rest) = body.split_first_chunk::<4>()?;
+        let mut images = Vec::new();
+        for _ in 0..u32::from_le_bytes(*count) {
+            let (length, after) = rest.split_first_chunk::<4>()?;
+            let (png, after) = after.split_at_checked(u32::from_le_bytes(*length) as usize)?;
+            images.push(png.to_vec());
+            rest = after;
+        }
+        let json = std::str::from_utf8(rest).ok()?.to_owned();
+        if !artwork.restore(images, &json) {
+            return None;
+        }
         // Pruning removes the least recently used entries first.
         let _ = fs::File::options()
             .write(true)
@@ -242,7 +261,12 @@ impl Entry {
 
     /// Store a reply; a failure leaves only a miss.
     pub(crate) fn put(&self, json: &str) {
-        if let Ok(stored) = self.store(json)
+        self.put_in(json, Table::shared());
+    }
+
+    /// Store a reply with the images it names, from `artwork`.
+    fn put_in(&self, json: &str, artwork: &Table) {
+        if let Ok(stored) = self.store(json, artwork)
             && WRITTEN.fetch_add(stored, Ordering::Relaxed) + stored >= LIMIT / 8
         {
             WRITTEN.store(0, Ordering::Relaxed);
@@ -252,17 +276,35 @@ impl Entry {
         }
     }
 
-    fn store(&self, json: &str) -> io::Result<u64> {
+    fn store(&self, json: &str, artwork: &Table) -> io::Result<u64> {
         if json.len() > ENTRY_BUDGET {
             return Err(io::Error::other(
                 "history reply exceeds the transport byte budget",
             ));
         }
+        let images = artwork
+            .images(json)
+            .ok_or_else(|| io::Error::other("history reply names an image it cannot carry"))?;
+        // Sized before anything is copied: short URLs can name far more image bytes than fit.
+        let size = images
+            .iter()
+            .try_fold(4 + json.len(), |size, png| size.checked_add(4)?.checked_add(png.len()))
+            .filter(|&size| size <= ENTRY_BUDGET)
+            .ok_or_else(|| {
+                io::Error::other("history reply and its images exceed the transport byte budget")
+            })?;
+        let mut body = Vec::with_capacity(size);
+        body.extend(u32::try_from(images.len()).map_err(io::Error::other)?.to_le_bytes());
+        for png in &images {
+            body.extend(u32::try_from(png.len()).map_err(io::Error::other)?.to_le_bytes());
+            body.extend_from_slice(png);
+        }
+        body.extend_from_slice(json.as_bytes());
         let mut bytes = MAGIC.to_vec();
         let length = u32::try_from(self.key.len()).map_err(io::Error::other)?;
         bytes.extend(length.to_le_bytes());
         bytes.extend(self.key.as_bytes());
-        zstd::stream::copy_encode(json.as_bytes(), &mut bytes, 3)?;
+        zstd::stream::copy_encode(&body[..], &mut bytes, 3)?;
         if bytes.len() > ENTRY_BUDGET {
             return Err(io::Error::other(
                 "history entry exceeds the transport byte budget",

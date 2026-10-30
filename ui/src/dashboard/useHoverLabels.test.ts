@@ -6,8 +6,8 @@ import type { HoverRead } from './useHoverLabels';
 
 test('a tooltip revision changes with the question and with every answer, whatever the sizes', () => {
   const answers = new Map<string, HoverRead>([
-    ['A', { style: { name: 'Alpha', color: null }, flag: { url: 'data:image/png;base64,AAAA' } }],
-    ['B', { style: { name: 'Beta', color: null }, flag: { url: 'data:image/png;base64,BBBB' } }],
+    ['A', { style: { name: 'Alpha', color: null }, flag: { url: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' } }],
+    ['B', { style: { name: 'Beta', color: null }, flag: { url: 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png' } }],
   ]);
   const read = (tag: string): HoverRead => answers.get(tag) ?? { style: undefined, flag: undefined };
   // Both warmed at one hour: hovering B then A changes the revision, though every map is one entry.

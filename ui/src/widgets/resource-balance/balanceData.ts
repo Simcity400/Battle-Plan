@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { intervalIndexOf } from '../../charts/intervalIndex.ts';
 import type { IntervalIndex } from '../../charts/intervalIndex';
 import { runAt } from '../../charts/series.ts';
@@ -40,7 +41,7 @@ export function validateResourceBalanceReply(data: unknown): ResourceBalanceRepl
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
     && Array.isArray(reply.resources) && reply.resources.every((item, index) => Number.isInteger(item.id) && typeof item.token === 'string' && item.token.length > 0
       && Number.isInteger(item.ordinal) && item.ordinal >= 1 && (index === 0 || reply.resources[index - 1].id < item.id)
-      && (item.name === null || typeof item.name === 'string') && (item.icon === null || (typeof item.icon === 'string' && item.icon.startsWith('data:image/png;base64,'))))
+      && (item.name === null || typeof item.name === 'string') && (item.icon === null || artworkUrlValue(item.icon)))
     && Array.isArray(reply.series) && reply.series.length === reply.resources.length
     && reply.series.every((series, index) => series.id === reply.resources[index].id && Array.isArray(series.runs) && ordered(series.runs)
       && series.runs.every(run => HOUR(run.firstHour) && HOUR(run.lastHour) && typeof run.startsSegment === 'boolean' && POOLS.every(key => RAW.test(run[key]))))

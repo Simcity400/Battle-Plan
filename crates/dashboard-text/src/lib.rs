@@ -16,6 +16,7 @@ static TEST_ALLOCATOR: test_allocator::Allocator = test_allocator::Allocator;
 mod test_allocator;
 
 pub mod air_wing_names;
+pub mod artwork;
 pub mod catalogue;
 pub mod character_scope;
 pub mod cryptology;

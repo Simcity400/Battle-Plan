@@ -377,7 +377,9 @@ impl Laid {
             self.size,
         )
         .map_err(|why| vec![format!("{name} is not painted: {why}")])?;
-        let image = dashboard_text::catalogue::png_data_url(&painted.image)
+        // A scene is painted for one hour and never shown again: kept as artwork, it would stay for
+        // the process's life.
+        let image = dashboard_text::artwork::png_data_url(&painted.image)
             .map_err(|why| vec![format!("{name} is not painted: {why}")])?;
         let incomplete = !painted.refused.is_empty();
         let mut notes = self.notes;

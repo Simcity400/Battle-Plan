@@ -859,13 +859,10 @@ fn strip_tga(colours: &[[u8; 4]]) -> Vec<u8> {
     bytes
 }
 
-/// The first pixel of a PNG data URL.
+/// The first pixel of the image an artwork URL names.
 fn first_pixel(url: &str) -> [u8; 4] {
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(url.strip_prefix("data:image/png;base64,").unwrap())
-        .unwrap();
-    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+    let bytes = dashboard_text::artwork::url_bytes(url).unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&*bytes))
         .read_info()
         .unwrap();
     let mut pixels = vec![0; reader.output_buffer_size().unwrap()];

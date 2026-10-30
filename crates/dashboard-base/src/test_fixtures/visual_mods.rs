@@ -123,7 +123,7 @@ pub fn solid(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
     })
 }
 
-/// The first pixel of a PNG data URL.
+/// The first pixel of the image an artwork URL names.
 pub fn first_pixel(url: &str) -> [u8; 4] {
     let image = dashboard_text::catalogue::texture_tests::from_url(url);
     image.pixels[..4].try_into().unwrap()

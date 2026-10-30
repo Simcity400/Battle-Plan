@@ -25,7 +25,7 @@ test('mounted portrait requests reuse reads and keep leaderboard and career dime
 
 test('portrait facts reject malformed references, artwork and duplicate entries', () => {
   const extract = portraitSpec(86).extract;
-  const portrait = { reference: '8', image: 'data:image/png;base64,AAAA', missing: null };
+  const portrait = { reference: '8', image: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', missing: null };
   assert.deepEqual(extract({ portraits: [portrait], warnings: ['Content is unverified'] }).get('8'), { ...portrait, warnings: ['Content is unverified'] });
   for (const reply of [null, { portraits: null }, { portraits: [null] },
     { portraits: [{ ...portrait, reference: '18446744073709551616' }] },
@@ -125,7 +125,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
       { branchId: '1', hour: 100, references: ['8'], edge: 118 },
     ]);
     track = recording('recording-b');
-    fixture.reply = { portraits: [{ reference: '8', image: 'data:image/png;base64,AAAA', missing: null }], warnings: [] };
+    fixture.reply = { portraits: [{ reference: '8', image: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', missing: null }], warnings: [] };
     assert.equal(render().size, 0, 'a reused reference in another recording starts pending');
     fixture.commit(); await settle();
     assert.equal(render().get('[100,"8"]')?.missing, null);
@@ -136,7 +136,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
     fixture.content++;
     assert.equal(render().size, 0, 'changed content cannot retain a prior portrait or refusal');
     fixture.commit(); await settle();
-    assert.equal(render().get('[100,"8"]')?.image, 'data:image/png;base64,AAAA');
+    assert.equal(render().get('[100,"8"]')?.image, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(fixture.calls.length, 5);
   } finally { fixture.unmount(); await vite.close(); delete host.__portraitFacts; }
 });

@@ -32,9 +32,9 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   const art = { token: 'one', name: 'One', description: 'Game description', baseDurationDays: 70, icon: null };
   assert.equal(validateFocusReply({ ...reply, artwork: [art] }).artwork[0].baseDurationDays, 70);
   for (const baseDurationDays of [-1, NaN, Infinity]) assert.throws(() => validateFocusReply({ ...reply, artwork: [{ ...art, baseDurationDays }] }));
-  // An icon that is not a bounded PNG data URL is never drawn: it shows as missing art,
-  // and the rest of the reply (a mod's oversized icon included) still loads.
-  for (const icon of ['https://example.com/remote.png', 'data:text/html;base64,YQ==', `data:image/png;base64,${'A'.repeat(200 * 1024)}`]) {
+  // An icon that is not an artwork URL is never drawn: it shows as missing art,
+  // and the rest of the reply still loads.
+  for (const icon of ['https://example.com/remote.png', 'data:text/html;base64,YQ==', 'data:image/png;base64,YQ==', `/api/artwork/../${'a'.repeat(32)}.png`]) {
     assert.equal(validateFocusReply(structuredClone({ ...reply, artwork: [{ ...art, icon }] })).artwork[0].icon, null);
   }
   // A malformed entry is still refused rather than reaching the widget.
@@ -43,7 +43,7 @@ test('focus histories reject overlap, future completion bounds and invalid artwo
   }
   // Continuous focuses' static text is their own list, never drawn and always present.
   assert.equal(validateFocusReply({ ...reply, continuousStaticText: [art] }).continuousStaticText[0].name, 'One');
-  for (const continuousStaticText of [undefined, [{ ...art, icon: 'data:image/png;base64,YQ==' }], [null]]) {
+  for (const continuousStaticText of [undefined, [{ ...art, icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }], [null]]) {
     assert.throws(() => validateFocusReply({ ...reply, continuousStaticText } as unknown as FocusReply));
   }
 });
@@ -190,7 +190,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     active: true, headerSlot: null, onDiagnostics: (warnings: string[]) => { diagnostics = warnings; reports.push(warnings); } } as unknown as WidgetProps;
   const render = () => { state.begin(); return renderToStaticMarkup(createElement(renderer.render, props)); };
   const settle = () => new Promise<void>(resolve => setImmediate(resolve));
-  const complete = (read: Pending, name: string | null, reason: string | null = null, warnings: string[] = [], icon = 'data:image/png;base64,YQ==') => read.resolve({
+  const complete = (read: Pending, name: string | null, reason: string | null = null, warnings: string[] = [], icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png') => read.resolve({
     branchId: read.params.branchId, hour: read.params.hour, tag: read.params.tag, database: read.params.database, warnings,
     items: read.params.tokens.map(token => ({ artwork: { token, name: token === 'switch' ? name : 'Completed at 100', description: null,
       baseDurationDays: 10, icon: reason || read.params.textOnly ? null : icon }, reason: token === 'switch' ? reason : null })),
@@ -205,7 +205,7 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     complete(firstRead, 'Early choice'); await settle();
     assert.match(render(), /Early choice/);
     assert.equal(firstRead.params.textOnly, true);
-    assert.doesNotMatch(render(), /src="data:image/); // Text does not wait for the unresolved image request.
+    assert.doesNotMatch(render(), /src="http:\/\/artwork/); // Text does not wait for the unresolved image request.
     hour = 101; const pending = render(); state.flush();
     assert.doesNotMatch(pending, /Early choice/);
     assert.doesNotMatch(pending, /Loading game artwork/);
@@ -213,12 +213,12 @@ test('registered focus renderer owns dated art, pending/refused hover text, Pin 
     assert.match(pending, /Completed at 100/);
     const next = reads.find(read => read.params.hour === 101)!;
     assert.deepEqual(next.params.tokens, ['switch']);
-    complete(next, 'Later choice', null, [], 'data:image/png;base64,Yg=='); await settle();
-    complete(reads.find(read => read.params.hour === 101 && !read.params.textOnly)!, 'Image-side title', null, [], 'data:image/png;base64,Yg=='); await settle();
+    complete(next, 'Later choice', null, [], 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'); await settle();
+    complete(reads.find(read => read.params.hour === 101 && !read.params.textOnly)!, 'Image-side title', null, [], 'http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'); await settle();
     const changed = render();
     assert.match(changed, /Later choice/);
     assert.doesNotMatch(changed, /Image-side title/);
-    assert.match(changed, /src="data:image\/png;base64,Yg=="/);
+    assert.match(changed, /src="http:\/\/artwork\.localhost\/b{32}\.png"/);
     assert.doesNotMatch(changed, /Early choice/);
     hour = 102; render(); state.flush();
     complete(reads.find(read => read.params.hour === 102)!, null, 'focus-window mode is not recorded', ['Named content warning']); await settle();

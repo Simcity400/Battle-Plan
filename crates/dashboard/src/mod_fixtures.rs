@@ -136,9 +136,9 @@ fn tga_row(pixels: &[[u8; 4]]) -> Vec<u8> {
     bytes
 }
 
-/// The data URL an icon reply carries for one opaque pixel.
+/// The artwork URL an icon reply carries for one opaque pixel.
 fn pixel_png(rgba: [u8; 4]) -> String {
-    catalogue::png_data_url(&Rgba8Image {
+    crate::artwork::png_url(&Rgba8Image {
         width: 1,
         height: 1,
         pixels: rgba.to_vec(),

@@ -79,7 +79,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
       host.__projectLabels = []; host.__projectPortals = []; host.__projectPortalTargets = []; host.__projectKeys = {};
       return renderToStaticMarkup(createElement(HeaderActionsSlot.Provider, { value: host.__projectActions ?? null }, createElement(Widget, props)));
     };
-    const flags: ReturnType<CountryLabel>[] = [{ name: 'Selected actor', flagPending: true, flag: 'data:image/png;base64,synthetic' },
+    const flags: ReturnType<CountryLabel>[] = [{ name: 'Selected actor', flagPending: true, flag: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' },
       { name: '', flagPending: false, flagReason: 'Native flag selection refused its supplying read.' }];
     for (const flag of flags) {
       host.__projectFlag = flag;

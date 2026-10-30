@@ -80,7 +80,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
       branchId: params(call).branchId, hour: params(call).hour, tag: params(call).tag, database: params(call).database,
       items: params(call).tokens.map(token => ({ artwork: { token,
         name: params(call).iconsOnly ? null : details ? 'Detail title' : token === 'empty' ? '' : token === 'equal' ? 'equal' : 'Authored literal title',
-        description: details ? '' : null, baseDurationDays: 10, icon: params(call).textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
+        description: details ? '' : null, baseDurationDays: 10, icon: params(call).textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
       warnings: details ? ['Reached description warning'] : [],
     });
     const render = () => { hooks.begin(); return useFocusArtwork(client, track, 'M0', wanted, true, detailsWanted); };
@@ -96,7 +96,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     result = render();
     const pendingTitle = result.read.get(nameKey(10, 'literal'));
     assert.ok(pendingTitle && typeof pendingTitle !== 'symbol');
-    assert.equal(pendingTitle.artwork.icon, 'data:image/png;base64,AA==');
+    assert.equal(pendingTitle.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(pendingTitle.titlePending, true, 'a successful image cannot complete its pending title');
     assert.equal(pendingTitle.titleReason, undefined);
     calls[0].fail(); await settle();
@@ -105,7 +105,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     assert.ok(failedTitle && typeof failedTitle !== 'symbol');
     assert.equal(failedTitle.titlePending, false);
     assert.equal(failedTitle.titleReason, 'Focus name request failed.');
-    assert.equal(failedTitle.artwork.icon, 'data:image/png;base64,AA==', 'a failed title retains its successful image');
+    assert.equal(failedTitle.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', 'a failed title retains its successful image');
     // A content revision explicitly retries the refused title and clears old artwork.
     contentRevision(client).observe({ game: 'retry-game', user: 'retry-user', contentReady: true });
     render(); hooks.commit(); await settle();
@@ -119,7 +119,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
       const item = result.read.get(nameKey(10, token));
       assert.ok(item && typeof item !== 'symbol');
       assert.equal(item.artwork.name, name);
-      assert.equal(item.artwork.icon, 'data:image/png;base64,AA==');
+      assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
       assert.equal(item.artwork.description, null);
     }
 
@@ -149,7 +149,7 @@ test('focus titles and icons exclude descriptions, while opened details retain s
     const literal = result.read.get(nameKey(10, 'literal'));
     assert.ok(literal && typeof literal !== 'symbol');
     assert.equal(literal.artwork.name, 'Authored literal title');
-    assert.equal(literal.artwork.icon, 'data:image/png;base64,AA==');
+    assert.equal(literal.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(calls.length, 4, 'permanent detail failures do not retry in a loop');
     detailsWanted = []; render(); hooks.commit();
     detailsWanted = [wanted[0]]; render(); hooks.commit(); await settle();
@@ -205,7 +205,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
       calls.push({ params, answer: (name, description) => resolve({ ...input, data: {
         branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name, description: description ?? null,
-          baseDurationDays: 10, icon: params.textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
+          baseDurationDays: 10, icon: params.textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
       } }) });
     }) } as unknown as DashboardClient;
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
@@ -230,7 +230,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
     for (const token of ['scoped', 'absent']) {
       const item = result.read.get(nameKey(10, token));
       assert.ok(item && typeof item !== 'symbol');
-      assert.equal(item.artwork.icon, 'data:image/png;base64,AA==', 'icons display before slower scoped titles arrive');
+      assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', 'icons display before slower scoped titles arrive');
       assert.equal(item.artwork.name, null, 'an image-only reply cannot invent a title');
     }
     calls[0].answer('Dated title'); await settle();
@@ -239,7 +239,7 @@ test('known static focus titles omit dated title work, retaining empty and key-e
       const item = result.read.get(nameKey(10, token));
       assert.ok(item && typeof item !== 'symbol');
       assert.equal(item.artwork.name, name);
-      assert.equal(item.artwork.icon, 'data:image/png;base64,AA==');
+      assert.equal(item.artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     }
     detailsWanted = [wanted[0]]; render(); hooks.commit(); await settle();
     assert.equal(calls.length, 3);
@@ -283,7 +283,7 @@ test('a continuous focus is read from its own database, never from a national fo
       calls.push({ params, answer: () => resolve({ ...input, data: {
         branchId: params.branchId, hour: params.hour, tag: params.tag, database: params.database, warnings: [],
         items: params.tokens.map(token => ({ artwork: { token, name: params.iconsOnly ? null : name, description: null,
-          baseDurationDays: null, icon: params.textOnly ? null : 'data:image/png;base64,AA==' }, reason: null })),
+          baseDurationDays: null, icon: params.textOnly ? null : 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null })),
       } }) });
     }) } as unknown as DashboardClient;
     const track = { source: { id: 'source', revision: 'revision' }, branch: { id: 'branch' } } as BoundTrack;
@@ -310,7 +310,7 @@ test('a continuous focus is read from its own database, never from a national fo
     for (const call of asked('national')) call.answer();
     await settle();
     result = render();
-    assert.equal(shown(result.national.read)?.icon, 'data:image/png;base64,AA==');
+    assert.equal(shown(result.national.read)?.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
     assert.equal(result.continuous.read.get(nameKey(10, 'shared')), undefined, 'a national reply never answers the continuous read');
     for (const call of asked('continuous')) call.answer();
     await settle();
@@ -346,7 +346,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted, staticText) => {
       const fixture = globalThis.__focusDetails; fixture.wanted = wanted; fixture.detailsWanted = detailsWanted; fixture.staticText = staticText;
       return { warnings: [], details: fixture.details, read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]), {
-        artwork: { token: tag, name: tag === 'plain' ? '' : fixture.titlePending || fixture.titleReason ? null : 'Localized focus', description: null, baseDurationDays: 10, icon: 'data:image/png;base64,AA==' }, reason: null, titlePending: tag === 'scoped' && fixture.titlePending, titleReason: tag === 'scoped' ? fixture.titleReason : undefined,
+        artwork: { token: tag, name: tag === 'plain' ? '' : fixture.titlePending || fixture.titleReason ? null : 'Localized focus', description: null, baseDurationDays: 10, icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' }, reason: null, titlePending: tag === 'scoped' && fixture.titlePending, titleReason: tag === 'scoped' ? fixture.titleReason : undefined,
       }])) }; };
       export const useContinuousFocusArtwork = () => ({ warnings: [], read: new Map(), details: new Map() });`,
   };

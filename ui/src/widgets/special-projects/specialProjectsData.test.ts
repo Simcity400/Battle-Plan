@@ -176,7 +176,7 @@ test('a comparison heading carries complete flag status at the selected holder d
   assert.equal(projectCountryHour(data, 219), 199);
   assert.equal(projectCountryHour(data, 99), null);
   assert.equal(projectCountryHour(data, 250, [{ firstHour: 110, lastHour: 115 }]), 115);
-  const labels: ReturnType<CountryLabel>[] = [{ name: 'Known', flag: 'data:image/png;base64,synthetic', flagPending: true },
+  const labels: ReturnType<CountryLabel>[] = [{ name: 'Known', flag: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', flagPending: true },
     { name: '', flagPending: false, flagReason: 'The supplying flag read refused its native inputs.' }];
   for (const label of labels) {
     const heading = projectHeading('country', label, '');

@@ -3,7 +3,7 @@ import { validateProductReply } from './client.ts';
 import { contentRevision } from './contentRevision.ts';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply } from '../generated/dashboard';
 
-/** A list flag as the picker keeps it: its picture as the PNG data URL the reply carries. */
+/** A list flag as the picker keeps it: its picture as the artwork URL the reply carries. */
 export interface StoredFlag {
   tag: string;
   asset: string;
@@ -12,8 +12,8 @@ export interface StoredFlag {
   png: string;
 }
 
-/** Bytes for the flags the picker keeps, close to the product cache's own budget. */
-export const FLAG_STORE_BYTES = 64 * 1024 * 1024;
+/** Bytes of the strings the picker keeps for its flags; the browser keeps the pictures. */
+export const FLAG_STORE_BYTES = 16 * 1024 * 1024;
 /** Map entry, key object and flag header bookkeeping, approximately. */
 const ENTRY_OVERHEAD_BYTES = 96;
 

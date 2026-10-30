@@ -285,19 +285,17 @@ fn a_drawn_items_note_is_counted_in_the_warnings() {
         "warnings": [],
     });
     let note = "character 7 portrait: not drawn";
-    draw_icons(&mut data, |_| {
-        Ok(Ok((Some("data:image/png;base64,AA==".to_owned()), Some(note.to_owned()))))
-    })
-    .unwrap();
+    let icon = format!("artwork:{}.png", "a0".repeat(16));
+    draw_icons(&mut data, |_| Ok(Ok((Some(icon.clone()), Some(note.to_owned()))))).unwrap();
     for item in data["spendItems"].as_array().unwrap() {
-        assert_eq!(item["icon"], "data:image/png;base64,AA==");
+        assert_eq!(item["icon"], icon);
         assert_eq!(item["unknown"], note);
     }
     assert_eq!(data["warnings"], serde_json::json!([format!("{note} (count: 2)")]));
 }
 
 fn expected_png(pixel: [u8; 4]) -> String {
-    dashboard_text::catalogue::png_data_url(&installed_content_image::Rgba8Image {
+    dashboard_text::artwork::png_url(&installed_content_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: pixel.to_vec(),

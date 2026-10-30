@@ -1958,7 +1958,7 @@ mod tests {
         let produced = Cell::new(0);
         let items = params.tokens.iter().map(|token| {
             produced.set(produced.get() + 1);
-            let mut resolved = item(Some(format!("data:image/png;base64,{}", "A".repeat(512))));
+            let mut resolved = item(Some(format!("artwork:{}.png", "a".repeat(32))));
             resolved.0.token.clone_from(token);
             resolved
         });

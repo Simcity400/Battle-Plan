@@ -66,14 +66,11 @@ test('dated labels forward the hour limit to both reads and distinguish pending,
   } finally { delete host.__labelFixture; }
 });
 
-test('a flag is shown as the PNG its reply carries, one string per picture for every reply showing it', async () => {
+test('a flag is shown as the artwork URL its reply carries', async () => {
   const image = (tag: string, key: string, png: string) => ({ tag, asset: 'gfx/flags/small/MOD_mod ideology.tga', key, width: 1, height: 1, png });
+  const url = (digit: string) => `http://artwork.localhost/${digit.repeat(32)}.png`;
   const source = { sourceId: 'source', revision: 'revision', branchId: 'branch', content: 0 };
-  const first = await flagSpec('small').extract({ flags: [image('A', 'mod#9', 'data:image/png;base64,QQ=='), image('B', 'mod#7', 'data:image/png;base64,Qg==')] },
+  const first = await flagSpec('small').extract({ flags: [image('A', 'mod#9', url('9')), image('B', 'mod#7', url('7'))] },
     undefined, source);
-  assert.deepEqual([...first], [['A', 'data:image/png;base64,QQ=='], ['B', 'data:image/png;base64,Qg==']]);
-  // A later reply's copy of a picture already held gives the string kept for it; a new picture its own.
-  const later = await flagSpec('small').extract({ flags: [image('C', 'mod#9', 'data:image/png;base64,later'), image('D', 'mod#5', 'data:image/png;base64,RA==')] },
-    undefined, { ...source, branchId: 'other branch' });
-  assert.deepEqual([...later], [['C', 'data:image/png;base64,QQ=='], ['D', 'data:image/png;base64,RA==']]);
+  assert.deepEqual([...first], [['A', url('9')], ['B', url('7')]]);
 });

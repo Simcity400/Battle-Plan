@@ -4,7 +4,7 @@ import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { countryIdentityKey, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import { formatDateTime, isEngineHour } from '../../dashboard/calendar.ts';
-import { i32Value, nullableValue, orderedHourSpans as ordered, pngDataValue, raw64Value as raw, recordValue as object, textValue as text, tokenValue as token } from '../../dashboard/payload.ts';
+import { artworkUrlValue, i32Value, nullableValue, orderedHourSpans as ordered, raw64Value as raw, recordValue as object, textValue as text, tokenValue as token } from '../../dashboard/payload.ts';
 import type { OperativeRosterReply } from '../../generated/dashboard';
 
 type Country = OperativeRosterReply['countries'][number];
@@ -29,7 +29,7 @@ const observations = (v: unknown, aliases = false) => ordered(v) && v.every((rea
 
 export function validateOperativesRosterReply(data: unknown): OperativeRosterReply {
   if (!object(data) || !text(data.branchId) || !/^\d+$/.test(data.branchId)
-    || !Array.isArray(data.artwork) || !data.artwork.every(pngDataValue)
+    || !Array.isArray(data.artwork) || !data.artwork.every(artworkUrlValue)
     || !Array.isArray(data.reasons) || !data.reasons.every(text)) throw new Error('The operatives roster reply is malformed.');
   const artwork = data.artwork;
   const reasons = data.reasons;

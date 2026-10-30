@@ -176,7 +176,7 @@ mod tests {
     use super::*;
     #[test]
     fn faction_resource_icons_use_the_shared_resource_result_without_hiding_amounts() {
-        for icon in [Some("data:image/png;base64,c3ludGhldGlj".to_owned()), None] {
+        for icon in [Some(format!("artwork:{}.png", "5e".repeat(16))), None] {
             let info = super::super::super::resources::ResourceInfo {
                 id: 1,
                 token: "mod_resource".into(),
@@ -309,11 +309,7 @@ mod tests {
             );
             let slot = |ordinal| pool.iter().find(|value| value.ordinal == ordinal).unwrap();
             assert!(
-                slot(1)
-                    .icon
-                    .as_ref()
-                    .unwrap()
-                    .starts_with("data:image/png;base64,")
+                dashboard_text::artwork::url_bytes(slot(1).icon.as_ref().unwrap()).is_some()
             );
             assert!(slot(2).icon.is_none());
             assert_eq!(slot(1).raw, "-9007199254740993");

@@ -100,12 +100,12 @@ test('the leader is named as recorded, and every gap in what is known is said', 
       { ideology: '', person: null, firstHour: 105, lastHour: 105, startsSegment: false },
       { ideology: 'mod_type', person: 2, firstHour: 106, lastHour: 106, startsSegment: false },
     ],
-    people: [{ character: adolf, name: 'Adolf Hitler', portrait: 'data:image/png;base64,AA', portraitMissing: null },
+    people: [{ character: adolf, name: 'Adolf Hitler', portrait: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', portraitMissing: null },
       { character: { ...adolf, name: 'Der Führer' }, name: 'Der Führer', portrait: null, portraitMissing: 'The game generates this portrait from inputs the recording lacks.' },
       { character: { id: 9, token: '', name: 'SCOPED' }, name: null, portrait: null, portraitMissing: 'The leader’s portraits were not recorded.' }],
     ideologyTypes: [{ token: 'nazism', name: 'Nazism' }, { token: 'mod_type', name: null }] };
   const at = (hour: number) => leaderShown(reply, leaderAt(reply, hour));
-  assert.deepEqual(at(100), { name: 'Adolf Hitler', known: true, portrait: 'data:image/png;base64,AA', portraitMissing: null, ideology: 'Nazism' });
+  assert.deepEqual(at(100), { name: 'Adolf Hitler', known: true, portrait: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', portraitMissing: null, ideology: 'Nazism' });
   // A rename or a new portrait is its own entry, so both follow the hour shown.
   assert.deepEqual([at(102).name, at(102).portrait], ['Der Führer', null]);
   assert.match(at(102).portraitMissing!, /generates/);

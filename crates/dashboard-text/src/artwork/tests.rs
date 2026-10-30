@@ -1,0 +1,130 @@
+use super::*;
+
+fn image(width: u32, height: u32, value: u8) -> Rgba8Image {
+    Rgba8Image {
+        width,
+        height,
+        pixels: vec![value; (width * height * 4) as usize],
+    }
+}
+
+fn decoded(png: &[u8]) -> Rgba8Image {
+    let mut reader = png::Decoder::new(io::Cursor::new(png)).read_info().unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    pixels.truncate(frame.buffer_size());
+    Rgba8Image {
+        width: frame.width,
+        height: frame.height,
+        pixels,
+    }
+}
+
+#[test]
+fn urls_round_trip_their_image() {
+    let drawn = image(3, 2, 200);
+    let url = png_url(&drawn).unwrap();
+    let name = url.strip_prefix(base()).unwrap();
+    assert_eq!(name.len(), NAME_LENGTH);
+    let png = url_bytes(&url).unwrap();
+    assert_eq!(bytes(name).unwrap(), png);
+    assert_eq!(decoded(&png).pixels, drawn.pixels);
+}
+
+#[test]
+fn identical_pixels_are_one_name() {
+    let table = Table::new("test:");
+    let first = table.put(encode(&image(4, 4, 7)).unwrap());
+    assert_eq!(first, table.put(encode(&image(4, 4, 7)).unwrap()));
+    assert_ne!(first, table.put(encode(&image(4, 4, 8)).unwrap()));
+    assert_eq!(table.read().len(), 2);
+}
+
+#[test]
+fn names_are_validated_strictly() {
+    let table = Table::new("/api/artwork/");
+    let url = table.put(encode(&image(2, 2, 9)).unwrap());
+    let name = url.strip_prefix("/api/artwork/").unwrap().to_owned();
+    assert!(table.bytes(&name).is_some());
+    for refused in [
+        format!("../{name}"),
+        format!("..\\{name}"),
+        format!("/{name}"),
+        format!("{name}/"),
+        format!("{name}\0"),
+        format!("a{name}"),
+        name[1..].to_owned(),
+        name.replace(".png", ".PNG"),
+        name.to_uppercase(),
+        name.replace(".png", ".tmp"),
+        String::new(),
+        "..".into(),
+    ] {
+        assert!(table.bytes(&refused).is_none(), "{refused:?}");
+    }
+    assert!(table.url_bytes(&format!("http://artwork.localhost/{name}")).is_none());
+    assert!(table.url_bytes(&url).is_some());
+    // Well formed, but never kept.
+    assert!(table.bytes(&format!("{}.png", "0".repeat(32))).is_none());
+}
+
+#[test]
+fn every_image_handed_out_stays_served() {
+    let table = Table::new("test:");
+    let urls: Vec<_> = (0..64)
+        .map(|value| table.put(encode(&image(16, 16, value)).unwrap()))
+        .collect();
+    for (value, url) in urls.iter().enumerate() {
+        assert_eq!(decoded(&table.url_bytes(url).unwrap()).pixels[0], value as u8);
+    }
+}
+
+#[test]
+fn text_carries_each_image_it_names_once() {
+    let table = Table::new("test:");
+    let first = encode(&image(2, 1, 3)).unwrap();
+    let second = encode(&image(2, 1, 4)).unwrap();
+    let (one, two) = (table.put(first.clone()), table.put(second.clone()));
+    assert_eq!(table.images("no images").unwrap(), Vec::<Arc<[u8]>>::new());
+    // Text that only looks like a URL names nothing.
+    assert!(table.images("test:not-an-image test:").unwrap().is_empty());
+    let mut carried = table
+        .images(&format!(r#"["{one}","{two}","{one}"]"#))
+        .unwrap()
+        .iter()
+        .map(|png| png.to_vec())
+        .collect::<Vec<_>>();
+    carried.sort();
+    let mut expected = vec![first, second];
+    expected.sort();
+    assert_eq!(carried, expected);
+    let missing = format!("test:{}.png", "ab".repeat(16));
+    assert!(table.images(&format!("{one} {missing}")).is_none());
+}
+
+#[test]
+fn restoring_keeps_only_the_images_the_text_names() {
+    let source = Table::new("test:");
+    let shown = encode(&image(3, 3, 1)).unwrap();
+    let other = encode(&image(3, 3, 2)).unwrap();
+    let text = format!(r#"{{"icon":"{}"}}"#, source.put(shown.clone()));
+    let fresh = Table::new("test:");
+    assert!(!fresh.restore(Vec::<Vec<u8>>::new(), &text));
+    assert!(fresh.restore([other.clone(), shown.clone()], &text));
+    assert_eq!(*fresh.url_bytes(&text[9..text.len() - 2]).unwrap(), *shown);
+    assert_eq!(fresh.read().len(), 1, "an image the text does not name is not kept");
+    // A damaged image is another name, so it restores nothing.
+    let mut damaged = shown;
+    *damaged.last_mut().unwrap() ^= 1;
+    assert!(!Table::new("test:").restore([damaged], &text));
+    assert!(fresh.restore(Vec::<Vec<u8>>::new(), "no images"));
+}
+
+#[test]
+fn data_urls_carry_their_image_inline() {
+    let url = png_data_url(&image(3, 2, 255)).unwrap();
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(url.strip_prefix("data:image/png;base64,").unwrap())
+        .unwrap();
+    assert_eq!((decoded(&png).width, decoded(&png).height), (3, 2));
+}

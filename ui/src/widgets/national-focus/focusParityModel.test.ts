@@ -17,14 +17,14 @@ test('canonical model retains every referenced static field and every dated obse
     { ordinal: 1, token: 'repeated', completedByHour: 15 } ], current: 'active', continuous: 'continuous', paused: true };
   const calls: [FocusDatabase, string, number][] = [];
   const read = (database: FocusDatabase, token: string, hour: number) => { calls.push([database, token, hour]); return {
-    artwork: { token, name: hour === 15 ? 'Scoped title' : '', description: hour === 15 ? 'Observed details' : 'Static details', baseDurationDays: 7, icon: 'data:image/png;base64,AA==' },
+    artwork: { token, name: hour === 15 ? 'Scoped title' : '', description: hour === 15 ? 'Observed details' : 'Static details', baseDurationDays: 7, icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png' },
     pending: false, reason: hour === 15 ? 'Named refusal' : null, descriptionDemanded: hour === 15 }; };
   const model = focusParityModel(order, { progress: -9223372036854775808n, dailyGain: null }, 4, 20, true, metadata, continuousMetadata, read);
   assert.deepEqual(model.staticText, [metadata[2], metadata[1]]);
   assert.deepEqual(model.continuousStaticText, [continuousMetadata[0]]);
   assert.deepEqual(calls, [['national', 'repeated', 4], ['national', 'repeated', 15], ['national', 'active', 20]]);
   assert.deepEqual((model.artwork as any[])[1].art, read('national', 'repeated', 15));
-  assert.equal((model.activeArt as any).artwork.icon, 'data:image/png;base64,AA==');
+  assert.equal((model.activeArt as any).artwork.icon, 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png');
   assert.equal((model.current as any).progress.progress, -9223372036854775808n);
   const withOtherFuture = focusParityModel(order, null, 4, 20, true, [...metadata, { ...metadata[0], token: 'another_future' }], continuousMetadata, read);
   assert.deepEqual(withOtherFuture.staticText, model.staticText, 'only unreferenced future metadata is excluded');

@@ -1,33 +1,10 @@
 import { useCallback } from 'react';
-import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
+import type { CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import { FAILED_FACT } from './countryFacts.ts';
 import type { FactSpec, NameAt } from './countryFacts';
 import { nameKey, useCountryFactsAt, useCountryFactsRead, useCountryNamesRead } from './countryNamesAt.ts';
 import type { BoundTrack } from './model';
-
-/** Flag URLs by picture, so every reply, hour and widget showing one holds one string, least
- * recently used dropped past this many UTF-16 bytes. Holders keep their own string, so dropping
- * one never blanks a flag shown. */
-const SHARED_BYTES = 16 * 1024 * 1024;
-const shared = new Map<string, string>();
-let sharedBytes = 0;
-
-/** A flag as an image URL, for places that take an image (tooltip rows): the PNG its reply
- * carries, the one string kept for its picture (`key`, its file and pixels, at its size). */
-export function flagImageUrl(image: CountryFlagImage): string {
-  const key = JSON.stringify([image.key, image.width, image.height]);
-  const known = shared.get(key);
-  if (known !== undefined) { shared.delete(key); shared.set(key, known); return known; }
-  shared.set(key, image.png);
-  sharedBytes += image.png.length * 2;
-  for (const [oldest, url] of shared) {
-    if (sharedBytes <= SHARED_BYTES || oldest === key) break;
-    shared.delete(oldest);
-    sharedBytes -= url.length * 2;
-  }
-  return image.png;
-}
 
 /** One reading spec per flag size (a `country-flags` request draws at most 32 countries). */
 const specs = new Map<CountryFlagSize, FactSpec<string, Promise<ReadonlyMap<string, string>>>>();
@@ -37,7 +14,7 @@ export function flagSpec(size: CountryFlagSize): FactSpec<string, Promise<Readon
     spec = {
       product: 'country-flags', perRequest: 32, shared: true,
       params: (branchId, hour, tags) => ({ branchId, hour, tags, size }),
-      extract: async data => new Map((data as CountryFlagReply).flags.map(image => [image.tag, flagImageUrl(image)] as const)),
+      extract: async data => new Map((data as CountryFlagReply).flags.map(image => [image.tag, image.png] as const)),
     };
     specs.set(size, spec);
   }

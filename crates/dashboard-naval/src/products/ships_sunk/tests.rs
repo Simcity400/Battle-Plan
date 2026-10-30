@@ -393,13 +393,7 @@ fn modded_sub_unit_and_renamed_sea_zone_use_the_effective_content_stack() {
         reply.rows[1].recorded_name_index
     );
     assert_eq!(reply.classes[0].name.as_deref(), Some("Modded warship"));
-    assert!(
-        reply.classes[0]
-            .icon
-            .as_ref()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
-    );
+    assert!(dashboard_text::artwork::url_bytes(reply.classes[0].icon.as_ref().unwrap()).is_some());
     assert_eq!(
         reply.rows[0]
             .place_index

@@ -5,8 +5,7 @@
 //! interface, fonts and game-look text through its presentation, the visual
 //! mods the source's widgets show above it. Nothing names a vanilla asset.
 
-use crate::invalid;
-use base64::Engine;
+use crate::{artwork::png_url, invalid};
 use dashboard_core::{
     findings::{Finding, Kind},
     presentation::Presentation,
@@ -24,7 +23,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-/// The retained compressed artwork budget shared by product content caches.
+/// Bytes product content caches retain of drawn artwork: its URLs and refusals.
 pub const MAX_RETAINED_ARTWORK_BYTES: usize = 64 * 1024 * 1024;
 
 /// A fixed-content error retains its native kind and message on cache hits.
@@ -1428,8 +1427,8 @@ pub fn read_texture(layers: &ResolvedLayers, path: &str, decode: Decode) -> io::
 }
 
 /// A bare texture's first frame of a horizontal strip (the normal state; a
-/// sprite sheet is never stretched), point-sampled down to `max_edge`, as a PNG
-/// data URL. Sprite artwork goes through [`sprite_frame_png`].
+/// sprite sheet is never stretched), point-sampled down to `max_edge`, as its
+/// artwork URL. Sprite artwork goes through [`sprite_frame_png`].
 pub fn texture_png(
     layers: &ResolvedLayers,
     path: &str,
@@ -1516,7 +1515,7 @@ fn image_frame_png(
             .map_err(|_| invalid("Invalid sprite frames"))?,
         ..Plain::default()
     };
-    png_data_url(&native_frame(image, &plain, frame, max_edge)?)
+    png_url(&native_frame(image, &plain, frame, max_edge)?)
 }
 
 /// A sprite's authored frame at time zero, using native strip geometry and
@@ -1641,7 +1640,7 @@ pub fn sprite_frames_png(
         .iter()
         .map(|image| {
             native_frame(image, &Plain::default(), 0, max_edge)
-                .and_then(|image| png_data_url(&image))
+                .and_then(|image| png_url(&image))
         })
         .collect::<io::Result<Vec<_>>>()?;
     let cache = layers.derived::<SpriteImages>();
@@ -1747,7 +1746,7 @@ fn render_sprite_frame_png(
     // Animation initialization supplies the default effect path;
     // drawing binds that stack-resolved program and its samplers.
     sprite::frame(layers, plain, animated, decode, frame, max_edge)
-        .and_then(|image| png_data_url(&image))
+        .and_then(|image| png_url(&image))
         .map_err(|error| invalid(format!("sprite {}: {error}", sprite.name)))
 }
 
@@ -1797,23 +1796,6 @@ fn native_frame(
         height,
         pixels,
     })
-}
-
-/// Straight-alpha RGBA as a PNG data URL, the form every image reply uses.
-pub fn png_data_url(image: &Rgba8Image) -> io::Result<String> {
-    let mut encoded = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut encoded, image.width, image.height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        encoder.set_compression(png::Compression::Fast);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(&image.pixels)?;
-    }
-    Ok(format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(encoded)
-    ))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2977,21 +2959,5 @@ pub mod tests {
         assert_eq!(values(sample(strip(3, 0), 1, 4).unwrap()), [2, 6, 10, 14]);
         assert!(sample(strip(5, 0), 0, 4).is_err());
         assert!(sample(strip(1, 0), 0, 0).is_err());
-    }
-
-    #[test]
-    fn png_data_urls_round_trip_their_size() {
-        let url = png_data_url(&Rgba8Image {
-            width: 3,
-            height: 2,
-            pixels: vec![255; 24],
-        })
-        .unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(url.strip_prefix("data:image/png;base64,").unwrap())
-            .unwrap();
-        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-        let reader = decoder.read_info().unwrap();
-        assert_eq!((reader.info().width, reader.info().height), (3, 2));
     }
 }

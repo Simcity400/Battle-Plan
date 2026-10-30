@@ -1475,7 +1475,6 @@ fn naval_commands_join_the_roster_fleet_and_keep_observation_gaps() {
 fn requests_share_only_the_portrait_size_the_view_draws() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use base64::Engine;
     use replay_data::{rows::CharacterPortrait, rows::TableRows};
     use replay_frame::frame::TableView;
     let mut tga = vec![0_u8; 18];
@@ -1577,10 +1576,8 @@ fn requests_share_only_the_portrait_size_the_view_draws() {
     for (edge, expected) in [(86, (64, 86)), (118, (88, 118))] {
         let image =
             portraits::artwork(&frame, (5_u64 << 32) | 4713, &content.politics, edge).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(image.split_once(',').unwrap().1)
-            .unwrap();
-        let reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        let bytes = dashboard_text::artwork::url_bytes(&image).unwrap();
+        let reader = png::Decoder::new(std::io::Cursor::new(&*bytes))
             .read_info()
             .unwrap();
         assert_eq!((reader.info().width, reader.info().height), expected);

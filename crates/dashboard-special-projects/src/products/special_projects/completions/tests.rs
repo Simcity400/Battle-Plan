@@ -611,7 +611,7 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
     )
     .unwrap();
     let icon = project_icon(&content.catalogue, &key).unwrap();
-    assert!(icon.starts_with("data:image/png;base64,"));
+    assert!(dashboard_text::artwork::url_bytes(&icon).is_some());
     assert_eq!(
         dashboard_text::catalogue::texture_tests::from_url(&icon).pixels[0..4],
         [41, 73, 99, 255]

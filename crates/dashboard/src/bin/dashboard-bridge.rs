@@ -1,6 +1,7 @@
 //! Development-only stdio adapter for the browser UI, plus an explicit native
 //! folder-picker mode. No renderer or live game access.
 
+use base64::Engine;
 use dashboard::{
     Config, Service,
     protocol::{MAX_MESSAGE_BYTES, replay_revision},
@@ -23,7 +24,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
-enum FolderCommand {
+enum LocalCommand {
     SetContentFolders {
         id: String,
         game: PathBuf,
@@ -33,12 +34,17 @@ enum FolderCommand {
         id: String,
         paths: Vec<PathBuf>,
     },
+    /// An image a reply named, which the development server serves: its PNG, or null.
+    Artwork {
+        id: String,
+        name: String,
+    },
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Command {
-    Folders(FolderCommand),
+    Local(LocalCommand),
     Data(DataCommand),
 }
 
@@ -61,6 +67,15 @@ fn emit(event: &DataEvent) -> bool {
     serde_json::to_writer(&mut output, event).is_ok()
         && output.write_all(b"\n").is_ok()
         && output.flush().is_ok()
+}
+
+fn answer(id: String, payload: String) -> Result<(), Box<dyn std::error::Error>> {
+    for event in ReplyChunks::new(id, payload).map_err(invalid)? {
+        if !emit(&event) {
+            return Err("Browser connection closed".into());
+        }
+    }
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -92,6 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let mut config = Config::load()?;
+    let mut artwork_url = None;
     let mut args = arguments.into_iter();
     while let Some(option) = args.next() {
         match option.as_str() {
@@ -101,9 +117,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--user-dir" => {
                 config.user_dir = PathBuf::from(args.next().ok_or("Missing user folder")?)
             }
+            "--artwork-url" => artwork_url = Some(args.next().ok_or("Missing artwork URL")?),
             _ => return Err(format!("Unknown bridge option: {option}").into()),
         }
     }
+    // The URL the development server routes to [`LocalCommand::Artwork`].
+    dashboard::artwork::configure(&artwork_url.ok_or("The bridge needs --artwork-url")?)?;
     let service = Service::new(Arc::new(|event| emit(&event)))?;
     if let Err(error) = service.configure_content(&config, false) {
         eprintln!("{error}");
@@ -112,7 +131,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(command) = read_command(&mut input)? {
         let mut command = match command {
             Command::Data(command) => command,
-            Command::Folders(FolderCommand::RecordingSummaries { id, paths }) => {
+            Command::Local(LocalCommand::Artwork { id, name }) => {
+                let png = dashboard::artwork::bytes(&name)
+                    .map(|png| base64::engine::general_purpose::STANDARD.encode(png));
+                answer(id, serde_json::to_string(&png)?)?;
+                continue;
+            }
+            Command::Local(LocalCommand::RecordingSummaries { id, paths }) => {
                 let partials: Vec<_> = paths
                     .iter()
                     .map(|path| {
@@ -121,15 +146,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .flatten()
                     })
                     .collect();
-                let payload = serde_json::to_string(&partials)?;
-                for event in ReplyChunks::new(id, payload).map_err(invalid)? {
-                    if !emit(&event) {
-                        return Err("Browser connection closed".into());
-                    }
-                }
+                answer(id, serde_json::to_string(&partials)?)?;
                 continue;
             }
-            Command::Folders(FolderCommand::SetContentFolders { id, game, user }) => {
+            Command::Local(LocalCommand::SetContentFolders { id, game, user }) => {
                 let next = Config {
                     game_dir: game,
                     user_dir: user,
@@ -142,11 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(()) => {
                         config = next;
                         let payload = serde_json::json!({ "game": config.game_dir, "user": config.user_dir, "contentReady": true }).to_string();
-                        for event in ReplyChunks::new(id, payload).map_err(invalid)? {
-                            if !emit(&event) {
-                                return Err("Browser connection closed".into());
-                            }
-                        }
+                        answer(id, payload)?;
                     }
                     Err(error) => {
                         if !emit(&DataEvent::Error {
@@ -225,7 +241,7 @@ mod folder_command_tests {
         }))
         .unwrap();
         assert!(
-            matches!(command, Command::Folders(FolderCommand::SetContentFolders { id, game, user })
+            matches!(command, Command::Local(LocalCommand::SetContentFolders { id, game, user })
             if id == "folders-1" && game == std::path::Path::new("C:/Game") && user == std::path::Path::new("C:/User"))
         );
         let command = serde_json::from_value::<Command>(serde_json::json!({
@@ -237,6 +253,12 @@ mod folder_command_tests {
             command,
             Command::Data(DataCommand::MapSettings { .. })
         ));
+        let command = serde_json::from_value::<Command>(serde_json::json!({
+            "type": "artwork", "id": "art-1", "name": "synthetic.png"
+        }))
+        .unwrap();
+        assert!(matches!(command, Command::Local(LocalCommand::Artwork { id, name })
+            if id == "art-1" && name == "synthetic.png"));
         for value in [
             serde_json::json!({"type": "setContentFolders", "id": "1", "game": "C:/Game"}),
             serde_json::json!({"type": "setContentFolders", "id": "1", "game": "C:/Game", "user": null}),

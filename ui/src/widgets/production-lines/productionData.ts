@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { runAt } from '../../charts/series.ts';
 import { entryAt } from '../../dashboard/reads.ts';
 import { campaignToken } from '../../dashboard/chosen.ts';
@@ -115,7 +116,7 @@ export function validateProductionReply(data: unknown): ProductionLinesReply {
     && Array.isArray(reply.organisations) && byIdThenHour(reply.organisations)
       && reply.organisations.every(item => typeof item.token === 'string' && NULLABLE(item.name) && NULLABLE(item.icon)
         && NULLABLE(item.nameUnknown) && NULLABLE(item.iconUnknown))
-    && Array.isArray(reply.icons) && reply.icons.every(icon => typeof icon.key === 'string' && (icon.image === null || (typeof icon.image === 'string' && icon.image.startsWith('data:image/png;base64,'))))
+    && Array.isArray(reply.icons) && reply.icons.every(icon => typeof icon.key === 'string' && (icon.image === null || artworkUrlValue(icon.image)))
     && Array.isArray(reply.reads) && reply.reads.every((hour, index) => HOUR(hour) && (index === 0 || reply.reads[index - 1] < hour))
     && [reply.outputHours, reply.lineHours, reply.organisationHours, reply.unreadOutput, reply.approximate].every(spans => Array.isArray(spans) && ordered(spans))
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');

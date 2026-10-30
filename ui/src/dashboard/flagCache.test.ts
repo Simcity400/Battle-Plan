@@ -16,7 +16,7 @@ function fakeClient() {
       if (request.product !== 'country-flags') { productCalls++; return { ...request, data: { calls: productCalls } }; }
       requests.push(request);
       const flags = request.params.tags.filter(tag => tag !== 'NOFLAG')
-        .map(tag => ({ tag, asset: `gfx/flags/medium/${tag}.tga`, key: `gfx/flags/medium/${tag}.tga#0`, width: 1, height: 1, png: 'data:image/png;base64,AA==' }));
+        .map(tag => ({ tag, asset: `gfx/flags/medium/${tag}.tga`, key: `gfx/flags/medium/${tag}.tga#0`, width: 1, height: 1, png: `http://artwork.localhost/${'0'.repeat(32)}.png` }));
       return { ...request, data: { branchId: request.params.branchId, hour: request.params.hour, size: request.params.size, flags, warnings: [] } };
     },
   } as unknown as DashboardClient;
@@ -52,14 +52,15 @@ test('scrolling through thousands of flags never evicts widget products', async 
   assert.equal(productCalls(), 1);
 });
 
-test('the flag store is bounded by bytes, counting each flag by its picture', () => {
-  // A medium flag's PNG data URL runs to a few thousand characters.
-  const png = `data:image/png;base64,${'A'.repeat(3000)}`;
+test('the flag store is bounded by bytes, counting each flag by its strings', () => {
+  const png = `http://artwork.localhost/${'ab'.repeat(16)}.png`;
   const flag = (tag: string) => storedFlag({ tag, asset: `gfx/flags/medium/${tag}.tga`, key: `gfx/flags/medium/${tag}.tga#255`, width: 41, height: 26, png });
   assert.equal(flag('A').png, png);
   const key = (tag: string, sourceId = 's') => FlagStore.key(sourceId, 'v', '1', 100, tag);
+  const one = new FlagStore(Infinity);
+  one.set(key('A'), flag('A'));
   // Room for three medium flags, not four: the least recently used one goes.
-  const budget = 3.5 * (png.length * 2 + 300);
+  const budget = 3.5 * one.bytes;
   const store = new FlagStore(budget);
   for (const tag of ['A', 'B', 'C']) store.set(key(tag), flag(tag));
   store.get(key('A'));
@@ -85,7 +86,7 @@ test('the flag store is bounded by bytes, counting each flag by its picture', ()
 
 test('five thousand medium flags stay within the default flag budget', () => {
   const store = new FlagStore(FLAG_STORE_BYTES);
-  const png = `data:image/png;base64,${'A'.repeat(3000)}`;
+  const png = `http://artwork.localhost/${'ab'.repeat(16)}.png`;
   for (let index = 0; index < 5_000; index++) {
     store.set(FlagStore.key('s', 'v', '1', 100, `T${index}`), storedFlag({ tag: `T${index}`, asset: 'a', key: 'a#', width: 41, height: 26, png }));
   }

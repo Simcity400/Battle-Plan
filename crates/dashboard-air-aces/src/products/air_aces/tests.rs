@@ -413,9 +413,10 @@ fn air_aces_mod_content_portrait_name_and_opaque_tag_override_through_stack() {
             .any(|why| why.contains("ACE_FULL_NAME absent"))
     );
     assert!(
-        portrait(&PortraitOperands::from(&scan.aces[0].runs[0].facts), &cat)
-            .unwrap()
-            .starts_with("data:image/png;base64,")
+        dashboard_text::artwork::url_bytes(
+            &portrait(&PortraitOperands::from(&scan.aces[0].runs[0].facts), &cat).unwrap()
+        )
+        .is_some()
     );
     let mut unknown = scan.aces[0].runs[0].facts.clone();
     unknown.row = RecordedAce::Changed(Box::new(AirAceRow {

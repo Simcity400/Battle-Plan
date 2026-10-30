@@ -10,6 +10,7 @@ import { listReplayFolder, savedReplayFolder, saveReplayFolder } from './replayL
 import { BROWSER_BRIDGE_BUSY, MAX_MESSAGE_BYTES } from './src/generated/dashboard.ts';
 import type { PartialRecording } from './src/generated/dashboard.ts';
 import type { ReplayLibrary } from './src/dashboard/client.ts';
+import { artworkName, BROWSER_ARTWORK_BASE } from './src/dashboard/payload.ts';
 
 const runFile = promisify(execFile);
 
@@ -141,7 +142,8 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
   };
   const start = () => {
     if (child) return child;
-    const args = [...(gameDir ? ['--game-dir', gameDir] : []), ...(userDir ? ['--user-dir', userDir] : [])];
+    const args = [...(gameDir ? ['--game-dir', gameDir] : []), ...(userDir ? ['--user-dir', userDir] : []),
+      '--artwork-url', BROWSER_ARTWORK_BASE];
     const process = spawn(path.join(root, '.cargo-target/debug/dashboard-bridge.exe'), args, { cwd: root, windowsHide: true });
     const closed = new Promise<void>(resolve => process.once('close', () => resolve()));
     exits.add(closed); void closed.then(() => exits.delete(closed));
@@ -240,6 +242,19 @@ export function browserBridge(root: string, recordingsRoot: string, gameDir: str
     configureServer(server) {
       void sweepImports();
       server.httpServer?.once('close', () => { void stop(); });
+      // The images the bridge's replies name, from the bridge that keeps them.
+      server.middlewares.use(BROWSER_ARTWORK_BASE.slice(0, -1), async (request, response) => {
+        const name = new URL(request.url ?? '/', 'http://localhost').pathname.slice(1);
+        const controller = new AbortController();
+        response.on('close', () => { if (!response.writableEnded) controller.abort(); });
+        const png = child && (request.method === 'GET' || request.method === 'HEAD') && artworkName(name)
+          ? await send({ type: 'artwork', name }, controller.signal).then(value => typeof value === 'string' ? Buffer.from(value, 'base64') : null, () => null)
+          : null;
+        if (!png) { response.statusCode = 404; response.end(); return; }
+        response.setHeader('Content-Type', 'image/png');
+        response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        response.end(request.method === 'HEAD' ? undefined : png);
+      });
       server.middlewares.use('/api/recordings', async (request, response) => {
         response.setHeader('Content-Type', 'application/json');
         response.setHeader('Cache-Control', 'no-store');

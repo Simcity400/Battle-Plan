@@ -26,7 +26,7 @@ pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};
 pub(crate) use dashboard_text::party_names;
 pub use dashboard_text::{
-    character_scope, cryptology, effect_description, flag_choices, identity, metadata,
+    artwork, character_scope, cryptology, effect_description, flag_choices, identity, metadata,
     modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
 };
 

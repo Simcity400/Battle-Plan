@@ -1141,7 +1141,7 @@ pub fn division_name_groups(source: &Source, cat: &Arc<Catalogue>) -> DivisionNa
         .clone()
 }
 /// A division template's artwork as the division log draws it: its custom
-/// icon, else its priority sub-unit's, as a PNG data URL kept per content binding.
+/// icon, else its priority sub-unit's, as an artwork URL kept per content binding.
 pub fn template_icon(
     source: &Source,
     cat: &Arc<Catalogue>,

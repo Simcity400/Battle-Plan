@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spriteFrames, spriteIcons, spriteId } from './spriteArtwork.ts';
 
-const png = 'data:image/png;base64,iVBORw0KGgo=';
+const png = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
 test('sprite frames are asked once each, in a stable order, without missing keys', () => {
   assert.deepEqual(spriteFrames([{ key: 'GFX_b', frame: 0 }, null, { key: 'GFX_a', frame: 2 }, undefined, { key: '', frame: 0 },

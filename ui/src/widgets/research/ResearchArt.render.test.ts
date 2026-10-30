@@ -26,7 +26,7 @@ test('history cells reserve a flask fallback without artwork reasons and say wha
     assert.doesNotMatch(cell, /artwork unavailable|\?>/i);
     assert.match(cell, /aria-label="Mod technology, completed 1 Jan 1944, show time breakdown"/);
     assert.match(cell, /<small>1 Jan 1944<\/small>/, 'the plain date sits under the name');
-    const pictured = renderToStaticMarkup(createElement(Art, { icon: 'data:image/png;base64,YQ==', className: 'research-cell-art' }));
+    const pictured = renderToStaticMarkup(createElement(Art, { icon: 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png', className: 'research-cell-art' }));
     assert.match(pictured, /<img/);
     assert.doesNotMatch(pictured, /art-fallback/);
   } finally { await vite.close(); }

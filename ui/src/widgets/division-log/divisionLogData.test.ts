@@ -71,8 +71,8 @@ test('tooltips retain native disposition, bounded dates and the supplying read',
 test('country tooltip flags retain pending and named failure state without replacing division artwork', () => {
   const country = { name: 'Owner', flagPending: true };
   const killer = { name: 'Enemy', flagPending: false, flagReason: 'The flag request failed.' };
-  const tooltip = divisionTooltip({ ...entry(), icon: 'data:image/png;base64,division' }, country, killer, 'A place');
-  assert.equal(tooltip.icon, 'data:image/png;base64,division');
+  const tooltip = divisionTooltip({ ...entry(), icon: 'http://artwork.localhost/dddddddddddddddddddddddddddddddd.png' }, country, killer, 'A place');
+  assert.equal(tooltip.icon, 'http://artwork.localhost/dddddddddddddddddddddddddddddddd.png');
   assert.deepEqual(tooltip.rows.find(row => row.label === 'Country')?.countryFlag,
     { flag: undefined, flagReason: undefined, flagPending: true });
   assert.deepEqual(tooltip.rows.find(row => row.label === 'Killer')?.countryFlag,

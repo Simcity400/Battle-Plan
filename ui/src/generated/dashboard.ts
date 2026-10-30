@@ -68,7 +68,7 @@ id: string, tag: string,
 name: string, observedBranchId: string, observedHour: number, };
 export type Artwork = { token: string, name: string | null, description: string | null, baseDurationDays: number | null,
 /**
- * A PNG data URL of the first authored sprite frame.
+ * The artwork URL of the first authored sprite frame.
  */
 icon: string | null, };
 export type FocusDatabase = "national" | "continuous";
@@ -558,7 +558,7 @@ asset: string,
  */
 key: string, width: number, height: number,
 /**
- * The flag as a PNG data URL, at most 128 pixels on the longer side.
+ * The flag as its artwork URL, at most 128 pixels on the longer side.
  */
 png: string, };
 export type CountryFlagUnavailable = { tag: string, reason: string, };
@@ -2597,7 +2597,7 @@ export type LeaderArtwork = { character: IdeaCharacter,
  */
 name: string | null,
 /**
- * A PNG data URL; null when the portrait is not known.
+ * An artwork URL; null when the portrait is not known.
  */
 portrait: string | null,
 /**
@@ -3393,7 +3393,7 @@ id: number, token: string,
  */
 ordinal: number, name: string | null,
 /**
- * A PNG data URL; null when content has no icon for it.
+ * An artwork URL; null when content has no icon for it.
  */
 icon: string | null, };
 export type ResourceBalanceReply = { branchId: string, tag: string, decimals: number,
@@ -3572,7 +3572,7 @@ iconUnknown: string | null, };
 export type OrganisationState = { readHour: number | null, size: number, fundsRaw: string, unspentPoints: number, baseTaskCapacity: number, activeTasks: number, taskSlots: number, unlocked: Array<string>, planned: Array<string>, queueIndex: number, policyToken: string | null, policyName: string | null, cooldownHour: number | null, autoUpdateDesigns: boolean, };
 export type EquipmentIcon = { key: string,
 /**
- * A PNG data URL; null when the texture could not be read.
+ * An artwork URL; null when the texture could not be read.
  */
 image: string | null, };
 export type ProductionLinesParams = { branchId: string, tag: string,
@@ -4825,7 +4825,7 @@ id: number,
  */
 token: string | null, name: string | null,
 /**
- * A PNG data URL: the construction queue's picture of it.
+ * An artwork URL: the construction queue's picture of it.
  */
 icon: string | null, };
 export type StateName = { id: number, name: string | null, };
@@ -5652,7 +5652,7 @@ export type SpriteImage = { key: string, frame: number,
  */
 recorded?: string,
 /**
- * A PNG data URL, or null with a named, counted refusal.
+ * An artwork URL, or null with a named, counted refusal.
  */
 icon: string | null, };
 export type OccupationReserveParams = { branchId: string, view: OccupationReserveView, tags: Array<string> | null, tag: string | null, firstHour: number | null, lastHour: number | null, top: number | null, };

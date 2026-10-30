@@ -18,6 +18,31 @@ use tauri::{Manager, State, WebviewWindow};
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Where WebView2 serves the `artwork` scheme the dashboard's images are named under.
+const ARTWORK_BASE: &str = "http://artwork.localhost/";
+
+/// An image a reply names, read off the main thread, or 404.
+fn serve_artwork(request: tauri::http::Request<Vec<u8>>, responder: tauri::UriSchemeResponder) {
+    use tauri::http::{HeaderValue, Response, StatusCode, header};
+    let name = request.uri().path().strip_prefix('/').unwrap_or_default().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut response = Response::new(Vec::new());
+        match dashboard::artwork::bytes(&name) {
+            Some(png) => {
+                *response.body_mut() = png.to_vec();
+                let headers = response.headers_mut();
+                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                );
+            }
+            None => *response.status_mut() = StatusCode::NOT_FOUND,
+        }
+        responder.respond(response);
+    });
+}
+
 #[tauri::command]
 fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<HostStatus, String> {
     // Establish configuration/onboarding even before a recording makes the map visible.
@@ -170,7 +195,13 @@ fn main() {
         return;
     }
     shader_pipeline::artwork::warm();
+    if let Err(error) = dashboard::artwork::configure(ARTWORK_BASE) {
+        eprintln!("{error}");
+    }
     let app = tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("artwork", |_, request, responder| {
+            serve_artwork(request, responder)
+        })
         .manage(video::VideoState::default())
         .manage(preparation::PreparationMonitor::default())
         .setup(|app| {

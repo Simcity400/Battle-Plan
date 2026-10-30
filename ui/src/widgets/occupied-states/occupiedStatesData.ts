@@ -3,6 +3,7 @@ import type { Span } from '../../charts/series.ts';
 import { formatAmount, formatFixed, formatNativeFixed5, formatSigned } from '../../charts/valueAxis.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { fixed5At, validateFixed5Runs } from '../../dashboard/fixed5Runs.ts';
+import { artworkUrlValue } from '../../dashboard/payload.ts';
 import type { NativeFixed5Run } from '../../dashboard/fixed5Runs.ts';
 import type { HourSpan, OccupiedObservation, OccupiedSeries, OccupiedStatesManifestReply, OccupiedStatesReply } from '../../generated/dashboard';
 
@@ -41,7 +42,7 @@ const fixed5Spans = (v: unknown, spans: readonly Span[]) => validateFixed5Runs(v
 /** Law facts, each token once: a manifest's, or those a window answered
  * before preparation reached it carries for its states. */
 const lawList = (laws: unknown) => Array.isArray(laws) && laws.every(law => object(law) && typeof law.token === 'string' && nullable(law.name) && nullable(law.missing)
-  && (law.icon === null || (typeof law.icon === 'string' && law.icon.startsWith('data:image/png;base64,'))))
+  && (law.icon === null || artworkUrlValue(law.icon)))
   && new Set(laws.map(law => (law as { token: string }).token)).size === laws.length;
 
 export function validateOccupiedStatesManifest(data: unknown): OccupiedStatesManifestReply {

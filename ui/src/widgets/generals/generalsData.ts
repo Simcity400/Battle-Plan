@@ -1,4 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
+import { artworkUrlValue as png } from '../../dashboard/payload.ts';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { sortRows } from '../../charts/table/logic.ts';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -26,7 +27,6 @@ export type LeaderRole = WireLeaderRole & { attributeNames: [string | null, stri
 export type LeaderObservation = UnitLeadersReply['observed'][number] & { landCommands: boolean; navalCommands: boolean };
 export type UnitLeadersData = Omit<UnitLeadersReply, 'leaders' | 'roles' | 'observed'> & { leaders: LeaderCareer[]; roles: LeaderRole[]; observed: LeaderObservation[]; preparing?: string[] };
 const text = (v: unknown) => v === null || typeof v === 'string';
-const png = (v: unknown) => typeof v === 'string' && v.startsWith('data:image/png;base64,');
 const ascending = (a: number, b: number) => a - b;
 /** Hours coded first absolute, then as deltas. */
 const decode = (deltas: readonly number[]) => { let hour = 0; return deltas.map(delta => hour += delta); };

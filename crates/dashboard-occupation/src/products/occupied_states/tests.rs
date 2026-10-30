@@ -554,7 +554,7 @@ fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
     std::fs::write(folder.0.join("gfx/strip.tga"), tga).unwrap();
     let laws = installed_content_core::occupation_laws::read(&cat.content.layers).unwrap();
     let vertical = law_content(&cat, &laws, "extra");
-    let blue = catalogue::png_data_url(&installed_content_image::Rgba8Image {
+    let blue = dashboard_text::artwork::png_url(&installed_content_image::Rgba8Image {
         width: 1,
         height: 1,
         pixels: vec![0, 0, 255, 255],

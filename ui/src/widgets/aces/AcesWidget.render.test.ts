@@ -61,9 +61,9 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.deepEqual(state.parity!.item!(state.rows[0]), operands, 'Contextual warnings must not alter an ace operand');
     assert.match(missing, /art-fallback aces-portrait/);
     assert.doesNotMatch(missing, /Callsign not recorded|Hall of fame|Portrait not recorded|Synthetic portrait refusal|role="img"[^>]*Portrait/);
-    state.portrait = 'data:image/png;base64,synthetic';
+    state.portrait = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
     const present = render();
-    assert.match(present, /class="aces-portrait" src="data:image\/png;base64,synthetic"/);
+    assert.match(present, /class="aces-portrait" src="http:\/\/artwork\.localhost\/a{32}\.png"/);
     assert.doesNotMatch(present, /art-fallback aces-portrait/);
     state.preparing = true;
     state.detail = { ...detail, aces: detail.aces.map(ace => ({ ...ace, firstSeen: null })) };

@@ -20,15 +20,15 @@ test('a flag replacing another clears it at once, and draws only once its pictur
     const canvas = { width: 82, height: 52, getContext: () => ({ clearRect: () => { cleared++; } }) } as unknown as HTMLCanvasElement;
     const flag = (png: string) => ({ width: 82, height: 52, png });
     // A replacement that cannot be decoded leaves the frame empty.
-    showFlag(canvas, flag('data:image/png;base64,broken'));
+    showFlag(canvas, flag('http://artwork.localhost/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png'));
     assert.equal(cleared, 1);
     decodes[0].reject();
     await new Promise(resolve => setTimeout(resolve));
     assert.deepEqual(observed, []);
     // One decoded is drawn; one stopped before its decode never is.
-    const stop = showFlag(canvas, flag('data:image/png;base64,later'));
+    const stop = showFlag(canvas, flag('http://artwork.localhost/cccccccccccccccccccccccccccccccc.png'));
     stop();
-    showFlag(canvas, flag('data:image/png;base64,QQ=='));
+    showFlag(canvas, flag('http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png'));
     decodes[1].resolve();
     decodes[2].resolve();
     await new Promise(resolve => setTimeout(resolve));

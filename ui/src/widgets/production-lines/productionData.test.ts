@@ -44,7 +44,7 @@ const variant = (id: string, firstHour: number, name: string | null, values: Par
   id, firstHour, known: true, token: 'infantry_equipment_1', name, typeName: 'Infantry Equipment I', icon: null, iconUnknown: null, ...values,
 });
 const day = (hour: number) => `day ${hour}`;
-const PNG = 'data:image/png;base64,AAAA';
+const PNG = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
 
 test('line choices use dated equipment names and stable ordinals without keys or empty fallback names', () => {
   const source = { ...REPLY, lines: [line('123456789#42', [run(100, 147), run(148, 200, { variant: '71' })]).history] };

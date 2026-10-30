@@ -454,7 +454,7 @@ pub struct OrganisationState {
 #[serde(rename_all = "camelCase")]
 pub struct EquipmentIcon {
     pub key: String,
-    /// A PNG data URL; null when the texture could not be read.
+    /// An artwork URL; null when the texture could not be read.
     pub image: Option<String>,
 }
 

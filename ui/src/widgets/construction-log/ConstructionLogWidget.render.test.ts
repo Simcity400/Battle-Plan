@@ -99,9 +99,9 @@ test('construction rows align the building and place, the country, a status pill
     assert.doesNotMatch(rowOf(live, 'finished'), /live-dot/);
     // Only projects still in the queue.
     assert.deepEqual([...render({ options: { queue: true } }).matchAll(/data-row="([^"]+)"/g)].map(match => match[1]).sort(), ['building', 'repair']);
-    manifest.types[0].icon = 'data:image/png;base64,synthetic';
+    manifest.types[0].icon = 'http://artwork.localhost/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png';
     const art = render({});
-    assert.match(art, /src="data:image\/png;base64,synthetic"/);
+    assert.match(art, /src="http:\/\/artwork\.localhost\/a{32}\.png"/);
     assert.doesNotMatch(art, /art-fallback/);
   } finally { await close(); }
 });
