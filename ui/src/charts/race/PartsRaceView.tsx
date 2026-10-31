@@ -46,7 +46,7 @@ import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useParityPreparation } from '../../dashboard/parityPreparation';
 import { summaryShareRuns } from '../share';
-import { summaryStack } from '../chartSummary';
+import { chartSummaryLines, summaryStack } from '../chartSummary';
 import type { ChartSummary } from '../chartSummary';
 import type { TimeChartProps } from '../TimeChart';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
@@ -477,21 +477,27 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
     ? { ...request, product: 'series-summary', params: { branchId, tags, family, from, to, width, requireParts, within: within && Object.fromEntries(within) } } : request;
   // One summary read at a time while the chart's view moves (`useViewRead`).
   const content = useContentRevision(client);
+  // Kept while the family's validator is, so each page asked here is validated, summaries and all, once.
+  const decodedPage = useMemo(() => (value: unknown): T & Pick<PreparedPartsReply, 'summaries'> => {
+    const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
+    if (reply.summaries === undefined) return reply;
+    type Line = NonNullable<PreparedPartsReply['summaries']>[number];
+    const summaries = chartSummaryLines<Line>(reply.summaries, line => typeof line.tag === 'string')?.map(line => line.parts === undefined ? line
+      : { ...line, parts: chartSummaryLines<Line['parts'][number]>(line.parts, part => typeof part.key === 'string') });
+    if (!summaries || summaries.some(line => line.parts === null)) throw Error('The prepared force summary is malformed.');
+    return { ...reply, summaries: summaries as Line[] };
+  }, [validate]);
   const read = useViewRead<{ from: number; to: number; width: number }, T & Pick<PreparedPartsReply, 'summaries'>>(
     request ? JSON.stringify([key, enabled, content]) : null, bounds, enabled ? JSON.stringify([bounds.from, bounds.to, bounds.width]) : '', active,
-    (at, signal, publish, restart) => loadProduct(client, page(at.from, at.to, at.width)!, signal, value => {
-      const reply = validate(value) as T & Pick<PreparedPartsReply, 'summaries'>;
-      if (reply.summaries !== undefined && (!Array.isArray(reply.summaries)
-        || reply.summaries.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets)))) throw Error('The prepared force summary is malformed.');
-      return reply;
-    }, enabled ? track?.source : undefined, restart, publish), client);
+    (at, signal, publish, restart) => loadProduct(client, page(at.from, at.to, at.width)!, signal, decodedPage,
+      enabled ? track?.source : undefined, restart, publish), client);
   const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
   // The last reached hour stays merged in while playback's newest is read.
-  const reached = useFollowedProduct(client, enabled ? page(hour, hour, 1) : null, ['from', 'to'], active, validate, track?.source);
+  const reached = useFollowedProduct(client, enabled ? page(hour, hour, 1) : null, ['from', 'to'], active, decodedPage, track?.source);
   const pointedHour = hover?.key === key ? hover.hour : null;
-  const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, validate, track?.source);
+  const pointed = useProduct(client, enabled && pointedHour != null ? page(pointedHour, pointedHour, 1) : null, active, decodedPage, track?.source);
   const full = useProduct(client, enabled && parity?.requested && track ? page(track.branch.firstHour, track.branch.lastHour,
-    track.branch.lastHour - track.branch.firstHour + 1) : null, active, validate, track?.source);
+    track.branch.lastHour - track.branch.firstHour + 1) : null, active, decodedPage, track?.source);
   const ends = display.data?.summaries?.flatMap(line => {
     const bucket = [...line.summary.buckets].reverse().find(bucket => bucket !== null);
     return bucket ? [{ tag: line.tag, hour: bucket.lastHour }] : [];

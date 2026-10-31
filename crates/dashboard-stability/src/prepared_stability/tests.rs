@@ -256,8 +256,12 @@ mod experience {
             5
         );
         let dense = query("series-summary",json!({"branchId":"1","family":{"kind":"country-experience","measure":"army-gain"},"tags":[key],"from":slot_base(),"to":slot_base()+99,"width":1}),&fixture.store,&fixture.key, None,&flag).unwrap();
+        let dense = serde_json::from_value::<dashboard_base::prepared_chart::ChartSummary>(
+            dense["series"][0]["summary"].clone(),
+        )
+        .unwrap();
         assert_eq!(
-            dense["series"][0]["summary"]["buckets"][0]["minValue"].as_f64(),
+            dense.buckets[0].map(|bucket| bucket.min_value),
             Some((i128::from(i64::MAX) * 24) as f64)
         );
     }

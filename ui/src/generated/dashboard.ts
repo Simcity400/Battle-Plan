@@ -435,8 +435,33 @@ export type ChartBucket = {
  * Sum of absolute raw value times covered hours, at the series decimal scale.
  */
 absoluteTotal: string, firstHour: number, lastHour: number, firstValue: number, lastValue: number, lastValueHour: number, minHour: number, minValue: number, maxHour: number, maxValue: number, firstBreak: boolean, hasBreak: boolean, };
+export type ChartColumns = {
+/**
+ * Every slot, present or not.
+ */
+slots: number,
+/**
+ * Absent slots before each present bucket.
+ */
+skip: Array<number>,
+/**
+ * First hour less the previous bucket's last (the first's whole); last, last-value, min, max less first.
+ */
+hours: Array<number>,
+/**
+ * First, last, minimum and maximum values.
+ */
+values: Array<number>,
+/**
+ * 1 when the bucket starts with a break, 2 when it holds one.
+ */
+flags: Array<number>,
+/**
+ * Absolute totals as decimals.
+ */
+totals: Array<string>, };
 export type ChartRun = { firstHour: number, lastHour: number, value: number, breakBefore: boolean, };
-export type ChartSummary = { from: number, to: number, width: number, buckets: Array<ChartBucket | null>,
+export type ChartSummary = { from: number, to: number, width: number, buckets: ChartColumns,
 /**
  * Original supplying runs for hourly bins, including their unclipped bounds.
  */

@@ -4,7 +4,7 @@ import type { PreparedCoverage } from '../../shell/preparation/contract';
 import type { BalanceDrop, FixedRun, MeasureReply, ExperienceRead, HourSpan } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { MarkSummary } from '../../charts/markSummary';
-import { isChartSummary } from '../../charts/chartSummary.ts';
+import { chartSummaryFrom } from '../../charts/chartSummary.ts';
 import { validateExperienceReply } from '../experience/experienceData.ts';
 
 export interface MeasureState {
@@ -84,18 +84,20 @@ export function validateMeasureStates(value: unknown): MeasureStates {
 }
 
 export function validateMeasureSummaries(value: unknown): MeasureSummaries {
+  const malformed = () => new Error('The prepared balance summary reply is malformed.');
   if (!object(value) || !validCoverage(value) || typeof value.branchId !== 'string' || !measure(value.measure) || value.decimals !== decimals(value.measure)
     || value.pending !== undefined && !isOrderedSpans(value.pending)
-    || !warnings(value.warnings) || !Array.isArray(value.series) || !value.series.every(series => {
-      if (!object(series) || typeof series.tag !== 'string' || !isChartSummary(series.summary)) return false;
-      const summary = series.summary;
-      if (series.marks === null) return true;
-      if (!object(series.marks) || series.marks.from !== summary.from || series.marks.to !== summary.to || series.marks.width !== summary.width
-        || !Array.isArray(series.marks.clusters) || series.marks.clusters.length > Math.ceil(Number(summary.width) / 18)) return false;
-      return series.marks.clusters.every(cluster => object(cluster) && hour(cluster.firstHour) && hour(cluster.lastHour)
-        && cluster.firstHour <= cluster.lastHour && ordinal(cluster.firstOrdinal) && ordinal(cluster.count) && cluster.count !== '0');
-    })) throw new Error('The prepared balance summary reply is malformed.');
-  return value as unknown as MeasureSummaries;
+    || !warnings(value.warnings) || !Array.isArray(value.series)) throw malformed();
+  const series = value.series.map((line: unknown) => {
+    if (!object(line) || typeof line.tag !== 'string') throw malformed();
+    const summary = chartSummaryFrom(line.summary), marks = line.marks;
+    if (!summary || marks !== null && (!object(marks) || marks.from !== summary.from || marks.to !== summary.to || marks.width !== summary.width
+      || !Array.isArray(marks.clusters) || marks.clusters.length > Math.ceil(summary.width / 18)
+      || !marks.clusters.every(cluster => object(cluster) && hour(cluster.firstHour) && hour(cluster.lastHour)
+        && cluster.firstHour <= cluster.lastHour && ordinal(cluster.firstOrdinal) && ordinal(cluster.count) && cluster.count !== '0'))) throw malformed();
+    return { ...line, summary };
+  });
+  return { ...value, series } as unknown as MeasureSummaries;
 }
 
 export function validateMeasureDrops(value: unknown): MeasureDrops {

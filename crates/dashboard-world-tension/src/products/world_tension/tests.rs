@@ -204,22 +204,28 @@ fn prepared_tension_keeps_equal_read_dates_duplicates_renames_gaps_and_resume_st
         &serde_json::json!({"branchId":"1","from":100,"to":104,"width":1,"within":within,"share":true}),
         &fixture.store,&fixture.key,&history,&flag,
     ).unwrap();
-    let world = dense["summaries"]["world"]["buckets"].as_array().unwrap();
+    let world = serde_json::from_value::<dashboard_base::prepared_chart::ChartSummary>(
+        dense["summaries"]["world"].clone(),
+    )
+    .unwrap()
+    .buckets;
     assert_eq!(
         world
             .iter()
-            .filter_map(|bucket| bucket["minValue"].as_f64())
+            .flatten()
+            .map(|bucket| bucket.min_value)
             .reduce(f64::min),
         Some(0.0)
     );
     assert_eq!(
         world
             .iter()
-            .filter_map(|bucket| bucket["maxValue"].as_f64())
+            .flatten()
+            .map(|bucket| bucket.max_value)
             .reduce(f64::max),
         Some(5.0)
     );
-    assert!(world.iter().any(|bucket| bucket["hasBreak"] == true));
+    assert!(world.iter().flatten().any(|bucket| bucket.has_break));
 }
 
 #[test]

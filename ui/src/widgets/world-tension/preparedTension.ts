@@ -1,6 +1,6 @@
 import type { HourSpan, TensionReply } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
-import { isChartSummary } from '../../charts/chartSummary.ts';
+import { chartSummaryRecord } from '../../charts/chartSummary.ts';
 import { countryKey, validateTensionReply, tensionReadPreparing } from './tensionData.ts';
 import { isOrderedSpans } from '../../charts/series.ts';
 import { isPreparationExtent } from '../../dashboard/preparedPrefix.ts';
@@ -25,6 +25,7 @@ function validCatalogueKey(key: unknown): boolean {
 }
 export function validatePreparedTension(value: unknown): PreparedTension {
   const reply = validateTensionReply(value) as PreparedTension;
+  const summaries = chartSummaryRecord(reply.summaries);
   if (reply.coverage !== undefined && !isPreparationExtent(reply.coverage) || typeof reply.available !== 'boolean' || !Array.isArray(reply.catalogue) || !reply.catalogue.every(item => item && typeof item.tag === 'string'
     && validCatalogueKey(item.key) && Number.isSafeInteger(item.slot) && item.slot >= 0 && Number.isSafeInteger(item.firstHour))
     || !Array.isArray(reply.exactHours) || !reply.exactHours.every(Number.isSafeInteger)
@@ -32,8 +33,8 @@ export function validatePreparedTension(value: unknown): PreparedTension {
     || (reply.preparing !== undefined && (!Array.isArray(reply.preparing) || !reply.preparing.every(field => typeof field === 'string')))
     || (reply.preparingContributors !== undefined && (!Array.isArray(reply.preparingContributors) || !reply.preparingContributors.every(item => item
       && Number.isSafeInteger(item.hour) && Number.isSafeInteger(item.slot) && item.slot >= 0 && /^-?\d+$/.test(item.valueRaw))))
-    || !reply.summaries || !Object.values(reply.summaries).every(isChartSummary)) throw new Error('The prepared tension reply is malformed.');
-  return reply;
+    || !summaries) throw new Error('The prepared tension reply is malformed.');
+  return { ...reply, summaries };
 }
 export function mergePreparedTension(a: PreparedTension, b: PreparedTension): PreparedTension {
   const preparedReads = [...a.reads, ...b.reads].filter(read => !tensionReadPreparing(read, 'historicalContributors'));

@@ -4,6 +4,7 @@ import { mergeOccupationReads, validateOccupationSummaries } from './preparedOcc
 import { occupationLines, occupationModel } from './occupationTrendData.ts';
 import type { OccupationTrendReply } from '../../generated/dashboard';
 import type { MeasureSummaries } from '../country-measure/preparedMeasureData';
+import { wireSummaries } from '../../charts/chartSummary.fixture.ts';
 
 const exact: OccupationTrendReply = { branchId: '1', decimals: 5, warnings: [], series: [{ tag: 'opaque occupier', segments: [{ firstHour: 100, lastHour: 200 }], membership: null,
   runs: [{ firstHour: 100, lastHour: 100, readHour: 99, startsSegment: true, resistanceRaw: '123456', complianceRaw: '987654', states: 2, heldStates: 3, heldComplete: true, collaboration: [] }] }] };
@@ -12,7 +13,7 @@ const summary: MeasureSummaries = { branchId: '1', measure: 'resistance', decima
 }] } }] };
 
 test('occupation dense geometry never invents exact means, state counts or collaboration reads', () => {
-  validateOccupationSummaries(summary);
+  assert.deepEqual(validateOccupationSummaries(wireSummaries(summary)).series[0].summary.buckets[0], { ...summary.series[0].summary.buckets[0], absoluteTotal: '0' });
   const result = mergeOccupationReads(exact, exact, summary)!;
   assert.deepEqual(result.series[0].runs, exact.series[0].runs);
   assert.equal(result.series[0].runs[0].states, 2);

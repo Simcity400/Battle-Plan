@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as React from 'react';
 import { createServer } from 'vite';
+import { wireSummaries } from '../chartSummary.fixture.ts';
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function mount<T>(read: () => T) {
@@ -50,7 +51,7 @@ const track = { source: { id: 'forces-progressive', revision: '1' }, branch: { i
 function summary(rough: boolean, value: number) {
   return { from: 0, to: 31, width: 32, buckets: [{ firstHour: 0, lastHour: 31, firstValue: value,
     lastValue: value, lastValueHour: 31, minValue: value, minHour: 0, maxValue: value, maxHour: 0,
-    firstBreak: true, hasBreak: false }], runs: [{ firstHour: 0, lastHour: 31, value, startsSegment: true }],
+    firstBreak: true, hasBreak: false }], runs: [{ firstHour: 0, lastHour: 31, value, breakBefore: true }],
     approximate: rough ? [{ firstHour: 0, lastHour: 31 }] : [] };
 }
 function clientFor(reply: (params: any, complete: boolean) => unknown, limit: number) {
@@ -61,7 +62,7 @@ function clientFor(reply: (params: any, complete: boolean) => unknown, limit: nu
     preparedQuery: async (_source: unknown, _product: string, params: any) => {
       calls.push(`${_product}:${params.from ?? params.reads?.[0]?.hour}:${params.to ?? params.reads?.length}`);
       assert.ok(++queries <= limit, 'country count must not grow the request count');
-      return { ...(reply(params, complete) as object), coverage: complete
+      return { ...wireSummaries(reply(params, complete) as object), coverage: complete
         ? { firstHour: 0, lastHour: 31, complete: true } : { firstHour: 0, lastHour: 1, complete: false } };
     },
     preparationStatus: async (input: object, signal: AbortSignal) => {

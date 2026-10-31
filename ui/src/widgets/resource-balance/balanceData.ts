@@ -5,6 +5,7 @@ import type { IntervalIndex } from '../../charts/intervalIndex';
 import { runAt } from '../../charts/series.ts';
 import type { Run } from '../../charts/series';
 import type { ChartSummary } from '../../charts/chartSummary';
+import { chartSummaryFrom } from '../../charts/chartSummary.ts';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatAmount, formatSigned } from '../../charts/valueAxis.ts';
@@ -51,8 +52,17 @@ export function validateResourceBalanceReply(data: unknown): ResourceBalanceRepl
       && RAW.test(trade.deliveredRaw) && HOUR(trade.factories) && HOUR(trade.convoysAssigned) && HOUR(trade.convoysRequired)
       && HOUR(trade.firstHour) && HOUR(trade.lastHour) && trade.firstHour <= trade.lastHour && typeof trade.startsSegment === 'boolean')
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
-  if (!ok) throw new Error('The resource balance reply is malformed.');
-  return reply;
+  const malformed = () => new Error('The resource balance reply is malformed.');
+  if (!ok) throw malformed();
+  // Prepared replies add each resource's summaries, decoded from the dashboard's columns.
+  const summaries = (reply as { summaries?: unknown }).summaries;
+  if (summaries === undefined) return reply;
+  if (!Array.isArray(summaries)) throw malformed();
+  const summary = (value: unknown) => { const decoded = chartSummaryFrom(value); if (!decoded) throw malformed(); return decoded; };
+  return { ...reply, summaries: summaries.map(item => {
+    if (!item || !Number.isInteger(item.id) || !Array.isArray(item.parts)) throw malformed();
+    return { ...item, supply: summary(item.supply), demand: summary(item.demand), parts: item.parts.map(summary), total: summary(item.total) };
+  }) } as ResourceBalanceReply;
 }
 
 /** One resource's parts as exact raw integers. Needs are positive here. */

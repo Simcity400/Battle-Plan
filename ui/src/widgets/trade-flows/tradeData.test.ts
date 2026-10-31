@@ -10,6 +10,7 @@ import type { PreparedTradeReply } from './tradeData';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, heldScale, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
   sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply, resourceName, measureNote, mergePreparedTrade, exactSums } from './tradeData.ts';
 import { countryTotal } from './tradeCountry.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 /** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
@@ -496,11 +497,11 @@ test('progressive native trade amounts stay exact while integrals and first/last
   const native = reply(); native.flows = [flow(0, 1, 1, [[59, 59, '1234567', 3, 4, 5]])];
   const key = JSON.stringify(['[0,1]', '[1,2]', 1]);
   const summary = { from: 0, to: 59, width: 1, runs: [{ firstHour: 0, lastHour: 59, value: 10, breakBefore: true }],
-    buckets: [{ firstHour: 0, lastHour: 59, firstValue: 10, lastValue: 10, lastValueHour: 0, minHour: 0, minValue: 10, maxHour: 0, maxValue: 10, firstBreak: true, hasBreak: false }],
+    buckets: [{ firstHour: 0, lastHour: 59, firstValue: 10, lastValue: 10, lastValueHour: 0, minHour: 0, minValue: 10, maxHour: 0, maxValue: 10, firstBreak: true, hasBreak: false, absoluteTotal: '600' }],
     approximate: [{ firstHour: 0, lastHour: 59 }] };
-  const progressive = { ...native, summaries: { [key]: summary }, cumulativePending: true };
+  const progressive = { ...native, summaries: { [key]: wireSummary(summary) }, cumulativePending: true };
   const data = decodeTrade(validateTradeFlowsReply(progressive));
-  assert.equal(data.flows[0].prepared?.summary, summary, 'summaries do not require prepared prefixes');
+  assert.deepEqual(data.flows[0].prepared?.summary, summary, 'summaries do not require prepared prefixes');
   assert.equal(measureAmount(data.flows, 'current', 0, 59), 1_234_567n);
   assert.equal(measureRows(data.flows, 'current', 0, 59, 5)[1].value, '3');
   assert.throws(() => exactSums(data.flows, 0, 59), /still being prepared/);

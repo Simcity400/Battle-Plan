@@ -254,7 +254,7 @@ fn states_follow_reads_holders_unknowns_removals_cuts_and_gaps() {
         .sum();
     // Holders at 10, 20, 30, 40, 47 and 51.
     assert_eq!(marks, 6);
-    assert_eq!(reply["series"][1]["summary"]["buckets"], json!([]));
+    assert_eq!(reply["series"][1]["summary"]["buckets"]["slots"], 0);
     assert_eq!(reply["series"][1]["marks"]["clusters"], json!([]));
 
     let step = |snapshot: &mut Snapshot<'_, Memory>, key: &str, from: f64| {

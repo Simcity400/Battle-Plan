@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { reachedMeasureReply, validateMeasureDrops, validateMeasureStates, validateMeasureSummaries } from './preparedMeasureData.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 test('reached balances preserve exact wide amounts, gaps and native segments', () => {
   const run = { firstHour: 7, lastHour: 9, segmentFirstHour: 2, valueRaw: '-9223372036854775808', startsSegment: false, slot: 4, countryId: 8 };
@@ -21,7 +22,7 @@ test('event pages keep huge ordinals and duplicate dates; malformed geometry is 
   assert.throws(() => validateMeasureDrops({ ...page, firstOrdinal: 9007199254740993 }));
   assert.throws(() => validateMeasureDrops({ ...page, rows: [{ ...page.rows[0], hour: 8 }] }));
   assert.throws(() => validateMeasureSummaries({ branchId: '3', measure: 'politicalPower', decimals: 5, warnings: [],
-    series: [{ tag: 'opaque', summary: { from: 0, to: 100, width: 1, buckets: Array(5).fill(null) }, marks: null }] }));
+    series: [{ tag: 'opaque', summary: wireSummary({ from: 0, to: 100, width: 1, buckets: Array(5).fill(null) }), marks: null }] }));
 });
 
 test('summary pending hours stay independent of geometry and reject malformed spans', () => {
@@ -46,9 +47,9 @@ test('stability and maximum command power retain supplying reads even when the f
 test('hourly summary supplying runs retain unclipped bounds and refuse overlapping or malformed paths', () => {
   const summary = { from: 1.25, to: 3.5, width: 100, buckets: [null, null, null],
     runs: [{ firstHour: 0, lastHour: 8, value: 20, breakBefore: true }] };
-  const reply = (runs: unknown) => ({ branchId: '3', measure: 'politicalPower', decimals: 5, warnings: [],
-    series: [{ tag: 'opaque', summary: { ...summary, runs }, marks: null }] });
-  assert.deepEqual(validateMeasureSummaries(reply(summary.runs)), reply(summary.runs));
+  const reply = (runs: unknown, wire = true) => ({ branchId: '3', measure: 'politicalPower', decimals: 5, warnings: [],
+    series: [{ tag: 'opaque', summary: wire ? wireSummary({ ...summary, runs }) : { ...summary, runs }, marks: null }] });
+  assert.deepEqual(validateMeasureSummaries(reply(summary.runs)), reply(summary.runs, false));
   for (const runs of [[summary.runs[0], summary.runs[0]], [{ ...summary.runs[0], value: Infinity }],
     [{ ...summary.runs[0], breakBefore: undefined }]]) assert.throws(() => validateMeasureSummaries(reply(runs)));
 });
@@ -61,13 +62,14 @@ test('sampled state never establishes an exact reached balance and summary prove
   assert.deepEqual(reachedMeasureReply('1', 'politicalPower', [state.tag], values).series[0].runs, []);
   const summary = { from: 0, to: 20, width: 10, buckets: [], approximate: [{ firstHour: 7, lastHour: 20 }] };
   const reply = { branchId: '1', measure: 'politicalPower', decimals: 5, warnings: [], series: [{ tag: state.tag, summary, marks: null }] };
-  assert.deepEqual(validateMeasureSummaries(reply), reply);
-  const cold = { ...reply, coverage: { firstHour: 10, lastHour: 9, complete: false } };
-  assert.deepEqual(validateMeasureSummaries(cold), cold, 'the empty preparation extent precedes its first hour');
+  const sent = { ...reply, series: [{ ...reply.series[0], summary: wireSummary(summary) }] };
+  assert.deepEqual(validateMeasureSummaries(sent), reply);
+  const cold = { ...sent, coverage: { firstHour: 10, lastHour: 9, complete: false } };
+  assert.deepEqual(validateMeasureSummaries(cold), { ...reply, coverage: cold.coverage }, 'the empty preparation extent precedes its first hour');
   for (const coverage of [null, { firstHour: 10, lastHour: 8, complete: false }, { ...cold.coverage, complete: true }])
-    assert.throws(() => validateMeasureSummaries({ ...reply, coverage }));
+    assert.throws(() => validateMeasureSummaries({ ...sent, coverage }));
 
-  assert.throws(() => validateMeasureSummaries({ ...reply, series: [{ ...reply.series[0], summary: { ...summary,
+  assert.throws(() => validateMeasureSummaries({ ...sent, series: [{ ...sent.series[0], summary: { ...sent.series[0].summary,
     approximate: [{ firstHour: 7, lastHour: 6 }] } }] }));
   assert.throws(() => validateMeasureStates({ ...values, states: [{ ...state, sampleHour: 11 }] }));
 });

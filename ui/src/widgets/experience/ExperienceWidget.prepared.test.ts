@@ -8,6 +8,7 @@ import { plotFrame } from '../../charts/frame.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ChartTokens } from '../../charts/tokens';
 import { formatExperience } from './experienceData.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 test('experience widget reads only viewport summaries and reached hours while preserving exact raw values', async () => {
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
@@ -94,7 +95,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
           pending: [{firstHour:0,lastHour:49},{firstHour:51,lastHour:100}]
             .map(span => ({...span,firstHour:Math.max(span.firstHour,prefix+1)})).filter(span => span.firstHour<=span.lastHour) }),
         series: (params.tags as string[]).map(tag => { const spans = (params.within as Record<string,{firstHour:number;lastHour:number}[]>)[tag]; return ({ tag,
-        summary: { from: params.from, to: params.to, width,
+        summary: wireSummary({ from: params.from, to: params.to, width,
           runs: [{ firstHour: 0, lastHour: 49, value: Number(raw), breakBefore: true },
             { firstHour: 51, lastHour: 100, value: Number(raw), breakBefore: true }]
             .map(run => ({...run,lastHour:Math.min(run.lastHour,prefix??100)}))
@@ -104,7 +105,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
             return hour > (prefix??100) || hour === 50 || !spans.some(span=>span.firstHour<=hour&&hour<=span.lastHour) ? null : { firstHour: hour, lastHour: hour,
             firstValue: Number(raw), lastValue: Number(raw), lastValueHour: hour,
             minHour: hour, minValue: Number(raw), maxHour: hour, maxValue: Number(raw),
-            firstBreak: hour === 0 || hour === 51, hasBreak: false }; }) }, marks: null }); }) };
+            firstBreak: hour === 0 || hour === 51, hasBreak: false }; }) }), marks: null }); }) };
     }, preparationStatus: async (_request: object, signal: AbortSignal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
     }) };

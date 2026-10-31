@@ -4,6 +4,7 @@ import { mergeFactionReads, validatePreparedFactionTotals } from './preparedFact
 import type { PreparedFactionTotals } from './preparedFactionTotals';
 import type { DashboardClient, DashboardSource } from './client';
 import { loadProduct } from './products.ts';
+import { wireSummary } from '../charts/chartSummary.fixture.ts';
 
 function reply(first: number, last: number, value: number): PreparedFactionTotals {
   const span = { firstHour: first, lastHour: last };
@@ -25,17 +26,17 @@ test('prepared faction reads retain exact head, hover and end values without ove
 
 test('dense faction envelopes never replace exact values or wide signed member amounts', () => {
   const summary = reply(10, 10, 5);
-  summary.summaries = { '1': { from: 0, to: 10, width: 1, buckets: [{ firstHour: 0, lastHour: 10, firstValue: -500,
-    lastValue: 600, lastValueHour: 10, minValue: -1000, minHour: 1, maxValue: 1000, maxHour: 2, firstBreak: true, hasBreak: false }] } };
+  summary.summaries = { '1': wireSummary({ from: 0, to: 10, width: 1, buckets: [{ firstHour: 0, lastHour: 10, firstValue: -500,
+    lastValue: 600, lastValueHour: 10, minValue: -1000, minHour: 1, maxValue: 1000, maxHour: 2, firstBreak: true, hasBreak: false }] }) } as unknown as PreparedFactionTotals['summaries'];
   const head = reply(5, 5, -3);
   head.memberTracks = [{ tag: 'opaque alias', runs: [{ firstHour: 5, lastHour: 5, value: '-9007199254740993', startsSegment: false }],
     identities: [{ firstHour: 0, lastHour: 10, slot: 72, countryId: 88 }] }];
-  const result = validatePreparedFactionTotals(mergeFactionReads(head, undefined, summary));
+  const result = mergeFactionReads(validatePreparedFactionTotals(head), undefined, validatePreparedFactionTotals(summary))!;
   assert.deepEqual(result.series[0].runs.map(run => run.value), [-3, 5]);
   assert.equal(result.memberTracks![0].runs[0].value, '-9007199254740993');
   assert.equal(result.memberTracks![0].identities[0].firstHour, 0, 'the full native census keeps stable colour slots');
   assert.equal(result.summaries!['1'].buckets[0]!.lastValue, 600);
-  const broken = { ...summary, summaries: { '1': { ...summary.summaries['1'], width: 0 } } };
+  const broken = { ...summary, summaries: { '1': { ...summary.summaries!['1'], width: 0 } } };
   assert.throws(() => validatePreparedFactionTotals(broken), /geometry/);
 });
 

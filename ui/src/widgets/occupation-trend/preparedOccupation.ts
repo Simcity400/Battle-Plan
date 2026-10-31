@@ -17,8 +17,7 @@ type OccupationReply = OccupationTrendReply & FirstView;
 export function validateOccupationSummaries(value: unknown): MeasureSummaries {
   const reply = value as MeasureSummaries;
   if (!reply || !['resistance', 'compliance'].includes(reply.measure)) throw new Error('The prepared occupation summary is malformed.');
-  validateMeasureSummaries({ ...reply, measure: 'stability' });
-  return reply;
+  return { ...validateMeasureSummaries({ ...reply, measure: 'stability' }), measure: reply.measure };
 }
 
 export function usePreparedOccupation(client: DashboardClient, track: BoundTrack | undefined, selection: OccupationTrendParams | null,

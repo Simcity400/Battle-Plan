@@ -12,6 +12,7 @@ import { plotFrame } from '../../charts/frame.ts';
 import { drawBands } from '../../charts/draw.ts';
 import { bands, buildStack, rulingFirst, stackedSegments } from './partyData.ts';
 import { summaryStack } from '../../charts/chartSummary.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 const reply = (): PartyHistoryReply => ({branchId:'1',tag:'opaque / country',decimals:5,warnings:[],ideologies:[],ideologyTypes:[],people:[],leaders:[],
   partyNames:[],partyNameRuns:[],elections:[],unobserved:[],ruling:[{token:'mod_a',firstHour:0,lastHour:2000,startsSegment:true}],
@@ -23,12 +24,12 @@ test('prepared party replies use the legacy overlap refusal and preserve marker 
   try {
     const {validatePreparedParty,partyMarkSummaries}=await vite.ssrLoadModule('/ui/src/widgets/ruling-party/preparedParty.ts') as typeof import('./preparedParty');
     const data={coverage:{firstHour:0,lastHour:2000,complete:true},reply:reply(),summaries:[],marks:[],cursor:null,total:'0'};
-    assert.equal(validatePreparedParty(data),data);
+    assert.deepEqual(validatePreparedParty(data),data);
     for (const cursor of ['0', '127']) assert.throws(() => validatePreparedParty({...data,cursor}, '127'), /did not advance/);
     assert.equal(validatePreparedParty({...data,cursor:'128'}, '127').cursor, '128', 'an empty membership-filtered page may advance its raw cursor');
-    assert.equal(validatePreparedParty(data, '127'), data, 'a terminal page has no continuation');
+    assert.deepEqual(validatePreparedParty(data, '127'), data, 'a terminal page has no continuation');
     const cold = {...data,coverage:{firstHour:2,lastHour:1,complete:false}};
-    assert.equal(validatePreparedParty(cold), cold);
+    assert.deepEqual(validatePreparedParty(cold), cold);
     for (const coverage of [null, {...cold.coverage,lastHour:0}, {...cold.coverage,complete:true}])
       assert.throws(() => validatePreparedParty({...data,coverage}), /malformed/);
     const malformed=reply();malformed.parties[0].runs.push({...malformed.parties[0].runs[0]});
@@ -91,16 +92,16 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
       const data=reply();data.tag=params.tag as string;
       if(params.tag==='unprepared owner') {
         data.ruling=[];
-        return {coverage:{firstHour:0,lastHour:prepared ? 2000 : 99,complete:prepared},reply:data,summaries:params.mode==='summary' ? data.parties.map(party=>({token:party.token,summary:{from:params.from,to:params.to,width:params.width,
+        return {coverage:{firstHour:0,lastHour:prepared ? 2000 : 99,complete:prepared},reply:data,summaries:params.mode==='summary' ? data.parties.map(party=>({token:party.token,summary:wireSummary({from:params.from,to:params.to,width:params.width as number,
           approximate:prepared ? [] : [{firstHour:100,lastHour:104}],buckets:[100,103].map(hour=>({firstHour:hour,lastHour:hour===100 ? 102 : 104,
             firstValue:Number(party.runs[0].valueRaw)/100000,lastValue:Number(party.runs[0].valueRaw)/100000,lastValueHour:hour,minHour:hour,maxHour:hour,
-            minValue:Number(party.runs[0].valueRaw)/100000,maxValue:Number(party.runs[0].valueRaw)/100000,firstBreak:hour===100,hasBreak:false}))}})) : [],marks:[],total:'0',cursor:null};
+            minValue:Number(party.runs[0].valueRaw)/100000,maxValue:Number(party.runs[0].valueRaw)/100000,firstBreak:hour===100,hasBreak:false}))})})) : [],marks:[],total:'0',cursor:null};
       }
       if(params.mode==='events') {data.elections=[101];data.parties.forEach(party=>{party.runs=[];});}
-      return {coverage:{firstHour:0,lastHour:2000,complete:true},reply:data,summaries:params.mode==='summary' ? data.parties.map(party=>({token:party.token,summary:{from:params.from,to:params.to,width:params.width,
+      return {coverage:{firstHour:0,lastHour:2000,complete:true},reply:data,summaries:params.mode==='summary' ? data.parties.map(party=>({token:party.token,summary:wireSummary({from:params.from,to:params.to,width:params.width as number,
         runs:party.runs.map(run=>({firstHour:run.firstHour,lastHour:run.lastHour,value:Number(run.valueRaw)/100000,breakBefore:run.startsSegment})),
         buckets:Array.from({length:5},(_,index)=>({firstHour:100+index,lastHour:100+index,firstValue:Number(party.runs[0].valueRaw)/100000,lastValue:Number(party.runs[0].valueRaw)/100000,
-          minHour:100+index,maxHour:100+index,lastValueHour:100+index,minValue:Number(party.runs[0].valueRaw)/100000,maxValue:Number(party.runs[0].valueRaw)/100000,firstBreak:false,hasBreak:false}))}})) : [],marks:[],total:'1',cursor:params.mode==='events' && params.from===103 ? params.cursor : params.cursor==='0' ? '128' : null};
+          minHour:100+index,maxHour:100+index,lastValueHour:100+index,minValue:Number(party.runs[0].valueRaw)/100000,maxValue:Number(party.runs[0].valueRaw)/100000,firstBreak:false,hasBreak:false}))})})) : [],marks:[],total:'1',cursor:params.mode==='events' && params.from===103 ? params.cursor : params.cursor==='0' ? '128' : null};
     },
     preparationStatus:(request:object,signal:AbortSignal)=> {
       assert.ok(++statuses<=3,'each published partial view waits for the same accepted-coverage update');

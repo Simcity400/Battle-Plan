@@ -10,7 +10,8 @@ import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
-import type { PreparedStockpileReply } from './preparedStockpileChart';
+import { chartSummaryFrom } from '../../charts/chartSummary.ts';
+import type { PreparedStockpileReply, StockpilePrepared, StockpileOperand } from './preparedStockpileChart';
 
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
  * lines, and its logistics record: the game's own surplus or shortage per equipment
@@ -65,7 +66,21 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
     && Array.isArray(reply.aiHours) && ordered(reply.aiHours) && RAW.test(reply.needBoundRaw)
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The equipment stockpile reply is malformed.');
-  return reply;
+  const prepared = (reply as PreparedStockpileReply).prepared;
+  return prepared === undefined ? reply : { ...reply, prepared: preparedStockpile(prepared) } as PreparedStockpileReply;
+}
+
+/** The prepared display with its summaries decoded from the dashboard's columns. */
+function preparedStockpile(prepared: StockpilePrepared): StockpilePrepared {
+  const malformed = () => new Error('The equipment stockpile summary is malformed.');
+  const summary = (value: unknown) => { const decoded = chartSummaryFrom(value); if (!decoded) throw malformed(); return decoded; };
+  const operands = (rows: unknown): StockpileOperand[] => {
+    if (!Array.isArray(rows)) throw malformed();
+    return rows.map((row: StockpileOperand) => ({ ...row, values: summary(row?.values), presence: summary(row?.presence) }));
+  };
+  if (!prepared || !Array.isArray(prepared.coverage) || prepared.groups !== undefined && !Array.isArray(prepared.groups)) throw malformed();
+  return { ...prepared, operands: operands(prepared.operands), coverage: prepared.coverage.map(summary),
+    ...(prepared.groups && { groups: prepared.groups.map(group => ({ ...group, operands: operands(group?.operands) })) }) };
 }
 
 /** Lookups built once per reply (held weakly, so a new reply builds its own): types and

@@ -9,6 +9,7 @@ import { dayLabel } from '../../charts/draw.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ChartTokens } from '../../charts/tokens';
 import { formatBalance } from './measureData.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 test('actual balance widget uses prepared viewport, exact hour and keyboard reads with no mount history scans', async () => {
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
@@ -91,7 +92,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
       if (Number(params.to) > 100) return null;
       const width = params.width as number;
       return { branchId: 'branch', measure: 'politicalPower', decimals: 5, warnings: [], series: [{ tag,
-        summary: { from: params.from, to: params.to, width,
+        summary: wireSummary({ from: params.from, to: params.to, width,
           runs: [{ firstHour: 0, lastHour: 49, value: Number(raw) / 1e5, breakBefore: true },
             { firstHour: 51, lastHour: 100, value: Number(raw) / 1e5, breakBefore: true }],
           buckets: Array.from({ length: Math.floor(Number(params.to)) - Math.floor(Number(params.from)) + 1 }, (_, index) => {
@@ -99,7 +100,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
             return hour === 50 ? null : { firstHour: hour, lastHour: hour,
             firstValue: Number(raw) / 1e5, lastValue: Number(raw) / 1e5, lastValueHour: hour,
             minHour: hour, minValue: Number(raw) / 1e5, maxHour: hour, maxValue: Number(raw) / 1e5,
-            firstBreak: hour === 0 || hour === 51, hasBreak: false }; }) }, marks: null }] };
+            firstBreak: hour === 0 || hour === 51, hasBreak: false }; }) }), marks: null }] };
     }, preparationStatus: async (_request: object, signal: AbortSignal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(new DOMException('Cancelled', 'AbortError')), { once: true });
     }) };

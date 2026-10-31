@@ -2166,8 +2166,15 @@ mod tests {
             .as_object()
             .unwrap()
             .values()
-            .flat_map(|summary| summary["buckets"].as_array().unwrap())
-            .filter_map(|bucket| bucket["maxValue"].as_f64())
+            .flat_map(|summary| {
+                serde_json::from_value::<dashboard_base::prepared_chart::ChartSummary>(
+                    summary.clone(),
+                )
+                .unwrap()
+                .buckets
+            })
+            .flatten()
+            .map(|bucket| bucket.max_value)
             .max_by(f64::total_cmp)
             .unwrap();
         assert!(

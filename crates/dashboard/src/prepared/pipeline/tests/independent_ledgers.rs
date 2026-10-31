@@ -1239,13 +1239,7 @@ fn banked_experience_summaries_draw_the_prefix_without_decoding_the_tail() {
             assert_eq!(cold["pending"], serde_json::json!([span(0, 83)]));
             let chart = &cold["series"][0]["summary"];
             assert_eq!(chart["runs"], serde_json::json!([]));
-            assert!(
-                chart["buckets"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(serde_json::Value::is_null)
-            );
+            assert_eq!(chart["buckets"]["skip"], serde_json::json!([]));
         }
         let mut writer = store.replace(key.clone()).unwrap();
         commit_experience(&mut writer, &mut accumulator, format, 0..=23, 23, false);
@@ -1267,12 +1261,11 @@ fn banked_experience_summaries_draw_the_prefix_without_decoding_the_tail() {
             let prepared = &expected["series"][0]["summary"];
             assert_eq!(chart["runs"], prepared["runs"], "exact prefix values");
             let known = |chart: &serde_json::Value| {
-                chart["buckets"]
-                    .as_array()
+                serde_json::from_value::<crate::prepared_chart::ChartSummary>(chart.clone())
                     .unwrap()
-                    .iter()
-                    .filter(|bucket| !bucket.is_null())
-                    .cloned()
+                    .buckets
+                    .into_iter()
+                    .flatten()
                     .collect::<Vec<_>>()
             };
             assert_eq!(known(chart), known(prepared));

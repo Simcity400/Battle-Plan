@@ -2,6 +2,8 @@ import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import type { SupplyHealthReply, SupplyHealthRun } from '../../generated/dashboard';
 import { object, unsigned32 } from '../../dashboard/validation.ts';
 import { clipToSpans, isOrderedSpans } from '../../charts/series.ts';
+import { chartSummaryFrom } from '../../charts/chartSummary.ts';
+import type { ChartSummary } from '../../charts/chartSummary';
 import type { ShareRun } from '../../charts/share';
 import { formatFixed, rescale } from '../../charts/valueAxis.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
@@ -12,7 +14,10 @@ const count = unsigned32;
 export const STATES = ['noSupply', 'strained', 'inSupply'] as const;
 export const STATE_LABELS = { noSupply: 'No supply', strained: 'Strained', inSupply: 'In supply' } as const;
 
-export function validateSupplyHealthReply(value: unknown): SupplyHealthReply {
+/** A supply reply with its prepared summaries decoded. */
+export type SupplyReply = Omit<SupplyHealthReply, 'summaries'> & { summaries?: { tag: string; values: ChartSummary[] }[] };
+
+export function validateSupplyHealthReply(value: unknown): SupplyReply {
   if (!object(value) || !text(value.branchId) || typeof value.available !== 'boolean'
     || !(value.reason === null || text(value.reason)) || !Array.isArray(value.missingInputs)
     || !value.missingInputs.every(text) || new Set(value.missingInputs).size !== value.missingInputs.length
@@ -27,7 +32,14 @@ export function validateSupplyHealthReply(value: unknown): SupplyHealthReply {
       : !text(value.reason) || value.missingInputs.length === 0 || value.series.some(series => series.runs.length > 0))) {
     throw new Error('The supply health reply is malformed.');
   }
-  return value as unknown as SupplyHealthReply;
+  // Prepared replies add each country's summaries, decoded from the dashboard's columns.
+  if (value.summaries === undefined) return value as unknown as SupplyReply;
+  const summaries = Array.isArray(value.summaries) ? value.summaries.map(line => {
+    const values = object(line) && text(line.tag) && Array.isArray(line.values) ? line.values.map(chartSummaryFrom) : null;
+    return values && values.every(summary => summary !== null) ? { ...line, values } : null;
+  }) : null;
+  if (!summaries || summaries.some(line => line === null)) throw new Error('The supply health reply is malformed.');
+  return { ...value, summaries } as unknown as SupplyReply;
 }
 
 export function supplyShareRuns(runs: readonly SupplyHealthRun[]): ShareRun[] {

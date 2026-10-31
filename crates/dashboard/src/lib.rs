@@ -114,6 +114,7 @@ pub fn typescript_contract() -> String {
         prepared_focus::TableRefusal::decl(),
         prepared_focus::UnavailableHour::decl(),
         prepared_chart::ChartBucket::decl(),
+        prepared_chart::ChartColumns::decl(),
         prepared_chart::ChartRun::decl(),
         prepared_chart::ChartSummary::decl(),
         prepared_chart::MarkCluster::decl(),

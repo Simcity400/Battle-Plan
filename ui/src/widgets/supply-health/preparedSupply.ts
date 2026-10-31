@@ -8,11 +8,10 @@ import { useViewRead } from '../../dashboard/viewRead';
 import type { SupplyHealthReply } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { validateSupplyHealthReply } from './supplyHealthData';
+import type { SupplyReply } from './supplyHealthData';
 import { useParityPreparation } from '../../dashboard/parityPreparation';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { overlayCountryIdentities } from '../../dashboard/countryIdentity';
-import type { ChartSummary } from '../../charts/chartSummary';
-type PreparedReply = SupplyHealthReply & { summaries?: { tag: string; values: ChartSummary[] }[] };
 
 /** One display viewport plus exact reached moments; source changes mask both. */
 export function usePreparedSupply(client: DashboardClient, track: BoundTrack | undefined, tags: readonly string[],
@@ -42,21 +41,21 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
   // One display read at a time while the chart's view moves (`useViewRead`).
   const content = useContentRevision(client);
   const selected = parity?.requested || viewport?.key !== key ? tags : drawnTags;
-  const read = useViewRead<{ from: number; to: number; width?: number }, PreparedReply>(
+  const read = useViewRead<{ from: number; to: number; width?: number }, SupplyReply>(
     request(view.from, view.to, view.width, selected) ? JSON.stringify([key, selected, prepared, !!parity?.requested, content]) : null,
     view, prepared ? JSON.stringify([view.from, view.to, view.width]) : '', active,
     (at, signal, publish, restart) => loadProduct(client, request(at.from, at.to, at.width, selected)!, signal,
-      value => validateSupplyHealthReply(value) as PreparedReply, prepared ? track?.source : undefined, restart, publish), client);
+      validateSupplyHealthReply, prepared ? track?.source : undefined, restart, publish), client);
   const display = { ...read, error: useHeldFailure(read.error, read.data !== undefined, read.retry) };
-  const reached = useFollowedProduct<SupplyHealthReply>(client, request(hour, hour), ['from', 'to'], active,
+  const reached = useFollowedProduct<SupplyReply>(client, request(hour, hour), ['from', 'to'], active,
     validateSupplyHealthReply, prepared ? track?.source : undefined);
-  const pointed = useProduct<SupplyHealthReply>(client, request(hover ?? origin ?? hour, hover ?? origin ?? hour), active,
+  const pointed = useProduct<SupplyReply>(client, request(hover ?? origin ?? hour, hover ?? origin ?? hour), active,
     validateSupplyHealthReply, prepared ? track?.source : undefined);
   const data = useMemo(() => {
     const base = reached.data ?? display.data;
     if (!base) return undefined;
     const rough = display.data?.summaries?.some(line => line.values.some(summary => summary.approximate?.length)) === true;
-    const replies = [display.data, reached.data, pointed.data].filter((reply): reply is PreparedReply => !!reply);
+    const replies = [display.data, reached.data, pointed.data].filter((reply): reply is SupplyReply => !!reply);
     const countries = new Map<string, SupplyHealthReply['series'][number]>();
     let identities: { tag: string; identities: NonNullable<SupplyHealthReply['series'][number]['identities']> }[] = [];
     for (const reply of replies) {
@@ -74,7 +73,9 @@ export function usePreparedSupply(client: DashboardClient, track: BoundTrack | u
       const country = countries.get(identity.tag);
       if (country) countries.set(identity.tag, { ...country, identities: identity.identities });
     }
-    return { ...base, series: [...countries.values()] };
+    // The summaries are read on their own below; the merged reply is the exact one.
+    const { summaries: _summaries, ...exact } = base;
+    return { ...exact, series: [...countries.values()] };
   }, [display.data, reached.data, pointed.data]);
   const geometry = useMemo(() => new Map(display.data?.series.map(series => [series.tag, series.runs])), [display.data]);
   const onNavigateHour = useCallback<NonNullable<TimeChartProps['onNavigateHour']>>((action, from, x, until) => {

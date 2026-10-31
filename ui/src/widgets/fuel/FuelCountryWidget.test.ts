@@ -4,6 +4,7 @@ import { createElement, isValidElement } from 'react';
 import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 import type CountryPicker from '../../components/CountryPicker';
 import type DrillHost from '../../charts/drill/DrillHost';
 import type { CountryRaceViewProps } from '../../charts/race/CountryRaceView';
@@ -391,7 +392,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
       })) };
       assert.equal(product, 'series-summary');
       return { branchId: '1', replies, series: tags.flatMap(tag => params.measures!.map(measure => ({ tag, measure,
-        summary: { from: params.from, to: params.to, width: params.width, buckets: [], runs: [] },
+        summary: wireSummary({ from: params.from, to: params.to, width: params.width, buckets: [], runs: [] }),
       }))) };
     } } as unknown as typeof props.runtime.client;
     const settlePrepared = async () => {

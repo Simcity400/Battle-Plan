@@ -8,6 +8,7 @@ import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartTokens } from '../../charts/tokens';
 import { plotFrame } from '../../charts/frame.ts';
 import type { LedgerGovernment, PartyHistoryReply, PoliticsLedgerReply } from '../../generated/dashboard';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 test('dense ruling-party combines census, native and tail marks and chooses the nearer keyboard event', async t => {
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
@@ -92,12 +93,12 @@ test('dense ruling-party combines census, native and tail marks and chooses the 
         summary: { from: params.from, to: params.to, width: params.width, clusters: [{ firstHour: 40, lastHour: 80, firstOrdinal: '0', count: '2' }] } })) : [],
         summaries: summary ? data.parties.map((party, index) => {
           const value = Number(party.runs[0].valueRaw) / 100000;
-          return { token: party.token, summary: { from, to, width,
+          return { token: party.token, summary: wireSummary({ from, to, width,
             approximate: index ? [{ firstHour: 63, lastHour: 65 }, { firstHour: 450, lastHour: 550 }]
               : [{ firstHour: 60, lastHour: 63 }, { firstHour: 400, lastHour: 499 }],
             ...(to - from + 1 <= width ? { runs: party.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour, value, breakBefore: run.startsSegment })) } : {}),
             buckets: [{ firstHour: from, lastHour: to, firstValue: value, lastValue: value, lastValueHour: to,
-              minHour: from, maxHour: to, minValue: value, maxValue: value, firstBreak: true, hasBreak: false }] } };
+              minHour: from, maxHour: to, minValue: value, maxValue: value, firstBreak: true, hasBreak: false }] }) };
         }) : [] };
     },
   };

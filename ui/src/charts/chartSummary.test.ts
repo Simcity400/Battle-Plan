@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines } from './chartSummary.ts';
+import { chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines } from './chartSummary.ts';
+import { wireSummary } from './chartSummary.fixture.ts';
 import { drawBands, drawGapFill, drawLine } from './draw.ts';
 import { pickLines } from './linePick.ts';
 import { extentOf } from './series.ts';
@@ -336,4 +337,18 @@ test('exact and dense gap summaries share faded approximate passes from either s
     assert.ok(fills.includes(0.2 * 0.55));
     assert.equal(alpha, 1);
   }
+});
+
+test('a summary decodes from its bucket columns, gaps and totals in place, and refuses columns that disagree', () => {
+  const later = { ...bucket, firstHour: 60_000, lastHour: 60_009, lastValueHour: 60_004, minHour: 60_001, maxHour: 60_009, firstBreak: true, hasBreak: true, absoluteTotal: '123456789012345678901234567890' };
+  const sent = { from: 0, to: 70_000, width: 4, buckets: [null, { ...bucket, absoluteTotal: '7' }, null, null, later, null] };
+  const wire = wireSummary(sent);
+  assert.deepEqual(wire.buckets.skip, [1, 2]);
+  assert.deepEqual(wire.buckets.hours.slice(5), [60_000 - 49_999, 9, 4, 1, 9]);
+  assert.deepEqual(chartSummaryFrom(wire), sent);
+  assert.equal(chartSummaryFrom(wire), chartSummaryFrom(wire), 'decoded once per reply');
+  for (const columns of [{ slots: 2 }, { flags: [0, 4] }, { totals: ['7', '-1'] }, { hours: [...wire.buckets.hours.slice(0, 6), 3, 4, 1, 9] },
+    { skip: [1] }, { values: [...wire.buckets.values.slice(0, 7), Infinity] }])
+    assert.equal(chartSummaryFrom({ ...wire, buckets: { ...wire.buckets, ...columns } }), null, JSON.stringify(columns));
+  assert.equal(chartSummaryFrom(sent), null, 'bucket objects are not the wire');
 });

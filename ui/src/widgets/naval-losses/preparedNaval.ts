@@ -7,7 +7,9 @@ import { preparedSeriesQuery, preparedWindowQuery } from '../../dashboard/prepar
 import type { PreparedBinding } from '../../dashboard/preparedSeries';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
-import type { NavalLossesParams, NavalLossesReply, ChartSummary } from '../../generated/dashboard';
+import type { NavalLossesParams, NavalLossesReply } from '../../generated/dashboard';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { chartSummaryLines } from '../../charts/chartSummary';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { battleWindowIndex } from '../land-battles/landBattlesData';
 import { navalModel, navalValue, mergeNavalWindows, validateNavalWindow, validateNavalManifest } from './navalLossesData.ts';
@@ -16,9 +18,10 @@ import type { NavalManifest } from './navalLossesData';
 export interface SummaryReply { series: { tag: string; summary: ChartSummary }[]; sampled?: NavalLossesReply }
 function validateSummary(value: unknown): SummaryReply {
   const reply = value as SummaryReply;
-  if (!Array.isArray(reply?.series) || reply.series.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets))) throw Error('The naval loss summary is malformed.');
+  const series = chartSummaryLines<SummaryReply['series'][number]>(reply?.series, line => typeof line.tag === 'string');
+  if (!series) throw Error('The naval loss summary is malformed.');
   if (reply.sampled) validateNavalWindow(reply.sampled);
-  return reply;
+  return { ...reply, series };
 }
 export function usePreparedNaval(client: DashboardClient, track: BoundTrack | undefined, params: NavalLossesParams | null,
   moment: number, extent: readonly [number,number], view: 'race' | 'lines' | 'mix', active: boolean, parity = false) {

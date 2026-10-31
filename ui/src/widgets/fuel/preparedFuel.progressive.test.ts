@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as React from 'react';
 import { createServer } from 'vite';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 
@@ -25,8 +26,8 @@ test('mounted fuel publishes scalar tails immediately and replaces them when pre
   const client={preparedQuery:async(_source:unknown,product:string,params:{reads?:{tag:string;hour:number}[]})=>{
     const count=(calls.get(product)??0)+1;calls.set(product,count);assert.ok(count<=3,'initial and accepted publications cannot loop');
     const coverage={firstHour:0,lastHour:ready?29:1,complete:ready};
-    if(product==='series-summary')return {branchId:'1',coverage,replies:[metadata],series:[{tag:'tail',measure:'fuel',summary:{from:0,to:29,width:30,
-      buckets:[],runs:[{firstHour:0,lastHour:29,value:ready?2:1,breakBefore:true}],approximate:ready?[]:[{firstHour:2,lastHour:29}]}}]};
+    if(product==='series-summary')return {branchId:'1',coverage,replies:[metadata],series:[{tag:'tail',measure:'fuel',summary:wireSummary({from:0,to:29,width:30,
+      buckets:[],runs:[{firstHour:0,lastHour:29,value:ready?2:1,breakBefore:true}],approximate:ready?[]:[{firstHour:2,lastHour:29}]})}]};
     return {branchId:'1',coverage,replies:[metadata],states:params.reads!.map(read=>({...read,recorded:true,approximate:false,fuel:null,consumption:null,
       consumptionSegment:null,fuelRaw:ready?'2':'1',capacityRaw:'3'}))};
   },preparationStatus:async(input:object)=>{assert.ok(++statuses<=3);await accepted;return {...input,state:'ready',sections:[],bytes:'0',error:null,

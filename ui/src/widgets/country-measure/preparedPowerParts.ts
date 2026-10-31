@@ -7,20 +7,27 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { validatePowerBalance, powerBalanceIndex } from '../../dashboard/powerBalance';
-import { isChartSummary } from '../../charts/chartSummary';
+import { chartSummaryFrom } from '../../charts/chartSummary';
+import type { ChartSummary } from '../../charts/chartSummary';
 import type { PowerCurrency } from '../../dashboard/politicsSpending';
 import type { PowerBreakdown } from './powerDrillData';
 import { powerCountryLedger } from './powerCountryData';
 
 const NO_PREPARED_CLIENT = {} as DashboardClient;
 
-function validate(value: unknown): PoliticsLedgerReply {
-  const reply = validatePowerBalance(value);
-  if (reply.partSummaries !== undefined && (!Array.isArray(reply.partSummaries) || !reply.partSummaries.every(part => part
-    && typeof part.id === 'string' && typeof part.label === 'string' && isChartSummary(part.summary)))) {
-    throw new Error('The prepared income and causes are malformed.');
-  }
-  return reply;
+type PreparedLedger = Omit<PoliticsLedgerReply, 'partSummaries'> & { partSummaries?: { id: string; label: string; summary: ChartSummary }[] };
+
+function validate(value: unknown): PreparedLedger {
+  const { partSummaries: parts, ...reply } = validatePowerBalance(value);
+  if (parts === undefined) return reply;
+  const malformed = () => new Error('The prepared income and causes are malformed.');
+  if (!Array.isArray(parts)) throw malformed();
+  const partSummaries = parts.map(part => {
+    const summary = part && typeof part.id === 'string' && typeof part.label === 'string' ? chartSummaryFrom(part.summary) : null;
+    if (!summary) throw malformed();
+    return { ...part, summary };
+  });
+  return { ...reply, partSummaries };
 }
 
 /** Geometry follows the chart's viewport; exact operands follow only reached days. */
@@ -40,7 +47,7 @@ export function usePreparedPowerParts(client: DashboardClient | undefined, sourc
   const binding = Object.fromEntries(bindings ?? []);
   // One summary read at a time while the chart's view moves (`useViewRead`).
   const content = useContentRevision(requestClient);
-  const read = useViewRead<{ from: number; to: number; width: number }, PoliticsLedgerReply>(
+  const read = useViewRead<{ from: number; to: number; width: number }, PreparedLedger>(
     enabled ? JSON.stringify([source.id, source.revision, branchId, tag, countryId, currency, mode, bindingKey, content]) : null,
     view, JSON.stringify([view.from, view.to, view.width]), active && enabled,
     (at, signal, publish, restart) => loadProduct(requestClient, { sourceId: source!.id, revision: source!.revision, product: 'politics-ledger',
@@ -52,7 +59,7 @@ export function usePreparedPowerParts(client: DashboardClient | undefined, sourc
     return to < from ? [] : [{ sourceId: source.id, revision: source.revision, product: 'politics-ledger',
       params: { branchId, tag, view: 'balance', from, hour: to, within } }];
   })) : [];
-  const exact = useFollowedProducts<PoliticsLedgerReply>(requestClient, requests, ['from', 'hour'], active && enabled, validate);
+  const exact = useFollowedProducts<PoliticsLedgerReply>(requestClient, requests, ['from', 'hour'], active && enabled, validatePowerBalance);
   // Replies are indexed by the day they answer, which can be an earlier ask still shown.
   const indexes = useMemo(() => {
     const result = new Map<number, ReturnType<typeof powerBalanceIndex>>();

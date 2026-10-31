@@ -4,6 +4,7 @@ import type { ChartBucket, ChartSummary } from '../../charts/chartSummary';
 import { mergePreparedTension, validatePreparedTension } from './preparedTension.ts';
 import { contributionAt, countryKey, tensionModel } from './tensionData.ts';
 import { tensionDrillAt, tensionLookAt } from './tensionDrill.ts';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 const bucket: ChartBucket = { firstHour: 0,lastHour: 31,firstValue: 2,lastValue: 3,lastValueHour: 30,
   minHour: 9,minValue: -7,maxHour: 21,maxValue: 11,firstBreak: false,hasBreak: false };
@@ -15,11 +16,12 @@ test('prepared exact values and original holder provenance stay separate from de
     reads:[{firstHour:20,lastHour:20,startsSegment:false,tensionRaw:'1000',sumRaw:'9007199254740993',unnamedRaw:'0'}],
     countries:[{tag:'A',slot:1,runs:[{firstHour:20,lastHour:20,startsSegment:false,valueRaw:'9007199254740993'}],identities:[
       {firstHour:0,lastHour:9,slot:1,countryId:10},{firstHour:20,lastHour:30,slot:1,countryId:20}]}],
-    catalogue:[{key:'0',tag:'A',slot:1,firstHour:0}],exactHours:[20],summaries:{world:total,sum:total} });
+    catalogue:[{key:'0',tag:'A',slot:1,firstHour:0}],exactHours:[20],summaries:{world:wireSummary(total),sum:wireSummary(total)} });
   assert.equal(data.countries[0].runs[0].valueRaw,'9007199254740993');
   const model = tensionModel(data,undefined,[],new Map(data.catalogue.map(country => [countryKey(country),country.firstHour])));
   assert.equal(tensionLookAt(model,countryKey(data.countries[0]),20,{firstHour:0,lastHour:30,gaps:[]}),null,'a later reached read cannot relabel the original holder');
-  assert.throws(() => validatePreparedTension({...data,summaries:{world:{...total,width:0}}}));
+  assert.deepEqual(data.summaries.world, { ...total, buckets: [{ ...total.buckets[0], absoluteTotal: '0' }] });
+  assert.throws(() => validatePreparedTension({...data,summaries:{world:{...wireSummary(total),width:0}}}));
 });
 
 test('frame contributors join a changing catalogue without inventing historical zeroes or unnamed attribution', () => {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
+import { wireSummaries } from '../../charts/chartSummary.fixture.ts';
 import { drawBands } from '../../charts/draw.ts';
 import { plotFrame } from '../../charts/frame.ts';
 import { partLayers, partsStack, partsAt } from './partsData.ts';
@@ -136,10 +137,10 @@ test('the drill uses bounded summaries and exact hours, and both paths register 
       if(product==='series-state')return {branchId:'1',measure:'stability',decimals:5,warnings:[],...metadata,states:(params.reads as {tag:string;hour:number}[]).flatMap(read=>['','term:base'].map(id=>({tag:JSON.stringify([read.tag,id]),hour:read.hour,pending:!id && fixture.pending,run:read.hour<=10 ? {firstHour:0,lastHour:10,valueRaw:id ? raw : '0',slot:1,countryId:1,startsSegment:true,readHour:Math.min(read.hour,8)} : null,drop:null})))};
       if(product==='series-next-change')return {hour:8};
       assert.equal(product,'series-summary');const from=Number(params.from),to=Number(params.to),width=Number(params.width);
-      return {branchId:'1',measure:'stability',decimals:5,warnings:[],...metadata,series:['','term:base'].map(id=>({tag:JSON.stringify([tag,id]),marks:null,summary:{from,to,width,
+      return wireSummaries({branchId:'1',measure:'stability',decimals:5,warnings:[],...metadata,series:['','term:base'].map(id=>({tag:JSON.stringify([tag,id]),marks:null,summary:{from,to,width,
         approximate:[{firstHour:5,lastHour:10}],
         ...(width>1 ? {runs:[{firstHour:0,lastHour:10,value:Number(id ? raw : '0')/100000,breakBefore:true}]} : {}),
-        buckets:Array.from({length:width>1 ? to-from+1 : 1},(_,index)=>{const hour=from+index;const value=Number(id ? raw : '0')/100000;return {firstHour:hour,lastHour:width>1 ? hour : to,firstValue:value,lastValue:value,lastValueHour:hour,minHour:hour,maxHour:hour,minValue:value,maxValue:value,firstBreak:hour===0,hasBreak:false,absoluteTotal:String(BigInt(id ? raw : '0')*BigInt(width>1 ? 1 : to-from+1))};})}}))};
+        buckets:Array.from({length:width>1 ? to-from+1 : 1},(_,index)=>{const hour=from+index;const value=Number(id ? raw : '0')/100000;return {firstHour:hour,lastHour:width>1 ? hour : to,firstValue:value,lastValue:value,lastValueHour:hour,minHour:hour,maxHour:hour,minValue:value,maxValue:value,firstBreak:hour===0,hasBreak:false,absoluteTotal:String(BigInt(id ? raw : '0')*BigInt(width>1 ? 1 : to-from+1))};})}}))});
     }};
     const props={reply:{branchId:'1',tag,decimals:5,stability:parts,warSupport:parts,warnings:[]},numbers:{branchId:'1',tag,decimals:5,stability:parts,warSupport:parts,warnings:[]},pickOwner:{},presentationReady:true,measure:'stability',hour:9,extent:[0,10],playback:{playhead:null,mode:'draw-in',afterPlayhead:false,windowHours:24},branchStart:0,hoursPerSecond:24,active:true,tokens:{categories:['#123'],muted:'#888'},within:null,readAt:()=>8,
       preparedBinding:{client,source:{id:'source',revision:'1'},branchId:'1',tags:[tag]}};

@@ -6,6 +6,7 @@ import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { preparedWindowQuery } from '../../dashboard/preparedSeries.ts';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { PreparedAutonomy } from './preparedAutonomy';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 const band = { firstHour: 0, lastHour: 1000, startsSegment: true, level: 0, overlord: null, lowest: true, highest: true };
 const reply = { branchId: '1', scoreScale: 100000, levels: [{ id: 'mod/level', name: '', defined: true }],
@@ -22,7 +23,7 @@ test('summary pages retain every page marker and the least prepared coverage', (
     coverage: { firstHour: 0, lastHour: 1000, complete: true }, approximate: [], pending: [], exactHours: [],
     bands: [{ tag: 'A', runs: [{ ...band, lastHour: 749 }, { ...band, firstHour: 750, level: 1 }] }] });
   const rough = validatePreparedAutonomy({ ...reply, coverage: { firstHour: 0, lastHour: 499, complete: false },
-    approximate, pending: [], exactHours: [], summaries: { B: summary } });
+    approximate, pending: [], exactHours: [], summaries: { B: wireSummary(summary) } });
   for (const [a, b] of [[exact, rough], [rough, exact]]) {
     const merged = mergePreparedAutonomy(a, b);
     assert.deepEqual(merged.approximate, approximate, 'another page cannot make sampled geometry exact');
@@ -106,8 +107,8 @@ test('malformed bands and unbounded or invalid summary geometry are refused', ()
     { pending: [{ firstHour: 5, lastHour: 4 }] },
     { bands: [{ tag: 'A', runs: [{ ...band, lastHour: -1 }] }] },
     { bands: [{ tag: 'A', runs: [{ ...band, startsSegment: undefined }] }] },
-    { summaries: { A: { from: 0, to: 1000, width: 1, buckets: [null, null, null, null, null] } } },
-    { summaries: { A: { from: 0, to: 1000, width: 1, buckets: [{ firstHour: 0, lastHour: 5, maxHour: 6 }] } } },
+    { summaries: { A: wireSummary({ from: 0, to: 1000, width: 1, buckets: [null, null, null, null, null] }) } },
+    { summaries: { A: wireSummary({ from: 0, to: 1000, width: 1, buckets: [{ firstHour: 0, lastHour: 5, maxHour: 6 } as never] }) } },
     { exactHours: [NaN] },
   ]) assert.throws(() => validatePreparedAutonomy({ ...reply, ...changes }));
 });

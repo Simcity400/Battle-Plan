@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import type { FuelRead, FuelReply } from '../../generated/dashboard';
 import type { FuelSummaries } from './preparedFuel';
+import { wireSummary } from '../../charts/chartSummary.fixture.ts';
 
 test('prepared fuel keeps exact reached integers and supplying dates separate from summaries', async()=>{
   const server=await createServer({configFile:false,optimizeDeps:{noDiscovery:true},server:{middlewareMode:true,watch:null,hmr:false,ws:false},appType:'custom'});
@@ -19,7 +20,7 @@ test('prepared fuel keeps exact reached integers and supplying dates separate fr
     assert.equal(reachedFuel(states)[0].reads[0].fuelRaw,'9223372036854775807');
     assert.throws(()=>validateFuelStates({...states,states:[{...states.states[0],hour:124}]}),/cover/);
     const summary={from:100,to:123,width:30,buckets:[],runs:[{firstHour:100,lastHour:123,value:32768,breakBefore:true}]};
-    validateFuelSummaries({branchId:'1',replies:[metadata],series:[{tag:metadata.tag,measure:'fuel',summary}]});
+    assert.deepEqual(validateFuelSummaries({branchId:'1',replies:[metadata],series:[{tag:metadata.tag,measure:'fuel',summary:wireSummary(summary)}]}).series[0].summary,summary);
     assert.deepEqual(fuelSummaryRuns(summary,32768),[{firstHour:100,lastHour:123,value:1,breakBefore:true}]);
     const gain={...summary,runs:[{firstHour:100,lastHour:100,value:150000,breakBefore:true},{firstHour:124,lastHour:124,value:200000,breakBefore:false}]};
     const burn={...summary,runs:[{firstHour:100,lastHour:100,value:32768,breakBefore:true}]};

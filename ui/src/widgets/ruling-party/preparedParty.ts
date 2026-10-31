@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
-import { isChartSummary } from '../../charts/chartSummary';
+import { chartSummaryFrom } from '../../charts/chartSummary';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import type { ChartSummary } from '../../charts/chartSummary';
 import type { MarkCluster, MarkSummary } from '../../charts/markSummary';
@@ -32,13 +32,17 @@ export function validatePreparedParty(value: unknown, requestedCursor?: string):
     || data.cursor !== null && !/^\d+$/.test(data.cursor)
     || !isPreparationExtent(data.coverage)) throw new Error('The prepared party reply is malformed.');
   if (requestedCursor !== undefined && data.cursor !== null && BigInt(data.cursor) <= BigInt(requestedCursor)) throw new Error('The prepared party event cursor did not advance.');
-  for (const line of data.summaries) if (typeof line.token !== 'string' || !isChartSummary(line.summary)) throw new Error('The prepared party summary is malformed.');
+  const summaries = data.summaries.map(line => {
+    const summary = typeof line?.token === 'string' ? chartSummaryFrom(line.summary) : null;
+    if (!summary) throw new Error('The prepared party summary is malformed.');
+    return { ...line, summary };
+  });
   for (const mark of data.marks) {
     if (!['ruling', 'leader', 'election'].includes(mark.field) || typeof mark.exact !== 'boolean' || !Array.isArray(mark.summary.clusters)
       || mark.summary.clusters.some(cluster => !Number.isInteger(cluster.firstHour) || !Number.isInteger(cluster.lastHour)
         || cluster.firstHour > cluster.lastHour || !/^\d+$/.test(cluster.firstOrdinal) || !/^[1-9]\d*$/.test(cluster.count))) throw new Error('The prepared party marks are malformed.');
   }
-  return data;
+  return { ...data, summaries };
 }
 
 function validatePartyNavigation(value: unknown): { hour: number | null } {

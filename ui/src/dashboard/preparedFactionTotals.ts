@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TimeChartProps } from '../charts/TimeChart';
-import { isChartSummary } from '../charts/chartSummary.ts';
+import { chartSummaryRecord } from '../charts/chartSummary.ts';
 import type { ChartSummary } from '../charts/chartSummary';
 import type { FactionTotalsParams, FactionTotalsReply, FactionTotalSeries } from '../generated/dashboard';
 import type { DashboardClient } from './client';
@@ -18,11 +18,14 @@ export interface PreparedFactionTotals extends FactionTotalsReply {
 
 export function validatePreparedFactionTotals(value: unknown): PreparedFactionTotals {
   const reply = validateFactionTotalsReply(value) as PreparedFactionTotals;
-  for (const summaries of [reply.summaries, reply.memberSummaries]) {
-    if (summaries !== undefined && (!summaries || typeof summaries !== 'object' || Array.isArray(summaries)
-      || !Object.values(summaries).every(isChartSummary))) throw new Error('The prepared faction geometry is malformed.');
-  }
-  return reply;
+  const decoded = (summaries: unknown) => {
+    if (summaries === undefined) return undefined;
+    const record = chartSummaryRecord(summaries);
+    if (!record) throw new Error('The prepared faction geometry is malformed.');
+    return record;
+  };
+  const summaries = decoded(reply.summaries), memberSummaries = decoded(reply.memberSummaries);
+  return { ...reply, ...(summaries && { summaries }), ...(memberSummaries && { memberSummaries }) };
 }
 
 /** Later reached facts replace overlapping window facts; dense geometry supplies no values. */

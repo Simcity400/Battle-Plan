@@ -1893,14 +1893,9 @@ fn absolute_contribution_is_exact_across_batches_resume_append_gaps_and_membersh
                 expected
             );
             let json = serde_json::to_value(&summary).unwrap();
-            assert!(
-                json["buckets"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|bucket| !bucket.is_null())
-                    .all(|bucket| bucket["absoluteTotal"].is_string())
-            );
+            let totals = json["buckets"]["totals"].as_array().unwrap();
+            assert_eq!(totals.len(), summary.buckets.iter().flatten().count());
+            assert!(totals.iter().all(serde_json::Value::is_string));
             assert_eq!(
                 serde_json::from_value::<ChartSummary>(json).unwrap(),
                 summary

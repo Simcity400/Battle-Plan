@@ -1,7 +1,7 @@
 import type { AutonomyReply, AutonomyRun, AutonomySubject, CountryIdentityHistory } from '../../generated/dashboard';
 import { overlayCountryIdentities, validCountryIdentityHistories } from '../../dashboard/countryIdentity.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
-import { isChartSummary } from '../../charts/chartSummary.ts';
+import { chartSummaryRecord } from '../../charts/chartSummary.ts';
 import { validateAutonomyReply } from './autonomyData.ts';
 import type { Span } from '../../charts/series';
 import { isOrderedSpans } from '../../charts/series.ts';
@@ -24,15 +24,19 @@ export interface PreparedAutonomy extends AutonomyReply {
 /** Categorical operands feed the existing holder/level helpers; numeric labels use exact subjects. */
 export function validatePreparedAutonomy(value: unknown): PreparedAutonomy {
   const data = validateAutonomyReply(value) as PreparedAutonomy;
+  return checkedAutonomy(data, chartSummaryRecord(data.summaries));
+}
+/** `data` checked with its summaries decoded (null when they were malformed), and its metadata made. */
+function checkedAutonomy(data: PreparedAutonomy, summaries: Record<string, ChartSummary> | null): PreparedAutonomy {
   if (!validCountryIdentityHistories(data.identities) || !Array.isArray(data.bands) || !Array.isArray(data.exactHours) || !data.exactHours.every(Number.isSafeInteger)
     || data.approximate !== undefined && !isOrderedSpans(data.approximate) || data.pending !== undefined && !isOrderedSpans(data.pending)
-    || !data.summaries || typeof data.summaries !== 'object' || !Object.values(data.summaries).every(isChartSummary)
+    || !summaries
     || !data.bands.every(subject => subject && typeof subject.tag === 'string' && Array.isArray(subject.runs)
       && subject.runs.every(run => run && typeof run.startsSegment === 'boolean' && typeof run.lowest === 'boolean' && typeof run.highest === 'boolean')))
     throw new Error('The prepared autonomy reply is malformed.');
   const subjects: AutonomySubject[] = data.bands.map(subject => ({ tag: subject.tag, runs: subject.runs.map(run => ({ ...run,
     scoreRaw: '0', lowerRaw: '0', upperRaw: '0', ratioRaw: null })) }));
-  return { ...data, metadata: validateAutonomyReply({ ...data, subjects }) };
+  return { ...data, summaries, metadata: validateAutonomyReply({ ...data, subjects }) };
 }
 /** Summary pages retain every page's unfinished history and shared prefix. */
 export function mergePreparedAutonomy(a: PreparedAutonomy, b: PreparedAutonomy): PreparedAutonomy {
@@ -98,11 +102,13 @@ function mergeAutonomy(a: PreparedAutonomy, b: PreparedAutonomy, mode: 'pages' |
   const approximate = spans(a.approximate ?? [], mode === 'pages' ? b.approximate ?? [] : withoutHours(b.approximate ?? [], prepared));
   const unfinished = spans(a.pending ?? [], b.pending ?? []);
   const pending = mode === 'pages' ? unfinished : withoutHours(unfinished, spans(prepared, approximate));
-  return validatePreparedAutonomy({ ...a, levels, subjects: mergeSubjects(a.subjects, b.subjects), bands: mergeSubjects(a.bands, b.bands),
+  const merged = { ...a, levels, subjects: mergeSubjects(a.subjects, b.subjects), bands: mergeSubjects(a.bands, b.bands),
     // An exact read answers its hours alone: a missing read there is not the rough block's coverage.
     recorded: spans(withoutHours(a.recorded, reached), b.recorded), unidentified: spans(withoutHours(a.unidentified, reached), b.unidentified),
     warnings: [...new Set([...a.warnings, ...b.warnings])], summaries: { ...a.summaries, ...b.summaries },
     exactHours: [...new Set([...a.exactHours, ...b.exactHours])].sort((a, b) => a - b),
     coverage, approximate, pending,
-    identities: overlayCountryIdentities(a.identities, b.identities) });
+    identities: overlayCountryIdentities(a.identities, b.identities) };
+  // Pages are decoded already: the merge is checked as a reply is, its summaries as they are.
+  return checkedAutonomy(validateAutonomyReply(merged) as PreparedAutonomy, merged.summaries);
 }

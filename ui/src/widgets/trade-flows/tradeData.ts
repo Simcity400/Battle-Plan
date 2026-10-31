@@ -2,6 +2,7 @@ import { contentTitle } from '../../dashboard/contentTitles.ts';
 import { artworkUrlValue } from '../../dashboard/payload.ts';
 import { runAt } from '../../charts/series.ts';
 import type { ChartSummary } from '../../charts/chartSummary';
+import { chartSummaryRecord } from '../../charts/chartSummary.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
@@ -73,17 +74,20 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
         && flow.factories.every(HOUR) && flow.convoysAssigned.every(HOUR) && flow.convoysRequired.every(HOUR) && flow.deals.every(COUNT);
     })
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
-  if (!ok) throw new Error('The trade flows reply is malformed.');
+  const wire = (reply as PreparedTradeReply).summaries;
+  const summaries = wire === undefined ? undefined : chartSummaryRecord(wire);
+  if (!ok || summaries === null) throw new Error('The trade flows reply is malformed.');
+  const shown = summaries ? { ...reply, summaries } as PreparedTradeReply : reply;
   // Indexing also refuses contradictory holder aliases. Every numeric run must
   // name the same exact native holder in the shared census at its supplying read.
-  const trade = decodeTrade(reply);
+  const trade = decodeTrade(shown);
   const outrun = trade.flows.some(flow => flow.runs.some(run => (['seller', 'buyer'] as const).some(side => {
     const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
     return !fact || fact.tag !== run[side === 'seller' ? 'sellerTag' : 'buyerTag'] || fact.lastHour < run.lastHour;
   })));
-  if (!outrun) return reply;
+  if (!outrun) return shown;
   // A prefix can hold runs ahead of the identity history that names their holders.
-  if ((reply as PreparedTradeReply).coverage?.complete === false) return { ...reply, holdersPending: true } as PreparedTradeReply;
+  if ((shown as PreparedTradeReply).coverage?.complete === false) return { ...shown, holdersPending: true } as PreparedTradeReply;
   throw new Error('The trade flow names a holder outside its recorded identity.');
 }
 

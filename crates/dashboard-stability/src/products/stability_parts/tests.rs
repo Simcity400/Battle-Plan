@@ -517,18 +517,15 @@ fn prepared_parts_match_the_product_with_missing_lines_character_reads_and_resum
                 .iter()
                 .find(|line| line["tag"] == serde_json::to_string(&("GER", &part.id)).unwrap())
                 .unwrap();
-            let total: u128 = line["summary"]["buckets"]
-                .as_array()
+            let total: u128 =
+                serde_json::from_value::<dashboard_base::prepared_chart::ChartSummary>(
+                    line["summary"].clone(),
+                )
                 .unwrap()
+                .buckets
                 .iter()
-                .filter(|bucket| !bucket.is_null())
-                .map(|bucket| {
-                    bucket["absoluteTotal"]
-                        .as_str()
-                        .unwrap()
-                        .parse::<u128>()
-                        .unwrap()
-                })
+                .flatten()
+                .map(|bucket| bucket.absolute_total)
                 .sum();
             let expected: u128 = part
                 .runs

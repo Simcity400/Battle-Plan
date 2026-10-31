@@ -6,7 +6,9 @@ import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
 import { useHeldFailure } from '../../dashboard/heldFailures';
-import type { ArmySizeParams, ArmySizeReply, ChartSummary, CountryIdentityRun } from '../../generated/dashboard';
+import type { ArmySizeParams, ArmySizeReply, CountryIdentityRun } from '../../generated/dashboard';
+import type { ChartSummary } from '../../charts/chartSummary';
+import { chartSummaryLines } from '../../charts/chartSummary';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { validateArmySizeReply } from './armySizeData';
 import { countryValueAt, countryValuesModel } from '../../charts/race/countryValues';
@@ -31,9 +33,10 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
     (at, signal, publish, restart) => loadProduct(client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'series-summary',
       params: { branchId: params!.branchId, family: { kind: 'army-size', measure: params!.measure, countFor: params!.countFor, top: params!.top },
         tags: params!.tags, from: at.from, to: at.to, width: at.width } }, signal, value => {
-      const reply = value as { series: { tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }[] };
-      if (!Array.isArray(reply?.series) || reply.series.some(line => typeof line.tag !== 'string' || !Array.isArray(line.summary?.buckets))) throw Error('The army summary is malformed.');
-      return reply;
+      const series = chartSummaryLines<{ tag: string; summary: ChartSummary; identities?: CountryIdentityRun[] }>((value as { series?: unknown } | null)?.series,
+        line => typeof line.tag === 'string');
+      if (!series) throw Error('The army summary is malformed.');
+      return { ...value as object, series };
     }, track!.source, restart, publish), client);
   const summaries = useMemo(() => new Map(incoming.data?.series.map(line => [line.tag, line.summary])), [incoming.data]);
   const onSummaryView = useCallback<NonNullable<TimeChartProps['onSummaryView']>>(next => {

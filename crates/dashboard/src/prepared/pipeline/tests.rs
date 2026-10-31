@@ -3587,13 +3587,7 @@ fn progressive_stability_parts_join_prepared_prefix_and_tail_then_zoom_exactly_w
     );
     let dense = query("series-summary", summary(0, 1));
     assert!(child(&dense, "GER", "term:base")["runs"].is_null());
-    assert_eq!(
-        child(&dense, "GER", "term:base")["buckets"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(child(&dense, "GER", "term:base")["buckets"]["slots"], 1);
     let exact = query("series-summary", summary(4, 30));
     let base = child(&exact, "GER", "term:base");
     assert_eq!(base["approximate"], serde_json::json!([]));
@@ -4388,10 +4382,7 @@ fn territory_progressive_queries_join_prepared_prefix_and_tail_then_zoom_exactly
     assert!(dense_group["series"][0]["summary"]["runs"].is_null());
     // Dense group geometry is the shared summary grid (power-of-two in fine views).
     assert_eq!(
-        dense_group["series"][0]["summary"]["buckets"]
-            .as_array()
-            .unwrap()
-            .len(),
+        dense_group["series"][0]["summary"]["buckets"]["slots"],
         crate::prepared::series::summary_bins((0, 29), (0.0, 29.0, 3))
             .unwrap()
             .1

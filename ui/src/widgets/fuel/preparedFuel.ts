@@ -42,9 +42,9 @@ export function validateFuelSummaries(value: unknown): FuelSummaries {
   if (!object(value) || typeof value.branchId !== 'string' || !Array.isArray(value.series) || !Array.isArray(value.replies)) throw new Error('Prepared fuel summaries are malformed.');
   const result = value as unknown as FuelSummaries;
   result.replies.forEach(validateFuelReply);
-  validateMeasureSummaries({ ...result, measure: 'politicalPower', decimals: 5, warnings: [], series: result.series.map(line=>({...line,marks:null})) });
+  const { series } = validateMeasureSummaries({ ...result, measure: 'politicalPower', decimals: 5, warnings: [], series: result.series.map(line=>({...line,marks:null})) });
   if (result.series.some(line => typeof line.measure !== 'string')) throw new Error('Prepared fuel measure is malformed.');
-  return result;
+  return { ...result, series: result.series.map((line, index) => ({ ...line, summary: series[index].summary })) };
 }
 function reachedReads<R extends { firstHour: number }>(states: FuelStates, select: (point: FuelPoint) => R | null) {
   const countries = new Map<string, Map<number, R>>();

@@ -1574,7 +1574,11 @@ fn measure(
                 "summary": chart_summary(&series.runs, bounds.first_hour, bounds.last_hour, viewport),
                 "marks": mark_summary(series, viewport)
             })).collect();
-            evidence.compare(&label, json!(expected), actual["series"].clone())?;
+            evidence.compare(
+                &label,
+                json!(expected),
+                bucket_objects(actual["series"].clone())?,
+            )?;
             for series in &reference.series {
                 let label = format!("measure-marks/{measure:?}/{viewport_id}/{}", series.tag);
                 let actual = evidence.query(
@@ -1667,6 +1671,16 @@ fn measure(
         }
     }
     Ok(())
+}
+
+/// The replied summaries' bucket columns as the bucket objects the oracle builds.
+fn bucket_objects(mut series: Value) -> io::Result<Value> {
+    for line in series.as_array_mut().into_iter().flatten() {
+        let columns: dashboard::prepared_chart::ChartColumns =
+            serde_json::from_value(line["summary"]["buckets"].take())?;
+        line["summary"]["buckets"] = serde_json::to_value(columns.buckets()?)?;
+    }
+    Ok(series)
 }
 
 /// An independent sweep of the old product runs. It does not read prepared
