@@ -160,9 +160,9 @@ export default function Timeline(props: TimelineProps) {
   const rowHeight = props.rowHeight ?? ROW_HEIGHT;
   const height = timelineHeight(props.lanes.length, rowHeight, rows);
   const [viewportHeight, setViewportHeight] = useState(window.innerHeight);
-  const viewportState = () => {
+  const viewportState = (spacerElement = spacer.current!, scrolling = viewportElement.current!) => {
     const p = latest.current;
-    return timelineViewport(spacer.current!, viewportElement.current!, p.lanes.length, p.rowHeight ?? ROW_HEIGHT, p.stickyAxis !== false, geometry.current);
+    return timelineViewport(spacerElement, scrolling, p.lanes.length, p.rowHeight ?? ROW_HEIGHT, p.stickyAxis !== false, geometry.current);
   };
   const task = useRef<FrameTask | null>(null);
   const controls = useRef<{ dispatch: (action: ViewAction) => void } | null>(null);
@@ -172,6 +172,9 @@ export default function Timeline(props: TimelineProps) {
 
   useEffect(() => {
     const element = canvas.current!;
+    // Its own elements: unmounting detaches the refs before this effect's cleanup stops what it started.
+    const spacerElement = spacer.current!;
+    const scrolling = viewportElement.current!;
     const context = element.getContext('2d')!;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
@@ -299,7 +302,7 @@ export default function Timeline(props: TimelineProps) {
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
       const row = p.rowHeight ?? ROW_HEIGHT;
-      const { visible, offset: scrolled } = viewportState();
+      const { visible, offset: scrolled } = viewportState(spacerElement, scrolling);
       offset.current = scrolled;
       const axisTop = p.stickyAxis !== false ? scrolled : 0;
       const viewport = laneWindow(p.lanes.length, visible.top, visible.height, row, geometry.current);
@@ -655,17 +658,17 @@ export default function Timeline(props: TimelineProps) {
     const remove = scheduler.add(current);
     const unsubscribe = subscribeTokens(next => { tokens = next; labelsFitted = false; wake(); });
     const measureView = () => {
-      const parent = scrollParent(spacer.current!);
+      const parent = scrollParent(spacerElement);
       setViewportHeight(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
     };
-    const observer = new ResizeObserver(() => { measureView(); wake(); });
+    const observer = new ResizeObserver(() => { if (spacerElement.isConnected) { measureView(); wake(); } });
     observer.observe(element);
-    observer.observe(viewportElement.current!);
-    for (let parent: HTMLElement | null = spacer.current; parent; parent = parent.parentElement) observer.observe(parent);
+    observer.observe(scrolling);
+    for (let parent: HTMLElement | null = spacerElement; parent; parent = parent.parentElement) observer.observe(parent);
     measureView();
     const scroll = () => {
       const p = latest.current;
-      const { visible } = viewportState();
+      const { visible } = viewportState(spacerElement, scrolling);
       if (p.active && (p.stickyAxis !== false || !coversViewport(region.current, p.lanes.length, visible, p.rowHeight ?? ROW_HEIGHT, geometry.current))) {
         draw({ now: performance.now(), dt: 0 });
       }
