@@ -14,7 +14,7 @@ use replay_data::{
     rows::{TABLE_COUNT, TableId},
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics};
+use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
 use std::{cell::RefCell, io};
 
 mod changes;
@@ -52,6 +52,14 @@ pub fn identity() -> io::Result<Vec<(TableId, Hold)>> {
         ),
         (TableId::CountryLinks, Hold::Whole),
     ])
+}
+
+/// Gives back the walk's views that [`World::frame_held_into`] gave `frame` for `asks`, and
+/// Campaign's: each table not selected again.
+pub fn release(frame: &mut DecodedFrame, asks: &[(TableId, Hold)]) {
+    for &(table, _) in asks.iter().chain(&[(TableId::Campaign, Hold::Whole)]) {
+        frame.tables[table.index()] = not_selected();
+    }
 }
 
 /// What a lane reads of its walk's world.
@@ -282,9 +290,30 @@ impl World {
     /// held, is held whole from then on, built anew now. Drop the frame before the hour
     /// ends: a view still shared when the next hour builds it is copied, not changed.
     pub fn frame_held(&self, state: &State, asks: &[(TableId, Hold)]) -> io::Result<DecodedFrame> {
-        self.frame
-            .borrow_mut()
-            .frame(state, asks, (self.branch, self.hour), &self.metrics)
+        let mut frame = DecodedFrame {
+            branch: self.branch,
+            hour: self.hour,
+            tables: std::array::from_fn(|_| not_selected()),
+            metrics: Metrics::default(),
+        };
+        self.frame_held_into(state, asks, &mut frame)?;
+        Ok(frame)
+    }
+
+    /// [`Self::frame_held`] into `frame`, a frame kept from hour to hour, its other tables left
+    /// as they are: no frame is made anew. It must hold none of the walk's views when asked:
+    /// [`release`] them before the hour ends, so the next hour's first ask, any lane's,
+    /// changes them in place.
+    pub fn frame_held_into(
+        &self,
+        state: &State,
+        asks: &[(TableId, Hold)],
+        frame: &mut DecodedFrame,
+    ) -> io::Result<()> {
+        frame.branch = self.branch;
+        frame.hour = self.hour;
+        frame.metrics.clone_from(&self.metrics);
+        self.frame.borrow_mut().frame(state, asks, self.hour, frame)
     }
 
     /// The frame of the countries' identity tables ([`IDENTITY`]), as [`identity`] holds them.

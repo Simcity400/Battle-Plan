@@ -628,13 +628,8 @@ impl Views {
         Ok(())
     }
 
-    /// The frame of `hour` of `branch` from every hour noted since the views were built last:
-    /// a table no noted hour touched keeps its allocation; a complete table that stayed
-    /// complete gets the noted sections' edits, its inserted rows built from their columns,
-    /// its deleted keys removed and each written row given the columns written since; any
-    /// other gets a view built anew from the rows the walker holds, complete ones on
-    /// `parallel`'s workers when given. Views carrying change facts are admitted their credit
-    /// before any view changes: a refusal leaves the views and the hours noted as they were.
+    /// The frame of `hour` of `branch` from every hour noted since the views were built last,
+    /// as [`Self::update`] builds the views.
     pub fn build(
         &mut self,
         state: &State,
@@ -642,6 +637,32 @@ impl Views {
         metrics: Metrics,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<DecodedFrame> {
+        self.update(state, hour, parallel)?;
+        let mut frame = self
+            .frame(branch)
+            .ok_or_else(|| invalid("A built table has no view"))?;
+        frame.metrics = metrics;
+        Ok(frame)
+    }
+
+    /// `table`'s view as built last; None before a build, or when it is not selected.
+    pub fn view(&self, table: TableId) -> Option<&SharedView> {
+        self.views[table.index()].as_ref()
+    }
+
+    /// Builds the views of `hour` from every hour noted since they were built last, read with
+    /// [`Self::view`]: a table no noted hour touched keeps its allocation; a complete table
+    /// that stayed complete gets the noted sections' edits, its inserted rows built from their
+    /// columns, its deleted keys removed and each written row given the columns written since;
+    /// any other gets a view built anew from the rows the walker holds, complete ones on
+    /// `parallel`'s workers when given. Views carrying change facts are admitted their credit
+    /// before any view changes: a refusal leaves the views and the hours noted as they were.
+    pub fn update(
+        &mut self,
+        state: &State,
+        hour: i32,
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<()> {
         let mut plans = engine_allocation::vec(self.selected.len())?;
         let mut required = 0_usize;
         for (at, pending) in self.pending.iter_mut().enumerate() {
@@ -727,14 +748,13 @@ impl Views {
         }
         // A continuing walk's deltas apply to the hour the views were built for.
         let baseline = self.built.unwrap_or(hour.saturating_sub(1));
-        let mut tables: [SharedView; TABLE_COUNT] = std::array::from_fn(|_| not_selected());
         for (at, plan) in plans.into_iter().enumerate() {
             let id = self.selected[at];
             let index = id.index();
             let started = self.timed.then(Instant::now);
             let mut pending = std::mem::take(&mut self.pending[at]);
             let previous = self.views[index].take().filter(|_| !pending.anew);
-            let view = self.view(
+            let view = self.make(
                 state,
                 id,
                 plan,
@@ -749,9 +769,7 @@ impl Views {
                 edits: pending.edits,
                 ..Pending::default()
             };
-            let view = view?;
-            tables[index] = view.clone();
-            self.views[index] = Some(view);
+            self.views[index] = Some(view?);
             if let Some(started) = started {
                 let took = started.elapsed();
                 let tally = match plan {
@@ -766,12 +784,7 @@ impl Views {
             }
         }
         self.built = Some(hour);
-        Ok(DecodedFrame {
-            branch,
-            hour,
-            tables,
-            metrics,
-        })
+        Ok(())
     }
 
     /// Every row the walker holds of each of `tables`, built from its columns: on `parallel`'s
@@ -843,7 +856,7 @@ impl Views {
     /// is built anew, and `pending`, its hours noted since; `anew` holds the rows of the
     /// tables built anew, in selection order.
     #[allow(clippy::too_many_arguments)]
-    fn view(
+    fn make(
         &mut self,
         state: &State,
         id: TableId,

@@ -1013,6 +1013,7 @@ fn read_leader_visibility_reads_the_world_only_to_evaluate() {
             world: OnceCell::from(Err("the World is read".to_owned())),
             gap: OnceCell::new(),
             kept: None,
+            spans: Default::default(),
         }
     }
     let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
@@ -2543,6 +2544,7 @@ fn reused_leader_visibility(checking: bool) {
             world: OnceCell::from(Ok(world)),
             gap: OnceCell::new(),
             kept: None,
+            spans: Default::default(),
         };
         let mut rereads = Rereads::new();
         let decided = visible_reusing(
@@ -2736,6 +2738,7 @@ fn leader_visibility_from_changes(checking: bool) {
             world,
             gap: OnceCell::new(),
             kept: None,
+            spans: Default::default(),
         };
         let mut rereads = Rereads::new();
         let decided = visible_reusing(

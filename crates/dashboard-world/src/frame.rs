@@ -1,5 +1,5 @@
 //! The walk's one frame of the tables its lanes read as rows: each hour's edits noted as the
-//! walker applies them, the views built only at the first ask of an hour ([`Views::build`]).
+//! walker applies them, the views built only at the first ask of an hour ([`Views::update`]).
 //! Tables held whole are built together. A table held by some fields is held apart, even when
 //! another lane holds it whole: it is noted only at the hours that touch those fields, so its
 //! other fields stay as last built and its view changes only with them.
@@ -14,7 +14,7 @@ use replay_data::{
     rows::{TABLE_COUNT, TableId},
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
+use replay_frame::frame::DecodedFrame;
 use std::io;
 
 /// How the frame holds a table's rows.
@@ -59,8 +59,8 @@ impl Hold {
 struct Group {
     watch: Option<(TableId, u64)>,
     views: Views,
-    /// This hour's build, once asked for.
-    built: Option<DecodedFrame>,
+    /// Whether its views are built for this hour.
+    built: bool,
 }
 
 pub(crate) struct Frame {
@@ -118,7 +118,7 @@ impl Frame {
         self.groups.push(Group {
             watch,
             views: Views::new(tables, self.format, self.mode)?,
-            built: None,
+            built: false,
         });
         Ok(())
     }
@@ -140,7 +140,7 @@ impl Frame {
         facts: &Facts<'_>,
     ) -> io::Result<()> {
         for group in &mut self.groups {
-            group.built = None;
+            group.built = false;
             if let Some((table, fields)) = group.watch
                 && !facts.touched(table, fields)
             {
@@ -151,14 +151,14 @@ impl Frame {
         Ok(())
     }
 
-    /// See [`super::World::frame_held`].
+    /// See [`super::World::frame_held_into`]: `frame` already dated `hour`.
     pub(crate) fn frame(
         &mut self,
         state: &State,
         asks: &[(TableId, Hold)],
-        (branch, hour): (u64, i32),
-        metrics: &Metrics,
-    ) -> io::Result<DecodedFrame> {
+        hour: i32,
+        frame: &mut DecodedFrame,
+    ) -> io::Result<()> {
         // A table held in fewer fields than asked is held whole from now on.
         let mut missing = engine_allocation::collect_vec(
             asks.iter()
@@ -176,28 +176,21 @@ impl Frame {
                 .views
                 .reset();
         }
-        let mut frame = DecodedFrame {
-            branch,
-            hour,
-            tables: std::array::from_fn(|_| not_selected()),
-            metrics: metrics.clone(),
-        };
         for &(table, need) in asks.iter().chain(&[(TableId::Campaign, Hold::Whole)]) {
             let at = self
                 .holding(table, need)
                 .ok_or_else(|| invalid("A frame table has no group"))?;
             let group = &mut self.groups[at];
-            let built = match &mut group.built {
-                Some(built) => built,
-                built => built.insert(group.views.build(
-                    state,
-                    (branch, hour),
-                    metrics.clone(),
-                    None,
-                )?),
-            };
-            frame.tables[table.index()] = built.tables[table.index()].clone();
+            if !group.built {
+                group.views.update(state, hour, None)?;
+                group.built = true;
+            }
+            frame.tables[table.index()] = group
+                .views
+                .view(table)
+                .ok_or_else(|| invalid("A frame table was not built"))?
+                .clone();
         }
-        Ok(frame)
+        Ok(())
     }
 }

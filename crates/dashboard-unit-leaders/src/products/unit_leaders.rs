@@ -733,6 +733,10 @@ struct HourWorld<'a> {
     /// How `frame`'s rows may differ from the hour's whole frame, when it is
     /// a frame kept from a block read by its changes; None for a whole frame.
     kept: Option<&'a Kept<'a>>,
+    /// `kept`'s differences as inputs last read at the hour before and at the hour see them,
+    /// each with the hour it was read from: one for every evaluation of the hour
+    /// ([`Self::reads_whole`]).
+    spans: [OnceCell<(i32, Since<'a>)>; 2],
 }
 
 /// A frame kept from a block read by its changes and observed in place of
@@ -916,13 +920,12 @@ impl<'a> Kept<'a> {
     /// whole frame: each declares its dependence and none reads a field,
     /// row key or table this frame does not keep as the whole frame holds it.
     fn reads_whole(&self, inputs: &Inputs, frame: &DecodedFrame, from: i32) -> bool {
-        inputs.unchanged(&Since::span(
-            frame.branch,
-            from,
-            frame.hour,
-            Some(frame),
-            self.reduced,
-        ))
+        inputs.unchanged(&self.span(frame, from))
+    }
+
+    /// How `frame` differs from the hour's whole frame, as an input last read at `from` sees it.
+    fn span<'s>(&'s self, frame: &'s DecodedFrame, from: i32) -> Since<'s> {
+        Since::span(frame.branch, from, frame.hour, Some(frame), self.reduced)
     }
 
     /// Whether the tables a leader's template visibility reads
@@ -937,6 +940,36 @@ impl<'a> Kept<'a> {
 }
 
 impl<'a> HourWorld<'a> {
+    fn new(
+        content: &'a ScriptedContent,
+        frame: &'a DecodedFrame,
+        kept: Option<&'a Kept<'a>>,
+    ) -> Self {
+        Self {
+            content,
+            frame,
+            world: OnceCell::new(),
+            gap: OnceCell::new(),
+            kept,
+            spans: Default::default(),
+        }
+    }
+
+    /// [`Kept::reads_whole`] on the hour's frame of inputs last read at `from`, the hour or the
+    /// hour before; true on a whole frame.
+    fn reads_whole(&self, inputs: &Inputs, from: i32) -> bool {
+        let Some(kept) = self.kept else {
+            return true;
+        };
+        let (read, since) = self.spans[usize::from(from == self.frame.hour)]
+            .get_or_init(|| (from, kept.span(self.frame, from)));
+        if *read == from {
+            inputs.unchanged(since)
+        } else {
+            kept.reads_whole(inputs, self.frame, from)
+        }
+    }
+
     fn get(&self) -> Result<&World<'a>, String> {
         let world = self
             .world
@@ -1046,9 +1079,7 @@ impl Reuse<'_> {
             }
             // On a kept frame an input is read again only where it reads
             // what it reads on the whole frame.
-            let whole = hour.kept.is_none_or(|kept| {
-                kept.reads_whole(&last.inputs, frame, frame.hour.saturating_sub(1))
-            });
+            let whole = hour.reads_whole(&last.inputs, frame.hour.saturating_sub(1));
             last.inputs.confirm_since(frame, since, |key| {
                 if !whole {
                     return None;
@@ -1076,7 +1107,7 @@ impl Reuse<'_> {
         if let Some(kept) = hour.kept {
             if check_reuse() {
                 kept.block_whole("leaders.reject.check-mode");
-            } else if !kept.reads_whole(&inputs, frame, frame.hour) {
+            } else if !hour.reads_whole(&inputs, frame.hour) {
                 kept.block_inputs(&inputs, frame);
             }
         }
@@ -2624,13 +2655,7 @@ impl Scan {
         let Ok(scripted) = content.catalogue.scripted_content() else {
             return false;
         };
-        let hour = HourWorld {
-            content: scripted,
-            frame: decoded,
-            world: OnceCell::new(),
-            gap: OnceCell::new(),
-            kept,
-        };
+        let hour = HourWorld::new(scripted, decoded, kept);
         if hour.gap().is_err() {
             return false;
         }
@@ -2643,13 +2668,8 @@ impl Scan {
                 .evaluation
                 .as_mut()
                 .is_some_and(|evaluation| {
-                    let whole = kept.is_none_or(|kept| {
-                        kept.reads_whole(
-                            &evaluation.inputs,
-                            decoded,
-                            decoded.hour.saturating_sub(1),
-                        )
-                    });
+                    let whole =
+                        hour.reads_whole(&evaluation.inputs, decoded.hour.saturating_sub(1));
                     evaluation.inputs.confirm_since(decoded, since, |key| {
                         if !whole {
                             return None;
@@ -2958,13 +2978,7 @@ impl Scan {
         };
         let world = content.filter(|_| needs_visibility).and_then(|c| {
             match c.catalogue.scripted_content() {
-                Ok(scripted) => Some(HourWorld {
-                    content: scripted,
-                    frame: decoded,
-                    world: OnceCell::new(),
-                    gap: OnceCell::new(),
-                    kept,
-                }),
+                Ok(scripted) => Some(HourWorld::new(scripted, decoded, kept)),
                 Err(reason) => {
                     refusals.note(reason, "leader visibility content");
                     None

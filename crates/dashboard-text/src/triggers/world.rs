@@ -5,8 +5,9 @@ use crate::triggers::Failure;
 use crate::triggers::refusal::refused;
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 
 use installed_content_core::{
@@ -95,13 +96,16 @@ pub(crate) trait PreparedContent: Send + Sync {
     fn invasion_days(&self) -> Result<i32, &str>;
     fn geography(&self) -> GeographyInputs<'_>;
 }
-/// Lexer tokens by their literal under the lexer's fold; `Err` for a fold two
-/// recorded literals share.
-type Folds = BTreeMap<Vec<u8>, Result<u32, Failure>>;
-/// The latest folds by the LexicalTokens allocation they were read from. The
-/// table is static, so every hour's World shares one until it is read again;
-/// an identity matches no other allocation.
-static FOLDS: Mutex<Vec<(ViewIdentity, Arc<Folds>)>> = Mutex::new(Vec::new());
+#[path = "world/folds.rs"]
+mod folds;
+use folds::Folds;
+thread_local! {
+    /// This thread's latest folds by the LexicalTokens allocation they were read from. The
+    /// table is static, so every hour's World of a walk shares one until it is read again;
+    /// an identity matches no other allocation. Each thread keeps its own, so concurrent
+    /// walks never push out each other's.
+    static FOLDS: RefCell<Vec<(ViewIdentity, Arc<Folds>)>> = const { RefCell::new(Vec::new()) };
+}
 /// An index of rows joined through `CountryLinks`, and why some row's link
 /// did not resolve: an answer the index does not hold is then unknown, since
 /// the unresolved row may be the one asked about.
@@ -1920,9 +1924,9 @@ impl<'a> World<'a> {
     }
 
     fn token_of_unrecorded(&self, name: &[u8]) -> Result<Option<u32>, Failure> {
-        match self.names()?.get(&name.to_ascii_lowercase()) {
+        match self.names()?.get(name) {
             None => Ok(None),
-            Some(Ok(token)) => Ok(Some(*token)),
+            Some(Ok(token)) => Ok(Some(token)),
             Some(Err(reason)) => {
                 reason.reached();
                 Err(reason.clone())
@@ -1936,39 +1940,23 @@ impl<'a> World<'a> {
             let view = self
                 .frame
                 .identity(replay_data::rows::TableId::LexicalTokens.index());
-            let cached = |cache: &[(ViewIdentity, Arc<Folds>)]| {
+            let cached = FOLDS.with_borrow(|cache| {
                 cache
                     .iter()
                     .find(|(identity, _)| view.as_ref().is_some_and(|view| identity.same(view)))
                     .map(|(_, folds)| Arc::clone(folds))
-            };
-            if let Some(folds) = cached(&FOLDS.lock().unwrap_or_else(|e| e.into_inner())) {
+            });
+            if let Some(folds) = cached {
                 return Ok(folds);
             }
-            let mut out = Folds::new();
-            for row in lexical(self.frame)? {
-                let folded = row.literal.to_ascii_lowercase();
-                match out.get_mut(&folded) {
-                    None => {
-                        out.insert(folded, Ok(row.token));
-                    }
-                    Some(held) => {
-                        // One token per fold natively: two are refused.
-                        *held = Err(refused(format!(
-                            "{} names several lexer tokens",
-                            String::from_utf8_lossy(&row.literal)
-                        )));
-                    }
-                }
-            }
-            let out = Arc::new(out);
-            let mut cache = FOLDS.lock().unwrap_or_else(|e| e.into_inner());
-            cache.retain(|(identity, _)| !view.as_ref().is_some_and(|view| identity.same(view)));
+            let out = Arc::new(Folds::read(lexical(self.frame)?.iter()));
             if let Some(view) = view {
-                cache.insert(0, (view, Arc::clone(&out)));
+                FOLDS.with_borrow_mut(|cache| {
+                    cache.insert(0, (view, Arc::clone(&out)));
+                    // A walk's table, and the one it read before.
+                    cache.truncate(2);
+                });
             }
-            // One per table allocation a concurrent scan can be reading.
-            cache.truncate(8);
             Ok(out)
         })
         .map(|folds| &**folds)

@@ -15,7 +15,7 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{DecodedFrame, Metrics, TableView, not_selected};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView, not_selected};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -253,9 +253,12 @@ struct Held {
     tokens: Vec<u128>,
     /// Rows read from the walker's columns, by table.
     decoded: Vec<u64>,
-    /// The roster tables' own views between hours, and the hour they were kept at.
-    own: DecodedFrame,
+    /// The roster tables' own views between hours, as [`ROSTER`] orders them.
+    own: [Option<SharedView>; ROSTER.len()],
+    /// The hour they were kept at.
     last: Option<(u64, i32)>,
+    /// The frame each hour is read into, kept between hours holding none of the walk's views.
+    frame: Option<DecodedFrame>,
 }
 
 impl Held {
@@ -276,13 +279,9 @@ impl Held {
             characters: Vec::new(),
             tokens: Vec::new(),
             decoded: vec![0; TABLE_COUNT],
-            own: DecodedFrame {
-                branch: 0,
-                hour: 0,
-                tables: std::array::from_fn(|_| not_selected()),
-                metrics: Metrics::default(),
-            },
+            own: Default::default(),
             last: None,
+            frame: None,
         }
     }
 
@@ -300,10 +299,12 @@ impl Held {
         }
     }
 
-    /// Moves the roster's own view of `table` between its kept views and `frame`.
-    fn hand(from: &mut DecodedFrame, to: &mut DecodedFrame, table: TableId) {
-        let index = table.index();
-        to.tables[index] = std::mem::replace(&mut from.tables[index], not_selected());
+    /// The place of a roster table's own view among [`ROSTER`].
+    fn own(table: TableId) -> usize {
+        ROSTER
+            .iter()
+            .position(|&held| held == table)
+            .expect("a roster table")
     }
 
     /// The hour's frame, its change facts and what changed since the hour before.
@@ -320,7 +321,14 @@ impl Held {
             ));
         }
         let fresh = hour.opens || !continuous;
-        let mut frame = hour.world.frame_held(hour.state, &self.asks)?;
+        let mut frame = self.frame.take().unwrap_or_else(|| DecodedFrame {
+            branch: hour.branch,
+            hour: hour.hour,
+            tables: std::array::from_fn(|_| not_selected()),
+            metrics: Default::default(),
+        });
+        hour.world
+            .frame_held_into(hour.state, &self.asks, &mut frame)?;
         let mut present = [false; TABLE_COUNT];
         for section in &hour.manifest.sections {
             let held = present
@@ -346,15 +354,7 @@ impl Held {
             };
         }
         if self.roster {
-            let mut own = std::mem::replace(
-                &mut self.own,
-                DecodedFrame {
-                    branch: hour.branch,
-                    hour: hour.hour,
-                    tables: std::array::from_fn(|_| not_selected()),
-                    metrics: Metrics::default(),
-                },
-            );
+            let mut own = std::mem::take(&mut self.own);
             let mut regrouped = fresh;
             if (fresh || changes.0[TableId::UnitLeaders.index()].is_some())
                 && let Ok(rows) = frame.complete::<tables::UnitLeaders>()
@@ -370,14 +370,10 @@ impl Held {
             }
             for table in [TableId::Characters, TableId::CharacterPortraits] {
                 if self.holds[table.index()] == Some(Hold::Roster) {
-                    changes.0[table.index()] = self.roster_table(
-                        hour.state,
-                        &mut own,
-                        table,
-                        anew[table.index()],
-                        regrouped,
-                    )?;
-                    Self::hand(&mut own, &mut frame, table);
+                    let view = &mut own[Self::own(table)];
+                    changes.0[table.index()] =
+                        self.roster_table(hour.state, view, table, anew[table.index()], regrouped)?;
+                    frame.tables[table.index()] = view.take().unwrap_or_else(not_selected);
                 }
             }
             let lexical = TableId::LexicalTokens;
@@ -392,16 +388,11 @@ impl Held {
                     retokened |= tokens != self.tokens;
                     self.tokens = tokens;
                 }
-                changes.0[lexical.index()] = self.roster_table(
-                    hour.state,
-                    &mut own,
-                    lexical,
-                    anew[lexical.index()],
-                    retokened,
-                )?;
-                Self::hand(&mut own, &mut frame, lexical);
+                let view = &mut own[Self::own(lexical)];
+                changes.0[lexical.index()] =
+                    self.roster_table(hour.state, view, lexical, anew[lexical.index()], retokened)?;
+                frame.tables[lexical.index()] = view.take().unwrap_or_else(not_selected);
             }
-            self.own = own;
         }
         for &table in block::tables() {
             let index = table.index();
@@ -418,17 +409,20 @@ impl Held {
         Ok((frame, facts, changes))
     }
 
-    /// Keeps the roster's own views of `frame` for the next hour; the walk's views go, so its
-    /// next build changes them in place.
+    /// Keeps the roster's own views of `frame` for the next hour, and `frame` to read it into;
+    /// the walk's views go, so its next build changes them in place.
     fn keep(&mut self, mut frame: DecodedFrame) {
+        self.last = Some((frame.branch, frame.hour));
         for table in ROSTER {
             if self.holds[table.index()] == Some(Hold::Roster) {
-                Self::hand(&mut frame, &mut self.own, table);
+                self.own[Self::own(table)] = Some(std::mem::replace(
+                    &mut frame.tables[table.index()],
+                    not_selected(),
+                ));
             }
         }
-        self.own.branch = frame.branch;
-        self.own.hour = frame.hour;
-        self.last = Some((frame.branch, frame.hour));
+        dashboard_world::release(&mut frame, &self.asks);
+        self.frame = Some(frame);
     }
 
     /// A roster table's view as the walker holds it this hour, its rows the roster's keys'.
@@ -474,9 +468,14 @@ impl Held {
         })
     }
 
-    /// A roster table's view in `frame` read anew.
-    fn renew(&mut self, state: &State, frame: &mut DecodedFrame, table: TableId) -> io::Result<()> {
-        frame.tables[table.index()] = self.snapshot(state, table)?.into();
+    /// A roster table's own `view` read anew.
+    fn renew(
+        &mut self,
+        state: &State,
+        view: &mut Option<SharedView>,
+        table: TableId,
+    ) -> io::Result<()> {
+        *view = Some(self.snapshot(state, table)?.into());
         Ok(())
     }
 
@@ -514,24 +513,25 @@ impl Held {
         Ok((!written.is_empty()).then(|| written.change(self.format)))
     }
 
-    /// A roster table's rows this hour: those the roster reads, held as the walker holds them,
-    /// read again where the hour wrote them; and what changed since the hour before.
+    /// A roster table's rows this hour, its own `view`: those the roster reads, held as the
+    /// walker holds them, read again where the hour wrote them; and what changed since the hour
+    /// before.
     fn roster_table(
         &mut self,
         state: &State,
-        frame: &mut DecodedFrame,
+        view: &mut Option<SharedView>,
         table: TableId,
         anew: bool,
         regrouped: bool,
     ) -> io::Result<Option<Change>> {
         if anew {
-            self.renew(state, frame, table)?;
+            self.renew(state, view, table)?;
             return Ok(Some(Change::Any));
         }
         match columns::status(state, table) {
             columns::Status::Complete => {}
             columns::Status::Truncated { .. } => {
-                self.renew(state, frame, table)?;
+                self.renew(state, view, table)?;
                 return Ok(Some(Change::Any));
             }
             _ => return Ok(None),
@@ -596,7 +596,7 @@ impl Held {
                 )?)
             };
             self.decoded[index] += (patches.len() + read.len()) as u64;
-            self.write(state, frame, table, &patches, added, dropped)?;
+            self.write(state, view, table, &patches, added, dropped)?;
         }
         if let Some(keys) = held {
             self.keys[index] = keys;
@@ -604,20 +604,20 @@ impl Held {
         Ok((!written.is_empty()).then(|| written.change(self.format)))
     }
 
-    /// `table`'s complete view in `frame`, its rows at `patches` (key, slot and fields, by key)
-    /// set from the walker, `added` set at their keys and `deleted` removed.
+    /// `table`'s own complete `view`, its rows at `patches` (key, slot and fields, by key) set
+    /// from the walker, `added` set at their keys and `deleted` removed.
     fn write(
         &self,
         state: &State,
-        frame: &mut DecodedFrame,
+        view: &mut Option<SharedView>,
         table: TableId,
         patches: &[(u128, u32, u64)],
         added: Option<TableRows>,
         deleted: Vec<u128>,
     ) -> io::Result<()> {
-        let index = table.index();
-        let view = std::mem::replace(&mut frame.tables[index], not_selected());
         let TableView::Complete(mut rows) = view
+            .take()
+            .ok_or_else(|| invalid("A leaders input delta has no baseline"))?
             .try_unwrap()
             .map_err(|_| invalid("A leaders input's previous rows are still shared"))?
         else {
@@ -633,7 +633,7 @@ impl Held {
             };
             rows = rows.apply_changes(RowChanges::new(added, deleted))?;
         }
-        frame.tables[index] = TableView::Complete(rows).into();
+        *view = Some(TableView::Complete(rows).into());
         Ok(())
     }
 
@@ -2934,13 +2934,7 @@ fn confirm(
     else {
         return confirmed;
     };
-    let world = HourWorld {
-        content: scripted,
-        frame,
-        world: OnceCell::new(),
-        gap: OnceCell::new(),
-        kept,
-    };
+    let world = HourWorld::new(scripted, frame, kept);
     if world.gap().is_err() {
         return confirmed;
     }
@@ -2953,7 +2947,7 @@ fn confirm(
         if evaluation.hour != before {
             continue;
         }
-        let whole = kept.is_none_or(|kept| kept.reads_whole(&evaluation.inputs, frame, before));
+        let whole = world.reads_whole(&evaluation.inputs, before);
         let same = evaluation.inputs.confirm_since(frame, since, |key| {
             if !whole {
                 return None;
