@@ -301,9 +301,12 @@ struct Country {
     #[serde(skip)]
     dated: HashMap<[u8; 32], (i32, u64)>,
     /// Its items in the order first paid.
+    #[serde(skip)]
     items: Vec<ItemRef>,
     #[serde(skip)]
     item_index: HashMap<[u8; 32], u32>,
+    /// Saved in the binary part with `items` ([`Emit::save`]).
+    #[serde(skip)]
     rollups: tally::Rollups,
     /// Its series keys as interned, by measure and by part dimension: an account finds each
     /// without hashing.
@@ -2516,7 +2519,24 @@ impl Emit {
                 .map(|cost| SavedCost::from(&cost.row))
                 .collect(),
         })?;
-        for part in [&json, &rows] {
+        // Each country's rollups and items, the bulk of a long campaign's state, as varints.
+        let mut binary = Vec::new();
+        let mut put = tally::Out(&mut binary);
+        for country in &self.countries {
+            country.rollups.save(&mut put);
+            put.len(country.items.len());
+            for item in &country.items {
+                put.0.extend_from_slice(&item.key);
+                let (paid, ordinal, sequence, first, hour, read) = item.first;
+                put.flag(paid);
+                put.var(u64::from(ordinal));
+                put.var(sequence);
+                put.var(first);
+                put.int(hour);
+                put.var(u64::from(read));
+            }
+        }
+        for part in [&json, &rows, &binary] {
             out.extend_from_slice(&(part.len() as u64).to_le_bytes());
             out.extend_from_slice(part);
         }
@@ -2530,8 +2550,8 @@ impl Emit {
         bytes: &[u8],
     ) -> io::Result<Self> {
         let mut d = Decode::new(bytes);
-        let mut parts = Vec::with_capacity(2);
-        for _ in 0..2 {
+        let mut parts = Vec::with_capacity(3);
+        for _ in 0..3 {
             let length = usize::try_from(d.u64()?).map_err(|_| invalid("saved part length"))?;
             parts.push(d.bytes(length)?);
         }
@@ -2573,6 +2593,28 @@ impl Emit {
             .map(|(at, tag)| (tag.clone(), at as u32))
             .collect();
         emit.countries = saved.countries;
+        let mut binary = Decode::new(parts[2]);
+        for country in &mut emit.countries {
+            country.rollups = tally::Rollups::load(&mut binary)?;
+            let count = tally::len(&mut binary)?;
+            country
+                .items
+                .try_reserve(count)
+                .map_err(|_| invalid("saved items exceed memory"))?;
+            for _ in 0..count {
+                let key = binary.array::<32>()?;
+                let first = (
+                    binary.flag()?,
+                    tally::word(&mut binary)?,
+                    binary.var()?,
+                    binary.var()?,
+                    tally::int(&mut binary)?,
+                    tally::word(&mut binary)?,
+                );
+                country.items.push(ItemRef { key, first });
+            }
+        }
+        binary.end()?;
         for country in &mut emit.countries {
             country.item_index = country
                 .items

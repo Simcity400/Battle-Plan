@@ -2,7 +2,7 @@
 //! each settled period into a rollup ([`super::emit`]) and a reply folds the hours no rollup
 //! holds with the same code, so both count alike.
 
-use dashboard_series::Cell;
+use dashboard_series::{Cell, codec::Decode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
@@ -469,63 +469,6 @@ pub struct Rollups {
     pub open: [std::collections::BTreeMap<i32, Totals>; 3],
 }
 
-/// [`Rollups`] as the emit's saved state holds it.
-#[derive(Default, Serialize, Deserialize)]
-pub struct SavedRollups {
-    days: Vec<Day>,
-    fields: Vec<Field>,
-    daily: Vec<((i32, u32, u64), [GainDay; 2])>,
-    open: Vec<(u8, i32, i32, [Gain; 2], u64, Vec<(Field, Entry)>)>,
-}
-
-impl From<&Rollups> for SavedRollups {
-    fn from(rollups: &Rollups) -> Self {
-        let mut saved = Self::default();
-        for ((_, field), day) in &rollups.days {
-            saved.days.push(*day);
-            saved.fields.push(*field);
-        }
-        saved.daily = rollups.daily.iter().map(|(k, v)| (*k, *v)).collect();
-        for (level, open) in rollups.open.iter().enumerate() {
-            for (&index, totals) in open {
-                saved.open.push((
-                    level as u8,
-                    index,
-                    totals.read,
-                    totals.gains,
-                    totals.unmatched,
-                    totals.entries.iter().map(|(f, e)| (*f, *e)).collect(),
-                ));
-            }
-        }
-        saved
-    }
-}
-
-impl From<SavedRollups> for Rollups {
-    fn from(saved: SavedRollups) -> Self {
-        let mut rollups = Self::default();
-        for (day, field) in saved.days.into_iter().zip(saved.fields) {
-            rollups.days.insert((day.day, field), day);
-        }
-        rollups.daily = saved.daily.into_iter().collect();
-        for (level, index, read, gains, unmatched, entries) in saved.open {
-            if let Some(open) = rollups.open.get_mut(usize::from(level)) {
-                open.insert(
-                    index,
-                    Totals {
-                        entries: entries.into_iter().collect(),
-                        gains,
-                        unmatched,
-                        read,
-                    },
-                );
-            }
-        }
-        rollups
-    }
-}
-
 impl Rollups {
     /// A payment no settled day holds yet, as the emit records it.
     pub fn add(&mut self, contribution: &Contribution) -> io::Result<()> {
@@ -629,14 +572,280 @@ impl Rollups {
     }
 }
 
-impl Serialize for Rollups {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        SavedRollups::from(self).serialize(serializer)
+/// The varints of a saved state, as [`Decode`] reads them back.
+pub struct Out<'a>(pub &'a mut Vec<u8>);
+
+impl Out<'_> {
+    pub fn var128(&mut self, mut value: u128) {
+        while value >= 0x80 {
+            self.0.push(value as u8 | 0x80);
+            value >>= 7;
+        }
+        self.0.push(value as u8);
+    }
+
+    pub fn var(&mut self, value: u64) {
+        self.var128(u128::from(value));
+    }
+
+    pub fn zig128(&mut self, value: i128) {
+        self.var128(((value << 1) ^ (value >> 127)) as u128);
+    }
+
+    pub fn int(&mut self, value: i32) {
+        self.zig128(i128::from(value));
+    }
+
+    pub fn flag(&mut self, value: bool) {
+        self.0.push(u8::from(value));
+    }
+
+    pub fn len(&mut self, len: usize) {
+        self.var(len as u64);
+    }
+
+    fn field(&mut self, (a, b, c): Field) {
+        self.var(u64::from(a));
+        self.var(u64::from(b));
+        self.var(c);
+    }
+
+    fn day(&mut self, day: &Day) {
+        self.int(day.day);
+        self.int(day.first.0);
+        self.var(day.first.1);
+        self.int(day.hour);
+        self.var(day.sequence);
+        self.var(u64::from(day.ordinal));
+        self.int(day.lag);
+        self.var(day.occurrences);
+        self.var(day.entries);
+        self.zig128(day.charge);
+        self.var(day.known);
+        self.flag(day.covered);
+        self.zig128(day.realized.0);
+        self.zig128(day.realized.1);
+        self.flag(day.realized_unknown);
+    }
+
+    fn gain(&mut self, gain: &Gain) {
+        self.zig128(gain.gained);
+        self.var128(gain.lost);
+        self.var(gain.incomplete);
+        self.flag(gain.any);
+    }
+
+    fn gain_day(&mut self, (gained, lost, read): GainDay) {
+        self.flag(gained.is_some());
+        if let Some(gained) = gained {
+            self.zig128(gained);
+        }
+        self.var128(lost);
+        self.flag(read);
+    }
+
+    fn entry(&mut self, entry: &Entry) {
+        self.flag(entry.one_off.is_some());
+        if let Some(one_off) = &entry.one_off {
+            self.zig128(one_off.known);
+            self.var(one_off.occurrences);
+            self.var(one_off.entries);
+            self.var(one_off.unknown);
+            self.var(one_off.uncovered);
+            self.int(one_off.latest.0);
+            self.var(one_off.latest.1);
+            self.var(u64::from(one_off.latest.2));
+            self.int(one_off.read);
+        }
+        self.flag(entry.recurring.is_some());
+        if let Some(recurring) = &entry.recurring {
+            self.var(recurring.days);
+            self.var(recurring.occurrences);
+            self.var(recurring.entries);
+            self.zig128(recurring.charge);
+            self.var(recurring.unknown);
+            self.var(recurring.uncovered);
+            self.zig128(recurring.realized.0);
+            self.zig128(recurring.realized.1);
+            self.flag(recurring.realized_unknown);
+            self.int(recurring.first_day);
+            self.day(&recurring.last);
+        }
+        self.var(entry.balances);
+        self.var(entry.credits);
+    }
+
+    fn totals(&mut self, totals: &Totals) {
+        let mut entries: Vec<(&Field, &Entry)> = totals.entries.iter().collect();
+        entries.sort_unstable_by_key(|(field, _)| **field);
+        self.len(entries.len());
+        for (&field, entry) in entries {
+            self.field(field);
+            self.entry(entry);
+        }
+        for gain in &totals.gains {
+            self.gain(gain);
+        }
+        self.var(totals.unmatched);
+        self.int(totals.read);
     }
 }
 
-impl<'de> Deserialize<'de> for Rollups {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        SavedRollups::deserialize(deserializer).map(Self::from)
+fn damaged() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "A saved politics ledger rollup is damaged")
+}
+
+pub fn int(input: &mut Decode<'_>) -> io::Result<i32> {
+    i32::try_from(input.zig128()?).map_err(|_| damaged())
+}
+
+pub fn word(input: &mut Decode<'_>) -> io::Result<u32> {
+    u32::try_from(input.var()?).map_err(|_| damaged())
+}
+
+pub fn len(input: &mut Decode<'_>) -> io::Result<usize> {
+    usize::try_from(input.var()?).map_err(|_| damaged())
+}
+
+fn field(input: &mut Decode<'_>) -> io::Result<Field> {
+    Ok((word(input)?, word(input)?, input.var()?))
+}
+
+fn day(input: &mut Decode<'_>) -> io::Result<Day> {
+    Ok(Day {
+        day: int(input)?,
+        first: (int(input)?, input.var()?),
+        hour: int(input)?,
+        sequence: input.var()?,
+        ordinal: word(input)?,
+        lag: int(input)?,
+        occurrences: input.var()?,
+        entries: input.var()?,
+        charge: input.zig128()?,
+        known: input.var()?,
+        covered: input.flag()?,
+        realized: (input.zig128()?, input.zig128()?),
+        realized_unknown: input.flag()?,
+    })
+}
+
+fn gain(input: &mut Decode<'_>) -> io::Result<Gain> {
+    Ok(Gain {
+        gained: input.zig128()?,
+        lost: input.var128()?,
+        incomplete: input.var()?,
+        any: input.flag()?,
+    })
+}
+
+fn gain_day(input: &mut Decode<'_>) -> io::Result<GainDay> {
+    let gained = if input.flag()? {
+        Some(input.zig128()?)
+    } else {
+        None
+    };
+    Ok((gained, input.var128()?, input.flag()?))
+}
+
+fn entry(input: &mut Decode<'_>) -> io::Result<Entry> {
+    let one_off = if input.flag()? {
+        Some(OneOff {
+            known: input.zig128()?,
+            occurrences: input.var()?,
+            entries: input.var()?,
+            unknown: input.var()?,
+            uncovered: input.var()?,
+            latest: (int(input)?, input.var()?, word(input)?),
+            read: int(input)?,
+        })
+    } else {
+        None
+    };
+    let recurring = if input.flag()? {
+        Some(Recurring {
+            days: input.var()?,
+            occurrences: input.var()?,
+            entries: input.var()?,
+            charge: input.zig128()?,
+            unknown: input.var()?,
+            uncovered: input.var()?,
+            realized: (input.zig128()?, input.zig128()?),
+            realized_unknown: input.flag()?,
+            first_day: int(input)?,
+            last: day(input)?,
+        })
+    } else {
+        None
+    };
+    Ok(Entry {
+        one_off,
+        recurring,
+        balances: input.var()?,
+        credits: input.var()?,
+    })
+}
+
+fn totals(input: &mut Decode<'_>) -> io::Result<Totals> {
+    let mut totals = Totals::default();
+    for _ in 0..len(input)? {
+        let field = field(input)?;
+        totals.entries.insert(field, entry(input)?);
+    }
+    totals.gains = [gain(input)?, gain(input)?];
+    totals.unmatched = input.var()?;
+    totals.read = int(input)?;
+    Ok(totals)
+}
+
+impl Rollups {
+    /// Its saved form, every map in key order: a long campaign's rollups are the bulk of the
+    /// emit's saved state, which as JSON took several times the bytes and the time.
+    pub fn save(&self, out: &mut Out<'_>) {
+        let mut days: Vec<(&(i32, Field), &Day)> = self.days.iter().collect();
+        days.sort_unstable_by_key(|(key, _)| **key);
+        out.len(days.len());
+        for ((_, field), day) in days {
+            out.field(*field);
+            out.day(day);
+        }
+        let mut daily: Vec<(&(i32, u32, u64), &[GainDay; 2])> = self.daily.iter().collect();
+        daily.sort_unstable_by_key(|(key, _)| **key);
+        out.len(daily.len());
+        for (&(day, raw, epoch), gains) in daily {
+            out.int(day);
+            out.var(u64::from(raw));
+            out.var(epoch);
+            for &gain in gains {
+                out.gain_day(gain);
+            }
+        }
+        for open in &self.open {
+            out.len(open.len());
+            for (&index, totals) in open {
+                out.int(index);
+                out.totals(totals);
+            }
+        }
+    }
+
+    /// The rollups [`Self::save`] saved.
+    pub fn load(input: &mut Decode<'_>) -> io::Result<Self> {
+        let mut rollups = Self::default();
+        for _ in 0..len(input)? {
+            let field = field(input)?;
+            let day = day(input)?;
+            rollups.days.insert((day.day, field), day);
+        }
+        for _ in 0..len(input)? {
+            let key = (int(input)?, word(input)?, input.var()?);
+            rollups.daily.insert(key, [gain_day(input)?, gain_day(input)?]);
+        }
+        for open in &mut rollups.open {
+            for _ in 0..len(input)? {
+                let index = int(input)?;
+                open.insert(index, totals(input)?);
+            }
+        }
+        Ok(rollups)
     }
 }
