@@ -34,7 +34,7 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{not_selected, view_reads};
+use replay_frame::frame::{ViewIdentity, view_reads};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry},
@@ -1242,7 +1242,7 @@ impl Projector {
                 &flag,
             )
         });
-        if !read.iter().any(|view| view.is(&not_selected())) {
+        if !read.iter().any(ViewIdentity::not_selected) {
             return sighted;
         }
         // The names read a table the naming frame lacks: read them again with every table.

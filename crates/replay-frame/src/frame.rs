@@ -36,8 +36,8 @@ mod wire;
 pub use self::decoder::count_unselected;
 #[doc(hidden)]
 pub use self::decoder::{
-    advance_public_table, advance_public_table_reusing, advance_table, keyframe_update,
-    not_selected,
+    NOT_SELECTED, advance_public_table, advance_public_table_reusing, advance_table,
+    keyframe_update, not_selected,
 };
 #[doc(hidden)]
 pub use self::wire::{decode_recorded_update, decode_update};
@@ -125,6 +125,13 @@ pub enum TableView {
     },
 }
 
+impl TableView {
+    /// Whether it is the view of a table not selected for reconstruction ([`not_selected`]).
+    pub fn is_not_selected(&self) -> bool {
+        matches!(self, Self::Unavailable { reason } if reason == NOT_SELECTED)
+    }
+}
+
 /// One decoded table, shared between the hours it did not change in.
 ///
 /// A decoder hands the same allocation to every hour whose update leaves the
@@ -189,7 +196,11 @@ impl SharedView {
 
     /// This allocation's identity, which does not keep its rows alive.
     pub fn identity(&self) -> ViewIdentity {
-        ViewIdentity(Arc::downgrade(&self.0), self.3.clone())
+        ViewIdentity(
+            Arc::downgrade(&self.0),
+            self.3.clone(),
+            self.0.is_not_selected(),
+        )
     }
 }
 
@@ -304,9 +315,10 @@ impl ChangeFacts {
 
 /// A [`SharedView`]'s allocation, named without holding its rows: the
 /// allocation's address cannot be reused while the identity exists, so it
-/// matches only views of that allocation, whether or not they are alive.
+/// matches only views of that allocation, whether or not they are alive; and
+/// whether that view is of a table not selected for reconstruction.
 #[derive(Clone, Debug)]
-pub struct ViewIdentity(Weak<TableView>, Option<Arc<FieldStamp>>);
+pub struct ViewIdentity(Weak<TableView>, Option<Arc<FieldStamp>>, bool);
 
 #[derive(Debug)]
 struct FieldStamp {
@@ -317,6 +329,11 @@ struct FieldStamp {
 }
 
 impl ViewIdentity {
+    /// Whether it names the view of a table not selected for reconstruction, held or not.
+    pub fn not_selected(&self) -> bool {
+        self.2
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_alive(&self) -> bool {
         self.0.strong_count() != 0

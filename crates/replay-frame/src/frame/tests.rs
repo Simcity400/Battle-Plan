@@ -741,6 +741,25 @@ fn a_frame_log_refuses_change_facts() {
     assert_eq!(log.len(), 1);
 }
 
+/// Each thread fills unselected tables with a view of its own, told apart by what it holds: a
+/// view another thread made, or its identity once the view is gone, is not selected as well.
+#[test]
+fn unselected_views_are_told_apart_by_what_they_hold_on_every_thread() {
+    let here = not_selected();
+    let there = std::thread::spawn(not_selected).join().unwrap();
+    assert!(SharedView::ptr_eq(&here, &not_selected()));
+    assert!(!SharedView::ptr_eq(&here, &there));
+    assert!(here.is_not_selected() && there.is_not_selected());
+    let identity = there.identity();
+    drop(there);
+    assert!(identity.not_selected() && here.identity().not_selected());
+    let rows: SharedView = TableView::Unavailable {
+        reason: "Table not recorded".into(),
+    }
+    .into();
+    assert!(!rows.is_not_selected() && !rows.identity().not_selected());
+}
+
 /// A selected decoder reconstructs its tables as the whole decoder does,
 /// hour by hour through deltas, a keyframe and a branch change: rows, sample
 /// hours and which hours share an allocation. Every other table is the one

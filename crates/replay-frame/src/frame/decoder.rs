@@ -4,10 +4,7 @@ use super::{
 };
 use crate::{Hour, codec::invalid, rows::TableId};
 use engine_allocation as allocation;
-use std::{
-    io,
-    sync::{Arc, LazyLock},
-};
+use std::{io, sync::Arc};
 
 #[cfg(test)]
 mod admission_tests;
@@ -605,17 +602,23 @@ fn advance_table_with(
     }
 }
 
-/// One view shared by every unselected table of every hour.
+/// Why a table not selected for reconstruction holds no rows: what tells its view apart
+/// ([`TableView::is_not_selected`]).
+pub const NOT_SELECTED: &str = "Table not selected for reconstruction";
+
+/// One view shared by every unselected table of every hour a thread builds. Each thread holds
+/// its own, so threads building frames at once never contend for one count; the view is told
+/// apart by what it holds, never by its address.
 pub fn not_selected() -> SharedView {
     #[cfg(any(test, feature = "test-support"))]
     UNSELECTED_SHARES.with(|count| count.set(count.get() + 1));
-    static VIEW: LazyLock<SharedView> = LazyLock::new(|| {
-        TableView::Unavailable {
-            reason: "Table not selected for reconstruction".into(),
+    thread_local! {
+        static VIEW: SharedView = TableView::Unavailable {
+            reason: NOT_SELECTED.into(),
         }
-        .into()
-    });
-    VIEW.clone()
+        .into();
+    }
+    VIEW.with(SharedView::clone)
 }
 
 #[cfg(any(test, feature = "test-support"))]
