@@ -324,6 +324,8 @@ fn runs_keep_their_start_reasons_and_the_root_names_their_sessions() {
             last_hour: Some(41),
             reason: "stopped in this test".into(),
         }),
+        format: 7,
+        controls: vec![b"a branch start".to_vec(), Vec::new(), b"a detach".to_vec()],
     };
     let bytes = file.finish_with_capture(&capture, |_| Ok(())).unwrap().file.into_inner();
     let recording = Recording::open(bytes, Limits::default()).unwrap();
@@ -353,6 +355,8 @@ fn a_capture_reads_back_and_refuses_a_run_without_its_session() {
         sessions: vec![b"only".to_vec()],
         run_sessions: vec![0, 0],
         stop: None,
+        format: 1,
+        controls: Vec::new(),
     };
     assert_eq!(Capture::read(&capture.write().unwrap()).unwrap(), capture);
     let orphan = Capture {
@@ -470,6 +474,8 @@ fn an_unfinished_file_finishes_from_its_last_revision() {
         sessions: vec![b"session".to_vec()],
         run_sessions: vec![0],
         stop: None,
+        format: 1,
+        controls: Vec::new(),
     };
     let (file, _, frames, published) =
         revised(envelope::UNIT_ORDINALS as i32 + 50, 400, Settings::RECORDING, Some(&capture));

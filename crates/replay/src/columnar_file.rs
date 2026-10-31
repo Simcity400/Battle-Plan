@@ -96,6 +96,11 @@ pub struct Capture {
     pub run_sessions: Vec<u32>,
     /// Where writing stopped short of the rows, when it did.
     pub stop: Option<Stop>,
+    /// The row recording's format version.
+    pub format: u16,
+    /// The capture's branch starts, gaps and control records but its clock witnesses, in
+    /// recording order, each as the row recording encodes it (`spool::encode_record`).
+    pub controls: Vec<Vec<u8>>,
 }
 
 /// The columnar writer stopped while the rows went on: the hours after `last_hour` of
@@ -109,7 +114,7 @@ pub struct Stop {
 }
 
 impl Capture {
-    const VERSION: u64 = 1;
+    const VERSION: u64 = 2;
 
     pub fn write(&self) -> io::Result<Vec<u8>> {
         let mut out = Bytes::new();
@@ -137,6 +142,12 @@ impl Capture {
                 out.varint(stop.reason.len() as u64)?;
                 out.raw(stop.reason.as_bytes())?;
             }
+        }
+        out.varint(u64::from(self.format))?;
+        out.varint(self.controls.len() as u64)?;
+        for control in &self.controls {
+            out.varint(control.len() as u64)?;
+            out.raw(control)?;
         }
         Ok(out.into_bytes())
     }
@@ -199,6 +210,13 @@ impl Capture {
             }
             _ => return Err(invalid("Unknown capture stop marker")),
         };
+        let format = u16::try_from(reader.varint()?)
+            .map_err(|_| invalid("A capture's format passes 2^16"))?;
+        let controls_count = count(&mut reader)?;
+        let mut controls = engine_allocation::vec(controls_count)?;
+        for _ in 0..controls_count {
+            controls.push(owned(&mut reader)?);
+        }
         reader.finish()?;
         Ok(Self {
             campaign_id,
@@ -207,6 +225,8 @@ impl Capture {
             sessions,
             run_sessions,
             stop,
+            format,
+            controls,
         })
     }
 }

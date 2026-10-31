@@ -59,6 +59,8 @@ fn a_native_capture_serves_only_the_replay_of_its_sessions() {
         sessions: vec![encoded(&held)],
         run_sessions: vec![0],
         stop: None,
+        format: 1,
+        controls: Vec::new(),
     };
     assert!(captures(&capture, &runs, &replay));
     let mut content = held.identity.clone();

@@ -210,6 +210,8 @@ fn capture(session: &[u8]) -> Capture {
         sessions: vec![session.to_vec()],
         run_sessions: vec![0],
         stop: None,
+        format: 1,
+        controls: Vec::new(),
     }
 }
 
@@ -288,6 +290,8 @@ fn captured(held: &SessionStart, runs: usize) -> Capture {
         sessions: vec![encoded(held).unwrap()],
         run_sessions: vec![0; runs],
         stop: None,
+        format: 1,
+        controls: Vec::new(),
     }
 }
 

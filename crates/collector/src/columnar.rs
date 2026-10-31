@@ -19,7 +19,7 @@ use replay_data::{
 use replay_frame::frame::FrameInput;
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs::{self, File},
     io,
     path::{Path, PathBuf},
@@ -108,6 +108,13 @@ struct Live {
     identity: Option<envelope::Identity>,
     /// The capture the root names: this session alone, every run its own.
     capture: Option<Capture>,
+    /// The digests of the branch starts, gaps and event losses the capture holds.
+    noted: HashSet<[u8; 16]>,
+    /// The records the rows were given and the capture does not hold yet, in order: a queued
+    /// frame's wait for its write.
+    notes: VecDeque<Note>,
+    /// The frame being given to the rows: its records, until it is written or queued.
+    staged: Vec<Noted>,
     file: Option<FileWriter<File>>,
     run: Option<Run>,
     /// Committed hours whose rows' write has not completed, in order.
@@ -120,6 +127,20 @@ struct Live {
     /// Runs started, which a run's first hour carries to the file.
     started: u64,
     counters: Counters,
+}
+
+/// Records the rows were given, which the capture takes once `awaits`, the branch and hour of
+/// the queued frame they came with, is written; none once it was, or when they came alone.
+struct Note {
+    awaits: Option<(u64, i32)>,
+    records: Vec<Noted>,
+}
+
+/// One record as the rows encode it.
+struct Noted {
+    bytes: Vec<u8>,
+    /// A branch start, gap or event loss: one fact, which a context given again repeats.
+    fact: bool,
 }
 
 /// What a recording measured, and why it stopped.
@@ -185,6 +206,9 @@ impl Columnar {
                 finished_path: owned_path(directory, Some(FINISHED))?,
                 identity: Some(identity),
                 capture: Some(capture),
+                noted: HashSet::new(),
+                notes: VecDeque::new(),
+                staged: Vec::new(),
                 file: None,
                 run: None,
                 pending: VecDeque::new(),
@@ -248,10 +272,40 @@ impl Columnar {
         }
     }
 
+    /// The rows' spool takes `records`: the file's capture keeps each branch start, gap and
+    /// control record but clock witnesses, in the order the rows were given them.
+    pub(crate) fn note(&mut self, records: &[replay::spool::Record]) {
+        if let Some(live) = self.0.as_deref_mut() {
+            engine_allocation::advisory(|| live.note(records));
+        }
+    }
+
+    /// [`Self::note`] of a frame's records, which the capture takes once the frame is written
+    /// ([`Self::written`]) or its queued write completes ([`Self::queued`]).
+    pub(crate) fn stage(&mut self, records: &[replay::spool::Record]) {
+        if let Some(live) = self.0.as_deref_mut() {
+            engine_allocation::advisory(|| live.stage(records));
+        }
+    }
+
+    /// The frame staged was written.
+    pub(crate) fn written(&mut self) {
+        if let Some(live) = self.0.as_deref_mut() {
+            engine_allocation::advisory(|| live.written());
+        }
+    }
+
+    /// The frame staged, of `hour` of `branch`, was queued for the rows' writer.
+    pub(crate) fn queued(&mut self, branch: u64, hour: i32) {
+        if let Some(live) = self.0.as_deref_mut() {
+            engine_allocation::advisory(|| live.queued(branch, hour));
+        }
+    }
+
     /// The rows' write failed: hours not yet written are dropped, and the next starts a run.
     pub(crate) fn interrupt(&mut self) {
         if let Some(live) = self.0.as_deref_mut() {
-            live.interrupt();
+            engine_allocation::advisory(|| live.interrupt());
         }
     }
 
@@ -271,6 +325,100 @@ impl Columnar {
 }
 
 impl Live {
+    fn note(&mut self, records: &[replay::spool::Record]) {
+        let noted = Self::encoded(records).and_then(|records| {
+            self.notes.try_reserve(1).map_err(|_| engine_allocation::oom())?;
+            self.notes.push_back(Note {
+                awaits: None,
+                records,
+            });
+            self.release()
+        });
+        if let Err(error) = noted {
+            self.stop(&error);
+        }
+    }
+
+    fn stage(&mut self, records: &[replay::spool::Record]) {
+        match Self::encoded(records) {
+            Ok(records) => self.staged = records,
+            Err(error) => {
+                self.staged.clear();
+                self.stop(&error);
+            }
+        }
+    }
+
+    fn written(&mut self) {
+        self.give(None);
+    }
+
+    fn queued(&mut self, branch: u64, hour: i32) {
+        self.give(Some((branch, hour)));
+    }
+
+    fn give(&mut self, awaits: Option<(u64, i32)>) {
+        let records = std::mem::take(&mut self.staged);
+        let given = (|| {
+            self.notes.try_reserve(1).map_err(|_| engine_allocation::oom())?;
+            self.notes.push_back(Note { awaits, records });
+            self.release()
+        })();
+        if let Err(error) = given {
+            self.stop(&error);
+        }
+    }
+
+    /// The records of `records` the capture keeps, as the rows encode them: all but frames,
+    /// session starts, which it holds already, and clock witnesses, one an hour.
+    fn encoded(records: &[replay::spool::Record]) -> io::Result<Vec<Noted>> {
+        use replay::spool::{ControlRecord, Record};
+        let mut kept = Vec::new();
+        for record in records {
+            if matches!(
+                record,
+                Record::Frame(_)
+                    | Record::SessionStart(_)
+                    | Record::Control(ControlRecord::ClockWitness { .. })
+            ) {
+                continue;
+            }
+            let bytes = replay::spool::encode_record(record)?;
+            let fact = matches!(
+                record,
+                Record::BranchStart(_)
+                    | Record::Gap(_)
+                    | Record::Control(ControlRecord::EventLoss { .. })
+            );
+            engine_allocation::reserve(&mut kept, 1)?;
+            kept.push(Noted { bytes, fact });
+        }
+        Ok(kept)
+    }
+
+    /// The capture takes the notes no queued write holds back, in order. A fact it holds
+    /// already is the same fact given again with a refused or failed write's context.
+    fn release(&mut self) -> io::Result<()> {
+        let Some(capture) = self.capture.as_mut() else {
+            self.notes.clear();
+            return Ok(());
+        };
+        while self.notes.front().is_some_and(|note| note.awaits.is_none()) {
+            let note = self.notes.pop_front().expect("a note");
+            for noted in note.records {
+                if noted.fact {
+                    engine_allocation::reserve_set(&mut self.noted, 1)?;
+                    if !self.noted.insert(envelope::digest(&noted.bytes)) {
+                        continue;
+                    }
+                }
+                engine_allocation::reserve(&mut capture.controls, 1)?;
+                capture.controls.push(noted.bytes);
+            }
+        }
+        Ok(())
+    }
+
     fn writing(&self) -> bool {
         self.counters.stopped.is_none() && !self.finished
     }
@@ -402,6 +550,17 @@ impl Live {
     }
 
     fn complete(&mut self, branch: u64, hour: i32) {
+        for note in &mut self.notes {
+            if note
+                .awaits
+                .is_some_and(|(held, at)| held == branch && at <= hour)
+            {
+                note.awaits = None;
+            }
+        }
+        if let Err(error) = self.release() {
+            self.stop(&error);
+        }
         // The rows complete queued hours in order; an hour the writer never queued is none.
         while self
             .pending
@@ -482,12 +641,31 @@ impl Live {
             sessions,
             run_sessions: engine_allocation::filled(file.published_runs(), 0)?,
             stop: None,
+            format: template.format,
+            controls: {
+                let mut controls = engine_allocation::vec(template.controls.len())?;
+                for control in &template.controls {
+                    controls.push(engine_allocation::copy_vec(control)?);
+                }
+                controls
+            },
         };
         file.revise(Some(&capture), |file| file.sync_data())
     }
 
+    /// Drops the records of frames the rows never wrote: a failed write's context is given
+    /// again with a later frame.
+    fn drop_unwritten(&mut self) {
+        self.staged.clear();
+        self.notes.retain(|note| note.awaits.is_none());
+        if let Err(error) = self.release() {
+            self.stop(&error);
+        }
+    }
+
     fn interrupt(&mut self) {
         self.pending.clear();
+        self.drop_unwritten();
         self.end_run();
         self.next_epoch = Some(envelope::epoch::WRITE_FAILURE);
     }
@@ -499,6 +677,7 @@ impl Live {
         self.finished = true;
         // Detach drains the rows' writes first; an hour still waiting was never written.
         self.pending.clear();
+        self.drop_unwritten();
         self.end_run();
         let Some(file) = self.file.take() else {
             return;
@@ -610,6 +789,8 @@ fn identity(campaign: &str, session: &SessionStart) -> io::Result<(envelope::Ide
         sessions,
         run_sessions: Vec::new(),
         stop: None,
+        format: replay_data::format::FormatVersion::CURRENT.version(),
+        controls: Vec::new(),
     };
     let identity = envelope::Identity {
         schema: envelope::schema_digest(&schema()?),

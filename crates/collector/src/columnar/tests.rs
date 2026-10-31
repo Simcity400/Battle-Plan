@@ -223,6 +223,92 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 }
 
+/// The capture keeps the records the rows take but clock witnesses, in order: a context given
+/// again after a failed write once, and every gap summary, since each counts its own frames.
+#[test]
+fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
+    use replay::spool::{ControlRecord, Record};
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    let folder = Folder::new("controls");
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let start = Record::BranchStart(BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: Some(0),
+        first_hour: 1,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    });
+    let summary = Record::Control(ControlRecord::GapSummary {
+        session: 1,
+        dropped_frames: 3,
+        reason: "synthetic loss".into(),
+    });
+    let clock = Record::Control(ControlRecord::ClockWitness {
+        session: 1,
+        qpc: 1,
+        hour: 1,
+        load_signal: None,
+    });
+    let context = [Record::SessionStart(session()), start.clone(), clock];
+    for _ in 0..2 {
+        columnar.note(&context);
+        columnar.note(std::slice::from_ref(&summary));
+    }
+    write(&mut columnar, 1, 1..=2);
+    columnar.finish();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    assert_eq!(
+        recording.capture().unwrap().unwrap().controls,
+        [encoded(&start), encoded(&summary), encoded(&summary)]
+    );
+}
+
+/// A queued frame's records reach the capture once its write completes, before records given
+/// after it; a failed write drops its frame's, which the next frame gives again, so a loss's
+/// gap summary is held once.
+#[test]
+fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() {
+    use replay::spool::{ControlRecord, Record};
+    use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+    let folder = Folder::new("queued-controls");
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let start = Record::BranchStart(BranchStart {
+        id: 1,
+        session: 1,
+        loaded_hour: Some(0),
+        first_hour: 1,
+        parent: Parentage::Unknown,
+        reason: BranchReason::SessionStart,
+    });
+    let summary = Record::Control(ControlRecord::GapSummary {
+        session: 1,
+        dropped_frames: 3,
+        reason: "synthetic loss".into(),
+    });
+    let detach = Record::Control(ControlRecord::Detach {
+        session: 1,
+        last_hour: Some(4),
+    });
+    let context = [start.clone(), summary.clone()];
+    columnar.stage(&context);
+    columnar.queued(1, 1);
+    columnar.interrupt();
+    columnar.stage(&context);
+    columnar.queued(1, 2);
+    columnar.note(std::slice::from_ref(&detach));
+    columnar.complete(1, 2);
+    write(&mut columnar, 1, 3..=4);
+    columnar.finish();
+    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
+    let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
+    assert_eq!(
+        recording.capture().unwrap().unwrap().controls,
+        [encoded(&start), encoded(&summary), encoded(&detach)]
+    );
+}
+
 #[test]
 fn an_off_recording_holds_nothing_and_reports_nothing() {
     let mut columnar = Columnar::off();

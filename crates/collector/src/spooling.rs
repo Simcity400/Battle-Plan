@@ -1547,6 +1547,7 @@ impl<B: SegmentBackend> Campaign<B> {
             hour,
             load_signal: signal,
         }));
+        self.columnar.stage(&context);
         let queued = self.spool.is_queued();
         #[cfg(test)]
         crate::allocation_failure_tests::before_spool_publication();
@@ -1565,9 +1566,11 @@ impl<B: SegmentBackend> Campaign<B> {
             work.staged = Some(crate::spool_writer::Output::<B>::stage_frame(
                 context, encoded, rotate,
             )?);
+            self.columnar.queued(branch, hour);
         } else {
             let staged = crate::spool_writer::Output::<B>::stage_frame(context, encoded, rotate)?;
             self.spool.write_frame(staged, 0)?;
+            self.columnar.written();
             if crate::allocation::failed() {
                 return Err(io::ErrorKind::OutOfMemory.into());
             }
@@ -1620,6 +1623,7 @@ impl<B: SegmentBackend> Campaign<B> {
                         )?,
                     }));
                 }
+                self.columnar.note(&context);
                 self.spool.start_context(context)?;
                 self.spool.finish_stopped_segment()?;
                 self.pending.clear();
@@ -1629,21 +1633,26 @@ impl<B: SegmentBackend> Campaign<B> {
                 "spool unavailable at detach; pending context needs another observed keyframe",
             ));
         }
-        self.spool.append_context(self.context(false, 0)?)?;
+        let context = self.context(false, 0)?;
+        self.columnar.note(&context);
+        self.spool.append_context(context)?;
         if unknown != 0 {
-            self.spool
-                .append(Record::Control(ControlRecord::GapSummary {
-                    session: self.session.id,
-                    dropped_frames: unknown,
-                    reason: engine_allocation::string(
-                        "collector lost clock metadata; campaign and hour range are unknown",
-                    )?,
-                }))?;
+            let summary = Record::Control(ControlRecord::GapSummary {
+                session: self.session.id,
+                dropped_frames: unknown,
+                reason: engine_allocation::string(
+                    "collector lost clock metadata; campaign and hour range are unknown",
+                )?,
+            });
+            self.columnar.note(std::slice::from_ref(&summary));
+            self.spool.append(summary)?;
         }
-        self.spool.append(Record::Control(ControlRecord::Detach {
+        let detach = Record::Control(ControlRecord::Detach {
             session: self.session.id,
             last_hour: self.last_written,
-        }))?;
+        });
+        self.columnar.note(std::slice::from_ref(&detach));
+        self.spool.append(detach)?;
         self.spool.finish_stopped_segment()?;
         self.pending.clear();
         Ok(())
@@ -1676,13 +1685,17 @@ impl<B: SegmentBackend> Campaign<B> {
             engine_allocation::reserve(&mut self.closing, 1)?;
         }
         if self.spool.is_open() {
-            self.spool.append_context(self.context(false, 0)?)?;
+            let context = self.context(false, 0)?;
+            self.columnar.note(&context);
+            self.spool.append_context(context)?;
         } else if self
             .pending
             .last()
             .is_some_and(|pending| !pending.gaps.is_empty())
         {
-            self.spool.start_context(self.context(true, 0)?)?;
+            let context = self.context(true, 0)?;
+            self.columnar.note(&context);
+            self.spool.start_context(context)?;
         }
         let receipt = self.spool.close_segment()?;
         if context_submitted && !self.pending.is_empty() {
@@ -3827,6 +3840,8 @@ impl Processor {
             load_signal: campaign.tracker.last_load_signal(),
             failed_hour: None,
         });
+        // A refused close gives the same context again, which the capture holds once.
+        campaign.columnar.note(&context);
         let result = campaign.spool.try_close_context(context, restarting);
         crate::allocation::set_context(caller);
         let receipt = match result {
