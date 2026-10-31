@@ -27,10 +27,11 @@ pub const PAGE_INTERVALS: usize = 256;
 static PAGES: Budget = Budget::new(128 << 20);
 // The rows every family's open writer appended before its batch publishes, apart from the pages
 // so that cached pages, which a writer cannot evict, never starve one.
-static WRITERS: Budget = Budget::new(512 << 20);
+static WRITERS: Budget = Budget::new(8 << 30);
 
-/// The rows a family's open writers may hold before its batch ends and publishes them.
-pub const SERIES_BATCH_BYTES: usize = 32 << 20;
+/// The rows a family's open writers may hold before its batch ends and publishes them. Each
+/// publication seals and commits at a cost of its own, so a busy family publishes rarely.
+pub const SERIES_BATCH_BYTES: usize = 1 << 30;
 
 /// Whether open writers hold half of what every writer may: a family holding rows ends its
 /// batch, so the next appends of every family still fit.
