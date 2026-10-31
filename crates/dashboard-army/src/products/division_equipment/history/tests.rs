@@ -781,3 +781,47 @@ fn a_hole_and_a_refused_pool_read_show_nothing_never_zero() {
         }
     }
 }
+
+/// Every field and value an hour's changes hold reads back as it was pushed, at the widest
+/// tags, kinds, handles, notes, operands and numbers.
+#[test]
+fn encoded_changes_read_back_every_field_and_value() {
+    use super::engine::{Change, Changes, Field, MEASURES, PARTS, Value};
+    let fields = [
+        Field::State,
+        Field::Divisions,
+        Field::Short,
+        Field::Unknown,
+        Field::Refused,
+        Field::Type(u32::MAX, MEASURES[MEASURES.len() - 1]),
+        Field::Variant(0, u64::MAX),
+        Field::Design(300, 1 << 40),
+        Field::Template(u64::MAX, PARTS[PARTS.len() - 1]),
+        Field::Note(u32::MAX),
+        Field::StockDesign(0),
+    ];
+    let values = [
+        None,
+        Some(Value::Number(i128::MIN)),
+        Some(Value::Number(i128::MAX)),
+        Some(Value::Number(-1)),
+        Some(Value::Number(1 << 70)),
+        Some(Value::Operand(u32::MAX)),
+    ];
+    let mut changes = Changes::default();
+    let mut pushed = Vec::new();
+    for (at, field) in fields.into_iter().enumerate() {
+        for value in values {
+            let change = Change {
+                tag: [0, 127, 128, u32::MAX][at % 4],
+                side: at as u8,
+                field,
+                value,
+            };
+            changes.push(change);
+            pushed.push(change);
+        }
+    }
+    let read: Vec<Change> = changes.iter().collect::<std::io::Result<_>>().unwrap();
+    assert_eq!(read, pushed);
+}

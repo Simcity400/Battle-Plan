@@ -372,13 +372,13 @@ impl Emit {
         if output.whole {
             self.generation += 1;
         }
-        for Change {
-            tag,
-            side,
-            field,
-            value,
-        } in output.changes
-        {
+        for change in output.changes.iter() {
+            let Change {
+                tag,
+                side,
+                field,
+                value,
+            } = change?;
             let actor = numbers.actor(tag)?;
             let kind = match field {
                 Field::Type(kind, _) | Field::Variant(kind, _) | Field::Design(kind, _) => {

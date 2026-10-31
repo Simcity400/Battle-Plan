@@ -23,7 +23,7 @@ use dashboard_text::{
 use dashboard_world::Division;
 use replay::columnar_frames::view_heap_bytes;
 use replay_data::{
-    codec::Decoder,
+    codec::{Decoder, put_varint},
     rows::{CountryLinkRow, TableId, VariantDefinitionRow, tables},
 };
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
@@ -275,6 +275,184 @@ pub(crate) struct Change {
     pub(crate) value: Option<Value>,
 }
 
+/// An answered hour's changes, encoded as they are pushed: a few bytes each, where a change held
+/// as itself takes 64, so the hours a segment's walk projects wait for their emit in a fraction
+/// of the memory. Handles are kept whole, which the emit reads back without decoding.
+#[derive(Default)]
+pub(crate) struct Changes {
+    bytes: Vec<u8>,
+    count: usize,
+}
+
+impl Changes {
+    pub(crate) fn push(&mut self, change: Change) {
+        let out = &mut self.bytes;
+        let index = |found: Option<usize>| found.expect("a listed measure or part") as u8;
+        let field: u8 = match change.field {
+            Field::State => 0,
+            Field::Divisions => 1,
+            Field::Short => 2,
+            Field::Unknown => 3,
+            Field::Refused => 4,
+            Field::Type(..) => 5,
+            Field::Variant(..) => 6,
+            Field::Design(..) => 7,
+            Field::Template(..) => 8,
+            Field::Note(_) => 9,
+            Field::StockDesign(_) => 10,
+        };
+        let value: u8 = match change.value {
+            None => 0,
+            Some(Value::Number(_)) => 1,
+            Some(Value::Operand(_)) => 2,
+        };
+        out.push(field << 2 | value);
+        put_varint(out, u128::from(change.tag));
+        out.push(change.side);
+        match change.field {
+            Field::State | Field::Divisions | Field::Short | Field::Unknown | Field::Refused => {}
+            Field::Type(kind, measure) => {
+                put_varint(out, u128::from(kind));
+                out.push(index(MEASURES.iter().position(|&held| held == measure)));
+            }
+            Field::Variant(kind, handle) | Field::Design(kind, handle) => {
+                put_varint(out, u128::from(kind));
+                out.extend_from_slice(&handle.to_le_bytes());
+            }
+            Field::Template(template, part) => {
+                out.extend_from_slice(&template.to_le_bytes());
+                out.push(index(PARTS.iter().position(|&held| held == part)));
+            }
+            Field::Note(note) => put_varint(out, u128::from(note)),
+            Field::StockDesign(handle) => out.extend_from_slice(&handle.to_le_bytes()),
+        }
+        match change.value {
+            None => {}
+            Some(Value::Number(number)) => {
+                put_varint(out, ((number << 1) ^ (number >> 127)) as u128);
+            }
+            Some(Value::Operand(operand)) => put_varint(out, u128::from(operand)),
+        }
+        self.count += 1;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The changes in the order they were pushed.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = io::Result<Change>> + '_ {
+        let mut input = Encoded(&self.bytes);
+        (0..self.count).map(move |_| input.change())
+    }
+
+    /// Lets go of the room it grew into past its bytes.
+    fn seal(mut self) -> Self {
+        self.bytes.shrink_to_fit();
+        self
+    }
+
+    fn heap(&self) -> usize {
+        self.bytes.capacity()
+    }
+}
+
+/// The bytes of [`Changes`] not yet read back.
+struct Encoded<'a>(&'a [u8]);
+
+impl Encoded<'_> {
+    /// The change [`Changes::push`] encoded next.
+    fn change(&mut self) -> io::Result<Change> {
+        let header = self.byte()?;
+        let tag = self.narrow()?;
+        let side = self.byte()?;
+        let field = match header >> 2 {
+            0 => Field::State,
+            1 => Field::Divisions,
+            2 => Field::Short,
+            3 => Field::Unknown,
+            4 => Field::Refused,
+            5 => {
+                let kind = self.narrow()?;
+                let measure = *MEASURES.get(usize::from(self.byte()?)).ok_or_else(broken)?;
+                Field::Type(kind, measure)
+            }
+            6 => Field::Variant(self.narrow()?, self.whole()?),
+            7 => Field::Design(self.narrow()?, self.whole()?),
+            8 => {
+                let template = self.whole()?;
+                let part = *PARTS.get(usize::from(self.byte()?)).ok_or_else(broken)?;
+                Field::Template(template, part)
+            }
+            9 => Field::Note(self.narrow()?),
+            10 => Field::StockDesign(self.whole()?),
+            _ => return Err(broken()),
+        };
+        let value = match header & 3 {
+            0 => None,
+            1 => {
+                let folded = self.varint()?;
+                Some(Value::Number(((folded >> 1) as i128) ^ -((folded & 1) as i128)))
+            }
+            2 => Some(Value::Operand(self.narrow()?)),
+            _ => return Err(broken()),
+        };
+        Ok(Change {
+            tag,
+            side,
+            field,
+            value,
+        })
+    }
+
+    #[inline]
+    fn byte(&mut self) -> io::Result<u8> {
+        let (&byte, rest) = self.0.split_first().ok_or_else(broken)?;
+        self.0 = rest;
+        Ok(byte)
+    }
+
+    /// A handle, kept whole.
+    #[inline]
+    fn whole(&mut self) -> io::Result<u64> {
+        let (bytes, rest) = self.0.split_first_chunk::<8>().ok_or_else(broken)?;
+        self.0 = rest;
+        Ok(u64::from_le_bytes(*bytes))
+    }
+
+    #[inline]
+    fn narrow(&mut self) -> io::Result<u32> {
+        u32::try_from(self.varint()?).map_err(|_| broken())
+    }
+
+    /// A varint, its groups gathered in 64 bits while they fit.
+    #[inline]
+    fn varint(&mut self) -> io::Result<u128> {
+        let mut value = 0_u64;
+        for shift in (0..63).step_by(7) {
+            let byte = self.byte()?;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte < 0x80 {
+                return Ok(u128::from(value));
+            }
+        }
+        let mut value = u128::from(value);
+        for shift in (63..128).step_by(7) {
+            let byte = self.byte()?;
+            value |= u128::from(byte & 0x7f) << shift;
+            if byte < 0x80 {
+                return Ok(value);
+            }
+        }
+        Err(broken())
+    }
+}
+
+fn broken() -> io::Error {
+    invalid("A division equipment change is damaged")
+}
+
 /// One answered hour.
 pub(crate) struct Output {
     pub(crate) hour: i32,
@@ -288,7 +466,7 @@ pub(crate) struct Output {
     pub(crate) whole: bool,
     /// The countries given whole, all of them with `whole`: their other values end.
     pub(crate) listed: Vec<u32>,
-    pub(crate) changes: Vec<Change>,
+    pub(crate) changes: Changes,
 }
 
 impl Output {
@@ -298,7 +476,7 @@ impl Output {
             + self.tags.capacity() * size_of::<(u32, Arc<str>)>()
             + self.tags.iter().map(|(_, tag)| tag.len()).sum::<usize>()
             + self.listed.capacity() * 4
-            + self.changes.capacity() * size_of::<Change>()
+            + self.changes.heap()
     }
 }
 
@@ -1120,7 +1298,7 @@ impl Engine {
             tags: std::mem::take(&mut self.fresh_tags),
             whole: false,
             listed: Vec::new(),
-            changes: Vec::new(),
+            changes: Changes::default(),
         }
     }
 
@@ -1286,7 +1464,7 @@ impl Engine {
         self.dirty.clear();
         self.stock_dirty.clear();
         self.notes_dirty = false;
-        let mut changes = Vec::new();
+        let mut changes = Changes::default();
         for &(tag, _) in &listed {
             self.whole(tag, &mut changes);
         }
@@ -1297,7 +1475,7 @@ impl Engine {
             tags: std::mem::take(&mut self.fresh_tags),
             whole: true,
             listed: listed.into_iter().map(|(tag, _)| tag).collect(),
-            changes,
+            changes: changes.seal(),
         })
     }
 
@@ -2111,7 +2289,7 @@ impl Engine {
     /// The hour's changes: each dirty reply's dirty values, and every value of the countries
     /// a stockpile read or the unlinked count reached.
     fn changes(&mut self, hour: i32) -> Output {
-        let mut changes = Vec::new();
+        let mut changes = Changes::default();
         let dirty = std::mem::take(&mut self.dirty);
         let stock_dirty = std::mem::take(&mut self.stock_dirty);
         let notes_all = std::mem::take(&mut self.notes_dirty);
@@ -2158,12 +2336,12 @@ impl Engine {
             tags: std::mem::take(&mut self.fresh_tags),
             whole: false,
             listed: Vec::new(),
-            changes,
+            changes: changes.seal(),
         }
     }
 
     /// Every value of country `tag`, both attributions.
-    fn whole(&mut self, tag: u32, changes: &mut Vec<Change>) {
+    fn whole(&mut self, tag: u32, changes: &mut Changes) {
         let holder = self.listed.get(&tag).copied().flatten();
         for side in 0..2 {
             let Some(holder) = holder else {
@@ -2207,7 +2385,7 @@ impl Engine {
         (tag, side, slot): (u32, u8, u32),
         dirty: &Dirty,
         stock: bool,
-        changes: &mut Vec<Change>,
+        changes: &mut Changes,
     ) {
         let read = self.supplies.designs.read;
         let empty = Sums::default();
