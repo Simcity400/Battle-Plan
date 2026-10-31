@@ -805,8 +805,8 @@ macro_rules! define_tables {
             pub(crate) fn range_update_fits(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>]) -> bool {
                 match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::fits(old, fresh, ranges)),+, _ => false }
             }
-            pub(crate) fn encode_range_update(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>], output: &mut Vec<u8>, deleted: &mut Vec<u8>) -> io::Result<bool> {
-                match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::encode(old, fresh, ranges, output, deleted)),+, _ => Err(invalid("key range table type mismatch")) }
+            pub(crate) fn encode_range_update(&self, previous: &TableRows, ranges: &[std::ops::Range<u128>], output: &mut Vec<u8>, deleted: &mut Vec<u8>, changed: Option<&mut ChangedRows>) -> io::Result<bool> {
+                match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::encode(old, fresh, ranges, output, deleted, changed)),+, _ => Err(invalid("key range table type mismatch")) }
             }
             pub(crate) fn apply_range_update(self, previous: &mut TableRows, ranges: &[std::ops::Range<u128>]) -> io::Result<TableRows> {
                 match (self, previous) { $((Self::$table(fresh), Self::$table(old)) => crate::sliced::ranges::apply(old, fresh, ranges).map(Self::$table)),+, _ => Err(invalid("key range table type mismatch")) }

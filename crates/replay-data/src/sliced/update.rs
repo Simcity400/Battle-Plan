@@ -39,14 +39,17 @@ pub struct SliceUpdate {
 /// and merges by key instead.
 macro_rules! sliced_pair {
     ($left:expr, $right:expr, |$a:ident, $b:ident, $wrap:ident| $body:expr, $other:expr) => {
-        sliced_pair!(@arms ($left, $right), $a, $b, $wrap, $body, $other;
+        sliced_pair!(@list ($left, $right), $a, $b, $wrap, $body, $other;)
+    };
+    (@list $pair:expr, $a:ident, $b:ident, $wrap:ident, $body:expr, $other:expr; $($extra:ident),*) => {
+        sliced_pair!(@arms $pair, $a, $b, $wrap, $body, $other;
             CountryMarket, MarketContractTerms, LendLeaseAgreements, ResearchTechnologies, ResearchInputs, ResearchAppliedBonuses, ResearchModifiers,
             AirCountryRelations, AirNavalPatrolHistories,
             RaidAirSites, StateResourceInputs, StateResources,
             StateCores, StateDynamicModifiers, CountryBuildingResources, RelationOpinions,
             RelationTuples, CountryStabilityInputs, CountryStabilityLines, CombatLogEquipment,
             NavalMissionCountries, NavalMissionCommanders, SupplyNodes, TradeRoutes, TrainInventory,
-            AvailableAdvisors, Focus, CompletedFocuses, Projects, ProjectHistory)
+            AvailableAdvisors, Focus, CompletedFocuses, Projects, ProjectHistory $(, $extra)*)
     };
     (@arms $pair:expr, $a:ident, $b:ident, $wrap:ident, $body:expr, $other:expr; $($variant:ident),+) => {
         match $pair {
@@ -58,6 +61,30 @@ macro_rules! sliced_pair {
             _ => $other,
         }
     };
+}
+
+/// Two tables of a type that takes keyed holder updates: every owner-sliced type, and the
+/// tables of [`takes_keyed_updates`].
+macro_rules! keyed_pair {
+    ($left:expr, $right:expr, |$a:ident, $b:ident, $wrap:ident| $body:expr, $other:expr) => {
+        sliced_pair!(@list ($left, $right), $a, $b, $wrap, $body, $other;
+            Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
+            DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
+            RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
+            Ships, NavalCombats, NavalCombatParticipants, AirWings)
+    };
+}
+
+/// Whether the producer of `table`, a table whose rows change by key each hour and that no
+/// owner slicing reads, publishes only its changed, new and removed rows against a shared
+/// baseline ([`SliceUpdate::keyed`]). [`keyed_pair!`] takes every one of them.
+pub fn takes_keyed_updates(table: TableId) -> bool {
+    let empty = TableRows::empty(table);
+    sliced_pair!(@arms (&empty, &empty), _old, _new, _wrap, true, false;
+        Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
+        DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
+        RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
+        Ships, NavalCombats, NavalCombatParticipants, AirWings)
 }
 
 /// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
@@ -217,7 +244,7 @@ impl SliceUpdate {
         if !self.keys.is_empty() {
             return self.owners.is_empty()
                 && self.keys.windows(2).all(|pair| pair[0] < pair[1])
-                && sliced_pair!(
+                && keyed_pair!(
                     previous,
                     &self.rows,
                     |_old, new, _wrap| key_fits(new, &self.keys),
@@ -250,10 +277,9 @@ impl SliceUpdate {
         self.encode_changes_with(previous, output, deleted, None)
     }
 
-    /// [`Self::encode_changes`], recording in `changed` each row of an owner update it
+    /// [`Self::encode_changes`], recording in `changed` each row of an owner or key update it
     /// writes (its index in the update's rows beside its baseline row's) and each key it
-    /// deletes; it writes nothing when no row changed. Range and key updates are not
-    /// recorded.
+    /// deletes; an owner update writes nothing when no row changed.
     pub fn encode_changes_recorded(
         &self,
         previous: &TableRows,
@@ -271,24 +297,19 @@ impl SliceUpdate {
         deleted: &mut Vec<u8>,
         mut changed: Option<&mut ChangedRows>,
     ) -> io::Result<bool> {
-        if (!self.ranges.is_empty() || !self.keys.is_empty())
-            && let Some(changed) = changed.as_deref_mut()
-        {
-            changed.lose();
-        }
         if !self.ranges.is_empty() {
             return self
                 .rows
-                .encode_range_update(previous, &self.ranges, output, deleted);
+                .encode_range_update(previous, &self.ranges, output, deleted, changed);
         }
         if !self.keys.is_empty() {
             if !self.fits(previous) {
                 return Err(invalid("invalid key update"));
             }
-            return sliced_pair!(
+            return keyed_pair!(
                 previous,
                 &self.rows,
-                |old, new, _wrap| encode_keys(old, new, &self.keys, output, deleted),
+                |old, new, _wrap| encode_keys(old, new, &self.keys, output, deleted, changed),
                 Err(invalid("key update rows differ from baseline type"))
             );
         }
@@ -405,7 +426,7 @@ impl SliceUpdate {
             if !self.fits(previous) {
                 return Err(invalid("invalid key update"));
             }
-            return sliced_pair!(
+            return keyed_pair!(
                 &mut *previous,
                 self.rows,
                 |old, new, wrap| apply_keys(old, new, &self.keys).map(wrap),
@@ -490,10 +511,13 @@ fn encode_keys<R: crate::rows::RowCodec>(
     keys: &[u128],
     output: &mut Vec<u8>,
     deleted: &mut Vec<u8>,
+    mut recorded: Option<&mut ChangedRows>,
 ) -> io::Result<bool> {
     if !key_fits(fresh, keys) {
         return Err(invalid("invalid key update rows"));
     }
+    u32::try_from(fresh.len()).map_err(|_| invalid("too many rows"))?;
+    u32::try_from(old.len()).map_err(|_| invalid("too many rows"))?;
     allocation::reserve(output, 4)?;
     let count_at = output.len();
     output.extend_from_slice(&0_u32.to_le_bytes());
@@ -503,20 +527,19 @@ fn encode_keys<R: crate::rows::RowCodec>(
     let mut gone_key = 0_u128;
     deleted.clear();
     for &key in keys {
-        let previous = old
-            .binary_search_by_key(&key, |row| row.key())
-            .ok()
-            .map(|i| &old[i]);
-        let current = fresh
-            .binary_search_by_key(&key, |row| row.key())
-            .ok()
-            .map(|i| &fresh[i]);
-        if let Some(row) = current {
-            if row.encode_change(previous, changed_key, output)? {
+        let before = old.binary_search_by_key(&key, |row| row.key()).ok();
+        let previous = before.map(|i| &old[i]);
+        let at = fresh.binary_search_by_key(&key, |row| row.key()).ok();
+        if let Some(at) = at {
+            if fresh[at].encode_change(previous, changed_key, output)? {
                 changed = changed
                     .checked_add(1)
                     .ok_or(invalid("too many changed rows"))?;
                 changed_key = key;
+                if let Some(recorded) = recorded.as_deref_mut() {
+                    // Both lengths were checked to fit 32 bits above.
+                    recorded.pair(at as u32, before.map(|before| before as u32));
+                }
             }
         } else if previous.is_some() {
             allocation::reserve(deleted, (R::KEY_BITS as usize).div_ceil(7).max(1))?;
@@ -525,6 +548,9 @@ fn encode_keys<R: crate::rows::RowCodec>(
             gone = gone
                 .checked_add(1)
                 .ok_or(invalid("too many removed rows"))?;
+            if let Some(recorded) = recorded.as_deref_mut() {
+                recorded.remove(key);
+            }
         }
     }
     output[count_at..count_at + 4].copy_from_slice(&changed.to_le_bytes());
@@ -619,6 +645,22 @@ mod tests {
             );
         }
         assert_eq!(sliced, 30);
+    }
+
+    /// Every keyed producer table takes keyed updates, and none is owner-sliced.
+    #[test]
+    fn keyed_producer_tables_take_keyed_updates_and_are_not_sliced() {
+        let mut keyed = 0;
+        for table in TableId::ALL {
+            let empty = TableRows::empty(table);
+            if !takes_keyed_updates(table) {
+                continue;
+            }
+            keyed += 1;
+            assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
+            assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
+        }
+        assert_eq!(keyed, 19);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {

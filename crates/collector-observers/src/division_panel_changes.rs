@@ -1,7 +1,7 @@
 //! Certificates shared by division membership and variant/state operands.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-static OPERANDS: WatchRegistry = WatchRegistry::new();
+static OPERANDS: WatchRegistry = WatchRegistry::marking();
 static VARIANTS: WatchRegistry = WatchRegistry::marking();
 static LIFETIMES: WatchRegistry = WatchRegistry::marking();
 static VARIANT_DEMAND: AtomicUsize = AtomicUsize::new(0);
@@ -147,6 +147,10 @@ pub fn take(visit: impl FnMut(usize)) -> Option<u64> {
     (VARIANT_ACTIVE.load(Ordering::SeqCst) == 0 && variant_capability_is_current(stamp))
         .then_some(epoch)
         .flatten()
+}
+/// The equipment pools a membership writer touched since the last take.
+pub fn take_operands(visit: impl FnMut(usize)) -> Option<u64> {
+    OPERANDS.take(visit)
 }
 pub fn take_lifetimes(visit: impl FnMut(usize)) -> Option<u64> {
     let stamp = variant_capability()?;

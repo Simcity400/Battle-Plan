@@ -78,11 +78,36 @@ fn remove(
         rows.remove_range(range)
     }
 }
+/// Whether no writer touched `held`'s history root or medal store since its certificates were
+/// taken, in the hour's `taken`: its certificates are then the current ones.
+fn quiet(held: &Held, seed: &DivisionSeed, taken: &crate::observations::Taken) -> bool {
+    let Some(history) = held.history else {
+        return false;
+    };
+    seed.pointer
+        .checked_add(unit_history::DIVISION_HISTORY)
+        .is_some_and(|address| taken.quiet(address, history.0))
+        && (held.store == 0
+            || held
+                .medals
+                .is_some_and(|medals| taken.quiet(held.store, medals.0)))
+}
 fn key(division: u64, list: u8, ordinal: u32) -> u128 {
     ((division as u128) << 34) | ((list as u128) << 32) | ordinal as u128
 }
 impl Store {
+    /// Starts the hour, taking the entry edits itself.
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
+        let mut edits = crate::observations::Taken::default();
+        edits.take(|visit| changes::take_edits(visit));
+        self.begin_with(count, &edits)
+    }
+    /// Starts the hour under the hour's take of the entry edits.
+    pub fn begin_with(
+        &mut self,
+        count: usize,
+        edits: &crate::observations::Taken,
+    ) -> Result<(), &'static str> {
         self.pending.clear();
         self.defer_edits = false;
         changes::demand(count);
@@ -93,23 +118,26 @@ impl Store {
         allocation::reserve(&mut self.seen, self.held.len())
             .map_err(|_| "division history membership allocation failed")?;
         self.seen.resize(self.held.len(), false);
-        let mut failure = false;
-        self.edit_epoch = changes::take_edits(|receiver| {
-            if allocation::reserve(&mut self.edits, 1).is_err() {
-                failure = true;
-            } else {
-                self.edits.push(receiver);
-            }
-        });
-        if failure {
+        self.edit_epoch = edits.epoch();
+        if allocation::reserve(&mut self.edits, edits.touched_len()).is_err() {
             self.edit_epoch = None;
+        } else {
+            self.edits.extend_from_slice(edits.touched_receivers());
         }
-        self.edits.sort_unstable();
         allocation::reserve(&mut self.next, count)
             .map_err(|_| "division history cache allocation failed")
     }
     pub fn begin_owned(&mut self, count: usize) -> Result<(), &'static str> {
         let result = self.begin(count);
+        self.defer_edits = true;
+        result
+    }
+    pub fn begin_owned_with(
+        &mut self,
+        count: usize,
+        edits: &crate::observations::Taken,
+    ) -> Result<(), &'static str> {
+        let result = self.begin_with(count, edits);
         self.defer_edits = true;
         result
     }
@@ -144,6 +172,24 @@ impl Store {
             });
         at.and_then(|at| self.held.get(at))
             .filter(|held| held.division == seed.division)
+    }
+    /// `seed`'s held certificates, which a range would otherwise query, when the hour's take
+    /// saw no writer touch them since they were held.
+    pub(super) fn prefetch_quiet(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        taken: &crate::observations::Taken,
+        order: &mut crate::division_experience::Order,
+    ) -> Option<Certificates> {
+        let held = self
+            .prefetch_held(index, seed, order)
+            .filter(|held| held.army == seed.pointer && quiet(held, seed, taken))?;
+        Some(Certificates {
+            history: (held.history?, held.history_slot),
+            store: held.store,
+            medals: held.medals.map(|medals| (medals, held.medals_slot)),
+        })
     }
     pub(super) fn prefetch_certificates(
         &self,
@@ -209,14 +255,17 @@ impl Store {
         base: usize,
         seed: &DivisionSeed,
     ) -> Result<(), &'static str> {
-        self.observe_prepared(memory, base, seed, None)
+        self.observe_prepared(memory, base, seed, None, None)
     }
+    /// `taken`, the hour's take of the history certificates, carries a held division that no
+    /// writer touched without querying its certificates.
     pub(super) fn observe_prepared(
         &mut self,
         memory: &impl Memory,
         base: usize,
         seed: &DivisionSeed,
         prepared: Option<Certificates>,
+        taken: Option<&crate::observations::Taken>,
     ) -> Result<(), &'static str> {
         let index = self.next.len();
         let held_at = if self
@@ -257,18 +306,27 @@ impl Store {
             .pointer
             .checked_add(unit_history::DIVISION_HISTORY)
             .ok_or("division history address overflow")?;
-        let history = match prepared {
-            Some(p) => Some(p.history.0),
-            None => changes::sequence(history_address),
+        let quiet = held
+            .as_ref()
+            .zip(taken)
+            .is_some_and(|(held, taken)| quiet(held, seed, taken));
+        if quiet {
+            crate::observations::quiet(4);
+        }
+        let history = match (quiet, prepared) {
+            (true, _) => held.as_ref().and_then(|held| held.history),
+            (false, Some(p)) => Some(p.history.0),
+            (false, None) => changes::sequence(history_address),
         };
         let medals = held
             .as_ref()
             .filter(|held| held.store != 0)
-            .and_then(|held| match prepared.filter(|p| p.store == held.store) {
-                Some(p) => p.medals.map(|(certificate, _)| certificate),
-                None => changes::sequence(held.store),
+            .and_then(|held| match (quiet, prepared.filter(|p| p.store == held.store)) {
+                (true, _) => held.medals,
+                (false, Some(p)) => p.medals.map(|(certificate, _)| certificate),
+                (false, None) => changes::sequence(held.store),
             });
-        if let (Some(held), Some(p)) = (held.as_mut(), prepared) {
+        if let (Some(held), Some(p)) = (held.as_mut().filter(|_| !quiet), prepared) {
             held.history_slot = p.history.1;
             if p.store == held.store {
                 held.medals_slot = p.medals.map_or(usize::MAX, |(_, slot)| slot);
@@ -719,7 +777,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let first = store.finish().unwrap();
             let first_rows = first.complete::<tables::DivisionHistory>().unwrap();
@@ -736,7 +794,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let quiet = store.finish().unwrap();
             assert!(Arc::ptr_eq(&first, &quiet));
@@ -765,7 +823,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let changed = store.finish().unwrap();
             let changed_rows = changed.complete::<tables::DivisionHistory>().unwrap();
@@ -797,7 +855,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let appended = store.finish().unwrap();
             assert_eq!(appended.changed.len(), 1);
@@ -819,7 +877,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             let refused = store.finish().unwrap();
             let refused_rows = refused.complete::<tables::DivisionHistory>().unwrap();
@@ -835,7 +893,7 @@ mod tests {
                 let prepared = owned
                     .then(|| store.prefetch_certificates(index, seed, &mut order))
                     .flatten();
-                store.observe_prepared(&world, 0, seed, prepared).unwrap();
+                store.observe_prepared(&world, 0, seed, prepared, None).unwrap();
             }
             assert!(Arc::ptr_eq(&refused, &store.finish().unwrap()));
             assert_eq!(world.reads.get(), 0);

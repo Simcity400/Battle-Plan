@@ -86,7 +86,24 @@ struct Held<T> {
     army: usize,
     certificate: (u64, u64),
     value: T,
+    /// The certificate is the receiver's current one: a daily carry under a later sequence is not.
+    current: bool,
 }
+fn identity(base: usize, seed: &DivisionSeed) -> Result<(), &'static str> {
+    if seed.division == 0
+        || seed.handle != Some(seed.division)
+        || seed.class != Some(0)
+        || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
+        || base
+            .checked_add(carmy::SECONDARY_VTABLE_RVA)
+            .map(|v| v as u64)
+            != seed.secondary_vtable
+    {
+        return Err("division experience census identity unavailable");
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct Store<T = i64> {
     held: Vec<Held<T>>,
@@ -107,14 +124,10 @@ impl<T: Clone> Store<T> {
         held.certificate == certificate || self.daily && held.certificate.0 == certificate.0
     }
     /// Only an exact writer certificate can lend XP to the hourly exercise predicate.
-    pub fn current(&self, seed: &DivisionSeed, certificate: Option<(u64, u64)>) -> Option<T> {
+    pub fn current(&self, seed: &DivisionSeed) -> Option<T> {
         self.next
             .last()
-            .filter(|held| {
-                held.division == seed.division
-                    && held.army == seed.pointer
-                    && Some(held.certificate) == certificate
-            })
+            .filter(|held| held.division == seed.division && held.army == seed.pointer && held.current)
             .map(|held| held.value.clone())
     }
     pub fn begin(&mut self, count: usize) -> Result<(), &'static str> {
@@ -141,26 +154,30 @@ impl<T: Clone> Store<T> {
         certificate: Option<(u64, u64)>,
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Result<T, &'static str> {
-        if seed.division == 0
-            || seed.handle != Some(seed.division)
-            || seed.class != Some(0)
-            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
-            || base
-                .checked_add(carmy::SECONDARY_VTABLE_RVA)
-                .map(|v| v as u64)
-                != seed.secondary_vtable
-        {
-            return Err("division experience census identity unavailable");
-        }
+        identity(base, seed)?;
         let certificate =
             certificate.ok_or("division experience writer certificate unavailable")?;
-        // Census order normally stays unchanged. Only a membership/order change
-        // builds the reusable index; a quiet hour does no sort or second pass.
+        let at = self.locate(seed.division)?;
+        let held = at
+            .map(|at| &self.held[at])
+            .filter(|held| held.army == seed.pointer && self.matches(held, certificate));
+        let (value, current, certificate) = match held {
+            Some(held) => (held.value.clone(), held.certificate == certificate, held.certificate),
+            None => (read()?, true, certificate),
+        };
+        self.push(seed, certificate, value.clone(), current)?;
+        Ok(value)
+    }
+
+    /// Where the held entry of the next observed division is. Census order normally stays
+    /// unchanged: only a membership or order change builds the reusable index, so a quiet hour
+    /// does no sort or second pass.
+    fn locate(&mut self, division: u64) -> Result<Option<usize>, &'static str> {
         let guess = self.next.len().checked_add_signed(self.shift);
         let at = if guess.is_some_and(|at| {
             self.held
                 .get(at)
-                .is_some_and(|held| held.division == seed.division)
+                .is_some_and(|held| held.division == division)
         }) {
             guess
         } else {
@@ -176,32 +193,74 @@ impl<T: Clone> Store<T> {
                 self.order.sort_unstable_by_key(|entry| entry.0);
             }
             self.order
-                .binary_search_by_key(&seed.division, |entry| entry.0)
+                .binary_search_by_key(&division, |entry| entry.0)
                 .ok()
                 .map(|at| self.order[at].1)
         };
         if let Some(at) = at {
             self.shift = at as isize - self.next.len() as isize;
         }
-        let held = at
-            .map(|at| &self.held[at])
-            .filter(|held| held.army == seed.pointer && self.matches(held, certificate));
-        let (value, certificate) = match held {
-            Some(held) => (held.value.clone(), held.certificate),
-            None => (read()?, certificate),
-        };
-        {
-            if self.next.len() == self.next.capacity() {
-                return Err("division experience cache capacity exhausted");
-            }
-            self.next.push(Held {
-                division: seed.division,
-                army: seed.pointer,
-                certificate,
-                value: value.clone(),
-            });
+        Ok(at)
+    }
+
+    fn push(
+        &mut self,
+        seed: &DivisionSeed,
+        certificate: (u64, u64),
+        value: T,
+        current: bool,
+    ) -> Result<(), &'static str> {
+        if self.next.len() == self.next.capacity() {
+            return Err("division experience cache capacity exhausted");
         }
-        Ok(value)
+        self.next.push(Held {
+            division: seed.division,
+            army: seed.pointer,
+            certificate,
+            value,
+            current,
+        });
+        Ok(())
+    }
+
+    /// The held entry the next [`Self::observe_with`] of `seed` would carry without a
+    /// certificate query: it holds the seed's army, and `taken` saw no writer touch `receiver`
+    /// since it was held (a daily store needs only the take's epoch to be the held one). Its
+    /// position and certificate; `None` leaves the ordered observation to query the receiver.
+    pub fn quiet(
+        &mut self,
+        seed: &DivisionSeed,
+        receiver: usize,
+        taken: &crate::observations::Taken,
+        kind: usize,
+    ) -> Option<(usize, (u64, u64))> {
+        let at = self.locate(seed.division).ok()??;
+        let held = &self.held[at];
+        let quiet = if self.daily {
+            taken.epoch() == Some(held.certificate.0)
+        } else {
+            taken.quiet(receiver, held.certificate.0)
+        };
+        let quiet = held.army == seed.pointer && quiet;
+        if quiet {
+            crate::observations::quiet(kind);
+        }
+        quiet.then_some((at, held.certificate))
+    }
+
+    /// Carries the held entry at `at` that [`Self::quiet`] found, as a certificate query would
+    /// have. A writer touch keeps a daily sample but no longer certifies it current.
+    pub fn keep(
+        &mut self,
+        base: usize,
+        seed: &DivisionSeed,
+        at: usize,
+        touched: bool,
+    ) -> Result<T, &'static str> {
+        identity(base, seed)?;
+        let held = self.held[at].clone();
+        self.push(seed, held.certificate, held.value.clone(), held.current && !touched)?;
+        Ok(held.value)
     }
     /// Read-only range acquisition. The ordered observer still owns admission,
     /// next-entry order and failure accounting when it consumes this result.
@@ -319,6 +378,45 @@ impl<T: Clone> Store<T> {
         at.and_then(|at| self.held.get(at))
             .filter(|held| held.division == seed.division)
             .filter(|held| held.army == seed.pointer && self.matches(held, certificate))
+    }
+
+    /// The certificate and value a certificate query would give the ordered observation of
+    /// `seed`, seen from a read-only range with no query: its held entry is current, holds its
+    /// army, and the hour's `taken` saw no writer touch `receiver` since it was held.
+    pub(super) fn prefetch_quiet(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        receiver: usize,
+        taken: &crate::observations::Taken,
+        order: &mut Order,
+    ) -> Option<((u64, u64), T)> {
+        taken.epoch()?;
+        let held = self.prefetch_held_any(index, seed, order)?;
+        (held.current && taken.quiet(receiver, held.certificate.0))
+            .then(|| (held.certificate, held.value.clone()))
+    }
+
+    /// The held entry of `seed`'s army whatever its certificate.
+    fn prefetch_held_any(
+        &self,
+        index: usize,
+        seed: &DivisionSeed,
+        order: &mut Order,
+    ) -> Option<&Held<T>> {
+        let held = self.held.get(index).filter(|held| held.division == seed.division);
+        if held.is_some() {
+            return held.filter(|held| held.army == seed.pointer);
+        }
+        let at = order
+            .position(
+                self.baseline,
+                self.held.iter().map(|held| held.division),
+                seed.division,
+            )
+            .unwrap_or_else(|| self.held.iter().position(|held| held.division == seed.division));
+        at.and_then(|at| self.held.get(at))
+            .filter(|held| held.division == seed.division && held.army == seed.pointer)
     }
 
     /// Owned range result, including carries. Cache admission stays ordered;
@@ -709,7 +807,7 @@ mod tests {
             store.observe_with(0, &original, Some((1, 1)), || Ok(-7)),
             Ok(-7)
         );
-        assert_eq!(store.current(&original, Some((1, 1))), Some(-7));
+        assert_eq!(store.current(&original), Some(-7));
         store.finish(true);
         store.daily(false);
         store.begin(2).unwrap();
@@ -717,7 +815,7 @@ mod tests {
             store.observe_with(0, &original, Some((1, 2)), || panic!("daily carry read")),
             Ok(-7)
         );
-        assert_eq!(store.current(&original, Some((1, 2))), None);
+        assert_eq!(store.current(&original), None);
         let born = seed(2, 0x2000);
         assert_eq!(
             store.observe_with(0, &born, Some((1, 2)), || Ok(19)),
@@ -736,7 +834,7 @@ mod tests {
             store.observe_with(0, &original, Some((1, 2)), || Ok(23)),
             Ok(23)
         );
-        assert_eq!(store.current(&original, Some((1, 2))), Some(23));
+        assert_eq!(store.current(&original), Some(23));
         store.finish(false);
         store.begin(1).unwrap();
         assert_eq!(

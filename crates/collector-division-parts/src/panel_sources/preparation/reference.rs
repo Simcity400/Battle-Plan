@@ -20,6 +20,7 @@ pub(super) struct ReferenceReads {
     variant_indices: Map<(u64, usize), Option<usize>>,
     variants_used: usize,
     variant_refresh: Option<bool>,
+    dirty_read: bool,
 }
 impl ReferenceReads {
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
@@ -35,6 +36,7 @@ impl ReferenceReads {
         self.roots_used = 0;
         self.variants_used = 0;
         self.variant_refresh = None;
+        self.dirty_read = false;
         self.membership_indices.clear();
         self.states.clear();
         self.variant_indices.clear();
@@ -108,10 +110,19 @@ impl ReferenceReads {
         } else if *self.variant_refresh.get_or_insert_with(|| {
             let stamp = operands::observed_variant_stamp();
             stamp.is_some() && store.variant_observation != stamp
-        }) && let Some(pool) = pool
-        {
-            for &(_, handle, pointer) in pool.variants.iter() {
-                self.capture_variant(memory, base, store, handle, pointer, false);
+        }) {
+            if store.variant_epoch != store.boundary.variant_epoch {
+                if let Some(pool) = pool {
+                    for &(_, handle, pointer) in pool.variants.iter() {
+                        self.capture_variant(memory, base, store, handle, pointer, false);
+                    }
+                }
+            } else if !std::mem::replace(&mut self.dirty_read, true) {
+                for &pointer in &store.boundary.dirty {
+                    if let Some(&handle) = store.variant_handles.get(&pointer) {
+                        self.capture_variant(memory, base, store, handle, pointer, false);
+                    }
+                }
             }
         }
         if let Ok(province) = selection.province {
@@ -484,6 +495,7 @@ impl ReferenceReads {
             variant_indices: variants,
             variants_used: self.variants_used,
             variant_refresh: self.variant_refresh,
+            dirty_read: self.dirty_read,
         }
     }
 }

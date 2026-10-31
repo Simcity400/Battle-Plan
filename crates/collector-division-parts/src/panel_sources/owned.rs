@@ -10,6 +10,8 @@ pub(super) struct Boundary {
     pub stamp: Option<((u64, u64), u64)>,
     pub retired: Vec<usize>,
     pub dirty: Vec<usize>,
+    /// The equipment pools a membership writer touched since the previous hour.
+    pub operands: crate::observations::Taken,
     pub result: Result<(), &'static str>,
 }
 impl Default for Boundary {
@@ -23,6 +25,7 @@ impl Default for Boundary {
             stamp: None,
             retired: Vec::new(),
             dirty: Vec::new(),
+            operands: Default::default(),
             result: Ok(()),
         }
     }
@@ -30,6 +33,7 @@ impl Default for Boundary {
 impl Boundary {
     pub fn allocated_bytes(&self) -> usize {
         (self.retired.capacity() + self.dirty.capacity()) * std::mem::size_of::<usize>()
+            + self.operands.allocated_bytes()
     }
 }
 impl Store {
@@ -64,6 +68,9 @@ impl Store {
             boundary.dirty.sort_unstable();
         }
         boundary.stamp = operands::observed_variant_stamp();
+        boundary
+            .operands
+            .take(|visit| operands::take_operands(visit));
     }
     /// New or retired bindings retain the original ordered authentication path.
     pub fn can_settle_owned(&self) -> bool {

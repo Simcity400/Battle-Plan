@@ -17,6 +17,7 @@ pub mod attack_stats;
 pub mod dig_in;
 mod division_experience;
 pub mod division_land;
+pub mod observations;
 pub mod supply_inputs;
 pub mod unit_combat_references;
 

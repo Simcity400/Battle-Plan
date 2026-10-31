@@ -137,61 +137,143 @@ impl PreparationPart {
                     seed,
                 )
             });
-            // These receivers are already registered. The passive query performs
-            // the same epoch/quiet checks without a second, no-op registration.
-            // Cold receivers still reach the original ordered admission.
-            let experience_certificate = changes.experience_observed_sequence(seed.pointer);
-            let progression_certificate = changes.progression_observed_sequence(seed.pointer);
-            let experience_acquired = experience_certificate.is_some();
-            let progression_acquired = progression_certificate.is_some();
+            // A receiver the hour's take saw untouched is carried by the ordered observation
+            // without a query; the range neither queries nor prefetches it. Other receivers
+            // are already registered: the passive query performs the same epoch/quiet checks
+            // without a second, no-op registration. Cold receivers still reach the original
+            // ordered admission.
+            let observations = store.observations.is_taken().then_some(&store.observations);
             let officer_receiver = seed
                 .pointer
                 .checked_add(engine_native::unit_history::OFFICER);
-            let officer_certificate = officer_receiver.and_then(history_changes::observed_sequence);
+            let experience_quiet = observations.and_then(|observations| {
+                store.experience.prefetch_quiet(
+                    index,
+                    seed,
+                    seed.pointer,
+                    &observations.experience,
+                    &mut self.orders[0],
+                )
+            });
+            let progression_quiet = observations.and_then(|observations| {
+                store.progression.prefetch_quiet(
+                    index,
+                    seed,
+                    seed.pointer,
+                    &observations.progression,
+                    &mut self.orders[1],
+                )
+            });
+            let officer_quiet = observations.zip(officer_receiver).and_then(|(observations, receiver)| {
+                store.officer.prefetch_quiet(
+                    index,
+                    seed,
+                    receiver,
+                    &observations.history,
+                    &mut self.orders[2],
+                )
+            });
+            // Stored XP, previous template and officer XP, in the counters' order.
+            for (kind, quiet) in [
+                experience_quiet.is_some(),
+                progression_quiet.is_some(),
+                officer_quiet.is_some(),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if quiet {
+                    crate::observations::quiet(kind);
+                }
+            }
+            let experience_certificate = match experience_quiet {
+                Some((certificate, _)) => Some(certificate),
+                None => changes.experience_observed_sequence(seed.pointer),
+            };
+            let progression_certificate = match progression_quiet {
+                Some((certificate, _)) => Some(certificate),
+                None => changes.progression_observed_sequence(seed.pointer),
+            };
+            let experience_acquired = experience_certificate.is_some();
+            let progression_acquired = progression_certificate.is_some();
+            let officer_certificate = match officer_quiet {
+                Some((certificate, _)) => Some(certificate),
+                None => officer_receiver.and_then(history_changes::observed_sequence),
+            };
             let officer_acquired = officer_certificate.is_some();
-            let career_certificate = experience_certificate
-                .and_then(|_| history_changes::observed_sequence(seed.pointer));
-            let career_acquired = career_certificate.is_some();
-            let experience = store.experience.prefetch_value(
-                base,
-                index,
-                seed,
-                experience_certificate,
-                &mut self.orders[0],
-                || {
-                    engine_native::read::<i64>(
-                        memory,
-                        seed.pointer
-                            .checked_add(engine_native::carmy::EXPERIENCE)
-                            .ok_or("division experience address overflow")?,
+            let career_quiet = experience_certificate
+                .and(observations)
+                .and_then(|observations| {
+                    store.career.prefetch_quiet(
+                        index,
+                        seed,
+                        seed.pointer,
+                        &observations.history,
+                        &mut self.orders[3],
                     )
-                    .ok_or("division experience unreadable")
-                },
-            );
-            let progression = store.progression.prefetch_value(
-                base,
-                index,
-                seed,
-                progression_certificate,
-                &mut self.orders[1],
-                || engine_native::carmy::pending_template(memory, base, seed.pointer),
-            );
-            let officer = store.officer.prefetch_value(
-                base,
-                index,
-                seed,
-                officer_certificate,
-                &mut self.orders[2],
-                || engine_native::unit_history::officer_experience(memory, base, seed.pointer),
-            );
-            let career = store.career.prefetch_value(
-                base,
-                index,
-                seed,
-                career_certificate,
-                &mut self.orders[3],
-                || engine_native::unit_history::career_counter(memory, seed.pointer),
-            );
+                });
+            if career_quiet.is_some() {
+                crate::observations::quiet(3);
+            }
+            let career_certificate = match career_quiet {
+                Some((certificate, _)) => Some(certificate),
+                None => experience_certificate
+                    .and_then(|_| history_changes::observed_sequence(seed.pointer)),
+            };
+            let career_acquired = career_certificate.is_some();
+            // A quiet value is the held one a query would have found; only its query is skipped.
+            let experience = match experience_quiet {
+                Some((_, value)) => Some(Ok(value)),
+                None => store.experience.prefetch_value(
+                    base,
+                    index,
+                    seed,
+                    experience_certificate,
+                    &mut self.orders[0],
+                    || {
+                        engine_native::read::<i64>(
+                            memory,
+                            seed.pointer
+                                .checked_add(engine_native::carmy::EXPERIENCE)
+                                .ok_or("division experience address overflow")?,
+                        )
+                        .ok_or("division experience unreadable")
+                    },
+                ),
+            };
+            let progression = match progression_quiet {
+                Some((_, value)) => Some(Ok(value)),
+                None => store.progression.prefetch_value(
+                    base,
+                    index,
+                    seed,
+                    progression_certificate,
+                    &mut self.orders[1],
+                    || engine_native::carmy::pending_template(memory, base, seed.pointer),
+                ),
+            };
+            let officer = match officer_quiet {
+                Some((_, value)) => Some(Ok(value)),
+                None => store.officer.prefetch_value(
+                    base,
+                    index,
+                    seed,
+                    officer_certificate,
+                    &mut self.orders[2],
+                    || engine_native::unit_history::officer_experience(memory, base, seed.pointer),
+                ),
+            };
+            let career = match career_quiet {
+                Some((_, value)) => Some(Ok(value)),
+                None => store.career.prefetch_value(
+                    base,
+                    index,
+                    seed,
+                    career_certificate,
+                    &mut self.orders[3],
+                    || engine_native::unit_history::career_counter(memory, seed.pointer),
+                ),
+            };
             self.rows.push(PreparedDivision {
                 experience_certificate,
                 progression_certificate,
@@ -208,9 +290,20 @@ impl PreparationPart {
                     officer_acquired,
                     career_acquired,
                 ],
-                history: store
-                    .history
-                    .prefetch_certificates(index, seed, &mut self.orders[4]),
+                history: observations
+                    .and_then(|observations| {
+                        store.history.prefetch_quiet(
+                            index,
+                            seed,
+                            &observations.history,
+                            &mut self.orders[4],
+                        )
+                    })
+                    .or_else(|| {
+                        store
+                            .history
+                            .prefetch_certificates(index, seed, &mut self.orders[4])
+                    }),
             });
         }
     }

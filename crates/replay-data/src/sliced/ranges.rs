@@ -1,7 +1,7 @@
 //! Certified key-range replacements, including insertions and deletions.
 use crate::{
     codec::{invalid_static as invalid, put_varint},
-    rows::RowCodec,
+    rows::{ChangedRows, RowCodec},
 };
 use engine_allocation as allocation;
 use std::{io, ops::Range};
@@ -20,41 +20,62 @@ pub(crate) fn fits<R: RowCodec>(_old: &[R], fresh: &[R], ranges: &[Range<u128>])
                 .is_some_and(|range| range.contains(&row.key()))
         })
 }
+/// Records in `changed` each written row (its index in `fresh` beside its baseline row's in `old`)
+/// and each deleted key, in key order.
 pub(crate) fn encode<R: RowCodec>(
     old: &[R],
     fresh: &[R],
     ranges: &[Range<u128>],
     output: &mut Vec<u8>,
     deleted: &mut Vec<u8>,
+    mut changed: Option<&mut ChangedRows>,
 ) -> io::Result<bool> {
     if !fits(old, fresh, ranges) {
         return Err(invalid("invalid certified key ranges"));
     }
+    u32::try_from(fresh.len()).map_err(|_| invalid("too many rows"))?;
+    u32::try_from(old.len()).map_err(|_| invalid("too many rows"))?;
     allocation::reserve(output, 4)?;
     let count_at = output.len();
     output.extend_from_slice(&0u32.to_le_bytes());
     let (mut count, mut gone_count, mut last, mut gone_last) = (0u32, 0u32, 0u128, 0u128);
     deleted.clear();
     for range in ranges {
-        let mut previous = old[span(old, range)].iter().peekable();
-        for row in &fresh[span(fresh, range)] {
-            while let Some(gone) = previous.next_if(|p| p.key() < row.key()) {
+        let (old_span, fresh_span) = (span(old, range), span(fresh, range));
+        let mut previous = old[old_span.clone()].iter().enumerate().peekable();
+        for (at, row) in fresh[fresh_span.clone()].iter().enumerate() {
+            while let Some((_, gone)) = previous.next_if(|(_, p)| p.key() < row.key()) {
                 allocation::reserve(deleted, 19)?;
                 put_varint(deleted, gone.key() - gone_last);
                 gone_last = gone.key();
                 gone_count += 1;
+                if let Some(changed) = changed.as_deref_mut() {
+                    changed.remove(gone.key());
+                }
             }
-            let baseline = previous.next_if(|p| p.key() == row.key());
-            if baseline != Some(row) && row.encode_change(baseline, last, output)? {
+            let baseline = previous.next_if(|(_, p)| p.key() == row.key());
+            if baseline.map(|(_, baseline)| baseline) != Some(row)
+                && row.encode_change(baseline.map(|(_, baseline)| baseline), last, output)?
+            {
                 count += 1;
                 last = row.key();
+                if let Some(changed) = changed.as_deref_mut() {
+                    // Both lengths were checked to fit 32 bits above.
+                    changed.pair(
+                        (fresh_span.start + at) as u32,
+                        baseline.map(|(before, _)| (old_span.start + before) as u32),
+                    );
+                }
             }
         }
-        for gone in previous {
+        for (_, gone) in previous {
             allocation::reserve(deleted, 19)?;
             put_varint(deleted, gone.key() - gone_last);
             gone_last = gone.key();
             gone_count += 1;
+            if let Some(changed) = changed.as_deref_mut() {
+                changed.remove(gone.key());
+            }
         }
     }
     output[count_at..count_at + 4].copy_from_slice(&count.to_le_bytes());

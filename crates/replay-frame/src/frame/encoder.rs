@@ -184,6 +184,10 @@ impl FrameEncoder {
     pub fn new() -> Self {
         Self::default()
     }
+    /// This encoder among every encoder of the process; a [`BaselineToken`] names it.
+    pub fn identity(&self) -> u64 {
+        self.identity
+    }
     fn needs_keyframe(&self, branch: BranchId, hour: Hour, force: bool) -> bool {
         force
             || self.state.branch != Some(branch)

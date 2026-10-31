@@ -117,8 +117,8 @@ impl Watches {
     pub const fn new() -> Self {
         Self {
             registry: WatchRegistry::marking(),
-            experience: WatchRegistry::new(),
-            progression: WatchRegistry::new(),
+            experience: WatchRegistry::marking(),
+            progression: WatchRegistry::marking(),
             calls: CallCounters::new(),
         }
     }
@@ -210,6 +210,13 @@ pub trait Changes: Sync {
     /// A receiver registered in that epoch and not visited since was touched
     /// by no observed writer. `None` when nothing taken certifies anything.
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
+    /// The armies whose stored XP, and whose previous template, a writer touched since the last take.
+    fn take_experience(&self, _visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        None
+    }
+    fn take_progression(&self, _visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        None
+    }
     /// Registers a receiver before its read; whether it is now watched in
     /// the epoch of the hour's take.
     fn register(&self, receiver: usize) -> bool;
@@ -230,6 +237,12 @@ impl Changes for Watches {
     }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         self.registry.take(visit)
+    }
+    fn take_experience(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        self.experience.take(visit)
+    }
+    fn take_progression(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        self.progression.take(visit)
     }
     fn register(&self, receiver: usize) -> bool {
         self.registry.register(receiver).is_some()
@@ -253,6 +266,12 @@ impl Changes for Observer {
     }
     fn take(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
         WATCHES.take(visit)
+    }
+    fn take_experience(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        WATCHES.experience.take(visit)
+    }
+    fn take_progression(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        WATCHES.progression.take(visit)
     }
     fn register(&self, receiver: usize) -> bool {
         WATCHES.register(receiver)
@@ -371,6 +390,7 @@ pub fn status() -> impl serde::Serialize {
         "unit_history": unit_history_changes::status(),
         "division_panel": collector_observers::division_panel_changes::status(),
         "experience_watches": WATCHES.experience.status(),
+        "observations": crate::observations::status(),
         "progression_watches": WATCHES.progression.status(),
         "progression_refusals": crate::status::map(PROGRESSION_FAILURE_NAMES.into_iter().zip(PROGRESSION_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),
         "experience_refusals": crate::status::map(EXPERIENCE_FAILURE_NAMES.into_iter().zip(EXPERIENCE_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),

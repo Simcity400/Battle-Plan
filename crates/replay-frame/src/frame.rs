@@ -677,6 +677,11 @@ impl BaselineToken {
     pub fn allows_row_updates(self) -> bool {
         self.row_updates
     }
+
+    /// The encoder, branch and committed hour of the baseline this token compares with.
+    pub fn baseline(self) -> (u64, BranchId, Hour) {
+        (self.encoder, self.branch, self.baseline)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

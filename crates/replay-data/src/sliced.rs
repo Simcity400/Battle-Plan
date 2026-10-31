@@ -39,7 +39,7 @@ use std::io;
 
 pub(crate) mod ranges;
 mod update;
-pub use update::SliceUpdate;
+pub use update::{SliceUpdate, takes_keyed_updates};
 
 pub trait SlicedRow: RowCodec {
     /// The slice owner: a native country ID, canonical country slot or native

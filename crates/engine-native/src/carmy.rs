@@ -1694,7 +1694,9 @@ pub struct StatusPacket {
     commander_index: Vec<usize>,
     /// Each division the latest [`Self::retreat_bans`] read, by id, with the index of
     /// its group in `commander_bans` (`usize::MAX` for an ungrouped division).
+    /// In census order; [`Self::commander_order`] finds a division.
     commander_divisions: Vec<(u64, usize)>,
+    commander_order: Vec<(u64, u32)>,
     /// Per-walk ban metadata. Only the exclusive bans pass uses it; the
     /// mutex permits immutable status preparation to be shared with parts.
     commander_memo: std::sync::Mutex<crate::modifier_definition::DefinitionMemo>,
@@ -1797,6 +1799,7 @@ impl StatusPacket {
             commander_bans: Vec::new(),
             commander_index: Vec::new(),
             commander_divisions: Vec::new(),
+            commander_order: Vec::new(),
             commander_memo: std::sync::Mutex::new(
                 crate::modifier_definition::DefinitionMemo::default(),
             ),
@@ -1865,6 +1868,7 @@ impl StatusPacket {
             commander_bans: crate::allocation::vec(capacities.units)?,
             commander_index: crate::allocation::filled(index_capacity, 0)?,
             commander_divisions: crate::allocation::vec(capacities.units)?,
+            commander_order: crate::allocation::vec(capacities.units)?,
             // The two retreat-ban keys; a vacant packet stays allocation-free.
             commander_memo: std::sync::Mutex::new(
                 crate::modifier_definition::DefinitionMemo::with_capacity(
@@ -1924,6 +1928,7 @@ impl StatusPacket {
         self.commander_bans.clear();
         self.commander_index.fill(0);
         self.commander_divisions.clear();
+        self.commander_order.clear();
         // Keep the memo's storage: a fresh memo would allocate on every walk.
         self.commander_memo
             .get_mut()
@@ -2070,6 +2075,7 @@ impl StatusPacket {
             + self.commander_bans.capacity()
                 * size_of::<Result<Option<crate::carmy_leader::RetreatBans>, &'static str>>()
             + self.commander_divisions.capacity() * size_of::<(u64, usize)>()
+            + self.commander_order.capacity() * size_of::<(u64, u32)>()
             + self
                 .commander_memo
                 .lock()
@@ -2389,12 +2395,34 @@ impl StatusPacket {
         division: u64,
         block: u8,
     ) -> Option<crate::carmy_leader::MovementEntries> {
-        let absent = [None; crate::carmy_leader::MOVEMENT_MODIFIER_KEYS.len()];
         let at = self
-            .commander_divisions
+            .commander_order
             .binary_search_by_key(&division, |entry| entry.0)
             .ok()?;
-        let bans = match self.commander_divisions[at].1 {
+        self.commander_movement_of(self.commander_order[at].1 as usize, block)
+    }
+
+    /// [`Self::commander_movement`] of the division at census `position`, found there without a
+    /// search when it is that division's.
+    pub fn commander_movement_at(
+        &self,
+        position: usize,
+        division: u64,
+        block: u8,
+    ) -> Option<crate::carmy_leader::MovementEntries> {
+        match self.commander_divisions.get(position) {
+            Some(&(at, _)) if at == division => self.commander_movement_of(position, block),
+            _ => self.commander_movement(division, block),
+        }
+    }
+
+    fn commander_movement_of(
+        &self,
+        at: usize,
+        block: u8,
+    ) -> Option<crate::carmy_leader::MovementEntries> {
+        let absent = [None; crate::carmy_leader::MOVEMENT_MODIFIER_KEYS.len()];
+        let bans = match self.commander_divisions.get(at)?.1 {
             usize::MAX => None,
             index => (*self.commander_bans.get(index)?).ok()?,
         };
@@ -2463,6 +2491,7 @@ impl StatusPacket {
             self.commander_bans.clear();
             self.commander_index.fill(0);
             self.commander_divisions.clear();
+        self.commander_order.clear();
             self.commander_memo
                 .get_mut()
                 .unwrap_or_else(|error| error.into_inner())
@@ -2507,8 +2536,13 @@ impl StatusPacket {
                     None => unread += 1,
                 }
             }
-            self.commander_divisions
-                .sort_unstable_by_key(|entry| entry.0);
+            self.commander_order.extend(
+                self.commander_divisions
+                    .iter()
+                    .enumerate()
+                    .map(|(at, entry)| (entry.0, at as u32)),
+            );
+            self.commander_order.sort_unstable_by_key(|entry| entry.0);
             Ok(if unread == 0 {
                 Outcome::Rows { len }
             } else {
@@ -2521,6 +2555,7 @@ impl StatusPacket {
         result.unwrap_or_else(|reason| {
             // A failed read keeps no partly filled, unsorted division list.
             self.commander_divisions.clear();
+        self.commander_order.clear();
             Outcome::Unavailable { reason }
         })
     }
@@ -2824,6 +2859,20 @@ impl StatusPacket {
             .get(unit.maxima)
             .map(|maxima| maxima.effective().0);
         self.exercise(inputs, maximum_hp).map(u8::from)
+    }
+
+    /// [`Self::status_index`] of the unit at census `position`, found there without a search
+    /// when it is that division's.
+    pub fn status_index_at(&self, position: usize, division: u64) -> Option<usize> {
+        if self.border_index.len() == self.units.len()
+            && self
+                .units
+                .get(position)
+                .is_some_and(|unit| unit.division == division)
+        {
+            return Some(position);
+        }
+        self.status_index(division)
     }
 
     /// The existing authenticated full-handle index, without another census.

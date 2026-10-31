@@ -864,6 +864,7 @@ impl Store {
                 seed,
                 reads,
                 prepared.and_then(|p| p.membership),
+                (!self.settling_owned).then_some(&boundary.operands),
             )?;
             let context_result = (|| {
                 let province = match prepared {
@@ -1268,8 +1269,10 @@ impl Store {
         base: usize,
         seed: &DivisionSeed,
     ) -> Result<(), &'static str> {
-        self.membership_prepared(memory, base, seed, None, None)
+        self.membership_prepared(memory, base, seed, None, None, None)
     }
+    /// `quiet`, the hour's take of pool writer marks, carries a held pool no writer touched
+    /// without querying its certificate.
     fn membership_prepared(
         &mut self,
         memory: &impl Memory,
@@ -1277,6 +1280,7 @@ impl Store {
         seed: &DivisionSeed,
         reads: Option<&NativeReads>,
         observation: Option<((u64, u64), usize)>,
+        quiet: Option<&crate::observations::Taken>,
     ) -> Result<(), &'static str> {
         let pool = seed
             .pointer
@@ -1285,7 +1289,15 @@ impl Store {
         let certificate = if self.settling_owned {
             observation.map(|(certificate, _)| certificate)
         } else {
-            operands::sequence(pool)
+            match self.pools.get(&seed.division).and_then(|held| {
+                held.certificate.filter(|certificate| {
+                    held.army == seed.pointer
+                        && quiet.is_some_and(|quiet| quiet.quiet(pool, certificate.0))
+                })
+            }) {
+                Some(certificate) => Some(certificate),
+                None => operands::sequence(pool),
+            }
         };
         if let Some(held) = self.pools.get_mut(&seed.division)
             && held.certificate == certificate

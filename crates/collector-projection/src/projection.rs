@@ -67,6 +67,10 @@ struct Ordering {
     held: Option<Held>,
     republished: u64,
     held_converted: u64,
+    /// Time spent projecting the table.
+    ns: u64,
+    /// A [`Ledgers`] of the table's comparison inputs.
+    ledger: Option<Box<dyn std::any::Any + Send>>,
 }
 
 pub struct ProjectionScratch {
@@ -90,6 +94,7 @@ struct OrderingStatus {
     updated: u64,
     updated_rows: u64,
     sorted: u64,
+    ns: u64,
     capacity_bytes: usize,
 }
 
@@ -109,6 +114,7 @@ impl ProjectionScratch {
             updated: order.updated,
             updated_rows: order.updated_rows,
             sorted: order.sorted,
+            ns: order.ns,
             capacity_bytes: order.indices.capacity() * std::mem::size_of::<usize>(),
         }
     }
@@ -117,6 +123,13 @@ impl ProjectionScratch {
     pub fn republish_counts(&self, table: TableId) -> [u64; 2] {
         let order = self.table(table);
         [order.republished, order.held_converted]
+    }
+
+    fn charge(&self, table: TableId, started: std::time::Instant) {
+        let mut order = self.table(table);
+        order.ns = order
+            .ns
+            .saturating_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
     }
 
     /// Withdraw `table`'s recorded capture: the next hour converts it.
@@ -135,6 +148,7 @@ impl ProjectionScratch {
                 "updated": order.updated,
                 "updated_rows": order.updated_rows,
                 "sorted": order.sorted,
+                "ns": order.ns,
                 "ordering_capacity_bytes": order.capacity_bytes,
             }))),
         })
@@ -242,6 +256,7 @@ impl<'a> Projection<'a> {
         &self,
         snapshot: &crate::certified::Snapshot<S::Row>,
     ) -> TableInput {
+        let started = std::time::Instant::now();
         let mut scratch = self.scratch.table(S::ID);
         let baseline = self
             .encoder
@@ -277,6 +292,23 @@ impl<'a> Projection<'a> {
             }
         };
         scratch.certified = Some((self.branch, self.hour, snapshot.revision));
+        match &input {
+            TableInput::ComparedEqual(_) => {
+                scratch.compared = scratch.compared.saturating_add(1);
+                scratch.reused = scratch.reused.saturating_add(1);
+            }
+            TableInput::SliceUpdate { update, .. } => {
+                scratch.compared = scratch.compared.saturating_add(1);
+                scratch.updated = scratch.updated.saturating_add(1);
+                scratch.updated_rows = scratch
+                    .updated_rows
+                    .saturating_add(update.rows().len() as u64);
+            }
+            _ => scratch.converted = scratch.converted.saturating_add(1),
+        }
+        scratch.ns = scratch
+            .ns
+            .saturating_add(started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64);
         input
     }
 
@@ -470,10 +502,160 @@ impl<'a> Projection<'a> {
     }
 }
 
+impl Projection<'_> {
+    /// [`Self::table`] for a table the encoder holds as a shared baseline. The rows merge by
+    /// key with the hour's continuous baseline: only the changed, new and removed rows form a
+    /// keyed update, whatever the membership change, and an hour with none compares equal.
+    /// Without that baseline the complete rows are shared; an owned baseline keeps the
+    /// positional comparison.
+    fn keyed_table<S: TableSchema, T>(
+        &mut self,
+        outcome: Outcome,
+        source: &[T],
+        key: impl Fn(&T) -> u128,
+        equal: impl Fn(&T, &S::Row) -> bool,
+        convert: impl Fn(&T) -> S::Row,
+    ) -> TableInput {
+        let shared = self
+            .encoder
+            .slice_baseline(S::ID, self.branch, self.hour, self.force)
+            .is_some();
+        if !shared
+            && self
+                .encoder
+                .comparison_baseline::<S>(self.branch, self.hour, self.force)
+                .is_some()
+        {
+            return self.table::<S, _>(outcome, source, key, equal, convert);
+        }
+        let Some(source) = source.get(..outcome.len()) else {
+            return unavailable("walker row count exceeds allocated buffer").into();
+        };
+        match outcome {
+            Outcome::Unavailable { reason } => return unavailable(reason).into(),
+            Outcome::Truncated { unread_rows: 0, .. } => {
+                return unavailable("walker marked truncation without a missing count").into();
+            }
+            _ => {}
+        }
+        let mut order = self.scratch.table(S::ID);
+        let order = &mut *order;
+        let natural = source.windows(2).all(|rows| key(&rows[0]) < key(&rows[1]));
+        if !natural {
+            if order.indices.len() != source.len() {
+                order.indices.clear();
+                if engine_allocation::reserve_exact(&mut order.indices, source.len()).is_err() {
+                    return unavailable("collector allocation failed").into();
+                }
+                order.indices.extend(0..source.len());
+            }
+            if !order
+                .indices
+                .windows(2)
+                .all(|pair| key(&source[pair[0]]) < key(&source[pair[1]]))
+            {
+                order
+                    .indices
+                    .sort_unstable_by_key(|index| key(&source[*index]));
+                order.sorted = order.sorted.saturating_add(1);
+            }
+            if order
+                .indices
+                .windows(2)
+                .any(|pair| key(&source[pair[0]]) == key(&source[pair[1]]))
+            {
+                return unavailable("walker produced duplicate engine ids").into();
+            }
+        }
+        let at = |index: usize| &source[if natural { index } else { order.indices[index] }];
+        if matches!(outcome, Outcome::Rows { .. })
+            && !replay_data::cadence::is_staggered(S::ID)
+            && let Some((token, previous)) =
+                self.encoder
+                    .slice_baseline(S::ID, self.branch, self.hour, self.force)
+            && let Some(previous) = previous.rows::<S>()
+        {
+            order.compared = order.compared.saturating_add(1);
+            let mut keys = Vec::new();
+            let mut rows = Vec::new();
+            let mut edit = |key: u128, row: Option<S::Row>| {
+                engine_allocation::reserve(&mut keys, 1)?;
+                keys.push(key);
+                if let Some(row) = row {
+                    engine_allocation::reserve(&mut rows, 1)?;
+                    rows.push(row);
+                }
+                Ok::<_, std::io::Error>(())
+            };
+            let (mut current, mut held) = (0, 0);
+            let merged = loop {
+                let row = (current < source.len()).then(|| at(current));
+                let result = match (row, previous.get(held)) {
+                    (None, None) => break Ok(()),
+                    (Some(row), Some(baseline)) if key(row) == baseline.key() => {
+                        current += 1;
+                        held += 1;
+                        if equal(row, baseline) {
+                            continue;
+                        }
+                        edit(key(row), Some(convert(row)))
+                    }
+                    (Some(row), baseline) if baseline.is_none_or(|b| key(row) < b.key()) => {
+                        current += 1;
+                        edit(key(row), Some(convert(row)))
+                    }
+                    (_, Some(baseline)) => {
+                        held += 1;
+                        edit(baseline.key(), None)
+                    }
+                    (Some(_), None) => unreachable!("an absent baseline row takes the insert arm"),
+                };
+                if result.is_err() {
+                    break result;
+                }
+            };
+            if merged.is_err() {
+                return unavailable("collector allocation failed").into();
+            }
+            if keys.is_empty() {
+                order.reused = order.reused.saturating_add(1);
+                return TableInput::ComparedEqual(token);
+            }
+            order.updated = order.updated.saturating_add(1);
+            order.updated_rows = order.updated_rows.saturating_add(rows.len() as u64);
+            return TableInput::SliceUpdate {
+                token,
+                update: std::sync::Arc::new(replay_data::sliced::SliceUpdate::keyed(
+                    keys,
+                    TableRows::from_rows::<S>(rows),
+                )),
+            };
+        }
+        let mut rows = Vec::new();
+        if engine_allocation::reserve_exact(&mut rows, source.len()).is_err() {
+            return unavailable("collector allocation failed").into();
+        }
+        rows.extend((0..source.len()).map(|index| convert(at(index))));
+        let rows = TableRows::from_rows::<S>(rows);
+        order.converted = order.converted.saturating_add(1);
+        match outcome {
+            Outcome::Truncated { unread_rows, .. } => TableView::Truncated {
+                rows,
+                missing: unread_rows,
+            }
+            .into(),
+            // A shared complete baseline is what the next hour's keyed merge updates.
+            _ => TableInput::SharedComplete(std::sync::Arc::new(rows)),
+        }
+    }
+}
+
 /// `key` must be the replay key and `equal` must compare every replay field,
 /// a field with a display step ([`replay_data::display`]) at that step, since the
 /// baseline holds it rounded. All source and arena checks are performed before
-/// calling this function. Converted rows are rounded to their display steps.
+/// calling this function. Converted rows are rounded to their display steps. A table that
+/// takes keyed updates ([`replay_data::sliced::takes_keyed_updates`]) merges by key
+/// ([`Projection::keyed_table`]).
 pub fn project_table<S: TableSchema, T>(
     projection: Option<&mut Projection<'_>>,
     outcome: Outcome,
@@ -483,10 +665,353 @@ pub fn project_table<S: TableSchema, T>(
     convert: impl Fn(&T) -> S::Row,
 ) -> TableInput {
     let convert = |native: &T| displayed::<S>(convert(native));
-    match projection {
-        Some(projection) => projection.table::<S, _>(outcome, source, key, equal, convert),
-        None => table::<S, _>(outcome, source, convert).into(),
+    let Some(projection) = projection else {
+        return table::<S, _>(outcome, source, convert).into();
+    };
+    let started = std::time::Instant::now();
+    let input = if replay_data::sliced::takes_keyed_updates(S::ID) {
+        projection.keyed_table::<S, _>(outcome, source, key, equal, convert)
+    } else {
+        projection.table::<S, _>(outcome, source, key, equal, convert)
+    };
+    projection.scratch.charge(S::ID, started);
+    input
+}
+
+/// The variable-length comparison inputs of one row, appended to its table's ledger.
+pub struct Record<'a> {
+    bytes: &'a mut Vec<u8>,
+    failed: bool,
+}
+
+impl Record<'_> {
+    /// Room for `len` more bytes; false once any reservation failed.
+    fn room(&mut self, len: usize) -> bool {
+        self.failed = self.failed || self.bytes.try_reserve(len).is_err();
+        !self.failed
     }
+
+    /// A length-prefixed run of `len` values of `width` bytes each, written by `each`.
+    fn run(&mut self, len: Option<usize>, width: usize, each: impl FnOnce(&mut Vec<u8>)) {
+        let Some(len) = len else {
+            if self.room(1) {
+                self.bytes.push(0);
+            }
+            return;
+        };
+        if self.room(9 + len * width) {
+            self.bytes.push(1);
+            self.bytes.extend_from_slice(&(len as u64).to_le_bytes());
+            each(&mut *self.bytes);
+        }
+    }
+
+    /// A run of bytes, length-prefixed; `None` differs from every run.
+    pub fn bytes(&mut self, data: Option<&[u8]>) {
+        self.run(data.map(<[u8]>::len), 1, |out| out.extend_from_slice(data.unwrap_or_default()));
+    }
+
+    /// One word.
+    pub fn word(&mut self, value: i64) {
+        if self.room(8) {
+            self.bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// A run of ids, length-prefixed; `None` differs from every run.
+    pub fn ids(&mut self, data: Option<&[u32]>) {
+        self.run(data.map(<[u32]>::len), 4, |out| {
+            for value in data.unwrap_or_default() {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        });
+    }
+
+    /// A run of words, length-prefixed; `None` differs from every run.
+    pub fn words(&mut self, data: Option<&[i64]>) {
+        self.run(data.map(<[i64]>::len), 8, |out| {
+            for value in data.unwrap_or_default() {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        });
+    }
+}
+
+/// A keyed table's comparison inputs, in the source order of the rows they produced.
+struct Ledger<C> {
+    /// Encoder, branch and hour of the committed rows these inputs produced.
+    stamp: Option<(u64, BranchId, Hour)>,
+    keys: Vec<u128>,
+    /// `None`: a row that never compares equal.
+    fixed: Vec<Option<C>>,
+    ends: Vec<usize>,
+    bytes: Vec<u8>,
+}
+
+impl<C> Default for Ledger<C> {
+    fn default() -> Self {
+        Self {
+            stamp: None,
+            keys: Vec::new(),
+            fixed: Vec::new(),
+            ends: Vec::new(),
+            bytes: Vec::new(),
+        }
+    }
+}
+
+impl<C> Ledger<C> {
+    fn clear(&mut self) {
+        self.stamp = None;
+        self.keys.clear();
+        self.fixed.clear();
+        self.ends.clear();
+        self.bytes.clear();
+    }
+
+    fn span(&self, at: usize) -> &[u8] {
+        let start = at.checked_sub(1).map_or(0, |before| self.ends[before]);
+        &self.bytes[start..self.ends[at]]
+    }
+}
+
+/// The ledger of the committed rows and the one the hour fills.
+struct Ledgers<C> {
+    held: Ledger<C>,
+    next: Ledger<C>,
+}
+
+impl<C> Default for Ledgers<C> {
+    fn default() -> Self {
+        Self {
+            held: Ledger::default(),
+            next: Ledger::default(),
+        }
+    }
+}
+
+impl Projection<'_> {
+    /// [`Self::keyed_table`] comparing each row's inputs, in source order, with those that
+    /// produced the committed baseline. Rows whose inputs are unchanged are neither compared with
+    /// the baseline nor converted.
+    fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
+        &mut self,
+        outcome: Outcome,
+        source: &[T],
+        key: impl Fn(&T) -> u128,
+        record: impl Fn(usize, &T, &mut Record<'_>) -> Option<C>,
+        convert: impl Fn(&T) -> S::Row,
+    ) -> TableInput {
+        let held: Option<Box<Ledgers<C>>> = self
+            .scratch
+            .table(S::ID)
+            .ledger
+            .take()
+            .and_then(|ledger| ledger.downcast().ok());
+        let encoder = self.encoder;
+        let shared = encoder.slice_baseline(S::ID, self.branch, self.hour, self.force);
+        let complete = matches!(outcome, Outcome::Rows { .. })
+            && !replay_data::cadence::is_staggered(S::ID)
+            && source.len() >= outcome.len();
+        if !complete
+            || (shared.is_none()
+                && encoder
+                    .comparison_baseline::<S>(self.branch, self.hour, self.force)
+                    .is_some())
+        {
+            // Nothing to hold: a refusal, a truncation, or an owned baseline (fixtures seeding
+            // through a decoded frame) that keeps the positional comparison.
+            return self.keyed_table::<S, _>(
+                outcome,
+                source,
+                &key,
+                |row, previous| convert(row) == *previous,
+                &convert,
+            );
+        }
+        let source = &source[..outcome.len()];
+        let mut ledgers = match held {
+            Some(ledgers) => ledgers,
+            None => match engine_allocation::boxed(Ledgers::default()) {
+                Ok(ledgers) => ledgers,
+                Err(_) => return unavailable("collector allocation failed").into(),
+            },
+        };
+        let next = &mut ledgers.next;
+        next.clear();
+        let reserved = engine_allocation::reserve(&mut next.keys, source.len())
+            .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
+            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()));
+        if reserved.is_err() {
+            return unavailable("collector allocation failed").into();
+        }
+        for (at, row) in source.iter().enumerate() {
+            let mut writer = Record {
+                bytes: &mut next.bytes,
+                failed: false,
+            };
+            let fixed = record(at, row, &mut writer);
+            if writer.failed {
+                return unavailable("collector allocation failed").into();
+            }
+            next.keys.push(key(row));
+            next.fixed.push(fixed);
+            next.ends.push(next.bytes.len());
+        }
+        let input = match shared {
+            Some((token, previous))
+                if ledgers.held.stamp == Some(token.baseline())
+                    && previous.len() == ledgers.held.keys.len() =>
+            {
+                match ledger_update::<S, T, C>(&ledgers.held, &ledgers.next, source, &convert) {
+                    Ok(None) => TableInput::ComparedEqual(token),
+                    Ok(Some(update)) => TableInput::SliceUpdate {
+                        token,
+                        update: std::sync::Arc::new(update),
+                    },
+                    Err(reason) => return unavailable(reason).into(),
+                }
+            }
+            // No ledger of this baseline: its rows merge with the converted rows.
+            _ => self.keyed_table::<S, _>(
+                outcome,
+                source,
+                &key,
+                |row, previous| convert(row) == *previous,
+                &convert,
+            ),
+        };
+        if matches!(
+            input,
+            TableInput::ComparedEqual(_)
+                | TableInput::SliceUpdate { .. }
+                | TableInput::SharedComplete(_)
+        ) {
+            let Ledgers { held, next } = &mut *ledgers;
+            std::mem::swap(held, next);
+            held.stamp = Some((encoder.identity(), self.branch, self.hour));
+            let mut order = self.scratch.table(S::ID);
+            match &input {
+                TableInput::ComparedEqual(_) => {
+                    order.compared = order.compared.saturating_add(1);
+                    order.reused = order.reused.saturating_add(1);
+                }
+                TableInput::SliceUpdate { update, .. } => {
+                    order.compared = order.compared.saturating_add(1);
+                    order.updated = order.updated.saturating_add(1);
+                    order.updated_rows = order
+                        .updated_rows
+                        .saturating_add(update.rows().len() as u64);
+                }
+                _ => {}
+            }
+            order.ledger = Some(ledgers);
+        }
+        input
+    }
+}
+
+/// The keyed update from the rows `held` describes to those of `next`, `None` when no row
+/// changed. Row keys and their order follow `next`.
+fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
+    held: &Ledger<C>,
+    next: &Ledger<C>,
+    source: &[T],
+    convert: impl Fn(&T) -> S::Row,
+) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
+    const DUPLICATE: &str = "walker produced duplicate engine ids";
+    const ALLOCATION: &str = "collector allocation failed";
+    let mut seen = Vec::new();
+    engine_allocation::reserve(&mut seen, held.keys.len()).map_err(|_| ALLOCATION)?;
+    seen.resize(held.keys.len(), false);
+    let mut index: Option<std::collections::HashMap<u128, usize>> = None;
+    let mut added = std::collections::HashSet::new();
+    // (key, source position of its new row; None removes it)
+    let mut edits: Vec<(u128, Option<usize>)> = Vec::new();
+    let mut matched = 0;
+    for (at, &key) in next.keys.iter().enumerate() {
+        let old = if held.keys.get(at) == Some(&key) {
+            Some(at)
+        } else {
+            if index.is_none() {
+                let mut held_at = std::collections::HashMap::new();
+                engine_allocation::reserve_map(&mut held_at, held.keys.len())
+                    .map_err(|_| ALLOCATION)?;
+                held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
+                index = Some(held_at);
+            }
+            index.as_ref().and_then(|index| index.get(&key).copied())
+        };
+        match old {
+            Some(old) => {
+                if std::mem::replace(&mut seen[old], true) {
+                    return Err(DUPLICATE);
+                }
+                matched += 1;
+                if next.fixed[at].is_some()
+                    && next.fixed[at] == held.fixed[old]
+                    && next.span(at) == held.span(old)
+                {
+                    continue;
+                }
+            }
+            None => {
+                engine_allocation::reserve_set(&mut added, 1).map_err(|_| ALLOCATION)?;
+                if !added.insert(key) {
+                    return Err(DUPLICATE);
+                }
+            }
+        }
+        engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+        edits.push((key, Some(at)));
+    }
+    if matched < held.keys.len() {
+        for (old, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
+            engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+            edits.push((held.keys[old], None));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    edits.sort_unstable_by_key(|edit| edit.0);
+    let mut keys = Vec::new();
+    let mut rows = Vec::new();
+    engine_allocation::reserve(&mut keys, edits.len()).map_err(|_| ALLOCATION)?;
+    engine_allocation::reserve(&mut rows, edits.len()).map_err(|_| ALLOCATION)?;
+    for (key, at) in edits {
+        keys.push(key);
+        if let Some(at) = at {
+            rows.push(convert(&source[at]));
+        }
+    }
+    Ok(Some(replay_data::sliced::SliceUpdate::keyed(
+        keys,
+        TableRows::from_rows::<S>(rows),
+    )))
+}
+
+/// [`project_table`] for a keyed table ([`replay_data::sliced::takes_keyed_updates`]) whose
+/// rows compare by their inputs: `record` returns and writes every value `convert` reads for the
+/// row at that source position (`None` when the row must always convert), the same inputs
+/// giving the same row.
+pub fn ledger_table<S: TableSchema, T, C: Copy + PartialEq + Send + 'static>(
+    projection: Option<&mut Projection<'_>>,
+    outcome: Outcome,
+    source: &[T],
+    key: impl Fn(&T) -> u128,
+    record: impl Fn(usize, &T, &mut Record<'_>) -> Option<C>,
+    convert: impl Fn(&T) -> S::Row,
+) -> TableInput {
+    debug_assert!(replay_data::sliced::takes_keyed_updates(S::ID));
+    let convert = |native: &T| displayed::<S>(convert(native));
+    let Some(projection) = projection else {
+        return table::<S, _>(outcome, source, convert).into();
+    };
+    let started = std::time::Instant::now();
+    let input = projection.ledger_table::<S, T, C>(outcome, source, key, record, convert);
+    projection.scratch.charge(S::ID, started);
+    input
 }
 
 /// [`Projection::republish`], else `convert`, recorded by [`Projection::retain`].

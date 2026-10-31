@@ -296,6 +296,11 @@ impl PresentationInputs {
                 hook();
             }
             request.army_stats = store.take();
+            // One take of every carry registry for the hour, before the preparation ranges read
+            // what it certifies.
+            if let Some(store) = request.army_stats.as_deref_mut() {
+                store.observations.take(&crate::army_stat_changes::Observer);
+            }
             let end = sampling::qpc();
             state.trace.as_mut().unwrap().store_end_qpc = end;
             state.store_wait_ticks = end.saturating_sub(begin).max(0) as u64;

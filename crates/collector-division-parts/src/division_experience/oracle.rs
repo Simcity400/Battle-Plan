@@ -111,6 +111,7 @@ fn shifted_scalar_ranges_match_the_original_lookup_and_faults() {
                 army: index * 0x1000,
                 certificate: (1, index as u64 % 3),
                 value: (index as i64).wrapping_mul(i64::MAX),
+                current: true,
             })
             .collect(),
         daily,

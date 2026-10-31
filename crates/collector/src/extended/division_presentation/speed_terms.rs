@@ -280,7 +280,9 @@ pub(super) struct SpeedTerms {
     outcomes: [Outcome; N],
     /// DivisionStatus.combat_movement by division, ascending, when
     /// `combat_captured`.
+    /// In census order; [`Self::combat_order`] finds a division.
     combat: Vec<(u64, Option<Option<i64>>)>,
+    combat_order: Vec<(u64, u32)>,
     combat_captured: bool,
     combat_demand: Vec<(u64, Result<bool, &'static str>)>,
     movers: Vec<Mover>,
@@ -326,6 +328,7 @@ impl Default for SpeedTerms {
             transport: Vec::new(),
             outcomes: [UNCAPTURED; N],
             combat: Vec::new(),
+            combat_order: Vec::new(),
             combat_captured: false,
             combat_demand: Vec::new(),
             movers: Vec::new(),
@@ -391,6 +394,7 @@ impl SpeedTerms {
             + self.rivers.capacity() * size_of::<RiverRelationRow>()
             + self.transport.capacity() * size_of::<OwnerTransportSpeedRow>()
             + self.combat.capacity() * size_of::<(u64, Option<Option<i64>>)>()
+            + self.combat_order.capacity() * size_of::<(u64, u32)>()
             + self.movers.capacity() * size_of::<Mover>()
             + self.combat_demand.capacity() * size_of::<(u64, Result<bool, &'static str>)>()
             + self.route.capacity() * size_of::<Result<u32, &'static str>>()
@@ -431,6 +435,7 @@ impl SpeedTerms {
         self.transport.clear();
         self.outcomes = [UNCAPTURED; N];
         self.combat.clear();
+        self.combat_order.clear();
         self.combat_captured = false;
     }
 
@@ -449,7 +454,35 @@ impl SpeedTerms {
         if !self.combat_captured {
             return None;
         }
-        memo(&self.combat, division).flatten()
+        let at = self
+            .combat_order
+            .binary_search_by_key(&division, |entry| entry.0)
+            .ok()?;
+        self.combat.get(self.combat_order[at].1 as usize)?.1
+    }
+
+    /// [`Self::combat_movement`] of the division at census `position`, found there without a
+    /// search when it is that division's.
+    pub(super) fn combat_movement_at(&self, position: usize, division: u64) -> Option<Option<i64>> {
+        if !self.combat_captured {
+            return None;
+        }
+        match self.combat.get(position) {
+            Some(&(at, value)) if at == division => value,
+            _ => self.combat_movement(division),
+        }
+    }
+
+    /// Orders [`Self::combat`] for lookups by division, within the capacity it was captured with.
+    fn index_combat(&mut self) {
+        self.combat_order.clear();
+        self.combat_order.extend(
+            self.combat
+                .iter()
+                .enumerate()
+                .map(|(at, entry)| (entry.0, at as u32)),
+        );
+        self.combat_order.sort_unstable_by_key(|entry| entry.0);
     }
 
     pub(super) fn outcomes(&self) -> [Outcome; N] {
@@ -571,7 +604,7 @@ impl SpeedTerms {
                 self.finish(Err(reason), slot);
             }
         }
-        self.combat.sort_unstable_by_key(|entry| entry.0);
+        self.index_combat();
         self.speed_cache.finish();
         self.publish();
         self.held.return_complete();
@@ -599,6 +632,7 @@ impl SpeedTerms {
         let mut ticks = [0_u64; N];
         self.counts = [[0; 3]; FAMILIES];
         self.combat.clear();
+        self.combat_order.clear();
         self.combat_captured = false;
         let census = match outcome {
             Outcome::Rows { len } => rows.get(..len).ok_or("division census outside its rows"),
@@ -631,6 +665,7 @@ impl SpeedTerms {
             self.combat_captured = self.capture_combat(memory, base, seeds).is_ok();
             if !self.combat_captured {
                 self.combat.clear();
+        self.combat_order.clear();
                 self.counts[COMBAT] = [0, 0, seeds.len() as u64];
             }
         }
@@ -737,6 +772,7 @@ impl SpeedTerms {
         self.combat_index.clear();
         self.attackers.clear();
         reserve(&mut self.combat, seeds.len())?;
+        reserve(&mut self.combat_order, seeds.len())?;
         for seed in seeds {
             let value = (|| -> Result<Option<i64>, &'static str> {
                 let Some(list) = list(seed)? else {
@@ -792,7 +828,7 @@ impl SpeedTerms {
             self.combat.push((seed.division, value.ok()));
         }
         if !self.settle_pending {
-            self.combat.sort_unstable_by_key(|entry| entry.0);
+            self.index_combat();
         }
         Ok(())
     }

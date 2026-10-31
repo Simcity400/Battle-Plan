@@ -8,7 +8,7 @@
 //! DivisionStatus.combat_movement) run beside the status pass ([`speed_terms`]).
 use super::production::Sources;
 use crate::{
-    projection::{Projection, project_table, scalar_table},
+    projection::{Projection, ledger_table, scalar_table},
     sampling::qpc,
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
@@ -151,8 +151,7 @@ pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
     })
 }
 
-// One scalar projection for the unchanged-row comparison and the owned row.
-// Stepped fields are rounded to their display steps (replay_data::display), as the
+// The status row's scalar fields. Stepped fields are rounded to their display steps (replay_data::display), as the
 // baseline holds them.
 macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
@@ -176,12 +175,6 @@ macro_rules! status_fields {
                 | (u8::from($row.movement_organisation.is_some_and(|pair| pair.is_some())) * DivisionStatusRow::MOVE_LOW_ORGANISATION)
                 | (u8::from($row.movement_organisation.is_none()) * DivisionStatusRow::MOVE_ORGANISATION_REFUSED),
         })
-    };
-}
-
-macro_rules! compare_status_fields {
-    ([$previous:expr], {$first:ident: $initial:expr, $($field:ident: $value:expr),* $(,)?}) => {
-        $initial == $previous.$first $(&& $value == $previous.$field)*
     };
 }
 
@@ -240,6 +233,30 @@ macro_rules! project_status_fields {
             ),
         }
     }};
+}
+
+/// The fixed inputs of a DivisionStatus row besides its name, supply origin and attack words.
+#[derive(Clone, Copy, PartialEq)]
+struct StatusInputs {
+    /// As the row publishes it: arena positions cleared, stepped words rounded, unpublished
+    /// fields cleared.
+    row: carmy::StatusRow,
+    exact_supply: Option<[i64; 2]>,
+    supply_grace: Option<i32>,
+    supply: Option<engine_native::cunit_supply_inputs::Inputs>,
+    dig_in: Option<i64>,
+    commander: Option<[Option<i64>; 6]>,
+    experience: Option<i64>,
+    pending_template: Option<u64>,
+    officer: Option<i64>,
+    career: Option<i32>,
+    panel_source: Option<[u64; 3]>,
+    combat_movement: Option<Option<i64>>,
+}
+
+/// Where `row`, an element of `rows`, sits in it.
+fn position<T>(rows: &[T], row: &T) -> usize {
+    (row as *const T as usize - rows.as_ptr() as usize) / std::mem::size_of::<T>().max(1)
 }
 
 /// The recorded form of what the camouflage category selector takes from the division; a refused
@@ -1004,7 +1021,7 @@ impl Captured {
         self.attack.reset();
         self.attack.history = None;
         self.attack.sources = None;
-        self.attack.selected_sources.clear();
+        self.attack.clear_selected_sources();
         self.phase_ticks = [0; PHASES];
         self.order_transport.reset();
         // Engine acquisition resets each owned packet in its measured scope.
@@ -1903,7 +1920,7 @@ impl Captured {
         self.attack_ready = false;
         self.attack.history = Some(Err(reason));
         self.attack.sources = Some(Err(reason));
-        self.attack.selected_sources.clear();
+        self.attack.clear_selected_sources();
         self.movement.outcome = Outcome::Unavailable { reason };
         self.status.outcome = Outcome::Unavailable { reason };
         self.bans.outcome = Outcome::Unavailable { reason };
@@ -2071,14 +2088,12 @@ impl Captured {
                 self.phase_ticks[6..10].copy_from_slice(&store.sources.phase_ticks());
                 if result.is_err() {
                     store.sources.forget();
-                    self.attack.selected_sources.clear();
+                    self.attack.clear_selected_sources();
                 }
                 result
             })
         };
-        self.attack
-            .selected_sources
-            .sort_unstable_by_key(|row| row.0);
+        self.attack.index_selected_sources();
         let sources_finished = qpc();
         self.phase_ticks[3] = sources_finished.saturating_sub(start).max(0) as u64;
         if ordered_sources {
@@ -2292,13 +2307,11 @@ impl Captured {
                     .find(|reads| reads.has_variant(handle, pointer))
             },
         ));
-        self.attack
-            .selected_sources
-            .sort_unstable_by_key(|row| row.0);
+        self.attack.index_selected_sources();
         self.phase_ticks[6..10].copy_from_slice(&store.sources.phase_ticks());
         if self.attack.sources.as_ref().is_some_and(Result::is_err) {
             store.sources.forget();
-            self.attack.selected_sources.clear();
+            self.attack.clear_selected_sources();
         }
     }
 
@@ -2580,94 +2593,75 @@ impl Captured {
             };
         }
         let status_outcome = status;
-        let status = project_table::<tables::DivisionStatus, _>(
+        let status = ledger_table::<tables::DivisionStatus, _, StatusInputs>(
             projection.as_deref_mut(),
             status,
             &self.status.rows,
             |r| u128::from(r.division),
-            |r, previous| {
-                let (Ok(border), Ok(maximum), Ok(remaining), Ok(naming)) = (
-                    previous
-                        .border_combat_stats
-                        .require("DivisionStatus.border_combat_stats"),
-                    previous
-                        .supply_grace_maximum
-                        .require("DivisionStatus.supply_grace_maximum"),
-                    previous
-                        .supply_grace_remaining
-                        .require("DivisionStatus.supply_grace_remaining"),
-                    previous.naming.require("DivisionStatus.naming"),
-                ) else {
-                    return false;
-                };
-                if !status_fields!(r, compare_status_fields, [previous])
-                    || previous.attack != Recorded::Value(Witnessed(None))
-                    || self.attack.has_witness(r.division)
-                {
-                    return false;
-                }
-                let attack = self.attack.view(r.division);
-                let index = self.status_index(r.division);
+            |at, r, record| {
+                let attack = self.attack.view_at(at, r.division);
+                let index = self.status_index_at(at, r.division);
                 let supply = self.supply_sample_at(r, index);
-                let commander = self.commander_modifiers(r.division, index);
-                Recorded::Value(attack.experience()) == previous.experience
-                    && Recorded::Value(attack.pending_template()) == previous.pending_template
-                    && Recorded::Value(attack.officer()) == previous.officer_experience
-                    && Recorded::Value(attack.career()) == previous.career_counter
-                    && Recorded::Value(attack.panel_source()) == previous.panel_source
-                    && attack.same(&previous.attack_stats)
-                    && attack.same_movement(&previous.movement_stats)
-                    && Recorded::Value(r.weather_factor) == previous.weather_factor
-                    && Recorded::Value(r.out_of_supply_days) == previous.out_of_supply_days
-                    && DivisionStatusRow::exact_supply(
+                record.bytes(r.naming.and_then(|n| name_span(n.custom)));
+                record.bytes(r.naming.and_then(|n| name_span(n.group)));
+                record.bytes(cached_name(r, index));
+                match supply.2 {
+                    Some(origins) => {
+                        record.word(origins.len() as i64);
+                        for origin in origins {
+                            record.word(i64::from(origin.province));
+                            record.word(origin.requested);
+                            record.word(origin.received);
+                        }
+                    }
+                    None => record.word(-1),
+                }
+                attack.record(record);
+                // A witnessed row publishes the hour's operands.
+                if self.attack.has_witness(r.division) {
+                    return None;
+                }
+                let mut row = *r;
+                row.naming = r.naming.map(|naming| cname_group_member::Inputs {
+                    custom: (0, naming.custom.1),
+                    group: (0, naming.group.1),
+                    ..naming
+                });
+                row.supply_origins_start = 0;
+                row.maximum_hit_points = DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_hit_points);
+                row.maximum_organisation =
+                    DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_organisation);
+                row.supply_ratio = DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio);
+                row.supply_grace_remaining = DivisionStatusRow::displayed_grace(
+                    r.supply_grace_remaining,
+                    self.supply_grace,
+                );
+                row.attrition = 0;
+                row.supply = None;
+                row.supply_failure = None;
+                Some(StatusInputs {
+                    row,
+                    exact_supply: DivisionStatusRow::exact_supply(
                         r.out_of_supply_days,
                         r.supply_ratio,
                         r.supply_grace_remaining,
-                    ) == previous.supply_exact()
-                    && matches!(previous.supply_ratio_exact, Recorded::Value(_))
-                    && previous.attrition_inputs == Recorded::Value(Retired)
-                    && super::supply_inputs::matches_division(supply.0, supply.2, &previous.supply)
-                    && Recorded::Value(r.country_ordinal) == previous.country_ordinal
-                    && Recorded::Value(r.invalid_orders_reason) == previous.invalid_orders_reason
-                    && Recorded::Value(self.dig_in.factor(r.division, index))
-                        == previous.dig_in_factor
-                    && Recorded::Value(commander.map(|entries| {
-                        [entries[0], entries[1], entries[2], entries[4], entries[5]]
-                    })) == previous.commander_modifiers
-                    && Recorded::Value(commander.and_then(|entries| entries[3]))
-                        == previous.commander_width_factor
-                    && Recorded::Value(self.speed_terms.combat_movement(r.division))
-                        == previous.combat_movement
-                    && match &previous.name {
-                        Recorded::Value(name) => cached_name(r, index) == name.as_deref(),
-                        Recorded::NotRecorded => false,
-                    }
-                    && r.border_combat_stats == *border
-                    && r.supply_grace_maximum == *maximum
-                    && DivisionStatusRow::displayed_grace(
-                        r.supply_grace_remaining,
-                        self.supply_grace,
-                    ) == *remaining
-                    && Recorded::Value(camouflage(r.camouflage)) == previous.camouflage
-                    && previous.acclimatization_maximum.is_none()
-                    && previous.acclimatization.is_empty()
-                    && match (r.naming, naming) {
-                        (None, None) => true,
-                        (Some(n), Some(previous)) => {
-                            n.kind == previous.kind
-                                && n.order == previous.order
-                                && n.ordered == previous.ordered
-                                && n.programmatic == previous.programmatic
-                                && name_span(n.custom).unwrap() == previous.custom.as_slice()
-                                && name_span(n.group).unwrap() == previous.group.as_slice()
-                        }
-                        _ => false,
-                    }
-                    && Recorded::Value(name_template(r.naming)) == previous.name_template
+                    ),
+                    supply_grace: self.supply_grace,
+                    supply: supply.0,
+                    dig_in: self.dig_in.factor(r.division, index),
+                    commander: self.commander_modifiers(r.division, index),
+                    experience: attack.experience(),
+                    pending_template: attack.pending_template(),
+                    officer: attack.officer(),
+                    career: attack.career(),
+                    panel_source: attack.panel_source(),
+                    combat_movement: self.speed_terms.combat_movement_at(at, r.division),
+                })
             },
             |r| {
-                let attack = self.attack.view(r.division);
-                let index = self.status_index(r.division);
+                let at = position(&self.status.rows, r);
+                let attack = self.attack.view_at(at, r.division);
+                let index = self.status_index_at(at, r.division);
                 let supply = self.supply_sample_at(r, index);
                 status_fields!(
                     r,
@@ -2695,18 +2689,20 @@ impl Captured {
                         attack.officer(),
                         attack.career(),
                         attack.panel_source(),
-                        self.speed_terms.combat_movement(r.division),
+                        self.speed_terms.combat_movement_at(at, r.division),
                     ],
                 )
             },
         );
-        let panel = scalar_table::<tables::DivisionPanelStats, _>(
+        let panel = ledger_table::<tables::DivisionPanelStats, _, _>(
             projection.as_deref_mut(),
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
+            |at, r, _| Some(self.attack.view_at(at, r.division).panel()),
             |r| {
-                let words = self.attack.panel(r.division);
+                let at = position(&self.status.rows, r);
+                let words = self.attack.view_at(at, r.division).panel();
                 DivisionPanelStatsRow {
                     division: r.division,
                     panel_stats: std::array::from_fn(|at| words[at]),
@@ -2768,46 +2764,31 @@ impl Captured {
             ];
         }
         [
-            project_table::<tables::DivisionMovement, _>(
+            ledger_table::<tables::DivisionMovement, _, _>(
                 projection,
                 movement,
                 &self.movement.rows,
                 |r| u128::from(r.division),
-                |r, previous| {
-                    previous.selected == Recorded::Value(Retired)
-                        && r.division == previous.division
-                        && super::unit_combat_references::matches(
-                            request,
-                            self.movement_packet.combat_references(r),
-                            r.combat_count,
-                            &previous.combat_references,
-                        )
-                        && previous.fresh == Recorded::Value(Retired)
-                        && Recorded::Value(r.base_speed) == previous.base_speed
-                        && Recorded::Value(r.fuel) == previous.fuel
-                        && Recorded::Value(r.transport_speed) == previous.transport_speed
-                        && r.source == previous.source
-                        && r.target == previous.target
-                        && r.numerator == previous.numerator
-                        && r.retreat == previous.retreat
-                        && r.strategic_redeployment == previous.strategic_redeployment
-                        && replay_data::rows::Recorded::Value(r.strategic_action)
-                            == previous.strategic_action
-                        && Recorded::Value(r.withdrawal) == previous.withdrawal
-                        && Recorded::Value(r.movement_priority) == previous.movement_priority
-                        && Recorded::Value(self.order_transport(r.division))
-                            == previous.order_transport
-                        && previous.transport == Recorded::Value(Retired)
-                        && r.naval_transfer == previous.naval_transfer
-                        && r.combat_count == previous.combat_count
-                        && r.path_total == previous.path_total
-                        && span(r.path_start, r.path_len).unwrap() == previous.path.as_slice()
-                        && r.combat_role == previous.combat_role
-                        && r.combat_province == previous.combat_province
-                        && r.map_entity == previous.map_entity
-                        && r.alternate_total == previous.alternate_total
-                        && span(r.alternate_start, r.alternate_len).unwrap()
-                            == previous.alternate_path.as_slice()
+                |_, r, record| {
+                    record.ids(span(r.path_start, r.path_len));
+                    record.ids(span(r.alternate_start, r.alternate_len));
+                    match self.movement_packet.combat_references(r) {
+                        Some(references) => {
+                            record.word(references.len() as i64);
+                            for reference in references {
+                                record.word(reference.combat as i64);
+                                record.word(i64::from(reference.kind));
+                            }
+                        }
+                        None => record.word(-1),
+                    }
+                    let row = carmy::MovementRow {
+                        path_start: 0,
+                        alternate_start: 0,
+                        combat_references: r.combat_references.map(|(_, count)| (0, count)),
+                        ..*r
+                    };
+                    Some((row, self.order_transport(r.division), request.is_some()))
                 },
                 |r| DivisionMovementRow {
                     selected: Recorded::Value(Retired),
@@ -2878,12 +2859,17 @@ impl Captured {
     /// same commander ([`carmy::StatusPacket::commander_movement`]).
     fn commander_modifiers(&self, division: u64, index: usize) -> Option<[Option<i64>; 6]> {
         let block = self.dig_in.commander_block(division, index)?;
-        self.status_packet.commander_movement(division, block)
+        self.status_packet.commander_movement_at(index, division, block)
     }
 
     fn status_index(&self, division: u64) -> usize {
         self.status_packet
             .status_index(division)
+            .unwrap_or(usize::MAX)
+    }
+    fn status_index_at(&self, position: usize, division: u64) -> usize {
+        self.status_packet
+            .status_index_at(position, division)
             .unwrap_or(usize::MAX)
     }
     fn supply_sample(

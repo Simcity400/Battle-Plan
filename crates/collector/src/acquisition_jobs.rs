@@ -1300,6 +1300,12 @@ impl Role {
             | Self::Economy
             | Self::PresentationSpeedTerms
             | Self::FinalInputs
+            // Its join gates the Late dispatch, and through it FinalInputs, which ends the
+            // hour: at priority 3 it started 9.3 ms in and its join held Late to 10.7 ms.
+            | Self::ScoresRails
+            // FinalInputs' sources: at priority 2 the residual started 7 ms in, after its
+            // queueing at 0.8 ms, and ended 9 ms in.
+            | Self::IntelResidual
             // The hourly template census is a long independent join tail.
             | Self::Templates
             // The longest first-burst job, 2.55 ms at 1943 with the war
@@ -1314,8 +1320,7 @@ impl Role {
             | Self::IndustrialOrganisations
             | Self::ProductionDaily
             | Self::ProductionModifierParts => 1,
-            Self::IntelResidual
-            | Self::Governance
+            Self::Governance
             | Self::Gated
             | Self::GatedProjects
             | Self::CharacterInputs
@@ -1343,16 +1348,14 @@ impl Role {
             | Self::CountryLeaderRoles
             | Self::CharacterTraits
             | Self::SupplyTrains
-            // Joined only before the Late dispatch, with segments of slack.
-            | Self::ScoresRails
             | Self::ArmyIcons
             // Joined after the Late join, which it runs beside.
             | Self::Fronts
             | Self::Weather => 3,
+            // FinalInputs' other sources, short, ahead of the rest of the tail.
+            Self::Session | Self::Relations => 2,
             Self::Factions
             | Self::Lexical
-            | Self::Session
-            | Self::Relations
             | Self::RaidLaunch
             | Self::RaidTargets
             | Self::AirRelations

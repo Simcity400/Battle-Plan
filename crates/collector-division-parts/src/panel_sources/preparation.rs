@@ -20,6 +20,8 @@ pub(super) struct NativeReads {
     variant_indices: Map<(u64, usize), VariantObservation>,
     variants_used: usize,
     variant_refresh: Option<bool>,
+    /// The boundary's dirty held variants are read.
+    dirty_read: bool,
 }
 /// A root's warm certificate with its registry slot, and its index in `roots`.
 #[derive(Default)]
@@ -147,6 +149,7 @@ impl NativeReads {
         self.roots_used = 0;
         self.variants_used = 0;
         self.variant_refresh = None;
+        self.dirty_read = false;
         self.membership_indices.clear();
         self.states.clear();
         self.variant_indices.clear();
@@ -227,7 +230,7 @@ impl NativeReads {
             }
         }
         let pool = store.pools.get(&seed.division);
-        self.capture_membership(memory, base, pool, seed);
+        self.capture_membership(memory, base, pool, seed, &store.boundary.operands);
         if let Some(&index) = self.membership_indices.get(&seed.division)
             && self.memberships[index].ready
             && self.memberships[index].result.is_ok()
@@ -239,10 +242,21 @@ impl NativeReads {
         } else if *self.variant_refresh.get_or_insert_with(|| {
             let stamp = operands::observed_variant_stamp();
             stamp.is_some() && store.variant_observation != stamp
-        }) && let Some(pool) = pool
-        {
-            for &(_, handle, pointer) in pool.variants.iter() {
-                self.capture_variant(memory, base, store, handle, pointer, false);
+        }) {
+            if store.variant_epoch != store.boundary.variant_epoch {
+                // A domain epoch change refreshes every held variant, each pool's here.
+                if let Some(pool) = pool {
+                    for &(_, handle, pointer) in pool.variants.iter() {
+                        self.capture_variant(memory, base, store, handle, pointer, false);
+                    }
+                }
+            } else if !std::mem::replace(&mut self.dirty_read, true) {
+                // Settlement refreshes only the boundary's dirty held variants.
+                for &pointer in &store.boundary.dirty {
+                    if let Some(&handle) = store.variant_handles.get(&pointer) {
+                        self.capture_variant(memory, base, store, handle, pointer, false);
+                    }
+                }
             }
         }
         if let Ok(province) = selection.province {
@@ -360,6 +374,7 @@ impl NativeReads {
         base: usize,
         held: Option<&Pool>,
         seed: &DivisionSeed,
+        quiet: &crate::observations::Taken,
     ) {
         if self.membership_indices.contains_key(&seed.division) {
             self.complete = false;
@@ -372,6 +387,14 @@ impl NativeReads {
             self.complete = false;
             return;
         };
+        // A held pool no writer touched since the hour's take keeps its certificate and slot.
+        if let Some(held) = held.filter(|held| held.army == seed.pointer)
+            && let Some(certificate) = held.certificate
+            && quiet.quiet(pool, certificate.0)
+        {
+            self.membership_observation = Some((certificate, held.slot));
+            return;
+        }
         let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::sequence_at(pool, hint);
         let Some((certificate, slot)) = acquired else {

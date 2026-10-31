@@ -3,7 +3,7 @@
 //! medal-modifier rebuild patch. Neither hook reads memory or allocates.
 use crate::watch_registry::{Notification, WatchRegistry};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-static WATCHES: WatchRegistry = WatchRegistry::new();
+static WATCHES: WatchRegistry = WatchRegistry::marking();
 static EDITS: WatchRegistry = WatchRegistry::marking();
 static ENTRY_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static PATCHED: AtomicBool = AtomicBool::new(false);
@@ -36,6 +36,10 @@ pub fn edit_sequence(receiver: usize) -> Option<(u64, u64)> {
 }
 pub fn take_edits(visit: impl FnMut(usize)) -> Option<u64> {
     EDITS.take(visit)
+}
+/// The officer, career, history-root and medal receivers a writer touched since the last take.
+pub fn take(visit: impl FnMut(usize)) -> Option<u64> {
+    WATCHES.take(visit)
 }
 pub fn entry_demand(entries: usize) {
     ENTRY_DEMAND.fetch_max(entries, Ordering::Relaxed);

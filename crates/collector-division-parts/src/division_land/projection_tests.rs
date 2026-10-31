@@ -69,11 +69,19 @@ fn land_projection_keeps_frame_bytes_without_cloning_unchanged_contributors() {
                 assert!(matches!(actual, TableInput::ComparedEqual(_)));
             }
             if !force && hour == 3 {
-                let TableInput::ComparedChanges { indices, rows, .. } = &actual else {
+                let TableInput::SliceUpdate { update, .. } = &actual else {
                     panic!("one contributor change must not clone the census");
                 };
-                assert_eq!(indices.len(), 1);
-                assert_eq!(rows.len(), 1);
+                assert_eq!(update.keys.len(), 1);
+                assert_eq!(update.rows().len(), 1);
+            }
+            if !force && hour == 4 {
+                // A removed division is one deleted key, not a converted census.
+                let TableInput::SliceUpdate { update, .. } = &actual else {
+                    panic!("a removed division must not convert the census");
+                };
+                assert_eq!(update.keys.len(), 1);
+                assert_eq!(update.rows().len(), 0);
             }
             let mut next = frame(hour);
             let mut control = frame(hour);
