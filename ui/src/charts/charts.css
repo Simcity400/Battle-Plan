@@ -7,6 +7,7 @@
 .race-chart canvas { display: block; position: sticky; top: 0; width: 100%; height: 100%; }
 .race-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .time-chart canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.time-chart .time-chart-overlay { position: absolute; inset: 0; pointer-events: none; }
 .time-chart canvas:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; border-radius: var(--r-sm); }
 .timeline-chart { position: relative; width: 100%; }
 /* The dates stay in view while overscanned lanes scroll beneath them. */

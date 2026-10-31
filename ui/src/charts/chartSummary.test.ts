@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines } from './chartSummary.ts';
+import { chartSummaryFrom, mergeSummaries, drawApproximateSpans, drawGapSummary, drawLineSummary, pickSummaryLines, summaryGeometry } from './chartSummary.ts';
 import { wireSummary } from './chartSummary.fixture.ts';
 import { drawBands, drawGapFill, drawLine } from './draw.ts';
 import { pickLines } from './linePick.ts';
@@ -351,4 +351,20 @@ test('a summary decodes from its bucket columns, gaps and totals in place, and r
     { skip: [1] }, { values: [...wire.buckets.values.slice(0, 7), Infinity] }])
     assert.equal(chartSummaryFrom({ ...wire, buckets: { ...wire.buckets, ...columns } }), null, JSON.stringify(columns));
   assert.equal(chartSummaryFrom(sent), null, 'bucket objects are not the wire');
+});
+
+test('a frame that cannot place a value draws that column as its placed dots, never a line across it', () => {
+  const frame = plotFrame(120, 100, { left: 10, right: 10, top: 10, bottom: 10 }, [0, 29], [1e-323, 1], true);
+  assert.equal(frame.toY(0), Infinity, 'the log floor underflows, so zero has no place');
+  const column = (first: number, low: number): ChartBucket => ({ firstHour: first, lastHour: first + 9, firstValue: 0.5, lastValue: 0.5, lastValueHour: first,
+    minHour: first + 2, minValue: low, maxHour: first, maxValue: 0.5, firstBreak: false, hasBreak: false });
+  const summary: ChartSummary = { from: 0, to: 29, width: 100, buckets: [column(0, 0.25), column(10, 0), column(20, 0.25)] };
+  const geometry = summaryGeometry(frame, summary);
+  assert.equal(geometry.paths.length, 2, 'the unplaced column joins neither neighbour');
+  assert.ok(geometry.paths.flat().every(command => command.slice(1).every(value => Number.isFinite(value))));
+  assert.equal(geometry.dots.length, 3, 'its placed corners stay as dots');
+  const drawn = canvas();
+  drawLineSummary(drawn.context, frame, tokens, summary, '#123');
+  assert.equal(drawn.paths.length, 2);
+  assert.ok(drawn.paths.flat(2).every(value => Number.isFinite(value)));
 });

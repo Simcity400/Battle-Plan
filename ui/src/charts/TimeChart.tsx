@@ -138,10 +138,12 @@ type Pointed = { hour: number; describes: number; badges: readonly EventBadge[];
 type Drag = { mode: 'axis-x'; grab: number } | { mode: 'axis-y'; grab: number } | { mode: 'pan'; lastX: number } | { mode: 'box'; x0: number; y0: number; x1: number; y1: number; timeOnly: boolean };
 
 /** A canvas time chart: axes from the recording's own dates, zoom that holds during
- * playback, live hover, and redraws only while something moves. */
+ * playback, live hover, and redraws only while something moves. Its series paint on one
+ * canvas only when what they show changes; the crosshair and selection on another above. */
 export default function TimeChart(props: TimeChartProps) {
   const owner = useId();
   const canvas = useRef<HTMLCanvasElement>(null);
+  const overlay = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
   latest.current = props;
   const motionNow = useMotionNow();
@@ -180,6 +182,7 @@ export default function TimeChart(props: TimeChartProps) {
   useEffect(() => {
     const element = canvas.current!;
     const context = element.getContext('2d')!;
+    const sheet = overlay.current, overlayContext = sheet?.getContext('2d') ?? null;
     let tokens = readTokens();
     let view: ViewState = EMPTY_VIEW;
     // The badges last described, compared one by one (a count and range could repeat after a pan).
@@ -189,9 +192,10 @@ export default function TimeChart(props: TimeChartProps) {
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
-    // While the pointer is over the chart, its drawing without the crosshair is kept, so a
-    // pointer move repaints only the crosshair, not every series. Dropped when it leaves.
-    let base: { canvas: HTMLCanvasElement; key: readonly unknown[] } | null = null;
+    // What the series canvas shows, by everything its painting reads: a frame with the same
+    // repaints nothing. The overlay holds only the crosshair and selection, cleared as they move.
+    let painted: readonly unknown[] | null = null;
+    let overlaid = false;
     const surface = watchCanvasSize(element, () => wake());
     let pointer: { x: number; y: number; clientX: number; clientY: number } | null = null;
     let drag: Drag | null = null;
@@ -229,6 +233,9 @@ export default function TimeChart(props: TimeChartProps) {
       if (!layoutWidth || !layoutHeight) return false;
       if (element.width !== size.width) element.width = size.width;
       if (element.height !== size.height) element.height = size.height;
+      if (sheet && (sheet.width !== size.width || sheet.height !== size.height)) {
+        sheet.width = size.width; sheet.height = size.height; overlaid = false;
+      }
 
       // Badges sit above the plot, so a chart with them keeps room there; a strip
       // sits between the plot and the dates.
@@ -293,14 +300,8 @@ export default function TimeChart(props: TimeChartProps) {
       const summaries = [...(p.markSummary ? [p.markSummary] : []), ...(p.markSummaries ?? [])].filter(summary => markSummaryMatches(summary, frame!, until));
       const baseKey = [size.width, size.height, frame.plotLeft, frame.plotTop, frame.plotWidth, frame.plotHeight, frame.x[0], frame.x[1], frame.y[0], frame.y[1],
         frame.log, tokens, p.layers, p.revision, until, p.strip, p.playhead, p.playback, p.badges, p.overlay, p.rows, p.formatValue, p.valueTicks, ...summaries];
-      const kept = base;
       pickFrame.current = { ...picks.drawn({ frame, until }, p.onPick), props: p };
-      if (kept && kept.key.length === baseKey.length && kept.key.every((value, index) => Object.is(value, baseKey[index]))) {
-        context.setTransform(1, 0, 0, 1, 0, 0);
-        context.clearRect(0, 0, size.width, size.height);
-        context.drawImage(kept.canvas, 0, 0);
-        context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
-      } else {
+      if (!painted || painted.length !== baseKey.length || !painted.every((value, index) => Object.is(value, baseKey[index]))) {
         context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
         context.clearRect(0, 0, layoutWidth, layoutHeight);
         drawAxes(context, frame, tokens, (p.formatValue ?? formatAxisValue), p.rows?.labels);
@@ -313,14 +314,14 @@ export default function TimeChart(props: TimeChartProps) {
         for (const summary of summaries) drawMarkSummary(context, frame, tokens, summary);
         if (p.badges) drawBadges(context, frame, tokens, p.badges, until);
         p.overlay?.(context, frame, tokens);
-        if (pointer) {
-          const canvas = kept?.canvas ?? document.createElement('canvas');
-          if (canvas.width !== size.width) canvas.width = size.width;
-          if (canvas.height !== size.height) canvas.height = size.height;
-          const copy = canvas.getContext('2d');
-          if (copy) { copy.clearRect(0, 0, size.width, size.height); copy.drawImage(element, 0, 0); base = { canvas, key: baseKey }; }
-        } else base = null;
+        painted = baseKey;
       }
+      if (overlayContext && overlaid) {
+        overlayContext.setTransform(1, 0, 0, 1, 0, 0);
+        overlayContext.clearRect(0, 0, size.width, size.height);
+        overlaid = false;
+      }
+      overlayContext?.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       shown.current = { x, until };
       if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
         reported = { handler: p.onViewChange, x };
@@ -351,7 +352,7 @@ export default function TimeChart(props: TimeChartProps) {
         : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
       const eventText = spokenBadges && clusterText ? `${spokenBadges}; ${clusterText}` : spokenBadges || clusterText;
       if (eventText !== spokenText) { spokenText = eventText; setSpoken(eventText); }
-      if (drag?.mode === 'box') drawSelection(context, tokens, drag);
+      if (drag?.mode === 'box' && overlayContext) { drawSelection(overlayContext, tokens, drag); overlaid = true; }
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
       // The pointer drives it until a navigation key hands it to the keyboard, whose hour
@@ -404,7 +405,7 @@ export default function TimeChart(props: TimeChartProps) {
         if (p.rows && hit?.by === 'pointer' && pointer) rowRef.current = Math.max(0, Math.min(p.rows.labels.length - 1,
           Math.floor((pointer.y - frame.plotTop) / frame.plotHeight * p.rows.labels.length)));
         const row = Math.max(0, Math.min((p.rows?.labels.length ?? 1) - 1, rowRef.current));
-        drawCrosshair(context, frame, tokens, at.hour);
+        if (overlayContext) { drawCrosshair(overlayContext, frame, tokens, at.hour); overlaid = true; }
         const hour = Math.floor(at.describes);
         if (!hovered || hovered.hour !== hour || hovered.row !== row || hovered.rows !== p.rows || hovered.tooltip !== p.tooltip || hovered.revision !== p.revision || hovered.cluster !== pointed?.cluster || hovered.markTooltip !== p.markTooltip || !sameBadges(hovered.badges, at.badges)) {
           hovered = { hour, row, badges: at.badges, cluster: pointed?.cluster, markTooltip: p.markTooltip, rows: p.rows, tooltip: p.tooltip, revision: p.revision,
@@ -529,7 +530,7 @@ export default function TimeChart(props: TimeChartProps) {
     };
     const cancel = () => { drag = null; wake(); };
     const leave = () => {
-      pendingNavigation.current = null; pointer = null; base = null;
+      pendingNavigation.current = null; pointer = null;
       if (pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
       hover.current = reduceHover(hover.current, { type: 'pointer-leave' }); hideTooltip(owner); wake();
     };
@@ -697,6 +698,7 @@ export default function TimeChart(props: TimeChartProps) {
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>
     <p className="sr-only" aria-live="polite">{keySpoken}</p>
+    <canvas ref={overlay} className="time-chart-overlay" aria-hidden="true" />
     {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}
   </div>;
 }

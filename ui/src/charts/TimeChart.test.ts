@@ -13,7 +13,7 @@ type Effect = { deps?: readonly unknown[]; run: () => void | (() => void); clean
 test('actual TimeChart observes pointer/keyboard hours, visible badges and the owning consumer', async () => {
   const slots = new Map<number, unknown>(), effects = new Map<number, Effect>(), pending = new Map<number, Effect>();
   const listeners = new Map<string, (event: unknown) => void>();
-  let cursor = 0, visible = true, task: FrameTask | undefined, frame: PlotFrame | undefined;
+  let cursor = 0, visible = true, task: FrameTask | undefined, frame: PlotFrame | undefined, paints = 0;
   const fixture = {
     reducedMotion: true,
     shownTooltip: null as TooltipContent | null,
@@ -88,13 +88,11 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const { default: Chart } = await vite.ssrLoadModule('/ui/src/charts/TimeChart.tsx') as typeof import('./TimeChart.tsx');
     Object.defineProperty(globalThis, 'window', { configurable: true, value: { devicePixelRatio: 1 } });
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class { observe() {} disconnect() {} } });
-    // The chart keeps a copy of its drawing to repaint the pointer over, on a canvas of its own.
-    Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement: () => ({ width: 0, height: 0, getContext: () => context }) } });
     const seen: [string, number | null][] = [], described: number[] = [];
     const observe = (name: string) => (hour: number | null) => { seen.push([name, hour]); };
     const props: TimeChartProps = { label: 'Synthetic shares', extent: [0, 100], branchStart: 0,
       playhead: 90, playback: 'cursor', axes: { xFrom: null, xTo: null, yMin: 0, yMax: 1, log: false },
-      layers: [{ draw: (_ctx, drawn) => { frame = drawn; } }], active: true, revision: 1,
+      layers: [{ draw: (_ctx, drawn) => { frame = drawn; paints++; } }], active: true, revision: 1,
       keyHours: [0, 10, 80, 100], snap: () => 37.9, pickOwner: {}, onHover: observe('A'),
       tooltip: hour => { described.push(hour); return { title: String(hour), rows: [] }; } };
     type Canvas = { ref: { current: unknown }; onKeyDown: (event: unknown) => void };
@@ -111,6 +109,7 @@ test('actual TimeChart observes pointer/keyboard hours, visible badges and the o
     const key = (canvas: Canvas, name: string) => canvas.onKeyDown({ key: name, preventDefault() {} });
     let canvas = render(); draw(); pointer(); draw();
     assert.deepEqual(seen.at(-1), ['A', 37]); assert.equal(described.at(-1), 37);
+    assert.equal(paints, 1, 'hovering repaints only the overlay: the series paint once');
     const reads = layoutReads; draw(); draw();
     assert.equal(layoutReads, reads, 'frames reuse the canvas size measured until it resizes');
     const refreshedAt = seen.length;

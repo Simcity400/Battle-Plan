@@ -26,11 +26,13 @@ export default function StackedShareChart({ runs, bands, summaries, ...chart }: 
   const drawn = useMemo<ChartLayer[]>(() => approximate.length ? [{ ...layers[0], draw: (ctx, frame, tokens, state) =>
     drawApproximateSpans(ctx, frame, approximate, state.playhead, () => layers[0].draw(ctx, frame, tokens, state)) }] : layers, [layers, approximate]);
   useLayoutEffect(() => { layers[0].update(model, [first, last]); }, [layers, model, first, last]);
+  // The layer takes each model in place, so the chart repaints by the model too.
+  const revision = useMemo(() => [chart.revision, model], [chart.revision, model]);
   return <div className="stacked-share-chart">
     <Legend label="Share bands" items={[...bands].reverse().map(band => ({ ...band }))} />
     {!!approximate.length && <p className="chart-line-key"><i className="is-dashed" aria-hidden="true" />Approximate</p>}
     <div className="stacked-share-plot">
-      <TimeChart {...chart} layers={drawn} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }}
+      <TimeChart {...chart} revision={revision} layers={drawn} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: 100, log: false }}
         formatValue={formatAxisPercent} valueTicks={SHARE_TICKS} />
     </div>
   </div>;

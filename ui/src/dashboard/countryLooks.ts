@@ -120,6 +120,9 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const segments = useMemo(() => new Map(lookPlan(track?.branch, JSON.parse(heldTags) as string[], moment, segmentAt, hours, exact).samples.map(item => [item.tag, item.stretch])),
     [heldTags, track?.branch, moment, segmentAt, hours, exact]);
+  // Kept while the segments are, so what keys on it outlives names and flags arriving.
+  const matches = useMemo(() => (tag: string, at: number) => matchesLookSegment(segments, tag,
+    track ? lookHour(track.branch, at, segmentAt?.(tag, Math.floor(at)))?.stretch ?? null : null), [segments, track, segmentAt]);
   return useMemo(() => {
     // Merging what finished is idempotent, so a repeated render changes nothing.
     const next = sampledLooks(held, samples, sample => {
@@ -130,8 +133,6 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
     held.looks = next.looks;
     held.segments = next.segments;
     const looks = held.looks;
-    const matches = (tag: string, at: number) => matchesLookSegment(segments, tag,
-      track ? lookHour(track.branch, at, segmentAt?.(tag, Math.floor(at)))?.stretch ?? null : null);
     const look = (tag: string, at?: number) => at === undefined || matches(tag, at) ? looks.get(tag) : undefined;
     const flagKeyAt = (tag: string, at?: number) => {
       if (at === undefined) return flagKeys.get(tag);
@@ -153,5 +154,5 @@ export function useCountryLooks(client: DashboardClient, track: Pick<BoundTrack,
       matches,
       revision: styles.size + flags.size * 1000 + looks.size * 1_000_000,
     };
-  }, [samples, styles, flags, flagKeys, held, segments, track, segmentAt]);
+  }, [samples, styles, flags, flagKeys, held, segments, track, segmentAt, matches]);
 }

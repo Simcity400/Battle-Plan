@@ -15,6 +15,9 @@ export function useCountryColours(tags: readonly string[], color: (tag: string) 
   const kept = useRef(tags);
   if (kept.current !== tags && (kept.current.length !== tags.length || kept.current.some((tag, index) => tag !== tags[index]))) kept.current = tags;
   const listed = kept.current;
+  // The colours themselves, not the looks object rebuilt as names and flags arrive, keep the function.
+  const colorKey = listed.map(tag => color(tag)?.join(',') ?? '').join(';');
+  const matches = revision.matches;
   return useMemo(() => {
     const palette = categoricalPalette(tokens.surface);
     const sorted = [...listed].sort(compareTags);
@@ -25,7 +28,7 @@ export function useCountryColours(tags: readonly string[], color: (tag: string) 
     });
     const adjusted = tokens.countryColours === 'fixed' ? nudgeApart(raw, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : raw;
     const colors = new Map(sorted.map((tag, index) => [tag, toHex(adjusted[index])]));
-    return (tag: string, hour?: number) => hour !== undefined && revision.matches?.(tag, hour) === false
+    return (tag: string, hour?: number) => hour !== undefined && matches?.(tag, hour) === false
       ? fallbackColors.get(tag) ?? tokens.muted : colors.get(tag) ?? tokens.muted;
-  }, [listed, revision, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [listed, colorKey, matches, tokens]); // eslint-disable-line react-hooks/exhaustive-deps
 }

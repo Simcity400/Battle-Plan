@@ -27,6 +27,8 @@ import { PreparedKey } from '../PreparedKey';
 import type { ChartLayer } from '../TimeChart';
 import type { ChartStrip } from '../TimeChart';
 import { CHART_LAYOUT } from '../tokens';
+import type { ChartTokens } from '../tokens';
+import type { PlotFrame } from '../frame';
 import { fitTooltip, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
@@ -111,10 +113,13 @@ type RawPickOwner = { scope: string; client: WidgetRuntime['client'];
 
 /** Race, country lines and one-country mix use the same colours, hour-specific
  * identities, exact reads, chart controls and Jump to across all race widgets. */
-export default function CountryRaceView({ runtime, track, active, options, view, extent, playhead, moment, slots, ranked, lines, remoteRows,
+export default function CountryRaceView({ runtime, track, active, options, view, extent: shownExtent, playhead, moment, slots, ranked, lines, remoteRows,
   parts = NO_PARTS, raceLegendParts = parts, partsLabel = 'Types', mix, countryTags, countryLookHours, countryLookHour, entityLooks, lineLegendLabel = 'Countries', segmentAt, tooltip, tooltipTags, lineTooltip, timeTooltip,
   keyHours: suppliedHours, strip, beforeChart, pending, badges, onViewChange: reportViewport, lineSummaries, onSummaryView, onReachHour, exactLineTags, navigation, onPick, pickOwner, selectedHour, state, formatAxis, formatTick, labels: chartLabels, lineEmpty, mixEmpty, resetKey,
   presentation = {}, label, empty, formatValue }: CountryRaceViewProps) {
+  // Callers build the extent each render; its hours, not the array, keep the chart's layers.
+  const [extentFirst, extentLast] = shownExtent;
+  const extent = useMemo<[number, number]>(() => [extentFirst, extentLast], [extentFirst, extentLast]);
   const tokens = useChartTokens();
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
@@ -153,8 +158,8 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     countryFlag: presentation.countryLooks === false ? undefined : (tag: string, at?: number) => ({
       flag: looks.flag(tag, at), flagReason: looks.flagReason?.(tag, at), flagPending: looks.flagPending?.(tag, at) }) };
   const country = entity.color;
-  const nameOf = (tag: string, hour?: number) => entityLooks
-    ? entity.name(tag, hour ?? (linesView ? hours.get(tag) ?? moment : moment)) : looks.name(tag, hour);
+  const nameOf = useCallback((tag: string, hour?: number) => entityLooks
+    ? entityLooks.name(tag, hour ?? (linesView ? hours.get(tag) ?? moment : moment)) : looks.name(tag, hour), [entityLooks, looks, linesView, hours, moment]);
   const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
   const items = useMemo(() => countryRaceItems(ranked, colours, country, tokens.muted, presentation.exact !== false),
     [ranked, colours, country, tokens.muted, presentation.exact]);
@@ -246,6 +251,14 @@ export default function CountryRaceView({ runtime, track, active, options, view,
     return (hour === null ? undefined : entity.countryFlag?.(tag, hour))
       ?? { flagReason: 'The country flag is unavailable at this date.' };
   };
+  // Kept while nothing they draw changes, so a render that changes nothing drawn repaints nothing.
+  const timeLayers = useMemo(() => [pendingLayer(pending), ...(linesView ? lineLayers : mixLayers)], [pending, linesView, lineLayers, mixLayers]);
+  const timeOverlay = useCallback((ctx: CanvasRenderingContext2D, frame: PlotFrame, chartTokens: ChartTokens) => {
+    if (selectedHour != null) drawPlayhead(ctx, frame, chartTokens, selectedHour);
+    if (!linesView || !endLabels) return;
+    placeEndLabels(ctx, frame, chartTokens, countryRaceEnds(drawnLines, frame.x[0], Math.min(frame.x[1], extent[1]), until,
+      nameOf, country, formatValue).map(end => ({ ...end, y: frame.toY(end.value) })));
+  }, [selectedHour, linesView, endLabels, drawnLines, extent, until, nameOf, country, formatValue]);
   if (state != null || !track) return state ?? null;
   const jump = (hour: number, x: number, y: number, tag: string | null = view === 'mix' ? mixTagAt(hour) : countryRacePickTag(view, drawnLines)) => {
     if (view === 'mix' && mix?.tagAt && tag === null) return;
@@ -305,7 +318,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
         onContextMenu={(key, x, y, item) => jump(raceHour(item), x, y, raceTag(key, item))} dateOverlay={options.dateOverlay === true ? dayLabel(moment) : null}
         empty={empty} hoursPerSecond={common.hoursPerSecond} active={active} resetKey={resetKey ?? `${track.source.id}:${track.branch.id}`} />
         : <TimeChart key={presentation.resetTimeView ? view : undefined} {...common} label={view === 'mix' && mix ? chartLabels?.mix?.(mixName) ?? `${label} over time`
-          : chartLabels?.lines ?? `${label} over time`} layers={[pendingLayer(pending), ...(linesView ? lineLayers : mixLayers)]} strip={strip} formatValue={formatAxis ?? formatTick}
+          : chartLabels?.lines ?? `${label} over time`} layers={timeLayers} strip={strip} formatValue={formatAxis ?? formatTick}
           keyHours={timeHours} badges={badges?.length ? badges : undefined}
           onHover={hour => { if (hour === null) showTip(null); }}
           onViewChange={observeView}
@@ -342,12 +355,7 @@ export default function CountryRaceView({ runtime, track, active, options, view,
             return view === 'lines' ? fitForms(lineTooltip?.(hour, linesAt(hour, lines), labelAt, country, colours)
               ?? [linesTooltip(hour, lines, labelAt, country, formatDateTime(hour), label, formatValue)], hovered)
               : alias ? tipAt(alias, hour, labelAt(hour)(alias).name, hovered) : null;
-          }} overlay={(ctx, frame, chartTokens) => {
-            if (selectedHour != null) drawPlayhead(ctx, frame, chartTokens, selectedHour);
-            if (!linesView || !endLabels) return;
-            placeEndLabels(ctx, frame, chartTokens, countryRaceEnds(drawnLines, frame.x[0], Math.min(frame.x[1], extent[1]), until,
-              nameOf, country, formatValue).map(end => ({ ...end, y: frame.toY(end.value) })));
-          }} />}
+          }} overlay={timeOverlay} />}
     </div>
     {menu.menu}
   </div>;

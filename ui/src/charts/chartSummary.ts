@@ -138,55 +138,144 @@ export function extentOfSummary(summary: ChartSummary, from = summary.from, to =
 export const summaryFits = (frame: Pick<PlotFrame, 'x' | 'plotWidth'>, summary: { from: number; to: number; width: number }, until: number | null) => summary.width === Math.ceil(frame.plotWidth)
   && summary.to <= Math.min(frame.x[1], until ?? frame.x[1]) && summary.to >= frame.x[0] && summary.from <= frame.x[1];
 
+/** A dense summary's drawing in hours and values: a frame only places it, so it is built once
+ * per summary and step kind. Joined columns continue one polyline, so a line strokes once per
+ * unbroken stretch rather than once per column. */
+interface SummaryShape {
+  /** Each vertex's hour and value, interleaved, polyline after polyline, hours never falling. */
+  points: Float64Array;
+  /** The vertex each polyline starts at, then the vertex count. */
+  starts: Uint32Array;
+  /** Broken columns' extrema, hour and value interleaved, in hour order. */
+  dots: Float64Array;
+  /** The last column's end hour and value. */
+  end: readonly [number, number] | null;
+  /** The least and greatest value drawn, so a frame checks it can place them all at once. */
+  low: number;
+  high: number;
+}
+const shapes = new WeakMap<ChartSummary, [SummaryShape | undefined, SummaryShape | undefined]>();
+
 /** A bounded summary never substitutes for exact picks, hover or keyboard reads.
  * Broken columns show separate extrema dots: no stroke crosses an unknown span.
  * Continuous columns retain the time order of extrema and held step direction. */
-export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = false, until: number | null = null):
-  { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
-  // A retained reply keeps its own hours: drawn in a moved view it is never
-  // stretched, and it never reaches past the hours shown.
-  const paths: PathCommand[][] = [], dots: Point[] = [];
-  if (!summaryFits(frame, summary, until)) return { paths, dots, end: null };
-  const runs = exactRuns(summary);
-  if (runs) {
-    const segments = (held ? heldSegments : curveSegments)(runs, frame.x[0], summary.to, frame.toX, frame.toY);
-    return { paths: segments.map(segment => segment.path), dots, end: segments.at(-1)?.points.at(-1) ?? null };
-  }
+function summaryShape(summary: ChartSummary, held: boolean): SummaryShape {
+  const kept = shapes.get(summary) ?? [undefined, undefined];
+  const known = kept[held ? 1 : 0];
+  if (known) return known;
+  const points: number[] = [], starts: number[] = [], dots: number[] = [];
+  const step = held ? 1 : 0;
   let previous: ChartBucket | null = null;
-  let end: { x: number; y: number } | null = null;
+  let end: [number, number] | null = null;
   for (const bucket of summary.buckets) {
     if (!bucket) { previous = null; continue; }
-    const points = [
+    const corners = [
       { hour: bucket.firstHour, value: bucket.firstValue, order: 0 },
       { hour: bucket.minHour, value: bucket.minValue, order: 1 },
       { hour: bucket.maxHour, value: bucket.maxValue, order: 2 },
       { hour: bucket.lastValueHour, value: bucket.lastValue, order: 3 },
     ].sort((a, b) => a.hour - b.hour || a.order - b.order);
-    if (bucket.hasBreak || points.some(point => !Number.isFinite(frame.toY(point.value)))) {
-      for (const point of points) {
-        if (Number.isFinite(frame.toY(point.value))) dots.push({ x: frame.toX(point.hour), y: frame.toY(point.value) });
+    // A value no frame can place breaks the column, as an unknown span does.
+    if (bucket.hasBreak || corners.some(corner => !Number.isFinite(corner.value))) {
+      for (const corner of corners) if (Number.isFinite(corner.value)) dots.push(corner.hour, corner.value);
+      previous = null;
+    } else {
+      if (previous && !bucket.firstBreak && previous.lastHour + 1 === bucket.firstHour) {
+        // The previous column ended where this join starts, so its polyline goes on.
+        const at = points.length - 2;
+        if (points[at] !== previous.lastHour + step || points[at + 1] !== previous.lastValue) {
+          starts.push(points.length / 2); points.push(previous.lastHour + step, previous.lastValue);
+        }
+        points.push(bucket.firstHour, previous.lastValue, bucket.firstHour, bucket.firstValue);
+      } else { starts.push(points.length / 2); points.push(bucket.firstHour, bucket.firstValue); }
+      let value = bucket.firstValue;
+      for (const corner of corners) {
+        if (held) points.push(corner.hour, value);
+        points.push(corner.hour, corner.value); value = corner.value;
       }
+      points.push(Math.min(summary.to, bucket.lastHour + step), bucket.lastValue);
+      previous = bucket;
+    }
+    end = [Math.min(summary.to, bucket.lastHour + step), bucket.lastValue];
+  }
+  starts.push(points.length / 2);
+  let low = Infinity, high = -Infinity;
+  for (const values of [points, dots]) for (let at = 1; at < values.length; at += 2) { low = Math.min(low, values[at]); high = Math.max(high, values[at]); }
+  const shape = { points: Float64Array.from(points), starts: Uint32Array.from(starts), dots: Float64Array.from(dots), end, low, high };
+  kept[held ? 1 : 0] = shape;
+  shapes.set(summary, kept);
+  return shape;
+}
+
+/** Whether `frame` places every value of `shape`: its projection is monotonic, so the extremes decide. */
+const placeable = (frame: PlotFrame, shape: SummaryShape) => shape.low > shape.high
+  || Number.isFinite(frame.toY(shape.low)) && Number.isFinite(frame.toY(shape.high));
+
+/** Column by column geometry, for a frame that cannot place some value: such a column is only its placed dots. */
+function columnGeometry(frame: PlotFrame, summary: ChartSummary, held: boolean): { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
+  const paths: PathCommand[][] = [], dots: Point[] = [], step = held ? 1 : 0;
+  let previous: ChartBucket | null = null, end: Point | null = null;
+  for (const bucket of summary.buckets) {
+    if (!bucket) { previous = null; continue; }
+    const corners = [
+      { hour: bucket.firstHour, value: bucket.firstValue, order: 0 },
+      { hour: bucket.minHour, value: bucket.minValue, order: 1 },
+      { hour: bucket.maxHour, value: bucket.maxValue, order: 2 },
+      { hour: bucket.lastValueHour, value: bucket.lastValue, order: 3 },
+    ].sort((a, b) => a.hour - b.hour || a.order - b.order);
+    if (bucket.hasBreak || corners.some(corner => !Number.isFinite(frame.toY(corner.value)))) {
+      for (const corner of corners) if (Number.isFinite(frame.toY(corner.value))) dots.push({ x: frame.toX(corner.hour), y: frame.toY(corner.value) });
       previous = null;
     } else {
       const path: PathCommand[] = [];
       const push = (move: boolean, hour: number, value: number) => path.push([move ? 'M' : 'L', frame.toX(hour), frame.toY(value)]);
-      const joins = previous && !bucket.firstBreak && previous.lastHour + 1 === bucket.firstHour;
-      if (joins) {
-        push(true, previous!.lastHour + (held ? 1 : 0), previous!.lastValue);
-        push(false, bucket.firstHour, previous!.lastValue);
-        push(false, bucket.firstHour, bucket.firstValue);
+      if (previous && !bucket.firstBreak && previous.lastHour + 1 === bucket.firstHour) {
+        push(true, previous.lastHour + step, previous.lastValue); push(false, bucket.firstHour, previous.lastValue); push(false, bucket.firstHour, bucket.firstValue);
       } else push(true, bucket.firstHour, bucket.firstValue);
       let value = bucket.firstValue;
-      for (const point of points) {
-        if (held) push(false, point.hour, value);
-        push(false, point.hour, point.value); value = point.value;
+      for (const corner of corners) {
+        if (held) push(false, corner.hour, value);
+        push(false, corner.hour, corner.value); value = corner.value;
       }
-      push(false, Math.min(summary.to, bucket.lastHour + (held ? 1 : 0)), bucket.lastValue);
+      push(false, Math.min(summary.to, bucket.lastHour + step), bucket.lastValue);
       paths.push(path); previous = bucket;
     }
-    end = { x: frame.toX(Math.min(summary.to, bucket.lastHour + (held ? 1 : 0))), y: frame.toY(bucket.lastValue) };
+    end = { x: frame.toX(Math.min(summary.to, bucket.lastHour + step)), y: frame.toY(bucket.lastValue) };
   }
   return { paths, dots, end: end && Number.isFinite(end.y) ? end : null };
+}
+
+/** The shape's end placed in `frame`, when it can be. */
+function shapeEnd(frame: PlotFrame, shape: SummaryShape): Point | null {
+  if (!shape.end) return null;
+  const end = { x: frame.toX(shape.end[0]), y: frame.toY(shape.end[1]) };
+  return Number.isFinite(end.y) ? end : null;
+}
+
+/** Vertices `from` up to `to` of the shape as path commands placed in `frame`, opening with a move. */
+function shapeCommands(frame: PlotFrame, shape: SummaryShape, from: number, to: number): PathCommand[] {
+  const path: PathCommand[] = [];
+  for (let vertex = from; vertex < to; vertex++) {
+    path.push([vertex === from ? 'M' : 'L', frame.toX(shape.points[2 * vertex]), frame.toY(shape.points[2 * vertex + 1])]);
+  }
+  return path;
+}
+
+export function summaryGeometry(frame: PlotFrame, summary: ChartSummary, held = false, until: number | null = null):
+  { paths: PathCommand[][]; dots: Point[]; end: Point | null } {
+  // A retained reply keeps its own hours: drawn in a moved view it is never
+  // stretched, and it never reaches past the hours shown.
+  if (!summaryFits(frame, summary, until)) return { paths: [], dots: [], end: null };
+  const runs = exactRuns(summary);
+  if (runs) {
+    const segments = (held ? heldSegments : curveSegments)(runs, frame.x[0], summary.to, frame.toX, frame.toY);
+    return { paths: segments.map(segment => segment.path), dots: [], end: segments.at(-1)?.points.at(-1) ?? null };
+  }
+  const shape = summaryShape(summary, held), paths: PathCommand[][] = [], dots: Point[] = [];
+  if (!placeable(frame, shape)) return columnGeometry(frame, summary, held);
+  for (let line = 0; line + 1 < shape.starts.length; line++) paths.push(shapeCommands(frame, shape, shape.starts[line], shape.starts[line + 1]));
+  for (let at = 0; at < shape.dots.length; at += 2) dots.push({ x: frame.toX(shape.dots[at]), y: frame.toY(shape.dots[at + 1]) });
+  return { paths, dots, end: shapeEnd(frame, shape) };
 }
 
 /** Paint the original geometry in at most two clipped passes. Approximate
@@ -220,40 +309,105 @@ export function drawApproximateSpans(ctx: CanvasRenderingContext2D, frame: PlotF
   } else draw(false);
 }
 
+type SummaryLineOptions = { area?: boolean; dash?: readonly number[]; endDot?: boolean };
+
 export function drawLineSummary(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
   summary: ChartSummary, color: string, held = false, until: number | null = null,
-  options: { area?: boolean; dash?: readonly number[]; endDot?: boolean } = {}): Point | null {
+  options: SummaryLineOptions = {}): Point | null {
   if (!summaryFits(frame, summary, until)) return null;
-  if (summary.approximate?.length) {
-    let end: Point | null = null;
-    drawApproximateSpans(ctx, frame, summary.approximate, until, approximate => {
-      end = drawLineSummary(ctx, frame, tokens, { ...summary, approximate: undefined }, color, held, until,
-        approximate ? { ...options, dash: [4, 4], area: false, endDot: false } : options) ?? end;
-    });
-    return end;
-  }
   const runs = exactRuns(summary);
-  if (runs) return drawLine(ctx, frame, tokens, runs, color, { ...options, held, until: until ?? undefined });
-  const geometry = summaryGeometry(frame, summary, held, until);
+  const shape = runs ? null : summaryShape(summary, held);
+  const paint = (drawn: SummaryLineOptions) => !shape ? drawLine(ctx, frame, tokens, runs!, color, { ...drawn, held, until: until ?? undefined })
+    : placeable(frame, shape) ? strokeShape(ctx, frame, tokens, shape, color, drawn)
+      : strokeColumns(ctx, frame, tokens, columnGeometry(frame, summary, held), color, drawn);
+  if (!summary.approximate?.length) return paint(options);
+  let end: Point | null = null;
+  drawApproximateSpans(ctx, frame, summary.approximate, until, approximate => {
+    end = paint(approximate ? { ...options, dash: [4, 4], area: false, endDot: false } : options) ?? end;
+  });
+  return end;
+}
+
+/** Sets up a summary line's stroke and returns its area's baseline in `frame`. */
+function lineStyle(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, color: string, options: SummaryLineOptions): number {
   ctx.save(); ctx.strokeStyle = color; ctx.fillStyle = color;
   ctx.lineWidth = tokens.lineWidth.series; ctx.lineJoin = 'round';
   if (options.dash) ctx.setLineDash(options.dash);
-  const baseline = frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
+  return frame.toY(frame.log ? frame.y[0] : Math.max(frame.y[0], Math.min(0, frame.y[1])));
+}
+
+/** Paints a summary line's end dot unless left out, and ends its stroke. */
+function lineEnd(ctx: CanvasRenderingContext2D, tokens: ChartTokens, end: Point | null, options: SummaryLineOptions): Point | null {
+  if (end && options.endDot !== false) {
+    ctx.beginPath(); ctx.arc(end.x, end.y, tokens.lineWidth.series * 2, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = tokens.surface; ctx.stroke();
+  }
+  ctx.restore(); return end;
+}
+
+/** Strokes column by column geometry, as a frame that cannot place the whole shape draws it. */
+function strokeColumns(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+  geometry: ReturnType<typeof columnGeometry>, color: string, options: SummaryLineOptions): Point | null {
+  const baseline = lineStyle(ctx, frame, tokens, color, options);
   for (const path of geometry.paths) {
     if (options.area) {
       ctx.beginPath(); tracePath(ctx, path);
-      const last = path.at(-1)!;
-      ctx.lineTo(last[1], baseline); ctx.lineTo(path[0][1], baseline); ctx.closePath();
+      ctx.lineTo(path.at(-1)![1], baseline); ctx.lineTo(path[0][1], baseline); ctx.closePath();
       ctx.globalAlpha = 0.12; ctx.fill(); ctx.globalAlpha = 1;
     }
     ctx.beginPath(); tracePath(ctx, path); ctx.stroke();
   }
   for (const point of geometry.dots) { ctx.beginPath(); ctx.arc(point.x, point.y, tokens.lineWidth.series / 2, 0, Math.PI * 2); ctx.fill(); }
-  if (geometry.end && options.endDot !== false) {
-    ctx.beginPath(); ctx.arc(geometry.end.x, geometry.end.y, tokens.lineWidth.series * 2, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = tokens.surface; ctx.stroke();
+  return lineEnd(ctx, tokens, geometry.end, options);
+}
+
+/** Strokes each polyline of `shape` placed in `frame`, with its area, broken columns' dots and end dot. */
+function strokeShape(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, shape: SummaryShape,
+  color: string, options: SummaryLineOptions): Point | null {
+  const { points, starts, dots } = shape;
+  const baseline = lineStyle(ctx, frame, tokens, color, options);
+  const trace = (from: number, to: number) => {
+    ctx.moveTo(frame.toX(points[2 * from]), frame.toY(points[2 * from + 1]));
+    for (let vertex = from + 1; vertex < to; vertex++) ctx.lineTo(frame.toX(points[2 * vertex]), frame.toY(points[2 * vertex + 1]));
+  };
+  for (let line = 0; line + 1 < starts.length; line++) {
+    const from = starts[line], to = starts[line + 1];
+    if (options.area) {
+      ctx.beginPath(); trace(from, to);
+      ctx.lineTo(frame.toX(points[2 * (to - 1)]), baseline); ctx.lineTo(frame.toX(points[2 * from]), baseline); ctx.closePath();
+      ctx.globalAlpha = 0.12; ctx.fill(); ctx.globalAlpha = 1;
+    }
+    ctx.beginPath(); trace(from, to); ctx.stroke();
   }
-  ctx.restore(); return geometry.end;
+  for (let at = 0; at < dots.length; at += 2) {
+    ctx.beginPath(); ctx.arc(frame.toX(dots[at]), frame.toY(dots[at + 1]), tokens.lineWidth.series / 2, 0, Math.PI * 2); ctx.fill();
+  }
+  return lineEnd(ctx, tokens, shapeEnd(frame, shape), options);
+}
+
+/** The first of `count` indices `before` no longer holds for; it holds for a prefix. */
+function lower(count: number, before: (index: number) => boolean): number {
+  let low = 0, high = count;
+  while (low < high) { const middle = (low + high) >> 1; if (before(middle)) low = middle + 1; else high = middle; }
+  return low;
+}
+
+/** The heights `shape` crosses `x` at in `frame`, as `ordinates` finds them over each polyline;
+ * only the vertices about `x` are placed. */
+function shapeOrdinates(frame: PlotFrame, shape: SummaryShape, x: number, targetY: number): number[] {
+  const { points, starts } = shape, lines = starts.length - 1;
+  const at = (vertex: number) => frame.toX(points[2 * vertex]);
+  const ys: number[] = [];
+  // Polylines run left to right: from the first ending at or past x, while they start by it.
+  for (let line = lower(lines, index => at(starts[index + 1] - 1) < x - 1e-6); line < lines; line++) {
+    const from = starts[line], to = starts[line + 1];
+    if (at(from) > x + 1e-6) break;
+    // A window opening left of x (or at the polyline's own start) and closing right of it holds every crossing.
+    const first = Math.max(from, from + lower(to - from, index => at(from + index) < x - 1e-6) - 1);
+    const past = from + lower(to - from, index => at(from + index) <= x + 1e-6);
+    ys.push(...ordinates(shapeCommands(frame, shape, first, Math.min(to, past + 1)), x, targetY));
+  }
+  return ys;
 }
 
 /** Picks share the summary geometry that was painted, then require a separately
@@ -263,13 +417,23 @@ export function pickSummaryLines(lines: readonly { key: string; summary: ChartSu
   if (!context?.frame || hour < Math.floor(context.frame.x[0]) || hour > Math.min(context.frame.x[1], context.until ?? Infinity)) return [];
   const frame = context.frame, distances = new Map<string, number>();
   const x = context.point?.x ?? frame.toX(Math.max(frame.x[0], hour));
+  const targetY = context.point?.y ?? frame.plotTop + frame.plotHeight / 2;
   for (const line of lines) {
     if (!known.has(line.key)) continue;
     const runs = exactRuns(line.summary);
     if (runs && !runAt(runs, hour)) continue;
-    const geometry = summaryGeometry(frame, line.summary, line.held ?? false, context.until);
-    const ys = geometry.paths.flatMap(path => ordinates(path, x, context.point?.y ?? frame.plotTop + frame.plotHeight / 2));
-    for (const point of geometry.dots) if (Math.abs(point.x - x) <= 1) ys.push(point.y);
+    const ys: number[] = [];
+    const shape = !runs && summaryFits(frame, line.summary, context.until) ? summaryShape(line.summary, line.held ?? false) : null;
+    if (shape && placeable(frame, shape)) {
+      const dots = shape.dots;
+      ys.push(...shapeOrdinates(frame, shape, x, targetY));
+      for (let at = 2 * lower(dots.length / 2, index => frame.toX(dots[2 * index]) < x - 1); at < dots.length && frame.toX(dots[at]) <= x + 1; at += 2)
+        ys.push(frame.toY(dots[at + 1]));
+    } else {
+      const geometry = summaryGeometry(frame, line.summary, line.held ?? false, context.until);
+      ys.push(...geometry.paths.flatMap(path => ordinates(path, x, targetY)));
+      for (const point of geometry.dots) if (Math.abs(point.x - x) <= 1) ys.push(point.y);
+    }
     const visible = ys.filter(y => Number.isFinite(y) && y >= frame.plotTop && y <= frame.plotTop + frame.plotHeight);
     if (!visible.length) continue;
     distances.set(line.key, context.point ? visible.reduce((distance, y) => Math.min(distance, Math.abs(y - context.point!.y)), Infinity) : 0);
