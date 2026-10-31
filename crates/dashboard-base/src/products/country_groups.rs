@@ -613,6 +613,53 @@ impl<T> RunHistory<T> {
     fn len(&self) -> usize {
         self.len
     }
+    /// The run holding `hour`, found by halving: a history's runs are
+    /// disjoint and in hour order, each `hours` (its first and last).
+    pub fn holding(&self, hour: i32, hours: impl Fn(&T) -> (i32, i32)) -> Option<&T> {
+        let end = self.first_after(|run| hours(run).0 <= hour);
+        let run = &self[end.checked_sub(1)?];
+        let (first, last) = hours(run);
+        (first <= hour && hour <= last).then_some(run)
+    }
+    /// The runs overlapping the hours from `first` through `last`, in order.
+    pub fn overlapping<'a>(
+        &'a self,
+        first: i32,
+        last: i32,
+        hours: impl Fn(&T) -> (i32, i32) + 'a,
+    ) -> impl Iterator<Item = &'a T> + 'a {
+        let start = self.first_after(|run| hours(run).1 < first);
+        (start..self.len)
+            .map(|index| &self[index])
+            .take_while(move |run| hours(run).0 <= last)
+    }
+    /// The number of leading runs `before` holds for, which must hold for a prefix.
+    fn first_after(&self, before: impl Fn(&T) -> bool) -> usize {
+        #[cfg(any(test, feature = "test-support"))]
+        HISTORY_STEPS.with(|steps| steps.set((steps.get().0 + 1, steps.get().1)));
+        let (mut low, mut high) = (0, self.len);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            #[cfg(any(test, feature = "test-support"))]
+            HISTORY_STEPS.with(|steps| steps.set((steps.get().0, steps.get().1 + 1)));
+            if before(&self[middle]) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low
+    }
+}
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static HISTORY_STEPS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+/// The run history lookups made on this thread, and the runs they compared,
+/// for tests of their callers' cost.
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_steps() -> (usize, usize) {
+    HISTORY_STEPS.with(std::cell::Cell::get)
 }
 impl<T: Clone> RunHistory<T> {
     fn push(&mut self, value: T) {
@@ -2983,9 +3030,7 @@ impl Scan {
         {
             return Some(current);
         }
-        history
-            .iter()
-            .rfind(|name| name.first_hour <= hour && hour <= name.last_hour)
+        history.holding(hour, |name| (name.first_hour, name.last_hour))
     }
     pub fn resolved_faction_name_at(
         &self,

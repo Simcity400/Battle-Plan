@@ -12,14 +12,14 @@
 //! groups or air superiority read changes ([`FAMILY`]'s fields: the groups'
 //! own, the countries' keys, every link, every score field, each wing's
 //! mission region, the theatres' names, the theatre groups' theatres and the
-//! theatre rosters' keys), at each day's first hour (where the day's choice
-//! is published) and at the next recorded war end (where the groups change
+//! theatre rosters' keys), at each day's first hour (where the day before's facts
+//! are written) and at the next recorded war end (where the groups change
 //! with no field changing, as their own extract names it). The worker keeps
 //! each observed hour's frame (countries reduced to the keys both read, wings
 //! to their mission regions) with the hour's score projection made through
 //! the score identity it read there, and for each hour between, whether the
 //! theatres were read there (their slot read) and whether a table the day's
-//! choice reads was decoded again (the war casualties move every hour of a
+//! roster reads was decoded again (the war casualties move every hour of a
 //! war without changing the groups).
 //!
 //! The fold observes each kept hour on the carried state as hourly
@@ -27,7 +27,7 @@
 //! projection when the worker's score identity is the carried one), and
 //! takes each hour between in constant time: the groups' unchanged-hour step
 //! and air superiority's ([`Prepared::quiet_hour`]). At the block's end the
-//! groups are sealed and the day's choice is held open, as hourly preparation
+//! groups are sealed and the open day's roster is assigned, as hourly preparation
 //! does at every block's end. When the carried state does not continue into
 //! an hour between, the rest of the block is observed hour by hour.
 //!
@@ -36,7 +36,7 @@
 
 use super::{
     DAY_HOURS,
-    prepared::{CHOICE_TABLES, PairDiff, Prepared, ProjectionMark, ScoreIdentity, Scored},
+    prepared::{PairDiff, Prepared, ProjectionMark, ROSTER_TABLES, ScoreIdentity, Scored},
     scan, scores,
 };
 use dashboard_base::prepared::kept::{Observed, Reduced, consecutive, kept_changes, observe_hours};
@@ -152,11 +152,11 @@ fn start(format: FormatVersion) -> Box<dyn Extract> {
 }
 
 /// One hour between observed hours: whether the theatres were read there,
-/// and whether a table the day's choice reads was decoded again.
+/// and whether a table the day's roster reads was decoded again.
 #[derive(Clone, Copy)]
 struct Quiet {
     theatres_read: bool,
-    choices_changed: bool,
+    roster_changed: bool,
 }
 
 /// One hour of a block's facts, in hour order.
@@ -395,7 +395,7 @@ impl Extract for BlockExtract {
         Ok(())
     }
 
-    /// The next day's first hour, where the day's choice is published, or
+    /// The next day's first hour, where the day's facts are written, or
     /// the groups' next war end, if sooner: hours that change what the fold
     /// does with no field changing.
     fn deadline(&self) -> Option<i32> {
@@ -411,7 +411,7 @@ impl Extract for BlockExtract {
     }
 
     /// Hours at which no field either reads changed: each hour's slot read
-    /// of the theatres, and whether the day's choice tables were decoded
+    /// of the theatres, and whether the day's roster tables were decoded
     /// again, as an observed hour's change facts carry them.
     fn quiet(&mut self, _: &Replay, hours: &QuietHours, span: Range<usize>) -> io::Result<()> {
         let Some((first, _)) = consecutive(hours, span.clone())? else {
@@ -425,7 +425,7 @@ impl Extract for BlockExtract {
                 TableId::AirTheatres,
                 hours.hours()[position],
             ),
-            choices_changed: CHOICE_TABLES
+            roster_changed: ROSTER_TABLES
                 .iter()
                 .any(|&table| hours.rebuilt(position, table)),
         });
@@ -554,7 +554,7 @@ impl OwnBranch {
     }
 
     /// The block's end, as hourly preparation ends every block it read: the
-    /// groups sealed and the day's choice held open at `hour`.
+    /// groups sealed and the open day's roster assigned at `hour`.
     fn end_of_block(
         &mut self,
         replay: &Replay,
@@ -651,7 +651,7 @@ impl OwnBranch {
                                 Ok(()) => self.prepared.quiet_hour(
                                     hour,
                                     quiet.theatres_read,
-                                    quiet.choices_changed,
+                                    quiet.roster_changed,
                                 ),
                                 Err(error) => Err(from_groups(error)),
                             };

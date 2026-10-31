@@ -2658,7 +2658,6 @@ dependencies = [
  "installed-content-localisation",
  "installed-content-regions",
  "indexmap 2.14.2",
- "job-priority",
  "log",
  "mimalloc",
  "once_cell",

@@ -671,12 +671,11 @@ fn air_superiority_answers_from_its_own_coverage_while_the_hourly_walk_accepts_n
         independent::with_test_only(families, || {
             let source = fixture.source("superiority-stalled");
             let flag = AtomicBool::new(false);
+            let cold = query(&source, requests("1", 100, LAST).remove(0));
             assert!(
-                !query(&source, requests("1", 100, LAST).remove(0))["approximate"]
-                    .as_array()
-                    .unwrap()
-                    .is_empty(),
-                "{label}: a cold choices reply samples the blocks"
+                !cold["pending"].as_array().unwrap().is_empty()
+                    && cold["approximate"].as_array().unwrap().is_empty(),
+                "{label}: a cold choices reply leaves every hour pending and estimates none"
             );
             // The hourly walk stalls: it is cancelled at its first commit.
             let mut commits = 0;
@@ -772,71 +771,6 @@ fn air_superiority_quiet_hours_build_no_frame() {
             "{label}: every frame kept and observed once"
         );
     }
-}
-
-#[test]
-fn the_default_air_timeline_view_is_kept_from_open_once_prepared() {
-    use crate::products::air_superiority::prepared::{kept_views, warm};
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mut fixture = Fixture::new(&scenario(111, false));
-    let game = fixture.root.join("game");
-    for (path, text) in [
-        ("hoi4.exe", "test"),
-        (
-            "user/dlc_load.json",
-            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-        ),
-        (
-            "user/settings.txt",
-            "language=l_english force_pow2_textures=no",
-        ),
-        (
-            "map/strategicregions/synthetic.txt",
-            "strategic_region={id=7000 name=REGION provinces={1}}",
-        ),
-        (
-            "localisation/english/synthetic_l_english.yml",
-            "\u{feff}l_english:\n REGION:0 \"English region\"\n",
-        ),
-    ] {
-        let path = game.join(path);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, text).unwrap();
-    }
-    let (content, identity) = dashboard_base::test_fixtures::content_identity(&game);
-    let mut wire = records(
-        1,
-        vec![air_frame(1, 100), air_frame(1, 101), air_frame(1, 130)],
-    );
-    let replay::spool::Record::SessionStart(session) = &mut wire[0] else {
-        unreachable!()
-    };
-    session.identity = identity;
-    fixture.replace(&Replay::from_records(CAMPAIGN.into(), &[wire]).unwrap());
-    let source = fixture.source("air-warm");
-    let flag = AtomicBool::new(false);
-    // A branch whose air superiority is still preparing is left to its queries.
-    warm(&source, &content, &flag);
-    assert!(kept_views(&source).is_empty());
-    run(&source, Some(&content), &flag, |_| {}).unwrap();
-    warm(&source, &content, &flag);
-    let warmed = kept_views(&source);
-    assert_eq!(warmed.len(), 1, "the default view of the one branch");
-    // The Air page's first query, bound as every dashboard query is, classifies on that view.
-    let request = crate::transport::ProductRequest {
-        source_id: source.key().source_id.clone(),
-        revision: source.key().revision.clone(),
-        product: "air-superiority".into(),
-        params: serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":100, "lastHour":130, "mode":"sides"}),
-    };
-    crate::prepared::query::query(&source, &request, Some(&content), &flag).unwrap();
-    assert_eq!(kept_views(&source), warmed, "the warmed view, of the same prepared state");
-    super::super::super::files(&source, Some(&content))
-        .unwrap()
-        .0
-        .clear()
-        .unwrap();
 }
 
 #[test]
@@ -946,21 +880,19 @@ fn cached_air_reply_refreshes_labels_when_language_changes_without_a_publication
 }
 
 #[test]
-fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values() {
+#[test]
+fn air_first_views_answer_the_prepared_prefix_and_leave_the_rest_pending() {
     let replay = scenario(LAST, false);
     let mut fixture = Fixture::new(&replay);
     independent::with_test_hourly(|| {
-        let source = fixture.source("air-sampled-first-view");
+        let source = fixture.source("air-pending-first-view");
         let params = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":100, "lastHour":LAST, "mode":"sides", "top":10});
-        let cold = query(&source, params.clone());
-        assert_eq!(
-            dashboard_base::prepared::query::observations::usage(
-                &source,
-                "queries:air-superiority",
-            )
-            .2,
-            1
-        );
+        // Nothing is read from the recording: the unprepared hours are pending.
+        let (cold, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                query(&source, params.clone())
+            });
+        assert!(!refused, "a first view reads no recording block");
         assert!(
             cold["coverage"]["firstHour"]
                 .as_i64()
@@ -968,14 +900,20 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
                 && cold["coverage"]["complete"] == false
         );
         assert_eq!(cold["rowsApproximate"], true);
-        assert!(!cold["rows"].as_array().unwrap().is_empty());
-        assert_eq!(cold["pending"], serde_json::json!([]));
-        let (again, refused) =
-            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
-                query(&source, params.clone())
-            });
-        assert!(!refused, "a re-ask must reuse every block sample");
-        assert_eq!(again, cold);
+        assert_eq!(cold["approximate"], serde_json::json!([]));
+        assert!(cold["rows"].as_array().unwrap().is_empty());
+        assert!(
+            cold["days"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|day| day.is_null()),
+            "a day not yet prepared has no value, never zero"
+        );
+        let pending = cold["pending"].as_array().unwrap();
+        assert_eq!(pending.first().unwrap()["firstHour"], 100);
+        assert_eq!(pending.last().unwrap()["lastHour"], LAST);
+        assert_eq!(query(&source, params.clone()), cold);
         assert_eq!(
             dashboard_base::prepared::query::observations::usage(
                 &source,
@@ -985,22 +923,6 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
             1,
             "an unchanged publication reuses the complete reply projection"
         );
-        let (bytes, bound, computed) =
-            dashboard_base::prepared::query::observations::usage(&source, "air-superiority");
-        assert!(bytes > 0 && bytes <= bound);
-        assert_eq!(
-            computed,
-            source.replay_ref().index.len(),
-            "one shared observation per block"
-        );
-        let narrow = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":124, "lastHour":LAST, "mode":"sides", "top":1});
-        query(&source, narrow);
-        assert_eq!(
-            dashboard_base::prepared::query::observations::usage(&source, "air-superiority").2,
-            computed,
-            "range and row selection reuse the same block observations"
-        );
-
         run_measured(
             &source,
             None,
@@ -1019,7 +941,11 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
             |_| {},
         )
         .unwrap();
-        let partial = query(&source, params.clone());
+        let (partial, refused) =
+            dashboard_base::prepared::query::progressive::without_block_decodes(|| {
+                query(&source, params.clone())
+            });
+        assert!(!refused, "a partly prepared view reads no recording block");
         assert!(
             dashboard_base::prepared::query::observations::usage(
                 &source,
@@ -1030,11 +956,17 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
         );
         assert_eq!(partial["coverage"]["lastHour"], 123);
         assert_eq!(partial["rowsApproximate"], true);
+        assert_eq!(partial["pending"][0]["firstHour"], 124);
+        let days = partial["days"].as_array().unwrap();
+        // Hours 100 through 123 are prepared, the last of them on an open day.
+        assert_eq!(days[1], 123);
+        assert!(days[2..].iter().all(|day| day.is_null()));
         plain(&source);
         let complete = query(&source, params);
         assert!(complete.get("approximate").is_none());
         assert!(complete.get("rowsApproximate").is_none());
-        // Only whole prepared days are exact when a daily cell crosses coverage.
+        assert!(complete.get("pending").is_none());
+        // The prepared days are exact: they answer as the complete branch does.
         assert_eq!(partial["days"][0], complete["days"][0]);
         assert_eq!(air_day_values(&partial, 0), air_day_values(&complete, 0));
         clear(source);
@@ -1045,7 +977,7 @@ fn air_first_views_cache_the_tail_and_replace_complete_days_with_prepared_values
 /// region choices keep the membership its prepared hours hold, as they do
 /// once the branch is prepared.
 #[test]
-fn air_theatre_choices_read_the_prepared_prefix_while_the_rest_is_sampled() {
+fn air_theatre_choices_read_the_prepared_prefix_while_the_rest_is_pending() {
     let replay = scenario(LAST, false);
     let mut fixture = Fixture::new(&replay);
     independent::with_test_hourly(|| {
@@ -1076,13 +1008,12 @@ fn air_theatre_choices_read_the_prepared_prefix_while_the_rest_is_sampled() {
                 .map(|region| region["id"].clone())
                 .collect()
         };
-        let unrecorded = |reply: &serde_json::Value| {
-            reply["warnings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|warning| warning == "Air theatre membership is not recorded in this window")
-        };
+        let unrecorded =
+            |reply: &serde_json::Value| {
+                reply["warnings"].as_array().unwrap().iter().any(|warning| {
+                    warning == "Air theatre membership is not recorded in this window"
+                })
+            };
         let windows = [(100, 111), (100, LAST)];
         let partial: Vec<_> = windows
             .iter()

@@ -33,6 +33,7 @@ use std::{
 
 mod assignment;
 pub mod block;
+mod daily;
 mod model;
 pub mod prepared;
 mod scan;
@@ -234,11 +235,24 @@ fn side_filter(params: &AirParams) -> Option<HashSet<&str>> {
 }
 
 fn selected(cell: &AirCell, sides: &[AirSide], keys: Option<&HashSet<&str>>) -> AirCell {
+    selected_by(
+        cell,
+        &|index| sides.get(index as usize).map(|side| side.key.as_str()),
+        keys,
+    )
+}
+
+/// [`selected`], each side's key by its index from `key_of`.
+fn selected_by<'k>(
+    cell: &AirCell,
+    key_of: &dyn Fn(u32) -> Option<&'k str>,
+    keys: Option<&HashSet<&str>>,
+) -> AirCell {
     if let Some(AirValue::Scores(scores)) = &cell.0 {
         if keys.is_none() {
             return cell.clone();
         }
-        return selected(
+        return selected_by(
             &AirCell(Some(AirValue::Sides(AirSideCell {
                 scores: scores.clone(),
                 viewpoints: vec![],
@@ -248,20 +262,15 @@ fn selected(cell: &AirCell, sides: &[AirSide], keys: Option<&HashSet<&str>>) -> 
                 filtered: false,
                 excluded: 0,
             }))),
-            sides,
+            key_of,
             keys,
         );
     }
     let Some(AirValue::Sides(cell)) = &cell.0 else {
         return cell.clone();
     };
-    let keep = |index: &u32| {
-        keys.is_none_or(|keys| {
-            sides
-                .get(*index as usize)
-                .is_some_and(|side| keys.contains(side.key.as_str()))
-        })
-    };
+    let keep =
+        |index: &u32| keys.is_none_or(|keys| key_of(*index).is_some_and(|key| keys.contains(key)));
     AirCell(Some(AirValue::Sides(AirSideCell {
         viewpoints: cell
             .viewpoints
@@ -389,6 +398,16 @@ fn compact_sides(
     read_hours: &[i32],
     last: i32,
 ) -> Vec<AirSide> {
+    compact_sides_with(&|index| &sides[index as usize], cells, read_hours, last)
+}
+
+/// [`compact_sides`], each side by its index from `side_of`.
+fn compact_sides_with<'s>(
+    side_of: &dyn Fn(u32) -> &'s AirSide,
+    cells: &mut [&mut AirCell],
+    read_hours: &[i32],
+    last: i32,
+) -> Vec<AirSide> {
     let mut used = BTreeSet::new();
     for cell in cells.iter() {
         match &cell.0 {
@@ -433,7 +452,7 @@ fn compact_sides(
     }
     used.into_iter()
         .map(|index| {
-            let side = &sides[index as usize];
+            let side = side_of(index);
             // A superseded partial-day read must not survive the returned samples.
             let mut reads = Vec::new();
             for &hour in read_hours.iter().filter(|&&hour| hour <= last) {
@@ -1125,6 +1144,31 @@ fn cache_reply(
     Ok(reply)
 }
 
+/// A timeline reply with its anchor reads, identity segments and names, as
+/// [`cache_reply`] presents one.
+fn present_timeline(
+    source: &Source,
+    groups: &dashboard_base::products::country_groups::Scan,
+    anchors: &assignment::SideAnchors,
+    context: &LoadContext,
+    naming_hour: i32,
+    mut reply: AirTimelineReply,
+    cancelled: &AtomicBool,
+) -> io::Result<AirReply> {
+    reply.anchor_reads = anchor_reads(&reply.sides, groups, anchors, reply.last_hour);
+    reply.segments = country_segments(
+        groups,
+        reply.first_hour,
+        reply.last_hour,
+        &reply.anchor_reads,
+    );
+    let mut reply = AirReply::Timeline(reply);
+    resolve_names(source, groups, context, naming_hour, None, &mut reply);
+    check_cancel(cancelled)?;
+    check_reply_size(&reply)?;
+    Ok(reply)
+}
+
 fn check_reply_size(reply: &AirReply) -> io::Result<usize> {
     dashboard_core::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES)
         .ok_or_else(reply_budget_error)
@@ -1193,8 +1237,8 @@ fn anchor_reads(
                 && groups
                     .identities
                     .get(tag)?
-                    .iter()
-                    .any(|run| run.first_hour <= *hour && *hour <= run.last_hour))
+                    .holding(*hour, |run| (run.first_hour, run.last_hour))
+                    .is_some())
             .then(|| (side.key.clone(), (tag.clone(), *hour)))
         })
         .collect()
@@ -1214,14 +1258,21 @@ fn country_segments(
         .identities
         .iter()
         .filter_map(|(tag, history)| {
-            let segments: Vec<_> = history
-                .iter()
-                .filter(|run| {
-                    (run.first_hour <= last && first <= run.last_hour)
-                        || anchor_hours.get(tag.as_str()).is_some_and(|hours| {
-                            hours.range(run.first_hour..=run.last_hour).next().is_some()
-                        })
-                })
+            let hours = |run: &dashboard_base::products::country_history::CountryIdentityRun| {
+                (run.first_hour, run.last_hour)
+            };
+            // Runs are disjoint and in hour order: the ones read, by their first hour.
+            let mut runs = BTreeMap::new();
+            for run in history.overlapping(first, last, hours) {
+                runs.insert(run.first_hour, run);
+            }
+            for hour in anchor_hours.get(tag.as_str()).into_iter().flatten() {
+                if let Some(run) = history.holding(*hour, hours) {
+                    runs.insert(run.first_hour, run);
+                }
+            }
+            let segments: Vec<_> = runs
+                .into_values()
                 .map(|run| AirSpan {
                     first_hour: run.first_hour,
                     last_hour: run.last_hour.min(last),

@@ -480,6 +480,7 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &["air-superiority"],
         walk: true,
         content: Content::Bound,
+        version: 2,
         ..family("air_superiority")
     },
     Descriptor {

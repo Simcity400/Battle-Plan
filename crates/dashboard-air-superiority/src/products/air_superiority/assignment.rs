@@ -55,6 +55,56 @@ pub(super) fn assign_sides_with_anchors(
     countries: &BTreeSet<String>,
     anchors: &SideAnchors,
 ) -> Option<Vec<AssignedSide>> {
+    let mut sides = assigned(groups, hour, countries)?;
+    let (present, identities) = native_side_keys(groups, hour, &sides)?;
+    for (side, key) in sides
+        .iter_mut()
+        .zip(resolve_keys(&identities, &present, anchors))
+    {
+        if let Some(id) = key.strip_prefix("f:") {
+            side.faction = Some(id.into());
+        }
+        side.key = key;
+    }
+    Some(sides)
+}
+
+/// The sides `hour` assigns `countries` before any key is resolved: None
+/// where [`assign_sides_with_anchors`] finds none.
+pub(super) fn native_roster(
+    groups: &country_groups::Scan,
+    hour: i32,
+    countries: &BTreeSet<String>,
+) -> Option<Vec<AssignedSide>> {
+    let sides = assigned(groups, hour, countries)?;
+    sides
+        .iter()
+        .flat_map(|side| &side.members)
+        .all(|tag| identity_run(groups, tag, hour).is_some())
+        .then_some(sides)
+}
+
+fn identity_run<'a>(
+    groups: &'a country_groups::Scan,
+    tag: &str,
+    hour: i32,
+) -> Option<&'a dashboard_base::products::country_history::CountryIdentityRun> {
+    groups
+        .identities
+        .get(tag)?
+        .holding(hour, |run| (run.first_hour, run.last_hour))
+}
+
+/// The native identity `tag` has at `hour`, as side keys name countries.
+pub(super) fn identity_at(groups: &country_groups::Scan, tag: &str, hour: i32) -> Option<String> {
+    identity_run(groups, tag, hour).map(country_key)
+}
+
+fn assigned(
+    groups: &country_groups::Scan,
+    hour: i32,
+    countries: &BTreeSet<String>,
+) -> Option<Vec<AssignedSide>> {
     if contains(&groups.unobserved().factions, hour) || contains(&groups.unobserved().wars, hour) {
         return None;
     }
@@ -91,18 +141,183 @@ pub(super) fn assign_sides_with_anchors(
         .iter()
         .filter(|run| run.first_hour <= hour && hour <= run.last_hour)
         .map(|run| (run.first.clone(), run.second.clone()));
-    let mut sides = assign(factions, countries, wars)?;
-    let (present, identities) = native_side_keys(groups, hour, &sides)?;
-    for (side, key) in sides
-        .iter_mut()
-        .zip(resolve_keys(&identities, &present, anchors))
-    {
-        if let Some(id) = key.strip_prefix("f:") {
-            side.faction = Some(id.into());
+    assign(factions, countries, wars)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Group runs an indexed assignment visited.
+    pub(super) static VISITED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Intervals found by the hours they hold: a max-end tree over the
+/// intervals in start order, which visits only those holding an hour.
+struct Stab<T> {
+    runs: Vec<(i32, i32, T)>,
+    ends: Vec<i32>,
+    size: usize,
+}
+
+impl<T> Stab<T> {
+    fn new(mut runs: Vec<(i32, i32, T)>) -> Self {
+        runs.sort_by_key(|(first, _, _)| *first);
+        let size = runs.len().next_power_of_two();
+        let mut ends = vec![i32::MIN; 2 * size];
+        for (at, (_, last, _)) in runs.iter().enumerate() {
+            ends[size + at] = *last;
         }
-        side.key = key;
+        for node in (1..size).rev() {
+            ends[node] = ends[2 * node].max(ends[2 * node + 1]);
+        }
+        Self { runs, ends, size }
     }
-    Some(sides)
+
+    fn each<'a>(&'a self, hour: i32, visit: &mut impl FnMut(&'a T)) {
+        let end = self.runs.partition_point(|(first, _, _)| *first <= hour);
+        self.walk(1, 0, self.size, end, hour, visit);
+    }
+
+    fn walk<'a>(
+        &'a self,
+        node: usize,
+        low: usize,
+        high: usize,
+        end: usize,
+        hour: i32,
+        visit: &mut impl FnMut(&'a T),
+    ) {
+        if low >= end || self.ends[node] < hour {
+            return;
+        }
+        if high - low == 1 {
+            #[cfg(test)]
+            VISITED.with(|count| count.set(count.get() + 1));
+            visit(&self.runs[low].2);
+            return;
+        }
+        let middle = (low + high) / 2;
+        self.walk(2 * node, low, middle, end, hour, visit);
+        self.walk(2 * node + 1, middle, high, end, hour, visit);
+    }
+}
+
+/// A group run [`assigned`] reads.
+enum Active {
+    /// Unobserved factions or wars, or a faction's incomplete roster.
+    Unknown,
+    Member(u64, String),
+    /// A faction's leader, by the run's order among the faction's leaders.
+    Leader(u64, usize, String),
+    War(String, String),
+}
+
+/// Every group run [`assigned`] reads, found by hour: an assignment at an
+/// hour visits the runs active then, not the history around them.
+pub(super) struct GroupIndex {
+    runs: Stab<Active>,
+}
+
+impl GroupIndex {
+    pub fn new(groups: &country_groups::Scan) -> Self {
+        let mut runs = Vec::new();
+        let unobserved = groups.unobserved();
+        for span in unobserved.factions.iter().chain(&unobserved.wars) {
+            runs.push((span.first_hour, span.last_hour, Active::Unknown));
+        }
+        for (&id, faction) in &groups.factions {
+            for span in faction.incomplete.iter() {
+                runs.push((span.first_hour, span.last_hour, Active::Unknown));
+            }
+            for run in faction.members.iter() {
+                runs.push((
+                    run.first_hour,
+                    run.last_hour,
+                    Active::Member(id, run.tag.clone()),
+                ));
+            }
+            for (order, run) in faction.leaders.iter().enumerate() {
+                runs.push((
+                    run.first_hour,
+                    run.last_hour,
+                    Active::Leader(id, order, run.tag.clone()),
+                ));
+            }
+        }
+        for run in groups.wars.iter() {
+            runs.push((
+                run.first_hour,
+                run.last_hour,
+                Active::War(run.first.clone(), run.second.clone()),
+            ));
+        }
+        Self {
+            runs: Stab::new(runs),
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.runs.ends.capacity() * size_of::<i32>()
+            + self.runs.runs.capacity() * size_of::<(i32, i32, Active)>()
+            + self
+                .runs
+                .runs
+                .iter()
+                .map(|(_, _, run)| match run {
+                    Active::Unknown => 0,
+                    Active::Member(_, tag) | Active::Leader(_, _, tag) => tag.capacity(),
+                    Active::War(first, second) => first.capacity() + second.capacity(),
+                })
+                .sum::<usize>()
+    }
+}
+
+/// [`native_roster`], reading only the group runs active at `hour`.
+pub(super) fn indexed_roster(
+    groups: &country_groups::Scan,
+    index: &GroupIndex,
+    hour: i32,
+    countries: &BTreeSet<String>,
+) -> Option<Vec<AssignedSide>> {
+    let mut unknown = false;
+    let mut members = BTreeMap::<u64, BTreeSet<String>>::new();
+    let mut leaders = BTreeMap::<u64, (usize, &str)>::new();
+    let mut wars = Vec::new();
+    index.runs.each(hour, &mut |run| match run {
+        Active::Unknown => unknown = true,
+        Active::Member(id, tag) => {
+            if countries.contains(tag) {
+                members.entry(*id).or_default().insert(tag.clone());
+            }
+        }
+        Active::Leader(id, order, tag) => {
+            let held = leaders.entry(*id).or_insert((*order, tag.as_str()));
+            if *order < held.0 {
+                *held = (*order, tag.as_str());
+            }
+        }
+        Active::War(first, second) => wars.push((first.clone(), second.clone())),
+    });
+    if unknown {
+        return None;
+    }
+    let factions = members
+        .into_iter()
+        .map(|(id, members)| Faction {
+            id,
+            name: groups.faction_name_at(id, hour).unwrap_or_default(),
+            leader: leaders
+                .get(&id)
+                .filter(|(_, tag)| members.contains(*tag))
+                .map(|(_, tag)| (*tag).to_owned()),
+            members,
+        })
+        .collect();
+    let sides = assign(factions, countries, wars)?;
+    sides
+        .iter()
+        .flat_map(|side| &side.members)
+        .all(|tag| identity_run(groups, tag, hour).is_some())
+        .then_some(sides)
 }
 
 /// Only assignment identity is needed to check whether published keys change.
@@ -142,6 +357,23 @@ impl SideKey {
             members: side.members.clone(),
         }
     }
+
+    /// The key [`native_side_keys`] gives a side of `factions` and member
+    /// `tags`, whose identities are `identities`.
+    pub fn native(factions: &[u64], tags: &[String], identities: Vec<String>) -> Self {
+        let present = if let Some(id) = factions.iter().min() {
+            format!("f:{id}")
+        } else if tags.len() > 1 {
+            format!("w:{}", identities[0])
+        } else {
+            format!("c:{}", tags[0])
+        };
+        Self {
+            present,
+            factions: factions.to_vec(),
+            members: identities,
+        }
+    }
 }
 
 fn country_key(run: &dashboard_base::products::country_history::CountryIdentityRun) -> String {
@@ -162,12 +394,7 @@ pub(super) fn native_side_keys(
                 .members
                 .iter()
                 .map(|tag| {
-                    let run = groups
-                        .identities
-                        .get(tag)?
-                        .iter()
-                        .find(|run| run.first_hour <= hour && hour <= run.last_hour)?;
-                    let identity = country_key(run);
+                    let identity = country_key(identity_run(groups, tag, hour)?);
                     present.insert(identity.clone());
                     Some(identity)
                 })
@@ -186,14 +413,56 @@ pub(super) fn resolve_keys(
     countries: &BTreeSet<String>,
     anchors: &SideAnchors,
 ) -> Vec<String> {
-    let mut historical_counts = BTreeMap::new();
-    let mut present_counts = BTreeMap::new();
-    for (tag, anchor) in &anchors.countries {
-        *historical_counts.entry(anchor).or_insert(0_usize) += 1;
-        if countries.contains(tag) {
-            *present_counts.entry(anchor).or_insert(0_usize) += 1;
+    resolve_present(sides, &PresentAnchors::new(countries, anchors), anchors)
+}
+
+/// How many countries each historical country anchor has, and how many of
+/// them a roster's countries hold.
+pub(super) struct PresentAnchors {
+    historical: BTreeMap<String, usize>,
+    present: BTreeMap<String, usize>,
+}
+impl PresentAnchors {
+    pub fn new(countries: &BTreeSet<String>, anchors: &SideAnchors) -> Self {
+        let mut historical = BTreeMap::new();
+        let mut present = BTreeMap::new();
+        for (tag, anchor) in &anchors.countries {
+            *historical.entry(anchor.clone()).or_insert(0_usize) += 1;
+            if countries.contains(tag) {
+                *present.entry(anchor.clone()).or_insert(0_usize) += 1;
+            }
+        }
+        Self {
+            historical,
+            present,
         }
     }
+
+    /// What its counts hold: each anchor's text and count, with its tree node.
+    pub fn bytes(&self) -> usize {
+        self.historical
+            .keys()
+            .chain(self.present.keys())
+            .map(|anchor| anchor.capacity() + size_of::<(String, usize)>() + 16)
+            .sum()
+    }
+
+    /// Whether a lone country of `identity` is the only present country of
+    /// an alliance that held more: such a remnant keeps its alliance's key.
+    pub fn sole_remnant(&self, identity: &str, anchors: &SideAnchors) -> bool {
+        anchors.countries.get(identity).is_some_and(|anchor| {
+            self.historical.get(anchor).copied().unwrap_or(0) > 1
+                && self.present.get(anchor) == Some(&1)
+        })
+    }
+}
+
+/// [`resolve_keys`] with the roster's countries already counted.
+pub(super) fn resolve_present(
+    sides: &[SideKey],
+    counts: &PresentAnchors,
+    anchors: &SideAnchors,
+) -> Vec<String> {
     let mut present_factions = BTreeMap::new();
     for id in sides.iter().flat_map(|side| &side.factions) {
         if let Some(anchor) = anchors.factions.get(id) {
@@ -212,13 +481,7 @@ pub(super) fn resolve_keys(
             }
             let sole_remnant = side.factions.is_empty()
                 && side.members.len() == 1
-                && anchors
-                    .countries
-                    .get(&side.members[0])
-                    .is_some_and(|anchor| {
-                        historical_counts.get(&anchor).copied().unwrap_or(0) > 1
-                            && present_counts.get(&anchor) == Some(&1)
-                    });
+                && counts.sole_remnant(&side.members[0], anchors);
             if (side.present.starts_with("w:") || sole_remnant)
                 && let Some(anchor) = side
                     .members
@@ -418,9 +681,7 @@ fn assign(
                 for &id in enemy_leaders.get(enemy.as_str()).into_iter().flatten() {
                     *direct.entry(id).or_default() += 1;
                 }
-                if let Some(&faction) = member_of
-                    .get(enemy)
-                    .or_else(|| joined.get(enemy.as_str()))
+                if let Some(&faction) = member_of.get(enemy).or_else(|| joined.get(enemy.as_str()))
                 {
                     blocked.insert(faction);
                 }

@@ -1,10 +1,12 @@
 #[cfg(test)]
+use super::assignment::{SideKey, native_side_keys};
+#[cfg(test)]
 use super::assignment::{historical_anchors, resolve_keys};
 #[cfg(test)]
 use super::scores::ScoreRead;
 use super::scores::ScoreView;
 use super::{
-    assignment::{AssignedSide, SideAnchors, SideKey, assign_sides_with_anchors, native_side_keys},
+    assignment::{AssignedSide, SideAnchors, assign_sides_with_anchors},
     *,
 };
 use dashboard_base::products::country_groups::Scan;
@@ -85,6 +87,7 @@ pub(super) struct Auxiliary {
 #[derive(Clone)]
 pub(super) struct Snapshot {
     pub hour: i32,
+    #[cfg(test)]
     pub(super) key_read: Option<Arc<KeyRead>>,
     pub cells: BTreeMap<u32, AirCell>,
     pub fallback: AirCell,
@@ -99,6 +102,7 @@ pub(super) struct Snapshot {
     pub theatre_read: Option<i32>,
 }
 
+#[cfg(test)]
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct KeyRead {
     pub(super) countries: BTreeSet<String>,
@@ -147,41 +151,6 @@ pub(super) fn dictionary(
         .is_none()
         .then(|| side.members.first())
         .flatten();
-    if let Some(&index) = indices.get(&side.key) {
-        let known = &mut sides[index as usize];
-        let at = known.reads.partition_point(|read| read.0 <= hour);
-        if at > 0 {
-            let old = &known.reads[at - 1];
-            if (&old.1, &old.2, old.3.as_ref(), old.4, &old.5, &old.6)
-                == (
-                    &side.name,
-                    &side.leader,
-                    tag,
-                    side.co_belligerents,
-                    &side.factions,
-                    &side.colour_faction,
-                )
-            {
-                return index;
-            }
-        }
-        let read = (
-            hour,
-            side.name.clone(),
-            side.leader.clone(),
-            tag.cloned(),
-            side.co_belligerents,
-            side.factions.clone(),
-            side.colour_faction.clone(),
-        );
-        if at > 0 && known.reads[at - 1].0 == hour {
-            known.reads[at - 1] = read;
-        } else {
-            known.reads.insert(at, read);
-        }
-        return index;
-    }
-    let index = sides.len() as u32;
     let read = (
         hour,
         side.name.clone(),
@@ -191,19 +160,53 @@ pub(super) fn dictionary(
         side.factions.clone(),
         side.colour_faction.clone(),
     );
+    dictionary_read(sides, indices, &side.key, side.faction.clone(), read)
+}
+
+/// [`dictionary`] for the side keyed `key` of `faction`, read as `read`.
+pub(super) fn dictionary_read(
+    sides: &mut Vec<AirSide>,
+    indices: &mut HashMap<String, u32>,
+    key: &str,
+    faction: Option<String>,
+    read: AirSideRead,
+) -> u32 {
+    if let Some(&index) = indices.get(key) {
+        note_read(&mut sides[index as usize], read);
+        return index;
+    }
+    let index = sides.len() as u32;
     sides.push(AirSide {
-        key: side.key.clone(),
-        faction: side.faction.clone(),
-        colour_faction: side.colour_faction.clone(),
-        tag: tag.cloned(),
-        name: side.name.clone(),
-        leader: side.leader.clone(),
-        co_belligerents: side.co_belligerents,
-        factions: side.factions.clone(),
+        key: key.to_owned(),
+        faction,
+        colour_faction: read.6.clone(),
+        tag: read.3.clone(),
+        name: read.1.clone(),
+        leader: read.2.clone(),
+        co_belligerents: read.4,
+        factions: read.5.clone(),
         reads: vec![read],
     });
-    indices.insert(side.key.clone(), index);
+    indices.insert(key.to_owned(), index);
     index
+}
+
+/// Add `read` to a known side's reads unless the read before it is the same.
+pub(super) fn note_read(known: &mut AirSide, read: AirSideRead) {
+    let at = known.reads.partition_point(|held| held.0 <= read.0);
+    if at > 0 {
+        let old = &known.reads[at - 1];
+        if (&old.1, &old.2, &old.3, old.4, &old.5, &old.6)
+            == (&read.1, &read.2, &read.3, read.4, &read.5, &read.6)
+        {
+            return;
+        }
+    }
+    if at > 0 && known.reads[at - 1].0 == read.0 {
+        known.reads[at - 1] = read;
+    } else {
+        known.reads.insert(at, read);
+    }
 }
 
 fn reason(reason: &str) -> AirCell {
@@ -248,6 +251,7 @@ pub(super) fn snapshot(
 
 type SideCatalogue<'a> = (&'a mut Vec<AirSide>, &'a mut HashMap<String, u32>);
 
+#[cfg(test)]
 pub(super) fn snapshot_kind(
     frame: &DecodedFrame,
     groups: &Scan,
@@ -270,6 +274,7 @@ pub(super) fn snapshot_kind(
     Ok(sample)
 }
 
+#[cfg(test)]
 fn snapshot_scores(
     frame: &DecodedFrame,
     groups: &Scan,
@@ -425,6 +430,7 @@ pub(super) fn score_countries(
     Ok((operands, owners))
 }
 
+#[cfg(test)]
 pub(super) fn country_scores(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
@@ -494,6 +500,7 @@ pub(super) fn score_values(
         .collect();
     projection
 }
+#[cfg(test)]
 fn snapshot_score_read(
     frame: &DecodedFrame,
     scores: ScoreView<'_>,
@@ -526,27 +533,6 @@ pub(super) fn prepared_snapshot(
         catalogue,
     )
 }
-pub(super) fn catalogue_snapshot(
-    hour: i32,
-    projection: &CountryScores,
-    groups: &Scan,
-    sides: &mut Vec<AirSide>,
-) -> io::Result<Snapshot> {
-    // Capture native operands; final historical keys are resolved by the prepared query.
-    let anchors = SideAnchors::default();
-    snapshot_country_scores(
-        hour,
-        projection,
-        SideRead {
-            groups,
-            anchors: &anchors,
-            keep_keys: true,
-            cached: None,
-        },
-        (None, false),
-        (sides, &mut HashMap::new()),
-    )
-}
 fn snapshot_country_scores(
     hour: i32,
     projection: &CountryScores,
@@ -564,6 +550,7 @@ fn snapshot_country_scores(
     let (sides, indices) = catalogue;
     let mut result = Snapshot {
         hour,
+        #[cfg(test)]
         key_read: None,
         cells: BTreeMap::new(),
         fallback: reason("identity-not-recorded"),
@@ -765,6 +752,7 @@ fn snapshot_country_scores(
         result.cells.insert(region, build(Some(region), sides));
     }
     result.fallback = fallback;
+    #[cfg(test)]
     if !used_keys.is_empty() {
         let (countries, sides) =
             native_side_keys(groups, hour, rosters).expect("assigned native side identities");

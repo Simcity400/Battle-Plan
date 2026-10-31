@@ -4,8 +4,9 @@ use dashboard_base::prepared::series::{self, Accumulator, Reader};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 
-mod days;
+mod facts;
 mod first_view;
+mod reader;
 mod values;
 
 #[derive(Serialize, Deserialize)]
@@ -15,34 +16,34 @@ enum Field {
     Wings(u32),
     Active(u32),
 }
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ChoiceOperand {
-    keys: scan::KeyRead,
-    published: Vec<(usize, AirSide)>,
-}
-#[derive(Serialize, Deserialize)]
-struct ChoiceRead {
-    operand: Arc<ChoiceOperand>,
-    first_day_ordinal: i32,
-    first_hour: i32,
-    last_hour: i32,
-}
 
 /// Query operands from the continuation. The fold's accumulators, open joins
 /// and score dictionaries are not read by a page query.
 #[derive(Deserialize)]
 struct QueryState {
     previous_hour: Option<i32>,
-    choices: Vec<ChoiceRead>,
-    pending_choice: Option<ChoiceRead>,
     countries: BTreeSet<String>,
     regions: BTreeSet<u32>,
     theatres: BTreeMap<String, Vec<u8>>,
     available: bool,
+    facts: QueryFacts,
 }
-/// The tables whose change chooses the day's sides again: any change of
-/// their rows (a new decoding of them) marks the day's choice for a new read.
-pub(super) const CHOICE_TABLES: [TableId; 6] = [
+#[derive(Deserialize)]
+struct QueryFacts {
+    checkpoints: Option<facts::Checkpoints>,
+}
+
+/// The roster last assigned: its groups (None where no sides were
+/// assigned) and their faction names.
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Assigned {
+    groups: Option<Vec<daily::Group>>,
+    names: Vec<String>,
+}
+
+/// The tables whose change assigns the day's sides again: any change of
+/// their rows (a new decoding of them) marks the day's roster for a new read.
+pub(super) const ROSTER_TABLES: [TableId; 6] = [
     TableId::Factions,
     TableId::FactionMembers,
     TableId::WarRelations,
@@ -92,8 +93,6 @@ pub struct Prepared {
     events: Accumulator,
     hours: Accumulator,
     previous_hour: Option<i32>,
-    choices: Vec<ChoiceRead>,
-    pending_choice: Option<ChoiceRead>,
     countries: BTreeSet<String>,
     regions: BTreeSet<u32>,
     theatres: BTreeMap<String, Vec<u8>>,
@@ -108,7 +107,12 @@ pub struct Prepared {
     current_keys: BTreeMap<(String, u32), (u64, u64)>,
     active_regions: BTreeSet<u32>,
     wing_regions: BTreeSet<u32>,
-    choice_dirty: bool,
+    roster_dirty: bool,
+    /// The roster last assigned, None before the first.
+    roster: Option<Assigned>,
+    /// Hours at which recorded wars end with no row changing, latest first.
+    war_ends: Vec<i32>,
+    facts: facts::Ledger,
     #[serde(skip)]
     country_keys: Option<dashboard_text::metadata::CountryKeys>,
     #[serde(skip)]
@@ -117,16 +121,6 @@ pub struct Prepared {
     /// whose projections are this observer's own until the identity changes.
     #[serde(skip)]
     verified: Option<Arc<ScoreIdentity>>,
-    #[serde(skip)]
-    choice_indices: HashMap<String, usize>,
-    #[serde(skip)]
-    choice_input: Option<Arc<ChoiceOperand>>,
-    #[serde(skip)]
-    choice_key: Option<String>,
-    #[serde(skip)]
-    choice_ready: bool,
-    #[serde(skip)]
-    choice_index: Option<usize>,
     /// Each region's wings and active keys once named, so a region's fields
     /// are named (serialized and looked up) once, not every hour.
     #[serde(skip)]
@@ -214,7 +208,7 @@ impl Prepared {
         let previous = held
             .and_then(|(key, _)| self.values.state(key))
             .and_then(|state| state.last);
-        self.choice_dirty |= previous.is_none_or(|run| (run.value > 0) != (friendly > 0));
+        self.roster_dirty |= previous.is_none_or(|run| (run.value > 0) != (friendly > 0));
         let fresh = !continuous || held.is_none();
         #[cfg(test)]
         let held = held.filter(|_| !self.plain);
@@ -233,7 +227,7 @@ impl Prepared {
     }
     /// A pair gone from the projection: both its values end.
     fn end_pair(&mut self, (friendly, enemy): (u64, u64), hour: i32) {
-        self.choice_dirty = true;
+        self.roster_dirty = true;
         self.values.observe(friendly, hour, None, false);
         self.values.observe(enemy, hour, None, false);
         #[cfg(test)]
@@ -323,7 +317,7 @@ impl Prepared {
             .is_some_and(|hour| hour.div_euclid(DAY_HOURS) != frame.hour.div_euclid(DAY_HOURS))
         {
             let started = self.clock();
-            if self.choice_dirty || !self.choice_ready {
+            if self.roster_dirty || self.roster.is_none() {
                 groups.finish(replay, frame.branch);
             }
             self.publish_day(groups, false)?;
@@ -333,6 +327,21 @@ impl Prepared {
             .previous_hour
             .is_some_and(|hour| hour.checked_add(1) == Some(frame.hour));
         let restoring = self.score_identity.is_none();
+        if restoring || changes.rows_changed[TableId::WarRelations.index()] {
+            self.war_ends = frame
+                .complete::<tables::WarRelations>()
+                .map(|rows| {
+                    rows.iter()
+                        .filter(|row| row.end_hour > row.start_hour && row.end_hour > frame.hour)
+                        .map(|row| row.end_hour)
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.war_ends
+                .sort_unstable_by(|left, right| right.cmp(left));
+            self.war_ends.dedup();
+        }
+        self.end_wars(frame.hour);
         let country_changed = changes.rows_changed[TableId::Countries.index()]
             && self.country_keys.as_ref().is_none_or(|keys| {
                 #[cfg(test)]
@@ -480,7 +489,7 @@ impl Prepared {
                     new_regions.insert(*region);
                 }
             }
-            self.choice_dirty |= !changed.is_empty();
+            self.roster_dirty |= !changed.is_empty();
             for region in changed {
                 self.observe_value(
                     &Field::Active(region),
@@ -614,10 +623,10 @@ impl Prepared {
         self.lap(started, "air_superiority.fold.regions");
         // Positive/zero eligibility above can change the published sides; other
         // score magnitudes leave the recorded identity/name operands unchanged.
-        self.choice_dirty |= score_operands_changed
+        self.roster_dirty |= score_operands_changed
             || identity_changed
             || !continuous
-            || CHOICE_TABLES
+            || ROSTER_TABLES
                 .iter()
                 .any(|table| changes.rows_changed[table.index()]);
         self.previous_hour = Some(frame.hour);
@@ -636,16 +645,16 @@ impl Prepared {
     /// whose scores, country keys, links, wings' regions and theatre rosters
     /// are the hour before's: the series reach the hour, the held theatres
     /// are dated by the hour's read of them (`theatres_read`, their slot
-    /// read), and the day's choice is chosen again when a table the choice
-    /// reads was decoded again (`choices_changed`), as that observation would
-    /// find there. Rows decoded again with equal values change nothing else:
+    /// read), and the day's roster is assigned again when a table it reads
+    /// was decoded again (`roster_changed`) or a war ended, as that
+    /// observation would find there. Rows decoded again with equal values change nothing else:
     /// every value it would observe is the one it holds, and every key it
     /// would name it named before.
     pub(super) fn quiet_hour(
         &mut self,
         hour: i32,
         theatres_read: bool,
-        choices_changed: bool,
+        roster_changed: bool,
     ) -> io::Result<()> {
         self.values.advance(hour)?;
         self.events.through(hour);
@@ -660,43 +669,45 @@ impl Prepared {
                 self.work.emitted += 1;
             }
         }
-        self.choice_dirty |= choices_changed;
+        self.roster_dirty |= roster_changed;
+        self.end_wars(hour);
         self.previous_hour = Some(hour);
         Ok(())
     }
-    fn current_projection(&mut self) -> io::Result<scan::CountryScores> {
-        let mut projection = scan::CountryScores {
-            operands: self
-                .operands
-                .clone()
-                .ok_or_else(|| invalid("Air score continuation is missing"))?,
-            active: self.active_regions.clone(),
-            ..Default::default()
-        };
-        for (pair, &(friendly, enemy)) in &self.current_keys {
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
-            let value = |key| {
-                self.values
-                    .state(key)
-                    .and_then(|state| state.last)
-                    .map(|run| run.value)
-                    .ok_or_else(|| invalid("Prepared air score is missing"))
-            };
-            projection.pairs.insert(
-                pair.clone(),
-                (
-                    i64::try_from(value(friendly)?)
-                        .map_err(|_| invalid("Prepared friendly score is invalid"))?,
-                    i64::try_from(value(enemy)?)
-                        .map_err(|_| invalid("Prepared enemy score is invalid"))?,
-                ),
-            );
+    /// The wars ending by `hour` change the groups with no row changing: the
+    /// roster is assigned again.
+    fn end_wars(&mut self, hour: i32) {
+        while self.war_ends.last().is_some_and(|end| *end <= hour) {
+            self.war_ends.pop();
+            self.roster_dirty = true;
         }
-        Ok(projection)
     }
+    /// Assign `hour`'s sides to the present countries, keeping their faction
+    /// names; none without country identities.
+    fn assign(
+        &mut self,
+        groups: &dashboard_base::products::country_groups::Scan,
+        hour: i32,
+        operands: &scan::ScoreOperands,
+    ) {
+        // Groups runs only open at and seal to observed hours: this is the final groups' roster.
+        let sides = operands
+            .identity_known
+            .then(|| assignment::native_roster(groups, hour, &operands.present))
+            .flatten();
+        self.roster = Some(Assigned {
+            names: sides
+                .iter()
+                .flatten()
+                .flat_map(|side| side.factions.iter().map(|(_, name)| name.clone()))
+                .collect(),
+            groups: sides.as_deref().map(daily::roster),
+        });
+        self.roster_dirty = false;
+    }
+    /// The day of the last hour observed: its roster assigned again where it
+    /// may have changed and, once the day is over (not `terminal`), its facts
+    /// recorded.
     pub fn publish_day(
         &mut self,
         groups: &dashboard_base::products::country_groups::Scan,
@@ -705,123 +716,55 @@ impl Prepared {
         let Some(hour) = self.previous_hour else {
             return Ok(());
         };
-        if self.choice_dirty || !self.choice_ready {
-            let projection = self.current_projection()?;
-            let mut sides = Vec::new();
-            let sample = scan::catalogue_snapshot(hour, &projection, groups, &mut sides)?;
-            self.choice_input = sample.key_read.map(|keys| {
-                let published_indices: HashMap<_, _> = keys
-                    .published
-                    .iter()
-                    .map(|(index, key)| (key.as_str(), *index))
-                    .collect();
-                let published = sides
-                    .into_iter()
-                    .map(|mut side| {
-                        let index = published_indices[side.key.as_str()];
-                        side.reads.clear();
-                        (index, side)
-                    })
-                    .collect();
-                Arc::new(ChoiceOperand {
-                    keys: (*keys).clone(),
-                    published,
-                })
-            });
-            self.choice_key = self
-                .choice_input
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
-            self.choice_index = self
-                .choice_key
-                .as_ref()
-                .and_then(|key| self.choice_indices.get(key))
-                .copied();
-            self.choice_dirty = false;
-            self.choice_ready = true;
+        let operands = self
+            .operands
+            .clone()
+            .ok_or_else(|| invalid("Air score continuation is missing"))?;
+        if self.roster_dirty || self.roster.is_none() {
+            self.assign(groups, hour, &operands);
         }
         if terminal {
-            self.pending_choice = self.choice_input.clone().map(|operand| ChoiceRead {
-                operand,
-                first_day_ordinal: hour.div_euclid(DAY_HOURS),
-                first_hour: hour,
-                last_hour: hour,
-            });
-        } else {
-            self.pending_choice = None;
-            if let Some(index) = self.choice_index {
-                self.choices[index].last_hour = hour;
-            } else if let Some(key) = &self.choice_key {
-                let index = self.choices.len();
-                self.choices.push(ChoiceRead {
-                    operand: self.choice_input.clone().expect("choice operand"),
-                    first_day_ordinal: hour.div_euclid(DAY_HOURS),
-                    first_hour: hour,
-                    last_hour: hour,
-                });
-                self.choice_indices.insert(key.clone(), index);
-                self.choice_index = Some(index);
-                #[cfg(test)]
-                {
-                    self.work.emitted += 1;
-                }
-            }
+            return Ok(());
         }
-        Ok(())
-    }
-    fn catalogue(&self, groups: &dashboard_base::products::country_groups::Scan) -> DayCache {
-        let anchors = Arc::new(assignment::historical_anchors(groups));
-        let mut sides = Vec::new();
-        let mut indices = HashMap::new();
-        let mut reads: Vec<_> = self
-            .choices
-            .iter()
-            .chain(self.pending_choice.iter())
-            .collect();
-        reads.sort_by_key(|read| read.first_day_ordinal);
-        for read in reads {
-            let keys = assignment::resolve_keys(
-                &read.operand.keys.sides,
-                &read.operand.keys.countries,
-                &anchors,
-            );
-            for (index, side) in &read.operand.published {
-                let key = keys[*index].clone();
-                let assigned = assignment::AssignedSide {
-                    faction: key
-                        .strip_prefix("f:")
-                        .map(str::to_owned)
-                        .or_else(|| side.faction.clone()),
-                    key,
-                    colour_faction: side.colour_faction.clone(),
-                    factions: side.factions.clone(),
-                    name: side.name.clone(),
-                    leader: side.leader.clone(),
-                    members: side.tag.iter().cloned().collect(),
-                    co_belligerents: side.co_belligerents,
+        let assigned = self.roster.as_ref().expect("an assigned roster");
+        let (current_keys, values) = (&self.current_keys, &self.values);
+        let pairs = |tag: &str, each: &mut dyn FnMut(u32, (i64, i64))| -> io::Result<()> {
+            for ((held, region), (friendly, enemy)) in current_keys.range((tag.to_owned(), 0)..) {
+                if held != tag {
+                    break;
+                }
+                let value = |key: &u64| {
+                    values
+                        .state(*key)
+                        .and_then(|state| state.last)
+                        .map(|run| run.value)
+                        .ok_or_else(|| invalid("Prepared air score is missing"))
                 };
-                scan::dictionary(&mut sides, &mut indices, &assigned, read.first_hour);
-                if read.last_hour != read.first_hour {
-                    scan::dictionary(&mut sides, &mut indices, &assigned, read.last_hour);
-                }
+                each(
+                    *region,
+                    (
+                        i64::try_from(value(friendly)?)
+                            .map_err(|_| invalid("Prepared friendly score is invalid"))?,
+                        i64::try_from(value(enemy)?)
+                            .map_err(|_| invalid("Prepared enemy score is invalid"))?,
+                    ),
+                );
             }
-        }
-        DayCache {
-            regions: self.regions.clone(),
-            countries: self.countries.clone(),
-            theatres: self.theatres.clone(),
-            sides: Arc::new(sides),
-            #[cfg(test)]
-            side_indices: Arc::new(indices),
-            anchors,
-            warnings: groups.warnings.clone(),
-            available: self.available,
-            ..Default::default()
-        }
+            Ok(())
+        };
+        self.facts.finish(facts::Sample {
+            hour,
+            operands: &operands,
+            auxiliary: self.last_auxiliary.as_ref(),
+            theatre_read: self.theatre_read,
+            roster: assigned.groups.as_deref(),
+            names: &assigned.names,
+            pairs: &pairs,
+            active: &self.active_regions,
+        })
     }
     pub fn bytes(&self) -> usize {
-        self.values.bytes() + self.events.bytes() + self.hours.bytes()
+        self.values.bytes() + self.events.bytes() + self.hours.bytes() + self.facts.bytes()
     }
     pub fn flush(
         &mut self,
@@ -847,6 +790,7 @@ impl Prepared {
             0,
             cancelled,
         )?;
+        self.facts.flush(writer, branch)?;
         series::write_catalogue(writer, "air-superiority", branch, &self.keys, &())?;
         let bytes =
             dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)?;
@@ -872,30 +816,6 @@ impl Prepared {
         let mut state: Self = serde_json::from_reader(zstd::stream::Decoder::new(file)?)?;
         let catalogue: Option<series::Catalogue<()>> =
             series::read_saved_catalogue(store, key, saved, "air-superiority", branch)?;
-        for (index, choice) in state.choices.iter().enumerate() {
-            state
-                .choice_indices
-                .insert(serde_json::to_string(&choice.operand)?, index);
-        }
-        // Every committed block ends with a terminal publication, which leaves
-        // its clean choice pending; resume from that choice as continuing does.
-        if state.previous_hour.is_some() && !state.choice_dirty {
-            state.choice_input = state
-                .pending_choice
-                .as_ref()
-                .map(|read| Arc::clone(&read.operand));
-            state.choice_key = state
-                .choice_input
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?;
-            state.choice_index = state
-                .choice_key
-                .as_ref()
-                .and_then(|key| state.choice_indices.get(key))
-                .copied();
-            state.choice_ready = true;
-        }
         state.keys = catalogue
             .ok_or_else(|| invalid("Prepared air-superiority catalogue is missing"))?
             .0;
@@ -912,12 +832,11 @@ impl Prepared {
             .0;
         Ok(Self {
             previous_hour: state.previous_hour,
-            choices: state.choices,
-            pending_choice: state.pending_choice,
             countries: state.countries,
             regions: state.regions,
             theatres: state.theatres,
             available: state.available,
+            facts: facts::Ledger::read(state.facts.checkpoints),
             keys,
             ..Default::default()
         })
@@ -996,8 +915,6 @@ impl Prepared {
             }
         };
         Ok(Sampled {
-            first,
-            last,
             wanted,
             values,
             events,
@@ -1049,305 +966,10 @@ impl Prepared {
         )?;
         Ok(samples)
     }
-    /// A timeline's days, as [`Self::samples`] classifies them, the days its view already
-    /// classified from this prepared state (`serial`) for another query taken from
-    /// `timelines`, and the days every later query shares kept there.
-    #[allow(clippy::too_many_arguments)]
-    fn timeline_days(
-        &self,
-        store: &store::Store,
-        key: &store::SourceKey,
-        branch: u64,
-        params: &AirParams,
-        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
-        groups: &dashboard_base::products::country_groups::Scan,
-        anchors: &assignment::SideAnchors,
-        sides: &mut Vec<AirSide>,
-        timelines: &days::Timelines,
-        serial: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Vec<Arc<Snapshot>>> {
-        let mut sampled = self.sampled(store, key, branch, params, fields, cancelled)?;
-        let _cpu = replay_frame::cpu::scope_phase("air_superiority:query_days");
-        let view = sampled_view(params);
-        let kept = timelines.view((
-            branch,
-            serial,
-            sampled.first,
-            view.0.map(str::to_owned),
-            view.1,
-        ));
-        // Work done ahead for the view gives way to this query from now on.
-        let _waiting = kept.waiting();
-        let mut days = kept
-            .days
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // A query cancelled while it waited for another replays nothing.
-        check_cancel(cancelled)?;
-        // Days before the last hour's are the same for every query reaching past them.
-        let last_day = sampled.last.div_euclid(DAY_HOURS);
-        let complete = sampled
-            .wanted
-            .partition_point(|hour| hour.div_euclid(DAY_HOURS) < last_day);
-        let mut samples = days.resume(&kept, &sampled.wanted[..complete], sides, cancelled)?;
-        let mut indices = catalogue_indices(sides);
-        let mut rosters = scan::RosterRead::default();
-        values::each_hour(
-            &sampled.wanted[samples.len()..],
-            sampled.fields,
-            &mut sampled.values,
-            &mut sampled.events,
-            cancelled,
-            |hour, projection, auxiliary| {
-                let _cpu =
-                    replay_frame::cpu::scope_phase("air_superiority:query_sample_classification");
-                #[cfg(test)]
-                days::CLASSIFIED.with(|count| count.set(count.get() + 1));
-                let before = days.before(&kept, samples.len(), complete, sides, hour);
-                let mut sample = scan::prepared_snapshot(
-                    hour,
-                    projection,
-                    groups,
-                    anchors,
-                    view,
-                    (&mut *sides, &mut indices),
-                    &mut rosters,
-                )?;
-                scan::apply_auxiliary(&mut sample, auxiliary);
-                let sample = Arc::new(sample);
-                if let Some(before) = before {
-                    days.keep(timelines, &kept, &sample, before, sides);
-                }
-                samples.push(sample);
-                Ok(())
-            },
-        )?;
-        Ok(samples)
-    }
-    /// Classifies the next of `view`'s days after those it keeps, at most `chunk`, for work
-    /// ahead of its queries ([`classify_ahead`]) whose `params` reach the branch's last hour.
-    /// `ahead` carries on from the days it applied, catching up with those queries kept since, and
-    /// keeps each day it classifies. It classifies only for a view kept with room for its days,
-    /// holds the view only to check it and to keep a day, so the view can be let go meanwhile,
-    /// never holds the view's lock while it reads or classifies, and gives way as soon as a query
-    /// waits for the view.
-    #[allow(clippy::too_many_arguments)]
-    fn classify_next(
-        &self,
-        store: &store::Store,
-        key: &store::SourceKey,
-        branch: u64,
-        params: &AirParams,
-        fields: &std::sync::OnceLock<Vec<(Field, u64)>>,
-        groups: &dashboard_base::products::country_groups::Scan,
-        anchors: &assignment::SideAnchors,
-        base: &[AirSide],
-        timelines: &days::Timelines,
-        view: &days::View,
-        ahead: &mut days::Ahead,
-        chunk: usize,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Next> {
-        let Some(held) = unlowered(|| timelines.listed(view)) else {
-            return Ok(Next::Done);
-        };
-        if held.wanted() {
-            return Ok(Next::GiveWay);
-        }
-        let kept = Arc::downgrade(&held);
-        drop(held);
-        let mut sampled = self.sampled(store, key, branch, params, fields, cancelled)?;
-        let last_day = sampled.last.div_euclid(DAY_HOURS);
-        let complete = sampled
-            .wanted
-            .partition_point(|hour| hour.div_euclid(DAY_HOURS) < last_day);
-        let Some(held) = kept.upgrade() else {
-            return Ok(Next::Done);
-        };
-        let unapplied = unlowered(|| {
-            ahead.unapplied(
-                &held
-                    .days
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )
-        });
-        drop(held);
-        if !ahead.apply(unapplied, base, &sampled.wanted[..complete]) {
-            return Ok(Next::Done);
-        }
-        let start = ahead.applied();
-        if start >= complete {
-            return Ok(Next::Done);
-        }
-        let end = start.saturating_add(chunk).min(complete);
-        let mut indices = catalogue_indices(ahead.sides());
-        let mut rosters = scan::RosterRead::default();
-        let sample_view = sampled_view(params);
-        // Why the chunk stopped before its end, if it did.
-        let mut stopped = None;
-        let read = values::each_hour(
-            &sampled.wanted[start..end],
-            sampled.fields,
-            &mut sampled.values,
-            &mut sampled.events,
-            cancelled,
-            |hour, projection, auxiliary| {
-                stopped = match kept.upgrade().map(|held| held.wanted()) {
-                    None => Some(Next::Done),
-                    Some(true) => Some(Next::GiveWay),
-                    Some(false) => None,
-                };
-                if stopped.is_some() {
-                    return Err(io::ErrorKind::Interrupted.into());
-                }
-                let before = ahead.before(hour);
-                let mut sample = scan::prepared_snapshot(
-                    hour,
-                    projection,
-                    groups,
-                    anchors,
-                    sample_view,
-                    (ahead.sides(), &mut indices),
-                    &mut rosters,
-                )?;
-                scan::apply_auxiliary(&mut sample, auxiliary);
-                let Some(held) = kept.upgrade() else {
-                    stopped = Some(Next::Done);
-                    return Err(io::ErrorKind::Interrupted.into());
-                };
-                let keep = unlowered(|| ahead.keep(timelines, &held, Arc::new(sample), before));
-                drop(held);
-                stopped = match keep {
-                    days::Keep::Kept => return Ok(()),
-                    days::Keep::Moved => Some(Next::GiveWay),
-                    days::Keep::Full => Some(Next::Done),
-                };
-                Err(io::ErrorKind::Interrupted.into())
-            },
-        );
-        match (stopped, read) {
-            (Some(stopped), _) => Ok(stopped),
-            (None, Ok(())) if end < complete => Ok(Next::More),
-            (None, Ok(())) => Ok(Next::Done),
-            (None, Err(error)) => Err(error),
-        }
-    }
-}
-
-/// What classifying a chunk of a view's days ahead of its queries left to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Next {
-    /// More days remain.
-    More,
-    /// A query waits for the view or kept days of its own: the next chunk waits until it ran.
-    GiveWay,
-    /// No more days to keep: all are kept, the view was let go, or its budget is full.
-    Done,
-}
-
-/// Days classified ahead at most before the work lets go of the prepared state and the view.
-const AHEAD_DAYS: usize = 64;
-
-/// Classifies the days of `params`' timeline view after those its queries kept, through
-/// `through`, on a thread of its own below the priority of the work the user waits for, a chunk
-/// at a time ([`Prepared::classify_next`]): a later query, as when the playhead jumps, takes them
-/// kept rather than classifying them while the user waits. One runs per view. It holds the
-/// prepared state only while a chunk runs, takes the locks queries share out of background mode
-/// ([`unlowered`]), gives way to any query for the view, and stops once that state or the view is
-/// let go, no more days fit the budget, or a chunk fails.
-fn classify_ahead(
-    hourless: &Arc<Hourless>,
-    store: &Arc<store::Store>,
-    key: &store::SourceKey,
-    branch: u64,
-    params: &AirParams,
-    through: i32,
-    timelines: &Arc<days::Timelines>,
-) {
-    let (Some(first), Some(last)) = (params.first_hour, params.last_hour) else {
-        return;
-    };
-    let Some(first) = first.div_euclid(DAY_HOURS).checked_mul(DAY_HOURS) else {
-        return;
-    };
-    if last >= through {
-        return;
-    }
-    let (viewpoint, country) = sampled_view(params);
-    let view: days::View = (
-        branch,
-        hourless.serial,
-        first,
-        viewpoint.map(str::to_owned),
-        country,
-    );
-    let Some(claim) = timelines.claim_ahead(&view) else {
-        return;
-    };
-    let hourless = Arc::downgrade(hourless);
-    // Its binding checks, which a store's retried reads make, share no lock with queries.
-    let (store, key, timelines) = (Arc::clone(store), key.unshared(), Arc::clone(timelines));
-    let mut params = params.clone();
-    params.last_hour = Some(through);
-    let _ = std::thread::Builder::new()
-        .name("air timeline days ahead".into())
-        .spawn(move || {
-            job_priority::background_thread();
-            let cancelled = AtomicBool::new(false);
-            let mut ahead = days::Ahead::default();
-            loop {
-                let Some(hourless) = hourless.upgrade() else {
-                    break;
-                };
-                // Each chunk reads one verified publication, as a query does.
-                let Ok(scope) = unlowered(|| store.scope(&key)) else {
-                    break;
-                };
-                let next = hourless.state.classify_next(
-                    &store,
-                    &key,
-                    branch,
-                    &params,
-                    &hourless.fields,
-                    &hourless.groups,
-                    &hourless.cache.anchors,
-                    &hourless.cache.sides,
-                    &timelines,
-                    &view,
-                    &mut ahead,
-                    AHEAD_DAYS,
-                    &cancelled,
-                );
-                drop((scope, hourless));
-                match next {
-                    Ok(Next::More) => {}
-                    Ok(Next::GiveWay) => std::thread::sleep(std::time::Duration::from_millis(5)),
-                    Ok(Next::Done) | Err(_) => break,
-                }
-            }
-            // The claim is let go out of background mode: a query claiming a view takes its lock.
-            unlowered(|| drop(claim));
-        });
-}
-
-/// Runs `work` out of background mode on a thread in it, which then returns to it: `work` takes
-/// a lock the work the user waits for also takes, which background priority must never hold.
-fn unlowered<T>(work: impl FnOnce() -> T) -> T {
-    if !job_priority::is_background_thread() {
-        return work();
-    }
-    job_priority::foreground_thread();
-    let done = work();
-    job_priority::background_thread();
-    done
 }
 
 /// The hours a query samples and the series reading their inputs.
 struct Sampled<'a> {
-    first: i32,
-    last: i32,
     wanted: Vec<i32>,
     values: Reader<'a>,
     events: Reader<'a>,
@@ -1391,46 +1013,6 @@ fn read_groups(
             .ok_or_else(|| invalid("Prepared country groups are missing"))?,
     };
     dashboard_base::products::country_groups::Scan::read(io::BufReader::new(file))
-}
-
-/// What every query of a complete branch reads alike, whatever its hours:
-/// the continuation's operands, the country groups, the side catalogue and,
-/// once a sampled view parses them, the catalogue's fields.
-struct Hourless {
-    state: Prepared,
-    groups: dashboard_base::products::country_groups::Scan,
-    cache: DayCache,
-    fields: std::sync::OnceLock<Vec<(Field, u64)>>,
-    /// Names the timeline days classified from this state ([`days::serial`]).
-    serial: u64,
-}
-
-impl Hourless {
-    fn bytes(&self) -> usize {
-        use dashboard_base::prepared::query::observations::serde_bytes;
-        let anchors = &self.cache.anchors;
-        std::mem::size_of::<Self>()
-            + serde_bytes(&self.state)
-            + serde_bytes(&self.state.keys)
-            + serde_bytes(&self.groups)
-            + self.groups.dictionary_bytes()
-            + serde_bytes(&(
-                &self.cache.regions,
-                &self.cache.countries,
-                &self.cache.theatres,
-                &*self.cache.sides,
-                &self.cache.warnings,
-            ))
-            + serde_bytes(&(
-                &anchors.countries,
-                &anchors.factions,
-                &anchors.faction_hours,
-                &anchors.country_reads,
-                &anchors.faction_reads,
-            ))
-            // The keys again: the fields a sampled view parses from them later.
-            + serde_bytes(&self.state.keys)
-    }
 }
 
 /// The prepared theatre membership of the hours from `first` to `last`, each
@@ -1486,104 +1068,31 @@ fn theatre_membership(
     Ok(segment)
 }
 
-/// [`Hourless`], kept for the source while the pages it reads are unchanged.
-fn hourless(
+/// The daily state of `branch`'s publication, kept for the source while the
+/// pages it reads are unchanged.
+fn daily_state(
     source: &Source,
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
     cancelled: &AtomicBool,
-) -> io::Result<Arc<Hourless>> {
-    let page = |section: String| -> io::Result<Option<[u64; 3]>> {
-        Ok(store.read(key, &section, 0)?.map(|file| file.id().cache_key()))
+) -> io::Result<Arc<reader::Daily>> {
+    let reads = reader::Reads {
+        source: Some(source),
+        store,
+        key,
+        branch,
+        cancelled,
     };
-    let pages = (
-        page(format!("air-superiority-{branch}"))?,
-        series::catalogue_pages(store, key, "air-superiority", branch)?,
-        page(super::block::groups_section(branch))?,
-        page(format!("country-groups-{branch}"))?,
-    );
-    dashboard_base::prepared::query::observations::scope(
-        source,
-        "air-superiority:hourless",
-        Some(key),
-    )
-    .get_entry(branch, &(), &pages, cancelled, Hourless::bytes, || {
-        let state = Prepared::read_query(store, key, branch)?;
-        let groups = read_groups(store, key, branch)?;
-        let cache = state.catalogue(&groups);
-        Ok(Hourless {
-            state,
-            groups,
-            cache,
-            fields: std::sync::OnceLock::new(),
-            serial: days::serial(),
-        })
-    })
-}
-
-/// The prepared state each of `source`'s kept timeline views was classified from, for tests of
-/// their callers.
-#[cfg(any(test, feature = "test-support"))]
-pub fn kept_views(source: &Source) -> Vec<u64> {
-    days::timelines(source).kept_views()
-}
-
-/// Classifies each prepared branch's default timeline view (the whole branch by sides, as the
-/// Air page first asks it) ahead of its first query: one query of its first day keeps the view,
-/// and its answer starts classifying the rest below the user's priority ([`classify_ahead`]), so
-/// the Air page and its jumps find the days kept. A branch whose air superiority is still
-/// preparing is left to its queries.
-pub fn warm(
-    source: &Source,
-    content: &dashboard_core::config::ContentOptions,
-    cancelled: &AtomicBool,
-) {
-    let replay = source.replay_ref();
-    let branches: Vec<(u64, i32)> = replay
-        .branches
-        .iter()
-        .map(|start| {
-            (
-                start.id,
-                dashboard_text::metadata::branch_bounds(replay, start).0,
-            )
-        })
-        .collect();
-    let context = LoadContext {
-        content: Some(content.clone()),
-    };
-    // Bound as the dashboard binds its queries, so the first of them reads the state warmed here.
-    let Ok((_, key)) = dashboard_base::prepared::files(source, Some(content)) else {
-        return;
-    };
-    dashboard_base::prepared::query::observations::bind(source, &key);
-    for (branch, first) in branches {
-        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-            return;
-        }
-        let prepared = dashboard_base::prepared::coverage::product_coverage(
-            source,
-            Some(content),
+    dashboard_base::prepared::query::observations::scope(source, "air-superiority:daily", Some(key))
+        .get_entry(
             branch,
-            "air-superiority",
+            &(),
+            &reader::publication(store, key, branch)?,
             cancelled,
+            reader::Daily::bytes,
+            || reader::Daily::read(&reads),
         )
-        .ok()
-        .flatten()
-        .is_some_and(|coverage| coverage.complete);
-        if !prepared {
-            continue;
-        }
-        let params = serde_json::json!({
-            "branchId": branch.to_string(),
-            "view": "timeline",
-            "firstHour": first,
-            "lastHour": first,
-            "mode": "sides",
-        });
-        let _ = query(source, params, &context, cancelled);
-    }
 }
 
 pub fn query(
@@ -1629,1049 +1138,95 @@ pub fn query(
         return first_view::query(source, &params, context, coverage, cancelled);
     }
     let (store, key) = dashboard_base::prepared::files(source, context.content.as_ref())?;
-    let hourless = hourless(source, &store, &key, branch, cancelled)?;
-    let (state, groups) = (&hourless.state, &hourless.groups);
-    let mut cache = hourless.cache.clone();
+    let daily = daily_state(source, &store, &key, branch, cancelled)?;
     let naming_hour = params
         .last_hour
         .unwrap_or_else(|| dashboard_text::metadata::branch_bounds(replay, start).1);
-    if params.view == AirView::Choices {
-        params.mode = None;
-        params.viewpoint = None;
-        params.viewpoint_country = None;
-        params.sides = None;
-        if params
-            .theatres
-            .as_ref()
-            .is_some_and(|theatres| !theatres.is_empty())
-        {
-            cache.segments.push(Arc::new(theatre_membership(
+    let reply = match params.view {
+        AirView::Choices => {
+            params.mode = None;
+            params.viewpoint = None;
+            params.viewpoint_country = None;
+            params.sides = None;
+            let mut cache = daily.choices();
+            if params
+                .theatres
+                .as_ref()
+                .is_some_and(|theatres| !theatres.is_empty())
+            {
+                cache.segments.push(Arc::new(theatre_membership(
+                    &store,
+                    &key,
+                    branch,
+                    params.first_hour.unwrap_or(i32::MIN),
+                    params.last_hour.unwrap_or(i32::MAX),
+                    cancelled,
+                )?));
+            }
+            cache_reply(
+                source,
+                replay,
+                &daily.groups,
+                &cache,
+                &params,
+                context,
+                naming_hour,
+                cancelled,
+            )?
+        }
+        AirView::Moment => {
+            let mut sides = Vec::new();
+            let samples = daily.state.samples(
                 &store,
                 &key,
                 branch,
-                params.first_hour.unwrap_or(i32::MIN),
-                params.last_hour.unwrap_or(i32::MAX),
+                &params,
+                &daily.fields,
+                &daily.groups,
+                &daily.anchors,
+                &mut sides,
                 cancelled,
-            )?));
+            )?;
+            let mut reply = AirReply::Moment(moment_reply(
+                samples,
+                sides,
+                &daily.groups,
+                &params,
+                &daily.anchors,
+            )?);
+            resolve_names(
+                source,
+                &daily.groups,
+                context,
+                naming_hour,
+                None,
+                &mut reply,
+            );
+            check_reply_size(&reply)?;
+            reply
         }
-        return serde_json::to_value(cache_reply(
-            source,
-            replay,
-            groups,
-            &cache,
-            &params,
-            context,
-            naming_hour,
-            cancelled,
-        )?)
-        .map_err(Into::into);
-    }
-    let anchors = Arc::clone(&cache.anchors);
-    let reply = if params.view == AirView::Moment {
-        let mut sides = Vec::new();
-        let samples = state.samples(
-            &store,
-            &key,
-            branch,
-            &params,
-            &hourless.fields,
-            groups,
-            &anchors,
-            &mut sides,
-            cancelled,
-        )?;
-        let mut reply = AirReply::Moment(moment_reply(samples, sides, groups, &params, &anchors)?);
-        resolve_names(source, groups, context, naming_hour, None, &mut reply);
-        check_reply_size(&reply)?;
-        reply
-    } else {
-        let mut sides = (*cache.sides).clone();
-        let samples = state.timeline_days(
-            &store,
-            &key,
-            branch,
-            &params,
-            &hourless.fields,
-            groups,
-            &anchors,
-            &mut sides,
-            &days::timelines(source),
-            hourless.serial,
-            cancelled,
-        )?;
-        let mut segment = scan::DaySegment::default();
-        for sample in samples {
-            segment
-                .days
-                .insert(sample.hour.div_euclid(DAY_HOURS), sample);
+        AirView::Timeline => {
+            let reads = reader::Reads {
+                source: Some(source),
+                store: &store,
+                key: &key,
+                branch,
+                cancelled,
+            };
+            present_timeline(
+                source,
+                &daily.groups,
+                &daily.anchors,
+                context,
+                naming_hour,
+                reader::timeline(&daily, &reads, &params, i32::MAX)?,
+                cancelled,
+            )?
         }
-        cache.segments.push(Arc::new(segment));
-        cache.sides = Arc::new(sides);
-        let through = dashboard_text::metadata::branch_bounds(replay, start).1;
-        classify_ahead(
-            &hourless,
-            &store,
-            &key,
-            branch,
-            &params,
-            through,
-            &days::timelines(source),
-        );
-        cache_reply(
-            source,
-            replay,
-            groups,
-            &cache,
-            &params,
-            context,
-            naming_hour,
-            cancelled,
-        )?
     };
     check_cancel(cancelled)?;
     serde_json::to_value(reply).map_err(Into::into)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{air, groups, params, recording};
-    use super::*;
-    use dashboard_base::prepared::series::tests::Fixture;
-    use dashboard_core::test_fixtures::scale_frame;
-    use replay_data::{rows::RaidAirScoreRow, rows::TableRows, rows::WarRelationRow};
-    use replay_frame::frame::TableView;
-
-    #[test]
-    fn superiority_shared_driver_equal_scores_keep_daily_choices_and_native_work_flat() {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let measured = observer_tests::scaled_work(8, |hours| {
-            let fixture = Fixture::new();
-            let flag = AtomicBool::new(false);
-            let mut first = scale_frame(1, 25, 24);
-            for rows in [
-                TableRows::Factions(vec![]),
-                TableRows::FactionMembers(vec![]),
-                TableRows::WarRelations(vec![]),
-                TableRows::HumanControllers(vec![]),
-                TableRows::Capitulation(vec![]),
-                TableRows::AirWings(vec![]),
-            ] {
-                let table = rows.table();
-                first.tables[table.index()] = TableView::Complete(rows).into();
-            }
-            first.tables[TableId::RaidAirScores.index()] =
-                TableView::Complete(TableRows::RaidAirScores(
-                    (0..24)
-                        .map(|country| RaidAirScoreRow {
-                            country: 100000 + country,
-                            region: 7000,
-                            friendly: i64::from(country) + 1,
-                            enemy: 99,
-                            impact: Default::default(),
-                            friendly_missions: 0,
-                            enemy_missions: 0,
-                            air_spotting_scale: Some(0),
-                        })
-                        .collect(),
-                ))
-                .into();
-            let frames: Vec<_> = (0..=25 + hours)
-                .map(|hour| {
-                    let mut frame = first.clone();
-                    frame.hour = hour as i32;
-                    frame
-                })
-                .collect();
-            let replay = recording(frames.clone());
-            let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-            let mut state = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            for frame in &frames[..=25] {
-                groups.observe(frame)?;
-                state.observe_changed(
-                    frame,
-                    &replay,
-                    &mut groups,
-                    &tracker.observe(frame, replay.format),
-                )?;
-            }
-            let delta = observer_tests::unchanged_frames(
-                state.work,
-                &first,
-                hours as i32,
-                replay.format,
-                |frame, changes| {
-                    groups.observe(frame)?;
-                    state.observe_changed(frame, &replay, &mut groups, changes)?;
-                    Ok(state.work)
-                },
-            )?;
-            assert_eq!(delta, observer_tests::Work::default());
-            groups.finish(&replay, 1);
-            state.publish_day(&groups, true)?;
-            let mut writer = fixture.writer();
-            state.flush(&mut writer, 1, &flag)?;
-            writer.commit()?;
-            parity(&fixture, &frames, None);
-            Ok(delta)
-        })
-        .unwrap();
-        observer_tests::assert_flat(measured);
-    }
-
-    #[test]
-    fn superiority_shared_driver_one_score_change_does_not_walk_historical_regions() {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let measured = observer_tests::scaled_work(20, |history| {
-            let mut frame = air(0, 100000);
-            let replay = recording(vec![frame.clone()]);
-            let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-            let mut state = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            for hour in 0..history {
-                frame.hour = hour as i32;
-                if let TableView::Complete(TableRows::RaidAirScores(rows)) =
-                    &mut *frame.tables[TableId::RaidAirScores.index()]
-                {
-                    rows[0].region = 1000 + hour as u32;
-                }
-                groups.observe(&frame)?;
-                state.observe_changed(
-                    &frame,
-                    &replay,
-                    &mut groups,
-                    &tracker.observe(&frame, replay.format),
-                )?;
-            }
-            let end = (frame.hour.div_euclid(DAY_HOURS) + 1) * DAY_HOURS + 1;
-            while frame.hour < end {
-                frame.hour += 1;
-                groups.observe(&frame)?;
-                state.observe_changed(
-                    &frame,
-                    &replay,
-                    &mut groups,
-                    &tracker.observe(&frame, replay.format),
-                )?;
-            }
-            assert!(state.regions.len() >= history);
-            let before = state.work;
-            let delta = observer_tests::unchanged_frames(
-                before,
-                &frame,
-                10,
-                replay.format,
-                |frame, changes| {
-                    groups.observe(frame)?;
-                    state.observe_changed(frame, &replay, &mut groups, changes)?;
-                    Ok(state.work)
-                },
-            )?;
-            assert_eq!(delta, observer_tests::Work::default());
-            let mut previous = frame.clone();
-            previous.hour += 10;
-            tracker.observe(&previous, replay.format);
-            frame.hour += 11;
-            if let TableView::Complete(TableRows::RaidAirScores(rows)) =
-                &mut *frame.tables[TableId::RaidAirScores.index()]
-            {
-                rows[0].friendly += 1;
-            }
-            groups.observe(&frame)?;
-            state.observe_changed(
-                &frame,
-                &replay,
-                &mut groups,
-                &tracker.observe(&frame, replay.format),
-            )?;
-            let changed = observer_tests::Work {
-                row_visits: state.work.row_visits - before.row_visits,
-                history_visits: state.work.history_visits - before.history_visits,
-                emitted: state.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert!(changed.row_visits < 100 && changed.history_visits < 10);
-            Ok(changed)
-        })
-        .unwrap();
-        observer_tests::assert_flat(measured);
-    }
-
-    #[test]
-    fn superiority_choices_refresh_when_held_identity_scores_cross_zero() {
-        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let first = air(0, 200000);
-        let mut zero = first.clone();
-        if let TableView::Complete(TableRows::RaidAirScores(rows)) =
-            &mut *zero.tables[TableId::RaidAirScores.index()]
-        {
-            rows.iter_mut()
-                .find(|row| row.country == 9001)
-                .unwrap()
-                .friendly = 0;
-        }
-        let frames: Vec<_> = (0..=49)
-            .map(|hour| {
-                let mut frame = if hour < 24 {
-                    first.clone()
-                } else {
-                    zero.clone()
-                };
-                frame.hour = hour;
-                frame
-            })
-            .collect();
-        let replay = recording(frames.clone());
-        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-        let mut state = Prepared::default();
-        let mut tracker = FrameChangeTracker::new();
-        for frame in &frames {
-            groups.observe(frame).unwrap();
-            state
-                .observe_changed(
-                    frame,
-                    &replay,
-                    &mut groups,
-                    &tracker.observe(frame, replay.format),
-                )
-                .unwrap();
-        }
-        groups.finish(&replay, 1);
-        state.publish_day(&groups, true).unwrap();
-        assert_eq!(
-            state.choices.len(),
-            2,
-            "zero scores remove a published side even when its identity is held"
-        );
-        let mut writer = fixture.writer();
-        state.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        parity(&fixture, &frames, None);
-    }
-
-    #[test]
-    fn superiority_equal_theatre_reads_publish_dates_without_copying_the_dictionary() {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        for hours in [8, 80] {
-            let fixture = Fixture::new();
-            let flag = AtomicBool::new(false);
-            let mut first = air(25, 200000);
-            first.metrics.table_ns[TableId::AirTheatres.index()] = 1;
-            first.tables[TableId::AirTheatres.index()] =
-                TableView::Complete(TableRows::AirTheatres(
-                    (0..128)
-                        .map(|id| replay_data::rows::AirTheatreRow {
-                            id,
-                            name: format!("theatre-{id}").into_bytes(),
-                            ..Default::default()
-                        })
-                        .collect(),
-                ))
-                .into();
-            first.tables[TableId::AirTheatreGroups.index()] =
-                TableView::Complete(TableRows::AirTheatreGroups(vec![])).into();
-            first.tables[TableId::AirTheatreMembers.index()] =
-                TableView::Complete(TableRows::AirTheatreMembers(vec![])).into();
-            let frames: Vec<_> = (0..=25 + hours)
-                .map(|hour| {
-                    let mut frame = first.clone();
-                    frame.hour = hour;
-                    frame
-                })
-                .collect();
-            let replay = recording(frames.clone());
-            let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-            let mut state = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            for frame in &frames[..=25] {
-                groups.observe(frame).unwrap();
-                state
-                    .observe_changed(
-                        frame,
-                        &replay,
-                        &mut groups,
-                        &tracker.observe(frame, replay.format),
-                    )
-                    .unwrap();
-            }
-            let work = observer_tests::unchanged_frames(
-                state.work,
-                &first,
-                hours,
-                replay.format,
-                |frame, changes| {
-                    groups.observe(frame)?;
-                    state.observe_changed(frame, &replay, &mut groups, changes)?;
-                    Ok(state.work)
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                work,
-                observer_tests::Work {
-                    emitted: hours as usize,
-                    ..Default::default()
-                },
-                "the only hourly work is its small supplying-date event"
-            );
-            groups.finish(&replay, 1);
-            state.publish_day(&groups, true).unwrap();
-            let mut writer = fixture.writer();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            let mut reader = Reader::new(
-                &fixture.store,
-                &fixture.key,
-                "air-superiority-1-operands".into(),
-                &flag,
-            )
-            .unwrap();
-            assert_eq!(reader.event_count_through(1, i32::MAX).unwrap(), 1);
-            let (_, date) = reader.latest_event(2, 25 + hours).unwrap().unwrap();
-            assert_eq!(date, serde_json::json!(25 + hours));
-            parity(&fixture, &frames, None);
-        }
-    }
-
-    /// Kept reads parse no field: choices never read them, and a sampled view
-    /// parses them only after reading its coverage.
-    #[test]
-    fn kept_reads_leave_damaged_field_names_to_sampled_views_after_coverage() {
-        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let frames: Vec<_> = (0..=49).map(|hour| air(hour, 200000)).collect();
-        let replay = recording(frames.clone());
-        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-        let mut state = Prepared::default();
-        let mut tracker = FrameChangeTracker::new();
-        for frame in &frames {
-            groups.observe(frame).unwrap();
-            state
-                .observe_changed(
-                    frame,
-                    &replay,
-                    &mut groups,
-                    &tracker.observe(frame, replay.format),
-                )
-                .unwrap();
-        }
-        groups.finish(&replay, 1);
-        state.publish_day(&groups, true).unwrap();
-        let next = state.keys.len() as u64;
-        state.keys.insert("not a field".into(), next);
-        let mut writer = fixture.writer();
-        state.flush(&mut writer, 1, &flag).unwrap();
-        writer
-            .write_at("country-groups-1", 0, groups.saved_bytes().unwrap().as_slice())
-            .unwrap();
-        writer.commit().unwrap();
-        let source = Source::from_replay(
-            dashboard_base::source::SourceKey {
-                source_id: "air-damaged-fields".into(),
-                revision: "1".into(),
-            },
-            "synthetic.battleplan".into(),
-            Arc::new(replay),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let kept = hourless(&source, &fixture.store, &fixture.key, 1, &flag).unwrap();
-        assert!(kept.fields.get().is_none(), "choices read no field");
-        let field = kept.state.fields().err().unwrap().to_string();
-        let sample = |fields: &std::sync::OnceLock<Vec<(Field, u64)>>| {
-            let mut sides = Vec::new();
-            kept.state
-                .samples(
-                    &fixture.store,
-                    &fixture.key,
-                    1,
-                    &params(AirView::Timeline, 0, 49),
-                    fields,
-                    &kept.groups,
-                    &kept.cache.anchors,
-                    &mut sides,
-                    &flag,
-                )
-                .err()
-                .unwrap()
-                .to_string()
-        };
-        assert_eq!(sample(&kept.fields), field);
-        let mut writer = fixture.writer();
-        writer
-            .write_at("air-superiority-1-hours", 0, b"damaged".as_slice())
-            .unwrap();
-        writer.commit().unwrap();
-        let coverage = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "air-superiority-1-hours".into(),
-            &flag,
-        )
-        .unwrap()
-        .runs(0, 0, 49)
-        .err()
-        .unwrap()
-        .to_string();
-        assert_ne!(coverage, field);
-        assert_eq!(sample(&std::sync::OnceLock::new()), coverage);
-    }
-
-    /// A view's kept days answer every last hour, later or earlier than the last asked, as
-    /// classifying each day in turn does, and a query asked again classifies only its last day.
-    fn kept_parity(
-        fixture: &Fixture,
-        state: &Prepared,
-        groups: &dashboard_base::products::country_groups::Scan,
-        request: &AirParams,
-        frames: &[DecodedFrame],
-    ) {
-        let flag = AtomicBool::new(false);
-        let reply = |request: &AirParams, timelines: Option<&days::Timelines>| {
-            let mut cache = state.catalogue(groups);
-            let mut sides = (*cache.sides).clone();
-            let fields = std::sync::OnceLock::new();
-            let (store, key) = (&fixture.store, &fixture.key);
-            let samples = match timelines {
-                Some(timelines) => state
-                    .timeline_days(
-                        store,
-                        key,
-                        1,
-                        request,
-                        &fields,
-                        groups,
-                        &cache.anchors,
-                        &mut sides,
-                        timelines,
-                        0,
-                        &flag,
-                    )
-                    .unwrap(),
-                None => state
-                    .samples(
-                        store,
-                        key,
-                        1,
-                        request,
-                        &fields,
-                        groups,
-                        &cache.anchors,
-                        &mut sides,
-                        &flag,
-                    )
-                    .unwrap()
-                    .into_iter()
-                    .map(Arc::new)
-                    .collect(),
-            };
-            let mut segment = scan::DaySegment::default();
-            for sample in samples {
-                segment
-                    .days
-                    .insert(sample.hour.div_euclid(DAY_HOURS), sample);
-            }
-            cache.segments = vec![Arc::new(segment)];
-            cache.sides = Arc::new(sides);
-            serde_json::to_value(timeline(&cache, request).unwrap()).unwrap()
-        };
-        let hours: Vec<i32> = frames.iter().map(|frame| frame.hour).collect();
-        // Days classified ahead, a day at a time and around a query keeping days of its own,
-        // answer every query as classifying each day in turn does, leaving it its last day.
-        let timelines = days::Timelines::default();
-        let cache = state.catalogue(groups);
-        let fields = std::sync::OnceLock::new();
-        let mut through = request.clone();
-        through.last_hour = hours.last().copied();
-        let (viewpoint, country) = sampled_view(request);
-        let first = request.first_hour.unwrap().div_euclid(DAY_HOURS) * DAY_HOURS;
-        let view: days::View = (1, 0, first, viewpoint.map(str::to_owned), country);
-        let mut ahead = days::Ahead::default();
-        let mut step = || {
-            state
-                .classify_next(
-                    &fixture.store,
-                    &fixture.key,
-                    1,
-                    &through,
-                    &fields,
-                    groups,
-                    &cache.anchors,
-                    &cache.sides,
-                    &timelines,
-                    &view,
-                    &mut ahead,
-                    1,
-                    &flag,
-                )
-                .unwrap()
-        };
-        assert_eq!(step(), Next::Done, "a view no query kept");
-        let asked = |last: i32| {
-            let mut request = request.clone();
-            request.last_hour = Some(last);
-            let before = days::CLASSIFIED.with(std::cell::Cell::get);
-            let kept = reply(&request, Some(&timelines));
-            assert_eq!(kept, reply(&request, None), "{last}");
-            days::CLASSIFIED.with(std::cell::Cell::get) - before
-        };
-        asked(hours[0]);
-        step();
-        asked(hours[hours.len() / 2]);
-        for _ in 0..=hours.len() {
-            match step() {
-                Next::More => {}
-                Next::Done => break,
-                Next::GiveWay => panic!("no query waits for the view"),
-            }
-        }
-        assert_eq!(step(), Next::Done);
-        for &last in &hours {
-            let classified = asked(last);
-            assert!(classified <= 1, "{last}: {classified} days classified");
-        }
-        // Earliest first, so kept days are extended; then latest first, so they are cut short.
-        let forward: Vec<i32> = hours.iter().chain(hours.last()).copied().collect();
-        let backward: Vec<i32> = hours.iter().rev().chain(&hours).copied().collect();
-        for lasts in [forward, backward] {
-            let timelines = days::Timelines::default();
-            for last in lasts {
-                let mut request = request.clone();
-                request.last_hour = Some(last);
-                let kept = reply(&request, Some(&timelines));
-                assert_eq!(kept, reply(&request, None), "{last}");
-                if Some(&last) == hours.last() {
-                    let before = days::CLASSIFIED.with(std::cell::Cell::get);
-                    assert_eq!(reply(&request, Some(&timelines)), kept, "{last}");
-                    let again = days::CLASSIFIED.with(std::cell::Cell::get) - before;
-                    assert!(again <= 1, "{last}: {again} days classified again");
-                }
-            }
-        }
-    }
-
-    fn parity(fixture: &Fixture, frames: &[DecodedFrame], theatres: Option<Vec<String>>) {
-        let replay = Arc::new(recording(frames.to_vec()));
-        let groups = groups(&replay);
-        let flag = AtomicBool::new(false);
-        let full = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
-        let state = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
-        assert_eq!(state.current_keys.len(), 0, "a query hydrated fold joins");
-        assert_eq!(state.values.bytes(), Accumulator::default().bytes());
-        assert_eq!(state.events.bytes(), Accumulator::default().bytes());
-        assert_eq!(state.hours.bytes(), Accumulator::default().bytes());
-        assert_eq!(state.keys, full.keys);
-        assert_eq!(state.previous_hour, full.previous_hour);
-        assert_eq!(
-            serde_json::to_vec(&(&state.choices, &state.pending_choice)).unwrap(),
-            serde_json::to_vec(&(&full.choices, &full.pending_choice)).unwrap()
-        );
-        let expected = scan::scan_days(&replay, 1, &groups, None, &flag).unwrap();
-        let cache = state.catalogue(&groups);
-        let choices = |sides: &[AirSide]| {
-            sides
-                .iter()
-                .map(|side| {
-                    let mut side = side.clone();
-                    if let Some((_, name, leader, tag, count, factions, colour)) = side.reads.last()
-                    {
-                        side.name = name.clone();
-                        side.leader = leader.clone();
-                        side.tag = tag.clone();
-                        side.co_belligerents = *count;
-                        side.factions = factions.clone();
-                        side.colour_faction = colour.clone();
-                    }
-                    side.reads.clear();
-                    side
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(choices(&cache.sides), choices(&expected.sides));
-        assert_eq!(cache.regions, expected.regions);
-        assert_eq!(cache.countries, expected.countries);
-        assert_eq!(cache.theatres, expected.theatres);
-        let first = frames.first().unwrap().hour;
-        let last = frames.last().unwrap().hour;
-        for view in [AirView::Moment, AirView::Timeline] {
-            for (viewpoint, country) in [(None, false), (Some("f:9"), false), (Some("MOD"), true)] {
-                let mut cache = state.catalogue(&groups);
-                let mut request = params(view, first, last);
-                request.regions = None;
-                request.theatres = theatres.clone();
-                request.top = Some(5000);
-                request.mode = Some(if viewpoint.is_some() {
-                    AirMode::Viewpoint
-                } else {
-                    AirMode::Sides
-                });
-                request.viewpoint = viewpoint.map(str::to_owned);
-                request.viewpoint_country = Some(country);
-                let mut sides = if view == AirView::Timeline {
-                    (*cache.sides).clone()
-                } else {
-                    vec![]
-                };
-                let samples = state
-                    .samples(
-                        &fixture.store,
-                        &fixture.key,
-                        1,
-                        &request,
-                        &std::sync::OnceLock::new(),
-                        &groups,
-                        &cache.anchors,
-                        &mut sides,
-                        &flag,
-                    )
-                    .unwrap();
-                if view == AirView::Moment {
-                    let actual =
-                        moment_reply(samples, sides, &groups, &request, &cache.anchors).unwrap();
-                    let expected = scan_moment(&replay, 1, &groups, &request, &flag).unwrap();
-                    assert_eq!(
-                        serde_json::to_value(actual).unwrap(),
-                        serde_json::to_value(expected).unwrap()
-                    );
-                } else {
-                    let mut segment = scan::DaySegment::default();
-                    for sample in samples {
-                        segment
-                            .days
-                            .insert(sample.hour.div_euclid(DAY_HOURS), Arc::new(sample));
-                    }
-                    cache.segments = vec![Arc::new(segment)];
-                    cache.sides = Arc::new(sides);
-                    let cold = scan::scan_days_kind(&replay, 1, &groups, viewpoint, country, &flag)
-                        .unwrap();
-                    assert_eq!(
-                        serde_json::to_value(timeline(&cache, &request).unwrap()).unwrap(),
-                        serde_json::to_value(timeline(&cold, &request).unwrap()).unwrap()
-                    );
-                    kept_parity(fixture, &state, &groups, &request, frames);
-                }
-            }
-        }
-    }
-    #[test]
-    fn prepared_air_superiority_two_publications_resume_append_and_final_side_keys_match() {
-        let mut fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let mut frames = vec![
-            air(23, 200000),
-            air(24, i64::MAX),
-            air(47, 400000),
-            air(48, 500000),
-            air(49, 600000),
-        ];
-        for frame in &mut frames {
-            *frame.tables[TableId::AirWings.index()] =
-                TableView::Complete(TableRows::AirWings(vec![replay_data::rows::AirWingRow {
-                    id: 17,
-                    owner: 9001,
-                    mission_region: Some(if frame.hour >= 48 { 7999 } else { 7000 }),
-                    ..Default::default()
-                }]));
-            *frame.tables[TableId::AirTheatres.index()] =
-                TableView::Complete(TableRows::AirTheatres(vec![
-                    replay_data::rows::AirTheatreRow {
-                        id: 700,
-                        owner: 9001,
-                        name: b"Synthetic theatre".to_vec(),
-                        ..Default::default()
-                    },
-                ]));
-            *frame.tables[TableId::AirTheatreGroups.index()] =
-                TableView::Complete(TableRows::AirTheatreGroups(vec![
-                    replay_data::rows::AirTheatreGroupRow {
-                        id: 701,
-                        theatre: 700,
-                        ..Default::default()
-                    },
-                ]));
-            *frame.tables[TableId::AirTheatreMembers.index()] =
-                TableView::Complete(TableRows::AirTheatreMembers(vec![
-                    replay_data::rows::AirTheatreMemberRow {
-                        wing: 17,
-                        group: 701,
-                        ..Default::default()
-                    },
-                ]));
-            frame.metrics.table_ns[TableId::AirTheatres.index()] = 1;
-        }
-        if let TableView::Complete(TableRows::Factions(rows)) =
-            &mut *frames[2].tables[TableId::Factions.index()]
-        {
-            rows[0].name = b"Renamed synthetic pact".to_vec();
-        }
-        for frame in &mut frames[3..] {
-            *frame.tables[TableId::WarRelations.index()] =
-                TableView::Complete(TableRows::WarRelations(vec![
-                    WarRelationRow {
-                        first_country: 44,
-                        second_country: 66,
-                        ..Default::default()
-                    },
-                    WarRelationRow {
-                        first_country: 9001,
-                        second_country: 66,
-                        ..Default::default()
-                    },
-                ]));
-        }
-        let replay = recording(frames.clone());
-        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-        let mut state = Prepared::default();
-        for chunk in [&frames[..1], &frames[1..3]] {
-            let mut writer = fixture.writer();
-            for frame in chunk {
-                groups.observe(frame).unwrap();
-                state.observe(frame, &replay, &mut groups).unwrap();
-            }
-            groups.finish(&replay, 1);
-            state.publish_day(&groups, true).unwrap();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            // The restored observer resumes from the same daily choice.
-            let cache = |state: &Prepared| {
-                (
-                    state.choice_ready,
-                    state.choice_dirty,
-                    state.choice_key.clone(),
-                    state.choice_index,
-                )
-            };
-            let continued = cache(&state);
-            state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
-            assert_eq!(cache(&state), continued);
-        }
-        parity(&fixture, &frames[..3], None);
-        parity(&fixture, &frames[..3], Some(vec!["700".into()]));
-        let previous = fixture.key.clone();
-        let mut writer = fixture.append_writer();
-        state = Prepared::read(&fixture.store, &fixture.key, Some(&previous), 1).unwrap();
-        for frame in &frames[3..] {
-            groups.observe(frame).unwrap();
-            state.observe(frame, &replay, &mut groups).unwrap();
-        }
-        groups.finish(&replay, 1);
-        state.publish_day(&groups, true).unwrap();
-        state.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        parity(&fixture, &frames, None);
-        parity(&fixture, &frames, Some(vec!["700".into()]));
-        assert_eq!(state.choices.first().unwrap().first_day_ordinal, 0);
-        assert_eq!(state.pending_choice.as_ref().unwrap().first_day_ordinal, 2);
-        assert_eq!(state.pending_choice.as_ref().unwrap().last_hour, 49);
-    }
-    #[test]
-    fn prepared_air_superiority_continuation_grows_with_distinct_operands_and_not_days() {
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let replay = recording(vec![air(0, 200000)]);
-        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-        let mut state = Prepared::default();
-        let mut sizes = vec![];
-        for end in [100, 10000] {
-            let start = state.previous_hour.map_or(0, |hour| hour + 1);
-            let mut writer = fixture.writer();
-            for hour in start..end {
-                let frame = air(hour, 200000);
-                groups.observe(&frame).unwrap();
-                state.observe(&frame, &replay, &mut groups).unwrap();
-            }
-            state.publish_day(&groups, true).unwrap();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            sizes.push(serde_json::to_vec(&state).unwrap().len());
-            assert!(state.choices.len() <= 1);
-            assert_eq!(state.choices.first().unwrap().first_day_ordinal, 0);
-            assert!(state.pending_choice.is_some());
-        }
-        eprintln!("air-superiority continuation bytes after 100 and 10000 hours: {sizes:?}");
-        assert!(sizes[1] < sizes[0] + 4096);
-    }
-    /// Held key ids and the workers' pair diffs publish, byte for byte, what
-    /// naming every field anew and walking every pair publishes: scores
-    /// changing every hour of an air war, a score's sign flipping, a pair
-    /// appearing, going and coming back, a pair unchanged for hours, a new
-    /// region, a wing moving, a gap, two day boundaries and the worker's
-    /// projections starting again at block boundaries.
-    #[test]
-    fn superiority_held_keys_and_pair_diffs_publish_what_plain_observation_does() {
-        use super::super::block::ScoreTracker;
-        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        use replay_data::rows::AirWingRow;
-        let score = |country, region, friendly, enemy| RaidAirScoreRow {
-            country,
-            region,
-            friendly,
-            enemy,
-            impact: Default::default(),
-            friendly_missions: 0,
-            enemy_missions: 0,
-            air_spotting_scale: Some(0),
-        };
-        let frames: Vec<_> = (0..60)
-            .filter(|hour| *hour != 33)
-            .map(|hour| {
-                let mut frame = air(hour, 200_000 + i64::from(hour) * 1_000);
-                let germany = if hour % 7 == 3 {
-                    -500
-                } else {
-                    1_000 + i64::from(hour)
-                };
-                let mut scores = vec![
-                    score(44, 7000, 100_000, 200_000 + i64::from(hour) * 1_000),
-                    score(9001, 7000, germany, 100_000),
-                ];
-                if (10..20).contains(&hour) || (30..40).contains(&hour) {
-                    scores.push(score(55, 7999, 3_000 + i64::from(hour % 3), 0));
-                }
-                if hour >= 25 {
-                    scores.push(score(66, 7100, 4_000, 1_000));
-                }
-                scores.sort_by_key(|row| (row.country, row.region));
-                *frame.tables[TableId::RaidAirScores.index()] =
-                    TableView::Complete(TableRows::RaidAirScores(scores));
-                if hour >= 5 {
-                    *frame.tables[TableId::AirWings.index()] =
-                        TableView::Complete(TableRows::AirWings(vec![AirWingRow {
-                            id: 1,
-                            owner: 44,
-                            mission_region: Some(if hour < 50 { 7000 } else { 7200 }),
-                            ..Default::default()
-                        }]));
-                }
-                frame
-            })
-            .collect();
-        let replay = recording(frames.clone());
-        let flag = AtomicBool::new(false);
-        let run = |plain: bool| -> (BTreeMap<String, Vec<Vec<u8>>>, Prepared) {
-            let fixture = Fixture::new();
-            let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-            let mut state = Prepared {
-                plain,
-                ..Default::default()
-            };
-            state.measure();
-            let mut changes = FrameChangeTracker::new();
-            let mut worker = ScoreTracker::default();
-            for frame in &frames {
-                // The pre-pass reads each block alone: its worker starts
-                // again at each block's first hour.
-                if [20, 45].contains(&frame.hour) {
-                    worker = ScoreTracker::default();
-                }
-                let changes = changes.observe(frame, replay.format);
-                groups.observe(frame).unwrap();
-                if plain {
-                    state
-                        .observe_changed(frame, &replay, &mut groups, &changes)
-                        .unwrap();
-                } else {
-                    let scored = worker.scored(frame, &changes).unwrap();
-                    state
-                        .observe_scored(frame, &replay, &mut groups, &changes, scored)
-                        .unwrap();
-                }
-            }
-            groups.finish(&replay, 1);
-            state.publish_day(&groups, true).unwrap();
-            let mut writer = fixture.writer();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            let mut sections = BTreeMap::new();
-            for name in [
-                "air-superiority-1",
-                "air-superiority-1-values",
-                "air-superiority-1-operands",
-                "air-superiority-1-hours",
-                "air-superiority-1-catalogue",
-            ] {
-                let count = fixture
-                    .store
-                    .range_count(&fixture.key, name)
-                    .unwrap()
-                    .unwrap_or_else(|| panic!("{name} was not written"));
-                let ranges = (0..count)
-                    .map(|range| {
-                        let mut bytes = Vec::new();
-                        std::io::Read::read_to_end(
-                            &mut fixture
-                                .store
-                                .read(&fixture.key, name, range)
-                                .unwrap()
-                                .unwrap(),
-                            &mut bytes,
-                        )
-                        .unwrap();
-                        bytes
-                    })
-                    .collect();
-                sections.insert(name.to_owned(), ranges);
-            }
-            (sections, state)
-        };
-        let (plain, _) = run(true);
-        let (held, mut state) = run(false);
-        assert_eq!(
-            held.keys().collect::<Vec<_>>(),
-            plain.keys().collect::<Vec<_>>()
-        );
-        for (name, ranges) in &plain {
-            assert_eq!(&held[name], ranges, "{name}");
-        }
-        let parts: BTreeMap<_, _> = state
-            .take_parts()
-            .into_iter()
-            .map(|(name, _, times)| (name, times))
-            .collect();
-        assert!(
-            parts
-                .get("air_superiority.fold.diffed")
-                .is_some_and(|times| *times > 20),
-            "most war hours observe only their changed pairs: {parts:?}"
-        );
-        assert!(
-            parts.contains_key("air_superiority.fold.pairs"),
-            "block starts and the gap walk every pair: {parts:?}"
-        );
-    }
-
-    #[test]
-    fn prepared_air_superiority_window_list_reads_no_scan_state() {
-        let source = Source::from_replay(
-            dashboard_base::source::SourceKey {
-                source_id: "prepared-air-windows".into(),
-                revision: "1".into(),
-            },
-            "synthetic.battleplan".into(),
-            Arc::new(recording(vec![air(0, 100000)])),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let mut request = params(AirView::Choices, 0, 0);
-        request.windows_only = Some(true);
-        let reply = query(
-            &source,
-            serde_json::to_value(request).unwrap(),
-            &LoadContext { content: None },
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert!(!reply["windows"].as_array().unwrap().is_empty());
-        assert!(
-            source
-                .append_state::<AirCache>()
-                .lock()
-                .unwrap()
-                .branches
-                .is_empty()
-        );
-    }
-}
+mod tests;
