@@ -54,6 +54,7 @@ impl Owner {
         self.ready = false;
         self.fault = true;
     }
+    #[cfg(test)]
     pub fn observe(
         &mut self,
         row: &EventFeedHistoryRow,
@@ -61,6 +62,17 @@ impl Owner {
         script: EventFeedScript,
         change: EventFeedScriptChange,
     ) -> io::Result<()> {
+        self.apply(row.read_hour, Change::of(row, event), script, change)
+    }
+    /// [`Self::observe`] of `occurrence`, a change of the read at `read_hour`.
+    pub(super) fn apply(
+        &mut self,
+        read_hour: i32,
+        occurrence: Change<'_>,
+        script: EventFeedScript,
+        change: EventFeedScriptChange,
+    ) -> io::Result<()> {
+        let event = occurrence.event;
         if self.country != event.target {
             self.country = event.target;
             self.version.change();
@@ -71,7 +83,7 @@ impl Owner {
                 *self = Self {
                     country: event.target,
                     ready: true,
-                    baseline_hour: Some(row.read_hour),
+                    baseline_hour: Some(read_hour),
                     ..Self::default()
                 };
             }
@@ -90,7 +102,7 @@ impl Owner {
                 }
                 self.building = false;
                 self.ready = !self.fault;
-                self.baseline_hour = Some(row.read_hour);
+                self.baseline_hour = Some(read_hour);
             }
             DelayedStored { remaining } => {
                 let instance = script
@@ -103,8 +115,7 @@ impl Owner {
                     self.refuse();
                     return Ok(());
                 }
-                let start = script.scope_start as usize;
-                let scopes = &row.script_scopes[start..start + script.scope_len as usize];
+                let scopes = occurrence.scopes(script);
                 // One queue never holds a label twice: removal finds by label.
                 if self.timers.iter().any(|timer| timer.instance == instance) {
                     return Err(invalid("duplicate delayed-event compact identity"));
@@ -112,7 +123,7 @@ impl Owner {
                 allocation::reserve_exact(&mut self.timers, 1)?;
                 self.timers.push(DelayedEvent {
                     instance,
-                    definition: identity(row, script)?,
+                    definition: occurrence.identity(script)?,
                     originator: event.actor,
                     remaining,
                     scopes: allocation::copy_vec(scopes)?,

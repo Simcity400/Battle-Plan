@@ -10,6 +10,7 @@ use crate::{
 use engine_allocation as allocation;
 use std::io;
 pub(crate) mod columns;
+pub use columns::reuse;
 pub mod decisions;
 pub mod state;
 pub use state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity};
@@ -699,11 +700,32 @@ impl Value for EventFeedScriptChange {
         Ok(())
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        match u8::decode(input)? {
-            17 => Ok(Self::Decision(decisions::DecisionChange::decode(input)?)),
+        let code = u8::decode(input)?;
+        Self::of(code, input)
+    }
+}
+/// Where a stored registry change's operands are read from.
+pub(crate) trait ChangeOperands {
+    /// The change's one integer operand.
+    fn operand(&mut self) -> io::Result<u32>;
+    fn decision(&mut self) -> io::Result<decisions::DecisionChange>;
+}
+impl ChangeOperands for Decoder<'_> {
+    fn operand(&mut self) -> io::Result<u32> {
+        compact_read(self)
+    }
+    fn decision(&mut self) -> io::Result<decisions::DecisionChange> {
+        decisions::DecisionChange::decode(self)
+    }
+}
+impl EventFeedScriptChange {
+    /// The change stored as `code`, its operands read from `operands`.
+    pub(crate) fn of(code: u8, operands: &mut impl ChangeOperands) -> io::Result<Self> {
+        match code {
+            17 => Ok(Self::Decision(operands.decision()?)),
             0 => Ok(Self::PendingBaseline),
             1 => Ok(Self::PendingStored {
-                due_hour: signed_value(compact_read(input)?),
+                due_hour: signed_value(operands.operand()?),
             }),
             2 => Ok(Self::PendingReady),
             3 => Ok(Self::PendingRemoved),
@@ -713,11 +735,11 @@ impl Value for EventFeedScriptChange {
             16 => Ok(Self::FiredRemoved),
             7 => Ok(Self::DelayedBaseline),
             8 => Ok(Self::DelayedStored {
-                remaining: signed_value(compact_read(input)?),
+                remaining: signed_value(operands.operand()?),
             }),
             9 => Ok(Self::DelayedReady),
             code @ (10 | 11) => Ok(Self::DelayedAdvance {
-                count: compact_read(input)?,
+                count: operands.operand()?,
                 finished: code == 11,
             }),
             code @ (12..=14) => Ok(Self::DelayedRemoved {
@@ -1156,6 +1178,13 @@ pub const SCRIPT_FAMILY_NAMES: [(ScriptFamily, &str); 5] = [
     ),
 ];
 
+/// The names of the families `refusals` marks unavailable.
+fn refused_script_families(refusals: u8) -> impl Iterator<Item = &'static str> {
+    SCRIPT_FAMILY_NAMES
+        .into_iter()
+        .filter_map(move |(bit, name)| (refusals & bit as u8 != 0).then_some(name))
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EventFeedHistoryRow {
     pub generation: u64,
@@ -1184,9 +1213,7 @@ impl EventFeedHistoryRow {
         }
     }
     pub fn refused_script_families(&self) -> impl Iterator<Item = &'static str> {
-        SCRIPT_FAMILY_NAMES
-            .into_iter()
-            .filter_map(|(bit, name)| (self.script_refusals & bit as u8 != 0).then_some(name))
+        refused_script_families(self.script_refusals)
     }
     /// Keep each distinct token's bytes once in the arena, in first-use order,
     /// and point every occurrence of an equal token at that one span. Every

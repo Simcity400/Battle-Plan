@@ -7,11 +7,12 @@ use crate::{
     triggers::{Evaluator, Scope, Scopes},
 };
 use replay_data::event_feed_rows::{
-    EventFeedCountry, EventFeedEvent,
+    EventFeedCountry,
     decisions::{
         CONTAINERS, DecisionState, IGNORED, REENABLE, REMOVE_REQUESTED, TAKEN, TARGETED,
         TARGETED_TIMED, TIMED,
     },
+    state::Change,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -134,25 +135,26 @@ impl Captured {
             + self.days.capacity() * size_of::<i32>()
             + self.countries.capacity() * size_of::<([u32; 3], Option<u32>)>()
     }
-    /// `state` at the rebuild `event` of a read `covered` whole, with `kept` its copy.
+    /// `state` at the rebuild `change` of a read `covered` whole, with `kept` its copy.
     pub(super) fn of(
         state: &DecisionState,
-        event: &EventFeedEvent,
+        change: Change<'_>,
         covered: bool,
         kept: std::sync::Arc<super::native::retained::Kept>,
     ) -> Self {
         Self {
-            owner: event.actor.id,
-            sequence: event.sequence,
+            owner: change.event.actor.id,
+            sequence: change.sequence,
             complete: covered && state.complete(),
-            seed: event.script.and_then(|script| script.days),
-            political_power: event.script.and_then(|script| match script.change {
+            seed: change.event.script.and_then(|script| script.days),
+            political_power: change.event.script.and_then(|script| match script.change {
                 Some(replay_data::event_feed_rows::EventFeedScriptChange::Decision(change)) => {
                     change.political_power
                 }
                 _ => None,
             }),
-            override_admission: event
+            override_admission: change
+                .event
                 .script
                 .and_then(|script| script.lifecycle)
                 .map(|value| value != 0),
@@ -208,7 +210,7 @@ impl Inputs {
                 .sum::<usize>()
             + self.countries.capacity() * size_of::<([u32; 3], Option<u32>)>()
     }
-    pub fn captured(state: &DecisionState, event: &EventFeedEvent, covered: bool) -> Self {
+    pub fn captured(state: &DecisionState, change: Change<'_>, covered: bool) -> Self {
         let mut members = Vec::new();
         for container in 0..CONTAINERS as u8 {
             if let Ok(rows) = state.members(container) {
@@ -224,16 +226,17 @@ impl Inputs {
             }
         }
         Self {
-            sequence: event.sequence,
+            sequence: change.sequence,
             complete: covered && state.complete(),
-            seed: event.script.and_then(|script| script.days),
-            political_power: event.script.and_then(|script| match script.change {
+            seed: change.event.script.and_then(|script| script.days),
+            political_power: change.event.script.and_then(|script| match script.change {
                 Some(replay_data::event_feed_rows::EventFeedScriptChange::Decision(change)) => {
                     change.political_power
                 }
                 _ => None,
             }),
-            override_admission: event
+            override_admission: change
+                .event
                 .script
                 .and_then(|script| script.lifecycle)
                 .map(|value| value != 0),
@@ -740,7 +743,7 @@ mod tests {
                 "category={shown={visible={always=yes} available={always=yes} cost=0} paid={cost=10} expensive={cost=101} hidden={visible={always=no}} cooling={cost=0} missing={visible={has_country_flag=unrecorded_flag}}}",
             ),
         ]);
-        let event = EventFeedEvent {
+        let event = replay_data::event_feed_rows::EventFeedEvent {
             sequence: 9,
             generation: 1,
             hour: 7,

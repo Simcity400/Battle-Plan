@@ -4,7 +4,7 @@
 //! roster, say) costs its few changing words and repeats byte for byte when the
 //! same run recurs.
 use super::*;
-use crate::rows::{Field, Kind};
+use crate::rows::Field;
 
 // Source, country/cause leaves, script spans/flags/operands and operation leaves.
 const FIELDS: usize = 37;
@@ -197,14 +197,36 @@ impl crate::value::EncodeValue for Batch<'_> {
     }
 }
 
+thread_local! {
+    /// The occurrences of a pack this thread decoded, kept for its next ([`reuse`]).
+    static SPARE: std::cell::Cell<Vec<EventFeedEvent>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Keeps `events`' allocation for the next pack this thread decodes, which would otherwise
+/// commit its pages anew each hour.
+pub fn reuse(mut events: Vec<EventFeedEvent>) {
+    events.clear();
+    SPARE.with(|spare| {
+        let held = spare.take();
+        spare.set(if held.capacity() >= events.capacity() {
+            held
+        } else {
+            events
+        });
+    });
+}
+
 pub(crate) fn decode(
     row: &EventFeedHistoryRow,
     input: &mut Decoder<'_>,
 ) -> io::Result<Vec<EventFeedEvent>> {
     // Every occurrence stores at least its sequence gap and mask code.
     let count = input.count(2)?;
-    let mut events = allocation::vec(count)?;
-    let (mut sequence, mut previous, mut previous_mask) = (0_u64, [None; FIELDS], 0_u64);
+    let mut events = SPARE.with(std::cell::Cell::take);
+    allocation::reserve_exact(&mut events, count)?;
+    // The words in force, which each occurrence changes in place, and which of them are held.
+    let (mut sequence, mut words, mut held, mut previous_mask) =
+        (0_u64, [None; FIELDS], 0_u64, 0_u64);
     for index in 0..count {
         let gap = wide_read(input)?;
         if index != 0 && gap == 0 {
@@ -223,126 +245,163 @@ pub(crate) fn decode(
             }
             _ => return Err(invalid("Event feed changed-word mask differs")),
         };
-        let mut words = previous;
-        for column in (0..FIELDS).filter(|column| mask & (1 << column) != 0) {
-            let change = Kind::OptionalU64.decode_change(input)?;
-            let Field::OptionalU64(value) =
-                change.apply(Kind::OptionalU64, Field::OptionalU64(previous[column]))?
-            else {
-                unreachable!()
-            };
-            if value == previous[column] {
+        let mut columns = mask;
+        while columns != 0 {
+            let column = columns.trailing_zeros() as usize;
+            columns &= columns - 1;
+            let value = changed_word(input, words[column])?;
+            if value == words[column] {
                 return Err(invalid("Event feed unchanged word stored as a change"));
             }
             words[column] = value;
+            held = held & !(1 << column) | u64::from(value.is_some()) << column;
         }
-        events.push(event(row, sequence, words)?);
-        (previous, previous_mask) = (words, mask);
+        events.push(event(row, sequence, &words, held)?);
+        previous_mask = mask;
     }
     Ok(events)
 }
 
-fn event(row: &EventFeedHistoryRow, sequence: u64, mut words: Words) -> io::Result<EventFeedEvent> {
-    fn required(words: &mut Words, at: usize) -> io::Result<u64> {
-        words[at]
-            .take()
+/// A word stored as the ordinary optional column change from its `previous` value.
+fn changed_word(input: &mut Decoder<'_>, previous: Option<u64>) -> io::Result<Option<u64>> {
+    match input.u8()? {
+        0 => return Ok(None),
+        1 => {}
+        _ => return Err(invalid("invalid optional integer tag")),
+    }
+    let encoded = input.varint()?;
+    let difference = ((encoded >> 1) as i128) ^ -((encoded & 1) as i128);
+    if difference.unsigned_abs() > u128::from(u64::MAX) {
+        return Err(invalid("numeric difference exceeds native field range"));
+    }
+    let value = i128::from(previous.unwrap_or(0))
+        .checked_add(difference)
+        .ok_or_else(|| invalid("numeric delta addition overflow"))?;
+    u64::try_from(value)
+        .map(Some)
+        .map_err(|_| invalid("numeric delta exceeds native field range"))
+}
+
+/// An occurrence's words as its fields read them, each read marked: a held word no field
+/// reads is refused.
+struct Read<'w> {
+    words: &'w Words,
+    read: u64,
+}
+
+impl Read<'_> {
+    fn optional_word(&mut self, at: usize) -> Option<u64> {
+        self.read |= 1 << at;
+        self.words[at]
+    }
+    fn required(&mut self, at: usize) -> io::Result<u64> {
+        self.optional_word(at)
             .ok_or_else(|| invalid("Event feed column operand absent"))
     }
-    fn word(words: &mut Words, at: usize) -> io::Result<u32> {
-        u32::try_from(required(words, at)?).map_err(|_| invalid("Event feed column exceeds u32"))
+    fn word(&mut self, at: usize) -> io::Result<u32> {
+        u32::try_from(self.required(at)?).map_err(|_| invalid("Event feed column exceeds u32"))
     }
-    fn optional(words: &mut Words, at: usize) -> io::Result<Option<u32>> {
-        words[at]
-            .take()
+    fn optional(&mut self, at: usize) -> io::Result<Option<u32>> {
+        self.optional_word(at)
             .map(|n| u32::try_from(n).map_err(|_| invalid("Event feed column exceeds u32")))
             .transpose()
     }
-    fn country(words: &mut Words, at: usize) -> io::Result<EventFeedCountry> {
+    fn country(&mut self, at: usize) -> io::Result<EventFeedCountry> {
         Ok(EventFeedCountry {
-            reference: word(words, at)?,
-            id: word(words, at + 1)?,
-            instance: word(words, at + 2)?,
+            reference: self.word(at)?,
+            id: self.word(at + 1)?,
+            instance: self.word(at + 2)?,
         })
     }
-    fn byte(words: &mut Words, at: usize) -> io::Result<u8> {
-        u8::try_from(required(words, at)?).map_err(|_| invalid("Event feed column exceeds u8"))
+    fn byte(&mut self, at: usize) -> io::Result<u8> {
+        u8::try_from(self.required(at)?).map_err(|_| invalid("Event feed column exceeds u8"))
     }
-    fn route(value: u8) -> io::Result<EventFeedRoute> {
-        EventFeedRoute::decode(&mut Decoder::new(&[value]))
+}
+
+impl ChangeOperands for Read<'_> {
+    fn operand(&mut self) -> io::Result<u32> {
+        self.word(31)
     }
-    let age = word(&mut words, 0)?;
-    let hour = i32::try_from(i64::from(row.read_hour) - i64::from(age))
-        .map_err(|_| invalid("Event feed relative hour exceeds i32"))?;
-    let source = EventFeedSource::decode(&mut Decoder::new(&[byte(&mut words, 1)?]))?;
-    let actor = country(&mut words, 2)?;
-    let target = country(&mut words, 5)?;
-    let cause = if words[8].is_some() {
-        Recorded::Value(EventFeedCause {
-            route: route(byte(&mut words, 8)?)?,
-            within: route(byte(&mut words, 9)?)?,
-            conference: words[10].take(),
-            state: optional(&mut words, 11)?,
-            ally: if words[12].is_some() {
-                Some(country(&mut words, 12)?)
+    fn decision(&mut self) -> io::Result<decisions::DecisionChange> {
+        let operation = self.byte(32)?;
+        let (container, flags, ordinal) = (self.byte(33)?, self.byte(34)?, self.word(35)?);
+        let operation = decisions::Operation::of(operation)?;
+        Ok(decisions::DecisionChange {
+            operation,
+            container,
+            flags,
+            ordinal,
+            political_power: if operation == decisions::Operation::Rebuild {
+                self.optional_word(36).map(|n| n as i64)
             } else {
                 None
             },
-            reason: optional(&mut words, 15)?,
-            flags: byte(&mut words, 16)?,
+        })
+    }
+}
+
+/// The occurrence `words` hold, of which those of `held` are present.
+fn event(
+    row: &EventFeedHistoryRow,
+    sequence: u64,
+    words: &Words,
+    held: u64,
+) -> io::Result<EventFeedEvent> {
+    fn route(value: u8) -> io::Result<EventFeedRoute> {
+        EventFeedRoute::decode(&mut Decoder::new(&[value]))
+    }
+    let mut read = Read { words, read: 0 };
+    let age = read.word(0)?;
+    let hour = i32::try_from(i64::from(row.read_hour) - i64::from(age))
+        .map_err(|_| invalid("Event feed relative hour exceeds i32"))?;
+    let source = EventFeedSource::decode(&mut Decoder::new(&[read.byte(1)?]))?;
+    let actor = read.country(2)?;
+    let target = read.country(5)?;
+    let cause = if words[8].is_some() {
+        Recorded::Value(EventFeedCause {
+            route: route(read.byte(8)?)?,
+            within: route(read.byte(9)?)?,
+            conference: read.optional_word(10),
+            state: read.optional(11)?,
+            ally: if words[12].is_some() {
+                Some(read.country(12)?)
+            } else {
+                None
+            },
+            reason: read.optional(15)?,
+            flags: read.byte(16)?,
         })
     } else {
         Recorded::NotRecorded
     };
     let script = if words[17].is_some() {
-        let flags = word(&mut words, 17)?;
+        let flags = read.word(17)?;
         let mut script = EventFeedScript {
-            token_start: word(&mut words, 18)?,
-            token_len: word(&mut words, 19)?,
-            scope_start: word(&mut words, 20)?,
-            scope_len: word(&mut words, 21)?,
+            token_start: read.word(18)?,
+            token_len: read.word(19)?,
+            scope_start: read.word(20)?,
+            scope_len: read.word(21)?,
             native_event: if words[22].is_some() {
                 Some(EventFeedEventIdentity {
-                    kind: word(&mut words, 22)?,
-                    id: word(&mut words, 23)?,
+                    kind: read.word(22)?,
+                    id: read.word(23)?,
                 })
             } else {
                 None
             },
-            instance: optional(&mut words, 24)?,
-            option: optional(&mut words, 25)?.map(signed_value),
-            country_target: optional(&mut words, 26)?,
-            numeric_target: optional(&mut words, 27)?.map(signed_value),
-            lifecycle: optional(&mut words, 28)?.map(signed_value),
-            days: optional(&mut words, 29)?.map(signed_value),
+            instance: read.optional(24)?,
+            option: read.optional(25)?.map(signed_value),
+            country_target: read.optional(26)?,
+            numeric_target: read.optional(27)?.map(signed_value),
+            lifecycle: read.optional(28)?.map(signed_value),
+            days: read.optional(29)?.map(signed_value),
             scope_unrecorded: flags & (1 << 5) != 0,
             token_unrecorded: flags & (1 << 6) != 0,
             change: None,
         };
         if words[30].is_some() {
-            let code = byte(&mut words, 30)?;
-            // Reuse the strict operation decoder; only this small fixed-size operand
-            // record is assembled, never an occurrence batch or an arena.
-            let mut encoded = allocation::vec(32)?;
-            encoded.push(code);
-            match code {
-                1 | 8 | 10 | 11 => compact_write(word(&mut words, 31)?, &mut encoded),
-                17 => {
-                    encoded.push(byte(&mut words, 32)?);
-                    encoded.push(byte(&mut words, 33)?);
-                    encoded.push(byte(&mut words, 34)?);
-                    compact_write(word(&mut words, 35)?, &mut encoded);
-                    if encoded[1] == decisions::Operation::Rebuild as u8 {
-                        words[36]
-                            .take()
-                            .map(|n| n as i64)
-                            .encode_reserved(&mut encoded)?;
-                    }
-                }
-                _ => {}
-            }
-            let mut input = Decoder::new(&encoded);
-            script.change = Some(EventFeedScriptChange::decode(&mut input)?);
-            input.finish()?;
+            let code = read.byte(30)?;
+            script.change = Some(EventFeedScriptChange::of(code, &mut read)?);
         }
         if script.flags() != flags {
             return Err(invalid("Event feed script column flags differ"));
@@ -351,7 +410,7 @@ fn event(row: &EventFeedHistoryRow, sequence: u64, mut words: Words) -> io::Resu
     } else {
         None
     };
-    if words.iter().any(Option::is_some) {
+    if held & !read.read != 0 {
         return Err(invalid("Event feed unused column operand"));
     }
     Ok(EventFeedEvent {
@@ -610,13 +669,16 @@ mod tests {
         let mut malformed = encoded.clone();
         malformed[..4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(decode(&row, &mut Decoder::new(&malformed)).is_err());
+        let held = |words: &Words| {
+            (0..FIELDS).fold(0, |held, at| held | u64::from(words[at].is_some()) << at)
+        };
         // A script operand without a script flag is not silently discarded.
         let mut entry = words(&row.events[0], row.read_hour);
         entry[36] = Some(1);
-        assert!(event(&row, 1, entry).is_err());
+        assert!(event(&row, 1, &entry, held(&entry)).is_err());
         let mut entry = words(&row.events[0], row.read_hour);
         entry[0] = Some(u64::MAX);
-        assert!(event(&row, 1, entry).is_err());
+        assert!(event(&row, 1, &entry, held(&entry)).is_err());
         let mut repeated = row.clone();
         repeated.events.push(repeated.events[0]);
         assert!(repeated.validate().is_err());

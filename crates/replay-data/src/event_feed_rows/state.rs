@@ -2,7 +2,11 @@
 //! Baselines prove membership at attachment; they never create past fires.
 use super::decisions::{ALL, CLEAR_ALL_CANDIDATES, Operation};
 use super::*;
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    hash::{BuildHasherDefault, Hash, Hasher},
+    sync::Arc,
+};
 mod delayed;
 #[cfg(test)]
 mod plans;
@@ -56,42 +60,495 @@ impl Version {
     }
 }
 
-/// An event pack validated once, for a reduction that need not validate it again, with what
-/// that reduction leaves out ([`Plan`]).
+/// What a reduction reads of a pack besides its changes, with what is shown of its coverage: its
+/// world, read hour and coverage, and the sequences of its first and last occurrences.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackHeader {
+    pub generation: u64,
+    pub read_hour: i32,
+    pub coverage: EventFeedCoverage,
+    pub outstanding: u64,
+    pub failure: Option<Vec<u8>>,
+    pub script_refusals: u8,
+    /// The sequences of its first and last occurrences.
+    pub sequences: Option<(u64, u64)>,
+}
+impl PackHeader {
+    pub fn of(row: &EventFeedHistoryRow) -> io::Result<Self> {
+        Ok(Self {
+            generation: row.generation,
+            read_hour: row.read_hour,
+            coverage: row.coverage,
+            outstanding: row.outstanding,
+            failure: row
+                .failure
+                .as_deref()
+                .map(allocation::copy_vec)
+                .transpose()?,
+            script_refusals: row.script_refusals,
+            sequences: sequences(row),
+        })
+    }
+    pub fn refused_script_families(&self) -> impl Iterator<Item = &'static str> {
+        super::refused_script_families(self.script_refusals)
+    }
+    fn reading(&self) -> Reading {
+        Reading {
+            generation: self.generation,
+            read_hour: self.read_hour,
+            coverage: self.coverage,
+            failed: self.failure.is_some(),
+            script_refusals: self.script_refusals,
+            sequences: self.sequences,
+        }
+    }
+}
+fn sequences(row: &EventFeedHistoryRow) -> Option<(u64, u64)> {
+    row.events
+        .first()
+        .zip(row.events.last())
+        .map(|(first, last)| (first.sequence, last.sequence))
+}
+
+/// What a reduction reads of a pack besides its changes ([`PackHeader`]).
+#[derive(Clone, Copy)]
+struct Reading {
+    generation: u64,
+    read_hour: i32,
+    coverage: EventFeedCoverage,
+    failed: bool,
+    script_refusals: u8,
+    sequences: Option<(u64, u64)>,
+}
+impl Reading {
+    fn of(row: &EventFeedHistoryRow) -> Self {
+        Self {
+            generation: row.generation,
+            read_hour: row.read_hour,
+            coverage: row.coverage,
+            failed: row.failure.is_some(),
+            script_refusals: row.script_refusals,
+            sequences: sequences(row),
+        }
+    }
+}
+
+/// A retained-state change as a reduction reads it: its occurrence, the arenas its spans index,
+/// and its sequence.
+#[derive(Clone, Copy)]
+pub struct Change<'a> {
+    pub sequence: u64,
+    pub event: &'a EventFeedEvent,
+    tokens: &'a [u8],
+    scopes: &'a [EventFeedScope],
+}
+impl<'a> Change<'a> {
+    /// Occurrence `event` of `row`.
+    pub fn of(row: &'a EventFeedHistoryRow, event: &'a EventFeedEvent) -> Self {
+        Self {
+            sequence: event.sequence,
+            event,
+            tokens: &row.script_tokens,
+            scopes: &row.script_scopes,
+        }
+    }
+    /// The token `script`'s span names.
+    pub(super) fn token(&self, script: EventFeedScript) -> &'a [u8] {
+        let start = script.token_start as usize;
+        &self.tokens[start..start + script.token_len as usize]
+    }
+    /// The scopes `script`'s span names.
+    pub(super) fn scopes(&self, script: EventFeedScript) -> &'a [EventFeedScope] {
+        let start = script.scope_start as usize;
+        &self.scopes[start..start + script.scope_len as usize]
+    }
+    pub(super) fn identity(&self, script: EventFeedScript) -> io::Result<ScriptIdentity> {
+        Ok(ScriptIdentity {
+            native_event: script
+                .native_event
+                .ok_or_else(|| invalid("script registry event identity absent"))?,
+            token: allocation::copy_vec(self.token(script))?,
+        })
+    }
+}
+
+/// A retained-state change but for its sequence and hour, with its own token and scopes: what
+/// recurs from read to read, held once by its walk ([`Payloads`]).
+#[derive(Debug)]
+pub struct Payload {
+    event: EventFeedEvent,
+    token: Token,
+    scopes: Box<[EventFeedScope]>,
+    /// Its place among its walk's payloads.
+    id: u32,
+}
+impl PartialEq for Payload {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.event, &self.token, &self.scopes) == (&other.event, &other.token, &other.scopes)
+    }
+}
+impl Eq for Payload {}
+impl Payload {
+    fn change(&self, sequence: u64) -> Change<'_> {
+        Change {
+            sequence,
+            event: &self.event,
+            tokens: self.token.bytes(),
+            scopes: &self.scopes,
+        }
+    }
+    /// Whether it is the payload of `occurrence`, as [`Payloads::intern`] would make it.
+    fn holds(&self, occurrence: Change<'_>) -> bool {
+        let (held, event) = (&self.event, occurrence.event);
+        held.source == event.source
+            && held.actor == event.actor
+            && held.target == event.target
+            && held.cause == event.cause
+            && match (held.script, event.script) {
+                (Some(own), Some(script)) => {
+                    own == EventFeedScript {
+                        token_start: 0,
+                        scope_start: 0,
+                        ..script
+                    } && self.token.bytes() == occurrence.token(script)
+                        && *self.scopes == *occurrence.scopes(script)
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// The longest token a payload holds in place.
+const SHORT: usize = 63;
+
+/// A change's token as its payload holds it: in place when it fits, so finding the payload
+/// reads no other allocation.
+#[derive(Debug, PartialEq, Eq)]
+enum Token {
+    Short(u8, [u8; SHORT]),
+    Long(Box<[u8]>),
+}
+impl Token {
+    fn of(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() <= SHORT {
+            let mut held = [0; SHORT];
+            held[..bytes.len()].copy_from_slice(bytes);
+            return Ok(Self::Short(bytes.len() as u8, held));
+        }
+        Ok(Self::Long(allocation::boxed_slice(allocation::copy_vec(
+            bytes,
+        )?)?))
+    }
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Short(len, held) => &held[..*len as usize],
+            Self::Long(bytes) => bytes,
+        }
+    }
+}
+impl Hash for Payload {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Equal payloads hash alike: these words and the token are what tells roster changes apart.
+        let event = &self.event;
+        state.write_u64(u64::from(event.actor.id) << 32 | u64::from(event.target.reference));
+        state.write_u64(u64::from(event.target.id) << 32 | event.source as u64);
+        if let Some(script) = event.script {
+            state.write_u64(
+                u64::from(script.country_target.unwrap_or(u32::MAX)) << 32
+                    | u64::from(script.instance.unwrap_or(u32::MAX)),
+            );
+            state.write_u64(script.days.map_or(u64::MAX, |days| days as u32 as u64));
+            if let Some(EventFeedScriptChange::Decision(change)) = script.change {
+                state.write_u64(
+                    u64::from(change.ordinal) << 32
+                        | u64::from(change.flags) << 16
+                        | u64::from(change.container) << 8
+                        | change.operation as u64,
+                );
+                // A rebuild's balance tells one owner's rebuilds apart.
+                state.write_u64(
+                    change
+                        .political_power
+                        .map_or(u64::MAX, |power| power as u64),
+                );
+            }
+        }
+        state.write(self.token.bytes());
+    }
+}
+
+/// A walk's own hash of its payloads and targets, which are its keys.
+#[derive(Default)]
+struct Mixed(u64);
+impl Hasher for Mixed {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.write_u64(u64::from_le_bytes(word));
+        }
+    }
+    fn write_u32(&mut self, word: u32) {
+        self.write_u64(word.into());
+    }
+    fn write_u64(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+/// The payloads a walk's packs planned so far, each held once.
+#[derive(Default)]
+pub struct Payloads {
+    held: HashSet<Arc<Payload>, BuildHasherDefault<Mixed>>,
+    /// Every payload by id, with the id of the one that followed it last.
+    all: Vec<(Arc<Payload>, u32)>,
+    /// The id of the payload last interned.
+    last: Option<u32>,
+}
+impl Payloads {
+    /// The id of the walk's payload of `occurrence`, and that payload with the bytes it adds when
+    /// the walk held none like it.
+    fn intern(
+        &mut self,
+        occurrence: Change<'_>,
+    ) -> io::Result<(u32, Option<(Arc<Payload>, usize)>)> {
+        // Changes recur in the order they came: the last one's successor is tried first.
+        if let Some(last) = self.last {
+            let next = self.all[last as usize].1;
+            if let Some((payload, _)) = self.all.get(next as usize)
+                && payload.holds(occurrence)
+            {
+                self.last = Some(next);
+                return Ok((next, None));
+            }
+        }
+        let (id, added) = self.find(occurrence)?;
+        if let Some(last) = self.last {
+            self.all[last as usize].1 = id;
+        }
+        self.last = Some(id);
+        Ok((id, added))
+    }
+    /// Forgets the payloads from id `count` on, which a pack that failed to plan introduced.
+    fn truncate(&mut self, count: usize) {
+        for (payload, _) in self.all.drain(count.min(self.all.len())..) {
+            self.held.remove(&payload);
+        }
+        self.last = None;
+    }
+    fn find(&mut self, occurrence: Change<'_>) -> io::Result<(u32, Option<(Arc<Payload>, usize)>)> {
+        let mut event = EventFeedEvent {
+            sequence: 0,
+            generation: 0,
+            hour: 0,
+            ..*occurrence.event
+        };
+        let (token, scopes) = match &mut event.script {
+            Some(script) => {
+                let spans = (occurrence.token(*script), occurrence.scopes(*script));
+                script.token_start = 0;
+                script.scope_start = 0;
+                spans
+            }
+            None => (&[][..], &[][..]),
+        };
+        let payload = Payload {
+            event,
+            token: Token::of(token)?,
+            scopes: allocation::boxed_slice(allocation::copy_vec(scopes)?)?,
+            id: u32::try_from(self.all.len())
+                .map_err(|_| invalid("A walk holds more payloads than it counts"))?,
+        };
+        if let Some(held) = self.held.get(&payload) {
+            return Ok((held.id, None));
+        }
+        allocation::allocation_attempt()?;
+        allocation::reserve_set(&mut self.held, 1)?;
+        allocation::reserve(&mut self.all, 1)?;
+        let added = 2 * size_of::<usize>()
+            + size_of::<Payload>()
+            + match &payload.token {
+                Token::Short(..) => 0,
+                Token::Long(bytes) => bytes.len(),
+            }
+            + payload.scopes.len() * size_of::<EventFeedScope>();
+        let (id, payload) = (payload.id, Arc::new(payload));
+        self.held.insert(Arc::clone(&payload));
+        self.all.push((Arc::clone(&payload), u32::MAX));
+        Ok((id, Some((payload, added))))
+    }
+}
+
+/// The payloads of a walk's prepared packs by id, as the reduction of those packs holds them: a
+/// pack names its changes' payloads by id ([`PreparedHistory`]), so its walk and its reduction
+/// share no count of them, and each pack brings those it introduced.
+#[derive(Default)]
+pub struct HeldPayloads(Vec<Arc<Payload>>);
+impl HeldPayloads {
+    /// Takes in the payloads `prepared` introduced, which follow those of its walk's earlier
+    /// packs; a walk's first pack begins anew. Every prepared pack of a walk is admitted, in
+    /// order, whether or not it is reduced.
+    pub fn admit(&mut self, prepared: &PreparedHistory) -> io::Result<()> {
+        if prepared.first == 0 {
+            self.0.clear();
+        } else if prepared.first as usize != self.0.len() {
+            return Err(invalid(
+                "A prepared event pack does not follow its walk's last",
+            ));
+        }
+        allocation::reserve(&mut self.0, prepared.introduced.len())?;
+        self.0.extend(prepared.introduced.iter().cloned());
+        Ok(())
+    }
+}
+
+/// An event pack validated and planned once, for a reduction that need not validate it again:
+/// its [`PackHeader`], and of its occurrences only its retained-state changes, each with the
+/// work its reduction leaves out ([`Plan`]) and the id of its payload as its walk holds it.
 pub struct PreparedHistory {
-    row: EventFeedHistoryRow,
-    plan: Plan,
+    header: PackHeader,
+    steps: Vec<(Step, u64, u32)>,
+    /// How many payloads its walk held before it, and those it was the first to hold, which
+    /// follow them by id.
+    first: u32,
+    introduced: Vec<Arc<Payload>>,
+    /// The bytes those add.
+    added: usize,
 }
 impl PreparedHistory {
-    pub fn new(row: EventFeedHistoryRow) -> io::Result<Self> {
+    pub fn new(row: &EventFeedHistoryRow) -> io::Result<Self> {
         row.validate()?;
-        let plan = Plan::of(&row, None);
-        Ok(Self { row, plan })
+        Self::planned(row, Plan::of(row, None), &mut Payloads::default())
     }
-    /// [`Self::new`] of a walk's next pack, knowing what the walk's earlier packs wrote.
-    pub fn following(row: EventFeedHistoryRow, walk: &mut Written) -> io::Result<Self> {
+    /// [`Self::new`] of a walk's next pack, knowing what the walk's earlier packs wrote and the
+    /// payloads it holds.
+    pub fn following(
+        row: &EventFeedHistoryRow,
+        walk: &mut Written,
+        payloads: &mut Payloads,
+    ) -> io::Result<Self> {
         row.validate()?;
-        let plan = Plan::of(&row, Some(walk));
-        Ok(Self { row, plan })
+        Self::decoded(row, walk, payloads)
     }
-    pub fn row(&self) -> &EventFeedHistoryRow {
-        &self.row
+    /// [`Self::following`] of a pack as its decoding left it ([`RowCodec::decode_fields`],
+    /// [`Value::decode`]), which validates it.
+    ///
+    /// [`RowCodec::decode_fields`]: crate::rows::RowCodec::decode_fields
+    pub fn decoded(
+        row: &EventFeedHistoryRow,
+        walk: &mut Written,
+        payloads: &mut Payloads,
+    ) -> io::Result<Self> {
+        Self::planned(row, Plan::of(row, Some(walk)), payloads)
     }
-    /// The bytes it owns on the heap: its row's and its plan's.
+    fn planned(row: &EventFeedHistoryRow, plan: Plan, payloads: &mut Payloads) -> io::Result<Self> {
+        let first = payloads.all.len();
+        let planned = (|| -> io::Result<Self> {
+            let mut steps = allocation::vec(plan.steps.len())?;
+            let (mut introduced, mut added) = (Vec::new(), 0);
+            for step in plan.steps {
+                let occurrence = Change::of(row, &row.events[step.event as usize]);
+                let (id, new) = payloads.intern(occurrence)?;
+                if let Some((payload, bytes)) = new {
+                    allocation::reserve(&mut introduced, 1)?;
+                    introduced.push(payload);
+                    added += bytes;
+                }
+                steps.push((step, occurrence.sequence, id));
+            }
+            Ok(Self {
+                header: PackHeader::of(row)?,
+                steps,
+                first: u32::try_from(first)
+                    .map_err(|_| invalid("A walk holds more payloads than it counts"))?,
+                introduced,
+                added,
+            })
+        })();
+        if planned.is_err() {
+            payloads.truncate(first);
+        }
+        planned
+    }
+    pub fn header(&self) -> &PackHeader {
+        &self.header
+    }
+    /// The bytes it owns on the heap: its steps', its refusal text's, and those of the payloads
+    /// it was its walk's first to hold.
     pub fn heap_bytes(&self) -> usize {
-        crate::value::Value::heap_bytes(&self.row)
-            + self.plan.steps.capacity() * std::mem::size_of::<Step>()
+        self.steps.capacity() * size_of::<(Step, u64, u32)>()
+            + self.header.failure.as_ref().map_or(0, Vec::capacity)
+            + self.introduced.capacity() * size_of::<Arc<Payload>>()
+            + self.added
+    }
+}
+
+/// A prepared pack with the payloads its ids name.
+struct Admitted<'a> {
+    prepared: &'a PreparedHistory,
+    payloads: &'a [Arc<Payload>],
+}
+impl<'a> Admitted<'a> {
+    /// `prepared`, the pack `held` admitted last.
+    fn of(prepared: &'a PreparedHistory, held: &'a HeldPayloads) -> io::Result<Self> {
+        if prepared.first as usize + prepared.introduced.len() != held.0.len() {
+            return Err(invalid(
+                "A prepared event pack is reduced apart from its walk's payloads",
+            ));
+        }
+        Ok(Self {
+            prepared,
+            payloads: &held.0,
+        })
+    }
+}
+
+/// A pack's retained-state changes in plan order, as a reduction reads them.
+trait Planned {
+    fn len(&self) -> usize;
+    /// The plan's `at`th step and its change.
+    fn step(&self, at: usize) -> (Step, Change<'_>);
+}
+struct RowPlan<'a> {
+    row: &'a EventFeedHistoryRow,
+    plan: &'a Plan,
+}
+impl Planned for RowPlan<'_> {
+    fn len(&self) -> usize {
+        self.plan.steps.len()
+    }
+    fn step(&self, at: usize) -> (Step, Change<'_>) {
+        let step = self.plan.steps[at];
+        (
+            step,
+            Change::of(self.row, &self.row.events[step.event as usize]),
+        )
+    }
+}
+impl Planned for Admitted<'_> {
+    fn len(&self) -> usize {
+        self.prepared.steps.len()
+    }
+    fn step(&self, at: usize) -> (Step, Change<'_>) {
+        let (step, sequence, id) = self.prepared.steps[at];
+        (step, self.payloads[id as usize].change(sequence))
     }
 }
 
 /// The decision owners' target countries a walk's packs wrote since it began, each with the
 /// pack that last wrote it. They hold while every one of those packs was reduced to its end.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Written {
     generation: Option<u64>,
     packs: u64,
-    targets: HashMap<(u32, u32), (EventFeedCountry, u64)>,
+    /// By owner, each target reference's country and the pack that wrote it.
+    targets: Keyed<Keyed<(EventFeedCountry, u64)>>,
 }
+type Keyed<T> = HashMap<u32, T, BuildHasherDefault<Mixed>>;
 
 /// A pack's retained-state changes in order, each with the work its reduction leaves out
 /// because the pack, or the walk before it, already shows that work's effect.
@@ -128,8 +585,8 @@ impl Plan {
         walk.packs += 1;
         let pack = walk.packs;
         let mut steps = Vec::with_capacity(row.events.len());
-        // Each decision owner so far: its id, its last change's actor, and whether it is touched.
-        let mut owners: Vec<(u32, EventFeedCountry, bool)> = Vec::new();
+        // Each decision owner so far: its last change's actor, and whether it is touched.
+        let mut owners: Keyed<(EventFeedCountry, bool)> = Keyed::default();
         for (index, event) in row.events.iter().enumerate() {
             let Some(script) = event.script else {
                 continue;
@@ -140,19 +597,21 @@ impl Plan {
             let mut flags = 0;
             if let EventFeedScriptChange::Decision(decision) = change {
                 let id = event.actor.id;
-                let at = match owners.last() {
-                    Some(owner) if owner.0 == id => Some(owners.len() - 1),
-                    _ => owners.iter().position(|owner| owner.0 == id),
-                };
+                let owner = owners.entry(id);
+                let touches = decision.operation != Operation::Rebuild;
                 if decision.operation == Operation::Candidate
                     && !script.token_unrecorded
-                    && at.is_some_and(|at| owners[at].1 == event.actor && owners[at].2)
+                    && matches!(&owner, std::collections::hash_map::Entry::Occupied(held)
+                        if *held.get() == (event.actor, true))
                 {
                     flags |= QUIET;
                 }
+                let owner = owner.or_insert((event.actor, false));
+                *owner = (event.actor, owner.1 | touches);
                 if !script.token_unrecorded && event.target.reference as i32 > 0 {
                     flags |= TARGETED;
-                    match walk.targets.entry((id, event.target.reference)) {
+                    let targets = walk.targets.entry(id).or_default();
+                    match targets.entry(event.target.reference) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let (held, by) = entry.get_mut();
                             if *held == event.target {
@@ -167,16 +626,11 @@ impl Plan {
                     }
                 }
                 // A baseline makes its owner anew, after its own target write.
-                if decision.operation == Operation::Baseline && !script.token_unrecorded {
-                    walk.targets.retain(|(owner, _), _| *owner != id);
-                }
-                let touches = decision.operation != Operation::Rebuild;
-                match at {
-                    Some(at) => {
-                        owners[at].1 = event.actor;
-                        owners[at].2 |= touches;
-                    }
-                    None => owners.push((id, event.actor, touches)),
+                if decision.operation == Operation::Baseline
+                    && !script.token_unrecorded
+                    && let Some(targets) = walk.targets.get_mut(&id)
+                {
+                    targets.clear();
                 }
             }
             steps.push(Step {
@@ -186,7 +640,7 @@ impl Plan {
             });
         }
         // Walked back, each owner's nearest later clear of every kind and of each kind.
-        let mut clears: Vec<(u32, Option<u32>, [Option<u32>; 4])> = Vec::new();
+        let mut clears: Keyed<(Option<u32>, [Option<u32>; 4])> = Keyed::default();
         for step in steps.iter_mut().rev() {
             let event = &row.events[step.event as usize];
             let Some(script) = event.script.filter(|script| !script.token_unrecorded) else {
@@ -201,18 +655,7 @@ impl Plan {
             ) {
                 continue;
             }
-            let id = event.actor.id;
-            let at = match clears.last() {
-                Some(clear) if clear.0 == id => clears.len() - 1,
-                _ => match clears.iter().position(|clear| clear.0 == id) {
-                    Some(at) => at,
-                    None => {
-                        clears.push((id, None, [None; 4]));
-                        clears.len() - 1
-                    }
-                },
-            };
-            let (_, every, kinds) = &mut clears[at];
+            let (every, kinds) = clears.entry(event.actor.id).or_default();
             if decision.operation == Operation::Baseline
                 || (decision.flags & ALL != 0 && decision.flags & CLEAR_ALL_CANDIDATES != 0)
             {
@@ -360,27 +803,36 @@ impl ScriptEventState {
     pub fn observe_decisions(
         &mut self,
         row: &EventFeedHistoryRow,
-        mut visit: impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+        mut visit: impl FnMut(&super::decisions::DecisionState, Change<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         row.validate()?;
-        self.reduce(row, &Plan::of(row, None), true, &mut visit)
+        let plan = Plan::of(row, None);
+        self.reduce(
+            Reading::of(row),
+            &RowPlan { row, plan: &plan },
+            true,
+            &mut visit,
+        )
     }
-    /// [`Self::observe_decisions`] of a pack validated when it was prepared. `sure`: every
-    /// earlier pack of its walk was reduced to its end, so what they wrote holds.
+    /// [`Self::observe_decisions`] of a pack validated when it was prepared, the pack `held`
+    /// admitted last. `sure`: every earlier pack of its walk was reduced to its end, so what they
+    /// wrote holds.
     pub fn observe_prepared(
         &mut self,
         prepared: &PreparedHistory,
+        held: &HeldPayloads,
         sure: bool,
-        mut visit: impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+        mut visit: impl FnMut(&super::decisions::DecisionState, Change<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.reduce(&prepared.row, &prepared.plan, sure, &mut visit)
+        let admitted = Admitted::of(prepared, held)?;
+        self.reduce(prepared.header.reading(), &admitted, sure, &mut visit)
     }
     fn reduce(
         &mut self,
-        row: &EventFeedHistoryRow,
-        plan: &Plan,
+        row: Reading,
+        plan: &impl Planned,
         sure: bool,
-        visit: &mut impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+        visit: &mut impl FnMut(&super::decisions::DecisionState, Change<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.touched = Touched::default();
         if self.generation != Some(row.generation) {
@@ -407,36 +859,38 @@ impl ScriptEventState {
         }
         // A loss known on this row already makes the retained queues stale;
         // its deltas must not meet them before the row's own baselines.
-        if row.coverage != EventFeedCoverage::Complete || row.failure.is_some() {
+        if row.coverage != EventFeedCoverage::Complete || row.failed {
             self.touched.all = true;
             for owner in self.delayed.values_mut() {
                 owner.gap();
             }
         }
         // Validation keeps a pack's occurrences in order: only its first can repeat one seen.
-        if let Some(first) = row.events.first()
-            && self.sequence.is_some_and(|last| first.sequence <= last)
+        if let Some((first, _)) = row.sequences
+            && self.sequence.is_some_and(|last| first <= last)
         {
             return Err(invalid("script state occurrence order differs"));
         }
         let mut baselines = (false, false);
-        if let Err((at, error)) = self.steps(row, plan, sure, visit, &mut baselines) {
-            self.sequence = Some(row.events[at].sequence);
-            self.restore_cancelled(row, plan, at);
+        if let Err((at, sequence, error)) =
+            self.steps(row.read_hour, plan, sure, visit, &mut baselines)
+        {
+            self.sequence = Some(sequence);
+            self.restore_cancelled(plan, at);
             return Err(error);
         }
-        if let Some(last) = row.events.last() {
-            self.sequence = Some(last.sequence);
+        if let Some((_, last)) = row.sequences {
+            self.sequence = Some(last);
         }
         let (pending_baseline, fired_baseline) = baselines;
         if row.coverage == EventFeedCoverage::Unavailable
-            || row.failure.is_some()
+            || row.failed
             || row.script_refusals != 0
             || row.coverage == EventFeedCoverage::Partial
         {
             self.touched.all = true;
         }
-        if row.coverage == EventFeedCoverage::Unavailable || row.failure.is_some() {
+        if row.coverage == EventFeedCoverage::Unavailable || row.failed {
             for owner in self.decisions.values_mut() {
                 owner.gap();
             }
@@ -465,21 +919,23 @@ impl ScriptEventState {
         self.stamp();
         Ok(())
     }
-    /// The plan's steps in order, or the event a failing one stopped at.
+    /// The plan's steps in order, changes of the read at `read_hour`, or the event a failing one
+    /// stopped at and its sequence.
     fn steps(
         &mut self,
-        row: &EventFeedHistoryRow,
-        plan: &Plan,
+        read_hour: i32,
+        plan: &impl Planned,
         sure: bool,
-        visit: &mut impl FnMut(&super::decisions::DecisionState, &EventFeedEvent) -> io::Result<()>,
+        visit: &mut impl FnMut(&super::decisions::DecisionState, Change<'_>) -> io::Result<()>,
         (pending_baseline, fired_baseline): &mut (bool, bool),
-    ) -> Result<(), (usize, io::Error)> {
+    ) -> Result<(), (usize, u64, io::Error)> {
         let mut decided: Option<Run<'_>> = None;
         let mut timed: Option<((u32, u32), &mut delayed::Owner)> = None;
-        for step in &plan.steps {
+        for index in 0..plan.len() {
+            let (step, occurrence) = plan.step(index);
             let at = step.event as usize;
-            let fail = |error| (at, error);
-            let event = &row.events[at];
+            let fail = |error| (at, occurrence.sequence, error);
+            let event = occurrence.event;
             let Some(script) = event.script else {
                 continue;
             };
@@ -522,7 +978,7 @@ impl ScriptEventState {
                     run.made = false;
                     let cancelled = step.flags & CANCELLED != 0;
                     run.owner
-                        .apply(row, event, script, change, write, cancelled)
+                        .apply(read_hour, occurrence, script, change, write, cancelled)
                         .map_err(fail)?;
                     // A rebuild's roster is its own occurrence: it changes the retained state
                     // only when it makes, renames or loses its owner.
@@ -533,7 +989,7 @@ impl ScriptEventState {
                         self.touched.decisions.insert(run.key);
                         run.touched = true;
                     }
-                    visit(&*run.owner, event).map_err(fail)?;
+                    visit(&*run.owner, occurrence).map_err(fail)?;
                 }
                 PendingBaseline => {
                     self.pending.clear();
@@ -548,14 +1004,13 @@ impl ScriptEventState {
                         self.pending_ready = false;
                         continue;
                     }
-                    let start = script.scope_start as usize;
-                    let scopes = &row.script_scopes[start..start + script.scope_len as usize];
+                    let scopes = occurrence.scopes(script);
                     allocation::reserve_exact(&mut self.pending, 1).map_err(fail)?;
                     self.pending.push(PendingEvent {
                         instance: script
                             .instance
                             .ok_or_else(|| fail(invalid("pending event has no instance")))?,
-                        definition: identity(row, script).map_err(fail)?,
+                        definition: occurrence.identity(script).map_err(fail)?,
                         originator: event.actor,
                         due_hour,
                         scopes: allocation::copy_vec(scopes).map_err(fail)?,
@@ -599,7 +1054,7 @@ impl ScriptEventState {
                         continue;
                     }
                     allocation::reserve_exact(&mut self.fired, 1).map_err(fail)?;
-                    self.fired.push(identity(row, script).map_err(fail)?);
+                    self.fired.push(occurrence.identity(script).map_err(fail)?);
                     self.fired_version.change();
                 }
                 FiredRemoved => {
@@ -608,7 +1063,7 @@ impl ScriptEventState {
                         self.fired_ready = false;
                         continue;
                     }
-                    let removed = identity(row, script).map_err(fail)?;
+                    let removed = occurrence.identity(script).map_err(fail)?;
                     if let Some(index) = self.fired.iter().position(|member| *member == removed) {
                         // Native replacement erases one matched definition, not every
                         // equal identity. Initial duplicates retain multiplicity.
@@ -643,7 +1098,9 @@ impl ScriptEventState {
                         timed = Some((key, self.delayed.entry(key).or_default()));
                     }
                     let (_, owner) = timed.as_mut().expect("a reduced delayed-event owner");
-                    owner.observe(row, event, script, change).map_err(fail)?;
+                    owner
+                        .apply(read_hour, occurrence, script, change)
+                        .map_err(fail)?;
                 }
             }
         }
@@ -651,23 +1108,23 @@ impl ScriptEventState {
     }
     /// The candidate changes the plan left to a clear or baseline of the pack that the
     /// reduction, stopping at `at`, never reached.
-    fn restore_cancelled(&mut self, row: &EventFeedHistoryRow, plan: &Plan, at: usize) {
-        for step in &plan.steps {
+    fn restore_cancelled(&mut self, plan: &impl Planned, at: usize) {
+        for index in 0..plan.len() {
+            let (step, occurrence) = plan.step(index);
             if step.event as usize >= at {
                 break;
             }
             if step.flags & CANCELLED == 0 || step.cancelled as usize <= at {
                 continue;
             }
-            let event = &row.events[step.event as usize];
+            let event = occurrence.event;
             let Some(script) = event.script else {
                 continue;
             };
             let Some(EventFeedScriptChange::Decision(change)) = script.change else {
                 continue;
             };
-            let token = &row.script_tokens[script.token_start as usize
-                ..script.token_start as usize + script.token_len as usize];
+            let token = occurrence.token(script);
             let key = owner_key(&self.decisions, event.actor);
             if let Some(owner) = self.decisions.get_mut(&key) {
                 owner.candidate(token, event, script, change);
@@ -707,6 +1164,7 @@ fn owner_key<T>(owners: &BTreeMap<(u32, u32), T>, country: EventFeedCountry) -> 
         .next()
         .map_or((country.id, country.instance), |(key, _)| *key)
 }
+#[cfg(test)]
 fn identity(row: &EventFeedHistoryRow, script: EventFeedScript) -> io::Result<ScriptIdentity> {
     let start = script.token_start as usize;
     let end = start + script.token_len as usize;

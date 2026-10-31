@@ -18,6 +18,7 @@ use crate::{
     prepared::frame_changes::FrameChanges,
     products::country_history::HistoryScan,
 };
+use dashboard_keyed::table_changes::{self, Change, apply_frame, empty_frame};
 use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::metrics,
@@ -27,17 +28,17 @@ use replay::{
 };
 use replay_data::{
     event_feed_rows::{
-        EventFeedCountry, EventFeedCoverage, EventFeedSource,
-        state::{PreparedHistory, Written},
+        EventFeedCountry, EventFeedCoverage, EventFeedHistoryRow, EventFeedSource,
+        state::{Payloads, PreparedHistory, Written},
     },
     format::FormatVersion,
     rows::{
-        CountryCounterInputRow, CountryExperienceGainRow, CountryRow, NuclearStrikeRow, RowCodec,
-        SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema, tables,
+        CountryCounterInputRow, CountryExperienceGainRow, CountryRow, NuclearStrikeRow,
+        RelationTupleRow, RowCodec, SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema,
+        tables,
     },
     scope::CaptureMode,
 };
-use dashboard_keyed::table_changes::{self, Change, apply_frame, empty_frame};
 use replay_frame::frame::{DecodedFrame, Metrics, TableView};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -61,14 +62,14 @@ pub const TABLES: &[TableId] = &[
     TableId::PoliticsCaptureCoverage,
 ];
 
-/// The tables the worker reads as rows from the walk's frame.
-const FRAME: [TableId; 7] = [
+/// The tables the worker reads as rows from the walk's frame. Relations are read by their
+/// changed keys and read owners instead ([`Projector::guaranteed`]).
+const FRAME: [TableId; 6] = [
     TableId::Campaign,
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryCounterInputs,
     TableId::CountryExperienceGains,
-    TableId::RelationTuples,
     TableId::NuclearStrikes,
 ];
 
@@ -121,8 +122,12 @@ enum Facts {
     /// The occurrences' notices and facts, in order, and the pack's own retained-state
     /// observation notes.
     Drafted(Vec<Notice>, Vec<Draft>, native::retained::Observations),
-    /// An occurrence dated before the walk, which the emit names: the hour's proven charges.
-    Deferred(BTreeMap<ChargeKey, Vec<super::ScriptCost>>),
+    /// An occurrence dated before the walk, which the emit names: the pack whole, and the
+    /// hour's proven charges.
+    Deferred(
+        Arc<EventFeedHistoryRow>,
+        BTreeMap<ChargeKey, Vec<super::ScriptCost>>,
+    ),
 }
 
 enum Native {
@@ -176,9 +181,11 @@ impl Item for Hour {
                         .map(String::capacity)
                         .sum::<usize>()
             }
-            Native::Packet(pack, Facts::Deferred(proven)) => {
+            Native::Packet(pack, Facts::Deferred(row, proven)) => {
                 size_of::<PreparedHistory>()
                     + pack.heap_bytes()
+                    + size_of::<EventFeedHistoryRow>()
+                    + replay_data::value::Value::heap_bytes(&**row)
                     + proven
                         .iter()
                         .map(|((_, _, token, _), costs)| {
@@ -241,7 +248,9 @@ pub struct Projector {
     masks: [u64; TABLE_COUNT],
     /// [`FRAME`] as the worker asks the walk's frame for it.
     holds: Vec<(TableId, Hold)>,
-    packet: Option<(i32, Result<Arc<PreparedHistory>, String>)>,
+    /// The pack last read, with its supplying hour, and the walk's payloads.
+    packet: Option<(i32, Result<Pack, String>)>,
+    payloads: Payloads,
     identities: HistoryScan,
     tags: LinkTags,
     written: Written,
@@ -251,6 +260,9 @@ pub struct Projector {
     within: (i32, i32),
     /// The guarantees the walk handed on.
     sent: BTreeSet<(u32, u32, i32)>,
+    /// The keys of the relations of guarantee type the walk's relation table holds; none while
+    /// it is incomplete.
+    guaranteed: Option<BTreeSet<u128>>,
     types: BTreeMap<u32, u32>,
 }
 
@@ -275,6 +287,7 @@ impl Projector {
             masks,
             holds: needs()?.frame,
             packet: None,
+            payloads: Payloads::default(),
             identities: HistoryScan::new(false, &[]),
             tags: LinkTags::default(),
             written: Written::default(),
@@ -282,6 +295,7 @@ impl Projector {
             first: 0,
             within: (0, 0),
             sent: BTreeSet::new(),
+            guaranteed: None,
             types: strike_types(),
         })
     }
@@ -289,7 +303,7 @@ impl Projector {
     fn read_packet(
         &mut self,
         hour: &segments::Hour<'_, World>,
-    ) -> io::Result<Result<Arc<PreparedHistory>, String>> {
+    ) -> io::Result<Result<Pack, String>> {
         let table = TableId::EventFeedHistory;
         let held = columns::table(hour.state, table)?;
         let edits = columns::changes(hour.state, table)?;
@@ -304,6 +318,12 @@ impl Projector {
                 || !edits.inserted.is_empty()
                 || !edits.deleted_keys.is_empty()
             {
+                // The pack read last, which no item holds, keeps its occurrences' allocation.
+                if let Some((_, Ok((row, _)))) = self.packet.take()
+                    && let Ok(row) = Arc::try_unwrap(row)
+                {
+                    replay_data::event_feed_rows::reuse(row.events);
+                }
                 let mut slots = held.live().ones();
                 self.packet = match (slots.next(), slots.next()) {
                     (Some(slot), None) => {
@@ -314,12 +334,19 @@ impl Projector {
                             self.format.version(),
                         )?;
                         let read_hour = row.read_hour;
-                        let packet = PreparedHistory::following(row, &mut self.written)
-                            .map(Arc::new)
-                            .map_err(|error| error.to_string());
-                        if read_hour != hour.hour {
+                        // Only its supplying hour reduces a pack.
+                        let packet = if read_hour == hour.hour {
+                            PreparedHistory::decoded(&row, &mut self.written, &mut self.payloads)
+                                .map(|prepared| (Arc::new(row), Arc::new(prepared)))
+                                .map_err(|error| error.to_string())
+                        } else {
+                            replay_data::event_feed_rows::reuse(row.events);
+                            Err("The pack was read at another hour.".into())
+                        };
+                        if packet.is_err() {
                             // This hour reduces no pack, so no later plan may count on its writes.
                             self.written = Written::default();
+                            self.fresh = true;
                         }
                         Some((read_hour, packet))
                     }
@@ -400,6 +427,50 @@ impl Projector {
         Ok(Some(reads))
     }
 
+    /// The relations of guarantee type at `hour`, kept by their keys from the table's edits and
+    /// read whole where the walk reads its tables whole, before its shapes are noted.
+    fn guaranteed(&mut self, hour: &segments::Hour<'_, World>) -> io::Result<()> {
+        let table = TableId::RelationTuples;
+        if !columns::complete(hour.state, table) {
+            self.guaranteed = None;
+            return Ok(());
+        }
+        let held = columns::table(hour.state, table)?;
+        let guarantee = |key: u128| (key >> 16) as u32 == engine_native::cguarantee_relation::TYPE;
+        let whole = hour.starts
+            || hour.opens
+            || self.shapes[table.index()] != Some(columns::Status::Complete);
+        let key = |slot: u32| {
+            held.key(slot)
+                .ok_or_else(|| crate::invalid("A relation slot holds no row"))
+        };
+        match &mut self.guaranteed {
+            Some(guaranteed) if !whole => {
+                let edits = columns::changes(hour.state, table)?;
+                for deleted in &edits.deleted_keys {
+                    guaranteed.remove(deleted);
+                }
+                for &slot in &edits.inserted {
+                    let key = key(slot)?;
+                    if guarantee(key) {
+                        guaranteed.insert(key);
+                    }
+                }
+            }
+            _ => {
+                let mut guaranteed = BTreeSet::new();
+                for slot in held.live().ones() {
+                    let key = key(slot)?;
+                    if guarantee(key) {
+                        guaranteed.insert(key);
+                    }
+                }
+                self.guaranteed = Some(guaranteed);
+            }
+        }
+        Ok(())
+    }
+
     fn read<T: TableSchema>(
         &self,
         hour: &segments::Hour<'_, World>,
@@ -420,6 +491,9 @@ impl Projector {
         )
     }
 }
+
+/// A pack whole, which its worker drafts, and as its emit reduces it.
+type Pack = (Arc<EventFeedHistoryRow>, Arc<PreparedHistory>);
 
 fn identity_table(table: TableId) -> bool {
     matches!(
@@ -507,13 +581,12 @@ fn charged(kind: EventFeedKind) -> bool {
 /// What a worker makes of a pack: its occurrences' notices and facts and its own retained-state
 /// observation notes, named from `first` on, with the `charges` of its hour.
 fn draft(
-    packet: &PreparedHistory,
+    pack: &Arc<EventFeedHistoryRow>,
     identities: &HistoryScan,
     first: i32,
     (start, end): (i32, i32),
     charges: impl FnOnce() -> io::Result<BTreeMap<ChargeKey, Vec<super::ScriptCost>>>,
 ) -> io::Result<Facts> {
-    let pack = packet.row();
     if pack.events.iter().any(|event| event.hour < first) {
         let decided = pack.events.iter().any(|event| {
             matches!(
@@ -521,11 +594,8 @@ fn draft(
                 EventFeedSource::DecisionSelected | EventFeedSource::DecisionTimeoutEffect
             )
         });
-        return Ok(Facts::Deferred(if decided {
-            charges()?
-        } else {
-            BTreeMap::new()
-        }));
+        let proven = if decided { charges()? } else { BTreeMap::new() };
+        return Ok(Facts::Deferred(Arc::clone(pack), proven));
     }
     let mut builder = Builder::new(start, end);
     builder.captured = Some(Vec::new());
@@ -558,29 +628,36 @@ fn draft(
 
 /// The hour's read owners' guarantees the walk had not handed on, with their start reached,
 /// and whether any owner's relations were read: of `reads`, the hour's reads of the relations'
-/// owners in owner order ([`Projector::relation_reads`]).
+/// owners in owner order ([`Projector::relation_reads`]); of `guaranteed`, the keys of the
+/// relations of guarantee type ([`Projector::guaranteed`]).
 fn guarantees(
-    frame: &DecodedFrame,
+    (frame, hour, format): (&DecodedFrame, &segments::Hour<'_, World>, FormatVersion),
     reads: Option<&[SliceReadRow]>,
+    guaranteed: Option<&BTreeSet<u128>>,
     tags: &mut LinkTags,
     sent: &mut BTreeSet<(u32, u32, i32)>,
-) -> (bool, Vec<(u32, u32, i32)>) {
+) -> io::Result<(bool, Vec<(u32, u32, i32)>)> {
     let mut relations = false;
     let mut seen = Vec::new();
     if tags.update(frame).is_err() {
-        return (relations, seen);
+        return Ok((relations, seen));
     }
-    let (Ok(rows), Some(reads)) = (frame.complete::<tables::RelationTuples>(), reads) else {
-        return (relations, seen);
+    let (Some(guaranteed), Some(reads)) = (guaranteed, reads) else {
+        return Ok((relations, seen));
     };
+    let table = TableId::RelationTuples;
+    let held = columns::table(hour.state, table)?;
     for read in reads.iter().filter(|read| tags.get(read.owner).is_some()) {
         relations = true;
-        let first = rows.partition_point(|row| row.owner_country < read.owner);
-        let last = rows.partition_point(|row| row.owner_country <= read.owner);
-        for row in rows[first..last]
-            .iter()
-            .filter(|row| diplomacy::reads_relation(row))
-        {
+        let owner = u128::from(read.owner) << 80;
+        for &key in guaranteed.range(owner..owner + (1 << 80)) {
+            let slot = held
+                .slot(key)
+                .ok_or_else(|| crate::invalid("A guarantee's key holds no relation slot"))?;
+            let row = columns::row::<RelationTupleRow>(hour.state, table, slot, format.version())?;
+            if !diplomacy::reads_relation(&row) {
+                continue;
+            }
             // A relation counts at its first read with its start reached; later reads see it held.
             let relation = (row.first_country, row.second_country, row.start_hour);
             if row.start_hour <= frame.hour && sent.insert(relation) {
@@ -588,7 +665,7 @@ fn guarantees(
             }
         }
     }
-    (relations, seen)
+    Ok((relations, seen))
 }
 
 /// The hour's strikes as a worker names them from `first` on.
@@ -636,11 +713,13 @@ impl Operator<World> for Projector {
         self.first = first;
         self.shapes = [None; TABLE_COUNT];
         self.packet = None;
+        self.payloads = Payloads::default();
         self.identities = HistoryScan::new(false, &[]);
         self.tags = LinkTags::default();
         self.written = Written::default();
         self.fresh = true;
         self.sent.clear();
+        self.guaranteed = None;
         Ok(())
     }
 
@@ -682,6 +761,7 @@ impl Operator<World> for Projector {
             }
         });
         let reads = self.relation_reads(hour)?;
+        self.guaranteed(hour)?;
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:pack", None);
         let packet = self.read_packet(hour)?;
@@ -697,9 +777,8 @@ impl Operator<World> for Projector {
         for (table, _) in &changes {
             flags[table.index()] = true;
         }
-        for table in [TableId::RelationTuples, TableId::NuclearStrikes] {
-            flags[table.index()] |= hour.world.touched(table, u64::MAX);
-        }
+        flags[TableId::NuclearStrikes.index()] |=
+            hour.world.touched(TableId::NuclearStrikes, u64::MAX);
         let mut changed = FrameChanges::alone(frame, self.format);
         changed.rows_changed = flags;
         drop(probe);
@@ -715,8 +794,8 @@ impl Operator<World> for Projector {
         let probe = replay_frame::cpu::scope("ef-w:draft", None);
         let format = self.format;
         let native = match packet {
-            Ok(packet) => {
-                let drafted = draft(&packet, &self.identities, self.first, self.within, || {
+            Ok((row, packet)) => {
+                let drafted = draft(&row, &self.identities, self.first, self.within, || {
                     charges_at(hour, format)
                 })?;
                 Native::Packet(packet, drafted)
@@ -725,8 +804,13 @@ impl Operator<World> for Projector {
         };
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:guarantees", None);
-        let (relations, guarantees) =
-            guarantees(frame, reads.as_deref(), &mut self.tags, &mut self.sent);
+        let (relations, guarantees) = guarantees(
+            (frame, hour, self.format),
+            reads.as_deref(),
+            self.guaranteed.as_ref(),
+            &mut self.tags,
+            &mut self.sent,
+        )?;
         drop(probe);
         let probe = replay_frame::cpu::scope("ef-w:strikes", None);
         let nuclear = strikes(
@@ -1212,7 +1296,7 @@ impl Prepared {
         let read = match hour.native {
             Native::Missing(reason) => Err(crate::invalid(reason)),
             Native::Packet(packet, facts) => {
-                let pack = packet.row();
+                let pack = packet.header();
                 complete =
                     pack.coverage == EventFeedCoverage::Complete && pack.script_refusals == 0;
                 let naming = (*naming, &mut *rostered);
@@ -1321,8 +1405,9 @@ fn natives(
     facts: Facts,
 ) -> io::Result<Vec<Draft>> {
     let _cpu = replay_frame::cpu::scope("event-feed-reduce", None);
-    let pack = packet.row();
+    let pack = packet.header();
     let walked = std::mem::replace(sure, false);
+    feed.native.admit(packet)?;
     let probe = replay_frame::cpu::scope("ef:follows-notices", None);
     feed.native.follows(pack)?;
     feed.native.notices(&mut feed.diagnostics, pack);
@@ -1351,20 +1436,20 @@ fn natives(
             }
             (drafts, observations)
         }
-        Facts::Deferred(mut proven) => {
+        Facts::Deferred(row, mut proven) => {
             let mut rosters = captured
                 .into_iter()
                 .map(|(sequence, rebuilt)| (sequence, rebuilt.inputs()))
                 .collect();
             native::Projection::occurrences(
                 &mut feed.diagnostics,
-                pack,
+                &row,
                 &mut tag_at,
                 &mut rosters,
                 &WHOLE_HOUR,
             )?;
             let drafts = feed.diagnostics.drafts(&mut proven, slot_at, true)?;
-            (drafts, native::retained::observations(pack, &mut tag_at))
+            (drafts, native::retained::observations(&row, &mut tag_at))
         }
     };
     drop(probe);

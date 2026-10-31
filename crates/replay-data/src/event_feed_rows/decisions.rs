@@ -126,8 +126,25 @@ impl Value for DecisionChange {
         Ok(())
     }
     fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let operation = Operation::of(u8::decode(input)?)?;
+        Ok(Self {
+            operation,
+            container: u8::decode(input)?,
+            flags: u8::decode(input)?,
+            ordinal: compact_read(input)?,
+            political_power: if operation == Operation::Rebuild {
+                Option::<i64>::decode(input)?
+            } else {
+                None
+            },
+        })
+    }
+}
+impl Operation {
+    /// The operation `code` stores.
+    pub(super) fn of(code: u8) -> io::Result<Self> {
         use Operation::*;
-        let operation = match u8::decode(input)? {
+        Ok(match code {
             0 => Baseline,
             1 => Ready,
             2 => Invalidate,
@@ -144,17 +161,6 @@ impl Value for DecisionChange {
             13 => Ignore,
             14 => Refused,
             _ => return Err(invalid("unknown retained decision operation")),
-        };
-        Ok(Self {
-            operation,
-            container: u8::decode(input)?,
-            flags: u8::decode(input)?,
-            ordinal: compact_read(input)?,
-            political_power: if operation == Rebuild {
-                Option::<i64>::decode(input)?
-            } else {
-                None
-            },
         })
     }
 }
@@ -294,15 +300,16 @@ impl DecisionState {
         script: EventFeedScript,
         change: DecisionChange,
     ) -> io::Result<()> {
-        self.apply(row, event, script, change, true, false)
+        let occurrence = super::state::Change::of(row, event);
+        self.apply(row.read_hour, occurrence, script, change, true, false)
     }
-    /// [`Self::observe`] of a planned change: `write` whether to write its target country,
-    /// which the owner may hold already, and `cancelled` whether a later clear or baseline of
-    /// the owner in the same pack cancels its candidate change.
+    /// [`Self::observe`] of a planned change of the read at `read_hour`: `write` whether to
+    /// write its target country, which the owner may hold already, and `cancelled` whether a
+    /// later clear or baseline of the owner in the same pack cancels its candidate change.
     pub(super) fn apply(
         &mut self,
-        row: &EventFeedHistoryRow,
-        event: &EventFeedEvent,
+        read_hour: i32,
+        occurrence: super::state::Change<'_>,
         script: EventFeedScript,
         change: DecisionChange,
         write: bool,
@@ -310,8 +317,8 @@ impl DecisionState {
     ) -> io::Result<()> {
         use Operation::*;
         let n = change.container as usize;
-        let token = &row.script_tokens
-            [script.token_start as usize..script.token_start as usize + script.token_len as usize];
+        let event = occurrence.event;
+        let token = occurrence.token(script);
         if self.country != event.actor {
             self.country = event.actor;
             self.version.change();
@@ -338,7 +345,7 @@ impl DecisionState {
                 }
                 self.building = false;
                 self.ready = true;
-                self.baseline_hour = Some(row.read_hour);
+                self.baseline_hour = Some(read_hour);
             }
             Invalidate => self.gap(),
             // Also closes an open baseline: a Ready after it has nothing to complete.

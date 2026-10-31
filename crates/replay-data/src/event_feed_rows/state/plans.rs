@@ -362,6 +362,8 @@ struct Reductions {
     rows: ScriptEventState,
     planned: ScriptEventState,
     walk: Written,
+    payloads: Payloads,
+    held: HeldPayloads,
     sure: bool,
 }
 
@@ -372,6 +374,8 @@ impl Reductions {
             rows: ScriptEventState::default(),
             planned: ScriptEventState::default(),
             walk: Written::default(),
+            payloads: Payloads::default(),
+            held: HeldPayloads::default(),
             sure: true,
         }
     }
@@ -379,6 +383,7 @@ impl Reductions {
     /// A new walk, knowing nothing its packs wrote.
     fn restart(&mut self) {
         self.walk = Written::default();
+        self.payloads = Payloads::default();
         self.sure = true;
     }
 
@@ -392,21 +397,22 @@ impl Reductions {
             }
             Ok(())
         });
-        let by_rows = self.rows.observe_decisions(row, |owner, event| {
-            if is_rebuild(event) {
-                rows.push((event.sequence, rostered(owner)));
+        let by_rows = self.rows.observe_decisions(row, |owner, change| {
+            if is_rebuild(change.event) {
+                rows.push((change.sequence, rostered(owner)));
             }
             Ok(())
         });
-        let prepared = PreparedHistory::following(row.clone(), &mut self.walk).unwrap();
-        let by_plan = self
-            .planned
-            .observe_prepared(&prepared, self.sure, |owner, event| {
-                if is_rebuild(event) {
-                    planned.push((event.sequence, rostered(owner)));
-                }
-                Ok(())
-            });
+        let prepared = PreparedHistory::following(row, &mut self.walk, &mut self.payloads).unwrap();
+        self.held.admit(&prepared).unwrap();
+        let by_plan =
+            self.planned
+                .observe_prepared(&prepared, &self.held, self.sure, |owner, change| {
+                    if is_rebuild(change.event) {
+                        planned.push((change.sequence, rostered(owner)));
+                    }
+                    Ok(())
+                });
         let results =
             [expected, by_rows, by_plan].map(|result| result.map_err(|error| error.to_string()));
         if results[2].is_err() {
@@ -439,7 +445,8 @@ impl Reductions {
 
     /// `row` compiled by the walk but never reduced, as a read whose occurrences repeat.
     fn skip(&mut self, row: &EventFeedHistoryRow) {
-        PreparedHistory::following(row.clone(), &mut self.walk).unwrap();
+        let prepared = PreparedHistory::following(row, &mut self.walk, &mut self.payloads).unwrap();
+        self.held.admit(&prepared).unwrap();
         self.sure = false;
     }
 }
@@ -496,6 +503,82 @@ fn a_read_leaves_out_candidates_its_clear_cancels_unless_it_stops_first() {
     assert_eq!(owner.candidates.len(), 3);
 }
 
+/// A walk holds each payload once: a read repeating an earlier one's changes adds none, and its
+/// changes reduce as the row's.
+#[test]
+fn a_walk_holds_each_payload_once() {
+    let owner = country(5, 5, 1);
+    let ops = || vec![candidate(owner, 0, 0, 0, 30), candidate(owner, 1, 0, 1, 31)];
+    let (mut walk, mut payloads) = (Written::default(), Payloads::default());
+    let first =
+        PreparedHistory::following(&read(1, 10, 1, ops()), &mut walk, &mut payloads).unwrap();
+    let again = read(1, 11, 3, ops());
+    let repeated = PreparedHistory::following(&again, &mut walk, &mut payloads).unwrap();
+    assert!(first.added > 0 && first.introduced.len() == 2);
+    assert!(repeated.added == 0 && repeated.introduced.is_empty());
+    assert_eq!((repeated.first, repeated.steps[1].2), (2, first.steps[1].2));
+    assert_eq!(repeated.steps[0].1, again.events[0].sequence);
+    let mut reductions = Reductions::new();
+    assert_eq!(reductions.reduce(&read(1, 10, 1, ops())), None);
+    assert_eq!(reductions.reduce(&again), None);
+}
+
+/// A token too long to hold in place is held apart, and found again as one held in place is.
+#[test]
+fn a_long_token_is_held_once_and_reduces_as_its_row() {
+    let owner = country(5, 5, 1);
+    let long = |hour: i32, first: u64| {
+        let mut row = read(1, hour, first, vec![candidate(owner, 0, 0, 0, 30)]);
+        let token = b"a_decision_token_longer_than_any_payload_holds_in_place_of_its_own";
+        row.script_tokens = token.to_vec();
+        let script = row.events[0].script.as_mut().unwrap();
+        (script.token_start, script.token_len) = (0, token.len() as u32);
+        row
+    };
+    let (mut walk, mut payloads) = (Written::default(), Payloads::default());
+    let first = PreparedHistory::following(&long(10, 1), &mut walk, &mut payloads).unwrap();
+    let again = PreparedHistory::following(&long(11, 2), &mut walk, &mut payloads).unwrap();
+    assert!(matches!(first.introduced[0].token, Token::Long(_)));
+    assert!(first.added >= size_of::<Payload>() + 66);
+    assert!(again.added == 0 && again.introduced.is_empty());
+    assert_eq!(first.steps[0].2, again.steps[0].2);
+    let mut reductions = Reductions::new();
+    assert_eq!(reductions.reduce(&long(10, 1)), None);
+    assert_eq!(reductions.reduce(&long(11, 2)), None);
+    let owner = reductions.planned.decisions.values().next().unwrap();
+    assert_eq!(owner.candidates.iter().next().unwrap().1.len(), 66);
+}
+
+/// A reduction holds its walk's payloads as the walk's packs bring them, in order: a pack whose
+/// predecessors it did not admit is refused, and another walk's first pack begins anew.
+#[test]
+fn a_reduction_holds_its_walk_payloads_in_order() {
+    let owner = country(5, 5, 1);
+    let ops = |target| vec![candidate(owner, 0, 0, 0, target)];
+    let (mut walk, mut payloads) = (Written::default(), Payloads::default());
+    let first =
+        PreparedHistory::following(&read(1, 10, 1, ops(30)), &mut walk, &mut payloads).unwrap();
+    let second =
+        PreparedHistory::following(&read(1, 11, 2, ops(31)), &mut walk, &mut payloads).unwrap();
+    let (mut held, mut state) = (HeldPayloads::default(), ScriptEventState::default());
+    assert!(held.admit(&second).is_err());
+    held.admit(&first).unwrap();
+    assert!(
+        state
+            .observe_prepared(&second, &held, true, |_, _| Ok(()))
+            .is_err()
+    );
+    held.admit(&second).unwrap();
+    state
+        .observe_prepared(&second, &held, true, |_, _| Ok(()))
+        .unwrap();
+    let (mut walk, mut payloads) = (Written::default(), Payloads::default());
+    let other =
+        PreparedHistory::following(&read(1, 12, 3, ops(32)), &mut walk, &mut payloads).unwrap();
+    held.admit(&other).unwrap();
+    assert_eq!(held.0.len(), 1);
+}
+
 /// A target an earlier read of the walk wrote is not written again while every read since was
 /// reduced; after one that was not, it is.
 #[test]
@@ -520,16 +603,19 @@ fn targets_a_walk_wrote_hold_only_while_it_reduced_every_read() {
     let mut reductions = Reductions::new();
     assert_eq!(reductions.reduce(&first), None);
     assert!(reductions.sure);
-    let mut assumed = Written::default();
-    PreparedHistory::following(first.clone(), &mut assumed).unwrap();
-    PreparedHistory::following(failed.clone(), &mut assumed).unwrap();
-    let blind = PreparedHistory::following(again.clone(), &mut assumed).unwrap();
+    let (mut assumed, mut payloads) = (Written::default(), Payloads::default());
+    let mut held = HeldPayloads::default();
+    for read in [&first, &failed] {
+        let prepared = PreparedHistory::following(read, &mut assumed, &mut payloads).unwrap();
+        held.admit(&prepared).unwrap();
+    }
+    let blind = PreparedHistory::following(&again, &mut assumed, &mut payloads).unwrap();
+    held.admit(&blind).unwrap();
     assert_eq!(
         blind
-            .plan
             .steps
             .iter()
-            .map(|step| step.flags & WRITTEN)
+            .map(|(step, _, _)| step.flags & WRITTEN)
             .collect::<Vec<_>>(),
         [WRITTEN, WRITTEN]
     );
@@ -540,7 +626,7 @@ fn targets_a_walk_wrote_hold_only_while_it_reduced_every_read() {
     trusting.observe_decisions(&first, |_, _| Ok(())).unwrap();
     let _ = trusting.observe_decisions(&failed, |_, _| Ok(()));
     trusting
-        .observe_prepared(&blind, true, |_, _| Ok(()))
+        .observe_prepared(&blind, &held, true, |_, _| Ok(()))
         .unwrap();
     assert_eq!(
         trusting
@@ -748,11 +834,7 @@ fn plans_reduce_as_every_change_does() {
                 .filter(|step| step.flags & (QUIET | CANCELLED) == QUIET | CANCELLED)
                 .count();
             let walked = reductions.sure;
-            let mut probe = Written {
-                generation: reductions.walk.generation,
-                packs: reductions.walk.packs,
-                targets: reductions.walk.targets.clone(),
-            };
+            let mut probe = reductions.walk.clone();
             let known = Plan::of(&row, Some(&mut probe));
             if walked {
                 written += known

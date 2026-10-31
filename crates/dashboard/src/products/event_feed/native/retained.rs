@@ -4,7 +4,7 @@ use super::*;
 use replay_data::event_feed_rows::{
     EventFeedScope, EventFeedScriptChange as Change,
     decisions::{CONTAINERS, DecisionState, RetainedDecision, RetainedRandomCount},
-    state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity},
+    state::{DelayedEvent, PackHeader, PendingEvent, ScriptEventState, ScriptIdentity},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -800,7 +800,7 @@ pub(crate) struct Observed {
 /// changed no part and makes no notes of its own, which a read whose only changes are
 /// countdown passes does not.
 pub(super) fn observe(
-    pack: &EventFeedHistoryRow,
+    pack: &PackHeader,
     state: &ScriptEventState,
     sections: &mut Sections,
     contents: &mut Contents,

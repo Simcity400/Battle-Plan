@@ -2174,7 +2174,7 @@ fn drafts_write_what_serde_writes_of_their_facts() {
     let roster = || {
         crate::products::event_feed::decision_roster::Inputs::captured(
             &DecisionState::default(),
-            &event,
+            replay_data::event_feed_rows::state::Change::of(&pack, &event),
             true,
         )
     };
