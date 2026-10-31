@@ -2466,33 +2466,96 @@ fn changes_typed<T: RowCodec>(rows: &[T], previous: &[T]) -> io::Result<(Vec<T>,
     Ok((changed, deleted))
 }
 
+/// `rows` with `changed` set at their keys and `deleted` removed, in place: each change and
+/// deletion found by its key from the one before, so only the rows after the first insertion
+/// or deletion move, and none is copied or keyed again.
 #[inline(never)]
 fn apply_changes_typed<T: RowCodec>(
     mut rows: Vec<T>,
     changed: Vec<T>,
     deleted: &[u128],
 ) -> io::Result<Vec<T>> {
-    // Rows changed in place keep the table's order; only an insertion or a
-    // deletion moves the rows after it.
-    if deleted.is_empty() {
-        let mut at = allocation::vec(changed.len())?;
-        let mut from = 0;
-        for row in &changed {
-            match locate(&rows, from, row.key()) {
-                Ok(position) => {
-                    at.push(position);
-                    from = position + 1;
+    let ascending = |mut keys: std::slice::Iter<'_, u128>| {
+        let mut last = keys.next();
+        keys.all(|key| last.replace(key).is_some_and(|last| last < key))
+    };
+    let keys = allocation::collect_vec(changed.iter().map(RowCodec::key))?;
+    if !ascending(keys.iter()) || !ascending(deleted.iter()) {
+        return merge_changes(rows, changed, deleted);
+    }
+    // Ok where a change sets a row, Err where it is inserted.
+    let mut places = allocation::vec(keys.len())?;
+    let mut from = 0;
+    for &key in &keys {
+        let at = locate(&rows, from, key);
+        from = match at {
+            Ok(position) => position + 1,
+            Err(position) => position,
+        };
+        places.push(at);
+    }
+    let mut gone = allocation::vec(deleted.len())?;
+    from = 0;
+    for &key in deleted {
+        let position =
+            locate(&rows, from, key).map_err(|_| invalid("row changes delete an absent key"))?;
+        gone.push(position);
+        from = position + 1;
+    }
+    // A key deleted and set again is set.
+    let mut set = places.iter().filter_map(|at| at.ok()).peekable();
+    gone.retain(|&position| {
+        while set.next_if(|&at| at < position).is_some() {}
+        set.peek() != Some(&position)
+    });
+    let mut inserted = allocation::vec(places.iter().filter(|at| at.is_err()).count())?;
+    let mut removed = gone.iter().peekable();
+    let mut before = 0;
+    for (at, row) in places.into_iter().zip(changed) {
+        match at {
+            Ok(position) => rows[position] = row,
+            // Where it goes once the deleted rows are gone.
+            Err(position) => {
+                while removed.next_if(|&&gone| gone < position).is_some() {
+                    before += 1;
                 }
-                Err(_) => break,
+                inserted.push((position - before, row));
             }
-        }
-        if at.len() == changed.len() {
-            for (position, row) in at.into_iter().zip(changed) {
-                rows[position] = row;
-            }
-            return Ok(rows);
         }
     }
+    if !gone.is_empty() {
+        let (mut index, mut removed) = (0, gone.iter().peekable());
+        rows.retain(|_| {
+            let kept = removed.next_if(|&&gone| gone == index).is_none();
+            index += 1;
+            kept
+        });
+    }
+    if !inserted.is_empty() {
+        // Holes at the end move down past each run of rows an insertion goes before.
+        let (mut read, holes) = (rows.len(), inserted.len());
+        allocation::resize_default(&mut rows, allocation::add(read, holes)?)?;
+        let mut write = rows.len();
+        for (position, row) in inserted.into_iter().rev() {
+            while read > position {
+                read -= 1;
+                write -= 1;
+                rows.swap(read, write);
+            }
+            write -= 1;
+            rows[write] = row;
+        }
+    }
+    Ok(rows)
+}
+
+/// [`apply_changes_typed`] by merging into a new table, for changes or deletions out of key
+/// order.
+fn merge_changes<T: RowCodec>(
+    rows: Vec<T>,
+    changed: Vec<T>,
+    deleted: &[u128],
+) -> io::Result<Vec<T>> {
     let mut out = allocation::vec(allocation::add(rows.len(), changed.len())?)?;
     let mut changed = changed.into_iter().peekable();
     let mut deleted = deleted.iter().peekable();

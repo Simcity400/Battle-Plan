@@ -181,68 +181,149 @@ struct Pending {
     /// The view is built anew, whatever the hours noted.
     anew: bool,
     /// Each noted section's edits, in hour order, while the table stays complete.
-    edits: Vec<(u128, Edit)>,
+    edits: Vec<Noted>,
     /// How many edits the last compaction left.
     compacted: usize,
 }
 
-/// What a section did to a row.
+/// What a section did to a row, with the slot the row is at for an edit that leaves one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Edit {
     Deleted,
     /// Inserted, every column with it.
-    Inserted,
+    Inserted(u32),
     /// These columns written.
-    Written(u64),
+    Written(u64, u32),
 }
 
-/// `edits`, sorted by key and in hour order within one, as what they leave each key: set
-/// whole (inserted since its last deletion), removed, or with the columns written since.
-fn fold(
-    edits: &[(u128, Edit)],
-    mut each: impl FnMut(u128, Edit) -> io::Result<()>,
-) -> io::Result<()> {
+/// A noted edit of the row keyed `key`, and its place among its table's edits, by which a
+/// sort keeps each key's in hour order without a scratch buffer.
+#[derive(Clone, Copy, Debug)]
+struct Noted {
+    key: u128,
+    /// The columns written; 0 for a deletion or an insertion.
+    mask: u64,
+    slot: u32,
+    /// Its place, below [`PLACES`], with its kind in the bits above.
+    place: u32,
+}
+
+const _: () = assert!(size_of::<Noted>() == 32);
+
+/// The places a table's edits can hold.
+const PLACES: u32 = 1 << 30;
+const DELETED: u32 = 1 << 30;
+const INSERTED: u32 = 2 << 30;
+const WRITTEN: u32 = 3 << 30;
+
+impl Noted {
+    fn new(key: u128, place: u32, edit: Edit) -> io::Result<Self> {
+        if place >= PLACES {
+            return Err(invalid("A table's edits pass the places they can hold"));
+        }
+        let (mask, slot, kind) = match edit {
+            Edit::Deleted => (0, 0, DELETED),
+            Edit::Inserted(slot) => (0, slot, INSERTED),
+            Edit::Written(mask, slot) => (mask, slot, WRITTEN),
+        };
+        Ok(Self {
+            key,
+            mask,
+            slot,
+            place: place | kind,
+        })
+    }
+
+    fn edit(self) -> Edit {
+        match self.place & !(PLACES - 1) {
+            DELETED => Edit::Deleted,
+            INSERTED => Edit::Inserted(self.slot),
+            _ => Edit::Written(self.mask, self.slot),
+        }
+    }
+
+    /// Its order: by key, then by place.
+    fn order(&self) -> (u128, u32) {
+        (self.key, self.place & (PLACES - 1))
+    }
+}
+
+/// The slot `key` is at in `table`: the slot its last edit named, else found again.
+fn held_slot(table: &Table, key: u128, slot: u32) -> Option<u32> {
+    if table.key(slot) == Some(key) {
+        Some(slot)
+    } else {
+        table.slot(key)
+    }
+}
+
+/// `edits` sorted by key, each key's in hour order, without a scratch buffer.
+fn sort(edits: &mut [Noted]) {
+    edits.sort_unstable_by_key(Noted::order);
+}
+
+/// `edits`, sorted by key and in hour order within one ([`sort`]), as what they leave each
+/// key: set whole (inserted since its last deletion), removed, or with the columns written
+/// since.
+fn fold(edits: &[Noted], mut each: impl FnMut(u128, Edit) -> io::Result<()>) -> io::Result<()> {
     let mut at = 0;
-    while let Some(&(key, _)) = edits.get(at) {
-        let (mut deleted, mut inserted, mut mask) = (false, false, 0);
-        while let Some(&(_, edit)) = edits.get(at).filter(|&&(held, _)| held == key) {
-            match edit {
+    while let Some(&Noted { key, .. }) = edits.get(at) {
+        let (mut deleted, mut inserted, mut mask, mut slot) = (false, false, 0, 0);
+        while let Some(noted) = edits.get(at).filter(|noted| noted.key == key) {
+            match noted.edit() {
                 Edit::Deleted => {
                     deleted = true;
                     inserted = false;
                     mask = 0;
                 }
-                Edit::Inserted => {
+                Edit::Inserted(held) => {
                     inserted = true;
                     mask = 0;
+                    slot = held;
                 }
-                Edit::Written(columns) => mask |= columns,
+                Edit::Written(columns, held) => {
+                    mask |= columns;
+                    slot = held;
+                }
             }
             at += 1;
         }
         if inserted {
-            each(key, Edit::Inserted)?;
+            each(key, Edit::Inserted(slot))?;
         } else if deleted {
             each(key, Edit::Deleted)?;
         } else if mask != 0 {
-            each(key, Edit::Written(mask))?;
+            each(key, Edit::Written(mask, slot))?;
         }
     }
     Ok(())
 }
 
 /// `edits` as [`fold`] leaves them, one per key, in key order, less deletions of keys
-/// `previous` does not hold: they fold the same with any edits after them.
-fn compact(edits: &mut Vec<(u128, Edit)>, previous: &TableRows) -> io::Result<()> {
-    edits.sort_by_key(|&(key, _)| key);
-    let mut folded = engine_allocation::vec(edits.len())?;
-    fold(edits, |key, edit| {
-        if edit != Edit::Deleted || previous.contains_key(key) {
-            folded.push((key, edit));
+/// `previous` does not hold: they fold the same with any edits after them. In place: each
+/// key's fold is written over its first edits.
+fn compact(edits: &mut Vec<Noted>, previous: &TableRows) -> io::Result<()> {
+    sort(edits);
+    let mut kept = 0;
+    let mut read = 0;
+    while read < edits.len() {
+        let key = edits[read].key;
+        let end = read + edits[read..].partition_point(|noted| noted.key == key);
+        let mut folded = None;
+        fold(&edits[read..end], |key, edit| {
+            folded = Some((key, edit));
+            Ok(())
+        })?;
+        if let Some((key, edit)) = folded
+            && (edit != Edit::Deleted || previous.contains_key(key))
+        {
+            // `kept` stays below `read`, an index of a placed edit.
+            edits[kept] = Noted::new(key, kept as u32, edit)?;
+            kept += 1;
         }
-        Ok(())
-    })?;
-    *edits = folded;
+        read = end;
+    }
+    edits.truncate(kept);
     Ok(())
 }
 
@@ -330,7 +411,7 @@ impl Views {
             + self
                 .pending
                 .iter()
-                .map(|pending| pending.edits.capacity() * size_of::<(u128, Edit)>())
+                .map(|pending| pending.edits.capacity() * size_of::<Noted>())
                 .sum::<usize>()
             + self.times.tables.capacity() * size_of::<(TableId, Duration)>()
     }
@@ -544,6 +625,18 @@ impl Views {
         manifest: &Manifest<'_>,
         restart: bool,
     ) -> io::Result<()> {
+        self.note_tables(state, manifest, restart, &|_| true)
+    }
+
+    /// [`Self::note`] for the tables `noted` names alone: the others see no hour, and are built
+    /// from the hours they saw, as views noted only at those hours would be.
+    pub fn note_tables(
+        &mut self,
+        state: &State,
+        manifest: &Manifest<'_>,
+        restart: bool,
+        noted: &dyn Fn(TableId) -> bool,
+    ) -> io::Result<()> {
         let mut present = [false; TABLE_COUNT];
         for section in &manifest.sections {
             *present
@@ -555,6 +648,9 @@ impl Views {
         }
         for (at, pending) in self.pending.iter_mut().enumerate() {
             let id = self.selected[at];
+            if !noted(id) {
+                continue;
+            }
             let index = id.index();
             if state.skips(index) {
                 return Err(invalid(format!("{id:?} is not read by this walk")));
@@ -593,15 +689,21 @@ impl Views {
                     + changes.changed.len()
                     + changes.fill_slots.len(),
             )?;
+            // Each edit's place is its index, so a sort by key keeps each key's in hour order.
+            let place = |edits: &Vec<Noted>| u32::try_from(edits.len()).unwrap_or(PLACES);
             // A key deleted and inserted again in one hour is set, not removed.
-            pending
-                .edits
-                .extend(changes.deleted_keys.iter().map(|&key| (key, Edit::Deleted)));
+            for &key in &changes.deleted_keys {
+                let at = place(&pending.edits);
+                pending.edits.push(Noted::new(key, at, Edit::Deleted)?);
+            }
             for &slot in &changes.inserted {
                 let key = table
                     .key(slot)
                     .ok_or_else(|| invalid("An inserted slot holds no row"))?;
-                pending.edits.push((key, Edit::Inserted));
+                let at = place(&pending.edits);
+                pending
+                    .edits
+                    .push(Noted::new(key, at, Edit::Inserted(slot))?);
             }
             let written = changes
                 .changed
@@ -612,7 +714,10 @@ impl Views {
                 let key = table
                     .key(slot)
                     .ok_or_else(|| invalid("A changed slot holds no row"))?;
-                pending.edits.push((key, Edit::Written(mask)));
+                let at = place(&pending.edits);
+                pending
+                    .edits
+                    .push(Noted::new(key, at, Edit::Written(mask, slot))?);
             }
             // Edits stay within twice the table's slots and what the last compaction left.
             if pending.edits.len() > table.slots().max(2 * pending.compacted) {
@@ -663,9 +768,48 @@ impl Views {
         hour: i32,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<()> {
-        let mut plans = engine_allocation::vec(self.selected.len())?;
+        let every = engine_allocation::collect_vec(0..self.selected.len())?;
+        self.update_at(state, hour, &every, parallel)
+    }
+
+    /// [`Self::update`] of `tables` alone, each selected: the others keep their views and the
+    /// hours noted since, for a later build. Views that record or carry change facts build every
+    /// table at once.
+    pub fn update_tables(
+        &mut self,
+        state: &State,
+        hour: i32,
+        tables: &[TableId],
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<()> {
+        if self.record || self.changes.is_some() {
+            return Err(invalid("Views with change facts build every table at once"));
+        }
+        let mut at = engine_allocation::vec(tables.len())?;
+        for table in tables {
+            at.push(
+                self.selected
+                    .binary_search(table)
+                    .map_err(|_| invalid("A table built is not selected"))?,
+            );
+        }
+        at.sort_unstable();
+        at.dedup();
+        self.update_at(state, hour, &at, parallel)
+    }
+
+    /// [`Self::update`] of the selected tables at `positions`, ascending.
+    fn update_at(
+        &mut self,
+        state: &State,
+        hour: i32,
+        positions: &[usize],
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<()> {
+        let mut plans = engine_allocation::vec(positions.len())?;
         let mut required = 0_usize;
-        for (at, pending) in self.pending.iter_mut().enumerate() {
+        for &at in positions {
+            let pending = &mut self.pending[at];
             let id = self.selected[at];
             let index = id.index();
             if state.skips(index) {
@@ -682,12 +826,12 @@ impl Views {
             let plan = match (status, previous.map(|view| &**view)) {
                 (Status::Complete, Some(TableView::Complete(rows))) => {
                     if pending.sectioned {
-                        pending.edits.sort_by_key(|&(key, _)| key);
+                        sort(&mut pending.edits);
                         let (mut changed, mut deleted) = (0, 0);
                         fold(&pending.edits, |key, edit| {
                             match edit {
                                 Edit::Deleted => deleted += usize::from(rows.contains_key(key)),
-                                Edit::Inserted | Edit::Written(_) => changed += 1,
+                                Edit::Inserted(_) | Edit::Written(..) => changed += 1,
                             }
                             Ok(())
                         })?;
@@ -714,7 +858,7 @@ impl Views {
         let mut credit = match &self.changes {
             Some(budget) => {
                 // Facts a replaced view no longer needs go back before more are asked for.
-                for (at, plan) in plans.iter().enumerate() {
+                for (plan, &at) in plans.iter().zip(positions) {
                     if !matches!(plan, Plan::Carry)
                         && let Some(view) = self.views[self.selected[at].index()].as_mut()
                     {
@@ -728,13 +872,13 @@ impl Views {
         let anew = engine_allocation::collect_vec(
             plans
                 .iter()
-                .zip(&self.selected)
+                .zip(positions)
                 .filter(|(plan, _)| matches!(plan, Plan::Anew))
-                .map(|(_, &id)| id),
+                .map(|(_, &at)| self.selected[at]),
         )?;
         if self.timed {
             self.times.tables.clear();
-            engine_allocation::reserve(&mut self.times.tables, self.selected.len())?;
+            engine_allocation::reserve(&mut self.times.tables, positions.len())?;
             let tables = std::mem::take(&mut self.times.tables);
             self.times = BuildTimes {
                 tables,
@@ -748,7 +892,7 @@ impl Views {
         }
         // A continuing walk's deltas apply to the hour the views were built for.
         let baseline = self.built.unwrap_or(hour.saturating_sub(1));
-        for (at, plan) in plans.into_iter().enumerate() {
+        for (plan, &at) in plans.into_iter().zip(positions) {
             let id = self.selected[at];
             let index = id.index();
             let started = self.timed.then(Instant::now);
@@ -972,9 +1116,8 @@ impl Views {
                         (&mut self.slots, &mut self.deleted, &mut self.patches);
                     fold(&pending.edits, |key, edit| {
                         match edit {
-                            Edit::Inserted => {
-                                let slot = table
-                                    .slot(key)
+                            Edit::Inserted(slot) => {
+                                let slot = held_slot(table, key, slot)
                                     .ok_or_else(|| invalid("An inserted key holds no slot"))?;
                                 engine_allocation::reserve(slots, 1)?;
                                 slots.push((key, slot));
@@ -985,9 +1128,8 @@ impl Views {
                                     removed.push(key);
                                 }
                             }
-                            Edit::Written(mask) => {
-                                let slot = table
-                                    .slot(key)
+                            Edit::Written(mask, slot) => {
+                                let slot = held_slot(table, key, slot)
                                     .ok_or_else(|| invalid("A changed key holds no slot"))?;
                                 engine_allocation::reserve(patches, 1)?;
                                 patches.push((key, slot, mask));

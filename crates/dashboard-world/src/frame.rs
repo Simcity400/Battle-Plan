@@ -1,8 +1,10 @@
 //! The walk's one frame of the tables its lanes read as rows: each hour's edits noted as the
-//! walker applies them, the views built only at the first ask of an hour ([`Views::update`]).
-//! Tables held whole are built together. A table held by some fields is held apart, even when
-//! another lane holds it whole: it is noted only at the hours that touch those fields, so its
-//! other fields stay as last built and its view changes only with them.
+//! walker applies them, each table's view built only at its first ask of an hour, the tables an
+//! ask builds of a group built in one pass ([`Views::update_tables`]). The tables held whole are
+//! one group, Campaign among them, and those held by some fields another. A table held by some
+//! fields is held apart, even when another lane holds it whole: it is noted only at the hours
+//! that touch those fields, so its other fields stay as last built and its view changes only
+//! with them.
 
 use super::{Facts, invalid};
 use replay::{
@@ -54,13 +56,16 @@ impl Hold {
     }
 }
 
-/// Tables noted and built together: Campaign alone, those held whole, or one held by fields,
-/// noted at the hours that touch them.
+/// Tables noted and built together: each noted every hour when held whole, else at the hours
+/// that touch its fields, and built at its first ask of an hour.
 struct Group {
-    watch: Option<(TableId, u64)>,
     views: Views,
-    /// Whether its views are built for this hour.
-    built: bool,
+    /// Each table's fields as the group holds it, by table: every field when whole.
+    fields: Vec<u64>,
+    /// Whether each table's view is built for this hour, by table.
+    built: Vec<bool>,
+    /// The tables an ask builds, kept from ask to ask.
+    wanted: Vec<TableId>,
 }
 
 pub(crate) struct Frame {
@@ -69,6 +74,8 @@ pub(crate) struct Frame {
     groups: Vec<Group>,
     /// Each table's groups, and the hold each keeps it in.
     held: Vec<Vec<(usize, Hold)>>,
+    /// Each asked table's group, kept from ask to ask.
+    placed: Vec<(TableId, usize)>,
 }
 
 impl Frame {
@@ -83,42 +90,48 @@ impl Frame {
             mode,
             groups: Vec::new(),
             held: engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| Vec::new()))?,
+            placed: Vec::new(),
         };
-        // Campaign alone, which every frame holds: no ask of another table builds the others.
-        frame.group(&[], None)?;
-        frame.held[TableId::Campaign.index()].push((0, Hold::Whole));
-        let whole = engine_allocation::collect_vec(
+        // Campaign, which every frame holds, among the tables held whole.
+        let mut whole = engine_allocation::collect_vec(
             tables
                 .iter()
                 .filter(|&&(table, hold)| hold == Hold::Whole && table != TableId::Campaign)
-                .map(|&(table, _)| table),
+                .copied(),
         )?;
-        if !whole.is_empty() {
-            frame.group(&whole, None)?;
-        }
-        for &(table, hold) in tables {
-            if let Hold::Fields(fields) = hold
-                && table != TableId::Campaign
-            {
-                frame.group(&[table], Some((table, fields)))?;
-            }
+        engine_allocation::reserve(&mut whole, 1)?;
+        whole.push((TableId::Campaign, Hold::Whole));
+        frame.group(&whole)?;
+        let fields = engine_allocation::collect_vec(
+            tables
+                .iter()
+                .filter(|&&(table, hold)| {
+                    matches!(hold, Hold::Fields(_)) && table != TableId::Campaign
+                })
+                .copied(),
+        )?;
+        if !fields.is_empty() {
+            frame.group(&fields)?;
         }
         Ok(frame)
     }
 
-    /// A group of `tables`, noted at the hours that touch `watch`, every hour when None.
-    fn group(&mut self, tables: &[TableId], watch: Option<(TableId, u64)>) -> io::Result<()> {
+    /// A group of `tables`, each in its hold.
+    fn group(&mut self, tables: &[(TableId, Hold)]) -> io::Result<()> {
         let at = self.groups.len();
-        let hold = watch.map_or(Hold::Whole, |(_, fields)| Hold::Fields(fields));
-        for &table in tables {
+        let mut fields = engine_allocation::filled(TABLE_COUNT, 0)?;
+        for &(table, hold) in tables {
+            fields[table.index()] = hold.fields();
             engine_allocation::reserve(&mut self.held[table.index()], 1)?;
             self.held[table.index()].push((at, hold));
         }
+        let selected = engine_allocation::collect_vec(tables.iter().map(|&(table, _)| table))?;
         engine_allocation::reserve(&mut self.groups, 1)?;
         self.groups.push(Group {
-            watch,
-            views: Views::new(tables, self.format, self.mode)?,
-            built: false,
+            views: Views::new(&selected, self.format, self.mode)?,
+            fields,
+            built: engine_allocation::filled(TABLE_COUNT, false)?,
+            wanted: Vec::new(),
         });
         Ok(())
     }
@@ -139,14 +152,18 @@ impl Frame {
         manifest: &Manifest<'_>,
         facts: &Facts<'_>,
     ) -> io::Result<()> {
-        for group in &mut self.groups {
-            group.built = false;
-            if let Some((table, fields)) = group.watch
-                && !facts.touched(table, fields)
-            {
-                continue;
-            }
-            group.views.note(state, manifest, facts.first())?;
+        for Group {
+            views,
+            fields,
+            built,
+            ..
+        } in &mut self.groups
+        {
+            built.fill(false);
+            views.note_tables(state, manifest, facts.first(), &|table| {
+                let fields = fields[table.index()];
+                fields == u64::MAX || facts.touched(table, fields)
+            })?;
         }
         Ok(())
     }
@@ -163,12 +180,12 @@ impl Frame {
         let mut missing = engine_allocation::collect_vec(
             asks.iter()
                 .filter(|&&(table, need)| self.holding(table, need).is_none())
-                .map(|&(table, _)| table),
+                .map(|&(table, _)| (table, Hold::Whole)),
         )?;
         if !missing.is_empty() {
-            missing.sort_unstable();
+            missing.sort_unstable_by_key(|&(table, _)| table);
             missing.dedup();
-            self.group(&missing, None)?;
+            self.group(&missing)?;
             // Built anew at this hour, from the rows the walker holds.
             self.groups
                 .last_mut()
@@ -176,16 +193,35 @@ impl Frame {
                 .views
                 .reset();
         }
+        self.placed.clear();
+        for group in &mut self.groups {
+            group.wanted.clear();
+        }
+        engine_allocation::reserve(&mut self.placed, asks.len() + 1)?;
         for &(table, need) in asks.iter().chain(&[(TableId::Campaign, Hold::Whole)]) {
             let at = self
                 .holding(table, need)
                 .ok_or_else(|| invalid("A frame table has no group"))?;
             let group = &mut self.groups[at];
-            if !group.built {
-                group.views.update(state, hour, None)?;
-                group.built = true;
+            if !group.built[table.index()] {
+                engine_allocation::reserve(&mut group.wanted, 1)?;
+                group.wanted.push(table);
             }
-            frame.tables[table.index()] = group
+            self.placed.push((table, at));
+        }
+        for group in &mut self.groups {
+            if group.wanted.is_empty() {
+                continue;
+            }
+            group
+                .views
+                .update_tables(state, hour, &group.wanted, None)?;
+            for &table in &group.wanted {
+                group.built[table.index()] = true;
+            }
+        }
+        for &(table, at) in &self.placed {
+            frame.tables[table.index()] = self.groups[at]
                 .views
                 .view(table)
                 .ok_or_else(|| invalid("A frame table was not built"))?
