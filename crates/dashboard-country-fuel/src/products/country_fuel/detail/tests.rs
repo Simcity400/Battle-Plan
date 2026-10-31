@@ -113,7 +113,7 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
         recipient_key: key,
     };
     let mut reads = Reads::new();
-    let mut summary = ScannedFuel::default();
+    let mut supplying = Vec::new();
     for hour in [1000, 1024, 1048, 1072, 1096] {
         let mut row = award_row(hour);
         let Recorded::Value(window) = &mut row.award_day else {
@@ -137,11 +137,11 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
         }
         let mut read = read_of(&row, hour, hour == 1000, None, &mut Default::default());
         read.last_hour = hour + 1;
-        summary.reads.push(read);
+        supplying.push(read);
         reads.insert(hour, BTreeMap::from([("GER".into(), row)]));
     }
     let runs = history_runs(
-        &summary,
+        &supplying,
         &reads,
         &[&params.tag],
         &params,
@@ -166,7 +166,7 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
     assert!(at(1024).starts_segment);
     assert!(
         history_runs(
-            &summary,
+            &supplying,
             &reads,
             &[&params.tag],
             &params,
@@ -220,7 +220,15 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
     let source = replay_source(frames, "fuel-recipient-window-5000");
     let cancelled = AtomicBool::new(false);
     let summary = scanned(&source, 1, &cancelled).unwrap();
-    let window = window_reads(&source, 1, 3, &summary, &cancelled).unwrap();
+    let (first, last) = dashboard_base::products::production_lines::detail_window(3).unwrap();
+    let hours: BTreeSet<i32> = summary
+        .countries
+        .values()
+        .flat_map(|country| &country.reads)
+        .filter(|read| read.last_hour >= first && read.first_hour <= last)
+        .map(|read| read.first_hour)
+        .collect();
+    let window = window_reads(&source, 1, 3, &hours, &cancelled).unwrap();
     assert_eq!(window[&hour].len(), count as usize);
     let key = recipients_of(
         &award_row(hour),
@@ -253,7 +261,7 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
     }
     assert!(Arc::ptr_eq(
         &window,
-        &window_reads(&source, 1, 3, &summary, &cancelled).unwrap()
+        &window_reads(&source, 1, 3, &hours, &cancelled).unwrap()
     ));
     let mut params = FuelAwardHistoryParams {
         branch_id: "1".into(),

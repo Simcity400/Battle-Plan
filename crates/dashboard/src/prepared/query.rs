@@ -23,7 +23,7 @@ use crate::{
     products::{ContentOptions, Product},
     transport::{MAX_REPLY_BYTES, ProductRequest, bounded_json},
 };
-use dashboard_base::prepared::gates;
+use dashboard_base::prepared::{gates, published};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -369,7 +369,7 @@ fn supply_reply(
         .as_str()
         .and_then(|id| id.parse::<u64>().ok())
         .ok_or_else(|| crate::invalid("Invalid supply branch"))?;
-    let Some(opened) = super::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         "supply",
@@ -419,8 +419,7 @@ fn stockpile_reply(
         .as_str()
         .ok_or_else(|| crate::invalid("Invalid stockpile branch"))?;
     let branch = branch(source, id)?;
-    let Some(opened) = super::families::open(source, content, "stockpile", emit::SCHEMA, branch)?
-    else {
+    let Some(opened) = published::open(source, content, "stockpile", emit::SCHEMA, branch)? else {
         return Ok(Value::Null);
     };
     let (_, key) = super::files(source, content)?;
@@ -481,7 +480,7 @@ fn supply_next_change(
     else {
         return Ok(Value::Null);
     };
-    let Some(opened) = super::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         "supply",
@@ -506,7 +505,7 @@ fn ledger_reply(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     use crate::products::politics_ledger;
-    let Some(opened) = super::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         "politics_ledger",
@@ -542,8 +541,7 @@ fn army_reply(
         )?)?);
     }
     let branch = branch(source, &params.branch_id)?;
-    let Some(opened) =
-        super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    let Some(opened) = published::open(source, content, "army", army_size::emit::SCHEMA, branch)?
     else {
         return Ok(Value::Null);
     };
@@ -586,8 +584,7 @@ fn army_series(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     use crate::products::army_size;
-    let Some(opened) =
-        super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    let Some(opened) = published::open(source, content, "army", army_size::emit::SCHEMA, branch)?
     else {
         return Ok(Value::Null);
     };
@@ -645,7 +642,7 @@ fn division_equipment_reply(
         .and_then(Value::as_str)
         .ok_or_else(|| crate::invalid("Missing prepared query branch"))?;
     let branch = branch(source, id)?;
-    let Some(opened) = super::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         history::NAME,
@@ -684,13 +681,12 @@ fn volunteers_reply(
         None,
         cancelled,
     )?;
-    let reply =
-        match super::families::open(source, content, "army", army_size::emit::SCHEMA, branch)? {
-            Some(opened) => opened.read(cancelled, |snapshot, directory| {
-                aid::read(snapshot, directory, &params, prefix, cancelled)
-            })?,
-            None => aid::unpublished(prefix),
-        };
+    let reply = match published::open(source, content, "army", army_size::emit::SCHEMA, branch)? {
+        Some(opened) => opened.read(cancelled, |snapshot, directory| {
+            aid::read(snapshot, directory, &params, prefix, cancelled)
+        })?,
+        None => aid::unpublished(prefix),
+    };
     Ok(serde_json::to_value(aid::finish(source, branch, reply)?)?)
 }
 
@@ -705,7 +701,7 @@ fn stability_series(
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
     use crate::products::country_stability;
-    let Some(opened) = super::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         "stability",
@@ -3063,13 +3059,11 @@ fn query_data(
             }
             match family {
                 Some("country-fuel") => {
-                    return crate::products::country_fuel::prepared::query(
+                    return crate::products::country_fuel::query::query(
                         source,
                         content,
                         product,
                         request.params.clone(),
-                        &store,
-                        &key,
                         cancelled,
                     );
                 }

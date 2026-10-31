@@ -29,12 +29,12 @@ pub(super) struct RawConsumption {
     pub(super) last_hour: i32,
     pub(super) starts_segment: bool,
     pub(super) segment_start_hour: i32,
-    country: u32,
-    country_instance: Option<u32>,
+    pub(super) country: u32,
+    pub(super) country_instance: Option<u32>,
     /// Each family's native daily sum, or why it is unknown.
-    native_daily: [Result<i64, Arc<str>>; 3],
-    known_daily: [i128; 3],
-    positive_daily: [i128; 3],
+    pub(super) native_daily: [Result<i64, Arc<str>>; 3],
+    pub(super) known_daily: [i128; 3],
+    pub(super) positive_daily: [i128; 3],
 }
 impl From<&RawConsumption> for FuelConsumptionRead {
     fn from(read: &RawConsumption) -> Self {
@@ -536,7 +536,7 @@ impl Product for CountryFuelDemand {
             .branch_id
             .parse()
             .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))?;
-        let read = prepared::summary_at(source, params, context, cancelled)?;
+        let read = query::summary_at(source, params, context, cancelled)?;
         let raw = detail::basis_reads(source, branch, params.hour, cancelled)?;
         let pack = pack_of(detail::authenticated(&raw, params)?, params.hour)
             .map_err(dashboard_core::invalid)?;
@@ -772,8 +772,7 @@ fn stacked_history(
         .branch_id
         .parse()
         .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))?;
-    let summary = prepared::window_summary(source, branch, window, context, cancelled)?;
-    let selected = prepared::summary_at(source, basis, context, cancelled)?;
+    let selected = query::summary_at(source, basis, context, cancelled)?;
     let basis_raw = detail::basis_reads(source, branch, basis.hour, cancelled)?;
     let pack = pack_of(detail::authenticated(&basis_raw, basis)?, basis.hour)
         .map_err(dashboard_core::invalid)?;
@@ -789,9 +788,17 @@ fn stacked_history(
         }
         parsed.push(parsed_key);
     }
-    let raw = detail::window_reads(source, branch, window, &summary, cancelled)?;
     let (first_hour, last_hour) = dashboard_base::products::production_lines::detail_window(window)
         .ok_or_else(|| dashboard_core::invalid("Invalid current fuel consumption window"))?;
+    let actor_reads: Vec<_> = query::actor_consumption(source, basis, window, context, cancelled)?
+        .into_iter()
+        .filter(|(_, read)| read.last_hour >= first_hour && read.first_hour <= last_hour)
+        .collect();
+    let hours = actor_reads
+        .iter()
+        .map(|(_, read)| read.first_hour)
+        .collect();
+    let raw = detail::window_reads(source, branch, window, &hours, cancelled)?;
     let catalogue = std::sync::OnceLock::new();
     let mut format = |bytes: &[u8]| read_name(source, context, &catalogue, bytes);
     let mut parts: Vec<_> = keys
@@ -803,11 +810,7 @@ fn stacked_history(
         .collect();
     let mut next = first_hour;
     {
-        let actor_reads = prepared::actor_consumption(source, basis, window, context, cancelled)?;
-        for (tag, read) in actor_reads
-            .into_iter()
-            .filter(|(_, read)| read.last_hour >= first_hour && read.first_hour <= last_hour)
-        {
+        for (tag, read) in actor_reads {
             dashboard_text::metadata::check_cancel(cancelled)?;
             if next < read.first_hour {
                 for part in &mut parts {

@@ -29,7 +29,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use independent::economy::FuelReference;
 pub use independent::event_feed::FeedReference;
 pub(crate) use independent::event_feed::{save_feed, write_feed_identities};
 
@@ -366,7 +365,6 @@ unsaved_while_own!(
     own_air => "air",
     own_navy => "navy",
     own_parts => "parts",
-    own_fuel => "fuel",
     own_equipment_losses => "equipment_losses",
     own_trade => "trade",
     own_territory => "territory",
@@ -478,8 +476,6 @@ struct BranchState {
     parts: Box<crate::products::stability_parts::Prepared>,
     #[serde(default, skip_serializing_if = "own_experience")]
     experience: Box<crate::prepared_stability::ExperienceAccumulator>,
-    #[serde(default, skip_serializing_if = "own_fuel")]
-    fuel: Box<crate::products::country_fuel::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_territory")]
     territory: Box<crate::products::territory::prepared::Prepared>,
     #[serde(skip)]
@@ -563,7 +559,6 @@ impl BranchState {
             intelligence: Default::default(),
             parts: Default::default(),
             experience: Default::default(),
-            fuel: Default::default(),
             territory: Default::default(),
             occupation: Default::default(),
             game_score: Default::default(),
@@ -3267,7 +3262,6 @@ fn run_planned(
                         intelligence,
                         parts,
                         experience,
-                        fuel,
                         territory,
                         occupation,
                         game_score,
@@ -3730,19 +3724,6 @@ fn run_planned(
                             },
                         ),
                         lanes::Job::new(
-                            &[("fuel", 43)],
-                            1905,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "fuel",
-                                    observe,
-                                    fuel.observe_changes(frame, replay.format, changes, cancelled)
-                                )?;
-                                Ok(())
-                            },
-                        ),
-                        lanes::Job::new(
                             &[("occupation", 45)],
                             500,
                             move |_family, frame, changes, mut family_timings| {
@@ -3995,7 +3976,6 @@ fn run_planned(
                             lanes.serial("intelligence", frame, changes, &mut family_timings)?;
                             lanes.serial("parts", frame, changes, &mut family_timings)?;
                             lanes.serial("experience", frame, changes, &mut family_timings)?;
-                            lanes.serial("fuel", frame, changes, &mut family_timings)?;
                             coordinator_order = 44;
                             family!(
                                 refused,
@@ -4419,7 +4399,6 @@ fn run_planned(
                         + branch.repairs.bytes()
                         + branch.parts.bytes()
                         + branch.experience.buffered_bytes()
-                        + branch.fuel.buffered_bytes()
                         + branch.territory.bytes()
                         + branch.occupation.bytes()
                         + branch.parties.bytes()
@@ -4496,7 +4475,6 @@ fn run_planned(
                         parties,
                         parts,
                         experience,
-                        fuel,
                         territory,
                         occupation,
                         intelligence,
@@ -4944,14 +4922,6 @@ fn run_planned(
                                 "parts",
                                 flush,
                                 parts.flush(writer, branch, cancelled)
-                            )))
-                        }),
-                        flush::Task::new(&[(41, "fuel")], move |_, writer, mut family_timings| {
-                            Ok(Some(time_family!(
-                                family_timings,
-                                "fuel",
-                                flush,
-                                fuel.flush(writer, branch, replay.format, cancelled)
                             )))
                         }),
                         flush::Task::new(

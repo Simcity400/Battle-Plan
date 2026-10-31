@@ -396,7 +396,6 @@ static ROWS: &[&dyn Own] = &[
     &sampled::AIR,
     &sampled::PARTS,
     &sampled::NAVY,
-    &economy::FUEL,
     &sampled::EQUIPMENT_LOSSES,
     &sampled::PARTIES,
     &sampled::FUEL_BRANCHES,
@@ -431,7 +430,7 @@ pub(super) mod quiet_politics;
 /// The military air ledger, raids and air aces.
 pub(super) mod air;
 
-/// Construction, production, country experience and fuel.
+/// Construction, production and country experience.
 pub(super) mod economy;
 
 /// Decryption, operative placements, agencies, the roster and espionage.

@@ -7,7 +7,7 @@ use std::io;
 
 pub static PLAN: Plan = Plan {
     queries,
-    unordered: &[],
+    unordered: &[&["series"]],
 };
 
 const MEASURES: [&str; 4] = ["fuel", "capacity", "stripGain", "stripBurn"];

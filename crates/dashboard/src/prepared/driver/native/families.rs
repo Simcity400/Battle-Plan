@@ -193,7 +193,7 @@ macro_rules! projected {
 
 projected!(
     army_size::facts::Hour,
-    country_fuel::columnar::Hour,
+    country_fuel::facts::Hour,
     diplomacy_state::columnar::Hour,
     equipment_losses::columnar::Hour,
     unit_leaders::columnar::Hour,
@@ -247,6 +247,7 @@ emits!(
     style_runs::emit::Emit => style_runs::facts::Hour,
     politics_ledger::emit::Emit => politics_ledger::facts::Hour,
     equipment_stockpile::emit::Emit => equipment_stockpile::columnar::Hour,
+    country_fuel::emit::Emit => country_fuel::facts::Hour,
 );
 
 impl<E: Emits> Emits for Box<E> {
@@ -381,8 +382,8 @@ impl Native for Army<'_> {
     }
 }
 
-struct Fuel<'p> {
-    replay: &'p Replay,
+struct Fuel {
+    format: FormatVersion,
 }
 
 fn fuel<'p>(
@@ -391,38 +392,39 @@ fn fuel<'p>(
     stage: Stage<'p, 'p>,
     taken: Taken<'p>,
 ) -> Made<'p> {
-    let replay = content.source.replay_ref();
-    bound(id, Fuel { replay }, stage, taken)
+    let format = content.source.replay_ref().format;
+    bound(id, Fuel { format }, stage, taken)
 }
 
-impl Native for Fuel<'_> {
-    type Operator = country_fuel::columnar::Projector;
-    type Branch = Box<country_fuel::prepared::Prepared>;
+impl Native for Fuel {
+    type Operator = country_fuel::facts::Projector;
+    type Branch = Series<Box<country_fuel::emit::Emit>>;
 
     fn tables(&self) -> &'static [TableId] {
-        country_fuel::columnar::TABLES
+        country_fuel::facts::TABLES
     }
 
     fn needs(&self) -> io::Result<Needs> {
-        Ok(country_fuel::columnar::needs())
+        Ok(country_fuel::facts::needs())
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        country_fuel::columnar::Projector::new(self.replay)
+        Ok(country_fuel::facts::Projector::new(self.format))
     }
 
-    fn branch(&self, _: u64, _: i32) -> io::Result<Self::Branch> {
-        Ok(Box::default())
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        let emit = country_fuel::emit::Emit::new(self.format);
+        Ok(Series::new(Box::new(emit), first))
     }
 
     fn observe(
         &self,
         state: &mut Self::Branch,
-        _: &mut Stage<'_, '_>,
-        _: u64,
-        hour: country_fuel::columnar::Hour,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        hour: country_fuel::facts::Hour,
     ) -> io::Result<()> {
-        state.observe_projected(hour)
+        state.observe(stage, branch, hour.hour, hour)
     }
 
     fn flush(
@@ -431,22 +433,25 @@ impl Native for Fuel<'_> {
         stage: &mut Stage<'_, '_>,
         branch: u64,
         _: Option<i32>,
-        cancelled: &AtomicBool,
+        _: &AtomicBool,
     ) -> io::Result<()> {
-        state.flush(stage.pages()?, branch, self.replay.format, cancelled)
+        state.flush(stage, branch)
     }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
-        saved(&**state)
+        state.save()
     }
 
     fn resume(
         &self,
-        _: &mut Stage<'_, '_>,
-        _: u64,
-        _: &Published,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
         saved: &[u8],
     ) -> io::Result<Self::Branch> {
-        taken_up(saved).map(Box::new)
+        let directory = directory(stage, branch, published, country_fuel::emit::SCHEMA)?;
+        let emit = country_fuel::emit::Emit::load(self.format, &directory, saved)?;
+        Ok(Series::new(Box::new(emit), published.frontier.first_hour))
     }
 }
 

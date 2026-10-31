@@ -23,6 +23,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
+dashboard-series.workspace = true
 dashboard-text.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true

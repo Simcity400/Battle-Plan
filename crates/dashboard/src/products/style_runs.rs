@@ -4,13 +4,10 @@
 //! and `country-styles` and `country-colours` the hours they ask ([`PreparedStyles`]); names
 //! are built at the reply, in the reader's language. Neither reads the recording.
 
-use crate::{
-    content, invalid, metadata::check_cancel, prepared::families,
-    products::country_flags::FlagFolders,
-};
+use crate::{content, invalid, metadata::check_cancel, products::country_flags::FlagFolders};
 use dashboard_base::{
     Source,
-    prepared::engine,
+    prepared::{engine, published},
     products::{
         ContentOptions,
         country_styles::{
@@ -231,7 +228,7 @@ pub(crate) fn country_facts(
     localisation: Option<&Localisation>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<CountryFactsReply>> {
-    let Some(opened) = families::open(source, content, NAME, emit::SCHEMA, branch)? else {
+    let Some(opened) = published::open(source, content, NAME, emit::SCHEMA, branch)? else {
         return Ok(None);
     };
     opened
@@ -380,7 +377,7 @@ impl StyleRuns for PreparedStyles {
         if hours.is_empty() {
             return Ok(true);
         }
-        let Some(opened) = families::open(source, content, NAME, emit::SCHEMA, branch)? else {
+        let Some(opened) = published::open(source, content, NAME, emit::SCHEMA, branch)? else {
             return Ok(false);
         };
         opened.read(cancelled, |snapshot, directory| {

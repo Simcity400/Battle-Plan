@@ -43,36 +43,35 @@ fn recording(frames: &[DecodedFrame]) -> Replay {
     replay
 }
 
-/// Writes the fuel family's pages of `frames` and the identities its replies name countries by.
-fn fuel_pages(
-    writer: &mut store::Writer,
-    format: replay_data::format::FormatVersion,
-    frames: &[DecodedFrame],
-) {
+/// Writes the factories family's pages of `frames` and the identities its replies name countries
+/// by.
+fn factory_pages(writer: &mut store::Writer, replay: &Replay, frames: &[DecodedFrame]) {
     let flag = AtomicBool::new(false);
-    let mut fuel = crate::products::country_fuel::prepared::Prepared::default();
+    let mut factories = crate::products::country_factories::prepared::Prepared::default();
     let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
+    let mut changes = crate::prepared::frame_changes::FrameChangeTracker::new();
     for frame in frames {
-        fuel.observe(frame, format, &flag).unwrap();
+        let changed = changes.observe(frame, replay.format);
+        factories.observe(frame, replay, &changed).unwrap();
         identities.observe(frame);
     }
-    fuel.flush(writer, 1, format, &flag).unwrap();
+    factories.flush(writer, 1, &flag).unwrap();
     json(writer, &gates::identities_section(1), &identities).unwrap();
 }
 
-/// Publishes the fuel pages of `frames` and the fuel family's coverage of them alone, replacing
-/// whatever `store` published.
+/// Publishes the factories pages of `frames` and the factories family's coverage of them alone,
+/// replacing whatever `store` published.
 fn publish_pages(
     store: &store::Store,
     key: &store::SourceKey,
-    format: replay_data::format::FormatVersion,
+    replay: &Replay,
     frames: &[DecodedFrame],
 ) {
     let mut writer = store.replace(key.clone()).unwrap();
-    fuel_pages(&mut writer, format, frames);
+    factory_pages(&mut writer, replay, frames);
     json(
         &mut writer,
-        &independent::coverage_section("fuel", 1),
+        &independent::coverage_section("factories", 1),
         &Coverage {
             schema: SCHEMA,
             first_hour: frames[0].hour,
@@ -84,14 +83,29 @@ fn publish_pages(
     writer.commit().unwrap();
 }
 
-/// The fuel summary of `tag` over `from..=to`.
-fn fuel_summary(tag: &str, from: i32, to: i32) -> Value {
-    json!({"branchId":"1","family":{"kind":"country-fuel"},"tags":[tag],"from":from,"to":to,
+/// The factories summary of `tag` over `from..=to`.
+fn factory_summary(tag: &str, from: i32, to: i32) -> Value {
+    json!({"branchId":"1","family":{"kind":"country-factories"},"tags":[tag],"from":from,"to":to,
         "width":100})
 }
 
-fn fuel_tag() -> String {
+fn factory_tag() -> String {
     String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap()
+}
+
+/// The extents of the first country's runs in a factories summary reply.
+fn factory_runs(reply: &Value) -> Vec<(i64, i64)> {
+    reply["data"]["summaries"][0]["summary"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| {
+            (
+                run["firstHour"].as_i64().unwrap(),
+                run["lastHour"].as_i64().unwrap(),
+            )
+        })
+        .collect()
 }
 
 /// The stability family's facts of GER at `hour`: its stability another value every hour, read
@@ -361,13 +375,13 @@ fn a_series_state_before_a_refusal_answers_and_one_across_it_refuses() {
 
 #[test]
 fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
-    let frames = fuel_frames();
-    let mut fixture = Fixture::new(&recording(&frames));
+    let frames = factory_frames();
+    let replay = recording(&frames);
+    let mut fixture = Fixture::new(&replay);
     let source = fixture.source("metadata");
-    let format = source.replay_ref().format;
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, format, &frames[..10]);
-    let summary = |from, to| fuel_summary(&fuel_tag(), from, to);
+    publish_pages(&store, &key, &replay, &frames[..10]);
+    let summary = |from, to| factory_summary(&factory_tag(), from, to);
     let read = |params| {
         let before = store::counters::now();
         let answered = reply(&source, "series-summary", params).unwrap();
@@ -379,7 +393,7 @@ fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
     // The committing thread decodes the publication it makes, before its next writer can remove
     // anything an earlier one read.
     let held = gates::current(&store, &key).unwrap();
-    publish_pages(&store, &key, format, &frames);
+    publish_pages(&store, &key, &replay, &frames);
     let current = gates::current(&store, &key).unwrap();
     assert!(!Arc::ptr_eq(&held, &current));
     let (second, work) = read(summary(0, 29));
@@ -393,12 +407,12 @@ fn queries_read_their_gates_from_memory_also_right_after_a_publication() {
 
 #[test]
 fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
-    let frames = fuel_frames();
-    let mut fixture = Fixture::new(&recording(&frames));
+    let frames = factory_frames();
+    let replay = recording(&frames);
+    let mut fixture = Fixture::new(&replay);
     let source = fixture.source("restart");
-    let format = source.replay_ref().format;
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, format, &frames[..10]);
+    publish_pages(&store, &key, &replay, &frames[..10]);
     let attempts = Rc::new(Cell::new(0));
     let mut later = Some({
         let (store, key) = (Arc::clone(&store), key.clone());
@@ -408,7 +422,7 @@ fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
-                        publish_pages(&store, &key, format, &frames);
+                        publish_pages(&store, &key, &replay, &frames);
                         drop(store.extend(&key).unwrap());
                     })
                     .join()
@@ -424,7 +438,11 @@ fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
         }
     });
     crate::prepared::query::ON_PINNED.with(|on| *on.borrow_mut() = Some(hook));
-    let answered = reply(&source, "series-summary", fuel_summary(&fuel_tag(), 0, 29));
+    let answered = reply(
+        &source,
+        "series-summary",
+        factory_summary(&factory_tag(), 0, 29),
+    );
     crate::prepared::query::ON_PINNED.with(|on| on.borrow_mut().take());
     let answered = answered.unwrap();
     assert_eq!(attempts.get(), 2, "the query started again once");
@@ -433,7 +451,7 @@ fn a_query_whose_files_a_later_publication_removed_starts_again_on_that_one() {
         (&coverage["lastHour"], &coverage["complete"]),
         (&json!(29), &json!(true))
     );
-    assert_eq!(runs(&answered).last().map(|run| run.1), Some(29));
+    assert_eq!(factory_runs(&answered).last().map(|run| run.1), Some(29));
 }
 
 /// `name`'s registry entry one version on.
@@ -445,9 +463,9 @@ fn bumped(name: &str) -> &'static Descriptor {
     }))
 }
 
-/// Prepares the fuel recording through the production pipeline.
+/// Prepares the factories recording through the production pipeline.
 fn prepared(name: &str) -> (Fixture, Arc<Source>) {
-    let frames = fuel_frames();
+    let frames = factory_frames();
     let mut fixture = Fixture::new(&recording(&frames));
     let source = fixture.source(name);
     run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
@@ -458,12 +476,17 @@ fn prepared(name: &str) -> (Fixture, Arc<Source>) {
 fn a_family_published_under_another_version_is_pending_through_every_gate() {
     let (_fixture, source) = prepared("versions");
     let flag = AtomicBool::new(false);
-    let bumped = plan::test_plan(&[bumped("fuel")], &independent::row_names()).unwrap();
+    let bumped = plan::test_plan(&[bumped("factories")], &independent::row_names()).unwrap();
     assert_eq!(bumped.stamp("groups"), plan::rows().stamp("groups"));
     assert_eq!(bumped.gating("country-groups"), Some("groups"));
     plan::with_test_plan(bumped, || {
-        let pending = reply(&source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap();
-        assert_eq!(pending["gate"], json!(["fuel"]), "{pending}");
+        let pending = reply(
+            &source,
+            "series-summary",
+            factory_summary(&factory_tag(), 0, 29),
+        )
+        .unwrap();
+        assert_eq!(pending["gate"], json!(["factories"]), "{pending}");
         let coverage = &pending["data"]["coverage"];
         assert_eq!(
             coverage["lastHour"].as_i64(),
@@ -471,11 +494,11 @@ fn a_family_published_under_another_version_is_pending_through_every_gate() {
             "nothing of the old version answers: {pending}"
         );
         let (ranges, short) = crate::prepared::coverage::waiting(|| {
-            crate::prepared::coverage::ranges(&source, None, 1, "country-fuel", None, &flag)
+            crate::prepared::coverage::ranges(&source, None, 1, "country-factories", None, &flag)
                 .unwrap()
         });
         assert_eq!(ranges, Default::default());
-        assert_eq!(short.into_iter().collect::<Vec<_>>(), ["fuel"]);
+        assert_eq!(short.into_iter().collect::<Vec<_>>(), ["factories"]);
         assert!(
             product_coverage(&source, None, 1, "country-groups", &flag)
                 .unwrap()
@@ -483,7 +506,7 @@ fn a_family_published_under_another_version_is_pending_through_every_gate() {
             "a family whose version holds answers"
         );
     });
-    let current = product_coverage(&source, None, 1, "country-fuel", &flag).unwrap();
+    let current = product_coverage(&source, None, 1, "country-factories", &flag).unwrap();
     assert!(current.is_some_and(|coverage| coverage.complete));
 }
 
@@ -533,8 +556,8 @@ fn a_walk_version_change_prepares_the_walk_and_its_dependents_again_alone() {
         .copied()
         .filter(|name| walked.stamp(name) != plan::rows().stamp(name))
         .collect();
-    assert!(!moved.contains("fuel"));
-    let kept = owned(&store, &key, "fuel");
+    assert!(!moved.contains("factories"));
+    let kept = owned(&store, &key, "factories");
     assert!(!kept.is_empty());
     let republished = Arc::new(Mutex::new(BTreeSet::new()));
     let seen = Arc::clone(&republished);
@@ -554,7 +577,7 @@ fn a_walk_version_change_prepares_the_walk_and_its_dependents_again_alone() {
             .all(|family| moved.contains(family.as_str())),
         "only families whose stamp moved publish again: {republished:?}, moved {moved:?}"
     );
-    assert_eq!(owned(&store, &key, "fuel"), kept);
+    assert_eq!(owned(&store, &key, "factories"), kept);
     let current = gates::current(&store, &key).unwrap();
     let versions = current.versions().unwrap().unwrap();
     assert_eq!(
@@ -566,19 +589,25 @@ fn a_walk_version_change_prepares_the_walk_and_its_dependents_again_alone() {
 
 #[test]
 fn a_publication_under_a_grown_recording_s_key_is_decoded_as_it_was_committed() {
-    let frames = fuel_frames();
-    let mut fixture = Fixture::new(&recording(&frames[..10]));
+    let frames = factory_frames();
+    let shorter = recording(&frames[..10]);
+    let mut fixture = Fixture::new(&shorter);
     let first = fixture.source("first");
-    let format = first.replay_ref().format;
     let (store, key) = crate::prepared::files(&first, None).unwrap();
-    publish_pages(&store, &key, format, &frames[..10]);
+    publish_pages(&store, &key, &shorter, &frames[..10]);
     let read = |source: &Source| {
-        reply(source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap()
+        reply(
+            source,
+            "series-summary",
+            factory_summary(&factory_tag(), 0, 29),
+        )
+        .unwrap()
     };
     assert_eq!(read(&first)["data"]["coverage"]["lastHour"], 9);
     // Binding the grown recording checks its key against the shorter one's manifest, which
     // refuses it until its own first commit.
-    fixture.replace(&recording(&frames));
+    let longer = recording(&frames);
+    fixture.replace(&longer);
     let grown = fixture.source("grown");
     let (store, key) = crate::prepared::files(&grown, None).unwrap();
     assert!(!store.is_reusable(&key).unwrap());
@@ -590,7 +619,7 @@ fn a_publication_under_a_grown_recording_s_key_is_decoded_as_it_was_committed() 
         "nothing is published to the grown recording yet: {cold}"
     );
     // Its one commit, with none after it.
-    publish_pages(&store, &key, format, &frames);
+    publish_pages(&store, &key, &longer, &frames);
     let answered = read(&grown);
     assert!(answered.get("gate").is_none(), "{answered}");
     let coverage = &answered["data"]["coverage"];
@@ -598,7 +627,7 @@ fn a_publication_under_a_grown_recording_s_key_is_decoded_as_it_was_committed() 
         (&coverage["lastHour"], &coverage["complete"]),
         (&json!(29), &json!(true))
     );
-    assert_eq!(runs(&answered).last().map(|run| run.1), Some(29));
+    assert_eq!(factory_runs(&answered).last().map(|run| run.1), Some(29));
 }
 
 /// A source of the recording at `path`.
@@ -618,14 +647,19 @@ fn open(path: &Path, name: &str) -> Arc<Source> {
 
 #[test]
 fn binding_another_key_of_a_store_leaves_its_publication_current() {
-    let frames = fuel_frames();
+    let frames = factory_frames();
     let replay = recording(&frames);
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("published");
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    publish_pages(&store, &key, replay.format, &frames);
+    publish_pages(&store, &key, &replay, &frames);
     let complete = |source: &Source| {
-        let answered = reply(source, "series-summary", fuel_summary(&fuel_tag(), 0, 29)).unwrap();
+        let answered = reply(
+            source,
+            "series-summary",
+            factory_summary(&factory_tag(), 0, 29),
+        )
+        .unwrap();
         answered["data"]["coverage"]["complete"].clone()
     };
     assert_eq!(complete(&source), true);
@@ -680,18 +714,17 @@ fn no_reader_reads_the_manifest_of_a_store_publishing_nothing_to_its_key() {
     assert_eq!((work.manifest_reads, work.stats), (0, 0), "{work:?}");
 }
 
-/// A country's fuel from hour 0 to 29, another amount every hour.
-fn fuel_frames() -> Vec<DecodedFrame> {
+/// A country's factories from hour 0 to 29, another count every hour.
+fn factory_frames() -> Vec<DecodedFrame> {
     (0..30)
         .map(|hour| {
             let mut frame = crate::test_fixtures::scale_frame(1, hour, 1);
-            frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
-            *frame.tables[TableId::CountryFuel.index()] =
-                TableView::Complete(TableRows::CountryFuel(vec![
-                    replay_data::rows::CountryFuelRow {
+            frame.metrics.table_ns[TableId::CountryFactories.index()] = 1;
+            *frame.tables[TableId::CountryFactories.index()] =
+                TableView::Complete(TableRows::CountryFactories(vec![
+                    replay_data::rows::CountryFactoriesRow {
                         country: 100_000,
-                        current_raw: 1_000 + i64::from(hour),
-                        maximum_raw: 32768,
+                        military_total_raw: (1_000 + i64::from(hour)) * 100_000,
                         ..Default::default()
                     },
                 ]));
@@ -700,19 +733,70 @@ fn fuel_frames() -> Vec<DecodedFrame> {
         .collect()
 }
 
+/// Publishes the fuel family's root, ten hours a segment from hour 0, each made as `segments`
+/// says: GER's fuel read every hour at another level, its emit writing the hours each prepared
+/// into the root as the segment driver does.
+fn publish_fuel(store: &store::Store, key: &store::SourceKey, segments: &[Made]) {
+    use crate::products::country_fuel::{emit::Emit, facts};
+    let family = Family::planned(plan::rows(), &["fuel"]).unwrap()[0];
+    let (publisher, _) = Publisher::open(
+        store,
+        key.clone(),
+        Binding::new(b"publication gates", b"no content"),
+        plan::rows(),
+        &[family],
+        &|_, _, _| true,
+    )
+    .unwrap();
+    let mut stage = publisher.stage(family.id).unwrap();
+    let mut emit = Emit::new(replay_data::format::FormatVersion::CURRENT);
+    for (index, made) in (0_u32..).zip(segments) {
+        let first = index * 10;
+        let (first_hour, last_hour) = (first as i32, first as i32 + 9);
+        let emitted = match made {
+            Made::Prepared => Some(last_hour),
+            Made::Refused { hour, .. } => (*hour > first_hour).then(|| hour - 1),
+            _ => None,
+        };
+        if let Some(emitted) = emitted {
+            let writer = stage.series(1, 0).unwrap();
+            for hour in first_hour..=emitted {
+                let level = (1_000 + i64::from(hour), 32_768);
+                let projected =
+                    facts::Hour::test_read(1, hour, "GER", (1, 1), hour == first_hour, level);
+                emit.hour(writer, projected).unwrap();
+            }
+            emit.cut(writer, emitted).unwrap();
+        }
+        let mut state = Vec::new();
+        emit.save(&mut state).unwrap();
+        let hours = Hours {
+            branch: 1,
+            run: 0,
+            first,
+            last: first + 9,
+            first_hour,
+            last_hour,
+            ends_segment: true,
+            ends_branch: false,
+            proof: [index as u8; 32],
+        };
+        stage
+            .processed(hours, made.clone(), Some(state), None)
+            .unwrap();
+        stage.submit().unwrap();
+    }
+    stage.settle().unwrap();
+}
+
 /// A fixture whose fuel family prepared hours 0 to 29 as `segments` say, and its country's tag.
 fn fuel_published(name: &str, segments: &[Made]) -> (Fixture, Arc<Source>, String) {
     assert_eq!(plan::current().gating("country-fuel"), Some("fuel"));
-    let frames = fuel_frames();
-    let replay = recording(&frames);
-    let mut fixture = Fixture::new(&replay);
+    let mut fixture = Fixture::new(&recording(&frames()));
     let source = fixture.source(name);
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    let mut writer = store.replace(key.clone()).unwrap();
-    fuel_pages(&mut writer, replay.format, &frames);
-    writer.commit().unwrap();
-    publish_root(&store, &key, "fuel", 0, segments);
-    (fixture, source, fuel_tag())
+    publish_fuel(&store, &key, segments);
+    (fixture, source, "GER".into())
 }
 
 fn fuel_states(tag: &str, hours: &[i32]) -> Value {

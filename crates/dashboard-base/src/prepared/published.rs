@@ -4,8 +4,8 @@
 //! ([`super::coverage::declared`]), and its directory ([`Directory`]), read once per
 //! publication and kept.
 
+use super::{coverage, files, roots};
 use crate::{Source, products::ContentOptions};
-use dashboard_base::prepared::roots;
 use dashboard_series::{Budget, Cache, Identity, Snapshot, StoreRead, family::Directory};
 use std::{
     collections::HashMap,
@@ -24,7 +24,7 @@ type Directories = HashMap<([u64; 3], u64, u64), Arc<Directory>>;
 static DIRECTORIES: LazyLock<Mutex<(Directories, usize)>> = LazyLock::new(Mutex::default);
 
 /// A family's publication on a branch, as a query reads it.
-pub(crate) struct Opened {
+pub struct Opened {
     snapshot: store::Snapshot,
     section: String,
     root: u64,
@@ -51,7 +51,7 @@ fn pinned<'s>(
 
 impl Opened {
     /// `read` of the publication pinned for this query and its directory.
-    pub(crate) fn read<T>(
+    pub fn read<T>(
         &self,
         cancelled: &AtomicBool,
         read: impl FnOnce(&mut Snapshot<'_, StoreRead<'_>>, &Directory) -> io::Result<T>,
@@ -69,14 +69,14 @@ impl Opened {
 
 /// `family`'s publication on `branch`, its keys spelled under `schema`; None before its
 /// first, or when none of its segments ends before the query's first hole.
-pub(crate) fn open(
+pub fn open(
     source: &Source,
     content: Option<&ContentOptions>,
     family: &str,
     schema: u64,
     branch: u64,
 ) -> io::Result<Option<Opened>> {
-    let (store, key) = super::files(source, content)?;
+    let (store, key) = files(source, content)?;
     let Some(session) = store.session(&key)? else {
         return Ok(None);
     };
@@ -85,7 +85,7 @@ pub(crate) fn open(
         return Ok(None);
     };
     let section = roots::root_section(family, branch);
-    let through = super::coverage::declared()
+    let through = coverage::declared()
         .before
         .map(|before| before.saturating_sub(1));
     let range = snapshot

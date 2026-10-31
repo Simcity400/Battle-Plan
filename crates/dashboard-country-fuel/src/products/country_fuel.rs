@@ -70,22 +70,22 @@
 use dashboard_base::products::{CountryParams, Product};
 use dashboard_base::source::Source;
 use dashboard_core::config::LoadContext;
-use dashboard_text::metadata::{
-    IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign,
-};
+use dashboard_text::metadata::{link_slot, slot_read, tagged_countries, validate_campaign};
 use engine_fuel::{
     ccountry_fuel_status::HISTORY_RING_ENTRIES, ccountry_fuel_status::MODIFIER_SCALE,
     ccountry_fuel_status::QUANTITY_SCALE,
 };
-use replay_data::{cadence, rows::CountryFuelRow, rows::FuelAwardDay, rows::TableId, rows::tables};
+use replay_data::{rows::CountryFuelRow, rows::FuelAwardDay, rows::TableId, rows::tables};
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+#[cfg(any(test, feature = "test-support"))]
+use {dashboard_text::metadata::IdentityTrack, replay_data::cadence, std::collections::VecDeque};
 
 pub struct CountryFuel;
 #[cfg(any(test, feature = "test-support"))]
@@ -93,10 +93,11 @@ pub mod oracle;
 #[cfg(any(test, feature = "test-support"))]
 use oracle::scanned;
 #[cfg(test)]
-use oracle::{Cache, scan, scan_branch};
-pub mod columnar;
+use oracle::scan;
 mod detail;
-pub mod prepared;
+pub mod emit;
+pub mod facts;
+pub mod query;
 pub mod served;
 pub use detail::{CountryFuelAwardHistory, FuelAwardHistoryReply};
 mod demand;
@@ -637,35 +638,35 @@ impl Product for CountryFuelAwards {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct ScannedFuel {
-    reads: Vec<RawRead>,
-    consumption: Vec<demand::RawConsumption>,
-    omitted_left_out: [usize; 3],
-    has_omitted_reads: bool,
-}
-
-impl ScannedFuel {
-    fn left_out(&self, reason: DayLeftOut) -> usize {
-        self.omitted_left_out[match reason {
-            DayLeftOut::Overlaps => 0,
-            DayLeftOut::NotUpdated => 1,
-            DayLeftOut::OwnershipNotRecorded => 2,
-        }] + self
-            .reads
-            .iter()
-            .filter(|read| read.left_out == Some(reason))
-            .count()
-    }
-}
-
 /// A country identity: its canonical slot and native id.
 type Identity = (u32, u32);
 
+/// A tag's reads and current consumption as the whole-branch scan gives them.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, Default)]
+struct ScannedFuel {
+    reads: Vec<RawRead>,
+    consumption: Vec<demand::RawConsumption>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ScannedFuel {
+    /// Its days left out, by [`emit::left_out_code`].
+    fn left_out(&self) -> [usize; 3] {
+        let mut counts = [0; 3];
+        for reason in self.reads.iter().filter_map(|read| read.left_out) {
+            counts[emit::left_out_code(reason)] += 1;
+        }
+        counts
+    }
+}
+
 /// What a recorded hour tells about the country: its identity (none: the tag was
 /// not listed) and whether it owned a state; none when the tables do not tell.
+#[cfg(any(test, feature = "test-support"))]
 type Holding = Option<(Option<Identity>, bool)>;
 
+#[cfg(any(test, feature = "test-support"))]
 fn resolved_slots(
     links: &[replay_data::rows::CountryLinkRow],
 ) -> std::collections::HashMap<u32, u32> {
@@ -675,6 +676,7 @@ fn resolved_slots(
         .collect()
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn tagged_identities<'a>(
     countries: impl Iterator<Item = (u32, u32, &'a [u8])>,
     slots: &std::collections::HashMap<u32, u32>,
@@ -689,6 +691,7 @@ fn tagged_identities<'a>(
     tagged
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn fuel_by_slot<T>(
     rows: &[T],
     raw: impl Fn(&T) -> u32,
@@ -708,6 +711,7 @@ fn fuel_by_slot<T>(
 /// country (none), and a resolved country owning no state is stateless, but a
 /// tag whose country the links cannot resolve, or a country owning no state whose
 /// owner some state names by a link that cannot be resolved, cannot tell.
+#[cfg(any(test, feature = "test-support"))]
 fn holding(identity: Option<Identity>, present: bool, owners: &(BTreeSet<u32>, bool)) -> Holding {
     match identity {
         None if !present => Some((None, false)),
@@ -729,6 +733,7 @@ fn holding(identity: Option<Identity>, present: bool, owners: &(BTreeSet<u32>, b
 /// recorded (`samples` holds each recorded hour once, ascending) and show the
 /// country owning a state. A sample showing no state (or another country)
 /// outweighs a missing one, or one that cannot tell.
+#[cfg(any(test, feature = "test-support"))]
 fn day_left_out(
     samples: &VecDeque<(i32, Holding)>,
     read: i32,
@@ -803,7 +808,8 @@ fn read_of(
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
 struct CountryScan {
     result: ScannedFuel,
     track: IdentityTrack,
@@ -811,201 +817,84 @@ struct CountryScan {
     demand_open: bool,
     continuity: Option<i32>,
     recent: VecDeque<(i32, Holding)>,
-    #[serde(skip)]
     identity: Option<Identity>,
 }
 
+/// Every tag's reads over a branch, and the native countries' tags.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct ScannedBranch {
     countries: BTreeMap<String, Arc<ScannedFuel>>,
     actor_aliases: BTreeMap<String, BTreeSet<String>>,
     unnamed: BTreeSet<u32>,
     actor_conflicts: BTreeSet<String>,
-    #[cfg(test)]
-    decoded_frames: usize,
-    #[cfg(test)]
-    ownership_rows: usize,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ScannedBranch {
     fn actor_tags(&self, country: &str) -> impl Iterator<Item = &String> {
         self.actor_aliases.get(country).into_iter().flatten()
     }
 }
 
-/// One all-country observation owns the ownership walk and supplying-read rules.
-#[derive(Default, Serialize, Deserialize)]
+/// The whole-branch row scan the publication is held to: one all-country
+/// observation owns the ownership walk and supplying-read rules.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
 struct Scan {
     countries: BTreeMap<String, CountryScan>,
     active: BTreeSet<String>,
-    #[serde(skip)]
-    country_keys: Option<dashboard_text::metadata::CountryKeys>,
-    #[serde(skip)]
-    country_count: Option<usize>,
-    #[serde(skip)]
-    slots: Option<std::collections::HashMap<u32, u32>>,
-    #[serde(skip)]
-    state_owners: Option<Vec<u32>>,
-    #[serde(skip)]
-    owner_slots: Option<(BTreeSet<u32>, bool)>,
-    #[serde(skip)]
-    updated: BTreeSet<String>,
-    #[serde(skip)]
-    projected_frontier: Option<i32>,
     // Newly observed tags inherit exactly the preceding absent/unknown evidence.
     prior: VecDeque<(i32, Holding)>,
     reasons: Reasons,
     unnamed: BTreeSet<u32>,
-    #[cfg(test)]
-    decoded_frames: usize,
-    #[cfg(test)]
-    ownership_rows: usize,
-    #[cfg(any(test, feature = "test-support"))]
-    #[serde(skip)]
-    work: dashboard_base::prepared::observer_tests::Work,
 }
-impl Scan {
-    fn forget_runtime(&mut self) {
-        self.country_keys = None;
-        self.country_count = None;
-        self.slots = None;
-        self.state_owners = None;
-        self.owner_slots = None;
-    }
 
-    fn observe_changes(
+#[cfg(any(test, feature = "test-support"))]
+impl Scan {
+    fn observe(
         &mut self,
         decoded: &replay_frame::frame::DecodedFrame,
         format: replay_data::format::FormatVersion,
-        changes: &dashboard_base::prepared::frame_changes::FrameChanges,
         cancelled: &AtomicBool,
-    ) -> io::Result<bool> {
-        self.observe_inner(decoded, format, Some(changes), None, cancelled)
-    }
-    fn observe_inner(
-        &mut self,
-        decoded: &replay_frame::frame::DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-        demand: Option<&[CountryFuelRow]>,
-        cancelled: &AtomicBool,
-    ) -> io::Result<bool> {
+    ) -> io::Result<()> {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        self.updated.clear();
-        if self.prior.back().and_then(|(hour, _)| hour.checked_add(1)) != Some(decoded.hour) {
-            self.forget_runtime();
-        }
-        #[cfg(test)]
-        {
-            self.decoded_frames += 1;
-        }
         let hour = decoded.hour;
-        let countries = decoded.complete::<tables::Countries>().ok();
-        let links_changed = self.slots.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::CountryLinks.index()]);
-        if links_changed {
-            self.slots = decoded.complete::<tables::CountryLinks>().ok().map(|rows| {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    self.work.row_visits += rows.len();
-                }
-                resolved_slots(rows)
-            });
-        }
-        let countries_changed = self.country_keys.is_none()
-            || changes.is_none_or(|changes| {
-                changes.rows_changed[TableId::Countries.index()]
-                    && countries.is_none_or(|countries| {
-                        self.country_keys.as_ref().is_none_or(|keys| {
-                            static FIELDS: std::sync::LazyLock<u64> =
-                                std::sync::LazyLock::new(|| {
-                                    dashboard_base::prepared::frame_changes::field_mask(
-                                        TableId::Countries,
-                                        &["canonical_slot", "tag"],
-                                    )
-                                });
-                            if self.country_count == Some(countries.len())
-                                && changes.rows(TableId::Countries).is_some_and(
-                                    |(changed, deleted)| {
-                                        deleted.is_empty()
-                                            && changed.iter().all(|row| row.mask & *FIELDS == 0)
-                                    },
-                                )
-                            {
-                                return false;
-                            }
-                            #[cfg(any(test, feature = "test-support"))]
-                            let before = keys.row_visits();
-                            let same = keys.same(countries);
-                            #[cfg(any(test, feature = "test-support"))]
-                            {
-                                self.work.row_visits += keys.row_visits() - before;
-                            }
-                            !same
-                        })
-                    })
-            });
-        if countries_changed {
-            self.country_count = countries.map(<[_]>::len);
-            self.country_keys = countries.map(|countries| {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    self.work.row_visits += countries.len();
-                }
-                dashboard_text::metadata::CountryKeys::read(countries)
-            });
-        }
-        let identities_changed = countries_changed || self.country_keys.is_none() || links_changed;
-        let ownership_changed = identities_changed
-            || self.owner_slots.is_none()
-            || self.state_owners.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
-        let tagged = identities_changed
-            .then(|| {
-                self.country_keys
-                    .as_ref()
-                    .zip(self.slots.as_ref())
-                    .map(|(countries, slots)| tagged_identities(countries.iter(), slots))
-            })
-            .flatten();
-        let states_changed = self.state_owners.is_none()
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::States.index()]);
-        if states_changed {
-            self.state_owners = decoded.complete::<tables::States>().ok().map(|states| {
-                #[cfg(test)]
-                {
-                    self.ownership_rows += states.len();
-                }
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    self.work.row_visits += states.len();
-                }
-                states.iter().map(|state| state.owner).collect()
-            });
-        }
-        if states_changed || links_changed || self.owner_slots.is_none() {
-            self.owner_slots =
-                self.state_owners
-                    .as_ref()
-                    .zip(self.slots.as_ref())
-                    .map(|(states, links)| {
-                        let mut slots = BTreeSet::new();
-                        let mut unresolved = false;
-                        for owner in states {
-                            match links.get(owner).copied() {
-                                Some(slot) => {
-                                    slots.insert(slot);
-                                }
-                                None => unresolved = true,
-                            }
-                        }
-                        (slots, unresolved)
-                    });
-        }
-        let owners = self
-            .owner_slots
+        let slots = decoded
+            .complete::<tables::CountryLinks>()
+            .ok()
+            .map(resolved_slots);
+        let country_keys = decoded
+            .complete::<tables::Countries>()
+            .ok()
+            .map(dashboard_text::metadata::CountryKeys::read);
+        let tagged = country_keys
             .as_ref()
-            .filter(|_| self.country_keys.is_some() && self.slots.is_some());
+            .zip(slots.as_ref())
+            .map(|(countries, slots)| tagged_identities(countries.iter(), slots));
+        let state_owners: Option<Vec<u32>> = decoded
+            .complete::<tables::States>()
+            .ok()
+            .map(|states| states.iter().map(|state| state.owner).collect());
+        let owner_slots = state_owners
+            .as_ref()
+            .zip(slots.as_ref())
+            .map(|(states, links)| {
+                let mut owning = BTreeSet::new();
+                let mut unresolved = false;
+                for owner in states {
+                    match links.get(owner).copied() {
+                        Some(slot) => {
+                            owning.insert(slot);
+                        }
+                        None => unresolved = true,
+                    }
+                }
+                (owning, unresolved)
+            });
+        let owners = owner_slots
+            .as_ref()
+            .filter(|_| country_keys.is_some() && slots.is_some());
         while self
             .prior
             .front()
@@ -1013,19 +902,20 @@ impl Scan {
         {
             self.prior.pop_front();
         }
+        let mut active = BTreeSet::new();
         if let Some(tagged) = &tagged {
             for (tag, lookup) in tagged {
                 match std::str::from_utf8(tag) {
                     Ok(tag) => {
-                        if !self.countries.contains_key(tag) {
-                            self.updated.insert(tag.to_owned());
-                        }
-                        self.countries
-                            .entry(tag.to_owned())
-                            .or_insert_with(|| CountryScan {
-                                recent: self.prior.clone(),
-                                ..Default::default()
-                            });
+                        let country =
+                            self.countries
+                                .entry(tag.to_owned())
+                                .or_insert_with(|| CountryScan {
+                                    recent: self.prior.clone(),
+                                    ..Default::default()
+                                });
+                        country.identity = *lookup;
+                        active.insert(tag.to_owned());
                     }
                     Err(_) => {
                         if let Some((_, id)) = lookup {
@@ -1035,30 +925,15 @@ impl Scan {
                 }
             }
         }
-        let mut removed = Vec::new();
-        if identities_changed {
-            let mut active = BTreeSet::new();
-            if let Some(tagged) = &tagged {
-                for (tag, lookup) in tagged {
-                    if let Ok(tag) = std::str::from_utf8(tag) {
-                        active.insert(tag.to_owned());
-                        self.countries.get_mut(tag).unwrap().identity = *lookup;
-                    }
-                }
-            }
-            removed.extend(self.active.difference(&active).cloned());
-            for tag in &removed {
-                self.countries.get_mut(tag).unwrap().identity = None;
-            }
-            self.active = active;
+        let removed: Vec<String> = self.active.difference(&active).cloned().collect();
+        for tag in &removed {
+            self.countries.get_mut(tag).unwrap().identity = None;
         }
+        self.active = active;
         let fuel = decoded.complete::<tables::CountryFuel>().ok();
-        let read = changes.map_or_else(
-            || slot_read(format, &decoded.metrics, TableId::CountryFuel, hour),
-            |changes| changes.slot_read[TableId::CountryFuel.index()],
-        );
+        let read = slot_read(format, &decoded.metrics, TableId::CountryFuel, hour);
         // A read's packs with their lists, which later formats record apart.
-        let assembled = match fuel.filter(|_| demand.is_none()) {
+        let assembled = match fuel {
             Some(rows) if read => Some(replay_frame::rows::with_demand_parts(
                 rows,
                 &decoded.tables[TableId::FuelDemandParts.index()],
@@ -1066,36 +941,18 @@ impl Scan {
             )?),
             _ => None,
         };
-        let by_slot = if self.country_keys.is_some()
-            && self.slots.is_some()
-            && let Some(rows) = demand.or(assembled.as_deref())
-        {
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.work.row_visits += rows.len();
+        let by_slot = match (&slots, &assembled) {
+            (Some(slots), Some(rows)) if country_keys.is_some() => {
+                fuel_by_slot(rows, |row| row.country, |raw| slots.get(&raw).copied())
             }
-            fuel_by_slot(
-                rows,
-                |row| row.country,
-                |raw| {
-                    self.slots
-                        .as_ref()
-                        .and_then(|slots| slots.get(&raw))
-                        .copied()
-                },
-            )
-        } else {
-            BTreeMap::new()
+            _ => BTreeMap::new(),
         };
         for tag in self.active.iter().chain(&removed) {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let country = self.countries.get_mut(tag).unwrap();
             let identity = country.identity;
-            let seen = if ownership_changed {
-                owners.and_then(|owners| holding(identity, self.active.contains(tag), owners))
-            } else {
-                country.recent.back().and_then(|(_, seen)| *seen)
-            };
+            let seen =
+                owners.and_then(|owners| holding(identity, self.active.contains(tag), owners));
             // Dormant tags share the preceding absent/unknown proof. Restore only
             // that bounded suffix when the tag reappears, never its old history.
             let last = country.recent.back().map(|(hour, _)| *hour);
@@ -1115,10 +972,6 @@ impl Scan {
                 country.recent.pop_front();
             }
             country.recent.push_back((hour, seen));
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                self.work.interpreter_calls += 1;
-            }
             let supplied = identity
                 .filter(|_| fuel.is_some() && read)
                 .and_then(|identity| by_slot.get(&identity.0))
@@ -1128,93 +981,28 @@ impl Scan {
                         demand::summary_of(row, hour, hour, false, &mut self.reasons),
                     )
                 });
-            if accept_country(country, hour, fuel.is_some(), read, supplied) {
-                self.updated.insert(tag.clone());
-            }
+            accept_country(country, hour, fuel.is_some(), read, supplied);
         }
-        let prior = if ownership_changed {
-            owners.map(|_| (None, false))
-        } else {
-            self.prior.back().and_then(|(_, seen)| *seen)
-        };
-        self.prior.push_back((hour, prior));
-        Ok(identities_changed)
-    }
-
-    /// Whether the scan can step through quiet hours from `first`: it holds
-    /// the live joins an observed hour leaves (none after a restore, before
-    /// its first observation), and the shared and every current country's
-    /// ownership proofs end at the hour before.
-    fn continues_quiet(&self, first: i32) -> bool {
-        let before = first.checked_sub(1);
-        let ends_before =
-            |proof: &VecDeque<(i32, Holding)>| proof.back().map(|(hour, _)| *hour) == before;
-        self.country_keys.is_some()
-            && self.slots.is_some()
-            && ends_before(&self.prior)
-            && self.active.iter().all(|tag| {
-                self.countries
-                    .get(tag)
-                    .is_some_and(|country| ends_before(&country.recent))
-            })
-    }
-
-    /// Hours `first..=last` following the last observed ([`Self::continues_quiet`]),
-    /// at which no country key, link, state owner, fuel row or availability
-    /// changed and no fuel read is dated: what observing each of them does.
-    /// No identity, ownership or open state changes there, so every proof
-    /// repeats its last hour's holding at each hour (only the last day of
-    /// hours is kept), every identity track and open read extends through
-    /// them, and no country is updated.
-    fn advance_quiet(&mut self, first: i32, last: i32) {
-        self.updated.clear();
-        // Hours earlier than a day before `last` would be dropped again by
-        // `last`'s own trim; every later one is kept.
-        let kept = first.max(last.saturating_sub(DAY_HOURS));
-        let repeat = |proof: &mut VecDeque<(i32, Holding)>| {
-            let seen = proof.back().and_then(|(_, seen)| *seen);
-            proof.extend((kept..=last).map(|hour| (hour, seen)));
-            while proof
-                .front()
-                .is_some_and(|(seen, _)| last.saturating_sub(*seen) > DAY_HOURS)
-            {
-                proof.pop_front();
-            }
-        };
-        repeat(&mut self.prior);
-        for tag in &self.active {
-            let country = self.countries.get_mut(tag).expect("current fuel country");
-            repeat(&mut country.recent);
-            country.track.advance(last);
-            if country.open
-                && let Some(read) = country.result.reads.last_mut()
-            {
-                read.last_hour = last;
-            }
-            if country.demand_open
-                && let Some(read) = country.result.consumption.last_mut()
-            {
-                read.last_hour = last;
-            }
-        }
+        self.prior.push_back((hour, owners.map(|_| (None, false))));
+        Ok(())
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn accept_country(
     country: &mut CountryScan,
     hour: i32,
     available: bool,
     read: bool,
     supplied: Option<(RawRead, demand::RawConsumption)>,
-) -> bool {
-    let was_open = (country.open, country.demand_open);
+) {
     let continuous = country.track.step(country.identity, hour);
     country.open &= continuous;
     country.demand_open &= continuous;
     let Some(identity) = country.identity.filter(|_| available) else {
         country.open = false;
         country.demand_open = false;
-        return was_open != (false, false);
+        return;
     };
     if !read {
         if country.open
@@ -1227,12 +1015,12 @@ fn accept_country(
         {
             read.last_hour = hour;
         }
-        return was_open != (country.open, country.demand_open);
+        return;
     }
     let Some((mut fuel, mut consumption)) = supplied else {
         country.open = false;
         country.demand_open = false;
-        return was_open != (false, false);
+        return;
     };
     if country.continuity != fuel.continuity_start_hour {
         country.open = false;
@@ -1259,13 +1047,13 @@ fn accept_country(
     country.result.consumption.push(consumption);
     country.open = true;
     country.demand_open = true;
-    true
 }
 
 /// Leaves out the day of every read that overlaps a day kept. Reads in the fuel
 /// table's daily slot come first, then the others, each in hour order; a day is
 /// kept when its read is at least [`DAY_HOURS`] from every read kept before it,
 /// which every slot read is. Days already left out never hold another back.
+#[cfg(any(test, feature = "test-support"))]
 fn keep_days(format: replay_data::format::FormatVersion, reads: &mut [RawRead]) {
     let slot = cadence::cadence_in(TableId::CountryFuel, format);
     let in_slot = |read: &RawRead| slot.is_refresh(read.first_hour);
@@ -1303,10 +1091,10 @@ impl Product for CountryFuel {
             DayLeftOut::decl(),
             FuelRead::decl(),
             FuelReply::decl(),
-            prepared::FuelSeriesPoint::decl(),
-            prepared::FuelSeriesStateReply::decl(),
-            prepared::FuelSeriesLine::decl(),
-            prepared::FuelSeriesSummaryReply::decl(),
+            query::FuelSeriesPoint::decl(),
+            query::FuelSeriesStateReply::decl(),
+            query::FuelSeriesLine::decl(),
+            query::FuelSeriesSummaryReply::decl(),
         ]
     }
 
@@ -1328,41 +1116,57 @@ impl Product for CountryFuel {
             .get(&params.tag)
             .map(Arc::as_ref)
             .unwrap_or(&empty);
-        reply(source, params, context, branch.as_ref(), scanned)
+        let counted = Counted {
+            read: !scanned.reads.is_empty(),
+            left_out: scanned.left_out(),
+        };
+        let mut reply = reply(source, params, context, &branch.unnamed, counted)?;
+        reply.reads = scanned.reads.iter().map(FuelRead::from).collect();
+        Ok(reply)
     }
 }
 
+/// What a reply's warnings count of a tag's reads: whether it had any, and its days left out
+/// by [`emit::left_out_code`].
+#[derive(Clone, Copy)]
+struct Counted {
+    read: bool,
+    left_out: [usize; 3],
+}
+
+/// A tag's reply with its warnings, its reads empty.
 fn reply(
     source: &Source,
     params: &CountryParams,
     context: &LoadContext,
-    branch: &ScannedBranch,
-    scanned: &ScannedFuel,
+    unnamed: &BTreeSet<u32>,
+    counted: Counted,
 ) -> io::Result<FuelReply> {
     let mut warnings = Vec::new();
-    if !branch.unnamed.is_empty() {
+    if !unnamed.is_empty() {
         warnings.push(format!(
             "{} fuel countries have non-UTF-8 tags and cannot be selected by tag: {:?}",
-            branch.unnamed.len(),
-            branch.unnamed
+            unnamed.len(),
+            unnamed
         ));
     }
-    if scanned.reads.is_empty() && !scanned.has_omitted_reads {
+    if !counted.read {
         warnings.push(format!("{}: no recorded fuel in this branch", params.tag));
     }
-    let overlapping = scanned.left_out(DayLeftOut::Overlaps);
+    let left_out = |reason| counted.left_out[emit::left_out_code(reason)];
+    let overlapping = left_out(DayLeftOut::Overlaps);
     if overlapping > 0 {
         warnings.push(format!(
                 "Fuel reads less than a day from another: {overlapping}. Their gain and burn overlap a day already shown and are left out."
             ));
     }
-    let not_updated = scanned.left_out(DayLeftOut::NotUpdated);
+    let not_updated = left_out(DayLeftOut::NotUpdated);
     if not_updated > 0 {
         warnings.push(format!(
                 "Fuel reads after a day the country held no state: {not_updated}. The game did not update its fuel then, so their gain and burn are left out."
             ));
     }
-    let unknown = scanned.left_out(DayLeftOut::OwnershipNotRecorded);
+    let unknown = left_out(DayLeftOut::OwnershipNotRecorded);
     if unknown > 0 {
         warnings.push(format!(
                 "Fuel reads after a day recorded without state ownership: {unknown}. Whether the game updated the fuel then is unknown, so their gain and burn are left out."
@@ -1418,7 +1222,7 @@ fn reply(
         gain_labels,
         transfer_labels,
         detail_hours: detail::DETAIL_HOURS,
-        reads: scanned.reads.iter().map(FuelRead::from).collect(),
+        reads: Vec::new(),
         warnings,
     })
 }

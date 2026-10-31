@@ -47,7 +47,8 @@ pub struct FuelAwardHistoryReply {
 type Reads = BTreeMap<i32, BTreeMap<String, CountryFuelRow>>;
 #[derive(Default)]
 struct DetailCache {
-    window: Option<((u64, i32), Arc<Reads>)>,
+    /// A window's reads, and the hours scanned for them.
+    window: Option<((u64, i32), BTreeSet<i32>, Arc<Reads>)>,
     // A pinned selection may be outside the currently visible history window.
     basis: Option<((u64, i32), Arc<Reads>)>,
 }
@@ -155,7 +156,7 @@ pub(super) fn basis_reads(
     dashboard_text::metadata::check_cancel(cancelled)?;
     let state = source.state::<DetailCache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(((cached_branch, _), reads)) = &cache.window
+    if let Some(((cached_branch, _), _, reads)) = &cache.window
         && *cached_branch == branch
         && reads.contains_key(&hour)
     {
@@ -190,36 +191,29 @@ pub(super) fn authenticated<'a>(
         .ok_or_else(|| dashboard_core::invalid("Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)"))
 }
 
+/// The reads of window `window` at `hours`, its supplying reads a selection asks: one window is
+/// kept, each hour of it scanned once whatever selection asked it first.
 pub(super) fn window_reads(
     source: &Source,
     branch: u64,
     window: i32,
-    summary: &ScannedBranch,
+    hours: &BTreeSet<i32>,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<Reads>> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let state = source.state::<DetailCache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((key, reads)) = &cache.window
-        && *key == (branch, window)
-    {
-        return Ok(Arc::clone(reads));
+    let (mut scanned, mut reads) = match cache.window.take() {
+        Some((key, scanned, reads)) if key == (branch, window) => (scanned, reads),
+        _ => (BTreeSet::new(), Arc::new(Reads::new())),
+    };
+    let missing: BTreeSet<i32> = hours.difference(&scanned).copied().collect();
+    if !missing.is_empty() {
+        let found = scan_reads(source, branch, &missing, cancelled)?;
+        Arc::make_mut(&mut reads).extend(found);
+        scanned.extend(missing);
     }
-    let (first, last) = dashboard_base::products::production_lines::detail_window(window)
-        .expect("validated fuel window");
-    let mut hours = BTreeSet::new();
-    for country in summary.countries.values() {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let start = country.reads.partition_point(|read| read.last_hour < first);
-        for read in country.reads[start..]
-            .iter()
-            .take_while(|read| read.first_hour <= last)
-        {
-            hours.insert(read.first_hour);
-        }
-    }
-    let reads = Arc::new(scan_reads(source, branch, &hours, cancelled)?);
-    cache.window = Some(((branch, window), Arc::clone(&reads)));
+    cache.window = Some(((branch, window), scanned, Arc::clone(&reads)));
     Ok(reads)
 }
 
@@ -259,7 +253,7 @@ fn recipient_amount(
 }
 
 fn history_runs(
-    summary: &ScannedFuel,
+    supplying: &[RawRead],
     reads: &Reads,
     aliases: &[&String],
     params: &FuelAwardHistoryParams,
@@ -270,8 +264,8 @@ fn history_runs(
     let mut runs = Vec::new();
     let mut cursor = i64::from(first);
     let mut previous_known = false;
-    let start = summary.reads.partition_point(|read| read.last_hour < first);
-    for read in summary.reads[start..]
+    let start = supplying.partition_point(|read| read.last_hour < first);
+    for read in supplying[start..]
         .iter()
         .take_while(|read| read.first_hour <= last)
     {
@@ -396,21 +390,23 @@ impl Product for CountryFuelAwardHistory {
                 "Fuel recipient key is absent from the selected supplying read",
             ));
         }
-        let summary = prepared::window_summary(source, branch, params.window, context, cancelled)?;
-        let aliases: Vec<_> = summary.actor_tags(&params.country).collect();
-        let mut country = ScannedFuel {
-            reads: aliases
-                .iter()
-                .flat_map(|tag| summary.countries[*tag].reads.iter())
-                .filter(|read| read.country.to_string() == params.country)
-                .cloned()
-                .collect(),
-            ..Default::default()
-        };
-        country.reads.sort_by_key(|read| read.first_hour);
-        if summary.actor_conflicts.contains(&params.country)
-            || country
-                .reads
+        let actor = query::actor_window(
+            source,
+            context,
+            branch,
+            &params.country,
+            params.window,
+            cancelled,
+        )?;
+        let aliases: Vec<_> = actor.aliases.iter().collect();
+        let mut supplying: Vec<RawRead> = actor
+            .reads
+            .into_iter()
+            .filter(|read| read.country.to_string() == params.country)
+            .collect();
+        supplying.sort_by_key(|read| read.first_hour);
+        if actor.conflict
+            || supplying
                 .windows(2)
                 .any(|reads| reads[0].last_hour >= reads[1].first_hour)
         {
@@ -418,12 +414,17 @@ impl Product for CountryFuelAwardHistory {
                 "Conflicting aliases for the selected native fuel recipient",
             ));
         }
-        let reads = window_reads(source, branch, params.window, &summary, cancelled)?;
         let (first_hour, last_hour) =
             dashboard_base::products::production_lines::detail_window(params.window)
                 .expect("validated fuel window");
+        let hours = supplying
+            .iter()
+            .filter(|read| read.last_hour >= first_hour && read.first_hour <= last_hour)
+            .map(|read| read.first_hour)
+            .collect();
+        let reads = window_reads(source, branch, params.window, &hours, cancelled)?;
         let runs = history_runs(
-            &country,
+            &supplying,
             &reads,
             &aliases,
             params,
@@ -466,6 +467,3 @@ impl Product for CountryFuelAwardHistory {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-pub(super) mod oracle;

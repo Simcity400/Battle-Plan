@@ -2847,6 +2847,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-country-fuel",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-world",
  "engine-allocation",

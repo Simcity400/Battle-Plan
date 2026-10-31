@@ -47,7 +47,6 @@ pub(super) fn walk_state(branch: u64, hour: i32, state: &BranchState) -> Line {
         air => "air",
         navy => "navy",
         parts => "parts",
-        fuel => "fuel",
         equipment_losses => "equipment_losses",
         trade => "trade",
         territory => "territory",

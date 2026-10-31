@@ -19,7 +19,6 @@ type PrepareReloadMode<'a> = (&'a str, &'a dyn Fn(&Source), bool);
 mod casualty_pending;
 mod catalogue_refusals;
 mod cold_defaults;
-mod columnar_fuel;
 mod commit_points;
 mod driver_plan;
 mod equipment_loss_pending;
@@ -3817,28 +3816,16 @@ fn check_peace_pending() {
 }
 
 #[test]
-fn progressive_fuel_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exactly_without_writing()
- {
+fn progressive_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exactly_without_writing() {
     // The pages and coverage below are those hourly preparation publishes.
-    independent::with_test_hourly(progressive_fuel_factories_and_nukes);
+    independent::with_test_hourly(progressive_factories_and_nukes);
 }
 
-fn progressive_fuel_factories_and_nukes() {
+fn progressive_factories_and_nukes() {
     fn sampled(hour: i32) -> DecodedFrame {
         let count = if hour < 2 { 1 } else { 2 };
         let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
         let amount = if hour % 2 == 0 { i64::from(hour) } else { 99 };
-        frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
-        *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
-            (0..count)
-                .map(|index| replay_data::rows::CountryFuelRow {
-                    country: 100_000 + index,
-                    current_raw: amount + i64::from(index),
-                    maximum_raw: 32768,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
         *frame.tables[TableId::CountryFactories.index()] =
             TableView::Complete(TableRows::CountryFactories(
                 (0..count)
@@ -3873,7 +3860,7 @@ fn progressive_fuel_factories_and_nukes() {
             .unwrap();
     }
     let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("progressive-fuel-forces");
+    let source = fixture.source("progressive-factories-nukes");
     let flag = AtomicBool::new(false);
     let (store, key) = super::super::files(&source, None).unwrap();
     let query = |product: &str, params: serde_json::Value| {
@@ -3893,17 +3880,8 @@ fn progressive_fuel_factories_and_nukes() {
         .map(|index| String::from_utf8(crate::test_fixtures::scale_tag(index)).unwrap())
         .collect();
     let summary = |kind: &str, from: i32| serde_json::json!({"branchId":"1","family":{"kind":kind},"tags":tags,"from":from,"to":29,"width":30});
-    let lines = |data: &serde_json::Value, kind: &str| {
-        data[if kind == "country-fuel" {
-            "series"
-        } else {
-            "summaries"
-        }]
-        .as_array()
-        .unwrap()
-        .clone()
-    };
-    for kind in ["country-fuel", "country-factories", "country-nukes"] {
+    let lines = |data: &serde_json::Value, _: &str| data["summaries"].as_array().unwrap().clone();
+    for kind in ["country-factories", "country-nukes"] {
         let cold = query("series-summary", summary(kind, 0));
         assert!(
             cold["coverage"]["firstHour"]
@@ -3927,25 +3905,19 @@ fn progressive_fuel_factories_and_nukes() {
             "series-state",
             serde_json::json!({"branchId":"1","family":{"kind":kind},"reads":[{"tag":"absent country","hour":29}]}),
         );
-        if kind == "country-fuel" {
-            assert!(absent["states"][0]["fuelRaw"].is_null());
-        } else {
-            assert!(
-                absent["series"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|series| series["runs"].as_array().unwrap().is_empty())
-            );
-        }
+        assert!(
+            absent["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|series| series["runs"].as_array().unwrap().is_empty())
+        );
     }
-    let mut fuel = crate::products::country_fuel::prepared::Prepared::default();
     let mut factories = crate::products::country_factories::prepared::Prepared::default();
     let mut nukes = crate::products::country_nukes::prepared::Prepared::default();
     let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
     for hour in 0..=1 {
         let frame = sampled(hour);
-        fuel.observe(&frame, replay.format, &flag).unwrap();
         factories
             .observe(
                 &frame,
@@ -3965,7 +3937,6 @@ fn progressive_fuel_factories_and_nukes() {
         identities.observe(&frame);
     }
     let mut writer = store.replace(key.clone()).unwrap();
-    fuel.flush(&mut writer, 1, replay.format, &flag).unwrap();
     factories.flush(&mut writer, 1, &flag).unwrap();
     nukes.flush(&mut writer, 1, &flag).unwrap();
     json(&mut writer, "country-identities-1", &identities).unwrap();
@@ -3981,10 +3952,10 @@ fn progressive_fuel_factories_and_nukes() {
     )
     .unwrap();
     writer.commit().unwrap();
-    let range_counts: Vec<_> = ["fuel-1", "factories-values-1-6", "nukes-values-1"]
+    let range_counts: Vec<_> = ["factories-values-1-6", "nukes-values-1"]
         .map(|section| store.range_count(&key, section).unwrap())
         .into();
-    for kind in ["country-fuel", "country-factories", "country-nukes"] {
+    for kind in ["country-factories", "country-nukes"] {
         let rough = query("series-summary", summary(kind, 0));
         assert_eq!(rough["coverage"]["lastHour"], 1);
         assert_eq!(
@@ -4017,35 +3988,24 @@ fn progressive_fuel_factories_and_nukes() {
                     && run["value"].as_f64() == Some(99.0)),
             "{kind}: thirteen-block zoom must retain the unsampled hourly change"
         );
-        if kind != "country-fuel" {
-            let mut top = summary(kind, 0);
-            top["tags"] = serde_json::json!([]);
-            top["family"]["top"] = if kind == "country-factories" {
-                serde_json::json!({"count":1,"mode":"built","groups":["military"]})
-            } else {
-                serde_json::json!(1)
-            };
-            let ranked = query("series-summary", top);
-            assert!(
-                ranked["series"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|series| series["tag"] == tags[1]),
-                "transient ranks use the same sampled numeric value"
-            );
-        }
+        let mut top = summary(kind, 0);
+        top["tags"] = serde_json::json!([]);
+        top["family"]["top"] = if kind == "country-factories" {
+            serde_json::json!({"count":1,"mode":"built","groups":["military"]})
+        } else {
+            serde_json::json!(1)
+        };
+        let ranked = query("series-summary", top);
+        assert!(
+            ranked["series"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|series| series["tag"] == tags[1]),
+            "transient ranks use the same sampled numeric value"
+        );
     }
-    let state = query(
-        "series-state",
-        serde_json::json!({"branchId":"1","family":{"kind":"country-fuel"},"reads":[{"tag":tags[1],"hour":29}]}),
-    );
-    assert_eq!(state["states"][0]["fuelRaw"], "100");
-    assert_eq!(state["states"][0]["approximate"], false);
-    assert!(state["states"][0]["fuel"].is_null());
-    assert!(state["states"][0]["consumption"].is_null());
-    assert!(query("series-summary",serde_json::json!({"branchId":"1","family":{"kind":"country-fuel"},"tags":tags,"measures":["stripGain"],"from":0,"to":29,"width":30})).is_null(), "cross-frame accounting must remain pending");
-    for (index, section) in ["fuel-1", "factories-values-1-6", "nukes-values-1"]
+    for (index, section) in ["factories-values-1-6", "nukes-values-1"]
         .into_iter()
         .enumerate()
     {

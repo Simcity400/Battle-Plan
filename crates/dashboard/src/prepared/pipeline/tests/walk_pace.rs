@@ -415,8 +415,6 @@ const PENDING_UNDER_COUNTED: &[&str] = &[
     "event_feed",
     // Flush seals the uncharged roster and unavailable-channel runs.
     "faction_state",
-    // Availability and settlement catalogue frontiers advance without fuel rows.
-    "fuel",
     // GroupsBranch::pending omits Changes::flush_as diagnostic counters.
     "groups",
     // IdentitiesBranch::pending is zero while flush writes the sealed HistoryScan.

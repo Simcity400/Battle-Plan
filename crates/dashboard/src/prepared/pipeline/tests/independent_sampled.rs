@@ -1,4 +1,4 @@
-//! The sampled families (air force and navy size, stability's parts, fuel,
+//! The sampled families (air force and navy size, stability's parts,
 //! equipment losses and the party history) prepared on
 //! their own, before the hourly walk, publish and save exactly what hourly
 //! preparation does, across commits, resume, reload, append, a gap and a
@@ -10,8 +10,8 @@ use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use replay_data::{
-    rows::CountryFuelRow, rows::CountryStabilityLineRow, rows::LexicalTokenRow,
-    rows::ResourceDefinitionRow, rows::ResourceExchangeRow, rows::ShipRow, rows::SliceReadRow,
+    rows::CountryStabilityLineRow, rows::LexicalTokenRow, rows::ResourceDefinitionRow,
+    rows::ResourceExchangeRow, rows::ShipRow, rows::SliceReadRow,
 };
 use serde_json::Value;
 use std::sync::Mutex;
@@ -30,10 +30,9 @@ fn set(observed: &mut DecodedFrame, rows: TableRows) {
 }
 
 /// Every sampled family's tables at `hour` of `branch`, two countries. Wings
-/// and ships move every hour (the force fixture's), as does every country's
-/// fuel; fuel capacity grows at +9. The first country's ship is of a second
-/// class from +8 (inside the second block) to +13 (the third block's first
-/// two hours), and the second country's of a third at +3 and +4 (inside the
+/// and ships move every hour (the force fixture's). The first country's ship
+/// is of a second class from +8 (inside the second block) to +13 (the third
+/// block's first two hours), and the second country's of a third at +3 and +4 (inside the
 /// first block of each branch), each spelled by its own token: so a census
 /// starting afresh at the third block numbers the classes in another order
 /// than one carried from the first, and classes are first seen inside
@@ -94,19 +93,6 @@ fn sampled_frame(branch: u64, hour: i32) -> DecodedFrame {
                 literal: literal.as_bytes().to_vec(),
             })
             .collect(),
-        ),
-    );
-    set(
-        &mut observed,
-        TableRows::CountryFuel(
-            (0..2)
-                .map(|index| CountryFuelRow {
-                    country: FIRST + index,
-                    current_raw: i64::from(at) * 10 + i64::from(index),
-                    maximum_raw: 32_768 + if at >= 9 { 1_000 } else { 0 },
-                    ..Default::default()
-                })
-                .collect(),
         ),
     );
     let mut inputs = crate::test_fixtures::stability_inputs();
@@ -305,14 +291,6 @@ const PARTS: Sampled = Sampled {
     field: Some("parts"),
     gated: "stability-parts",
     observed: "parts.observed",
-    applied: None,
-    own_read: None,
-};
-const FUEL: Sampled = Sampled {
-    name: "fuel",
-    field: Some("fuel"),
-    gated: "country-fuel",
-    observed: "fuel.observed",
     applied: None,
     own_read: None,
 };
@@ -791,23 +769,6 @@ sampled_tests!(
     stability_parts_prepared_on_their_own_refuse_where_hourly_preparation_does,
     stability_parts_are_observed_every_hour_on_their_own_thread_and_skipped_by_the_walk
 );
-// Fuel is read by its changes with the economy ledgers, whose tests count its
-// frames and quiet hours (`independent_ledgers`). Here its fuel moves every
-// hour, so every hour is a read it observes.
-#[test]
-fn fuel_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does() {
-    parity(FUEL);
-}
-
-#[test]
-fn fuel_prepared_on_its_own_commits_resumes_reloads_and_appends_as_hourly_preparation() {
-    commits(FUEL);
-}
-
-#[test]
-fn fuel_prepared_on_its_own_refuses_where_hourly_preparation_does() {
-    refusals(FUEL);
-}
 sampled_tests!(
     EQUIPMENT_LOSSES,
     equipment_losses_prepared_on_their_own_publish_and_save_what_hourly_preparation_does,
@@ -1370,7 +1331,6 @@ fn sampled_families_answer_from_their_own_coverage_while_the_hourly_walk_accepts
         "air",
         "navy",
         "parts",
-        "fuel",
         "equipment_losses",
         "parties",
         "trade",
@@ -1410,7 +1370,6 @@ fn sampled_families_answer_from_their_own_coverage_while_the_hourly_walk_accepts
                 "air-force-size",
                 "navy-size",
                 "stability-parts",
-                "country-fuel",
                 "party-history",
                 "trade-flows",
             ] {

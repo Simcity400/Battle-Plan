@@ -227,7 +227,6 @@ const LANE_FAMILIES: &[&str] = &[
     "intelligence",
     "parts",
     "experience",
-    "fuel",
     "occupation",
     "casualties",
     "equipment_losses",

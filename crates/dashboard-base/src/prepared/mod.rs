@@ -18,6 +18,7 @@ pub mod observer_tests;
 pub mod pages;
 pub mod prefix;
 pub mod prepass;
+pub mod published;
 pub use job_priority as priority;
 pub mod roots;
 pub mod series;

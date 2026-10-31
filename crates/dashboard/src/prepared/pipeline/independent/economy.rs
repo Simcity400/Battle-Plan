@@ -1,9 +1,8 @@
-//! The economy ledgers prepared on their own: construction, production,
-//! country experience and fuel. Each is read daily:
+//! The economy ledgers prepared on their own: construction, production and
+//! country experience. Each is read daily:
 //! its observer acts when a field it reads changes or when one of its tables'
 //! daily reads is dated, and an hour between does nothing but advance its
-//! accepted hours (and, for fuel, carry its ownership proofs and settle the
-//! days a day after their reads). So a block is read by its changes ([`prepass::Family`]
+//! accepted hours. So a block is read by its changes ([`prepass::Family`]
 //! fields), with each family's daily read hour as the extract's deadline: a
 //! pre-pass worker keeps the frames of the hours the family observes (the
 //! block's first, each hour a watched field, row key or availability changes,
@@ -34,7 +33,6 @@ use crate::{
     prepared_stability::ExperienceAccumulator,
     products::{
         construction_log::{self, NameSource},
-        country_fuel,
         country_groups::HourSpan,
     },
 };
@@ -48,10 +46,7 @@ use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
 enum Hour {
     /// An hour the family observes, with its change facts; its frame is the
     /// next the block's kept frames hold.
-    Observed {
-        changes: FrameChanges,
-        demand: Option<replay_data::rows::TableRows>,
-    },
+    Observed { changes: FrameChanges },
     /// Hours `first..=last`, after the hour before, at which nothing the
     /// family reads changed and none of its daily reads is dated.
     Quiet { first: i32, last: i32 },
@@ -76,7 +71,6 @@ struct DailyExtract {
     /// The tables whose daily reads the family's observation dates
     /// (`FrameChanges::slot_read`).
     reads: &'static [TableId],
-    fuel: bool,
     hours: Vec<Hour>,
     kept: FrameLog,
     /// The last hour given a frame.
@@ -92,7 +86,6 @@ impl DailyExtract {
         Box::new(Self {
             format,
             reads,
-            fuel: reads == FUEL_READS,
             hours: Vec::new(),
             kept: FrameLog::new(),
             last: None,
@@ -119,11 +112,8 @@ impl Extract for DailyExtract {
         let mut held = dashboard_base::prepared::prepass::HeldBytes::default();
         held.add(self.hours.capacity() * size_of::<Hour>());
         for hour in &self.hours {
-            if let Hour::Observed { changes, demand } = hour {
+            if let Hour::Observed { changes } = hour {
                 held.changes(changes);
-                if let Some(rows) = demand {
-                    held.add(rows.heap_bytes());
-                }
             }
         }
         for view in self.kept.views() {
@@ -147,33 +137,8 @@ impl Extract for DailyExtract {
             return Ok(());
         }
         self.last = Some(frame.hour);
-        let demand = if self.fuel && changes.slot_read[TableId::CountryFuel.index()] {
-            frame
-                .complete::<replay_data::rows::tables::CountryFuel>()
-                .ok()
-                .map(|rows| {
-                    replay_frame::rows::with_demand_parts(
-                        rows,
-                        &frame.tables[TableId::FuelDemandParts.index()],
-                        self.format,
-                    )
-                    .map(replay_data::rows::TableRows::CountryFuel)
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        let mut kept = frame.clone();
-        if self.fuel {
-            kept.tables[TableId::FuelDemandParts.index()] =
-                replay_frame::frame::TableView::Unavailable {
-                    reason: "Demand parts assembled by the block extract".into(),
-                }
-                .into();
-        }
-        self.kept.push(&kept)?;
+        self.kept.push(frame)?;
         self.hours.push(Hour::Observed {
-            demand,
             changes: FrameChanges {
                 rows_changed: changes.rows_changed,
                 table_read: changes.table_read,
@@ -244,15 +209,6 @@ trait Ledger {
     fn prepare(&mut self, block: &Block<'_>) -> io::Result<()>;
     /// One hour, as hourly preparation observes it.
     fn observe(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()>;
-    fn observe_demand(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        demand: Option<&replay_data::rows::TableRows>,
-    ) -> io::Result<()> {
-        let _ = demand;
-        self.observe(frame, changes)
-    }
     /// Hours `first..=last` following `frame`, the last observed, at which
     /// nothing the family reads changed and none of its daily reads is
     /// dated: what observing each does. False when the carried state cannot
@@ -300,7 +256,7 @@ fn fold(
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         check()?;
         match hour {
-            Hour::Observed { changes, demand } => {
+            Hour::Observed { changes } => {
                 // Released first, so the next frame changes it in place.
                 drop(last.take());
                 let frame = kept.next().ok_or_else(|| {
@@ -311,7 +267,7 @@ fn fold(
                 count(family.name, |counts| counts.observed += 1);
                 let result = {
                     let _cpu = ::replay_frame::cpu::scope("fold observe", None);
-                    ledger.observe_demand(&frame, &changes, demand.as_ref())
+                    ledger.observe(&frame, &changes)
                 };
                 if !observed(frame.hour, result)? {
                     return Ok((Folded::Fast, reached));
@@ -942,255 +898,6 @@ impl Branch for ExperienceBranch {
     }
 }
 
-// --- Fuel ------------------------------------------------------------------
-
-/// The tables fuel reads: the fuel amounts and their demand parts, and the
-/// countries, links and state owners they are joined through.
-const FUEL_TABLES: &[TableId] = &[
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::States,
-    TableId::CountryFuel,
-    TableId::FuelDemandParts,
-];
-
-/// The fuel read the observer dates.
-const FUEL_READS: &[TableId] = &[TableId::CountryFuel];
-
-static FUEL_FAMILY: prepass::Family = prepass::Family {
-    name: "fuel",
-    extract: "fuel.extract",
-    sequential: "fuel.sequential",
-    fallback: "fuel.fallback",
-    tables: FUEL_TABLES,
-    fields: Some(fuel_fields),
-    start: fuel_start,
-};
-
-/// What the fuel scan reads.
-fn fuel_fields() -> io::Result<Vec<TableFields>> {
-    Ok(vec![
-        // Country keys (`CountryKeys`): the id (the row key), canonical slot
-        // and tag. The balances move every hour and are not read.
-        TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
-        // Every link: holders and state owners are joined through them.
-        TableFields::all(TableId::CountryLinks),
-        // Each state's owner, the ownership proof's operand; the states'
-        // manpower, infrastructure and names move without it.
-        TableFields::named(TableId::States, &["owner"])?,
-        // The daily fuel read and its demand parts, at each read: rows
-        // change only there, and a read with equal rows dates a read again.
-        TableFields::all(TableId::CountryFuel).when_read(),
-        TableFields::all(TableId::FuelDemandParts).when_read(),
-    ])
-}
-
-fn fuel_start(format: FormatVersion) -> Box<dyn Extract> {
-    DailyExtract::start(format, FUEL_READS)
-}
-
-/// Fuel and current consumption.
-pub(in crate::prepared::pipeline) struct Fuel;
-
-pub(in crate::prepared::pipeline) static FUEL: Fuel = Fuel;
-
-impl Own for Fuel {
-    fn family(&self) -> &'static prepass::Family {
-        &FUEL_FAMILY
-    }
-
-    fn timing(&self) -> &'static str {
-        "independent.fuel"
-    }
-
-    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
-        Ok(Box::new(FuelBranch {
-            prepared: read(load, &continuation("fuel", branch))?,
-            format: load.replay.format,
-        }))
-    }
-}
-
-/// One branch's fuel observer.
-struct FuelBranch {
-    /// None until a block is observed on a branch with no saved state, where
-    /// hourly preparation makes a new one.
-    prepared: Option<Box<country_fuel::prepared::Prepared>>,
-    format: FormatVersion,
-}
-
-impl FuelBranch {
-    fn prepared(&mut self) -> &mut country_fuel::prepared::Prepared {
-        self.prepared.get_or_insert_with(Box::default)
-    }
-}
-
-impl Ledger for FuelBranch {
-    fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        self.prepared();
-        Ok(())
-    }
-
-    fn observe(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
-        let format = self.format;
-        // Cancellation is checked between hours.
-        self.prepared()
-            .observe_changes(frame, format, changes, &AtomicBool::new(false))
-    }
-
-    fn observe_demand(
-        &mut self,
-        frame: &DecodedFrame,
-        changes: &FrameChanges,
-        demand: Option<&replay_data::rows::TableRows>,
-    ) -> io::Result<()> {
-        let format = self.format;
-        self.prepared().observe_demand(
-            frame,
-            format,
-            changes,
-            demand.and_then(|rows| rows.rows::<replay_data::rows::tables::CountryFuel>()),
-            &AtomicBool::new(false),
-        )
-    }
-
-    fn quiet(&mut self, first: i32, last: i32, _: &DecodedFrame) -> io::Result<bool> {
-        let format = self.format;
-        self.prepared().advance_quiet(first, last, format)
-    }
-}
-
-impl Branch for FuelBranch {
-    fn fold(
-        &mut self,
-        facts: Box<dyn Any + Send>,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(Folded, Option<i32>)> {
-        fold(self, &FUEL_FAMILY, facts, block, observed, check)
-    }
-
-    fn observe_block(
-        &mut self,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<Option<i32>> {
-        observe_block(self, &FUEL_FAMILY, block, None, observed, check)
-    }
-
-    fn pending(&self) -> usize {
-        self.prepared
-            .as_ref()
-            .map_or(0, |prepared| prepared.buffered_bytes())
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: &Replay,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        match self.prepared.as_mut() {
-            Some(prepared) => prepared.flush(writer, branch, self.format, cancelled),
-            None => Ok(()),
-        }
-    }
-
-    fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        match self.prepared.as_ref() {
-            Some(prepared) => save(writer, &continuation("fuel", branch), &**prepared),
-            None => Ok(()),
-        }
-    }
-}
-
-pub struct FuelReference {
-    branch: FuelBranch,
-}
-
-impl FuelReference {
-    pub fn new(format: FormatVersion) -> Self {
-        Self {
-            branch: FuelBranch {
-                prepared: None,
-                format,
-            },
-        }
-    }
-
-    pub fn block(
-        &mut self,
-        source: &crate::Source,
-        replay: &Replay,
-        index: &replay::container::BlockIndex,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        let context = crate::products::LoadContext { content: None };
-        let block = Block {
-            replay,
-            index,
-            source,
-            context: &context,
-            cancelled,
-            shared: None,
-            #[cfg(test)]
-            read_hook_family: None,
-        };
-        let mut extracted = prepass::extract_block_measured(
-            replay,
-            index,
-            &[&FUEL_FAMILY],
-            cancelled,
-            &prepass::Knobs::current(),
-        );
-        let outcome = extracted
-            .outcomes
-            .pop()
-            .ok_or_else(|| io::Error::other("Fuel reference lacks a block outcome"))?
-            .0;
-        let mut observed = |_: i32, result: io::Result<()>| result.map(|()| true);
-        let mut check = || crate::metadata::check_cancel(cancelled);
-        self.branch.begin_block();
-        match outcome {
-            prepass::Outcome::Facts(facts) => {
-                self.branch.fold(facts, &block, &mut observed, &mut check)?;
-            }
-            prepass::Outcome::Sequential | prepass::Outcome::Declined(_) => {
-                self.branch
-                    .observe_block(&block, &mut observed, &mut check)?;
-            }
-            prepass::Outcome::Failed(error) => return Err(error),
-        }
-        self.branch.end_block(replay, index.branch);
-        Ok(())
-    }
-
-    pub fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        replay: &Replay,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.branch.flush(writer, replay, branch, cancelled)
-    }
-
-    pub fn reload(&mut self) -> io::Result<()> {
-        self.branch.prepared = self
-            .branch
-            .prepared
-            .as_ref()
-            .map(|prepared| serde_json::from_slice(&serde_json::to_vec(prepared)?))
-            .transpose()?;
-        Ok(())
-    }
-}
-
 // --- Test counts -------------------------------------------------------------
 
 /// What one family's folds did, including work carried from its worker.
@@ -1225,7 +932,6 @@ fn count_names(family: &str) -> Option<[&'static str; 3]> {
             "experience.observed",
             "experience.quiet",
         ],
-        "fuel" => ["fuel.frames", "fuel.observed", "fuel.quiet"],
         _ => return None,
     })
 }
@@ -1258,77 +964,6 @@ pub(in crate::prepared::pipeline) fn counts(family: &str) -> Counts {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fuel_extract_releases_part_baselines_and_keeps_the_same_assembled_reads() {
-        use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay_data::{
-            rows::CountryFuelRow, rows::FuelDemandRead, rows::FuelDemandUnit, rows::Recorded,
-            rows::TableRows, rows::tables,
-        };
-        use replay_frame::frame::TableView;
-        let frames = (0..3)
-            .map(|day| {
-                let hour = 100 + 24 * day;
-                let mut frame = source(1, hour, Some(1));
-                let (header, parts) = FuelDemandRead {
-                    divisions: (1..=200)
-                        .map(|reference| FuelDemandUnit {
-                            reference,
-                            rate_raw: Some(i64::from(day) + reference as i64),
-                            ..Default::default()
-                        })
-                        .collect(),
-                    ..Default::default()
-                }
-                .split(11)
-                .unwrap();
-                *frame.tables[TableId::CountryFuel.index()] =
-                    TableView::Complete(TableRows::CountryFuel(vec![CountryFuelRow {
-                        country: 11,
-                        demand: Recorded::Value(header),
-                        ..Default::default()
-                    }]));
-                *frame.tables[TableId::FuelDemandParts.index()] =
-                    TableView::Complete(TableRows::FuelDemandParts(parts));
-                frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
-                frame
-            })
-            .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let before = replay_frame::cpu::delta_copies()[TableId::FuelDemandParts.index()];
-        let facts = dashboard_base::prepared::prepass::extract_alone(
-            &replay,
-            &replay.index[0],
-            &FUEL_FAMILY,
-        )
-        .unwrap()
-        .downcast::<Facts>()
-        .unwrap();
-        assert_eq!(
-            replay_frame::cpu::delta_copies()[TableId::FuelDemandParts.index()],
-            before
-        );
-        assert_eq!(facts.hours.len(), 3);
-        let Facts { hours, kept, .. } = *facts;
-        for (hour, frame) in hours.into_iter().zip(kept.into_frames()) {
-            let Hour::Observed { demand, .. } = hour else {
-                panic!("each read is observed")
-            };
-            let frame = frame.unwrap();
-            assert!(frame.complete::<tables::FuelDemandParts>().is_err());
-            let demand = demand.unwrap();
-            let rows = demand.rows::<tables::CountryFuel>().unwrap();
-            let Recorded::Value(pack) = &rows[0].demand else {
-                panic!("recorded demand")
-            };
-            assert_eq!(pack.divisions.len(), 200);
-            assert_eq!(
-                pack.divisions[0].rate_raw,
-                Some(i64::from((frame.hour - 100) / 24) + 1)
-            );
-        }
-    }
 
     #[test]
     fn continuation_compression_preserves_its_bytes() {

@@ -1,9 +1,14 @@
+//! Fuel facts, projected hour by hour from a columnar walk ([`replay::segments`]): each tag
+//! whose country, state ownership, fuel row or read the hour may have changed, with what the
+//! hour shows of it, from the walk's countries and owners ([`dashboard_world`]) and the fuel
+//! and demand rows. A read hour, an hour the fuel table changes shape and a segment's first
+//! hour project every tag; a quiet hour projects none.
+
 use super::*;
 use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    container::Replay,
     segments::{self, Item, Operator, Sink, State},
 };
 use replay_data::{
@@ -11,7 +16,7 @@ use replay_data::{
     rows::{FuelDemandPartRow, RowCodec, TABLE_COUNT, TableRows},
 };
 use replay_frame::frame::TableView;
-use std::mem::size_of;
+use std::{collections::HashMap, mem::size_of};
 
 /// What a projection reads of its walk's world: the countries and the states' owners.
 pub fn needs() -> Needs {
@@ -31,44 +36,128 @@ pub const TABLES: &[TableId] = &[
     TableId::FuelDemandParts,
 ];
 
-pub(super) struct Country {
-    pub(super) tag: String,
-    pub(super) identity: Option<Identity>,
-    pub(super) present: bool,
-    pub(super) seen: Holding,
-    pub(super) sample: bool,
-    pub(super) amount: Option<(i64, i64)>,
-    pub(super) supplied: Option<(RawRead, demand::RawConsumption)>,
+/// What an hour shows of a tag's country, for the fuel update the hour governs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sample {
+    /// The country owns a state.
+    Owns(Identity),
+    /// The country owns none.
+    Stateless(Identity),
+    /// No country holds the tag.
+    Absent,
+    /// The tables do not tell.
+    Unknown,
 }
 
+/// One tag at a projected hour.
+pub struct Country {
+    /// Its tag's index in the projection ([`Hour::named`]).
+    pub(super) index: u32,
+    /// The country holding it, when the links resolve one.
+    pub(super) identity: Option<Identity>,
+    /// Whether a country holds it.
+    pub(super) present: bool,
+    pub(super) seen: Sample,
+    /// Its fuel row's level and capacity, where the hour may have changed them: None without
+    /// a row.
+    pub(super) level: Option<Option<(i64, i64)>>,
+    /// On a read hour, its row's read and current consumption, before the day's rules.
+    pub(super) supplied: Option<Box<(RawRead, demand::RawConsumption)>>,
+}
+
+/// One projected hour.
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
-    pub(super) format: FormatVersion,
+    /// Tags the projection numbers from this hour on, by index.
+    pub(super) named: Vec<(u32, Arc<str>)>,
+    /// Every tag a country holds, where the countries may have changed.
+    pub(super) present: Option<Vec<u32>>,
+    /// Tags the hour may have changed, at least each one it did, in tag order.
     pub(super) countries: Vec<Country>,
-    pub(super) identities: bool,
-    pub(super) prior: Holding,
-    pub(super) unnamed: BTreeSet<u32>,
+    /// What the hour shows of a tag no country holds.
+    pub(super) prior: Sample,
+    /// Countries whose tags are not UTF-8, where the countries may have changed.
+    pub(super) unnamed: Vec<u32>,
+    /// Whether the hour reads the fuel table, and whether it holds every row.
     pub(super) read: bool,
     pub(super) available: bool,
-    pub(super) refresh_levels: bool,
-    pub(super) countries_complete: bool,
 }
 
 impl Hour {
     pub fn changed_countries(&self) -> usize {
         self.countries.len()
     }
+
+    /// A test's hour of one tag, `tag`, its country `identity` owning a state and its fuel read
+    /// at `level` (fuel, capacity); `first` names the tag, as a segment's first hour does.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_read(
+        branch: u64,
+        hour: i32,
+        tag: &str,
+        identity: (u32, u32),
+        first: bool,
+        level: (i64, i64),
+    ) -> Self {
+        let row = CountryFuelRow {
+            country: identity.1,
+            current_raw: level.0,
+            maximum_raw: level.1,
+            ..Default::default()
+        };
+        let mut reasons = Reasons::default();
+        let read = read_of(&row, hour, false, None, &mut reasons);
+        let consumption = demand::summary_of(&row, hour, hour, false, &mut reasons);
+        Self {
+            branch,
+            hour,
+            named: if first {
+                vec![(0, Arc::from(tag))]
+            } else {
+                Vec::new()
+            },
+            present: first.then(|| vec![0]),
+            countries: vec![Country {
+                index: 0,
+                identity: Some(identity),
+                present: true,
+                seen: Sample::Owns(identity),
+                level: Some(Some(level)),
+                supplied: Some(Box::new((read, consumption))),
+            }],
+            prior: Sample::Absent,
+            unnamed: Vec::new(),
+            read: true,
+            available: true,
+        }
+    }
+}
+
+fn read_heap(read: &RawRead) -> usize {
+    match &read.day {
+        Some(RawDay::Awards(_)) => size_of::<AwardSums>(),
+        _ => 0,
+    }
 }
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        self.countries
-            .iter()
-            .map(|country| country.tag.capacity())
-            .sum::<usize>()
+        // Reasons are Arcs the projection's reasons hold too.
+        self.named.capacity() * size_of::<(u32, Arc<str>)>()
+            + self.named.iter().map(|(_, tag)| tag.len()).sum::<usize>()
+            + self
+                .present
+                .as_ref()
+                .map_or(0, |present| present.capacity() * 4)
             + self.countries.capacity() * size_of::<Country>()
-            + self.unnamed.len() * size_of::<u32>()
+            + self
+                .countries
+                .iter()
+                .filter_map(|country| country.supplied.as_deref())
+                .map(|(read, _)| size_of::<(RawRead, demand::RawConsumption)>() + read_heap(read))
+                .sum::<usize>()
+            + self.unnamed.capacity() * size_of::<u32>()
     }
 }
 
@@ -90,7 +179,6 @@ impl<T: Clone> Cells<T> {
         state: &State,
         table: TableId,
         whole: bool,
-        fields: Option<u64>,
         mut decode: impl FnMut(u32) -> io::Result<T>,
     ) -> io::Result<Vec<(u128, Option<T>, Option<T>)>> {
         let held = columns::table(state, table)?;
@@ -121,11 +209,9 @@ impl<T: Clone> Cells<T> {
             let slots: BTreeSet<_> = edits
                 .changed
                 .iter()
-                .zip(&edits.masks)
-                .chain(edits.fill_slots.iter().zip(&edits.fill_masks))
-                .filter(|(_, mask)| fields.is_none_or(|fields| **mask & fields != 0))
-                .map(|(&slot, _)| slot)
-                .chain(edits.inserted.iter().copied())
+                .chain(&edits.fill_slots)
+                .chain(&edits.inserted)
+                .copied()
                 .collect();
             for slot in slots {
                 if let Some(key) = held.key(slot) {
@@ -139,6 +225,7 @@ impl<T: Clone> Cells<T> {
     }
 }
 
+/// A row's current consumption, computed once while its row and parts stay the same.
 struct Summary {
     row: Arc<CountryFuelRow>,
     status: columns::Status,
@@ -146,46 +233,69 @@ struct Summary {
     consumption: demand::RawConsumption,
 }
 
+/// A tag the countries hold: its index and the country holding it.
+#[derive(Clone)]
+struct Held {
+    tag: Arc<str>,
+    index: u32,
+    identity: Option<Identity>,
+}
+
+/// One segment's projection: every segment starts cold.
 pub struct Projector {
     format: FormatVersion,
     shapes: [Option<columns::Status>; TABLE_COUNT],
     frontier: Option<i32>,
-    /// Each tag's holder, as the walk's countries give it, and each slot's tags.
-    identities: BTreeMap<String, Option<Identity>>,
-    tags: BTreeMap<u32, BTreeSet<String>>,
+    /// Each tag's index, in the order the projection first named it.
+    numbers: HashMap<Arc<str>, u32>,
+    names: Vec<Arc<str>>,
+    /// The tags the countries hold, in tag order, and each one's place by index.
+    held: Vec<Held>,
+    places: HashMap<u32, usize>,
+    /// Each canonical slot's held tags, by place.
+    slots: HashMap<u32, Vec<usize>>,
     /// Whether the owners were valid the hour before, and some state's owner unresolved.
     owned: (bool, bool),
     fuel: Cells<Arc<CountryFuelRow>>,
-    by_slot: BTreeMap<u32, BTreeMap<u128, Arc<CountryFuelRow>>>,
+    by_slot: HashMap<u32, BTreeMap<u128, Arc<CountryFuelRow>>>,
     parts: Cells<Arc<FuelDemandPartRow>>,
-    by_country: BTreeMap<u32, BTreeMap<u128, Arc<FuelDemandPartRow>>>,
+    by_country: HashMap<u32, BTreeMap<u128, Arc<FuelDemandPartRow>>>,
     reasons: Reasons,
-    summaries: BTreeMap<u32, Summary>,
+    summaries: HashMap<u32, Summary>,
 }
 
 impl Projector {
-    pub fn new(replay: &Replay) -> io::Result<Self> {
-        Self::with_format(replay.format, replay.capture_mode)
-    }
-
-    pub fn with_format(
-        format: FormatVersion,
-        _: replay_data::scope::CaptureMode,
-    ) -> io::Result<Self> {
-        Ok(Self {
+    pub fn new(format: FormatVersion) -> Self {
+        Self {
             format,
             shapes: [None; TABLE_COUNT],
             frontier: None,
-            identities: BTreeMap::new(),
-            tags: BTreeMap::new(),
+            numbers: HashMap::new(),
+            names: Vec::new(),
+            held: Vec::new(),
+            places: HashMap::new(),
+            slots: HashMap::new(),
             owned: (false, false),
             fuel: Cells::default(),
-            by_slot: BTreeMap::new(),
+            by_slot: HashMap::new(),
             parts: Cells::default(),
-            by_country: BTreeMap::new(),
+            by_country: HashMap::new(),
             reasons: Reasons::default(),
-            summaries: BTreeMap::new(),
-        })
+            summaries: HashMap::new(),
+        }
+    }
+
+    /// `tag`'s index, named in `named` when it is new to the projection.
+    fn number(&mut self, tag: &str, named: &mut Vec<(u32, Arc<str>)>) -> u32 {
+        if let Some(&index) = self.numbers.get(tag) {
+            return index;
+        }
+        let tag: Arc<str> = Arc::from(tag);
+        let index = self.names.len() as u32;
+        self.numbers.insert(Arc::clone(&tag), index);
+        self.names.push(Arc::clone(&tag));
+        named.push((index, tag));
+        index
     }
 
     fn index_fuel(
@@ -241,7 +351,7 @@ impl Projector {
             })
             .transpose()?
             .unwrap_or_default();
-        let view = match columns::status(state, TableId::FuelDemandParts) {
+        let view = match status {
             columns::Status::Complete => TableView::Complete(TableRows::FuelDemandParts(parts)),
             columns::Status::Truncated { .. } => TableView::Truncated {
                 rows: TableRows::FuelDemandParts(Vec::new()),
@@ -286,7 +396,6 @@ impl Operator<World> for Projector {
     ) -> io::Result<()> {
         let state = hour.state;
         let (countries, owners) = (hour.world.countries()?, hour.world.owners()?);
-        let countries_complete = countries.countries_complete();
         let continuous = self.frontier.and_then(|at| at.checked_add(1)) == Some(hour.hour);
         let mut changed = [false; TABLE_COUNT];
         let mut whole = [false; TABLE_COUNT];
@@ -307,39 +416,60 @@ impl Operator<World> for Projector {
         let identities_changed = whole[TableId::Countries.index()]
             || changed[TableId::CountryLinks.index()]
             || countries.changed();
+        // Indices of the tags the hour reaches.
         let mut reached = BTreeSet::new();
-        let mut unnamed = BTreeSet::new();
+        let mut named = Vec::new();
+        let mut unnamed = Vec::new();
+        let mut present = None;
         if identities_changed {
-            reached.extend(self.identities.keys().cloned());
-            self.identities.clear();
-            self.tags.clear();
+            reached.extend(self.held.iter().map(|held| held.index));
+            self.held.clear();
+            self.places.clear();
+            self.slots.clear();
             // Each tag's first holder by id whose identity the links resolve.
             for tag in countries.held().filter(|_| countries.complete()) {
                 let identity = match countries.tagged(tag) {
                     Tagged::Found(country) => Some((country.slot, country.id)),
                     Tagged::Absent | Tagged::Unresolved => None,
                 };
-                if let Ok(tag) = std::str::from_utf8(countries.tag(tag)) {
-                    let tag = tag.to_owned();
-                    if let Some((slot, _)) = identity {
-                        self.tags.entry(slot).or_default().insert(tag.clone());
+                match std::str::from_utf8(countries.tag(tag)) {
+                    Ok(text) => {
+                        let index = self.number(text, &mut named);
+                        self.held.push(Held {
+                            tag: Arc::clone(&self.names[index as usize]),
+                            index,
+                            identity,
+                        });
+                        reached.insert(index);
                     }
-                    self.identities.insert(tag.clone(), identity);
-                    reached.insert(tag);
-                } else if let Some((_, id)) = identity {
-                    unnamed.insert(id);
+                    Err(_) => {
+                        if let Some((_, id)) = identity {
+                            unnamed.push(id);
+                        }
+                    }
                 }
             }
+            self.held
+                .sort_unstable_by(|left, right| left.tag.as_bytes().cmp(right.tag.as_bytes()));
+            for (place, held) in self.held.iter().enumerate() {
+                self.places.insert(held.index, place);
+                if let Some((slot, _)) = held.identity {
+                    self.slots.entry(slot).or_default().push(place);
+                }
+            }
+            present = Some(self.held.iter().map(|held| held.index).collect());
         }
         let owner_valid = owners.complete() && countries.complete();
         let unresolved = owners.unresolved() != 0;
         if std::mem::replace(&mut self.owned, (owner_valid, unresolved))
             != (owner_valid, unresolved)
         {
-            reached.extend(self.identities.keys().cloned());
+            reached.extend(self.held.iter().map(|held| held.index));
         } else {
             for slot in owners.reached() {
-                reached.extend(self.tags.get(slot).into_iter().flatten().cloned());
+                for &place in self.slots.get(slot).into_iter().flatten() {
+                    reached.insert(self.held[place].index);
+                }
             }
         }
         let mut fuel_reached = BTreeSet::new();
@@ -348,7 +478,6 @@ impl Operator<World> for Projector {
                 state,
                 TableId::CountryFuel,
                 whole[TableId::CountryFuel.index()],
-                None,
                 |slot| {
                     columns::row(state, TableId::CountryFuel, slot, self.format.version())
                         .map(Arc::new)
@@ -383,14 +512,15 @@ impl Operator<World> for Projector {
             }
         }
         for slot in &fuel_reached {
-            reached.extend(self.tags.get(slot).into_iter().flatten().cloned());
+            for &place in self.slots.get(slot).into_iter().flatten() {
+                reached.insert(self.held[place].index);
+            }
         }
         if changed[TableId::FuelDemandParts.index()] {
             let edits = self.parts.update(
                 state,
                 TableId::FuelDemandParts,
                 whole[TableId::FuelDemandParts.index()],
-                None,
                 |slot| {
                     columns::row(state, TableId::FuelDemandParts, slot, self.format.version())
                         .map(Arc::new)
@@ -427,21 +557,28 @@ impl Operator<World> for Projector {
         );
         let available = columns::complete(state, TableId::CountryFuel);
         if read || whole[TableId::CountryFuel.index()] || !continuous {
-            reached.extend(self.identities.keys().cloned());
+            reached.extend(self.held.iter().map(|held| held.index));
         }
-        let mut countries = Vec::with_capacity(reached.len());
-        for tag in reached {
-            let present = self.identities.contains_key(&tag);
-            let identity = self.identities.get(&tag).copied().flatten();
+        let mut order: Vec<u32> = reached.into_iter().collect();
+        order.sort_unstable_by(|&left, &right| {
+            self.names[left as usize]
+                .as_bytes()
+                .cmp(self.names[right as usize].as_bytes())
+        });
+        let mut projected = Vec::with_capacity(order.len());
+        for index in order {
+            let place = self.places.get(&index).copied();
+            let present = place.is_some();
+            let identity = place.and_then(|place| self.held[place].identity);
             let seen = if owner_valid {
                 match identity {
-                    Some(identity) if owners.owned(identity.0) > 0 => Some((Some(identity), true)),
-                    Some(identity) if !unresolved => Some((Some(identity), false)),
-                    None if !present => Some((None, false)),
-                    _ => None,
+                    Some(identity) if owners.owned(identity.0) > 0 => Sample::Owns(identity),
+                    Some(identity) if !unresolved => Sample::Stateless(identity),
+                    None if !present => Sample::Absent,
+                    _ => Sample::Unknown,
                 }
             } else {
-                None
+                Sample::Unknown
             };
             let row = identity
                 .and_then(|(slot, _)| self.by_slot.get(&slot))
@@ -455,96 +592,36 @@ impl Operator<World> for Projector {
                     || whole[TableId::CountryFuel.index()]);
             let supplied = if read {
                 row.as_ref()
-                    .map(|row| self.supplied(row, state, hour.hour))
+                    .map(|row| self.supplied(row, state, hour.hour).map(Box::new))
                     .transpose()?
             } else {
                 None
             };
-            countries.push(Country {
-                tag,
+            projected.push(Country {
+                index,
                 identity,
                 present,
                 seen,
-                sample,
-                amount: row.as_ref().map(|row| (row.current_raw, row.maximum_raw)),
+                level: sample.then(|| row.as_ref().map(|row| (row.current_raw, row.maximum_raw))),
                 supplied,
             });
         }
         out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
-            format: self.format,
-            countries,
-            identities: identities_changed,
-            prior: owner_valid.then_some((None, false)),
+            named,
+            present,
+            countries: projected,
+            prior: if owner_valid {
+                Sample::Absent
+            } else {
+                Sample::Unknown
+            },
             unnamed,
             read,
             available,
-            refresh_levels: changed[TableId::CountryFuel.index()]
-                || changed[TableId::CountryLinks.index()],
-            countries_complete,
         })?;
         self.frontier = Some(hour.hour);
         Ok(())
-    }
-}
-
-impl Scan {
-    pub(super) fn catch_up_projected(&mut self, tag: &str) {
-        let Some(through) = self.projected_frontier else {
-            return;
-        };
-        let active = self.active.contains(tag);
-        let country = self.countries.get_mut(tag).expect("projected fuel country");
-        let last = country.recent.back().map(|(hour, _)| *hour);
-        if active {
-            let seen = country.recent.back().and_then(|(_, seen)| *seen);
-            if let Some(first) = last.and_then(|hour| hour.checked_add(1)) {
-                country.recent.extend(
-                    (first.max(through.saturating_sub(DAY_HOURS))..=through)
-                        .map(|hour| (hour, seen)),
-                );
-            }
-            country.track.advance(through);
-            if country.open
-                && let Some(read) = country.result.reads.last_mut()
-            {
-                read.last_hour = through;
-            }
-            if country.demand_open
-                && let Some(read) = country.result.consumption.last_mut()
-            {
-                read.last_hour = through;
-            }
-        } else {
-            country.recent.extend(
-                self.prior
-                    .iter()
-                    .filter(|(hour, _)| last.is_none_or(|last| *hour > last))
-                    .copied(),
-            );
-        }
-        while country
-            .recent
-            .front()
-            .is_some_and(|(hour, _)| through.saturating_sub(*hour) > DAY_HOURS)
-        {
-            country.recent.pop_front();
-        }
-    }
-
-    pub(super) fn finish_projected(&mut self) {
-        if self.projected_frontier.is_some() {
-            let tags: Vec<_> = self.countries.keys().cloned().collect();
-            for tag in tags {
-                self.catch_up_projected(&tag);
-            }
-        }
-    }
-}
-
-impl prepared::Prepared {
-    pub fn projector(&self, replay: &Replay) -> io::Result<Projector> {
-        Projector::new(replay)
     }
 }

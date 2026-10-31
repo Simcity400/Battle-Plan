@@ -3,22 +3,9 @@ use super::*;
 use replay::container::Replay;
 
 impl Scan {
-    pub(super) fn observe(
-        &mut self,
-        decoded: &replay_frame::frame::DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.observe_inner(decoded, format, None, None, cancelled)
-            .map(|_| ())
-    }
     pub(super) fn finish(self, format: replay_data::format::FormatVersion) -> ScannedBranch {
         let mut result = ScannedBranch {
             unnamed: self.unnamed,
-            #[cfg(test)]
-            decoded_frames: self.decoded_frames,
-            #[cfg(test)]
-            ownership_rows: self.ownership_rows,
             ..Default::default()
         };
         for (tag, mut country) in self.countries {

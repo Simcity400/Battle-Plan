@@ -6,6 +6,7 @@ use crate::{
     metadata::check_cancel,
     prepared::series::{self, Reader},
 };
+use dashboard_base::prepared::published;
 use serde_json::{Value, json};
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -293,16 +294,7 @@ fn cells(
                 ..selection
             };
             page = crate::prepared_production::select_at(
-                source,
-                content,
-                store,
-                source_key,
-                hour,
-                &metadata,
-                0,
-                0,
-                false,
-                cancelled,
+                source, content, store, source_key, hour, &metadata, 0, 0, false, cancelled,
             )?;
         }
         let found: BTreeMap<_, _> = page
@@ -481,7 +473,7 @@ fn stability_cells(
     } else {
         "warSupport"
     };
-    let Some(opened) = crate::prepared::families::open(
+    let Some(opened) = published::open(
         source,
         content,
         "stability",
@@ -519,8 +511,7 @@ fn army_cells(
     (hour, with_reads): (i32, bool),
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Vec<Cell>>> {
-    let Some(opened) =
-        crate::prepared::families::open(source, content, "army", army_size::emit::SCHEMA, branch)?
+    let Some(opened) = published::open(source, content, "army", army_size::emit::SCHEMA, branch)?
     else {
         return Ok(None);
     };

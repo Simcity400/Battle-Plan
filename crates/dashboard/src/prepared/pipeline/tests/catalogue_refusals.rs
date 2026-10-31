@@ -307,7 +307,7 @@ fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warn
         .note_shader_warning(OTHER_ARTWORK.into());
     catalogue.content.layers.read(OTHER_READ).unwrap();
     let branch = json!({"branchId": "1"});
-    let replies: [(&str, serde_json::Value, &[&str]); 12] = [
+    let replies: [(&str, serde_json::Value, &[&str]); 11] = [
         (
             "land-battles-manifest",
             branch.clone(),
@@ -348,12 +348,6 @@ fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warn
             json!({"selection": {"branchId": "1", "columns": [], "tags": [], "top": null},
                 "hour": 101, "sort": "factories", "descending": true, "index": true, "bars": false}),
             &["/data/warnings"],
-        ),
-        (
-            "series-state",
-            json!({"branchId": "1", "family": {"kind": "country-fuel"},
-                "reads": [{"tag": "AAA", "hour": 101}, {"tag": "BBB", "hour": 101}]}),
-            &["/replies/0/warnings", "/replies/1/warnings"],
         ),
         // Politics content refuses on this stack, so neither reply adds the
         // stack's lines itself.
@@ -397,9 +391,15 @@ fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warn
         }
     }
     // Where a reply's own content refuses, nothing else names the stack's
-    // lines: a stockpile hour's reply and a naval summary's sampled reply
-    // each gain them where they are served.
+    // lines: a stockpile hour's reply, each tag's fuel reply and a naval
+    // summary's sampled reply each gain them where they are served.
     let shapes = [
+        (
+            "series-state",
+            "country-fuel",
+            json!({"replies": [{"warnings": ["kept"]}, {"warnings": []}]}),
+            &["/replies/0/warnings", "/replies/1/warnings"][..],
+        ),
         (
             "equipment-stockpile-at",
             "equipment-stockpile-at",

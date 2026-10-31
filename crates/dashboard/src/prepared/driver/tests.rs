@@ -35,7 +35,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
             family.id.name()
         );
     }
-    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 12);
+    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 13);
     for segments in [
         "stability",
         "supply",
@@ -44,6 +44,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
         "country-styles",
         "politics_ledger",
         "stockpile",
+        "fuel",
     ] {
         assert_eq!(
             rows.backend(segments),
@@ -150,7 +151,6 @@ fn every_section_has_one_exact_owner() {
             "occupation-reserve-values-3",
             Some(family("occupation-reserve")),
         ),
-        ("fuel-days-1", Some(family("fuel"))),
         ("fuel_branches-values-1", Some(family("fuel_branches"))),
         ("air-values-1-0", Some(family("air"))),
         ("air-1-catalogue", Some(family("air"))),
@@ -172,9 +172,9 @@ fn every_section_has_one_exact_owner() {
         ("land-owners", Some(Owner::Job("land-owners"))),
         ("synthetic-alpha-1", None),
         ("airfield-1", None),
-        // Spellings no writer builds: the second is fuel's.
+        // Spellings no writer builds.
         ("production-catalogue-values-3", None),
-        ("fuel-branches-values-1", Some(family("fuel"))),
+        ("fuel-branches-values-1", None),
         ("lend-lease-balance-1-catalogue", None),
         (
             "preparation-facts-v2/ab/one/map-export-endpoints/keys",
