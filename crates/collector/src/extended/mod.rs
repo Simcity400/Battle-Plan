@@ -1175,6 +1175,15 @@ impl Captured {
         self.intel.country_intel_home().cloned()
     }
 
+    pub(crate) fn naval_combat_home(&self) -> Option<naval_combat_sources::Home> {
+        self.naval_combat_sources.home()
+    }
+
+    /// Take the province combat walk from the pool's home instead of this frame's own.
+    pub(crate) fn share_naval_combat_home(&mut self, home: &naval_combat_sources::Home) {
+        self.naval_combat_sources.share_home(home);
+    }
+
     pub(crate) fn template_home(&self) -> Option<division_templates::Home> {
         self.division_templates.home()
     }

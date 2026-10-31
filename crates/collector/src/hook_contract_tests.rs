@@ -33,6 +33,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         | Family::LocalSubunits
         | Family::ShipModels
         | Family::ProvinceUnits
+        | Family::ProvinceCombats
         | Family::AirBaseCarry
         | Family::Fuel
         | Family::Propaganda => &[],
@@ -128,7 +129,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         character_role_mutations, character_roster_mutations, country_input_mutations,
         local_subunit_mutations, naval_tree_mutations, opinion_mutations, orders_group_mutations,
         party_leader_mutations, political_party_mutations, political_status_mutations,
-        province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
+        province_combat_mutations, province_unit_mutations, raid_mutations, railway_mutations, regional_mission_mutations,
         script_flag_mutations, script_variable_mutations, ship_model_mutations, template_mutations,
         territory_mutations, unit_leader_mutations, world_input_mutations, world_lifetime_sites,
     };
@@ -214,6 +215,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         Family::Templates => sites!(template_mutations::MUTATIONS, (s, _) => s.rva),
         Family::ShipModels => sites!(ship_model_mutations::MUTATIONS, s => s.rva),
         Family::ProvinceUnits => sites!(province_unit_mutations::MUTATIONS, s => s.rva),
+        Family::ProvinceCombats => sites!(province_combat_mutations::MUTATIONS, s => s.rva),
         Family::AirBaseCarry => sites!(air_base_mutations::MUTATIONS, (s, _) => s.rva),
         Family::Experience => sites!(experience_gain_sites::SITES, s => s.rva),
         Family::Fuel => [

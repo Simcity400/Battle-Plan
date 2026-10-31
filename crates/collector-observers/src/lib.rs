@@ -34,6 +34,7 @@ pub mod output_log;
 pub mod political_status_changes;
 pub mod project_variable_changes;
 pub mod province_changes;
+pub mod province_combat_changes;
 pub mod raid_changes;
 pub mod rail_changes;
 pub mod retreat_ban_changes;

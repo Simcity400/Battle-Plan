@@ -1433,6 +1433,9 @@ pub struct Shared {
     /// The division template stores every frame's capture takes; counted once in
     /// `pool_bytes`, at their high-water mark.
     pub template_home: crate::extended::division_templates::Home,
+    /// The province combat walk every frame's hourly capture takes; counted once in
+    /// `pool_bytes`, at its high-water mark.
+    pub naval_combat_home: crate::extended::naval_combat_sources::Home,
     /// The weather temperature pass across hours; only the single FIFO decode
     /// worker locks it, in hour order.
     pub weather_temperature: Mutex<extended::weather::temperature::Tracker>,
@@ -1515,6 +1518,10 @@ impl Shared {
             .extended
             .template_home()
             .expect("a new frame holds its template home");
+        let naval_combat_home = first
+            .extended
+            .naval_combat_home()
+            .expect("a new frame holds its province combat home");
         let air = &sizing.extended.air;
         let mut raid_air_scores = Box::new(engine_raid_inputs::raid_air_scores::Held::default());
         raid_air_scores.grow(air.scores.regions, air.scores.countries, air.scores.rows)?;
@@ -1753,6 +1760,7 @@ impl Shared {
             country_cache_cells: AtomicUsize::new(country_cells),
             country_intel,
             template_home: std::sync::Arc::clone(&template_home),
+            naval_combat_home: std::sync::Arc::clone(&naval_combat_home),
             weather_temperature: Mutex::new(Default::default()),
         };
         let mut borrowed = sizing.extended;
@@ -1764,6 +1772,7 @@ impl Shared {
             let mut frame = Captured::with_capacities(&sizing.core, &sizing.map, &borrowed)?;
             frame.extended.share_country_intel(&shared.country_intel);
             frame.extended.share_template_home(&template_home);
+            frame.extended.share_naval_combat_home(&naval_combat_home);
             if crate::allocation::failed() {
                 return Err(std::io::ErrorKind::OutOfMemory.into());
             }

@@ -455,6 +455,8 @@ pub fn walk_direct_combats(
     )
 }
 
+/// `listed`, ascending, visits only those provinces; every other province is
+/// the caller's to vouch for.
 pub fn walk_direct_combats_growing(
     memory: &impl Memory,
     base: usize,
@@ -462,14 +464,16 @@ pub fn walk_direct_combats_growing(
     output: &mut Vec<DirectCombatsRow>,
     handles: &mut Vec<u64>,
     kinds: &mut Vec<u8>,
+    listed: Option<&[u32]>,
 ) -> DirectCombatsWalk {
-    walk_direct_combats_buffer(
+    walk_direct_combats_listed(
         memory,
         base,
         state,
         crate::walk::Buffer::Growing(output),
         crate::walk::Buffer::Growing(handles),
         crate::walk::Buffer::Growing(kinds),
+        listed,
     )
 }
 
@@ -477,9 +481,21 @@ pub fn walk_direct_combats_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
+    output: crate::walk::Buffer<'_, DirectCombatsRow>,
+    handles: crate::walk::Buffer<'_, u64>,
+    kinds: crate::walk::Buffer<'_, u8>,
+) -> DirectCombatsWalk {
+    walk_direct_combats_listed(memory, base, state, output, handles, kinds, None)
+}
+
+fn walk_direct_combats_listed(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
     mut output: crate::walk::Buffer<'_, DirectCombatsRow>,
     mut handles: crate::walk::Buffer<'_, u64>,
     mut kinds: crate::walk::Buffer<'_, u8>,
+    listed: Option<&[u32]>,
 ) -> DirectCombatsWalk {
     let mut used = 0usize;
     let mut required = 0usize;
@@ -503,21 +519,39 @@ pub fn walk_direct_combats_buffer(
         let mut pointer_bytes = [0u8; BATCH_ROWS * 8];
         let mut pointers = [0usize; BATCH_ROWS];
         let mut fields = [0u8; BATCH_ROWS * DIRECT_ROW_BYTES];
-        let mut index = 1;
-        while index < provinces.count {
-            let n = ((provinces.count - index) as usize).min(BATCH_ROWS);
-            if memory.copy_records(
-                RecordSources::Strided {
-                    base: provinces
-                        .element(index, 8)
-                        .ok_or("province combat slot unreadable")?,
-                    stride: 8,
-                    count: n,
-                },
-                &POINTER_LAYOUT,
-                &mut pointer_bytes[..n * 8],
-            ) != n
-            {
+        let mut ids = [0u32; BATCH_ROWS];
+        let mut slots = [0usize; BATCH_ROWS];
+        let total = listed.map_or((provinces.count - 1) as usize, <[u32]>::len);
+        let mut done = 0;
+        while done < total {
+            let n = (total - done).min(BATCH_ROWS);
+            let sources = match listed {
+                None => {
+                    for (slot, id) in ids[..n].iter_mut().enumerate() {
+                        *id = (done + slot + 1) as u32;
+                    }
+                    RecordSources::Strided {
+                        base: provinces
+                            .element(ids[0], 8)
+                            .ok_or("province combat slot unreadable")?,
+                        stride: 8,
+                        count: n,
+                    }
+                }
+                Some(list) => {
+                    ids[..n].copy_from_slice(&list[done..done + n]);
+                    for (slot, &id) in slots[..n].iter_mut().zip(&ids[..n]) {
+                        if id == 0 || id >= provinces.count {
+                            return Err("province combat listed province outside census");
+                        }
+                        *slot = provinces
+                            .element(id, 8)
+                            .ok_or("province combat slot unreadable")?;
+                    }
+                    RecordSources::Pointers(&slots[..n])
+                }
+            };
+            if memory.copy_records(sources, &POINTER_LAYOUT, &mut pointer_bytes[..n * 8]) != n {
                 return Err("province combat slot unreadable");
             }
             for (pointer, bytes) in pointers[..n].iter_mut().zip(pointer_bytes.chunks_exact(8)) {
@@ -532,10 +566,9 @@ pub fn walk_direct_combats_buffer(
             {
                 return Err("province combat identity unreadable");
             }
-            let first = index;
-            index += n as u32;
+            done += n;
             for slot in 0..n {
-                let province = first + slot as u32;
+                let province = ids[slot];
                 let row = &fields[slot * DIRECT_ROW_BYTES..][..DIRECT_ROW_BYTES];
                 if u64::from_le_bytes(row[..8].try_into().expect("eight bytes")) != vtable
                     || u32::from_le_bytes(row[8..12].try_into().expect("four bytes")) != province

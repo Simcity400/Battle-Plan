@@ -44,6 +44,7 @@ pub mod orders_group_mutations;
 pub mod party_leader_mutations;
 pub mod political_party_mutations;
 pub mod political_status_mutations;
+pub mod province_combat_mutations;
 pub mod province_unit_mutations;
 pub mod raid_mutations;
 pub mod railway_mutations;

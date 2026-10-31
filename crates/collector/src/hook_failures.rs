@@ -66,6 +66,7 @@ runtime_families! {
     Templates => ("template_changes", crate::template_changes::Hooks),
     ShipModels => ("ship_model_changes", crate::ship_model_changes::Hooks),
     ProvinceUnits => ("province_unit_changes", crate::province_unit_changes::Hooks),
+    ProvinceCombats => ("province_combat_changes", crate::province_combat_changes::Hooks),
     AirBaseCarry => ("air_base_carry_changes", crate::air_base_carry_changes::Hooks),
     Experience => ("experience_gains", crate::experience_gains::Hooks),
     Fuel => ("fuel_awards", crate::fuel_awards::Hooks),
@@ -288,6 +289,7 @@ impl Family {
             ],
             Self::ShipModels => &[ShipModels],
             Self::ProvinceUnits => &[ProvinceUnitOrder],
+            Self::ProvinceCombats => &[NavalProvinceCombats],
             Self::AirBaseCarry => &[AirBases, AirBaseRegistrations],
             Self::Experience => &[CountryExperienceGains],
             Self::Fuel => &[CountryFuel],
@@ -436,6 +438,7 @@ impl Family {
                 | Self::LocalSubunits
                 | Self::ShipModels
                 | Self::ProvinceUnits
+                | Self::ProvinceCombats
                 | Self::AirBaseCarry
                 | Self::Fuel
                 | Self::Propaganda
@@ -953,6 +956,7 @@ family_hooks!(
     template_changes,
     ship_model_changes,
     province_unit_changes,
+    province_combat_changes,
     air_base_carry_changes,
     experience_gains,
     fuel_awards,

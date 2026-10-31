@@ -110,6 +110,7 @@ impl ObserverBoundaryRequest {
         crate::faction_companion_changes::boundary(!self.continuous || self.recovery);
         crate::ship_model_changes::boundary(!self.continuous || self.recovery);
         crate::province_unit_changes::boundary(!self.continuous || self.recovery);
+        crate::province_combat_changes::boundary(!self.continuous || self.recovery);
         crate::air_base_carry_changes::boundary(!self.continuous || self.recovery);
         crate::character_changes::boundary(!self.continuous || self.recovery);
         crate::war_changes::boundary(!self.continuous || self.recovery);
@@ -189,6 +190,7 @@ impl ObserverBoundaryRequest {
             crate::faction_companion_changes::boundary(true);
             crate::ship_model_changes::boundary(true);
             crate::province_unit_changes::boundary(true);
+            crate::province_combat_changes::boundary(true);
             crate::air_base_carry_changes::boundary(true);
             crate::character_changes::boundary(true);
             crate::war_changes::boundary(true);

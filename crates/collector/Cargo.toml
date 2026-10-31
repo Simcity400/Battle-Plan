@@ -10,7 +10,7 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [features]
-default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "faction_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "raid_intel_changes"]
+default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "opinion_changes", "history_changes", "character_changes", "flag_changes", "building_changes", "advisor_pool_changes", "party_leader_changes", "variable_changes", "party_changes", "wing_changes", "roster_changes", "political_status_changes", "mission_changes", "rail_changes", "territory_changes", "navy_ledger_changes", "air_base_changes", "army_stat_changes", "country_input_changes", "raid_changes", "appointment_changes", "naval_tree_changes", "area_changes", "air_record_changes", "world_input_changes", "retreat_ban_changes", "local_subunit_changes", "template_changes", "faction_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "character_record_changes", "appearance_changes", "counter_changes", "war_changes", "province_unit_changes", "province_combat_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes", "raid_intel_changes"]
 politics_capture = ["collector-politics/politics_capture"]
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.
@@ -189,6 +189,7 @@ area_changes = ["collector-observers/area_changes"]
 # (or the building family forwards a write at it); provinces in a border conflict and the
 # fort_bunker operand of fortified provinces are read every hour.
 province_changes = ["collector-observers/province_changes"]
+province_combat_changes = ["collector-observers/province_combat_changes"]
 # Carry a country's CountryLocalSubunits rows until a native writer touches its local sub-unit
 # clones or their requirements.
 local_subunit_changes = ["collector-model-inputs/local_subunit_changes"]
@@ -383,7 +384,7 @@ collector-division-parts = { workspace = true, features = ["army_stat_changes", 
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
 collector-model-inputs = { workspace = true, features = ["default", "local_subunit_changes", "test-support"] }
-collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "political_status_changes", "projects_changes", "province_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
 collector-projects = { workspace = true, features = ["default", "naval_tree_changes", "raid_intel_changes", "test-support"] }
 collector-ship-models = { workspace = true, features = ["default", "ship_model_changes", "test-support"] }

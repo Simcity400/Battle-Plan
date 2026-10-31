@@ -170,6 +170,7 @@ use collector_test_support as test_support;
 mod template_changes;
 pub(crate) use collector_memory::terminal;
 pub(crate) use collector_observers::territory_changes;
+pub(crate) use collector_observers::province_combat_changes;
 pub(crate) use collector_production::production::design_changes;
 mod thread_cpu;
 mod thread_diagnostics;

@@ -950,6 +950,9 @@ fn run(
     let mut province_unit_hooks = FamilyHooks::construct(base, || unsafe {
         crate::province_unit_changes::Hooks::new(&memory, base)
     })?;
+    let mut province_combat_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::province_combat_changes::Hooks::new(&memory, base)
+    })?;
     let mut air_base_carry_hooks = FamilyHooks::construct(base, || unsafe {
         crate::air_base_carry_changes::Hooks::new(&memory, base)
     })?;
@@ -1346,6 +1349,7 @@ fn run(
     ranges.extend(faction_companion_hooks.executable_ranges());
     ranges.extend(ship_model_hooks.executable_ranges());
     ranges.extend(province_unit_hooks.executable_ranges());
+    ranges.extend(province_combat_hooks.executable_ranges());
     ranges.extend(air_base_carry_hooks.executable_ranges());
     ranges.extend(opinion_hooks.executable_ranges());
     ranges.extend(destruction_hooks.executable_ranges());
@@ -1601,6 +1605,9 @@ fn run(
                     ("province_unit_changes", &mut || {
                         province_unit_hooks.set_enabled(true)
                     }),
+                    ("province_combat_changes", &mut || {
+                        province_combat_hooks.set_enabled(true)
+                    }),
                     ("war_participation", &mut || {
                         participation_hooks.set_enabled(true)
                     }),
@@ -1819,7 +1826,7 @@ fn run(
                 }
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
-                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
+                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
@@ -1927,6 +1934,7 @@ fn run(
             RestoreFamily::FactionCompanions => faction_companion_hooks.set_enabled(false),
             RestoreFamily::ShipModels => ship_model_hooks.set_enabled(false),
             RestoreFamily::ProvinceUnits => province_unit_hooks.set_enabled(false),
+            RestoreFamily::ProvinceCombats => province_combat_hooks.set_enabled(false),
             RestoreFamily::AirBaseCarry => air_base_carry_hooks.set_enabled(false),
             RestoreFamily::Experience => experience_hooks.set_enabled(false),
             RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
@@ -2222,6 +2230,7 @@ fn run(
             faction_companion_hooks,
             ship_model_hooks,
             province_unit_hooks,
+            province_combat_hooks,
             air_base_carry_hooks,
             opinion_hooks,
             destruction_hooks,
@@ -2543,6 +2552,10 @@ impl RestoreFamily {
                 crate::province_unit_changes::active() != 0,
                 "province occupant list callbacks did not quiesce; collector retained",
             ),
+            Self::ProvinceCombats => (
+                crate::province_combat_changes::active() != 0,
+                "province combat vector callbacks did not quiesce; collector retained",
+            ),
             Self::AirBaseCarry => (
                 crate::air_base_carry_changes::active() != 0,
                 "air base registration callbacks did not quiesce; collector retained",
@@ -2651,6 +2664,7 @@ impl RestoreFamily {
                 | Self::FactionCompanions
                 | Self::ShipModels
                 | Self::ProvinceUnits
+                | Self::ProvinceCombats
                 | Self::AirBaseCarry
                 | Self::AirLosses
                 | Self::NuclearStrikes
@@ -2700,6 +2714,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::Templates => "template_changes",
         RestoreFamily::ShipModels => "ship_model_changes",
         RestoreFamily::ProvinceUnits => "province_unit_changes",
+        RestoreFamily::ProvinceCombats => "province_combat_changes",
         RestoreFamily::AirBaseCarry => "air_base_carry_changes",
         RestoreFamily::Experience => "experience_gains",
         RestoreFamily::Fuel => "fuel_awards",
@@ -3103,6 +3118,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "retreat_ban_changes": crate::retreat_ban_changes::status(),
         "local_subunit_changes": crate::local_subunit_changes::status(),
         "province_unit_changes": crate::province_unit_changes::status(),
+        "province_combat_changes": crate::province_combat_changes::status(),
         "variant_changes": crate::design_changes::status(),
         "template_changes": crate::template_changes::status(),
         "faction_goals": crate::faction_goal_changes::status(),
@@ -5240,6 +5256,7 @@ struct SizingShared {
     idle_growth_requested: AtomicBool,
     country_intel_accounted: AtomicUsize,
     template_home_accounted: AtomicUsize,
+    naval_combat_home_accounted: AtomicUsize,
     /// An explicit spool pass requests live preparation. Retiring encoded
     /// rows wakes the worker to free them, not to repeat that preparation.
     pass_requested: AtomicBool,
@@ -5271,6 +5288,7 @@ impl SizingShared {
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
             template_home_accounted: AtomicUsize::new(0),
+            naval_combat_home_accounted: AtomicUsize::new(0),
             pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
             #[cfg(test)]
@@ -5356,6 +5374,12 @@ impl SizingShared {
             (
                 crate::extended::division_templates::home_allocated_bytes(&shared.template_home),
                 &self.template_home_accounted,
+            ),
+            (
+                crate::extended::naval_combat_sources::home_allocated_bytes(
+                    &shared.naval_combat_home,
+                ),
+                &self.naval_combat_home_accounted,
             ),
         ] {
             let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
@@ -5684,6 +5708,8 @@ fn sizing_pass(
     crate::local_subunit_changes::collect();
     crate::province_unit_changes::presize();
     crate::province_unit_changes::collect();
+    crate::province_combat_changes::presize();
+    crate::province_combat_changes::collect();
     crate::faction_goal_changes::presize();
     crate::faction_goal_changes::collect();
     crate::faction_companion_changes::presize();

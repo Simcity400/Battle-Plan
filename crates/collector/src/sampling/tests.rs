@@ -1474,6 +1474,10 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
             &frame.extended.template_home().unwrap(),
             &shared.template_home
         ));
+        assert!(Arc::ptr_eq(
+            &frame.extended.naval_combat_home().unwrap(),
+            &shared.naval_combat_home
+        ));
         bytes += frame.allocated_bytes();
     }
     assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);

@@ -177,6 +177,7 @@ fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
             &mut rows,
             &mut handles,
             &mut kinds,
+            None,
         );
         assert_eq!(captured.outcome, Outcome::Rows { len: COUNT });
         assert_eq!(captured.required, COUNT * entries);
@@ -195,4 +196,39 @@ fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
                 .all(|&handle| handle == 7 << 32 | 4713)
         );
     }
+}
+
+fn listed(bytes: &[u8], ids: &[u32]) -> (DirectCombatsWalk, Vec<DirectCombatsRow>, Vec<u64>, Vec<u8>) {
+    let (mut rows, mut handles, mut kinds) = (Vec::new(), Vec::new(), Vec::new());
+    let result = walk_direct_combats_growing(
+        &SliceMemory { base: 0, bytes },
+        0,
+        STATE,
+        &mut rows,
+        &mut handles,
+        &mut kinds,
+        Some(ids),
+    );
+    (result, rows, handles, kinds)
+}
+
+#[test]
+fn a_listed_walk_reads_only_its_provinces_as_the_whole_walk_does() {
+    let bytes = fixture();
+    let (whole, rows, handles, kinds) = walk(&bytes, 2, 4);
+    let (some, listed_rows, listed_handles, listed_kinds) = listed(&bytes, &[1, 2]);
+    assert_eq!((some.outcome, some.required), (whole.outcome, whole.required));
+    assert_eq!(listed_rows[..1], rows[..1]);
+    assert_eq!(listed_handles[..3], handles[..3]);
+    assert_eq!(listed_kinds[..3], kinds[..3]);
+    // An empty province publishes no row; an unlisted one is not read.
+    let mut unread = bytes.clone();
+    put(&mut unread, PROVINCES[1], &0u64.to_le_bytes());
+    assert_eq!(listed(&unread, &[1]).0.outcome, Outcome::Rows { len: 0 });
+    assert_eq!(listed(&bytes, &[]).0.outcome, Outcome::Rows { len: 0 });
+    // A listed id outside the census refuses.
+    assert!(matches!(
+        listed(&bytes, &[3]).0.outcome,
+        Outcome::Unavailable { .. }
+    ));
 }

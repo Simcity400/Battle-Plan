@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 test-support = ["collector-extended-support/test-support"]
-default = ["advisor_changes", "opinion_changes", "character_changes", "advisor_pool_changes", "wing_changes", "roster_changes", "political_status_changes", "rail_changes", "territory_changes", "country_input_changes", "raid_changes", "naval_tree_changes", "area_changes", "world_input_changes", "retreat_ban_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "appearance_changes", "counter_changes", "war_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "weather_changes", "visibility_changes"]
+default = ["advisor_changes", "opinion_changes", "character_changes", "advisor_pool_changes", "wing_changes", "roster_changes", "political_status_changes", "rail_changes", "territory_changes", "country_input_changes", "raid_changes", "naval_tree_changes", "area_changes", "world_input_changes", "retreat_ban_changes", "ship_model_changes", "technology_changes", "focus_changes", "projects_changes", "appearance_changes", "counter_changes", "war_changes", "air_base_carry_changes", "unit_leader_changes", "census_changes", "unit_leader_trait_changes", "province_changes", "province_combat_changes", "weather_changes", "visibility_changes"]
 advisor_changes = []
 advisor_pool_changes = ["character_changes"]
 air_base_carry_changes = ["raid_changes", "ship_model_changes"]
@@ -28,6 +28,7 @@ opinion_changes = []
 political_status_changes = []
 projects_changes = ["country_input_changes"]
 province_changes = []
+province_combat_changes = []
 raid_changes = []
 rail_changes = []
 retreat_ban_changes = ["naval_tree_changes"]
@@ -92,7 +93,7 @@ cc = "1"
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "political_status_changes", "projects_changes", "province_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
+collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

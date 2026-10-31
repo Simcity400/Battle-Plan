@@ -133,6 +133,8 @@ pub enum Family {
     ShipModelChanges,
     /// Province occupant append from unit relocation and occupant removal.
     ProvinceUnitChanges,
+    /// Province combat append and removal.
+    ProvinceCombatChanges,
     /// Four air base registration writers and five wing pool writers.
     AirBaseCarryChanges,
     /// Six interior experience taps.
@@ -178,7 +180,7 @@ pub enum Family {
     /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
 }
-pub const FAMILY_COUNT: usize = 64;
+pub const FAMILY_COUNT: usize = 65;
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -250,6 +252,7 @@ impl Family {
         Self::TemplateChanges,
         Self::ShipModelChanges,
         Self::ProvinceUnitChanges,
+        Self::ProvinceCombatChanges,
         Self::AirBaseCarryChanges,
         Self::ExperienceGains,
         Self::FuelAwards,
@@ -323,6 +326,7 @@ impl Family {
             Self::FactionRefreshPhases => "faction_refresh_phases",
             Self::ShipModelChanges => "ship_model_changes",
             Self::ProvinceUnitChanges => "province_unit_changes",
+            Self::ProvinceCombatChanges => "province_combat_changes",
             Self::AirBaseCarryChanges => "air_base_carry_changes",
             Self::ExperienceGains => "experience_gains",
             Self::FuelAwards => "fuel_awards",
@@ -383,6 +387,7 @@ impl Family {
             | Self::TemplateChanges
             | Self::ShipModelChanges
             | Self::ProvinceUnitChanges
+            | Self::ProvinceCombatChanges
             | Self::AirBaseCarryChanges
             | Self::OperationOutcomes
             | Self::PoliticsCapture
