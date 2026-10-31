@@ -5,7 +5,7 @@
 //! queries while the hourly walk has accepted nothing; and the division log
 //! observes only each block's first hour on its own thread, the naval family
 //! every recorded hour once.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::windowed;
@@ -313,13 +313,14 @@ impl Windowed {
         independent::with_test_only(&[self.name], run)
     }
 
-    /// Sections only one mode writes: the checkpoint (which holds the
-    /// families' progress), the family's own coverage pages, its own scan
-    /// section and the branch coverage pages (which hold the refusals of the
-    /// hourly walk alone); branch states are compared without the family's
-    /// scan.
+    /// Sections only one mode writes: the checkpoint (which holds the families'
+    /// progress), the versions page (checked against each run's plan), the
+    /// family's own coverage pages, its own scan section and the branch
+    /// coverage pages (which hold the refusals of the hourly walk alone);
+    /// branch states are compared without the family's scan.
     fn mode_specific(self, name: &str) -> bool {
         name == "preparation-checkpoint-v1"
+            || name == "preparation-versions-v1"
             || name.starts_with("preparation-family-")
             || name.starts_with("preparation-branch-")
             || name.starts_with("preparation-coverage-")
@@ -341,6 +342,8 @@ fn assert_same(
     label: &str,
     continuation: bool,
 ) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

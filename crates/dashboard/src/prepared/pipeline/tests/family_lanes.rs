@@ -44,13 +44,15 @@ pub(super) fn payloads(
 /// so no other family's own sections, pages or refusals appear in one mode
 /// only, and the hourly reference runs under `independent::with_test_hourly`.
 /// What still differs by design is mode-specific and compared otherwise: the
-/// checkpoint (it holds the family's progress), its `preparation-family-*`
-/// pages, the sections it keeps for readers, the walk's branch state (field
-/// by field: the walk leaves out the state of families it skips) and the
-/// walk's branch coverage page, whose refusals of the family move to the
-/// family's own page. A store-level check (`unprepared_blocks`, `checkpoint`)
-/// runs under the registry the store was prepared with: another set of
-/// families prepared on their own restarts preparation.
+/// checkpoint (it holds the family's progress), the versions page (each
+/// checked against its run's plan, [`assert_versions`]), its
+/// `preparation-family-*` pages, the sections it keeps for readers, the
+/// walk's branch state (field by field: the walk leaves out the state of
+/// families it skips) and the walk's branch coverage page, whose refusals of
+/// the family move to the family's own page. A store-level check
+/// (`unprepared_blocks`, `checkpoint`) runs under the registry the store was
+/// prepared with: another set of families prepared on their own restarts
+/// preparation.
 pub(super) fn assert_payloads_equal(
     actual: &BTreeMap<(String, u64), Vec<u8>>,
     expected: &BTreeMap<(String, u64), Vec<u8>>,
@@ -85,6 +87,34 @@ pub(super) fn assert_payloads_equal(
         "{label}:\n{}",
         differences.join("\n")
     );
+}
+
+/// A store's versions page names the stamps of the plan it was prepared
+/// under: the registry's families, with those its checkpoint names prepared
+/// on their own.
+pub(super) fn assert_versions(payloads: &BTreeMap<(String, u64), Vec<u8>>, label: &str) {
+    let page = |name: &str| -> &[u8] {
+        payloads
+            .get(&(name.to_owned(), 0))
+            .unwrap_or_else(|| panic!("{label}: no {name}"))
+    };
+    let checkpoint: Checkpoint = serde_json::from_slice(page(CHECKPOINT)).unwrap();
+    let own: Vec<&'static str> = checkpoint
+        .independent
+        .keys()
+        .map(|name| registry::family_named(name).unwrap().id.name())
+        .collect();
+    let plan = plan::test_plan(&[], &own).unwrap();
+    let versions: crate::prepared::coverage::Versions =
+        serde_json::from_slice(page(crate::prepared::coverage::VERSIONS)).unwrap();
+    let expected = crate::prepared::coverage::Versions {
+        walk: plan.walk_stamp(),
+        families: own
+            .iter()
+            .filter_map(|&name| Some((name.to_owned(), plan.stamp(name)?)))
+            .collect(),
+    };
+    assert_eq!(versions, expected, "{label}: the versions page");
 }
 
 // Two fresh serial runs are the control for every parallel byte comparison.

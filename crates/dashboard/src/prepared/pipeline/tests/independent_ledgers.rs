@@ -3,7 +3,7 @@
 //! exactly what hourly preparation does, refuse where it refuses, answer
 //! their queries while the hourly walk has accepted nothing, and build no
 //! frame for the quiet hours between their changes and daily reads.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION, STOCKPILE};
@@ -406,11 +406,13 @@ fn hours(replay: &Replay) -> usize {
     hours
 }
 
-/// Sections only one mode writes: the checkpoint, the ledgers' coverage
-/// pages and continuations, and the hourly branch state, which holds the
-/// ledgers' continuations in hourly preparation (compared apart).
+/// Sections only one mode writes: the checkpoint, the versions page (checked
+/// against each run's plan), the ledgers' coverage pages and continuations, and
+/// the hourly branch state, which holds the ledgers' continuations in hourly
+/// preparation (compared apart).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.contains("-continuation-")
@@ -428,6 +430,8 @@ fn decoded(bytes: &[u8]) -> serde_json::Value {
 /// refused), the branch's coverage pages, whose refusals are the hourly
 /// walk's own, are compared apart too.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

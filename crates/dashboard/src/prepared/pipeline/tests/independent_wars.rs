@@ -3,7 +3,7 @@
 //! a field they compare changes (and the wars' capitulation date), refuse
 //! where hourly preparation refuses, and answer their queries while the
 //! hourly walk has accepted nothing.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::{war_casualties::prepared::block as casualties, wars::block as wars};
@@ -304,11 +304,13 @@ fn requests(branch: u64) -> Vec<(&'static str, &'static str, Value)> {
 }
 
 /// Sections only one mode writes: the checkpoint (which holds the families'
-/// progress), the families' coverage pages, the casualties' own
-/// continuation and the recorded viewpoint's published walk; branch states
-/// are compared without the casualties.
+/// progress), the versions page (checked against each run's plan), the
+/// families' coverage pages, the casualties' own continuation and the recorded
+/// viewpoint's published walk; branch states are compared without the
+/// casualties.
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.starts_with("war-casualties-state-")
@@ -356,6 +358,8 @@ fn decompressed_json(bytes: &[u8]) -> Value {
 /// state equal but for the casualties. With `continuation`, the casualties'
 /// own continuation is the one hourly preparation saves in its branch state.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

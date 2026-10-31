@@ -8,7 +8,7 @@
 //! pre-pass workers, at once or one after another; where commits fall never
 //! changes a reply; its queries answer while the hourly walk has accepted
 //! nothing; and its quiet hours build no frame.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::test_fixtures::scale_tag;
@@ -189,11 +189,12 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
 }
 
 /// Sections only one mode writes, or writes differently: the checkpoint, the
-/// family's coverage pages and continuation, and each branch's state, which
-/// holds the continuation only in hourly preparation ([`assert_same`]
-/// compares both).
+/// versions page (checked against each run's plan), the family's coverage pages
+/// and continuation, and each branch's state, which holds the continuation only
+/// in hourly preparation ([`assert_same`] compares both).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.starts_with("focus-state-")
@@ -209,6 +210,8 @@ fn branch_state(bytes: &[u8]) -> serde_json::Value {
 /// preparation keeps in each branch's state as `index`, and the rest of
 /// that state is the same.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

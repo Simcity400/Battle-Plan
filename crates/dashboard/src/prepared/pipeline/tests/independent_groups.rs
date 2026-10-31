@@ -1,7 +1,7 @@
 //! Country groups prepared on their own beside the hourly walk, publish and
 //! save exactly what hourly preparation does (air superiority included), and
 //! answer their queries while the hourly walk has accepted nothing.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::country_groups::prepared::observed_hours;
@@ -184,12 +184,14 @@ pub(super) fn query(source: &Source, product: &str, branch: &str) -> io::Result<
 }
 
 /// Sections only one mode writes: the checkpoint (which holds the groups'
-/// progress), the groups' own coverage pages and change publisher state, and
-/// air superiority's own read of the groups (and territory's of the country
-/// identities, also prepared on their own). The walk's branch state is
-/// compared field by field ([`assert_same`]).
+/// progress), the versions page (checked against each run's plan), the groups'
+/// own coverage pages and change publisher state, and air superiority's own
+/// read of the groups (and territory's of the country identities, also prepared
+/// on their own). The walk's branch state is compared field by field
+/// ([`assert_same`]).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-branch-")
         || name.starts_with("preparation-family-")
         || name.starts_with("country-group-state-")
@@ -201,6 +203,8 @@ fn mode_specific(name: &str) -> bool {
 /// first. With `continuation`, the groups' change publisher state is the one
 /// hourly preparation saves in its branch state.
 pub(super) fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, continuation: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads, air: bool| -> Payloads {
         payloads
             .iter()

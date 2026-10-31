@@ -3,7 +3,7 @@
 //! read only the hours their fields change, refuse where hourly preparation
 //! refuses, and answer their queries while the hourly walk has accepted
 //! nothing.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::{air_aces, military_air_ledger, raids};
@@ -121,14 +121,19 @@ fn prepared(
 }
 
 /// Sections only one mode writes: the checkpoint (which holds the family's
-/// progress) and the family's own coverage pages.
+/// progress), the versions page (checked against each run's plan) and the
+/// family's own coverage pages.
 fn mode_specific(name: &str) -> bool {
-    name == "preparation-checkpoint-v1" || name.starts_with("preparation-family-")
+    name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
+        || name.starts_with("preparation-family-")
 }
 
 /// Every section both modes publish is byte-identical, and hourly
 /// preparation published sections starting with `prefix`.
 fn assert_same(actual: &Payloads, hourly: &Payloads, prefix: &str, label: &str) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

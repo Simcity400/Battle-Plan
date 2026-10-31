@@ -6,7 +6,7 @@
 //! hour and with its text; answers its queries while the hourly walk has
 //! accepted nothing; observes every recorded hour once; and binds its content
 //! at every block as the walk does.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::research::test_fixtures::research_frame;
@@ -442,11 +442,13 @@ fn hours(replay: &Replay) -> usize {
     hours
 }
 
-/// Sections only one mode writes: the checkpoint, the family's own coverage
-/// pages, and the branch state and continuation where the family keeps its
-/// state in its own section rather than the branch state's.
+/// Sections only one mode writes: the checkpoint, the versions page (checked
+/// against each run's plan), the family's own coverage pages, and the branch
+/// state and continuation where the family keeps its state in its own section
+/// rather than the branch state's.
 fn mode_specific(case: &Case, name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || case.continuation.is_some_and(|(prefix, _)| {
             name.starts_with("preparation-branch-") || name.starts_with(prefix)
@@ -464,6 +466,8 @@ fn branch_state(bytes: &[u8]) -> serde_json::Value {
 /// compared byte for byte too. With `refused`, the branch's coverage pages,
 /// whose refusals the family keeps in its own page, are compared apart.
 fn assert_same(case: &Case, actual: &Payloads, hourly: &Payloads, label: &str, refused: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

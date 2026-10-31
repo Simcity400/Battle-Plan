@@ -8,7 +8,7 @@
 //! frame; and factory faction totals, country factories and country
 //! stockpiles answer from their families' coverage while the hourly walk
 //! has accepted nothing, as hourly preparation answers them.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
@@ -233,12 +233,14 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
     payloads
 }
 
-/// Sections only one mode writes: the checkpoint, the families' own coverage
-/// pages and continuations, the hourly branch state (compared apart) and the
-/// identity history the walk keeps under territory's name while the
-/// identities are prepared on their own.
+/// Sections only one mode writes: the checkpoint, the versions page (checked
+/// against each run's plan), the families' own coverage pages and
+/// continuations, the hourly branch state (compared apart) and the identity
+/// history the walk keeps under territory's name while the identities are
+/// prepared on their own.
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.contains("-continuation-")
@@ -257,6 +259,8 @@ fn decoded(bytes: &[u8]) -> serde_json::Value {
 /// `refusals`, each one's continuation is the field hourly preparation keeps
 /// in its branch state.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, own: &[&str], refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

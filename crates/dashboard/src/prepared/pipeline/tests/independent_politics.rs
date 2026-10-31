@@ -5,7 +5,7 @@
 //! append, resume and refusals, with one and several pre-pass workers, at
 //! once or one after another; their queries answer while the hourly walk has
 //! accepted nothing; and their quiet hours build no frame.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::subjects::prepared::counted;
@@ -468,12 +468,14 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
     payloads
 }
 
-/// Sections only one mode writes, or writes differently: the checkpoint
-/// (which holds the families' progress), the families' own coverage pages
-/// and continuations, and each branch's state, which holds their
-/// continuations only in hourly preparation ([`assert_same`] compares both).
+/// Sections only one mode writes, or writes differently: the checkpoint (which
+/// holds the families' progress), the versions page (checked against each run's
+/// plan), the families' own coverage pages and continuations, and each branch's
+/// state, which holds their continuations only in hourly preparation
+/// ([`assert_same`] compares both).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || CONTINUATIONS
@@ -491,6 +493,8 @@ fn branch_state(bytes: &[u8]) -> serde_json::Value {
 /// preparation keeps in each branch's state, and the rest of that state is
 /// the same.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()
@@ -958,6 +962,8 @@ fn quiet_politics_quiet_hours_build_no_frame() {
                     .map(|(key, bytes)| (key.clone(), bytes.clone()))
                     .collect()
             };
+            assert_versions(&payloads, &label);
+            assert_versions(&hourly, &label);
             assert_payloads_equal(&shared(&payloads), &shared(&hourly), &label);
             let (observed, frames) = counted(family);
             let (observed, frames) = (observed - before.0.0, frames - before.0.1);

@@ -5,7 +5,7 @@
 //! committed series and finishing its day pages at the hourly walk's commits,
 //! its refusals, and its queries answered while the hourly walk has accepted
 //! nothing.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::intelligence_prepared::{HISTORY_READS, KEPT_HOURS, QUIET_HOURS};
@@ -394,15 +394,19 @@ fn intelligence_section(name: &str) -> bool {
 }
 
 /// Every section both modes publish is byte-identical, the family's own
-/// first. Only the checkpoint and the family's coverage pages are the
-/// family's own; with `refused`, so is the branch's coverage page, whose
-/// refusals the hourly walk records only for families it observes.
+/// first. Only the checkpoint, the versions page (checked against each run's
+/// plan) and the family's coverage pages are mode-specific; with `refused`,
+/// so is the branch's coverage page, whose refusals the hourly walk records
+/// only for families it observes.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refused: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads, own: bool| -> Payloads {
         payloads
             .iter()
             .filter(|((name, _), _)| {
                 name != "preparation-checkpoint-v1"
+                    && name != "preparation-versions-v1"
                     && !name.starts_with("preparation-family-")
                     && !(refused && name.starts_with("preparation-coverage-"))
                     && (!own || intelligence_section(name))

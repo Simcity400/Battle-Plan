@@ -9,7 +9,7 @@
 //! its own read of the groups is the groups' hourly read; its queries answer
 //! while the hourly walk has accepted nothing; and its quiet hours build no
 //! frame.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::air_superiority::block;
@@ -250,12 +250,14 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
 }
 
 /// Sections only one mode writes: the checkpoint (which holds the families'
-/// progress), their own coverage pages, the groups' change publisher state
-/// while they are prepared on their own, air superiority's own read of the
-/// groups ([`assert_groups_read`] compares it), and each branch's state
+/// progress), the versions page (checked against each run's plan), their own
+/// coverage pages, the groups' change publisher state while they are prepared
+/// on their own, air superiority's own read of the groups
+/// ([`assert_groups_read`] compares it), and each branch's state
 /// ([`assert_same`] compares it decoded).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.starts_with("country-group-state-")
@@ -273,6 +275,8 @@ fn branch_state(bytes: &[u8]) -> serde_json::Value {
 /// which the walk keeps only while it reads the groups; without refusals,
 /// air superiority's own read of the groups is the walk's.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

@@ -10,7 +10,7 @@
 //! hours at which something leaders read changed; and the extract takes each
 //! hour's changes from the block reader, reduces kept rows only where they
 //! changed, and reads only the tables its run binds.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
@@ -101,11 +101,13 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
     payloads
 }
 
-/// Sections only one mode writes, or writes differently: the checkpoint
-/// (which holds the family's progress), the families' own coverage pages
-/// and each branch's state ([`assert_same`] compares it decoded).
+/// Sections only one mode writes, or writes differently: the checkpoint (which
+/// holds the family's progress), the versions page (checked against each run's
+/// plan), the families' own coverage pages and each branch's state
+/// ([`assert_same`] compares it decoded).
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
 }
@@ -120,6 +122,8 @@ fn branch_state(bytes: &[u8]) -> serde_json::Value {
 /// and each branch's state is hourly preparation's: the leaders' state is
 /// saved in their own continuation in both modes, never in the branch state.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

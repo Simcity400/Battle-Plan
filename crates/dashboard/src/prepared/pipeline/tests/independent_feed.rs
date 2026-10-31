@@ -9,7 +9,7 @@
 //! workers read; and its query answers from the coverage of every family it
 //! reads while the hourly walk has accepted nothing, as hourly preparation
 //! answers it, and waits while one of them is still the walk's.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use dashboard_base::prepared::kept::counted;
@@ -162,12 +162,14 @@ fn prepared(fixture: &mut Fixture, name: &str, prepare: &dyn Fn(&Source)) -> Pay
     payloads
 }
 
-/// Sections only one mode writes: the checkpoint, the families' own coverage
-/// pages and continuations, the hourly branch state (compared apart), the
-/// feed's own read of the identities and the identity history the walk keeps
-/// under territory's name while the identities are prepared on their own.
+/// Sections only one mode writes: the checkpoint, the versions page (checked
+/// against each run's plan), the families' own coverage pages and
+/// continuations, the hourly branch state (compared apart), the feed's own read
+/// of the identities and the identity history the walk keeps under territory's
+/// name while the identities are prepared on their own.
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("preparation-branch-")
         || name.contains("-continuation-")
@@ -192,6 +194,8 @@ const KEPT: [(&str, &str); 2] = [("event_feed", "feed"), ("nukes", "nukes")];
 /// the feed's own read of the identities is the identity history hourly
 /// preparation publishes.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, own: &[&str], refusals: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

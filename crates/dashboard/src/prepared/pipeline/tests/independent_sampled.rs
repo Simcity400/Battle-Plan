@@ -6,7 +6,7 @@
 //! preparation refuses, at its hour and with its text; observe every
 //! recorded hour once on their own thread from blocks every one of which a
 //! pre-pass worker read; and are no longer observed by the hourly walk.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use replay_data::{
@@ -360,13 +360,14 @@ impl Sampled {
         format!("{}-continuation-{branch}", self.name)
     }
 
-    /// Sections only one mode writes: the checkpoint (which holds the
-    /// families' progress), the family's own coverage pages, its own
-    /// continuation and the branch coverage pages (which hold the refusals of
-    /// the hourly walk alone); branch states are compared without the
-    /// family's state.
+    /// Sections only one mode writes: the checkpoint (which holds the families'
+    /// progress), the versions page (checked against each run's plan), the
+    /// family's own coverage pages, its own continuation and the branch
+    /// coverage pages (which hold the refusals of the hourly walk alone);
+    /// branch states are compared without the family's state.
     fn mode_specific(self, name: &str) -> bool {
         name == "preparation-checkpoint-v1"
+            || name == "preparation-versions-v1"
             || name.starts_with("preparation-family-")
             || name.starts_with("preparation-branch-")
             || name.starts_with("preparation-coverage-")
@@ -390,6 +391,8 @@ fn assert_same(
     label: &str,
     continuation: bool,
 ) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads| -> Payloads {
         payloads
             .iter()

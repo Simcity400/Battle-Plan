@@ -3,7 +3,7 @@
 //! the event feed, which read it in the same hour, included), is given frames
 //! only at the hours what it reads changes, and answers while the hourly walk
 //! has accepted nothing.
-use super::family_lanes::{assert_payloads_equal, payloads};
+use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
 use crate::products::country_history::{
@@ -224,11 +224,12 @@ fn hours(replay: &Replay) -> usize {
     hours
 }
 
-/// Sections only one mode writes: the checkpoint (which holds the
-/// identities' progress), the families' own coverage pages, and territory's
-/// own read of the identities.
+/// Sections only one mode writes: the checkpoint (which holds the identities'
+/// progress), the versions page (checked against each run's plan), the
+/// families' own coverage pages, and territory's own read of the identities.
 fn mode_specific(name: &str) -> bool {
     name == "preparation-checkpoint-v1"
+        || name == "preparation-versions-v1"
         || name.starts_with("preparation-family-")
         || name.starts_with("territory-identities-")
 }
@@ -238,6 +239,8 @@ fn mode_specific(name: &str) -> bool {
 /// identities, kept by the hourly walk, equals the history the identities
 /// published on their own.
 fn assert_same(actual: &Payloads, hourly: &Payloads, label: &str, complete: bool) {
+    assert_versions(actual, label);
+    assert_versions(hourly, label);
     let shared = |payloads: &Payloads, prefix: Option<&str>| -> Payloads {
         payloads
             .iter()
