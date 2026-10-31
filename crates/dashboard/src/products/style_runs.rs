@@ -75,7 +75,7 @@ impl Configured {
 
     /// One segment's projection, counting its full rebuilds into `rebuilds`.
     pub fn projector(&self, rebuilds: &Arc<facts::Rebuilds>) -> io::Result<facts::Projector> {
-        facts::Projector::new(Arc::clone(rebuilds))
+        facts::Projector::new(Arc::clone(rebuilds), self.flags.as_ref().ok().cloned())
     }
 
     /// The family's emit on a branch, from its first hour.

@@ -8,6 +8,7 @@
 
 use crate::flag_choices::{self, Chain};
 use crate::metadata::recorded_rows;
+use crate::products::country_flags::FlagFolders;
 use dashboard_world::{Flags, Hold, Needs, Roster, Tag, World};
 use installed_content_country_names::country_names::{CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
@@ -258,6 +259,8 @@ pub struct Projector {
     /// The next known hour hands every tag.
     fresh: bool,
     rebuilds: Arc<Rebuilds>,
+    /// The recorded flag folders, whose choices this worker makes for the facts it hands on.
+    flags: Option<Arc<FlagFolders>>,
 }
 
 /// Inserts `value` into `list` once.
@@ -312,7 +315,10 @@ fn built(frame: &DecodedFrame) -> Option<u8> {
 }
 
 impl Projector {
-    pub(super) fn new(rebuilds: Arc<Rebuilds>) -> io::Result<Self> {
+    pub(super) fn new(
+        rebuilds: Arc<Rebuilds>,
+        flags: Option<Arc<FlagFolders>>,
+    ) -> io::Result<Self> {
         let appearance = |names: &[&str]| mask(TableId::CountryAppearance, names);
         Ok(Self {
             fields: Fields {
@@ -338,6 +344,7 @@ impl Projector {
             anew: Some(Anew::Start),
             fresh: true,
             rebuilds,
+            flags,
         })
     }
 
@@ -676,6 +683,9 @@ impl Operator<World> for Projector {
             self.track(index, fact.as_ref(), reaches)?;
             let named = &mut self.tags[index as usize];
             if projected.whole || named.handed.as_ref() != Some(&fact) {
+                if let (Some(folders), Some(fact)) = (&self.flags, &fact) {
+                    folders.warm(&fact.flag)?;
+                }
                 named.handed = Some(fact.clone());
                 engine_allocation::reserve(&mut projected.countries, 1)?;
                 projected.countries.push(Country { index, fact });

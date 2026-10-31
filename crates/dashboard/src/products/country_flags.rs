@@ -16,7 +16,7 @@ use installed_content_core::{ResolveOptions, content::ResolvedContent, flags::Fl
 use installed_content_image::Rgba8Image;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::{
         Arc, Mutex, OnceLock,
@@ -953,6 +953,9 @@ pub struct FlagFolders {
     cells: [[u32; 2]; 3],
     /// Whether each file the searches read decodes, read once for every chain.
     files: Arc<FlagFiles>,
+    /// Each chain's choice, made once by the first thread to claim it; none where the search
+    /// failed, so a caller searches again and meets its error.
+    chosen: Mutex<HashMap<Chain, Arc<OnceLock<Option<CountryFlagChoice>>>>>,
 }
 
 impl FlagFolders {
@@ -964,6 +967,7 @@ impl FlagFolders {
             layers,
             cells,
             files: Arc::new(FlagFiles::probing()),
+            chosen: Mutex::new(HashMap::new()),
         })
     }
 
@@ -974,7 +978,30 @@ impl FlagFolders {
             layers,
             cells,
             files: Arc::new(FlagFiles::probing()),
+            chosen: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// `chain`'s place among the choices, and whether this call claimed it.
+    fn slot(&self, chain: &Chain) -> io::Result<(Arc<OnceLock<Option<CountryFlagChoice>>>, bool)> {
+        let mut chosen = lock(&self.chosen);
+        if let Some(slot) = chosen.get(chain) {
+            return Ok((Arc::clone(slot), false));
+        }
+        let slot = Arc::new(OnceLock::new());
+        engine_allocation::reserve_map(&mut *chosen, 1)?;
+        chosen.insert(chain.clone(), Arc::clone(&slot));
+        Ok((slot, true))
+    }
+
+    /// Makes `chain`'s choice ahead of [`Self::choose`] unless another thread already claimed
+    /// it: the workers make the choices their facts name, and the serial emit looks them up.
+    pub fn warm(&self, chain: &Chain) -> io::Result<()> {
+        let (slot, claimed) = self.slot(chain)?;
+        if claimed {
+            slot.get_or_init(|| self.search(chain).ok());
+        }
+        Ok(())
     }
 
     /// The key each atlas draws for `chain`: its first candidate whose file that atlas decodes,
@@ -982,6 +1009,15 @@ impl FlagFolders {
     /// no key past a candidate this reader cannot resolve, and no key where `chain` names none.
     /// A file that cannot be read fails it, named: no fact of the game, it refuses no hour.
     pub fn choose(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
+        let (slot, _) = self.slot(chain)?;
+        match slot.get_or_init(|| self.search(chain).ok()) {
+            Some(choice) => Ok(choice.clone()),
+            None => self.search(chain),
+        }
+    }
+
+    /// [`Self::choose`], searched anew.
+    fn search(&self, chain: &Chain) -> io::Result<CountryFlagChoice> {
         let mut choice = CountryFlagChoice::default();
         for set in [FlagSet::Normal, FlagSet::Medium, FlagSet::Small] {
             let at = atlas(set);
