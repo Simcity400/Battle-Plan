@@ -25,8 +25,9 @@ impl<'a> Snapshot<'a> {
         links: &BTreeMap<u32, u32>,
     ) -> Fact<Self> {
         let rows = regional_rows(frame, region)?;
-        let (friendly, enemy) = control_rows(frame, viewer, &rows, links)?;
-        let (ratio_friendly, ratio_enemy) = share_rows(frame, viewer, &rows, minimum, links)?;
+        let mut context = ControlContext::new(frame, viewer, links);
+        let (friendly, enemy) = context.rows(&rows)?;
+        let (ratio_friendly, ratio_enemy) = context.share_rows(&rows, minimum)?;
         Ok(Self {
             rows,
             friendly,
@@ -82,7 +83,8 @@ pub fn control_sums(
 ) -> Fact<(i64, i64)> {
     control_rows(frame, viewer, &regional_rows(frame, region)?, links)
 }
-/// Admissions reused across regions of one immutable frame and viewer.
+/// Admissions reused across regions of one immutable frame and viewer: the control's directed
+/// families and owners, and the explanatory share's group, enemy roster and blockaders.
 pub struct ControlContext<'a> {
     frame: &'a DecodedFrame,
     links: &'a BTreeMap<u32, u32>,
@@ -90,6 +92,9 @@ pub struct ControlContext<'a> {
     factions: OnceLock<Fact<Families>>,
     subjects: OnceLock<Fact<Families>>,
     owners: BTreeMap<u32, Fact<Owner<'a>>>,
+    group: OnceLock<Fact<BTreeSet<u32>>>,
+    enemies: OnceLock<Fact<Vec<u32>>>,
+    blockaders: OnceLock<Fact<BTreeSet<u32>>>,
 }
 impl<'a> ControlContext<'a> {
     pub fn new(frame: &'a DecodedFrame, viewer: u32, links: &'a BTreeMap<u32, u32>) -> Self {
@@ -100,6 +105,9 @@ impl<'a> ControlContext<'a> {
             factions: OnceLock::new(),
             subjects: OnceLock::new(),
             owners: BTreeMap::new(),
+            group: OnceLock::new(),
+            enemies: OnceLock::new(),
+            blockaders: OnceLock::new(),
         }
     }
     pub fn sums(&mut self, region: u32) -> Fact<(i64, i64)> {
@@ -135,7 +143,96 @@ impl<'a> ControlContext<'a> {
         }
         Ok((friendly, enemy))
     }
+    /// Explanatory ratio operands retain ordered enemy occurrences and their floor.
+    pub fn share(&self, region: u32, minimum: i64) -> Fact<(i64, i64)> {
+        self.share_rows(&regional_rows(self.frame, region)?, minimum)
+    }
+    fn share_rows(&self, rows: &[&NavalSupremacyRow], minimum: i64) -> Fact<(i64, i64)> {
+        if rows.iter().all(|row| row.current == 0) {
+            return Ok((0, 0_i64.max(minimum)));
+        }
+        let (frame, links, viewer) = (self.frame, self.links, self.viewer);
+        // The explanatory ratio uses the country group's unique membership,
+        // independently of the control's directed family predicate.
+        let group = self
+            .group
+            .get_or_init(|| {
+                let mut group = BTreeSet::from([viewer]);
+                for row in frame
+                    .complete::<tables::AirCountryRelations>()
+                    .map_err(|e| e.to_string())?
+                {
+                    if row.country == viewer
+                        && row.kind == AirCountryRelationRow::ALLY
+                        && (row.other as i32) > 0
+                    {
+                        group.insert(canonical(links, row.other)?);
+                    }
+                }
+                let mut family_group = Families::default();
+                family_group
+                    .read_factions(frame, links)
+                    .map_err(str::to_owned)?;
+                family_group
+                    .read_subjects(frame, links)
+                    .map_err(str::to_owned)?;
+                for &slot in links.values() {
+                    if family_group.family(slot, viewer) {
+                        group.insert(slot);
+                    }
+                }
+                Ok(group)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let mut ratio_friendly = 0_i64;
+        let mut first_current = BTreeMap::new();
+        for row in rows {
+            let slot = canonical(links, row.country)?;
+            first_current.entry(slot).or_insert(row.current);
+            if group.contains(&slot) {
+                ratio_friendly = ratio_friendly.wrapping_add(row.current);
+            }
+        }
+        let enemies = self
+            .enemies
+            .get_or_init(|| {
+                raw_roster(frame, viewer, AirCountryRelationRow::ENEMY)?
+                    .into_iter()
+                    .map(|raw| canonical(links, raw))
+                    .collect()
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        let mut ratio_enemy = 0_i64;
+        for slot in enemies {
+            ratio_enemy = ratio_enemy.wrapping_add(first_current.get(slot).copied().unwrap_or(0));
+        }
+        let blockaders = self
+            .blockaders
+            .get_or_init(|| {
+                Ok(frame
+                    .complete::<tables::RelationTuples>()
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .filter(|tuple| {
+                        tuple.type_id == NAVAL_BLOCKADE_RELATION_TYPE
+                            && canonical(links, tuple.second_country) == Ok(viewer)
+                    })
+                    .filter_map(|tuple| canonical(links, tuple.first_country).ok())
+                    .collect())
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        for row in rows {
+            if canonical(links, row.country).is_ok_and(|slot| blockaders.contains(&slot)) {
+                ratio_enemy = ratio_enemy.wrapping_add(row.current);
+            }
+        }
+        Ok((ratio_friendly, ratio_enemy.max(minimum)))
+    }
 }
+#[cfg(any(test, feature = "test-support"))]
 fn control_rows(
     frame: &DecodedFrame,
     viewer: u32,
@@ -143,96 +240,6 @@ fn control_rows(
     links: &BTreeMap<u32, u32>,
 ) -> Fact<(i64, i64)> {
     ControlContext::new(frame, viewer, links).rows(rows)
-}
-
-/// Explanatory ratio operands retain ordered enemy occurrences and their floor.
-pub fn share_sums(
-    frame: &DecodedFrame,
-    viewer: u32,
-    region: u32,
-    minimum: i64,
-    links: &BTreeMap<u32, u32>,
-) -> Fact<(i64, i64)> {
-    share_rows(
-        frame,
-        viewer,
-        &regional_rows(frame, region)?,
-        minimum,
-        links,
-    )
-}
-fn share_rows(
-    frame: &DecodedFrame,
-    viewer: u32,
-    rows: &[&NavalSupremacyRow],
-    minimum: i64,
-    links: &BTreeMap<u32, u32>,
-) -> Fact<(i64, i64)> {
-    if rows.iter().all(|row| row.current == 0) {
-        return Ok((0, 0_i64.max(minimum)));
-    }
-    // The explanatory ratio uses the country group's unique membership,
-    // independently of the control's directed family predicate.
-    let mut group = BTreeSet::from([viewer]);
-    for row in frame
-        .complete::<tables::AirCountryRelations>()
-        .map_err(|e| e.to_string())?
-    {
-        if row.country == viewer
-            && row.kind == AirCountryRelationRow::ALLY
-            && (row.other as i32) > 0
-        {
-            group.insert(canonical(links, row.other)?);
-        }
-    }
-    let mut family_group = Families::default();
-    family_group
-        .read_factions(frame, links)
-        .map_err(str::to_owned)?;
-    family_group
-        .read_subjects(frame, links)
-        .map_err(str::to_owned)?;
-    for &slot in links.values() {
-        if family_group.family(slot, viewer) {
-            group.insert(slot);
-        }
-    }
-    let mut ratio_friendly = 0_i64;
-    let mut first_current = BTreeMap::new();
-    for row in rows {
-        let slot = canonical(links, row.country)?;
-        first_current.entry(slot).or_insert(row.current);
-        if group.contains(&slot) {
-            ratio_friendly = ratio_friendly.wrapping_add(row.current);
-        }
-    }
-    let mut ratio_enemy = 0_i64;
-    let value = |raw| -> Fact<i64> {
-        Ok(first_current
-            .get(&canonical(links, raw)?)
-            .copied()
-            .unwrap_or(0))
-    };
-    for raw in raw_roster(frame, viewer, AirCountryRelationRow::ENEMY)? {
-        ratio_enemy = ratio_enemy.wrapping_add(value(raw)?);
-    }
-    let tuples = frame
-        .complete::<tables::RelationTuples>()
-        .map_err(|e| e.to_string())?;
-    let blockades: BTreeSet<_> = tuples
-        .iter()
-        .filter(|tuple| {
-            tuple.type_id == NAVAL_BLOCKADE_RELATION_TYPE
-                && canonical(links, tuple.second_country) == Ok(viewer)
-        })
-        .filter_map(|tuple| canonical(links, tuple.first_country).ok())
-        .collect();
-    for row in rows {
-        if canonical(links, row.country).is_ok_and(|slot| blockades.contains(&slot)) {
-            ratio_enemy = ratio_enemy.wrapping_add(row.current);
-        }
-    }
-    Ok((ratio_friendly, ratio_enemy.max(minimum)))
 }
 
 /// The raw recorded diplomacy vector, preserving aliases and occurrences.
@@ -498,5 +505,85 @@ mod tests {
             .into();
         assert_eq!(raw_roster(&frame, 1, 2).unwrap(), [22, 22]);
         assert!(raw_roster(&frame, 1, 1).unwrap().is_empty());
+    }
+    #[test]
+    fn one_context_shares_every_region_as_a_fresh_one_does() {
+        use replay_data::rows::{RelationTupleRow, TableId, TableRows};
+        use replay_frame::frame::{SharedView, TableView};
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 25,
+            metrics: Default::default(),
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "unreached".into(),
+                }
+                .into()
+            }),
+        };
+        let current = |region, country, current| NavalSupremacyRow {
+            region,
+            country,
+            current,
+            ..Default::default()
+        };
+        // Region 7 holds the viewer, its ally, its enemy and a blockader; 8 an enemy alone; 9 nothing.
+        frame.tables[TableId::NavalSupremacy.index()] =
+            SharedView::from(TableView::Complete(TableRows::NavalSupremacy(vec![
+                current(7, 101, 10),
+                current(7, 102, 5),
+                current(7, 103, 7),
+                current(7, 104, 3),
+                current(8, 102, 0),
+                current(8, 103, 4),
+                current(9, 103, 0),
+            ])))
+            .with_sampled_at(Some(24));
+        let links = BTreeMap::from([(101, 1), (102, 2), (103, 3), (104, 4)]);
+        let regions = [7, 8, 9];
+        let shares = |frame: &DecodedFrame| {
+            let shared = ControlContext::new(frame, 1, &links);
+            let once: Vec<_> = regions.iter().map(|&r| shared.share(r, 2)).collect();
+            let fresh: Vec<_> = regions
+                .iter()
+                .map(|&r| ControlContext::new(frame, 1, &links).share(r, 2))
+                .collect();
+            assert_eq!(once, fresh);
+            once
+        };
+        // Without the diplomacy tables, a region holding currents refuses and an empty one does not.
+        let refused = shares(&frame);
+        assert!(refused[0].is_err() && refused[1].is_err());
+        assert_eq!(refused[2], Ok((0, 2)));
+        frame.tables[TableId::AirCountryRelations.index()] =
+            TableView::Complete(TableRows::AirCountryRelations(vec![
+                AirCountryRelationRow {
+                    country: 1,
+                    kind: AirCountryRelationRow::ALLY,
+                    ordinal: 0,
+                    other: 102,
+                },
+                AirCountryRelationRow {
+                    country: 1,
+                    kind: AirCountryRelationRow::ENEMY,
+                    ordinal: 0,
+                    other: 103,
+                },
+            ]))
+            .into();
+        frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![])).into();
+        frame.tables[TableId::Subjects.index()] =
+            TableView::Complete(TableRows::Subjects(vec![])).into();
+        frame.tables[TableId::RelationTuples.index()] =
+            TableView::Complete(TableRows::RelationTuples(vec![RelationTupleRow {
+                type_id: NAVAL_BLOCKADE_RELATION_TYPE,
+                first_country: 104,
+                second_country: 101,
+                ..Default::default()
+            }]))
+            .into();
+        // Friendly: the viewer and its ally; enemy: the roster's enemy and the blockader, floored.
+        assert_eq!(shares(&frame), [Ok((15, 10)), Ok((0, 4)), Ok((0, 2))]);
     }
 }

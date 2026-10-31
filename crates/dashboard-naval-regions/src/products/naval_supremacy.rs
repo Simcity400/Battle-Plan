@@ -684,8 +684,7 @@ pub(crate) fn project(
             }
             Err(why) => notes.note(why, format!("{identity}:control operands")),
         }
-        let share = minimum
-            .and_then(|m| naval_region_control::share_sums(frame, viewer, region, m, &links));
+        let share = minimum.and_then(|m| control_context.share(region, m));
         match share {
             Ok((num, enemy)) => {
                 result.insert(format!("{region}|shareNum"), i128::from(num));
