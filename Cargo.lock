@@ -3274,6 +3274,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-text",
+ "dashboard-world",
  "engine-native",
  "indexmap 2.14.2",
  "log",
@@ -3439,11 +3440,15 @@ dependencies = [
 name = "dashboard-naval-yards"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "dashboard-base",
  "dashboard-core",
  "dashboard-forces",
  "dashboard-keyed",
+ "dashboard-series",
  "dashboard-text",
+ "dashboard-world",
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -3461,7 +3466,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "store",
  "test-unify",
  "ts-rs",
  "wgpu",

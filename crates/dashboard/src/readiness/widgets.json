@@ -607,14 +607,14 @@
     {
       "kind": "dockyards-and-repairs",
       "requests": [
-        {"product": "naval-repairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+        {"product": "naval-repairs", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$first"}}
       ],
       "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
     },
     {
       "kind": "refits",
       "requests": [
-        {"product": "naval-refits", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag"}}
+        {"product": "naval-refits", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$first"}}
       ],
       "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
     },

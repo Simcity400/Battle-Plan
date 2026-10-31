@@ -34,10 +34,11 @@ export const lineProgress = (at: YardsAt, line: string): number | null => refitS
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'lines');
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const at = useMemo(() => data && tag ? yardsAt(data, tag, hour) : null, [data, tag, hour]);
+  const shown = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const window = shown && resolveWindow(widget, shown, runtime.tracks, playback);
+  const hour = Math.floor(window?.lastHour ?? shown?.branch.lastHour ?? 0);
+  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, hour);
+  const at = useMemo(() => data && tag ? yardsAt(data) : null, [data, tag]);
   const { rows, children } = useMemo(() => refitRows(at), [at]);
   const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
   const columns = useMemo<readonly TableColumn<RefitRow>[]>(() => !data || !at ? [] : [
@@ -90,7 +91,7 @@ export default function RefitsWidget({ widget, runtime, active, onDiagnostics }:
 
 
 function lineName(data: YardsReply, at: YardsAt, line: string): string {
-  return tokenName(data, at.groups.get(line)?.measures.get('targetName'), data.groups.find(group => group.id === line)?.name ?? 'Design name unavailable');
+  return tokenName(data, at.groups.get(line)?.measures.get('targetName'), 'Design name unavailable');
 }
 
 /** Live lines in their recorded order, each with the ships whose membership the hour dates. */

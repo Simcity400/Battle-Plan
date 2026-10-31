@@ -5818,11 +5818,28 @@ export type ReserveHolder = { tag: string, slot: number, };
 export type IntelCoverageParams = { branchId: string, view: IntelCoverageView, tags: Array<string> | null, shown: number, touching: boolean, owner: string | null, target: string | null, firstHour: number | null, lastHour: number | null, };
 export type IntelCoverageReply = { window: KeyedWindow, warnings: Array<string>, };
 export type IntelCoverageView = "matrix" | "pair";
-export type NavalYardsParams = { branchId: string, tag: string, firstHour?: number, lastHour?: number, };
+export type NavalYardsAtParams = { branchId: string, tag: string, hour: number, };
 export type YardChoice = { id: string, name: string, };
-export type YardGroup = { country: string, id: string, name: string, ships: Array<YardChoice>, };
-export type NavalRepairsReply = { window: KeyedWindow, ports: Array<YardGroup>, tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
-export type NavalRefitsReply = { window: KeyedWindow, lines: Array<YardGroup>, tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
+export type NavalYardShip = { id: string, measures: { [key in string]?: string }, };
+export type NavalYardQueued = { ordinal: string, ship: string, };
+export type NavalYardHolder = { id: string, measures: { [key in string]?: string }, ships: Array<NavalYardShip>, queue: Array<NavalYardQueued>, };
+export type NavalYardsAtReply = { hour: number,
+/**
+ * Whether the hour's countries and their links were recorded; nothing is known where not.
+ */
+known: boolean,
+/**
+ * The dating table's last read by the hour.
+ */
+readHour: number | null, holders: Array<NavalYardHolder>, totals: { [key in string]?: string },
+/**
+ * Each source table's dated supplying read at the hour, by table, where it is dated.
+ */
+reads: { [key in string]?: number },
+/**
+ * The tokens the hour's rows name, by number.
+ */
+tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
 /** Refusals for want of room: a message starting with one may be tried again. */
@@ -5835,6 +5852,6 @@ export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_Q
 /** Products whose replies depend on configured game content. */
 export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "division-equipment-history", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile-at", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "equipment-stockpile-at", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "equipment-stockpile-at", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */
 export const COUNTRY_COLOURS_OVER_BUDGET = "Country colours exceed the product reply budget";

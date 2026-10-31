@@ -55,7 +55,6 @@ export interface IntelCoverageParams {
   owner?: string | null; target?: string | null; firstHour?: number | null; lastHour?: number | null;
 }
 
-export interface NavalYardsParams { branchId: string; tag: string; firstHour?: number; lastHour?: number }
 
 export interface SpriteArtworkParams {
   /** Each frame is a zero-based u32. */

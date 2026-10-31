@@ -1,4 +1,4 @@
-//! Recorded repair queues and live refit work, prepared as keyed histories.
+//! Recorded repair queues and live refit work, prepared as day events and read at an hour.
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -8,10 +8,8 @@ pub mod products {
     pub mod naval_repairs;
     pub mod yards;
 
-    dashboard_base::reply_warnings!(
-        naval_repairs::NavalRepairsReply,
-        naval_refits::NavalRefitsReply,
-    );
+    // Both views reply with the view at an hour.
+    dashboard_base::reply_warnings!(yards::at::YardsAtReply);
 }
 
 #[cfg(test)]

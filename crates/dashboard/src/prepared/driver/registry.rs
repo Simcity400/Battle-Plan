@@ -218,14 +218,18 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["naval-repairs"],
         queries: &["naval-repairs"],
         gates: &["naval-repairs"],
-        sections: &[products::naval_repairs::RepairsObserver::NAME],
+        // 2: day events on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         ..family("naval-repairs")
     },
     Descriptor {
         status: &["naval-refits"],
         queries: &["naval-refits"],
         gates: &["naval-refits"],
-        sections: &[products::naval_refits::RefitsObserver::NAME],
+        // 2: day events on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         ..family("naval-refits")
     },
     // Interactive products read it hour by hour through its coverage; `country-facts` whole.

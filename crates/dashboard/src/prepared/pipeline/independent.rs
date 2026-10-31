@@ -413,8 +413,6 @@ static ROWS: &[&dyn Own] = &[
     &keyed::DOCTRINE_MASTERY,
     &keyed::OCCUPATION_RESERVE,
     &keyed::INTEL_COVERAGE,
-    &keyed::NAVAL_REPAIRS,
-    &keyed::NAVAL_REFITS,
 ];
 
 /// One read of each block for the families that observe every block hour by

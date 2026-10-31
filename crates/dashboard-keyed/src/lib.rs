@@ -9,7 +9,8 @@
 //! reads and how one frame reads), and this crate does the rest the same way
 //! for all of them: the block pre-pass extract and fold ([`block`]), the
 //! carried scan with its series and catalogue ([`Scan`]), and the reads of a
-//! query ([`query`]).
+//! query ([`query`]). On a native recording a family is read a segment at a
+//! time instead ([`segment`]), and its emit publishes it on the series engine.
 //!
 //! What the pages say, for every name: a run holds the exact value the
 //! observer read from its first to its last hour; an hour inside a known
@@ -30,6 +31,8 @@ pub mod daily;
 pub mod delta;
 pub mod query;
 pub mod regions;
+pub mod segment;
+pub mod table_changes;
 
 #[cfg(test)]
 mod tests;

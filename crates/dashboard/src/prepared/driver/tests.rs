@@ -164,7 +164,6 @@ fn every_section_has_one_exact_owner() {
         ("country-identities-1", Some(family("identities"))),
         ("naval-battles-1", Some(family("naval"))),
         ("naval-battle-windows-1", Some(family("naval"))),
-        ("naval-repairs-values-1", Some(family("naval-repairs"))),
         ("war-casualties-state-1", Some(family("casualties"))),
         ("wars-series-1", Some(family("wars"))),
         ("map.checkpoints.3", Some(Owner::Job("map"))),

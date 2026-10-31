@@ -140,8 +140,8 @@ impl<O: Observer> Branch for KeyedBranch<O> {
 }
 
 use crate::products::{
-    air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_refits,
-    naval_repairs, naval_supremacy, occupation_reserve,
+    air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_supremacy,
+    occupation_reserve,
 };
 
 pub(in crate::prepared::pipeline) static AIR_MISSIONS: Keyed<air_missions::AirMissionsObserver> =
@@ -164,7 +164,3 @@ pub(in crate::prepared::pipeline) static OCCUPATION_RESERVE: Keyed<
 pub(in crate::prepared::pipeline) static INTEL_COVERAGE: Keyed<
     intel_coverage::IntelCoverageObserver,
 > = Keyed::new("independent.intel-network-coverage");
-pub(in crate::prepared::pipeline) static NAVAL_REPAIRS: Keyed<naval_repairs::RepairsObserver> =
-    Keyed::new("independent.naval-repairs");
-pub(in crate::prepared::pipeline) static NAVAL_REFITS: Keyed<naval_refits::RefitsObserver> =
-    Keyed::new("independent.naval-refits");

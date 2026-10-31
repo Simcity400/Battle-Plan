@@ -2,7 +2,7 @@
 //! and their names resolved through the recorded content stack when a reply asks.
 use super::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Operand {
     ShipCache {
         handle: u64,
@@ -31,14 +31,14 @@ pub enum Operand {
     Refusal(String),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PortName {
     pub province: u32,
     pub override_name: Result<Vec<u8>, String>,
     pub owner_tag: Result<String, String>,
     pub state: Result<StateName, String>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StateName {
     pub id: u32,
     pub custom: Vec<u8>,
@@ -142,7 +142,8 @@ pub(super) fn port_name(port: &PortName, cat: &Catalogue) -> Result<String, Stri
     )
 }
 
-pub(super) fn resolve(operand: &Operand, cat: Option<&Arc<Catalogue>>) -> Result<YardChoice, String> {
+/// `operand`'s name through the recorded content stack, or why it has none.
+pub fn resolve(operand: &Operand, cat: Option<&Arc<Catalogue>>) -> Result<YardChoice, String> {
     let cat = cat.ok_or("Naval yard names need the recorded content stack")?;
     let (id, name) = match operand {
         Operand::ShipCache { handle, bytes } => (
@@ -216,7 +217,8 @@ pub(super) fn resolve(operand: &Operand, cat: Option<&Arc<Catalogue>>) -> Result
     Ok(YardChoice { id, name })
 }
 
-pub(super) fn raw_id(operand: &Operand) -> String {
+/// `operand`'s own id, which a reply shows where its name is unavailable.
+pub fn raw_id(operand: &Operand) -> String {
     match operand {
         Operand::ShipCache { handle, .. } | Operand::ShipRebuilt { handle, .. } => {
             handle.to_string()
@@ -234,18 +236,15 @@ pub(super) fn raw_id(operand: &Operand) -> String {
         Operand::Refusal(_) => String::new(),
     }
 }
-pub(super) fn is_label(field: &str) -> bool {
-    matches!(
-        field,
-        "name"
-            | "nameRebuilt"
-            | "class"
-            | "policy"
-            | "taskName"
-            | "designName"
-            | "targetName"
-            | "refitIntentName"
-            | "afterRepairIntentName"
-    )
+/// The notes resolving `operand` raises: a rebuilt ship name's naming groups'.
+pub fn notes(operand: &Operand, cat: &Catalogue) -> Vec<String> {
+    match operand {
+        Operand::ShipRebuilt { naming, group, .. } if ship_names::needs_groups(naming, group) => {
+            ship_names::groups(cat)
+                .map(|groups| groups.1.clone())
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 

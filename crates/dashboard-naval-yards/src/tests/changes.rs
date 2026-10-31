@@ -1,54 +1,13 @@
-//! Change-driven yard observation against every hour observed whole.
-use super::*;
-use dashboard_base::prepared::{
-    frame_changes::{FrameChangeTracker, FrameChanges},
-    prepass::{self, Family},
-    series::tests::assert_payloads_equal,
+//! Change-driven yard reading against every hour projected whole.
+use super::{
+    rows::{follow, whole},
+    *,
 };
-use replay::container::TableFields;
+use crate::products::yards::emit::tests::project;
+use dashboard_base::prepared::prepass;
+use replay::segments::Item as _;
 use replay_frame::frame::SharedView;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use std::io;
-
-/// The family with every hour observed whole: the reference its changes match.
-#[derive(Default, Serialize, Deserialize)]
-#[serde(transparent)]
-struct Whole<O>(O);
-
-impl<O: Observer> Observer for Whole<O> {
-    const NAME: &'static str = O::NAME;
-    const TABLES: &'static [TableId] = O::TABLES;
-    const READ: TableId = O::READ;
-    fn family() -> &'static Family {
-        O::family()
-    }
-    fn fields() -> io::Result<Vec<TableFields>> {
-        O::fields()
-    }
-    fn changed(changes: &FrameChanges) -> bool {
-        O::changed(changes)
-    }
-    fn bind(
-        &mut self,
-        source: &dashboard_base::Source,
-        content: Option<&dashboard_core::config::ContentOptions>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.0.bind(source, content, check)
-    }
-    fn supplying_read(&self) -> Option<i32> {
-        self.0.supplying_read()
-    }
-    fn observe(
-        &mut self,
-        format: FormatVersion,
-        frame: &DecodedFrame,
-        values: &mut Values,
-    ) -> io::Result<bool> {
-        self.0.observe(format, frame, values)
-    }
-}
+use std::collections::BTreeSet;
 
 fn raw(country: u32) -> u32 {
     1000 + country
@@ -64,9 +23,6 @@ fn line_id(country: u32) -> u64 {
 }
 fn port_of(country: u32) -> u32 {
     10 + country
-}
-fn tag(country: u32) -> String {
-    String::from_utf8(test_fixtures::scale_tag(country)).unwrap()
 }
 
 fn put(frame: &mut DecodedFrame, rows: TableRows) {
@@ -400,62 +356,6 @@ fn worlds(countries: u32, hours: std::ops::RangeInclusive<i32>) -> Vec<DecodedFr
     frames
 }
 
-/// `frames` observed whole every hour in blocks ending before each of `cuts`.
-fn every_hour<O: Observer>(
-    source: &dashboard_base::Source,
-    frames: &[DecodedFrame],
-    cuts: &[usize],
-) -> Fixture {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut scan = Scan::<O>::default();
-    scan.observer.bind(source, None, &mut || Ok(())).unwrap();
-    let mut start = 0;
-    for &end in cuts.iter().chain([frames.len()].iter()) {
-        let mut tracker = FrameChangeTracker::new();
-        for frame in &frames[start..end] {
-            let read = tracker.observe(frame, FormatVersion::CURRENT).slot_read[O::READ.index()];
-            scan.prepare(FormatVersion::CURRENT, frame, read).unwrap();
-        }
-        let mut writer = fixture.writer();
-        scan.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        start = end;
-    }
-    fixture
-}
-
-/// `frames` prepared in blocks ending before each of `cuts`, each continued from its catalogue with `restore`.
-fn prepare<O: Observer>(
-    source: &dashboard_base::Source,
-    frames: &[DecodedFrame],
-    cuts: &[usize],
-    restore: bool,
-) -> Fixture {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut scan = Scan::<O>::default();
-    scan.observer.bind(source, None, &mut || Ok(())).unwrap();
-    let mut start = 0;
-    for &end in cuts.iter().chain([frames.len()].iter()) {
-        let mut tracker = FrameChangeTracker::new();
-        for frame in &frames[start..end] {
-            let changes = tracker.observe(frame, FormatVersion::CURRENT);
-            scan.prepare_changed(FormatVersion::CURRENT, frame, &changes)
-                .unwrap();
-        }
-        let mut writer = fixture.writer();
-        scan.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        if restore {
-            scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
-            scan.observer.bind(source, None, &mut || Ok(())).unwrap();
-        }
-        start = end;
-    }
-    fixture
-}
-
 /// `world(countries, 20)` at each of `hours` with only its designs moving: a referenced
 /// design renamed, removed for two hours and given another naming group, one added, and
 /// one nothing reads renamed every hour.
@@ -502,113 +402,55 @@ fn design_hours(countries: u32, hours: std::ops::RangeInclusive<i32>) -> Vec<Dec
         .collect()
 }
 
-fn replies(
-    source: &dashboard_base::Source,
-    fixture: &Fixture,
-    tags: &[String],
-    (first, last): (i32, i32),
-) -> Vec<serde_json::Value> {
-    let flag = AtomicBool::new(false);
-    let prefix = prefix(first, last, true);
-    let mut replies = Vec::new();
-    for tag in tags {
-        for params in [
-            json!({"branchId": "1", "tag": tag}),
-            json!({"branchId": "1", "tag": tag, "firstHour": first + 2, "lastHour": last - 2}),
-        ] {
-            let query = Query {
-                source,
-                params: &params,
-                content: None,
-                store: &fixture.store,
-                key: &fixture.key,
-                branch: 1,
-                prefix: &prefix,
-                cancelled: &flag,
-            };
-            replies.push(naval_repairs::query(&query).unwrap());
-            replies.push(naval_refits::query(&query).unwrap());
+/// Each hour of a walk of `frames`, read by `V`'s operators, a fresh one at each of `restarts`,
+/// followed from what they hand on, holds every row the hour holds projected whole. The hours
+/// they project whole.
+fn check<V: View>(frames: &[DecodedFrame], restarts: &[usize]) -> usize {
+    let restarts: BTreeSet<usize> = restarts.iter().copied().collect();
+    let before = prepass::noted("naval-yards.project");
+    let hours = project::<V>(frames, &restarts);
+    let projected = prepass::noted("naval-yards.project") - before;
+    let mut held = None;
+    for (hour, frame) in hours.iter().zip(frames) {
+        if let Some(read) = &hour.read {
+            assert!(hour.heap() > 0);
+            follow(&mut held, read);
         }
-    }
-    replies
-}
-
-/// Pages and replies prepared from changes, with and without restores, equal main's whole observation every hour.
-fn check(countries: u32, hours: std::ops::RangeInclusive<i32>, cuts: &[usize], tags: &[String]) {
-    let window = (*hours.start(), *hours.end());
-    let frames = worlds(countries, hours);
-    let source = source(frames.clone());
-    fn family<O: Observer, R: Observer>(
-        source: &dashboard_base::Source,
-        frames: &[DecodedFrame],
-        cuts: &[usize],
-    ) -> [Fixture; 4] {
-        let reference = every_hour::<R>(source, frames, cuts);
-        let projects = prepass::noted("naval-yards.project");
-        let whole = prepare::<Whole<O>>(source, frames, cuts, false);
-        let whole_projects = prepass::noted("naval-yards.project") - projects;
-        let projects = prepass::noted("naval-yards.project");
-        let changed = prepare::<O>(source, frames, cuts, false);
-        let changed_projects = prepass::noted("naval-yards.project") - projects;
-        let restored = prepare::<O>(source, frames, cuts, true);
-        for fixture in [&whole, &changed, &restored] {
-            assert_payloads_equal(&fixture.payloads(), &reference.payloads(), O::NAME);
-        }
-        // Hours after the first of each block project only what changed.
         assert!(
-            changed_projects < whole_projects,
-            "{} projected {changed_projects} of {whole_projects} hours whole",
-            O::NAME
+            held == whole::<V>(frame),
+            "{} at hour {}",
+            if V::REFITS { "refits" } else { "repairs" },
+            frame.hour
         );
-        [reference, whole, changed, restored]
     }
-    let repairs = family::<RepairsObserver, yards::reference::Repairs>(&source, &frames, cuts);
-    let refits = family::<RefitsObserver, yards::reference::Refits>(&source, &frames, cuts);
-    for fixtures in [&repairs, &refits] {
-        let whole = replies(&source, &fixtures[0], tags, window);
-        for fixture in &fixtures[1..] {
-            assert_eq!(replies(&source, fixture, tags, window), whole);
-        }
+    projected
+}
+
+#[test]
+fn changed_yard_hours_hand_on_the_rows_of_whole_hours_across_restarts() {
+    let frames = worlds(12, 7..=40);
+    let restarts = [0, 5, 11, 16, 23, 29];
+    for projected in [
+        check::<Repairs>(&frames, &restarts),
+        check::<Refits>(&frames, &restarts),
+    ] {
+        // Hours after each segment's first follow its changes, but where a name moves.
+        assert!(projected < frames.len(), "{projected} of {} hours read whole", frames.len());
     }
 }
 
 #[test]
-fn changed_yard_hours_publish_and_reply_exactly_as_whole_hours_across_blocks_and_restores() {
-    let tags: Vec<String> = [0, 1, 2, 3, 4, 6, 9, 11].into_iter().map(tag).collect();
-    check(12, 7..=40, &[5, 11, 16, 23, 29], &tags);
-}
-
-#[test]
-fn fifteen_hundred_country_navies_publish_exactly_as_whole_hours() {
-    let tags: Vec<String> = [0, 1, 749, 1499].into_iter().map(tag).collect();
-    check(1500, 14..=21, &[3], &tags);
+fn fifteen_hundred_country_navies_hand_on_the_rows_of_whole_hours() {
+    let frames = worlds(1500, 14..=21);
+    check::<Repairs>(&frames, &[0, 3]);
+    check::<Refits>(&frames, &[0, 3]);
 }
 
 #[test]
 fn design_hours_project_only_the_ships_and_lines_reading_a_changed_design() {
-    let tags: Vec<String> = [0, 1, 2, 3, 4, 6, 9, 11].into_iter().map(tag).collect();
     let frames = design_hours(12, 7..=30);
-    let source = source(frames.clone());
-    fn family<O: Observer, R: Observer>(
-        source: &dashboard_base::Source,
-        frames: &[DecodedFrame],
-        tags: &[String],
-    ) {
-        let cuts = [10];
-        let reference = every_hour::<R>(source, frames, &cuts);
-        let projects = prepass::noted("naval-yards.project");
-        let changed = prepare::<O>(source, frames, &cuts, false);
-        // Only the first hour is projected whole: every later one changes designs alone.
-        assert_eq!(prepass::noted("naval-yards.project") - projects, 1, "{}", O::NAME);
-        let restored = prepare::<O>(source, frames, &cuts, true);
-        for fixture in [&changed, &restored] {
-            assert_payloads_equal(&fixture.payloads(), &reference.payloads(), O::NAME);
-        }
-        let whole = replies(source, &reference, tags, (7, 30));
-        for fixture in [&changed, &restored] {
-            assert_eq!(replies(source, fixture, tags, (7, 30)), whole);
-        }
-    }
-    family::<RepairsObserver, yards::reference::Repairs>(&source, &frames, &tags);
-    family::<RefitsObserver, yards::reference::Refits>(&source, &frames, &tags);
+    let restarts = [0, 10];
+    // Only each segment's first hour is read whole: every later one changes designs alone.
+    assert_eq!(check::<Repairs>(&frames, &restarts), restarts.len());
+    assert_eq!(check::<Refits>(&frames, &restarts), restarts.len());
 }

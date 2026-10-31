@@ -405,6 +405,43 @@ fn supply_reply(
     Ok(serde_json::to_value(reply)?)
 }
 
+/// A yard view at an hour, from its family's publication (the family is named as its product);
+/// null past what the family has accepted.
+fn yards_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use dashboard_naval_yards::products::yards::{self, at, layout};
+    let params: at::YardsAtParams = serde_json::from_value(params.clone())?;
+    params.validate().map_err(crate::invalid)?;
+    let branch = branch(source, &params.branch_id)?;
+    let Some(opened) = published::open(source, content, product, layout::SCHEMA, branch)?
+    else {
+        return Ok(Value::Null);
+    };
+    // An unloaded catalogue is the reply's warning, never names silently missing.
+    let catalogue = content
+        .map(|options| crate::catalogue::catalogue(source, options))
+        .transpose()
+        .map_err(|why| why.to_string());
+    let refits = product == "naval-refits";
+    let Some(reply) = opened.read(cancelled, |snapshot, directory| {
+        let catalogue = catalogue.as_ref().map(Option::as_ref).map_err(String::as_str);
+        at::query(snapshot, directory, refits, &params, catalogue)
+    })?
+    else {
+        return Ok(Value::Null);
+    };
+    // The view's gate's prefix: hours after it are pending, never empty.
+    let prefix = super::prefix::read_or_empty(source, content, product, branch, None, cancelled)?;
+    let mut data = yards::checked(&reply)?;
+    prefix.mark(&mut data)?;
+    Ok(data)
+}
+
 /// Provinces' and states' names at their hours from the place-names family's publication; null
 /// before the family publishes the branch, and while an hour asked is past what it accepted.
 fn names_reply(
@@ -901,7 +938,7 @@ impl Hours {
             | "operative-placements"
             | "agency-comparison"
             | "operatives-roster" => range(&["firstHour"], "lastHour"),
-            "equipment-stockpile-at" => hour("hour"),
+            "equipment-stockpile-at" | "naval-repairs" | "naval-refits" => hour("hour"),
             // Names of rows each at its own hour: through the last one asked.
             "place-names" => ["places", "states"]
                 .into_iter()
@@ -982,8 +1019,6 @@ impl Hours {
             | "doctrine-mastery"
             | "occupation-reserve-manpower"
             | "intel-network-coverage"
-            | "naval-repairs"
-            | "naval-refits"
             | "air-superiority"
             | "raids"
             | "air-aces"
@@ -1203,8 +1238,8 @@ fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Val
 /// The query of a keyed family's product ([`dashboard_keyed`]).
 fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::Result<Value> {
     use crate::products::{
-        air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_refits,
-        naval_repairs, naval_supremacy, occupation_reserve, regional_weather,
+        air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields, naval_supremacy,
+        occupation_reserve, regional_weather,
     };
     match product {
         "air-missions" => air_missions::query(query),
@@ -1215,8 +1250,6 @@ fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::
         "doctrine-mastery" => doctrine_mastery::query(query),
         "occupation-reserve-manpower" => occupation_reserve::query(query),
         "intel-network-coverage" => intel_coverage::query(query),
-        "naval-repairs" => naval_repairs::query(query),
-        "naval-refits" => naval_refits::query(query),
         _ => Err(crate::invalid("Unknown keyed product")),
     }
 }
@@ -2091,9 +2124,7 @@ fn query_data(
         | "naval-supremacy"
         | "doctrine-mastery"
         | "occupation-reserve-manpower"
-        | "intel-network-coverage"
-        | "naval-repairs"
-        | "naval-refits") => {
+        | "intel-network-coverage") => {
             let id = request
                 .params
                 .get("branchId")
@@ -2117,6 +2148,9 @@ fn query_data(
             let mut data = keyed_query(product, &query)?;
             prefix.mark(&mut data)?;
             data
+        }
+        product @ ("naval-repairs" | "naval-refits") => {
+            yards_reply(source, content, product, &request.params, cancelled)?
         }
         "air-superiority" => crate::products::air_superiority::prepared::query(
             source,

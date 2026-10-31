@@ -64,8 +64,8 @@ const EXACT: Record<string, Built> = {
   'doctrine-mastery': (widget, track) => [built.doctrineMasteryRequest(widget, track)],
   'occupation-reserve-manpower': (widget, track) => [built.occupationReserveRequest(widget, track)],
   'intel-network-coverage': (widget, track) => [built.intelCoverageRequest(widget, track)],
-  'dockyards-and-repairs': (widget, track) => [built.yardsRequest(widget, track)],
-  refits: (widget, track) => [built.yardsRequest(widget, track)],
+  'dockyards-and-repairs': (widget, track, window) => [built.yardsRequest(widget, track, built.shownHour(track, window))],
+  refits: (widget, track, window) => [built.yardsRequest(widget, track, built.shownHour(track, window))],
   'governments-in-exile': (_widget, track, window) => [built.exilesRequest(track, built.shownHour(track, window))],
 };
 
@@ -117,6 +117,8 @@ const SHOWN: Record<string, readonly string[]> = {
   'ruling-party': ['0.to', '1.hours.0'],
   'resource-balance': ['0.from', '0.to', '0.hours.0'],
   'equipment-stockpile': ['1.hour'],
+  'dockyards-and-repairs': ['0.hour'],
+  refits: ['0.hour'],
   fuel: ['0.to', '1.reads.0.hour'],
   factories: ['0.from', '0.to'],
   territory: ['0.reads.0.hour'],

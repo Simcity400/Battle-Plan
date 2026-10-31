@@ -1,29 +1,33 @@
-import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from './keyedHistory.ts';
-import type { KeyedWindow } from './keyedHistory';
+import type { NavalYardsAtReply } from '../generated/dashboard';
 
-/** Naval repairs and refits (`naval-repairs`, `naval-refits`): one country's keyed window,
- * the groups (ports or refit lines) it catalogues and the names of its interned tokens. */
+/** Naval repairs and refits (`naval-repairs`, `naval-refits`): one country's ports or refit
+ * lines at an hour, their ships, its totals and the names of the tokens they name. */
+export type YardsReply = NavalYardsAtReply;
 export interface YardChoice { id: string; name: string }
-export interface YardGroup { country: string; id: string; name: string; ships: readonly YardChoice[] }
-export interface YardsReply { window: KeyedWindow; groups: readonly YardGroup[]; tokens: Readonly<Record<string, YardChoice>>; warnings: readonly string[] }
 
 /** Fixed-point operands are 100,000 per unit. */
 export const FIXED = 100000n;
 
 const isChoice = (value: unknown): value is YardChoice => !!value && typeof value === 'object'
   && typeof (value as YardChoice).id === 'string' && typeof (value as YardChoice).name === 'string';
+const decimals = (value: unknown): value is Record<string, string> => !!value && typeof value === 'object'
+  && Object.values(value as object).every(item => typeof item === 'string' && /^-?\d+$/.test(item));
+const decimal = (value: unknown) => typeof value === 'string' && /^-?\d+$/.test(value);
+const isShip = (value: unknown) => !!value && typeof value === 'object'
+  && typeof (value as { id: unknown }).id === 'string' && decimals((value as { measures: unknown }).measures);
 
-/** Validate a repairs (`ports`) or refits (`lines`) reply into one shape. */
-export function validateYards(value: unknown, field: 'ports' | 'lines'): YardsReply {
-  const reply = value as Record<string, unknown> & { window: unknown; tokens: unknown; warnings: unknown };
-  const groups = reply?.[field] as YardGroup[] | undefined;
-  if (!reply || typeof reply !== 'object' || !Array.isArray(groups) || !groups.every(group => isChoice(group) && typeof group.country === 'string'
-      && Array.isArray(group.ships) && group.ships.every(isChoice))
-    || !reply.tokens || typeof reply.tokens !== 'object' || !Object.values(reply.tokens as object).every(isChoice)
-    || !Array.isArray(reply.warnings) || !(reply.warnings as unknown[]).every(warning => typeof warning === 'string'))
+/** Validate a repairs or refits reply at an hour. */
+export function validateYards(value: unknown): YardsReply {
+  const reply = value as Partial<YardsReply> | null;
+  if (!reply || typeof reply !== 'object' || typeof reply.hour !== 'number' || typeof reply.known !== 'boolean'
+    || !(reply.readHour === null || typeof reply.readHour === 'number')
+    || !Array.isArray(reply.holders) || !reply.holders.every(holder => isShip(holder) && Array.isArray(holder.ships) && holder.ships.every(isShip)
+      && Array.isArray(holder.queue) && holder.queue.every(entry => !!entry && decimal(entry.ordinal) && decimal(entry.ship)))
+    || !decimals(reply.totals) || !reply.reads || typeof reply.reads !== 'object' || !Object.values(reply.reads).every(Number.isInteger)
+    || !reply.tokens || typeof reply.tokens !== 'object' || !Object.values(reply.tokens).every(isChoice)
+    || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string'))
     throw new Error('The naval yards reply is malformed.');
-  // The root keeps the prepared prefix fields (`coverage`, `pending`) the dashboard marks on it.
-  return { ...reply, window: validateKeyedWindow(reply.window), groups, tokens: reply.tokens as Record<string, YardChoice>, warnings: reply.warnings as string[] };
+  return reply as YardsReply;
 }
 
 /** One group's measures and ships at an hour, with its queue (ship handles in recorded order). */
@@ -31,31 +35,20 @@ export interface YardShip { id: string; measures: Map<string, bigint> }
 export interface YardGroupAt { id: string; measures: Map<string, bigint>; ships: Map<string, YardShip>; queue: { ordinal: number; ship: string }[] }
 export interface YardsAt { groups: Map<string, YardGroupAt>; totals: Map<string, bigint>; known: Map<string, bigint>; readHour: number | undefined }
 
-/** The country's groups at `hour`; null when not recorded then. */
-export function yardsAt(reply: YardsReply, tag: string, hour: number): YardsAt | null {
-  if (!keyedKnown(reply.window, hour)) return null;
-  const at: YardsAt = { groups: new Map(), totals: new Map(), known: new Map(), readHour: keyedRead(reply.window, hour) };
-  for (const series of reply.window.series) {
-    const parts = series.name.split('|');
-    if (countryPart(parts[0])?.tag !== tag) continue;
-    const run = runAtHour(series.runs, hour);
-    if (!run) continue;
-    const value = BigInt(run[2]);
-    const [, group, kind, ...rest] = parts;
-    if (group === 'total') { at.totals.set(kind, value); continue; }
-    if (group === 'known' || group === 'read') { at.known.set(`${group}|${kind}`, value); continue; }
-    if (group === 'refusal') continue;
-    const entry: YardGroupAt = at.groups.get(group) ?? { id: group, measures: new Map(), ships: new Map(), queue: [] };
-    if (kind === 'ship' && rest.length >= 2) {
-      const ship = entry.ships.get(rest[0]) ?? { id: rest[0], measures: new Map() };
-      ship.measures.set(rest.slice(1).join('|'), value);
-      entry.ships.set(rest[0], ship);
-    } else if (kind === 'queue' && rest.length === 1) entry.queue.push({ ordinal: Number(rest[0]), ship: value.toString() });
-    else if (rest.length === 0) entry.measures.set(kind, value);
-    at.groups.set(group, entry);
-  }
-  for (const group of at.groups.values()) group.queue.sort((a, b) => a.ordinal - b.ordinal);
-  return at;
+const measured = (measures: Readonly<Partial<Record<string, string>>>) => new Map(Object.entries(measures)
+  .flatMap(([name, value]) => value === undefined ? [] : [[name, BigInt(value)] as const]));
+
+/** The reply's groups at its hour; null where the hour's countries were not recorded. */
+export function yardsAt(reply: YardsReply): YardsAt | null {
+  if (!reply.known) return null;
+  const groups = new Map(reply.holders.map(holder => [holder.id, {
+    id: holder.id, measures: measured(holder.measures),
+    ships: new Map(holder.ships.map(ship => [ship.id, { id: ship.id, measures: measured(ship.measures) }] as const)),
+    queue: holder.queue.map(entry => ({ ordinal: Number(entry.ordinal), ship: entry.ship })),
+  }] as const));
+  const known = new Map(Object.entries(reply.reads)
+    .flatMap(([table, hour]) => hour === undefined ? [] : [[`read|${table}`, BigInt(hour)] as const]));
+  return { groups, totals: measured(reply.totals), known, readHour: reply.readHour ?? undefined };
 }
 
 /** An interned token's name, or the fallback when the token or its name is not recorded. */

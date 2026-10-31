@@ -1,7 +1,8 @@
+import type { NavalYardsAtParams } from '../generated/dashboard';
 import { U32_MAX, U8_MAX, unsignedId } from './batch5Params.ts';
 import type {
   AirMissionsParams, AirStatisticsParams, DoctrineMasteryParams, IntelCoverageParams, MinefieldsParams, NavalSupremacyParams,
-  NavalYardsParams, OccupationReserveParams, RegionalWeatherParams,
+  OccupationReserveParams, RegionalWeatherParams,
 } from './batch5Params';
 
 /** The Batch 5 widgets' request parameters, built to their DTOs' exact field types. A builder
@@ -65,4 +66,4 @@ export const intelMatrix = (branchId: string, shown: number, tags?: readonly str
 
 export const intelPair = (branchId: string, owner: string, target: string): IntelCoverageParams => ({ branchId, view: 'pair', owner, target });
 
-export const navalYards = (branchId: string, tag: string): NavalYardsParams => ({ branchId, tag });
+export const navalYards = (branchId: string, tag: string, hour: number): NavalYardsAtParams => ({ branchId, tag, hour });

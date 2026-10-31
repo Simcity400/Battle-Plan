@@ -253,8 +253,6 @@ fn keyed_families_are_prepared_on_their_own_and_answer_cold_and_prepared() {
         "doctrine-mastery",
         "occupation-reserve",
         "intel-network-coverage",
-        "naval-repairs",
-        "naval-refits",
     ] {
         assert!(independent::registered(name), "{name} is registered");
         assert!(

@@ -99,10 +99,10 @@ export function intelCoverageRequest(widget: WidgetSpec, track: Track, chosen: r
 
 /** The yard product each yard widget reads. */
 export const YARD_PRODUCTS = { 'dockyards-and-repairs': 'naval-repairs', refits: 'naval-refits' } as const;
-export function yardsRequest(widget: WidgetSpec, track: Track) {
+export function yardsRequest(widget: WidgetSpec, track: Track, hour: number) {
   const tag = firstTag(widget, track);
   const product = YARD_PRODUCTS[widget.kind as keyof typeof YARD_PRODUCTS];
-  return track && tag && product ? request(track, product, requests.navalYards(track.branch.id, tag)) : null;
+  return track && tag && product ? request(track, product, requests.navalYards(track.branch.id, tag, Math.floor(hour))) : null;
 }
 
 /** The hour a moment widget shows. */

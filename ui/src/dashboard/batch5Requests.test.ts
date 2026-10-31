@@ -75,7 +75,7 @@ test('every Batch 5 request deserializes into its Rust DTO', () => {
     ['intel-network-coverage', requests.intelMatrix('1', 12, ['GER'], true)],
     ['intel-network-coverage', requests.intelMatrix('1', 1, undefined, true)],
     ['intel-network-coverage', requests.intelPair('1', 'GER@7', 'ENG@3')],
-    ['naval-yards', requests.navalYards('1', 'GER')],
+    ['naval-yards', requests.navalYards('1', 'GER', 100)],
   ];
   for (const [product, params] of cases) {
     assert.ok(params, `${product} built no request`);

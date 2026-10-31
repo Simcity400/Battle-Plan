@@ -20,7 +20,7 @@ use crate::{
 };
 use dashboard_world::{Hold, Needs, World};
 use replay::{
-    columnar_frames::{metrics, view_heap_bytes},
+    columnar_frames::metrics,
     columns,
     container::Replay,
     segments::{self, Item, Operator, Sink, Start},
@@ -32,11 +32,12 @@ use replay_data::{
     },
     format::FormatVersion,
     rows::{
-        CountryCounterInputRow, CountryExperienceGainRow, CountryRow, NuclearStrikeRow, RowChanges,
-        RowCodec, SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema, tables,
+        CountryCounterInputRow, CountryExperienceGainRow, CountryRow, NuclearStrikeRow, RowCodec,
+        SliceReadRow, TABLE_COUNT, TableId, TableRows, TableSchema, tables,
     },
     scope::CaptureMode,
 };
+use dashboard_keyed::table_changes::{self, Change, apply_frame, empty_frame};
 use replay_frame::frame::{DecodedFrame, Metrics, TableView};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -115,16 +116,6 @@ pub fn needs() -> io::Result<Needs> {
 /// Both sides observe an hour whole; nothing cancels inside one.
 static WHOLE_HOUR: AtomicBool = AtomicBool::new(false);
 
-/// A table's change at an hour: its whole view, or its changed rows and deleted keys.
-pub(super) enum Change {
-    Replace(replay_frame::frame::SharedView),
-    Patch {
-        rows: TableRows,
-        deleted: Vec<u128>,
-        keys_changed: bool,
-    },
-}
-
 /// What a worker made of a pack, as a reduction that succeeds leaves it.
 enum Facts {
     /// The occurrences' notices and facts, in order, and the pack's own retained-state
@@ -168,20 +159,7 @@ pub struct Hour {
 
 impl Item for Hour {
     fn heap(&self) -> usize {
-        let changes: usize = self
-            .changes
-            .iter()
-            .map(|(_, change)| {
-                size_of::<Change>()
-                    + match &**change {
-                        // Its own once the walk's next build copies it.
-                        Change::Replace(view) => view_heap_bytes(view),
-                        Change::Patch { rows, deleted, .. } => {
-                            rows.heap_bytes() + deleted.capacity() * size_of::<u128>()
-                        }
-                    }
-            })
-            .sum();
+        let changes: usize = self.changes.iter().map(|(_, change)| change.heap()).sum();
         // A pack goes to its supplying hour alone, which keeps it once the projector moves on.
         let native = match &self.native {
             Native::Missing(reason) => reason.capacity(),
@@ -427,160 +405,20 @@ impl Projector {
         hour: &segments::Hour<'_, World>,
         reduce: impl Fn(T::Row) -> T::Row,
     ) -> io::Result<Option<Change>> {
-        let table = T::ID;
-        let index = table.index();
-        let status = columns::status(hour.state, table);
-        let held = columns::table(hour.state, table)?;
-        let edits = columns::changes(hour.state, table)?;
-        let whole =
-            hour.starts || hour.opens || self.shapes[index] != Some(columns::Status::Complete);
-        let rows = |slots: Vec<u32>| -> io::Result<TableRows> {
-            let mut rows = slots
-                .into_iter()
-                .map(|slot| {
-                    columns::row::<T::Row>(hour.state, table, slot, self.format.version())
-                        .map(&reduce)
-                })
-                .collect::<io::Result<Vec<_>>>()?;
-            rows.sort_unstable_by_key(|row| row.key());
-            Ok(T::wrap(rows))
-        };
-        let replace = match status {
-            columns::Status::Complete if whole => {
-                Some(TableView::Complete(rows(held.live().ones().collect())?))
-            }
-            columns::Status::Complete => {
-                let mask = self.masks[index];
-                let mut slots: BTreeSet<u32> = edits.inserted.iter().copied().collect();
-                for (changed, masks) in [
-                    (&edits.changed, &edits.masks),
-                    (&edits.fill_slots, &edits.fill_masks),
-                ] {
-                    if changed.len() != masks.len() {
-                        return Err(crate::invalid("Event feed slot masks miss their rows"));
-                    }
-                    slots.extend(
-                        changed
-                            .iter()
-                            .zip(masks)
-                            .filter(|(_, fields)| **fields & mask != 0)
-                            .map(|(&slot, _)| slot),
-                    );
-                }
-                if slots.is_empty() && edits.deleted_keys.is_empty() {
-                    return Ok(None);
-                }
-                let rows = rows(slots.into_iter().collect())?;
-                let mut deleted = edits.deleted_keys.clone();
-                deleted.sort_unstable();
-                deleted.dedup();
-                let fresh = T::borrow(&rows).expect("projected table rows");
-                deleted.retain(|key| fresh.binary_search_by_key(key, |row| row.key()).is_err());
-                return Ok(Some(Change::Patch {
-                    rows,
-                    deleted,
-                    keys_changed: !edits.inserted.is_empty() || !edits.deleted_keys.is_empty(),
-                }));
-            }
-            columns::Status::Truncated { missing } => Some(TableView::Truncated {
-                // Incomplete rows are never read; diagnostics use only their status.
-                rows: T::wrap(Vec::new()),
-                missing,
-            }),
-            columns::Status::Unavailable { reason } => {
-                let bytes = hour.state.dictionary().get(reason).ok_or_else(|| {
-                    crate::invalid("Event feed table reason is missing from its dictionary")
-                })?;
-                Some(TableView::Unavailable {
-                    reason: std::str::from_utf8(bytes)
-                        .map_err(|_| crate::invalid("Event feed table reason is not text"))?
-                        .to_owned(),
-                })
-            }
-            columns::Status::NotRecorded => Some(TableView::NotRecorded { mode: self.mode }),
-        };
-        if !hour.starts && !hour.opens && self.shapes[index] == Some(status) {
-            return Ok(None);
-        }
-        Ok(replace.map(|view| Change::Replace(view.into())))
+        let index = T::ID.index();
+        table_changes::read(
+            hour,
+            T::ID,
+            self.masks[index],
+            self.shapes[index],
+            (self.format, self.mode),
+            &|rows| {
+                let rows = T::take(rows)
+                    .map_err(|_| crate::invalid("Event feed rows hold another table"))?;
+                Ok(T::wrap(rows.into_iter().map(&reduce).collect()))
+            },
+        )
     }
-}
-
-fn empty_frame(branch: u64, hour: i32, metrics: Metrics) -> DecodedFrame {
-    DecodedFrame {
-        branch,
-        hour,
-        metrics,
-        tables: std::array::from_fn(|_| {
-            TableView::Unavailable {
-                reason: String::new(),
-            }
-            .into()
-        }),
-    }
-}
-
-fn patch<T: TableSchema>(
-    view: &mut TableView,
-    fresh: TableRows,
-    deleted: Vec<u128>,
-) -> io::Result<()> {
-    let TableView::Complete(held) = view else {
-        return Err(crate::invalid("Event feed patch has no complete baseline"));
-    };
-    let held = T::borrow_mut(held)
-        .ok_or_else(|| crate::invalid("Event feed patch baseline holds another table"))?;
-    let previous = T::wrap(std::mem::take(held));
-    let next = previous.apply_changes(RowChanges::new(fresh, deleted))?;
-    *held = T::take(next).map_err(|_| crate::invalid("Event feed patch holds another table"))?;
-    Ok(())
-}
-
-/// `changes` applied to `held`, the frame of the hour before, and the hour's change facts.
-fn apply_frame(
-    held: &mut Option<DecodedFrame>,
-    (branch, hour): (u64, i32),
-    opens: bool,
-    metrics: &Metrics,
-    changes: &[(TableId, Arc<Change>)],
-    format: FormatVersion,
-) -> io::Result<FrameChanges> {
-    let frame = held.get_or_insert_with(|| empty_frame(branch, hour, Metrics::default()));
-    if frame.branch != branch {
-        return Err(crate::invalid("Feed stitch crossed branches"));
-    }
-    frame.hour = hour;
-    frame.metrics = metrics.clone();
-    let mut changed = [opens; TABLE_COUNT];
-    for (table, change) in changes {
-        changed[table.index()] = true;
-        match &**change {
-            Change::Replace(view) => frame.tables[table.index()] = view.clone(),
-            Change::Patch { rows, deleted, .. } => {
-                macro_rules! apply {
-                    ($($table:ident),+ $(,)?) => {
-                        match table {
-                            $(TableId::$table => patch::<tables::$table>(
-                                &mut frame.tables[table.index()], rows.clone(), deleted.clone())?,)+
-                            _ => return Err(crate::invalid("Feed stitch received another table")),
-                        }
-                    };
-                }
-                apply!(
-                    Campaign,
-                    Countries,
-                    CountryLinks,
-                    CountryCounterInputs,
-                    CountryExperienceGains,
-                    RelationTuples,
-                    NuclearStrikes
-                );
-            }
-        }
-    }
-    let mut changes = FrameChanges::alone(frame, format);
-    changes.rows_changed = changed;
-    Ok(changes)
 }
 
 fn identity_table(table: TableId) -> bool {

@@ -30,10 +30,11 @@ const rowKey = (row: RepairRow) => row.key;
 export default function DockyardsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
-  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'ports');
-  const window = track && resolveWindow(widget, track, runtime.tracks, playback);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
-  const at = useMemo(() => data && tag ? yardsAt(data, tag, hour) : null, [data, tag, hour]);
+  const shown = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const window = shown && resolveWindow(widget, shown, runtime.tracks, playback);
+  const hour = Math.floor(window?.lastHour ?? shown?.branch.lastHour ?? 0);
+  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, hour);
+  const at = useMemo(() => data && tag ? yardsAt(data) : null, [data, tag]);
   const { rows, children } = useMemo(() => repairRows(at), [at]);
   const readDate = at?.readHour === undefined ? null : dayLabel(at.readHour);
   const columns = useMemo<readonly TableColumn<RepairRow>[]>(() => !data || !at ? [] : [
@@ -88,7 +89,7 @@ export default function DockyardsWidget({ widget, runtime, active, onDiagnostics
 const numberOf = (value: bigint | undefined) => value === undefined ? null : Number(value);
 
 function portName(data: YardsReply, at: YardsAt, port: string): string {
-  return tokenName(data, at.groups.get(port)?.measures.get('name'), data.groups.find(group => group.id === port)?.name ?? 'Port name unavailable');
+  return tokenName(data, at.groups.get(port)?.measures.get('name'), 'Port name unavailable');
 }
 
 /** Ports in recorded order (largest priority first, then province), each with its queue. */
