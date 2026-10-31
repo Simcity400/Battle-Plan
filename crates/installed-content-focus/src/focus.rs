@@ -486,16 +486,14 @@ pub fn parse(
                 if item.keyword_is("position") || item.keyword_is("continuous_focus_position") {
                     let valid = !inlay && children.len() == 2 && children.iter().all(Item::number)
                         || children.len() == 6
-                            && children[0]
-                                .value
-                                .scalar()
-                                .is_some_and(|v| v.eq_ignore_ascii_case(b"x"))
+                            && children[0].value.scalar().is_some_and(|v| {
+                                installed_content_core::parser::c_string(v).eq_ignore_ascii_case(b"x")
+                            })
                             && children[1].value.scalar_str() == Some("=")
                             && children[2].number()
-                            && children[3]
-                                .value
-                                .scalar()
-                                .is_some_and(|v| v.eq_ignore_ascii_case(b"y"))
+                            && children[3].value.scalar().is_some_and(|v| {
+                                installed_content_core::parser::c_string(v).eq_ignore_ascii_case(b"y")
+                            })
                             && children[4].value.scalar_str() == Some("=")
                             && children[5].number();
                     if !valid {

@@ -43,6 +43,22 @@ fn country_core(name: &str) -> Option<&'static [replay_data::rows::TableId]> {
     })
 }
 
+/// The core tables a state-scope trigger reads, beside its own tables and operands,
+/// which gate themselves; `None` for a trigger that needs every core table.
+fn state_core(name: &str) -> Option<&'static [replay_data::rows::TableId]> {
+    use replay_data::rows::TableId::{CountryLinks, States};
+    Some(match name {
+        "state" | "has_state_flag" | "impassable" | "is_coastal" => &[States],
+        "is_owned_by"
+        | "is_controlled_by"
+        | "is_owned_and_controlled_by"
+        | "is_core_of"
+        | "is_claimed_by"
+        | "has_dynamic_modifier" => &[States, CountryLinks],
+        _ => return None,
+    })
+}
+
 impl Evaluator<'_, '_> {
     /// The country-scope triggers (accepted scope 4)
     /// this evaluator reproduces, on the
@@ -391,7 +407,14 @@ impl Evaluator<'_, '_> {
                 actual.eq_ignore_ascii_case(wanted.as_bytes())
             }))));
         }
-        self.core()?;
+        match state_core(name) {
+            Some(tables) => {
+                for &table in tables {
+                    world.table_status(table)?;
+                }
+            }
+            None => self.core()?,
+        }
         if matches!(name, "is_fully_controlled_by" | "impassable" | "is_coastal") {
             world.state_content.map_err(Failure::from)?;
         }

@@ -48,20 +48,13 @@ impl RailwayAdjacency {
     }
 
     pub fn parse(definitions: &[u8], bitmap: &[u8], authored: Option<&[u8]>) -> io::Result<Self> {
+        // The reader refuses a record whose ID is not its position, which the engine's
+        // template roster and colour lookup need to agree on.
         let definitions = installed_content_core::map::read_definitions(definitions)?;
-        // The engine's template roster uses record positions and its colour
-        // lookup the records' u16 IDs; this reading needs them to agree.
-        if (definitions.record_ids.iter().enumerate())
-            .any(|(position, &id)| usize::from(id) != position)
-        {
-            return Err(invalid(
-                "rail adjacency requires definition IDs to equal their record positions, starting at zero",
-            ));
-        }
         let image = installed_content_core::map::decode_provinces_bmp(bitmap, &definitions)?;
         Self::derive(
             &image,
-            definitions.record_ids.len(),
+            definitions.provinces.len(),
             authored.unwrap_or_default(),
         )
     }

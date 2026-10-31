@@ -235,18 +235,20 @@ impl<'a> Keyword<'a> {
         self.0.to_ascii_lowercase()
     }
 
-    /// The key exactly as authored, for a reader that uses its text.
+    /// The key's text up to its first NUL, the token the lexer looks up, for a reader that
+    /// uses its text.
     pub fn text(self) -> &'a [u8] {
         self.0
     }
 }
 
 impl Item {
-    /// The key seen by keyword dispatch. Anonymous items, quoted keys, bare keys
-    /// starting with a digit or `-`, and punctuation tokens (`=` `<` `>` `{` `}` `(`
-    /// `)` `,` `?=`) return `None`. These all take the reader's nonkeyword branch.
+    /// The key seen by keyword dispatch: its text up to its first NUL, as the lexer looks
+    /// it up. Anonymous items, quoted keys, bare keys starting with a digit, `-` or NUL,
+    /// and punctuation tokens (`=` `<` `>` `{` `}` `(` `)` `,` `?=`) return `None`. These
+    /// all take the reader's nonkeyword branch.
     pub fn keyword(&self) -> Option<Keyword<'_>> {
-        let key = self.key.as_deref()?;
+        let key = c_string(self.key.as_deref()?);
         looked_up(key, self.key_quoted).then_some(Keyword(key))
     }
 
@@ -262,11 +264,11 @@ impl Item {
         self.keyword().is_some_and(|keyword| keyword.is(name))
     }
 
-    /// The ASCII-folded bare value seen by keyword dispatch. Quoted values, numbers,
-    /// punctuation, End tokens regardless of retained text, and blocks return `None`
-    /// and take the nonkeyword branch.
+    /// The ASCII-folded bare value up to its first NUL, as keyword dispatch sees it.
+    /// Quoted values, numbers, punctuation, End tokens regardless of retained text, and
+    /// blocks return `None` and take the nonkeyword branch.
     pub fn value_keyword(&self) -> Option<String> {
-        let text = self.value.scalar()?;
+        let text = c_string(self.value.scalar()?);
         (self.kind == Kind::Bare && looked_up(text, false))
             .then(|| String::from_utf8_lossy(&text.to_ascii_lowercase()).into_owned())
     }
@@ -335,10 +337,10 @@ fn variable_hash(name: &[u8]) -> u32 {
     })
 }
 
-/// Whether a key is eligible for keyword lookup: a bare token that starts with neither
-/// a digit nor `-` and is not punctuation (`=` `<` `>` `{` `}` `(` `)` `,` `?=`).
-/// Quoted tokens are ineligible. Shared by [`Item::keyword`] and the script reader's
-/// `Field::keyword`.
+/// Whether a key's C string is eligible for keyword lookup: a nonempty bare token that
+/// starts with neither a digit nor `-` and is not punctuation (`=` `<` `>` `{` `}` `(` `)`
+/// `,` `?=`). Quoted tokens are ineligible. Shared by [`Item::keyword`] and the script
+/// reader's `Field::keyword`.
 pub(crate) fn looked_up(key: &[u8], quoted: bool) -> bool {
     !quoted
         && key.first().is_some_and(|first| {

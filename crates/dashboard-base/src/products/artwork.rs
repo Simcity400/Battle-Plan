@@ -1575,19 +1575,8 @@ impl Context {
             return;
         };
         let layers = &self.catalogue.content.layers;
-        let cache = layers.derived::<catalogue::SpriteImages>();
-        let mut seen = BTreeSet::new();
-        let sprites = sprites
-            .into_iter()
-            .filter(|sprite| {
-                let key = catalogue::sprite_image_key(sprite, *decode, 0, ICON_EDGE);
-                !cache.contains(&key) && seen.insert(key)
-            })
-            .map(|sprite| (sprite, 0))
-            .collect::<Vec<_>>();
-        if sprites.len() < 2 {
-            return;
-        }
+        let sprites: Vec<_> = sprites.into_iter().map(|sprite| (sprite, 0)).collect();
+        // The batch skips what the presentation's images hold under the mode it draws in.
         // A refused batch is retried by the ordinary reader so each requested
         // item retains its output and named refusal. With visual mods shown the draws that
         // read them are strict attempts at the selection, so the batch is drawn as they are.

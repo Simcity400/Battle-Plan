@@ -1169,7 +1169,7 @@ impl Renderer<'_, '_, '_> {
         })
     }
 
-    // this is the stored name, even when empty.
+    // this is the stored name, even when empty, under the recording-language rule.
     fn character_label(&self, id: u32) -> Result<String, String> {
         if id == 0 {
             return Ok(String::new());
@@ -1180,7 +1180,7 @@ impl Renderer<'_, '_, '_> {
             .character(id)
             .map_err(|why| why.to_string())?
             .ok_or("Characters lacks scope target")?;
-        String::from_utf8(row.name.clone()).map_err(|_| "character name is not UTF-8".into())
+        self.effect_character_name(row)
     }
 
     // default country/organisation pair; FROM is owner.

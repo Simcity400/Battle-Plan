@@ -831,6 +831,60 @@ fn stored_text_needs_the_recording_language() {
     assert_eq!(rendered(&catalogue, &f, "TEST").unwrap(), "No agency");
 }
 
+/// A character's stored name is text the game stored in the recording's language without its
+/// key: shown to a viewer in that language and refused in another, as every stored text is.
+#[test]
+fn stored_character_names_need_the_recording_language() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    for language in ["english", "german"] {
+        let (mut catalogue, _folder) = tests::catalogue("", "");
+        catalogue.recorded_language = language.into();
+        let content = catalogue.scripted_content().unwrap();
+        content.set_synthetic_environment(Default::default());
+        let mut f = raid_frame();
+        set::<tables::Characters>(
+            &mut f,
+            vec![CharacterRow {
+                id: 44,
+                country: 100,
+                name: b"Erwin Rommel".to_vec(),
+                ..Default::default()
+            }],
+        );
+        set::<tables::UnitLeaders>(
+            &mut f,
+            vec![UnitLeaderRow {
+                id: 9,
+                reference_type: 3,
+                character_id: 44,
+                ..Default::default()
+            }],
+        );
+        let text = ScriptedText::new(&f, &catalogue.localisation, content, 1);
+        let leader = EventScopes::new(vec![EventScope {
+            this: EventObject::UnitLeader(9 << 32 | 3),
+            root: Link::Unknown,
+            from: Link::Unknown,
+            prev: Link::Unknown,
+            random_seed: 1,
+            random_counter: 0x5ea6_ba9e,
+            random_seed_refusal: None,
+            clock_seed: None,
+        }]);
+        let name = text.expand_in("[THIS.GetName]", &leader);
+        if language == "english" {
+            assert_eq!(name.as_deref(), Ok("Erwin Rommel"));
+        } else {
+            let refused = name.unwrap_err();
+            assert!(
+                refused.contains("stored in german") && refused.contains("character 44 name"),
+                "{refused}"
+            );
+        }
+    }
+}
+
 #[test]
 fn old_names_copy_the_retained_caches_or_the_current_name() {
     engine_executable::executable_tables::initialize_for_tests()

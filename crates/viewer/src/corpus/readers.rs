@@ -249,7 +249,10 @@ pub fn run(
                 buildings, ideologies, resources,
             );
             log.value("trigger_keys", &names);
-            if let Some(gap) = &names.ideologies_gap {
+            for gap in [&names.ideologies_gap, &names.resources_gap]
+                .into_iter()
+                .flatten()
+            {
                 log.note("trigger_keys", Kind::Refused, gap.clone());
             }
             Some((buildings, ideologies, resources))
@@ -535,7 +538,7 @@ struct Map {
         Vec<installed_content_core::Diagnostic>,
     )>,
     resources: Option<(
-        Vec<installed_content_core::resources::Resource>,
+        installed_content_core::resources::Resources,
         Vec<installed_content_core::Diagnostic>,
     )>,
     data: Option<installed_content_core::map::MapData>,

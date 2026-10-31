@@ -156,6 +156,50 @@ fn requested_sprite_batches_match_single_images_and_share_the_session() {
     }
 }
 
+/// A batch skips the draws the presentation's images already hold under the current artwork
+/// mode, and repeats: what is left is drawn only when at least two draws are. A cornered tile
+/// cannot be batched, so a batch that tries to draw one is refused.
+#[test]
+fn a_sprite_batch_draws_only_what_its_images_do_not_hold() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (catalogue, _folders) = texture_catalogue(
+        &[(
+            "interface/art.gfx",
+            "spriteTypes = { corneredTileSpriteType = { name = GFX_first texturefile = gfx/a.dds }              corneredTileSpriteType = { name = GFX_second texturefile = gfx/a.dds } }",
+        )],
+        &[],
+    );
+    let layers = &catalogue.content.layers;
+    let sprites = [
+        catalogue.sprites.lookup("GFX_first").unwrap(),
+        catalogue.sprites.lookup("GFX_second").unwrap(),
+    ];
+    let decode = Decode::default();
+    let requests = sprites.map(|sprite| (sprite, 0));
+    assert!(sprite_frames_png(layers, &requests, decode, 96).is_err());
+    let images = layers.presentation().derived::<SpriteImages>();
+    let hold = |sprite| {
+        images
+            .get(
+                sprite_image_key(sprite, decode, 0, 96),
+                || Ok("held".into()),
+            )
+            .unwrap()
+    };
+    hold(sprites[0]);
+    // One draw is left, however often it is asked for.
+    let repeated = [requests[0], requests[1], requests[1]];
+    sprite_frames_png(layers, &repeated, decode, 96).unwrap();
+    hold(sprites[1]);
+    sprite_frames_png(layers, &requests, decode, 96).unwrap();
+    // A strict draw's images are kept apart, so the ordinary ones do not hold it.
+    assert!(
+        installed_content_core::content::strict(|| sprite_frames_png(layers, &requests, decode, 96))
+            .is_err()
+    );
+}
+
 /// A mod replaces a base sprite with a PNG strip. Padding is part of the native
 /// frame pitch, including when the resulting width does not divide by the frame count.
 #[test]

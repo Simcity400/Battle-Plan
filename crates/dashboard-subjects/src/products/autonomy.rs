@@ -1121,8 +1121,8 @@ pub fn order_levels(
         .map(|states| {
             states
                 .ordered()
+                .placed
                 .into_iter()
-                .filter(|state| state.min_freedom_level.is_some())
                 .enumerate()
                 .map(|(place, state)| (state.id.as_str(), place))
                 .collect()
@@ -1164,14 +1164,17 @@ pub fn content_levels(
     states: &installed_content_core::autonomy::AutonomyStates,
     catalogue: &Catalogue,
 ) -> Vec<AutonomyLevel> {
-    states
-        .ordered()
+    let order = states.ordered();
+    let level = |state: &installed_content_core::autonomy::AutonomyState, defined| AutonomyLevel {
+        id: state.id.clone(),
+        name: level_name(catalogue, &state.id),
+        defined,
+    };
+    order
+        .placed
         .into_iter()
-        .map(|state| AutonomyLevel {
-            id: state.id.clone(),
-            name: level_name(catalogue, &state.id),
-            defined: state.min_freedom_level.is_some(),
-        })
+        .map(|state| level(state, true))
+        .chain(order.unplaced.into_iter().map(|state| level(state, false)))
         .collect()
 }
 

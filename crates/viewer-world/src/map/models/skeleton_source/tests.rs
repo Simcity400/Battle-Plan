@@ -49,7 +49,7 @@ fn skeleton_equal(left: &mesh::Mesh, right: &mesh::Mesh) {
 }
 
 #[test]
-fn skeleton_copy_keeps_every_retained_bit_and_first_duplicate_index() {
+fn skeleton_copy_keeps_every_retained_bit() {
     let values = [
         0.,
         -0.,
@@ -86,22 +86,7 @@ fn skeleton_copy_keeps_every_retained_bit_and_first_duplicate_index() {
                 .collect(),
             locators: vec!["mount".into(), "mount".into(), "?".into()],
         };
-        let mut actual = super::skeleton(&decoded);
-        skeleton_equal(&actual, &decoded);
-        let mut seen = std::collections::BTreeSet::new();
-        actual.skeleton.retain(|joint| seen.insert(joint.index));
-        assert_eq!(actual.skeleton.len(), count.div_ceil(2));
-        for joint in &actual.skeleton {
-            let expected = &decoded.skeleton[joint.index as usize * 2];
-            assert_eq!(
-                (&joint.name, joint.index, joint.parent),
-                (&expected.name, expected.index, expected.parent)
-            );
-            assert_eq!(
-                joint.inverse_bind.as_ref().map(transform_bits),
-                expected.inverse_bind.as_ref().map(transform_bits)
-            );
-        }
+        skeleton_equal(&super::skeleton(&decoded), &decoded);
         assert_eq!(decoded.shapes.len(), 1);
     }
 }

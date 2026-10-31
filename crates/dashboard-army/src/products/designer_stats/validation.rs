@@ -183,7 +183,7 @@ fn context(
         };
         let subunit = calculator
             .content
-            .subunit_named(&priority)
+            .subunit(&priority)
             .ok_or_else(|| format!("priority sub-unit {priority} has no definition"))?;
         Ok(std::iter::once(subunit.key.as_str())
             .chain(subunit.sheet.categories.iter().map(String::as_str))

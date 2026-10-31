@@ -477,15 +477,16 @@ impl CachedContent {
         let buildings = keep(joined(buildings), "buildings", &mut gaps);
         let resources =
             keep(joined(resources), "resources", &mut gaps).and_then(|(resources, warnings)| {
-                let refused = warnings.iter().any(|(kind, _)| {
-                    matches!(
-                        kind,
-                        installed_content_core::DiagnosticKind::ParseFailure
-                            | installed_content_core::DiagnosticKind::Unsettled
-                            | installed_content_core::DiagnosticKind::Unsupported
-                            | installed_content_core::DiagnosticKind::Refused
-                    )
-                });
+                let refused = resources.gap().is_some()
+                    || warnings.iter().any(|(kind, _)| {
+                        matches!(
+                            kind,
+                            installed_content_core::DiagnosticKind::ParseFailure
+                                | installed_content_core::DiagnosticKind::Unsettled
+                                | installed_content_core::DiagnosticKind::Unsupported
+                                | installed_content_core::DiagnosticKind::Refused
+                        )
+                    });
                 if refused {
                     gaps.insert(
                         "resources",
@@ -497,7 +498,7 @@ impl CachedContent {
                     );
                 }
                 notes.extend(warnings.into_iter().map(|(_, why)| why));
-                (!refused).then_some(resources)
+                (!refused).then_some(resources.declarations)
             });
         let politics = joined(politics);
         notes.extend(politics.notes.iter().cloned());

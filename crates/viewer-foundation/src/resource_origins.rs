@@ -52,8 +52,12 @@ pub struct Content {
 impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         let (resources, notes) = installed_content_core::resources::read(layers)?;
+        // The origins name resources by database index, which a file that stops short leaves unknown.
+        if let Some(gap) = resources.gap() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, gap.to_string()));
+        }
         Ok(Self {
-            resources,
+            resources: resources.declarations,
             buildings: installed_content_core::buildings::read(layers)?,
             bonuses: resource_bonuses(defines)?,
             oil: defines.text("NGame", "OIL_RESOURCE")?,

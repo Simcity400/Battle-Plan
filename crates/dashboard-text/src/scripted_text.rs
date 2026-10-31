@@ -1714,9 +1714,7 @@ impl<'a> ScriptedText<'a> {
                 .iter()
                 .find(|row| row.id == id)
                 .ok_or_else(|| format!("character {id} has no Characters row: {gap}"))?;
-            return String::from_utf8(row.name.clone())
-                .map(Some)
-                .map_err(|_| format!("character {id}'s name is not UTF-8"));
+            return self.stored_character_name(row).map(Some);
         }
         if is("GetIdeology") || is("GetIdeologyGroup") {
             return Err(format!(
@@ -1749,12 +1747,24 @@ impl<'a> ScriptedText<'a> {
             .find(|row| row.id == id)
             .ok_or_else(|| format!("character {id} has no Characters row: {gap}"))?;
         if !row.name.is_empty() {
-            return String::from_utf8(row.name.clone())
-                .map_err(|_| format!("character {id}'s name is not UTF-8"));
+            return self.stored_character_name(row);
         }
         self.localisation
             .localise(&row.token)
             .map_err(|refusal| refusal.to_string())
+    }
+
+    /// A character's stored name, under the recording-language rule ([`stored_text`]).
+    fn stored_character_name(
+        &self,
+        row: &replay_data::rows::CharacterRow,
+    ) -> Result<String, String> {
+        stored_text(
+            self.localisation,
+            &self.content.recorded_language,
+            &row.name,
+            &format!("character {} name", row.id),
+        )
     }
 
     /// Capital or original capital, falling back to capital: a null state

@@ -686,11 +686,12 @@ pub struct Field<'a> {
 }
 
 impl Field<'_> {
-    /// The key as keyword dispatch sees it: a folded bare key. Quoted keys, punctuation
-    /// and bare keys starting with a digit or `-` return `None` ([`super::looked_up`]).
+    /// The key as keyword dispatch sees it: a folded bare key up to its first NUL, the
+    /// token [`Token::lookup`] reads. Quoted keys, punctuation and bare keys starting with
+    /// a digit, `-` or NUL return `None` ([`super::looked_up`]).
     pub fn keyword(&self) -> Option<Vec<u8>> {
-        super::looked_up(&self.key.text, self.key.kind == Kind::Quoted)
-            .then(|| self.key.text.to_ascii_lowercase())
+        let key = self.key.c_str();
+        super::looked_up(key, self.key.kind == Kind::Quoted).then(|| key.to_ascii_lowercase())
     }
 
     /// Whether the key is keyword `name` (see [`Self::keyword`]).
@@ -700,11 +701,12 @@ impl Field<'_> {
     }
 
     /// The value slot's token as a reader that dispatches on its id sees
-    /// it, as [`super::Item::value_keyword`]: the folded text of a bare
-    /// token the lexer looked up; `None` for any other kind.
+    /// it, as [`super::Item::value_keyword`]: the folded text up to its first
+    /// NUL of a bare token the lexer looked up; `None` for any other kind.
     pub fn value_keyword(&self) -> Option<Vec<u8>> {
-        (self.value.kind == Kind::Bare && super::looked_up(&self.value.text, false))
-            .then(|| self.value.text.to_ascii_lowercase())
+        let value = self.value.c_str();
+        (self.value.kind == Kind::Bare && super::looked_up(value, false))
+            .then(|| value.to_ascii_lowercase())
     }
 
     /// Whether the value token is `{`.
@@ -1531,9 +1533,9 @@ impl<'n> Reader<'n> {
                     Value::Block(Vec::new())
                 } else if opens {
                     // `meta_effect` and `meta_trigger` copy their `text` block raw.
-                    let meta = super::looked_up(&key.text, key.kind == Kind::Quoted)
+                    let meta = super::looked_up(key.c_str(), key.kind == Kind::Quoted)
                         && matches!(
-                            key.text.to_ascii_lowercase().as_slice(),
+                            key.c_str().to_ascii_lowercase().as_slice(),
                             b"meta_effect" | b"meta_trigger"
                         );
                     Value::Block(self.generic(meta))
@@ -1818,7 +1820,7 @@ impl<'n> Reader<'n> {
                 self.skip_reported();
                 continue;
             }
-            if equipment && token.kind == Kind::Bare && token.text.eq_ignore_ascii_case(b"limit") {
+            if equipment && token.is_keyword("limit") {
                 self.advance();
                 self.current = self.resolve(self.current());
                 self.advance();
@@ -1905,7 +1907,7 @@ impl<'n> Reader<'n> {
     ) -> Vec<Item> {
         let mut items = Vec::new();
         let next = self.peek();
-        if next.kind == Kind::Bare && next.text.eq_ignore_ascii_case(b"limit") {
+        if next.is_keyword("limit") {
             items.extend(self.field(schema, &mut |_, _| Shape::Trigger));
         }
         if self.value.kind == Kind::Open {

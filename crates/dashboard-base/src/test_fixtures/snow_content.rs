@@ -20,7 +20,7 @@ pub fn write(root: &Path) {
         ),
         (
             "map/definition.csv",
-            "1;1;0;0;land;false;plain;1\n2;2;0;0;land;false;plain;1\n3;3;0;0;land;false;plain;1\n",
+            "0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;plain;1\n2;2;0;0;land;false;plain;1\n3;3;0;0;land;false;plain;1\n",
         ),
         (
             "map/strategicregions/snow.txt",

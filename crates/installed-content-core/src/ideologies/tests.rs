@@ -376,7 +376,7 @@ fn count_names_preserve_sub_ideology_identity() {
     let names = crate::trigger_keys::CountTriggerNames::new(
         &crate::buildings::Buildings::default(),
         &db,
-        &[],
+        &crate::resources::Resources::default(),
     );
     assert_eq!(names.is_ideology_type(b"SYNTHETIC_TYPE"), Ok(true));
     assert_eq!(names.is_ideology_type(b"synthetic_group"), Ok(false));

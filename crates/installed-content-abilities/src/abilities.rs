@@ -305,22 +305,12 @@ fn apply_with_terrain(
         .collect())
 }
 
-/// Every effective `common/abilities/*.txt` in the byte order the database
-/// loader enumerates them (the same folder scan as `common/buildings`); a later
+/// Every effective `common/abilities/*.txt` in the order the database loader
+/// enumerates them, by file name (the same folder scan as `common/buildings`); a later
 /// definition remains in the native roster, whose lookup keeps the first exact
 /// name. Later definitions are still parsed and retain their diagnostics.
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
-    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
-    let mut paths: Vec<installed_content_core::script_files::ScriptPath> = layers
-        .paths()
-        .filter(|path| {
-            path.to_ascii_lowercase()
-                .strip_prefix(b"common/abilities/")
-                .is_some_and(|name| !name.contains(&b'/') && name.ends_with(b".txt"))
-        })
-        .map(|path| installed_content_core::script_files::ScriptPath::new(path.to_vec()))
-        .collect();
-    paths.sort();
+    let paths = installed_content_core::script_files::database_paths(layers, "common/abilities/");
     let terrains = crate::terrain::read_definitions(layers)?
         .categories
         .into_iter()

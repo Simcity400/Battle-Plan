@@ -204,7 +204,8 @@ impl KeyNames {
         };
         if layers.paths().any(buildings::is_building_file) {
             let buildings = buildings::read_with(layers, &names)?;
-            names.counts.buildings = CountTriggerNames::new(&buildings, &ideologies, &[]).buildings;
+            names.counts.buildings =
+                CountTriggerNames::new(&buildings, &ideologies, &Default::default()).buildings;
             for (name, building) in &buildings.types {
                 let provincial = building.provincial();
                 let flag = buildings
@@ -251,6 +252,7 @@ impl KeyNames {
                 names.province_buildings.clear();
                 if point == Point::StaticModifiers {
                     names.counts.resources.clear();
+                    names.counts.resources_gap = None;
                 }
             }
             Point::Late => {}

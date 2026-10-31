@@ -266,7 +266,7 @@ fn with_effects(loc: &Localisation, run: impl FnOnce(&EffectContext<'_, '_>)) {
     .unwrap();
     std::fs::write(
         root.join("map/definition.csv"),
-        "1;1;1;1;land;false;synthetic;1\n",
+        "0;0;0;0;land;false;unknown;0\n1;1;1;1;land;false;synthetic;1\n",
     )
     .unwrap();
     let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();

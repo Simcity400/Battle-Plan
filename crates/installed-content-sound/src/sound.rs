@@ -410,13 +410,14 @@ impl Catalog {
             source: path.to_owned(),
         };
         for field in fields {
-            match key(field).as_str() {
-                "name" | "file" | "always_load" => {}
-                "volume" => number_into(field, &mut sound.volume, path, &mut self.notes),
-                "priority" => number_into(field, &mut sound.priority, path, &mut self.notes),
-                other => self
-                    .notes
-                    .note(format!("{path}: sound {name} refused field {other}")),
+            match key(field).as_deref() {
+                Some("name" | "file" | "always_load") => {}
+                Some("volume") => number_into(field, &mut sound.volume, path, &mut self.notes),
+                Some("priority") => number_into(field, &mut sound.priority, path, &mut self.notes),
+                _ => self.notes.note(format!(
+                    "{path}: sound {name} refused field {}",
+                    key_text(field)
+                )),
             }
         }
         self.sound_names
@@ -440,19 +441,19 @@ impl Catalog {
         let mut falloff = None;
         let notes = &mut self.notes;
         for field in fields {
-            match key(field).as_str() {
-                "name" => {}
-                "sounds" => read_sounds(field, &name, path, &mut sounds, notes),
-                "volume" => number_into(field, &mut effect.volume, path, notes),
-                "falloff" => falloff = field.value.scalar_str().map(str::to_owned),
-                "loop" => bool_into(field, &mut effect.looping, path, notes),
-                "is3d" => bool_into(field, &mut effect.positional, path, notes),
-                "max_audible" => {
+            match key(field).as_deref() {
+                Some("name") => {}
+                Some("sounds") => read_sounds(field, &name, path, &mut sounds, notes),
+                Some("volume") => number_into(field, &mut effect.volume, path, notes),
+                Some("falloff") => falloff = field.value.scalar_str().map(str::to_owned),
+                Some("loop") => bool_into(field, &mut effect.looping, path, notes),
+                Some("is3d") => bool_into(field, &mut effect.positional, path, notes),
+                Some("max_audible") => {
                     let mut value = effect.max_audible as f32;
                     number_into(field, &mut value, path, notes);
                     effect.max_audible = value as i32;
                 }
-                "max_audible_behaviour" => match field.value.scalar_str() {
+                Some("max_audible_behaviour") => match field.value.scalar_str() {
                     Some("fail") => effect.overflow = Overflow::Fail,
                     Some("silent") => effect.overflow = Overflow::Silent,
                     other => notes.note(format!(
@@ -460,43 +461,46 @@ impl Catalog {
                         other.unwrap_or("block")
                     )),
                 },
-                "fade_in" => number_into(field, &mut effect.fade_in, path, notes),
-                "fade_out" => number_into(field, &mut effect.fade_out, path, notes),
-                "volume_random_offset" => {
+                Some("fade_in") => number_into(field, &mut effect.fade_in, path, notes),
+                Some("fade_out") => number_into(field, &mut effect.fade_out, path, notes),
+                Some("volume_random_offset") => {
                     range_into(field, &mut effect.volume_offset, 1.0, path, notes)
                 }
-                "delay_random_offset" => {
+                Some("delay_random_offset") => {
                     range_into(field, &mut effect.delay_offset, 1.0, path, notes)
                 }
-                "playbackrate" => {
+                Some("playbackrate") => {
                     let mut percent = 100.0;
                     number_into(field, &mut percent, path, notes);
                     effect.playback_rate = percent / 100.0;
                 }
-                "playbackrate_random_offset" => {
+                Some("playbackrate_random_offset") => {
                     range_into(field, &mut effect.playback_rate_offset, 100.0, path, notes)
                 }
-                "looping_volume_random_offset" => {
+                Some("looping_volume_random_offset") => {
                     bool_into(field, &mut effect.looping_volume_offset, path, notes)
                 }
-                "looping_delay_random_offset" => {
+                Some("looping_delay_random_offset") => {
                     bool_into(field, &mut effect.looping_delay_offset, path, notes)
                 }
-                "looping_playbackrate_random_offset" => {
+                Some("looping_playbackrate_random_offset") => {
                     bool_into(field, &mut effect.looping_playback_rate_offset, path, notes)
                 }
-                "random_sound_when_looping" => {
+                Some("random_sound_when_looping") => {
                     bool_into(field, &mut effect.random_sound_when_looping, path, notes)
                 }
-                "prevent_random_repetition" => {
+                Some("prevent_random_repetition") => {
                     bool_into(field, &mut effect.prevent_random_repetition, path, notes)
                 }
-                "polyphony" => {
+                Some("polyphony") => {
                     let mut value = effect.polyphony as f32;
                     number_into(field, &mut value, path, notes);
                     effect.polyphony = value as i32;
                 }
-                other => notes.note(format!("{path}: soundeffect {name} refused field {other}")),
+                _ => notes.note(format!(
+                    "{path}: soundeffect {name} refused field {}",
+                    key_text(field)
+                )),
             }
         }
         let index = self.effects.len();
@@ -526,12 +530,12 @@ impl Catalog {
         };
         let notes = &mut self.notes;
         for field in fields {
-            match key(field).as_str() {
-                "name" => {}
-                "min_distance" => number_into(field, &mut falloff.min_distance, path, notes),
-                "max_distance" => number_into(field, &mut falloff.max_distance, path, notes),
-                "height_scale" => number_into(field, &mut falloff.height_scale, path, notes),
-                "type" => match field.value.scalar_str() {
+            match key(field).as_deref() {
+                Some("name") => {}
+                Some("min_distance") => number_into(field, &mut falloff.min_distance, path, notes),
+                Some("max_distance") => number_into(field, &mut falloff.max_distance, path, notes),
+                Some("height_scale") => number_into(field, &mut falloff.height_scale, path, notes),
+                Some("type") => match field.value.scalar_str() {
                     Some("linear") => falloff.curve = Curve::Linear,
                     Some("logarithmic") => falloff.curve = Curve::Logarithmic,
                     other => notes.note(format!(
@@ -539,7 +543,10 @@ impl Catalog {
                         other.unwrap_or("block")
                     )),
                 },
-                other => notes.note(format!("{path}: falloff {name} refused field {other}")),
+                _ => notes.note(format!(
+                    "{path}: falloff {name} refused field {}",
+                    key_text(field)
+                )),
             }
         }
         self.falloff_names.insert(name, self.falloffs.len());
@@ -555,9 +562,9 @@ impl Catalog {
         let mut members = Vec::new();
         let mut compressor_block = None;
         for field in fields {
-            match key(field).as_str() {
-                "name" => {}
-                "soundeffects" => match field.value.items() {
+            match key(field).as_deref() {
+                Some("name") => {}
+                Some("soundeffects") => match field.value.items() {
                     Some(items) => members.extend(
                         items
                             .iter()
@@ -568,7 +575,7 @@ impl Catalog {
                         "{path}: category {name} refused scalar soundeffects"
                     )),
                 },
-                "compressor" => match field.value.items() {
+                Some("compressor") => match field.value.items() {
                     Some(items) => {
                         compressor_block = Some(compressor(items, path, &mut self.notes))
                     }
@@ -576,9 +583,10 @@ impl Catalog {
                         .notes
                         .note(format!("{path}: category {name} refused scalar compressor")),
                 },
-                other => self
-                    .notes
-                    .note(format!("{path}: category {name} refused field {other}")),
+                _ => self.notes.note(format!(
+                    "{path}: category {name} refused field {}",
+                    key_text(field)
+                )),
             }
         }
         // A repeated name adds its effects to the same category; a later
@@ -628,9 +636,19 @@ impl Catalog {
                 }
             }
         }
-        for (category, members, source) in assignments {
-            for member in members {
-                match self.effect_names.get(&member) {
+        // Every declaration of a category adds to its one list; the lists then resolve once in
+        // category order, so reopening an earlier category does not take an effect back.
+        let mut lists: Vec<Vec<(&str, &str)>> = vec![Vec::new(); self.categories.len()];
+        for (category, members, source) in &assignments {
+            lists[*category].extend(
+                members
+                    .iter()
+                    .map(|member| (member.as_str(), source.as_str())),
+            );
+        }
+        for (category, members) in lists.into_iter().enumerate() {
+            for (member, source) in members {
+                match self.effect_names.get(member) {
                     Some(&effect) => {
                         if let Some(previous) = self.effects[effect].category
                             && previous != category
@@ -711,21 +729,24 @@ fn read_sounds(
 fn compressor(fields: &[parser::Item], path: &str, notes: &mut Notes) -> Compressor {
     let mut out = Compressor::default();
     for field in fields {
-        match key(field).as_str() {
-            "enabled" => bool_into(field, &mut out.enabled, path, notes),
-            "pregain" => out.pregain = decibels(field, path, notes),
-            "postgain" => out.postgain = decibels(field, path, notes),
-            "ratio" => {
+        match key(field).as_deref() {
+            Some("enabled") => bool_into(field, &mut out.enabled, path, notes),
+            Some("pregain") => out.pregain = decibels(field, path, notes),
+            Some("postgain") => out.postgain = decibels(field, path, notes),
+            Some("ratio") => {
                 number_into(field, &mut out.ratio, path, notes);
                 // A zero ratio is held as one: no compression.
                 if out.ratio == 0.0 {
                     out.ratio = 1.0;
                 }
             }
-            "threshold" => number_into(field, &mut out.threshold, path, notes),
-            "attacktime" => number_into(field, &mut out.attack, path, notes),
-            "releasetime" => number_into(field, &mut out.release, path, notes),
-            other => notes.note(format!("{path}: compressor refused field {other}")),
+            Some("threshold") => number_into(field, &mut out.threshold, path, notes),
+            Some("attacktime") => number_into(field, &mut out.attack, path, notes),
+            Some("releasetime") => number_into(field, &mut out.release, path, notes),
+            _ => notes.note(format!(
+                "{path}: compressor refused field {}",
+                key_text(field)
+            )),
         }
     }
     out
@@ -776,13 +797,12 @@ fn range_into(field: &parser::Item, out: &mut Range, scale: f32, path: &str, not
     }
 }
 
-/// Keys fold as the lexer folds keywords.
-fn key(field: &parser::Item) -> String {
+/// The keyword a field dispatches on, folded as the lexer folds it; `None` for a quoted,
+/// numeric or anonymous key, which names no property.
+fn key(field: &parser::Item) -> Option<String> {
     field
-        .key
-        .as_deref()
-        .map(|key| String::from_utf8_lossy(key).to_ascii_lowercase())
-        .unwrap_or_default()
+        .keyword()
+        .map(|keyword| String::from_utf8_lossy(&keyword.folded()).into_owned())
 }
 
 fn text(fields: &[parser::Item], key: &str) -> Option<String> {

@@ -1597,7 +1597,9 @@ pub fn authored_frame(frame: i32) -> u32 {
 }
 
 /// Render requested (sprite, frame) draws together from the presentation of
-/// `layers` into its sprite images. Callers retry a refused or oversized batch
+/// `layers` into its sprite images. A draw those images already hold under the
+/// current artwork mode, or a repeat, is not drawn again; fewer than two left are
+/// left to [`sprite_frame_png`]. Callers retry a refused or oversized batch
 /// through [`sprite_frame_png`], preserving each draw's refusal and drawing what
 /// the visual mods cannot supply from the recording.
 pub fn sprite_frames_png(
@@ -1608,9 +1610,21 @@ pub fn sprite_frames_png(
 ) -> io::Result<()> {
     use installed_content_core::gui::native::sprites::SpriteKind;
     let layers = layers.presentation();
+    let cache = layers.derived::<SpriteImages>();
+    let mut keys = BTreeSet::new();
+    let requests: Vec<_> = requests
+        .iter()
+        .filter_map(|&(sprite, frame)| {
+            let key = sprite_image_key(sprite, decode, frame, max_edge);
+            (!cache.contains(&key) && keys.insert(key.clone())).then_some((sprite, frame, key))
+        })
+        .collect();
+    if requests.len() < 2 {
+        return Ok(());
+    }
     let mut draws = Vec::new();
     let mut transient_bytes = 0_u64;
-    for &(sprite, frame) in requests {
+    for &(sprite, frame, _) in &requests {
         let (plain, animated) = match &sprite.facts.kind {
             SpriteKind::Plain(plain) => (plain, None),
             SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
@@ -1643,11 +1657,8 @@ pub fn sprite_frames_png(
                 .and_then(|image| png_url(&image))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let cache = layers.derived::<SpriteImages>();
-    for (&(sprite, frame), image) in requests.iter().zip(images) {
-        cache.get(sprite_image_key(sprite, decode, frame, max_edge), || {
-            Ok(image)
-        })?;
+    for ((_, _, key), image) in requests.into_iter().zip(images) {
+        cache.get(key, || Ok(image))?;
     }
     Ok(())
 }

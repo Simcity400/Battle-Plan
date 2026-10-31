@@ -1116,16 +1116,8 @@ impl ModelLibrary {
                 .find_map(|clip| self.push_palette(&decoded, clip.animation.as_deref(), &own));
         }
         let node_index = out.rig.nodes.len();
-        let mut skeleton = skeleton_source::skeleton(&decoded);
-        // Each LOD may repeat the skeleton, sometimes with placeholder zero
-        // inverse binds. Mesh::palette/joint choose the first occurrence of
-        // each index; keep that same canonical skeleton for per-frame writes.
-        let mut joint_indices = BTreeSet::new();
-        skeleton
-            .skeleton
-            .retain(|joint| joint_indices.insert(joint.index));
         out.rig.nodes.push(entity_animation::Node {
-            mesh: Arc::new(skeleton),
+            mesh: Arc::new(skeleton_source::skeleton(&decoded)),
             native: Some(Arc::new(super::mesh_pose::Source {
                 pdxmesh: entity.is_some(),
                 entity_locators: descriptors.entities.get(name).map_or_else(

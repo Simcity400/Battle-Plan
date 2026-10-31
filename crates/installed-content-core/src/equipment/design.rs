@@ -26,7 +26,7 @@ impl UpgradeDesign {
         let mut result = Self::default();
         for field in fields {
             if field.keyword_is("cost") {
-                match field.value.scalar().unwrap_or_default() {
+                match crate::parser::c_string(field.value.scalar().unwrap_or_default()) {
                     value if value.eq_ignore_ascii_case(b"land") => {
                         result.currency = UpgradeCurrency::Land
                     }

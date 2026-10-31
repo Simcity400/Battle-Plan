@@ -840,8 +840,8 @@ impl UnitModelAssets {
     }
 
     /// What the prepared content refuses when a lookup meets it, each with
-    /// the file it comes from when one does: acclimatization categories and sub-units
-    /// that are one token under the lexer's fold.
+    /// the file it comes from when one does: acclimatization categories that are one
+    /// token under the lexer's fold.
     pub fn refusals(&self) -> Vec<(Option<String>, String)> {
         let mut refusals = Vec::new();
         refusals.extend(
@@ -849,7 +849,6 @@ impl UnitModelAssets {
                 .refusals()
                 .map(|why| (Some("common/acclimatation.txt".to_owned()), why)),
         );
-        refusals.extend(self.sub_units.refusals().into_iter().map(|why| (None, why)));
         if let Err(why) = &self.dynamic_tags {
             refusals.push((
                 None,

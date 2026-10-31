@@ -175,10 +175,49 @@ impl<'a> ContentView<'a> {
 }
 
 /// The icon sprite of the trade view's resource row, and each content declaration's
-/// one-based frame in it: per token, its declarations in load order.
+/// one-based frame in it.
 struct Icons {
     sprite: installed_content_gfx::gfx::SpriteType,
-    icon_frames: BTreeMap<String, Vec<Option<u32>>>,
+    frames: Frames,
+}
+
+/// Each numbered declaration's one-based icon frame, per token in load order, and the
+/// first file that stops short, after which no declaration has a known ordinal.
+#[derive(Default)]
+struct Frames {
+    by_token: BTreeMap<String, Vec<Option<u32>>>,
+    gap: Option<String>,
+}
+
+impl Frames {
+    fn new(resources: &installed_content_core::resources::Resources) -> Self {
+        let mut by_token: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
+        for resource in resources.numbered() {
+            by_token
+                .entry(resource.token.clone())
+                .or_default()
+                .push(resource.icon_frame);
+        }
+        Self {
+            by_token,
+            gap: resources.gap().map(ToString::to_string),
+        }
+    }
+
+    /// The `ordinal`th (one-based) declaration's frame of `token`: `Ok(None)` when it has
+    /// none or the content has no such declaration, the gap when the content leaves it unknown.
+    fn of(&self, token: &str, ordinal: u32) -> Result<Option<u32>, String> {
+        let declared = ordinal
+            .checked_sub(1)
+            .and_then(|index| self.by_token.get(token)?.get(index as usize));
+        match (declared, &self.gap) {
+            (Some(frame), _) => Ok(*frame),
+            (None, Some(gap)) if ordinal > 0 => Err(format!(
+                "{token}: declaration {ordinal} has no known place in the content: {gap}"
+            )),
+            (None, _) => Ok(None),
+        }
+    }
 }
 
 fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
@@ -192,17 +231,10 @@ fn icons(view: &ContentView) -> io::Result<(Icons, Vec<String>)> {
     let sprite = catalogue::created_gui_sprite(view.sprites, &name)?.clone();
     let (resources, notes) = installed_content_core::resources::read(view.layers)?;
     warnings.extend(notes.into_iter().map(|(_, message)| message));
-    let mut icon_frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
-    for resource in resources {
-        icon_frames
-            .entry(resource.token)
-            .or_default()
-            .push(resource.icon_frame);
-    }
     Ok((
         Icons {
             sprite,
-            icon_frames,
+            frames: Frames::new(&resources),
         },
         warnings,
     ))
@@ -311,35 +343,16 @@ fn resource_content_noted(
         }
         (None, _) => None,
     };
-    let frame_of = |icons: &Icons, token: &str, ordinal: u32| {
-        icons
-            .icon_frames
-            .get(token)
-            .and_then(|frames| frames.get(ordinal as usize - 1))
-            .copied()
-            .flatten()
-    };
     // Draw every wanted frame of the shared sprite in one batch. A refused
     // batch leaves each frame to its own draw below, which names the refusal.
     if let (Some(icons), Some(decode)) = (&icons, decode) {
-        let images = view.layers.derived::<catalogue::SpriteImages>();
         let frames: BTreeSet<u32> = missing
             .iter()
-            .filter_map(|(token, ordinal)| frame_of(icons, token, *ordinal))
+            .filter_map(|(token, ordinal)| icons.frames.of(token, *ordinal).ok().flatten())
             .map(|frame| frame - 1)
-            .filter(|frame| {
-                !images.contains(&catalogue::sprite_image_key(
-                    &icons.sprite,
-                    decode,
-                    *frame,
-                    ICON_EDGE,
-                ))
-            })
             .collect();
-        if frames.len() > 1 {
-            let requests: Vec<_> = frames.iter().map(|frame| (&icons.sprite, *frame)).collect();
-            let _ = catalogue::sprite_frames_png(view.layers, &requests, decode, ICON_EDGE);
-        }
+        let requests: Vec<_> = frames.iter().map(|frame| (&icons.sprite, *frame)).collect();
+        let _ = catalogue::sprite_frames_png(view.layers, &requests, decode, ICON_EDGE);
     }
     // A sprite draws every frame or none: only the frame offset differs between
     // them, and the resolved program samples past the strip as the game does.
@@ -370,10 +383,10 @@ fn resource_content_noted(
         };
         let declared = catalogue::Drawn::new(|| {
             let icon = match (
-                frame_of(icons, token, *ordinal),
+                icons.frames.of(token, *ordinal),
                 decode.filter(|_| !refused),
             ) {
-                (Some(frame), Some(decode)) => match catalogue::sprite_frame_png(
+                (Ok(Some(frame)), Some(decode)) => match catalogue::sprite_frame_png(
                     view.layers,
                     &icons.sprite,
                     decode,
@@ -389,8 +402,17 @@ fn resource_content_noted(
                         None
                     }
                 },
-                (Some(_), None) => None,
-                (None, _) => {
+                (Ok(Some(_)), None) => None,
+                (Err(message), _) => {
+                    findings.push(Finding::new(
+                        Kind::Refused,
+                        format!("resource {token} declaration {ordinal}"),
+                        &message,
+                    ));
+                    note(Note::Art, message);
+                    None
+                }
+                (Ok(None), _) => {
                     let message =
                         format!("{token}: the recorded content gives no usable icon frame.");
                     findings.push(Finding::new(
@@ -530,28 +552,20 @@ fn present_icons(
 /// per kind of catalogue ([`catalogue::ByCatalogue`]).
 #[derive(Default)]
 struct ResourceArt {
-    frames: Option<(Arc<Catalogue>, BTreeMap<String, Vec<Option<u32>>>)>,
+    frames: Option<(Arc<Catalogue>, Frames)>,
     drawn: Option<catalogue::Redrawn<(String, u32), String>>,
 }
 
-/// Each resource declaration's one-based frame in the trade view's icon, per token in load
-/// order: recorded facts.
-fn icon_frames(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, Vec<Option<u32>>>> {
-    let mut frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
-    for resource in installed_content_core::resources::read(layers)?.0 {
-        frames
-            .entry(resource.token)
-            .or_default()
-            .push(resource.icon_frame);
-    }
-    Ok(frames)
+/// Each resource declaration's one-based frame in the trade view's icon: recorded facts.
+fn icon_frames(layers: &ResolvedLayers) -> io::Result<Frames> {
+    Ok(Frames::new(&installed_content_core::resources::read(layers)?.0))
 }
 
 /// A resource declaration's icon drawn through `catalogue`: the trade view's icon sprite, as its
 /// GUI selects it, at the declaration's recorded frame.
 fn resource_icon(
     catalogue: &Catalogue,
-    frames: &BTreeMap<String, Vec<Option<u32>>>,
+    frames: &Frames,
     token: &str,
     ordinal: u32,
 ) -> Result<String, String> {
@@ -565,9 +579,8 @@ fn resource_icon(
     .map_err(|error| error.to_string())?;
     let sprite =
         catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|e| e.to_string())?;
-    let frame = ordinal
-        .checked_sub(1)
-        .and_then(|index| frames.get(token)?.get(index as usize).copied().flatten())
+    let frame = frames
+        .of(token, ordinal)?
         .and_then(|frame| frame.checked_sub(1))
         .ok_or_else(|| format!("{token}: the recorded content gives no usable icon frame."))?;
     let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;

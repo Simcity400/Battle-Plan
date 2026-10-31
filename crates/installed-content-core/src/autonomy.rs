@@ -4,10 +4,12 @@
 //! compare equal), then load order; the dashboard names and colours subject
 //! types in that order, so a mod's states work without a list of vanilla ids.
 //! A level that is missing or not a plain number is left unknown, never
-//! assumed, and its state sorts after every state with a known level.
+//! assumed, and its state sorts after every state with a known level. So is a
+//! level a file whose reading stops short could redefine ([`crate::coverage`]).
 
 use crate::{
     Diagnostic, DiagnosticKind, ResolvedLayers,
+    coverage::{Coverage, Gap},
     fields::invalid,
     fixed5, ideas,
     key_names::KeyNames,
@@ -33,32 +35,93 @@ pub struct AutonomyState {
 pub struct AutonomyStates {
     /// In load order; a state defined again replaces the earlier one in place.
     pub states: Vec<AutonomyState>,
+    /// The file that last defined each state, which decides its level.
+    levels: Coverage,
+    /// The file that first defined each state, which decides its load-order place.
+    places: Coverage,
+}
+
+/// [`AutonomyStates::ordered`]: the states whose place in the level order is known, and the rest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Order<'a> {
+    /// From the least free to the freest: by `min_freedom_level`, then load order.
+    pub placed: Vec<&'a AutonomyState>,
+    /// In load order: a level that is unknown, that a file stopping short could
+    /// redefine, or whose place among equal levels such a file could change.
+    pub unplaced: Vec<&'a AutonomyState>,
 }
 
 impl AutonomyStates {
-    pub fn get(&self, id: &str) -> Option<&AutonomyState> {
-        self.states.iter().find(|state| state.id == id)
+    /// These states, read from files that all read to their end.
+    pub fn new(states: Vec<AutonomyState>) -> Self {
+        Self {
+            states,
+            ..Self::default()
+        }
     }
 
-    /// Every state from the least free to the freest: by `min_freedom_level`, then
-    /// load order, with states whose level is unknown last (in load order).
-    pub fn ordered(&self) -> Vec<&AutonomyState> {
-        let mut ordered: Vec<(usize, &AutonomyState)> = self.states.iter().enumerate().collect();
-        ordered.sort_by_key(|(index, state)| {
-            (
-                state.min_freedom_level.is_none(),
-                state.min_freedom_level,
-                *index,
-            )
-        });
-        ordered.into_iter().map(|(_, state)| state).collect()
+    /// A state by id: None when no file defines it, the gap when a file that
+    /// stops short could define or redefine it.
+    pub fn get(&self, id: &str) -> Result<Option<&AutonomyState>, &Gap> {
+        match self.levels.unknown(id) {
+            Some(gap) => Err(gap),
+            None => Ok(self.states.iter().find(|state| state.id == id)),
+        }
+    }
+
+    /// The last file that stops short, whose unread rest could define more states.
+    pub fn gap(&self) -> Option<&Gap> {
+        self.levels.any_gap()
+    }
+
+    /// Every state read: placed from the least free to the freest where its
+    /// place is known, the rest in load order.
+    pub fn ordered(&self) -> Order<'_> {
+        let mut placed: Vec<(usize, &AutonomyState, i64)> = Vec::new();
+        let mut unplaced = vec![false; self.states.len()];
+        for (index, state) in self.states.iter().enumerate() {
+            match state.min_freedom_level {
+                Some(level) if self.levels.unknown(&state.id).is_none() => {
+                    placed.push((index, state, level));
+                }
+                _ => unplaced[index] = true,
+            }
+        }
+        placed.sort_by_key(|&(index, _, level)| (level, index));
+        // Equal levels keep load order. A gap before the first file of one of them
+        // could define a later one ahead of it, so from there their order is unknown.
+        for group in placed.chunk_by(|a, b| a.2 == b.2) {
+            if let Some(from) = group
+                .iter()
+                .position(|(_, state, _)| self.places.before_first(&state.id).is_some())
+                && group.len() - from > 1
+            {
+                for &(index, _, _) in &group[from..] {
+                    unplaced[index] = true;
+                }
+            }
+        }
+        Order {
+            placed: placed
+                .into_iter()
+                .filter(|&(index, _, _)| !unplaced[index])
+                .map(|(_, state, _)| state)
+                .collect(),
+            unplaced: self
+                .states
+                .iter()
+                .zip(unplaced)
+                .filter_map(|(state, unplaced)| unplaced.then_some(state))
+                .collect(),
+        }
     }
 }
 
 /// The definitions of one autonomy file, as the database reads it: both
 /// top-level spellings by keyword, variables replayed and every field
-/// consumed by its reader. A read that cannot be settled refuses the file.
-pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec<Item>> {
+/// consumed by its reader. A read that cannot be settled stops the file at
+/// the state it was reading: the definitions before it, and why the rest is unknown.
+pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> (Vec<Item>, Option<String>) {
     #[derive(Clone, Copy)]
     enum Node {
         File,
@@ -68,6 +131,8 @@ pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec
         Mtth,
     }
     let mut undecided = Vec::new();
+    let mut started = 0_usize;
+    let mut stop: Option<(usize, String)> = None;
     let read = native::read(
         input,
         native::Mode::KeepMark,
@@ -77,6 +142,7 @@ pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec
             Node::File
                 if field.keyword_is("autonomy_state") || field.keyword_is("autonomous_state") =>
             {
+                started += 1;
                 Shape::Object(Node::State)
             }
             Node::File => Shape::Skip,
@@ -107,24 +173,32 @@ pub(crate) fn read_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec
                 _ => Shape::Skip,
             },
             Node::Modifier(node) => {
-                modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided)
-                    .map(Node::Modifier)
+                let shape = modifiers::shape(node, field, modifiers::UNKNOWN, &mut undecided)
+                    .map(Node::Modifier);
+                if stop.is_none()
+                    && let Some(first) = undecided.first()
+                {
+                    stop = Some((started.saturating_sub(1), first.to_string()));
+                }
+                shape
             }
             Node::Rule(node) => ideas::rule_field(node, field).map(Node::Rule),
             Node::Mtth => native::mean_time_to_happen(field),
         },
     );
-    if let Some(cause) = read.unsettled {
-        return Err(invalid(format!("autonomy definitions: {cause}")));
+    if stop.is_none()
+        && let Some(cause) = &read.unsettled
+    {
+        stop = Some((started.saturating_sub(1), cause.to_string()));
     }
-    if let Some(cause) = undecided.first() {
-        return Err(invalid(format!("autonomy definitions: {cause}")));
-    }
-    Ok(read
+    let kept = stop.as_ref().map_or(usize::MAX, |(kept, _)| *kept);
+    let definitions = read
         .items
         .into_iter()
         .filter(|item| item.keyword_is("autonomy_state") || item.keyword_is("autonomous_state"))
-        .collect())
+        .take(kept)
+        .collect();
+    (definitions, stop.map(|(_, cause)| cause))
 }
 
 /// The last field that is the keyword `key`.
@@ -209,47 +283,70 @@ fn from_definitions(
 /// out or unordered. A state defined again replaces the earlier one in place.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(AutonomyStates, Vec<Diagnostic>)> {
     let names = layers.key_names()?;
-    let mut warnings = Vec::new();
-    let mut result = AutonomyStates::default();
+    let mut reading = Reading::default();
     for path in script_files::paths(layers, "common/autonomous_states/", Some(".txt")) {
-        let path_text = path.to_string();
-        match read_definitions(&path.read(layers)?, &names) {
-            Ok(definitions) => {
-                for state in from_definitions(&definitions, &path_text, &mut warnings) {
-                    merge(&mut result, state, &path_text, &mut warnings);
-                }
-            }
-            Err(error) => warnings.push((
-                DiagnosticKind::ParseFailure,
-                format!("Autonomy states unavailable in {path}: {error}"),
-            )),
-        }
+        reading.file(&path.to_string(), &path.read(layers)?, &names);
     }
-    Ok((result, warnings))
+    Ok((reading.result, reading.warnings))
 }
 
-fn merge(
-    result: &mut AutonomyStates,
-    state: AutonomyState,
-    path: &str,
-    warnings: &mut Vec<Diagnostic>,
-) {
-    match result
-        .states
-        .iter_mut()
-        .find(|existing| existing.id == state.id)
-    {
-        Some(existing) => {
-            warnings.push((
-                DiagnosticKind::Warning,
+/// The states and notes of the files read so far, in load order.
+#[derive(Default)]
+struct Reading {
+    result: AutonomyStates,
+    warnings: Vec<Diagnostic>,
+}
+
+impl Reading {
+    /// The next file: its definitions up to where its reading stops.
+    fn file(&mut self, path: &str, input: &[u8], names: &KeyNames) {
+        let (definitions, stop) = read_definitions(input, names);
+        for state in from_definitions(&definitions, path, &mut self.warnings) {
+            self.merge(state, path);
+        }
+        if let Some(cause) = stop {
+            self.warnings.push((
+                DiagnosticKind::ParseFailure,
                 format!(
-                    "{path}: autonomy state {} is defined again; the later definition is used.",
-                    state.id
+                    "Autonomy states in {path} are unknown from {cause}; a level it could define or redefine is not ordered."
                 ),
             ));
-            *existing = state;
+            self.result.levels.gap(path, cause.as_str());
+            self.result.places.gap(path, cause);
         }
-        None => result.states.push(state),
+        self.result.levels.next_file();
+        self.result.places.next_file();
+    }
+
+    fn merge(&mut self, state: AutonomyState, path: &str) {
+        self.result.levels.replace(&state.id);
+        self.result.places.add(&state.id);
+        match self
+            .result
+            .states
+            .iter_mut()
+            .find(|existing| existing.id == state.id)
+        {
+            Some(existing) => {
+                self.warnings.push((
+                    DiagnosticKind::Warning,
+                    format!(
+                        "{path}: autonomy state {} is defined again; the later definition is used.",
+                        state.id
+                    ),
+                ));
+                *existing = state;
+            }
+            None => self.result.states.push(state),
+        }
+    }
+}
+
+/// The definitions of `input` as [`read`] keeps them, or why its reading stops.
+pub(crate) fn settled_definitions(input: &[u8], names: &KeyNames) -> io::Result<Vec<Item>> {
+    match read_definitions(input, names) {
+        (definitions, None) => Ok(definitions),
+        (_, Some(cause)) => Err(invalid(format!("autonomy definitions: {cause}"))),
     }
 }
 
@@ -258,15 +355,15 @@ mod tests {
     use super::*;
 
     fn states(files: &[(&str, &str)]) -> (AutonomyStates, Vec<Diagnostic>) {
-        let mut warnings = Vec::new();
-        let mut result = AutonomyStates::default();
+        let mut reading = Reading::default();
         for (path, text) in files {
-            let definitions = read_definitions(text.as_bytes(), &KeyNames::default()).unwrap();
-            for state in from_definitions(&definitions, path, &mut warnings) {
-                merge(&mut result, state, path, &mut warnings);
-            }
+            reading.file(path, text.as_bytes(), &KeyNames::default());
         }
-        (result, warnings)
+        (reading.result, reading.warnings)
+    }
+
+    fn placed<'a>(order: &Order<'a>) -> Vec<&'a str> {
+        order.placed.iter().map(|state| state.id.as_str()).collect()
     }
 
     /// Both top-level spellings and every keyword in any ASCII case are read,
@@ -315,14 +412,14 @@ mod tests {
             ),
         ]);
         assert!(warnings.is_empty(), "{warnings:?}");
-        let order: Vec<_> = read
-            .ordered()
-            .iter()
-            .map(|state| state.id.as_str())
-            .collect();
         // Equal levels (0.2 and 0.20) keep load order.
-        assert_eq!(order, ["tight", "also_tight", "middle", "loose"]);
-        assert_eq!(read.get("loose").unwrap().min_freedom_level, Some(80_000));
+        let order = read.ordered();
+        assert_eq!(placed(&order), ["tight", "also_tight", "middle", "loose"]);
+        assert!(order.unplaced.is_empty());
+        assert_eq!(
+            read.get("loose").unwrap().unwrap().min_freedom_level,
+            Some(80_000)
+        );
     }
 
     #[test]
@@ -332,12 +429,14 @@ mod tests {
             "autonomy_state = { id = scripted min_freedom_level = @level } autonomy_state = { id = bare } \
              autonomy_state = { id = known min_freedom_level = 0.4 } autonomy_state = { min_freedom_level = 0.1 }",
         )]);
-        let order: Vec<_> = read
-            .ordered()
+        let order = read.ordered();
+        assert_eq!(placed(&order), ["known"]);
+        let unplaced: Vec<_> = order
+            .unplaced
             .iter()
             .map(|state| state.id.as_str())
             .collect();
-        assert_eq!(order, ["known", "scripted", "bare"]);
+        assert_eq!(unplaced, ["scripted", "bare"]);
         assert_eq!(warnings.len(), 3, "{warnings:?}");
         assert!(
             warnings
@@ -367,17 +466,15 @@ mod tests {
                  autonomy_state = { id = unread min_freedom_level = 0.5 }",
             ),
         ]);
+        let level = |id| read.get(id).unwrap().unwrap().min_freedom_level;
         for id in ["suffix", "exponent", "block"] {
-            assert_eq!(read.get(id).unwrap().min_freedom_level, None);
+            assert_eq!(level(id), None);
             assert!(warnings.iter().any(|(_, warning)| warning.contains(id)));
         }
         assert_eq!(warnings.len(), 3);
-        assert!(read.get("unread").is_none());
-        assert_eq!(read.get("signed").unwrap().min_freedom_level, Some(60_000));
-        assert_eq!(
-            read.get("negative").unwrap().min_freedom_level,
-            Some(-123_456)
-        );
+        assert_eq!(read.get("unread"), Ok(None));
+        assert_eq!(level("signed"), Some(60_000));
+        assert_eq!(level("negative"), Some(-123_456));
     }
 
     #[test]
@@ -396,12 +493,93 @@ mod tests {
         assert_eq!(read.states[0].id, "first");
         assert_eq!(read.states[0].min_freedom_level, Some(10_000));
         // Equal levels: the replaced state keeps its first place in load order.
-        let order: Vec<_> = read
-            .ordered()
+        assert_eq!(placed(&read.ordered()), ["first", "second"]);
+        assert_eq!(warnings.len(), 1);
+    }
+
+    /// A file that stops short keeps the states it read before the stop, but none of
+    /// its levels is known: its unread rest could redefine any of them, or an earlier
+    /// file's. A later file that reads to its end decides its own states again.
+    #[test]
+    fn a_file_that_stops_short_leaves_every_level_it_could_redefine_unknown() {
+        let (read, warnings) = states(&[
+            (
+                "a.txt",
+                "autonomy_state = { id = early min_freedom_level = 0.2 } \
+                 autonomy_state = { id = kept min_freedom_level = 0.5 } \
+                 autonomy_state = { id = untouched min_freedom_level = 0.4 }",
+            ),
+            (
+                "b.txt",
+                "autonomy_state = { id = early min_freedom_level = 0.8 } \
+                 autonomy_state = { id = stops min_freedom_level = 0.3 modifier = { unknown_modifier = { x = 1 } } } \
+                 autonomy_state = { id = after min_freedom_level = 0.1 }",
+            ),
+            (
+                "c.txt",
+                "autonomy_state = { id = kept min_freedom_level = 0.6 }",
+            ),
+        ]);
+        // The replacement before the stop is settled and kept, but not served as known.
+        assert_eq!(read.states[0].min_freedom_level, Some(80_000));
+        for id in ["early", "untouched", "stops", "after"] {
+            assert_eq!(read.get(id).unwrap_err().path, "b.txt", "{id}");
+        }
+        assert!(read.states.iter().all(|state| state.id != "stops"));
+        assert_eq!(
+            read.get("kept").unwrap().unwrap().min_freedom_level,
+            Some(60_000)
+        );
+        let order = read.ordered();
+        assert_eq!(placed(&order), ["kept"]);
+        let unplaced: Vec<_> = order
+            .unplaced
             .iter()
             .map(|state| state.id.as_str())
             .collect();
-        assert_eq!(order, ["first", "second"]);
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(unplaced, ["early", "untouched"]);
+        assert_eq!(read.gap().unwrap().path, "b.txt");
+        assert!(
+            warnings
+                .iter()
+                .any(|(kind, warning)| *kind == DiagnosticKind::ParseFailure
+                    && warning.contains("b.txt")
+                    && warning.contains("unknown_modifier")),
+            "{warnings:?}"
+        );
+    }
+
+    /// Equal levels keep load order only where no file that stops short before the
+    /// earlier one's first file could have defined the later one ahead of it.
+    #[test]
+    fn a_gap_before_equal_levels_leaves_their_order_unknown() {
+        let gap = "autonomy_state = { id = gap modifier = { unknown_modifier = { x = 1 } } }";
+        let (read, _) = states(&[
+            ("a.txt", gap),
+            (
+                "b.txt",
+                "autonomy_state = { id = first min_freedom_level = 0.5 } \
+                 autonomy_state = { id = second min_freedom_level = 0.5 } \
+                 autonomy_state = { id = alone min_freedom_level = 0.7 }",
+            ),
+        ]);
+        let order = read.ordered();
+        assert_eq!(placed(&order), ["alone"]);
+        assert_eq!(order.unplaced.len(), 2);
+        let (read, _) = states(&[
+            (
+                "a.txt",
+                "autonomy_state = { id = early_tie min_freedom_level = 0.5 }",
+            ),
+            ("b.txt", gap),
+            (
+                "c.txt",
+                "autonomy_state = { id = late_tie min_freedom_level = 0.5 } \
+                 autonomy_state = { id = early_tie min_freedom_level = 0.5 }",
+            ),
+        ]);
+        let order = read.ordered();
+        assert_eq!(placed(&order), ["early_tie", "late_tie"]);
+        assert!(order.unplaced.is_empty());
     }
 }

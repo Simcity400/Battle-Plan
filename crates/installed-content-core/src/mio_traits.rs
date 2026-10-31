@@ -648,19 +648,18 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
             // focus::parse, the shared raw-list reader is exact only for that
             // reached form; refuse malformed token recovery.
             let parts = field.value.items().unwrap_or_default();
-            let valid = parts.len() == 6
-                && parts[0]
-                    .value
-                    .scalar()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(b"x"))
-                && parts[1].value.scalar_str() == Some("=")
-                && parts[2].number()
-                && parts[3]
-                    .value
-                    .scalar()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(b"y"))
-                && parts[4].value.scalar_str() == Some("=")
-                && parts[5].number();
+            let valid =
+                parts.len() == 6
+                    && parts[0].value.scalar().is_some_and(|value| {
+                        crate::parser::c_string(value).eq_ignore_ascii_case(b"x")
+                    })
+                    && parts[1].value.scalar_str() == Some("=")
+                    && parts[2].number()
+                    && parts[3].value.scalar().is_some_and(|value| {
+                        crate::parser::c_string(value).eq_ignore_ascii_case(b"y")
+                    })
+                    && parts[4].value.scalar_str() == Some("=")
+                    && parts[5].number();
             if !valid {
                 return Err(invalid(
                     "MIO trait position: unsupported integer-point token recovery (count: 1)",
@@ -841,9 +840,9 @@ fn parse(
                         .map(Token::c_str),
                 );
                 row.delete_initial |= field.value.items().unwrap_or_default().iter().any(|item| {
-                    item.value
-                        .scalar()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(b"initial_trait"))
+                    item.value.scalar().is_some_and(|name| {
+                        crate::parser::c_string(name).eq_ignore_ascii_case(b"initial_trait")
+                    })
                 });
             } else if field.keyword_is("remove_trait") {
                 row.removed.extend(

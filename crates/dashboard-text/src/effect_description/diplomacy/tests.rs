@@ -923,15 +923,15 @@ fn diplomacy_output_branches() {
         .scripted_content()
         .unwrap()
         .set_synthetic_environment(Default::default());
-    let mut autonomy_states = installed_content_core::autonomy::AutonomyStates {
-        states: ["synthetic", "synthetic_other"]
+    let mut autonomy_states = installed_content_core::autonomy::AutonomyStates::new(
+        ["synthetic", "synthetic_other"]
             .into_iter()
             .map(|id| installed_content_core::autonomy::AutonomyState {
                 id: id.into(),
                 min_freedom_level: None,
             })
             .collect(),
-    };
+    );
     *fixture.frame.tables[TableId::Autonomy.index()] =
         TableView::Complete(TableRows::Autonomy(vec![
             AutonomyRow {

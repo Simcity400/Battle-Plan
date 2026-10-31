@@ -2891,7 +2891,7 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
     let database = installed_content_core::equipment::Database::load(&catalogue.content.layers).unwrap();
     assert_eq!(database.misreads.len(), 10, "{:?}", database.misreads);
     let (levels, warnings) = installed_content_core::autonomy::read(&catalogue.content.layers).unwrap();
-    assert_eq!(levels.ordered().len(), 1);
+    assert_eq!(levels.ordered().unplaced.len(), 1);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     let checks = check(Arc::clone(&catalogue.content), "english");
     for key in [

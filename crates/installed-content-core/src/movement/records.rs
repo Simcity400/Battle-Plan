@@ -87,15 +87,10 @@ fn colour_key([red, green, blue]: [u8; 3]) -> u32 {
 pub(crate) fn read(definition_csv: &[u8], provinces_bmp: &[u8]) -> io::Result<Provinces> {
     let mut rows = Vec::new();
     let mut colours = HashMap::new();
-    for row in crate::map::definition_rows(definition_csv)? {
-        let position = rows.len();
+    let definitions = crate::map::definition_rows(definition_csv)?;
+    crate::map::require_positions(&definitions)?;
+    for row in definitions {
         let id = usize::from(row.id);
-        if id != position {
-            return Err(invalid(format!(
-                "definition.csv line {} declares province {id} at native record {position}; records whose ID differs from their position are unsupported",
-                row.line
-            )));
-        }
         // The colour lookup tests the stored ID, so record zero's is a miss.
         if id != 0 {
             colours.insert(colour_key(row.rgb), id as u32);

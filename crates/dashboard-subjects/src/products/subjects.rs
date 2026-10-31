@@ -178,8 +178,8 @@ pub fn levels(
     let mut result = Vec::new();
     let mut placed = BTreeSet::new();
     if let Some(states) = states {
-        for state in states.ordered() {
-            if state.min_freedom_level.is_some() && named.contains(state.id.as_str()) {
+        for state in states.ordered().placed {
+            if named.contains(state.id.as_str()) {
                 placed.insert(state.id.as_str());
                 result.push(SubjectLevel {
                     token: state.id.clone(),

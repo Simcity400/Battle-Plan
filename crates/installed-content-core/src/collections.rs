@@ -148,7 +148,12 @@ pub fn compile(item: &Item, database: Option<&Database>) -> Result<Collection, S
                         } else if op.key.is_none() {
                             // Unknown bare tokens are reported and do not append an
                             // operator.
-                            match op.value.scalar().map(<[u8]>::to_ascii_lowercase).as_deref() {
+                            match op
+                                .value
+                                .scalar()
+                                .map(|value| c_string(value).to_ascii_lowercase())
+                                .as_deref()
+                            {
                                 Some(b"faction_members") => {
                                     operators.push(Operator::FactionMembers)
                                 }

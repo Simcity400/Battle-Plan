@@ -9,7 +9,7 @@
 #[cfg(test)]
 use crate::subunit_files::subunit_keys;
 pub use installed_content_equipment_graphics::equipment_graphics::authored_fixed5;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -24,7 +24,7 @@ use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, row
 use replay_frame::frame::DecodedFrame;
 
 use crate::table_access::rows;
-use crate::table_access::{TokenKeys, TokenNames};
+use crate::table_access::{TokenNames, fold_token};
 
 #[derive(Clone, Debug)]
 pub struct SubUnit {
@@ -120,14 +120,14 @@ pub struct EquipmentModel<'a> {
 /// `installed_content_core::equipment` loads it, `duplicate_archetypes` copies included.
 #[derive(Clone, Debug, Default)]
 pub struct Content {
+    /// Each sub-unit by its key under the lexer's ASCII fold, the database's identity: a key
+    /// that differs only in case declares the same one again, under its first spelling.
     subunits: BTreeMap<String, SubUnit>,
-    /// Sub-unit keys in database order (the game creates each on first
+    /// Sub-unit identities in database order (the game creates each on first
     /// sight: the database's files in its order, keys in declaration order), which
     /// The game walks from index 1 (0 is the null object).
     order: Vec<String>,
     pub equipment: Arc<Database>,
-    /// The sub-unit keys by the lexer's token identity, built on first use.
-    subunit_tokens: OnceLock<TokenKeys>,
     /// The `need` entries the game reports and drops, each with why.
     pub dropped: Vec<String>,
 }
@@ -167,12 +167,15 @@ impl Content {
                 let (Some(key), Some(fields)) = (item.key.as_deref(), item.value.items()) else {
                     continue;
                 };
-                let key = text(key)?.to_owned();
-                let subunit = read_subunit(&key, self.subunits.get(&key), fields)?;
-                if !self.subunits.contains_key(&key) {
-                    self.order.push(key.clone());
+                let spelling = text(key)?;
+                let identity = fold_token(spelling);
+                let previous = self.subunits.get(&identity);
+                let key = previous.map_or(spelling, |previous| previous.key.as_str());
+                let subunit = read_subunit(key, previous, fields)?;
+                if previous.is_none() {
+                    self.order.push(identity.clone());
                 }
-                self.subunits.insert(key, subunit);
+                self.subunits.insert(identity, subunit);
             }
         }
         Ok(())
@@ -180,11 +183,12 @@ impl Content {
 
     /// The database's type masks (by lexer token kind) and groups (kept by a redefinition).
     fn take_database(&mut self, units: &SubUnits) -> io::Result<()> {
-        for (key, subunit) in &mut self.subunits {
+        for subunit in self.subunits.values_mut() {
+            let key = &subunit.key;
             subunit.category = units
                 .category(key.as_bytes())
                 .map_err(|why| invalid(format!("sub-unit {key} type: {why}")))?;
-            match units.group(key.as_bytes()) {
+            match units.group(subunit.key.as_bytes()) {
                 Ok(group) => subunit.sheet.group = group.map(str::to_owned),
                 Err(why) => refuse(&mut subunit.sheet.refused, "group", format!("sub-unit {key} group: {why}")),
             }
@@ -197,7 +201,8 @@ impl Content {
         // order while later references to the same archetype replace its value.
         let mut canonical = BTreeMap::new();
         let mut dropped = Vec::new();
-        for (key, unit) in &self.subunits {
+        for (identity, unit) in &self.subunits {
+            let key = &unit.key;
             let mut requirements = Vec::<(String, i64)>::new();
             for (name, amount) in &unit.requirements {
                 // A name with no registered equipment type is reported, and its entry is
@@ -217,7 +222,7 @@ impl Content {
                     requirements.push((archetype.to_owned(), *amount));
                 }
             }
-            canonical.insert(key.clone(), requirements);
+            canonical.insert(identity.clone(), requirements);
         }
         self.dropped = dropped;
         for (key, requirements) in canonical {
@@ -346,45 +351,20 @@ impl Content {
         self.name(at).map_err(|error| error.to_string())
     }
 
-    /// Each set of sub-unit keys equal under the lexer's fold, which a
-    /// recorded token names at once and so refuses.
-    pub fn refusals(&self) -> Vec<String> {
-        TokenKeys::new(self.subunits.keys())
-            .ambiguous()
-            .map(|keys| {
-                format!(
-                    "sub-units {} are one token under the lexer's fold",
-                    keys.join(", ")
-                )
-            })
-            .collect()
-    }
-
     /// The authored sub-unit a recorded definition token names, under the
     /// lexer's fold like [`Self::equipment_key`].
     pub fn subunit_of_token(&self, tokens: TokenNames<'_>, token: u32) -> io::Result<&SubUnit> {
         let spelling = tokens
             .name(token)
             .map_err(|reason| invalid(format!("sub-unit: {reason}")))?;
-        let key = self
-            .subunit_tokens
-            .get_or_init(|| TokenKeys::new(self.subunits.keys()))
-            .resolve(spelling)
-            .map_err(invalid)?
-            .ok_or_else(|| invalid(format!("missing authored sub-unit {spelling}")))?;
-        Ok(&self.subunits[key])
+        self.subunit(spelling)
+            .ok_or_else(|| invalid(format!("missing authored sub-unit {spelling}")))
     }
 
+    /// The sub-unit a key or recorded spelling names: keys are one token under the lexer's
+    /// ASCII fold.
     pub fn subunit(&self, key: &str) -> Option<&SubUnit> {
-        self.subunits.get(key)
-    }
-
-    /// The sub-unit a script key names: keys are one token under the lexer's ASCII fold.
-    pub fn subunit_named(&self, name: &str) -> Option<&SubUnit> {
-        self.subunits
-            .iter()
-            .find(|(key, _)| key.eq_ignore_ascii_case(name))
-            .map(|(_, subunit)| subunit)
+        self.subunits.get(&fold_token(key))
     }
 
     fn equipment(&self, key: &str) -> io::Result<&Equipment> {

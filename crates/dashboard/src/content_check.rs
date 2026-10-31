@@ -1398,10 +1398,12 @@ fn resources_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(),
     let catalogue = content.catalogue()?;
     let (resources, _) = installed_content_core::resources::read(&content.resolved.layers)
         .map_err(|error| error.to_string())?;
+    // A file that stops short leaves later declarations unnumbered; the icon notes name it.
     let numbered: Vec<_> = resources
-        .into_iter()
+        .numbered()
+        .iter()
         .enumerate()
-        .map(|(index, resource)| (index as u32, resource.token))
+        .map(|(index, resource)| (index as u32, resource.token.clone()))
         .collect();
     let wanted: Vec<_> = numbered
         .iter()

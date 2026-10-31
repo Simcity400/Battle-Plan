@@ -334,7 +334,7 @@ impl Assets {
         &mut self,
         buildings: &installed_content_core::buildings::Buildings,
         ideologies: &installed_content_core::ideologies::Ideologies,
-        resources: &[installed_content_core::resources::Resource],
+        resources: &installed_content_core::resources::Resources,
     ) -> installed_content_core::trigger_keys::TriggerNames {
         self.tactics
             .set_count_names(installed_content_core::trigger_keys::CountTriggerNames::new(
@@ -621,7 +621,7 @@ impl CombatContent {
         &mut self,
         buildings: &installed_content_core::buildings::Buildings,
         ideologies: &installed_content_core::ideologies::Ideologies,
-        resources: &[installed_content_core::resources::Resource],
+        resources: &installed_content_core::resources::Resources,
     ) {
         self.tactics
             .set_count_names(installed_content_core::trigger_keys::CountTriggerNames::new(

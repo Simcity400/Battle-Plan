@@ -3410,7 +3410,7 @@ mod tests {
         names.counts = CountTriggerNames::new(
             &buildings,
             &installed_content_core::ideologies::Ideologies::default(),
-            &[],
+            &Default::default(),
         );
         let content = parsed_with(
             b"first = { trigger = { arms_factory = 2 } }\n\
@@ -4749,7 +4749,11 @@ mod tests {
         let weigh_with_units = |hour, participants: &[u64], trigger: &str| {
             let frame = frame_at(hour);
             let mut content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
-            content.set_count_names(CountTriggerNames::new(&buildings, &ideologies, &[]));
+            content.set_count_names(CountTriggerNames::new(
+                &buildings,
+                &ideologies,
+                &Default::default(),
+            ));
             let facts = ContentFacts {
                 buildings: Ok(&buildings),
                 ideologies: Ok(&ideologies),

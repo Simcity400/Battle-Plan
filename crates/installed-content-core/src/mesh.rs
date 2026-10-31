@@ -241,13 +241,14 @@ impl Transform {
     }
 }
 
-/// One `[skeleton]` joint.
+/// One `[skeleton]` joint, as the importer keeps it ([`read_tree`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Joint {
     pub name: String,
-    /// `ix`, the joint's own index.
+    /// The joint's place in its skeleton, which skin influences and `pa` name;
+    /// the authored `ix` does not choose it.
     pub index: u32,
-    /// `pa`, the parent's index; absent on a root.
+    /// `pa`, the parent's place; absent on a root.
     pub parent: Option<u32>,
     /// `tx`, the inverse bind matrix: world space to this joint's own space.
     /// Absent when the file declares none.
@@ -483,7 +484,7 @@ impl Mesh {
     }
 
     /// The skinning matrix of every joint: its pose at this frame times its own
-    /// inverse bind, indexed by the joint's `ix`.
+    /// inverse bind, indexed by the joint's place in its skeleton.
     ///
     /// This is what a linear blend skinning pass multiplies a bind-pose vertex
     /// by. A joint with no usable `tx` takes the identity rather than a
@@ -710,18 +711,11 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
         .and_then(Value::floats)
         .unwrap_or(&[])
         .to_vec();
-    let mut skeleton = Vec::new();
     let mut shapes = Vec::new();
     for child in &object.children {
+        // A `[skeleton]` beside the shapes is no shape, and the importer reads no joints from it.
         if child.name == "skeleton" {
-            skeleton.extend(read_joints(child));
             continue;
-        }
-        // `[skeleton]` sits beside the shape's `[mesh]` nodes at depth 3.
-        // The depth-2 form above is also accepted, keeping both placements
-        // available to descriptor consumers.
-        if let Some(node) = child.child("skeleton") {
-            skeleton.extend(read_joints(node));
         }
         let mut meshes = Vec::new();
         for (index, node) in child.children.iter().enumerate() {
@@ -756,31 +750,48 @@ pub fn read_tree(root: &Node) -> io::Result<Mesh> {
     Ok(Mesh {
         lod_distances,
         shapes,
-        skeleton,
+        skeleton: skeleton_node(root).map(read_joints).unwrap_or_default(),
         locators,
     })
 }
 
-/// The joints under one `[skeleton]` node, skipping any child that declares no
-/// `ix`.
+/// The skeleton the importer keeps: the first nonempty `[skeleton]` of a shape
+/// (depth 3), in source order across every `[object]`.
+fn skeleton_node(root: &Node) -> Option<&Node> {
+    root.children_named("object")
+        .flat_map(|object| &object.children)
+        .filter_map(|shape| shape.child("skeleton"))
+        .find(|skeleton| !skeleton.children.is_empty())
+}
+
+/// Every joint of the kept skeleton in source order, each at its place ([`native_skeleton`]):
+/// with `ix` and `tx` its parent is `pa` as the importer's byte holds it (255 is none), without
+/// them parent 0 and no bind.
 fn read_joints(node: &Node) -> Vec<Joint> {
     node.children
         .iter()
-        .filter_map(|child| {
-            let index = child.property("ix")?.ints()?.first().copied()?;
-            Some(Joint {
+        .enumerate()
+        .map(|(index, child)| {
+            let tx = child.property("tx").and_then(Value::floats);
+            let (parent, inverse_bind) = match tx {
+                Some(tx) if child.property("ix").and_then(Value::ints).is_some() => (
+                    child
+                        .property("pa")
+                        .and_then(Value::ints)
+                        .and_then(|values| values.first())
+                        .map(|&value| value as u8)
+                        .filter(|&value| value != 255)
+                        .map(u32::from),
+                    Transform::from_columns(tx),
+                ),
+                _ => (Some(0), None),
+            };
+            Joint {
                 name: child.name.clone(),
-                index: u32::try_from(index).ok()?,
-                parent: child
-                    .property("pa")
-                    .and_then(Value::ints)
-                    .and_then(|values| values.first().copied())
-                    .and_then(|value| u32::try_from(value).ok()),
-                inverse_bind: child
-                    .property("tx")
-                    .and_then(Value::floats)
-                    .and_then(Transform::from_columns),
-            })
+                index: index as u32,
+                parent,
+                inverse_bind,
+            }
         })
         .collect()
 }
@@ -795,51 +806,44 @@ pub struct NativeJoint {
 }
 
 pub fn native_skeleton(root: &Node, scale: f32) -> io::Result<Vec<NativeJoint>> {
-    for object in root.children_named("object") {
-        for shape in &object.children {
-            let Some(skeleton) = shape.child("skeleton") else {
-                continue;
+    let Some(skeleton) = skeleton_node(root) else {
+        return Ok(Vec::new());
+    };
+    let mut joints = Vec::with_capacity(skeleton.children.len());
+    for child in &skeleton.children {
+        // Mesh joint names retain the first 31 Latin-1 bytes.
+        let mut joint = NativeJoint {
+            name: child.name.chars().take(31).collect(),
+            parent: 0,
+            inverse_bind: [0.; 12],
+        };
+        if let (Some(tx), Some(_index)) = (
+            child.property("tx").and_then(Value::floats),
+            child.property("ix").and_then(Value::ints),
+        ) {
+            let tx = tx.get(..12).ok_or_else(|| {
+                invalid(format!(
+                    "native skeleton joint {:?} has fewer than12 tx floats",
+                    child.name
+                ))
+            })?;
+            joint.inverse_bind.copy_from_slice(tx);
+            for value in &mut joint.inverse_bind[9..] {
+                *value *= scale;
+            }
+            joint.parent = match child.property("pa") {
+                None => 255,
+                Some(value) => *value.ints().and_then(|v| v.first()).ok_or_else(|| {
+                    invalid(format!(
+                        "native skeleton joint {:?} has no parent integer",
+                        child.name
+                    ))
+                })? as u8,
             };
-            let mut joints = Vec::with_capacity(skeleton.children.len());
-            for child in &skeleton.children {
-                // Mesh joint names retain the first 31 Latin-1 bytes.
-                let mut joint = NativeJoint {
-                    name: child.name.chars().take(31).collect(),
-                    parent: 0,
-                    inverse_bind: [0.; 12],
-                };
-                if let (Some(tx), Some(_index)) = (
-                    child.property("tx").and_then(Value::floats),
-                    child.property("ix").and_then(Value::ints),
-                ) {
-                    let tx = tx.get(..12).ok_or_else(|| {
-                        invalid(format!(
-                            "native skeleton joint {:?} has fewer than12 tx floats",
-                            child.name
-                        ))
-                    })?;
-                    joint.inverse_bind.copy_from_slice(tx);
-                    for value in &mut joint.inverse_bind[9..] {
-                        *value *= scale;
-                    }
-                    joint.parent = match child.property("pa") {
-                        None => 255,
-                        Some(value) => *value.ints().and_then(|v| v.first()).ok_or_else(|| {
-                            invalid(format!(
-                                "native skeleton joint {:?} has no parent integer",
-                                child.name
-                            ))
-                        })? as u8,
-                    };
-                }
-                joints.push(joint);
-            }
-            if !joints.is_empty() {
-                return Ok(joints);
-            }
         }
+        joints.push(joint);
     }
-    Ok(Vec::new())
+    Ok(joints)
 }
 
 fn read_sub_mesh(shape: &str, node: &Node) -> io::Result<SubMesh> {

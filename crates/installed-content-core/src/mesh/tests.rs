@@ -163,6 +163,87 @@ fn skeleton_keeps_source_order_and_first_nonempty_allocation() {
     );
 }
 
+/// The generic skeleton is the native one: the first nonempty skeleton, every joint at its
+/// source place whatever its `ix`, `pa` naming a place as the importer's byte holds it. A huge
+/// `ix` allocates nothing, and a palette has one matrix per joint.
+#[test]
+fn the_decoded_skeleton_places_joints_as_the_importer_does() {
+    let tx = |x: f32| [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -x, 0.0, 0.0];
+    let bytes = Builder::new()
+        .node(1, "object")
+        .node(2, "lod0")
+        .node(3, "skeleton")
+        .node(2, "lod1")
+        .node(3, "mesh")
+        .floats("p", &[2.0, 0.0, 0.0])
+        .floats("n", &[0.0, 1.0, 0.0])
+        .floats("ta", &[1.0, 0.0, 0.0, 1.0])
+        .floats("u0", &[0.0, 0.0])
+        .ints("tri", &[])
+        .node(3, "skeleton")
+        .node(4, "hand")
+        .ints("ix", &[i32::MAX])
+        .ints("pa", &[257])
+        .floats("tx", &tx(2.0))
+        .node(4, "root")
+        .ints("ix", &[0])
+        .ints("pa", &[-1])
+        .floats("tx", &tx(0.0))
+        .node(4, "bare")
+        .node(2, "lod2")
+        .node(3, "skeleton")
+        .node(4, "ignored")
+        .ints("ix", &[0])
+        .floats("tx", &tx(9.0))
+        .bytes;
+    let mesh = read(&bytes).unwrap();
+    let placed: Vec<_> = mesh
+        .skeleton
+        .iter()
+        .map(|joint| (joint.name.as_str(), joint.index, joint.parent))
+        .collect();
+    assert_eq!(
+        placed,
+        [
+            ("hand", 0, Some(1)),
+            ("root", 1, None),
+            ("bare", 2, Some(0))
+        ]
+    );
+    let native = native_skeleton(&parse(&bytes).unwrap(), 1.0).unwrap();
+    assert_eq!(
+        native.iter().map(|joint| joint.parent).collect::<Vec<_>>(),
+        [1, 255, 0]
+    );
+    let animation = read_animation(
+        &Builder::new()
+            .node(1, "info")
+            .ints("sa", &[1])
+            .node(2, "hand")
+            .strings("sa", &[""])
+            .floats("t", &[2.0, 1.0, 0.0])
+            .floats("q", &[0.0, 0.0, 0.0, 1.0])
+            .floats("s", &[1.0])
+            .node(2, "root")
+            .strings("sa", &[""])
+            .floats("t", &[0.0, 0.0, 0.0])
+            .floats("q", &[0.0, 0.0, 0.0, 1.0])
+            .floats("s", &[1.0])
+            .bytes,
+    )
+    .unwrap();
+    let palette = mesh.palette(&animation, FIRST_FRAME);
+    assert_eq!(palette.len(), 3);
+    // Influence 0 is the hand, which the animation lifts a unit off its bind.
+    assert_eq!(palette[0].transform_point([2.0, 0.0, 0.0]), [2.0, 1.0, 0.0]);
+    assert_eq!(palette[1], Transform::IDENTITY);
+    assert_eq!(
+        mesh.sampled_pose(&animation, &animation.sample(0.0, false))
+            .len(),
+        3
+    );
+}
+
 #[test]
 fn skeleton_names_and_missing_parent_follow_byte_fields() {
     let mut node = Node {
@@ -914,8 +995,9 @@ fn a_skin_is_recorded_and_a_skeleton_decoded() {
     assert_eq!(mesh.skeleton[1].parent, Some(0));
     // `tx` is the world inverse bind, so inverting it is the bind pose.
     assert_eq!(mesh.bind_pose("hand").unwrap().translation, [2.0, 3.0, 0.0]);
-    // A joint the file gives no `tx` has no bind pose at all.
+    // A joint the file gives no `tx` has no bind pose at all, and the importer's parent 0.
     assert_eq!(mesh.skeleton[0].inverse_bind, None);
+    assert_eq!(mesh.skeleton[0].parent, Some(0));
     assert_eq!(mesh.bind_pose("root"), None);
     let skin = mesh.shapes[0].meshes[0].skin.as_ref().unwrap();
     assert_eq!(skin.bones, 2);
@@ -1049,7 +1131,8 @@ const ODD_FLOATS: [f32; 6] = [
     f32::from_bits(1),
 ];
 
-// Both skeleton placements, skipped children, short bounds and unusual retained float bits.
+// A skeleton beside the shapes and one in a shape, skipped children, short bounds and unusual
+// retained float bits.
 fn mixed_mesh() -> Vec<u8> {
     let tx = [ODD_FLOATS, ODD_FLOATS].concat();
     Builder::new()
@@ -1215,14 +1298,9 @@ fn expected_projection(label: &str, bytes: &[u8]) -> Result<Mesh, String> {
                         weights: vec![[c, d, e, f]],
                     }),
                 }])],
+                // The skeleton beside the shapes is not read; `j` keeps parent 0 without `tx`.
                 skeleton: vec![
-                    Joint { name: "root".into(), index: 0, parent: None,
-                        inverse_bind: Some(Transform {
-                            basis: [[a, b, c], [d, e, f], [a, b, c]],
-                            translation: [d, e, f],
-                        }) },
-                    Joint { name: "child".into(), index: 1, parent: Some(0), inverse_bind: None },
-                    Joint { name: "j".into(), index: 2, parent: None, inverse_bind: None },
+                    Joint { name: "j".into(), index: 0, parent: Some(0), inverse_bind: None },
                 ],
                 locators: vec!["a".into(), "b".into()],
             })

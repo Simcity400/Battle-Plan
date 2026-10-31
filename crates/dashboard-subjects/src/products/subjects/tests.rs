@@ -389,14 +389,12 @@ fn subject_levels_follow_the_content_order_and_keep_unknown_ids_last() {
         id: id.into(),
         min_freedom_level,
     };
-    let states = AutonomyStates {
-        states: vec![
-            state("loose", Some(80_000)),
-            state("tight", Some(20_000)),
-            state("unordered", None),
-            state("unused", Some(0)),
-        ],
-    };
+    let states = AutonomyStates::new(vec![
+        state("loose", Some(80_000)),
+        state("tight", Some(20_000)),
+        state("unordered", None),
+        state("unused", Some(0)),
+    ]);
     let named = ["loose", "tight", "unordered", "modded"]
         .into_iter()
         .collect();

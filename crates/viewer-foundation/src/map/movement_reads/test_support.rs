@@ -44,7 +44,7 @@ pub fn assets() -> MovementFixture {
     triggers.counts = Some(installed_content_core::trigger_keys::CountTriggerNames::new(
         &facts.buildings,
         ideologies,
-        &[],
+        &Default::default(),
     ));
     facts.triggers = Arc::new(triggers);
     assets

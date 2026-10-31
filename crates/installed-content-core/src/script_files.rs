@@ -101,6 +101,27 @@ pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec
     files.into_iter().map(|(_, path)| ScriptPath(path)).collect()
 }
 
+/// Whether `path` is a database file directly in `folder` (lowercase and ending in `/`), its
+/// folder and `.txt` suffix compared without ASCII case.
+pub fn is_database_file(path: &[u8], folder: &str) -> bool {
+    path.to_ascii_lowercase()
+        .strip_prefix(folder.as_bytes())
+        .is_some_and(|name| !name.contains(&b'/') && name.ends_with(b".txt"))
+}
+
+/// Every effective database file directly in `folder` ([`is_database_file`]) in the order the
+/// database's folder scan lists them: by name, byte for byte. The scan spells the folder
+/// itself, so the case a layer gives the folder does not move a file.
+pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> Vec<ScriptPath> {
+    let mut paths: Vec<ScriptPath> = layers
+        .paths()
+        .filter(|path| is_database_file(path, folder))
+        .map(|path| ScriptPath(path.to_vec()))
+        .collect();
+    paths.sort_by(|a, b| a.0[folder.len()..].cmp(&b.0[folder.len()..]));
+    paths
+}
+
 /// Each parsed file under `folder` in load order, as trees, for the content
 /// readers not yet on the reader replay.
 pub fn documents<D: DiagnosticMessage>(
@@ -173,6 +194,52 @@ mod tests {
         );
         assert_eq!(paths(&layers, "common/ideas/", None).len(), 5);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A database folder lists its files by name: a mod that spells the folder in upper case
+    /// does not move its files ahead of the base game's.
+    #[test]
+    fn a_database_folder_orders_its_files_by_name_whatever_the_folder_case() {
+        let root = std::env::temp_dir().join(format!(
+            "installed-content-database-paths-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let (base, over) = (root.join("base"), root.join("over"));
+        for (dir, file) in [
+            (&base, "common/abilities/a.txt"),
+            (&base, "common/abilities/m.TXT"),
+            (&over, "COMMON/ABILITIES/z.txt"),
+            (&over, "COMMON/ABILITIES/nested/b.txt"),
+            (&over, "COMMON/ABILITIES/notes.yml"),
+        ] {
+            let path = dir.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, file).unwrap();
+        }
+        let layers = ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[][..])]).unwrap();
+        let listed: Vec<_> = database_paths(&layers, "common/abilities/")
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            listed,
+            [
+                "common/abilities/a.txt",
+                "common/abilities/m.TXT",
+                "COMMON/ABILITIES/z.txt"
+            ]
+        );
+        assert!(is_database_file(
+            b"COMMON/BUILDINGS/UPPER.TXT",
+            "common/buildings/"
+        ));
+        assert!(!is_database_file(
+            b"common/buildings/nested/air.txt",
+            "common/buildings/"
+        ));
     }
 
     #[test]

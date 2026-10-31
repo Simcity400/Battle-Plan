@@ -178,7 +178,7 @@ pub fn authored_bonus(
         };
         let target = String::from_utf8_lossy(&target.folded()).into_owned();
         let mut block = Block {
-            category: content.subunit_named(&target).is_none(),
+            category: content.subunit(&target).is_none(),
             target,
             ..Block::default()
         };

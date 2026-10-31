@@ -10,7 +10,7 @@ use crate::{
     buildings::Buildings,
     ideologies::Ideologies,
     parser::Item,
-    resources::Resource,
+    resources::Resources,
     scope::Scope,
     scripted_triggers::{Lookup, ScriptedTriggers, Template},
 };
@@ -484,10 +484,12 @@ pub struct CountTriggerNames {
     pub ideology_types: BTreeSet<Vec<u8>>,
     pub ideologies_gap: Option<String>,
     pub resources: BTreeSet<Vec<u8>>,
+    /// A resource file whose reading stops short, which could declare any other name.
+    pub resources_gap: Option<String>,
 }
 
 impl CountTriggerNames {
-    pub fn new(buildings: &Buildings, ideologies: &Ideologies, resources: &[Resource]) -> Self {
+    pub fn new(buildings: &Buildings, ideologies: &Ideologies, resources: &Resources) -> Self {
         let mut provincial = BTreeMap::new();
         for (name, building) in &buildings.types {
             let class = building.provincial();
@@ -527,9 +529,11 @@ impl CountTriggerNames {
                 .collect(),
             ideologies_gap: ideologies.groups().1.map(ToString::to_string),
             resources: resources
+                .declarations
                 .iter()
                 .map(|resource| resource.token.as_bytes().to_ascii_lowercase())
                 .collect(),
+            resources_gap: resources.gap().map(ToString::to_string),
         }
     }
     pub fn count_kind(&self, text: &[u8]) -> Result<Option<CountKind>, String> {
@@ -538,6 +542,11 @@ impl CountTriggerNames {
             Some(CountKind::Building)
         } else if self.resources.contains(&folded) {
             Some(CountKind::Resource)
+        } else if let Some(gap) = &self.resources_gap {
+            return Err(format!(
+                "whether {} names a resource is unknown: {gap}",
+                String::from_utf8_lossy(text)
+            ));
         } else if self.is_ideology(text)? {
             Some(CountKind::Ideology)
         } else {
@@ -809,10 +818,11 @@ mod tests {
         );
         let groups = crate::ideologies::parse(b"ideologies = { fascism = { } }");
         let ideologies = Ideologies::from_groups(groups.clone(), None);
-        let resources = [Resource {
+        let steel = crate::resources::Resource {
             token: "Steel".into(),
             icon_frame: None,
-        }];
+        };
+        let resources = Resources::new(vec![steel.clone()]);
         let names = CountTriggerNames::new(&buildings, &ideologies, &resources);
         assert!(names.is_building(b"ARMS_FACTORY"));
         assert_eq!(names.is_ideology(b"Fascism"), Ok(true));
@@ -841,6 +851,19 @@ mod tests {
             unknown.starts_with("whether technocracy names an ideology group is unknown: common/ideologies/b.txt is unknown from line 3"),
             "{unknown}"
         );
+        // A resource file that stops short could declare any name a building does not take.
+        let stopped = Resources::stopped(vec![steel], "common/resources/b.txt", "line 2");
+        let names = CountTriggerNames::new(&buildings, &ideologies, &stopped);
+        assert_eq!(names.count_kind(b"steel"), Ok(Some(CountKind::Resource)));
+        assert_eq!(
+            names.count_kind(b"arms_factory"),
+            Ok(Some(CountKind::Building))
+        );
+        let unknown = names.count_kind(b"fascism").unwrap_err();
+        assert!(
+            unknown.starts_with("whether fascism names a resource is unknown: common/resources/b.txt is unknown from line 2"),
+            "{unknown}"
+        );
     }
 
     #[test]
@@ -859,7 +882,8 @@ mod tests {
         buildings
             .repeated_types
             .insert("site".into(), vec![BuildingType::default(), provincial]);
-        let names = CountTriggerNames::new(&buildings, &Ideologies::default(), &[]);
+        let names =
+            CountTriggerNames::new(&buildings, &Ideologies::default(), &Resources::default());
         assert_eq!(names.is_provincial(b"BUNKER"), Some(true));
         assert_eq!(names.is_provincial(b"Mill"), Some(false));
         assert_eq!(names.is_provincial(b"site"), None);

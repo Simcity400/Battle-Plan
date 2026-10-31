@@ -1130,6 +1130,42 @@ fn number_and_keyword_tokens_follow_the_lexer() {
     assert_eq!(nul[0].text, b"x\0yz");
 }
 
+/// Field and item keyword dispatch read a key or value up to its NUL, the token the lexer
+/// looks up; a key that starts with NUL is no keyword.
+#[test]
+fn keyword_dispatch_stops_at_the_token_nul() {
+    let mut seen = Vec::new();
+    let read = read(
+        b"Buildings suffix = { cost = Land x }  lead = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field| {
+            seen.push((field.keyword(), field.value_keyword()));
+            if field.keyword_is("buildings") {
+                Shape::Body(())
+            } else {
+                Shape::One
+            }
+        },
+    );
+    assert_eq!(read.unsettled, None);
+    assert_eq!(
+        seen,
+        [
+            (Some(b"buildings".to_vec()), None),
+            (Some(b"cost".to_vec()), Some(b"land".to_vec())),
+            (None, None),
+        ]
+    );
+    let root = &read.items[0];
+    assert!(root.keyword_is("buildings"));
+    assert_eq!(root.keyword().unwrap().text(), b"Buildings");
+    let cost = &root.value.items().unwrap()[0];
+    assert_eq!(cost.value_keyword().as_deref(), Some("land"));
+    assert_eq!(read.items[1].keyword(), None);
+}
+
 /// A 0xFF is one end of the stream and reading goes on after it: at a token's start, ending
 /// a word (which the lexer keeps), after `?`; it only ends a comment, and ends a string that
 /// is still returned. In mode 0 a leading byte-order mark is word bytes; bytes from 0x80 are

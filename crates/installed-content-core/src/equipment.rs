@@ -368,7 +368,7 @@ impl Slots {
             self.names.push(name);
             return Shape::Object(Node::Slot);
         }
-        if field.value.kind == Kind::Bare && field.value.text.eq_ignore_ascii_case(b"inherit") {
+        if field.value.is_keyword("inherit") {
             self.maybe.push(name);
             return Shape::One;
         }
@@ -455,8 +455,8 @@ fn shape(node: Node, field: &Field<'_>, reading: &mut Reading) -> Shape<Node> {
             Some(b"linear_cost") => Shape::Object(Node::Cost),
             // The value slot's id against `land`, `naval` and `air`, else
             // error recovery.
-            Some(b"cost") => match field.value.text.to_ascii_lowercase().as_slice() {
-                b"land" | b"naval" | b"air" if field.value.kind == Kind::Bare => Shape::One,
+            Some(b"cost") => match field.value_keyword().as_deref() {
+                Some(b"land" | b"naval" | b"air") => Shape::One,
                 _ => Shape::Skip,
             },
             Some(b"abbreviation" | b"max_level") => Shape::One,
@@ -519,12 +519,7 @@ fn shape(node: Node, field: &Field<'_>, reading: &mut Reading) -> Shape<Node> {
             Some(b"type" | b"forbid_mission_type") => Shape::ListIfOpen,
             // Skip an opening block; `none` sets the flag, and other values report errors.
             Some(b"module_slots") if field.opens() => Shape::SkipIfOpen,
-            Some(b"module_slots")
-                if field.value.kind == Kind::Bare
-                    && field.value.text.eq_ignore_ascii_case(b"none") =>
-            {
-                Shape::One
-            }
+            Some(b"module_slots") if field.value.is_keyword("none") => Shape::One,
             Some(b"variant_name") if field.opens() => Shape::Object(Node::Pairs),
             Some(b"for_each") if field.opens() => Shape::Object(Node::ForEach),
             _ => Shape::Skip,
@@ -568,7 +563,7 @@ fn equipment_field(field: &Field<'_>, keyword: Option<&[u8]>, slots: &mut Slots)
         Some(b"module_slots") => {
             // Bare `inherit` folds, while quoted text is not the keyword.
             // Source slots are unavailable during this preliminary read.
-            if field.value.kind == Kind::Bare && field.value.text.eq_ignore_ascii_case(b"inherit") {
+            if field.value.is_keyword("inherit") {
                 slots.names.clear();
                 slots.maybe.clear();
                 slots.inherited = true;
@@ -1888,7 +1883,7 @@ fn read_duplicate(definition: &mut Duplicate, fields: &[Item]) {
                     && field
                         .value
                         .scalar()
-                        .is_some_and(|value| value.eq_ignore_ascii_case(b"none")) =>
+                        .is_some_and(|value| c_string(value).eq_ignore_ascii_case(b"none")) =>
             {
                 definition.no_slots = true;
             }

@@ -22,7 +22,7 @@ pub fn set_counts(assets: &mut RaidAssets) {
     names.counts = Some(installed_content_core::trigger_keys::CountTriggerNames::new(
         &facts.buildings,
         ideologies,
-        &[],
+        &Default::default(),
     ));
     facts.triggers = Arc::new(names);
 }

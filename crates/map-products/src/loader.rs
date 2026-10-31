@@ -143,7 +143,7 @@ impl Loader {
     pub fn resources(
         &self,
     ) -> io::Result<(
-        Vec<installed_content_core::resources::Resource>,
+        installed_content_core::resources::Resources,
         Vec<installed_content_core::Diagnostic>,
     )> {
         let result = self.result(installed_content_core::resources::read(
@@ -547,7 +547,7 @@ impl CombatInputs {
         &self,
         buildings: &installed_content_core::buildings::Buildings,
         ideologies: &installed_content_core::ideologies::Ideologies,
-        resources: &[installed_content_core::resources::Resource],
+        resources: &installed_content_core::resources::Resources,
     ) -> installed_content_core::trigger_keys::TriggerNames {
         installed_content_core::trigger_keys::TriggerNames {
             scripted: resolved_scripted(&self.database.phases, self.scripted.clone()),

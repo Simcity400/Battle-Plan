@@ -167,8 +167,11 @@ impl Catalog {
         let gfx = object_file_order(&interface, &gfx);
         for path in gfx {
             let bytes = path.read_uncovered(layers)?;
-            // Sprite files never declare objects; skip parsing them.
-            if bytes.windows(11).any(|word| word == b"pdxparticle") {
+            // Sprite files never declare objects; skip parsing them. The keyword folds case.
+            if bytes
+                .windows(11)
+                .any(|word| word.eq_ignore_ascii_case(b"pdxparticle"))
+            {
                 out.add_objects(&bytes)
                     .map_err(|error| invalid(format!("{path}: {error}")))?;
             }
@@ -197,12 +200,17 @@ impl Catalog {
 
     fn add_objects(&mut self, bytes: &[u8]) -> io::Result<()> {
         let (document, _) = crate::parser::parse_unclosed(bytes)?;
-        for objects in all(&document.items, b"objectTypes") {
-            for value in all(block(objects, "objectTypes")?, b"pdxparticle") {
+        for objects in keyword_values(&document.items, "objectTypes") {
+            for value in keyword_values(block(objects, "objectTypes")?, "pdxparticle") {
                 let fields = block(value, "pdxparticle")?;
-                let name = text(require(fields, "name", "pdxparticle")?, "pdxparticle name")?;
-                let kind = text(require(fields, "type", "pdxparticle")?, "pdxparticle type")?;
-                let scale = match last(fields, b"scale") {
+                let field = |key: &'static str| {
+                    keyword_values(fields, key)
+                        .next_back()
+                        .ok_or_else(|| invalid(format!("pdxparticle has no {key}")))
+                };
+                let name = text(field("name")?, "pdxparticle name")?;
+                let kind = text(field("type")?, "pdxparticle type")?;
+                let scale = match keyword_values(fields, "scale").next_back() {
                     Some(value) => number(value, "pdxparticle scale")?,
                     None => 1.0,
                 };
@@ -278,6 +286,18 @@ impl Catalog {
     pub fn max_particles(&self) -> usize {
         self.max_particles
     }
+}
+
+/// Every value under the keyword `key`, as the graphics file reader dispatches an object's
+/// fields: in any ASCII case, never under a quoted key.
+fn keyword_values<'a>(
+    items: &'a [parser::Item],
+    key: &'a str,
+) -> impl DoubleEndedIterator<Item = &'a parser::Value> {
+    items
+        .iter()
+        .filter(move |item| item.keyword_is(key))
+        .map(|item| &item.value)
 }
 
 fn capacity(fields: &[parser::Item]) -> io::Result<usize> {
@@ -474,6 +494,43 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("bad.dds has zero atlas dimension")
+        );
+    }
+
+    /// Object declarations dispatch by keyword as the graphics file reader does: in any ASCII
+    /// case, never under a quoted key; the identifiers they name stay exact.
+    #[test]
+    fn objects_dispatch_by_keyword_and_keep_exact_identifiers() {
+        let mut catalog = Catalog::default();
+        catalog
+            .add_objects(
+                br#"OBJECTTYPES = {
+                    PDXPARTICLE = { NAME = Rain TYPE = Rain_Particle SCALE = 2 }
+                    PdxParticle = { Name = snow Type = snow_particle }
+                    "pdxparticle" = { name = quoted type = snow_particle }
+                    pdxparticle = { "name" = keyed name = keyed_name type = snow_particle }
+                }"#,
+            )
+            .unwrap();
+        catalog
+            .add_particles(
+                b"particle = { name = Rain_Particle } particle = { name = snow_particle }",
+                &"gfx/particles/weather.asset".into(),
+            )
+            .unwrap();
+        let rain = catalog.resolve("Rain").unwrap();
+        assert_eq!((rain.name.as_str(), rain.scale), ("Rain_Particle", 2.0));
+        assert!(catalog.resolve("rain").is_err());
+        assert_eq!(catalog.resolve("snow").unwrap().registration, 1);
+        assert!(catalog.resolve("quoted").is_err());
+        assert!(catalog.resolve("keyed").is_err());
+        assert_eq!(catalog.resolve("keyed_name").unwrap().registration, 2);
+        assert!(
+            catalog
+                .add_objects(b"objectTypes = { pdxparticle = { NAME = nameless } }")
+                .unwrap_err()
+                .to_string()
+                .contains("pdxparticle has no type")
         );
     }
 

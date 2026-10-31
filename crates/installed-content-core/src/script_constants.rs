@@ -11,7 +11,9 @@
 //! categories merge into the first; repeated keys replace the whole entry.
 //!
 //! Bodies read by key ([`native::Shape::ByKey`]); keyless schema children and array
-//! elements use list consumption. Unsettled forms remain named refusals.
+//! elements use list consumption. Unsettled forms remain named refusals. A file whose
+//! reading stops short leaves every entry its unread rest could define or replace
+//! unknown; the files after it still read, and an entry one of them replaces is known again.
 
 use std::{collections::BTreeMap, io};
 
@@ -100,20 +102,43 @@ struct Category {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Constants {
     categories: BTreeMap<Vec<u8>, Category>,
-    /// A file whose reading the port cannot follow: every later category is
-    /// unknown.
-    unsettled: Option<String>,
+    /// The file in load order that last stored each (category, entry), which a
+    /// repeated entry replaces whole.
+    defined: BTreeMap<(Vec<u8>, Vec<u8>), usize>,
+    /// Each file whose reading the port cannot follow to its end, in load order,
+    /// and why.
+    gaps: Vec<(usize, String)>,
 }
 
 impl Constants {
+    /// The last gap that could change an entry stored by file `from`: one in or
+    /// after that file, or any gap when no file stores it.
+    fn gap(&self, from: Option<usize>) -> Option<&str> {
+        self.gaps
+            .iter()
+            .rev()
+            .find(|(file, _)| from.is_none_or(|from| *file >= from))
+            .map(|(_, why)| why.as_str())
+    }
+
     fn find_value(&self, parts: &[&str]) -> Result<Option<&Value>, &str> {
         let Some((category, path)) = parts.split_first() else {
             return Ok(None);
         };
-        let Some(found) = self.categories.get(&token(category.as_bytes())) else {
-            return self.unsettled.as_deref().map_or(Ok(None), Err);
+        let category = token(category.as_bytes());
+        let Some(found) = self.categories.get(&category) else {
+            return self.gap(None).map_or(Ok(None), Err);
         };
         if let Some(why) = &found.refused {
+            return Err(why);
+        }
+        if let Some(entry) = path.first()
+            && let Some(why) = self.gap(
+                self.defined
+                    .get(&(category, token(entry.as_bytes())))
+                    .copied(),
+            )
+        {
             return Err(why);
         }
         let mut map = &found.root;
@@ -192,10 +217,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Constants> {
 /// The database from files in load order.
 pub fn parse(files: &[(&str, &[u8])]) -> Constants {
     let mut out = Constants::default();
-    for (path, input) in files {
-        if out.unsettled.is_some() {
-            break;
-        }
+    for (file, (path, input)) in files.iter().enumerate() {
         // Use lexer mode 0 for script constants.
         let read = native::read(
             input,
@@ -208,34 +230,45 @@ pub fn parse(files: &[(&str, &[u8])]) -> Constants {
             let Some(key) = item.key.as_deref() else {
                 continue;
             };
+            let name = token(key);
             let category = out
                 .categories
-                .entry(token(key))
+                .entry(name.clone())
                 .or_insert_with(|| Category {
                     root: BTreeMap::new(),
                     refused: None,
                 });
-            if category.refused.is_none()
-                && let Err(why) = read_category(item, &mut category.root)
-            {
-                category.refused = Some(format!("{path}: {why}"));
+            if category.refused.is_none() {
+                match read_category(item, &mut category.root) {
+                    Ok(stored) => {
+                        for entry in stored {
+                            out.defined.insert((name.clone(), entry), file);
+                        }
+                    }
+                    Err(why) => category.refused = Some(format!("{path}: {why}")),
+                }
             }
         }
         if let Some(unsettled) = read.unsettled {
-            out.unsettled = Some(format!("{path}: {unsettled}"));
+            out.gaps.push((
+                file,
+                format!(
+                    "{path} is unknown from {unsettled}, so a constant it could define or replace there is unknown"
+                ),
+            ));
         }
     }
     out
 }
 
-/// Read one category block into `root`.
-fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<(), String> {
+/// Read one category block into `root`: the keys of the entries it stores.
+fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<Vec<Vec<u8>>, String> {
     let name = String::from_utf8_lossy(item.key.as_deref().unwrap_or_default()).into_owned();
     let Some(fields) = item.value.items() else {
         return Err(format!("category {name} is not a block"));
     };
     let Some((first, entries)) = fields.split_first() else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     if !first.keyword_is("schema") {
         // A missing initial schema skips the block. A new category keeps
@@ -248,10 +281,10 @@ fn read_category(item: &Item, root: &mut BTreeMap<Vec<u8>, Node>) -> Result<(), 
         return Err(format!("category {name}'s schema is not an object"));
     };
     let schema = read_schema(schema).map_err(|why| format!("category {name}'s schema: {why}"))?;
-    for entry in entries {
-        read_entry(entry, &schema, root);
-    }
-    Ok(())
+    Ok(entries
+        .iter()
+        .filter_map(|entry| read_entry(entry, &schema, root))
+        .collect())
 }
 
 /// Read a schema node, refusing reported forms by name when their resulting state
@@ -279,9 +312,9 @@ fn read_schema(fields: &[Item]) -> Result<Schema, String> {
                         schema.children.push(read_schema(fields)?);
                     }
                 }
-                None => schema.leaf = Some((kind(value)?, false)),
+                None => schema.leaf = Some((kind(field.value_keyword())?, false)),
             },
-            b"array" => schema.leaf = Some((kind(value)?, true)),
+            b"array" => schema.leaf = Some((kind(field.value_keyword())?, true)),
             other => {
                 return Err(format!(
                     "the schema key {} is reported and skipped",
@@ -293,42 +326,38 @@ fn read_schema(fields: &[Item]) -> Result<Schema, String> {
     Ok(schema)
 }
 
-fn kind(value: Option<&[u8]>) -> Result<Kind, String> {
-    Ok(match value.map(<[u8]>::to_ascii_lowercase).as_deref() {
-        Some(b"int") => Kind::Int,
-        Some(b"fixed_point") => Kind::FixedPoint,
-        Some(b"token") => Kind::Token,
-        Some(b"country") => Kind::Country,
-        Some(b"state") => Kind::State,
+/// A type dispatches on the value token's id ([`Item::value_keyword`]).
+fn kind(value: Option<String>) -> Result<Kind, String> {
+    Ok(match value.as_deref() {
+        Some("int") => Kind::Int,
+        Some("fixed_point") => Kind::FixedPoint,
+        Some("token") => Kind::Token,
+        Some("country") => Kind::Country,
+        Some("state") => Kind::State,
         _ => return Err("unsupported constant data type".into()),
     })
 }
 
-/// Read an entry under `schema` into `map`.
-fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) {
-    let Some(key) = entry.key.as_deref() else {
-        return;
-    };
-    let key = token(key);
+/// Read an entry under `schema` into `map`: its key when it stores one.
+fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) -> Option<Vec<u8>> {
+    let key = token(entry.key.as_deref()?);
     // A key that fails the schema match is not stored.
     if !schema.any_key && schema.key.as_deref() != Some(key.as_slice()) {
-        return;
+        return None;
     }
     let node = match schema.leaf {
         Some((kind, array)) => Node::Value(value(entry, kind, array)),
         // A nonobject value stores nothing.
         None => {
-            let Some(fields) = entry.value.items() else {
-                return;
-            };
+            let fields = entry.value.items()?;
             let mut inner = BTreeMap::new();
             for field in fields {
                 if field.key.is_none() {
                     map.insert(
-                        key,
+                        key.clone(),
                         Node::Refused("an object entry holds a value without a key".into()),
                     );
-                    return;
+                    return Some(key);
                 }
                 let field_key = token(field.key.as_deref().unwrap_or_default());
                 // The first child whose key matches or that takes any key;
@@ -342,7 +371,8 @@ fn read_entry(entry: &Item, schema: &Schema, map: &mut BTreeMap<Vec<u8>, Node>) 
             Node::Map(inner)
         }
     };
-    map.insert(key, node);
+    map.insert(key.clone(), node);
+    Some(key)
 }
 
 /// Failed or unsupported scalar conversion stores integer 0, including array elements.
@@ -455,6 +485,67 @@ mod tests {
         assert_eq!(constants.integer(&["sp", "small", "gain"]).unwrap(), None);
         assert_eq!(constants.integer(&["missing", "value"]).unwrap(), None);
         assert_eq!(constants.integer(&["groups", "nordics"]).unwrap(), None);
+    }
+
+    /// A file that stops short leaves every constant its unread rest could define or
+    /// replace unknown, an earlier file's included; a later file that replaces an entry
+    /// decides it again.
+    #[test]
+    fn a_file_that_stops_short_leaves_what_it_could_replace_unknown() {
+        // A block with anonymous values and a variable definition cannot be followed.
+        let stops = "propaganda = {
+            schema = { any_key = yes data = { { any_key = yes data = int } } }
+            GER = { @level = 2 loose }
+        }";
+        let later = "sp = {
+            schema = { any_key = yes data = { { key = min data = int } } }
+            small = { min = 7 }
+        }";
+        let constants = parse(&[
+            ("a.txt", PROPAGANDA.as_bytes()),
+            ("b.txt", stops.as_bytes()),
+            ("c.txt", later.as_bytes()),
+        ]);
+        assert_eq!(constants.gaps.len(), 1);
+        assert_eq!(constants.gaps[0].0, 1);
+        for parts in [
+            &["propaganda", "SIA", "empty_slot"][..],
+            &["propaganda", "GER", "empty_slot"],
+            &["propaganda", "absent", "x"],
+            &["sp", "wrong", "max"],
+            &["groups", "nordics"],
+            &["missing", "x"],
+        ] {
+            let Constant::Unset(why) = constants.value(parts) else {
+                panic!("{parts:?} is known");
+            };
+            assert!(why.contains("b.txt is unknown from"), "{parts:?}: {why}");
+            assert!(constants.collection(parts).is_err(), "{parts:?}");
+        }
+        assert_eq!(
+            constants.value(&["sp", "small", "min"]),
+            Constant::Value(700_000)
+        );
+        assert_eq!(constants.integer(&["sp", "small", "min"]).unwrap(), Some(7));
+    }
+
+    /// A schema type is the value token up to its NUL, as its dispatch reads it; a quoted
+    /// type is no token and is refused.
+    #[test]
+    fn schema_types_dispatch_on_the_value_token() {
+        let constants = parse(&[(
+            "a.txt",
+            &b"sample = { schema = { any_key = yes data = int\0suffix } entry = 7 }\n\
+              quoted = { schema = { any_key = yes data = \"int\" } entry = 7 }"[..],
+        )]);
+        assert_eq!(
+            constants.value(&["sample", "entry"]),
+            Constant::Value(700_000)
+        );
+        let Constant::Unset(why) = constants.value(&["quoted", "entry"]) else {
+            panic!("a quoted type is read");
+        };
+        assert!(why.contains("unsupported constant data type"), "{why}");
     }
 
     /// A repeated category merges into the first; a repeated key is

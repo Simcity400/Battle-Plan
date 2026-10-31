@@ -558,6 +558,7 @@ fn equipment_and_autonomy_content_is_cached_with_reader_notes() {
             .autonomy_states
             .unwrap()
             .get("synthetic_autonomy")
+            .unwrap()
             .is_some()
     );
     for expected in [

@@ -620,6 +620,18 @@ fn a_quoted_skill_type_is_no_category_keyword() {
     assert_eq!(leaders.skills.next_required_experience(0, 2), Some(Some(5)));
 }
 
+/// `type` dispatches on the value token up to its NUL, in the reader and in what it keeps
+/// alike: a retained category value is still a category for a `type` without an operator,
+/// which reads one value, so the block after it is the level's own fields.
+#[test]
+fn a_skill_type_dispatches_on_the_token_up_to_its_nul() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let skills =
+        skills(&[b"leader_skills = { 1 = { type = corps_commander\0suffix type { cost = 7 } } }"]);
+    assert_eq!(skills.next_required_experience(0, 1), Some(Some(7)));
+}
+
 /// Forms the tree cannot hold are read as the game reads them, each
 /// named: a taken name (leaving `= value` for the next key), a block value
 /// (only its `{` is kept), a taken name inside a block read by key, a block

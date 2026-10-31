@@ -2894,6 +2894,69 @@ fn country_flag_and_completed_focus_require_only_their_recorded_inputs() {
     }
 }
 
+/// A state trigger needs only the core tables it reads: identity, owner, controller and
+/// flags are answered whatever the provinces, while a trigger that reads them, or a gap in a
+/// table it does read, still refuses.
+#[test]
+fn a_state_trigger_reading_no_provinces_is_answered_without_them() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use replay_data::rows::StateRow;
+    let mut f = frame(&countries(), &[]);
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
+        id: 64,
+        owner: 100,
+        controller: 104,
+        ..Default::default()
+    }]));
+    *f.tables[TableId::ScriptFlags.index()] =
+        TableView::Complete(TableRows::ScriptFlags(vec![ScriptFlagRow {
+            scope_kind: 2,
+            scope_id: 64,
+            token: 900,
+            value: 1,
+            ..Default::default()
+        }]));
+    *f.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "unrelated province gap".into(),
+    };
+    let dlcs = BTreeSet::new();
+    let names = TriggerNames::default();
+    let aliases = Arc::new(TagAliases::default());
+    let evaluate = |frame: &DecodedFrame, body: &str| {
+        World::read(frame, ContentFacts::content_only(&dlcs, &names, &aliases))
+            .evaluate(&items(body), Scopes::of(Scope::State(64)))
+            .decided()
+    };
+    for (body, expected) in [
+        ("state = 64", true),
+        ("is_owned_by = GER", true),
+        ("is_controlled_by = GER", false),
+        ("is_controlled_by = FRA", true),
+        ("is_owned_and_controlled_by = GER", false),
+        ("has_state_flag = x", true),
+    ] {
+        assert_eq!(evaluate(&f, body), Ok(expected), "{body}");
+    }
+    assert!(
+        evaluate(&f, "is_fully_controlled_by = FRA")
+            .unwrap_err()
+            .contains("unrelated province gap")
+    );
+    *f.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "links refused".into(),
+    };
+    assert!(evaluate(&f, "is_owned_by = GER").is_err());
+    *f.tables[TableId::States.index()] = TableView::Unavailable {
+        reason: "states refused".into(),
+    };
+    assert!(
+        evaluate(&f, "has_state_flag = x")
+            .unwrap_err()
+            .contains("states refused")
+    );
+}
+
 #[test]
 fn continent_reads_the_retained_token_and_names_missing_operands() {
     engine_executable::executable_tables::initialize_for_tests()

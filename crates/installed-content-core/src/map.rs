@@ -145,14 +145,29 @@ fn color_key([red, green, blue]: [u8; 3]) -> u32 {
     (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue)
 }
 
+/// The native province table is indexed by record position while the raster's colour lookup
+/// stores each record's ID, so a record whose ID is not its position mixes two records; the
+/// readers that key definitions by ID refuse it by name.
+pub(crate) fn require_positions(rows: &[DefinitionRow]) -> io::Result<()> {
+    match rows
+        .iter()
+        .enumerate()
+        .find(|(position, row)| usize::from(row.id) != *position)
+    {
+        Some((position, row)) => Err(invalid(format!(
+            "definition.csv line {} declares province {} at native record {position}; records whose ID differs from their position are unsupported",
+            row.line, row.id
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// The province definitions and the colour lookup the province raster is
 /// resolved through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Definitions {
-    /// Every record by id, the zero sentinel included.
+    /// Every record by id, which is its native record position, the zero sentinel included.
     pub provinces: BTreeMap<u32, ProvinceDefinition>,
-    /// Each record's id in file order, which is its native record position.
-    pub record_ids: Vec<u16>,
     /// Each nonzero record writes its id under its colour in file order,
     /// so a later record takes a colour an earlier one also declares and
     /// record zero's colour is a miss.
@@ -161,9 +176,10 @@ pub struct Definitions {
 
 /// Reads `definition.csv` as the game does (`definition_rows`). Records the
 /// map does not model are refused by name: a kind other than `land`, `sea` or
-/// `lake`, and two records of one id.
+/// `lake`, and a record whose id is not its position ([`require_positions`]).
 pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
     let rows = definition_rows(input)?;
+    require_positions(&rows)?;
     let mut provinces = BTreeMap::new();
     let mut colors = HashMap::new();
     for row in &rows {
@@ -176,15 +192,15 @@ pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
                 String::from_utf8_lossy(&row.kind)
             ))
         })?;
-        let definition = ProvinceDefinition {
+        provinces.insert(
             id,
-            rgb: row.rgb,
-            kind,
-            continent: row.continent,
-        };
-        if provinces.insert(id, definition).is_some() {
-            return Err(invalid(format!("duplicate province id {id}")));
-        }
+            ProvinceDefinition {
+                id,
+                rgb: row.rgb,
+                kind,
+                continent: row.continent,
+            },
+        );
         if id != 0 {
             colors.insert(color_key(row.rgb), id);
         }
@@ -192,24 +208,19 @@ pub fn read_definitions(input: &[u8]) -> io::Result<Definitions> {
     if provinces.is_empty() {
         return Err(invalid("definition.csv contains no provinces"));
     }
-    Ok(Definitions {
-        provinces,
-        record_ids: rows.iter().map(|row| row.id).collect(),
-        colors,
-    })
+    Ok(Definitions { provinces, colors })
 }
 
 /// Each record's terrain name by id (column seven, `unknown` when absent),
-/// from the rows [`definition_rows`] reads; duplicate ids are refused as
-/// [`read_definitions`] refuses them.
+/// from the rows [`definition_rows`] reads; a record whose id is not its
+/// position is refused as [`read_definitions`] refuses it.
 pub fn province_terrains(input: &[u8]) -> io::Result<BTreeMap<u32, Vec<u8>>> {
-    let mut terrains = BTreeMap::new();
-    for row in definition_rows(input)? {
-        if terrains.insert(u32::from(row.id), row.terrain).is_some() {
-            return Err(invalid(format!("duplicate province id {}", row.id)));
-        }
-    }
-    Ok(terrains)
+    let rows = definition_rows(input)?;
+    require_positions(&rows)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (u32::from(row.id), row.terrain))
+        .collect())
 }
 
 /// The province definitions of [`read_definitions`].
@@ -255,7 +266,7 @@ fn apply_autonomy_colors(
     names: &KeyNames,
 ) -> io::Result<()> {
     // The database's own read of the file ([`crate::autonomy::read_definitions`]).
-    for item in crate::autonomy::read_definitions(input, names)? {
+    for item in crate::autonomy::settled_definitions(input, names)? {
         let Some(items) = item.value.items() else {
             continue;
         };
@@ -334,7 +345,7 @@ mod tests {
     #[test]
     fn bmp_bgr_padding_and_file_rows_produce_top_left_ids() {
         let definitions =
-            read_definitions(b"0;0;0;0;land\n7;1;2;3;sea\n99;4;5;6;lake\n5;9;9;9;land\n").unwrap();
+            read_definitions(b"0;0;0;0;land\n1;1;2;3;sea\n2;4;5;6;lake\n3;9;9;9;land\n").unwrap();
         let top_row = [3, 2, 1, 6, 5, 4, 222, 222];
         let bottom_row = [9, 9, 9, 3, 2, 1, 111, 111];
         assert_eq!(
@@ -343,7 +354,7 @@ mod tests {
             ProvinceImage {
                 width: 2,
                 height: 2,
-                province_ids: vec![7, 99, 5, 7],
+                province_ids: vec![1, 2, 3, 1],
             }
         );
     }
@@ -390,7 +401,6 @@ mod tests {
         let definitions =
             read_definitions(b"0;0;0;0;land\n1;0;0;0;land\n2;5;5;5;sea\n3;0;0;0;lake\n").unwrap();
         assert_eq!(definitions.provinces.len(), 4);
-        assert_eq!(definitions.record_ids, [0, 1, 2, 3]);
         let image = bitmap(2, 1, &[0, 0, 0, 5, 5, 5, 0, 0]);
         assert_eq!(
             decode_provinces_bmp(&image, &definitions)
@@ -489,12 +499,36 @@ mod tests {
         assert_eq!(terrains[&1], b" hills ");
         assert_eq!(terrains[&2], b"ocean");
         assert!(province_terrains(b"1;1;1;1;land\n1;2;2;2;land").is_err());
+        assert!(province_terrains(b"0;0;0;0;land\n2;1;1;1;sea\n1;2;2;2;land").is_err());
+    }
+
+    /// The native table is indexed by record position and the raster by the records' IDs,
+    /// so a file whose IDs are unique but out of order would key one record's kind under
+    /// another's colour: every reader that keys definitions by ID refuses it by name.
+    #[test]
+    fn records_whose_id_is_not_their_position_are_refused_by_name() {
+        for (input, line, id, position) in [
+            (&b"0;0;0;0;land\n2;1;1;1;sea\n1;2;2;2;land\n"[..], 2, 2, 1),
+            (b"0;0;0;0;land\n1;1;1;1;land\n3;2;2;2;sea\n", 3, 3, 2),
+            (b"1;1;1;1;land\n", 1, 1, 0),
+        ] {
+            let error = read_definitions(input).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "definition.csv line {line} declares province {id} at native record {position}; records whose ID differs from their position are unsupported"
+                )
+            );
+            assert_eq!(province_terrains(input).unwrap_err().to_string(), error);
+            assert_eq!(parse_definitions(input).unwrap_err().to_string(), error);
+        }
     }
 
     #[test]
     fn province_definitions_refuse_forms_the_map_does_not_model() {
         for invalid in [
             "1;1;2;3;land\n1;3;2;1;sea",
+            "0;0;0;0;land\n2;1;2;3;sea\n1;3;2;1;land",
             "1;1;2;3;mountain",
             "1;1;2;3",
             "1;1;2",

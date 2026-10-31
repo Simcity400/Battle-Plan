@@ -151,7 +151,7 @@ impl Database {
                         .any(|item| {
                             item.value
                                 .scalar()
-                                .is_some_and(|name| name.eq_ignore_ascii_case(b"name"))
+                                .is_some_and(|name| c_string(name).eq_ignore_ascii_case(b"name"))
                         });
                 }
                 if field.keyword_is("include") {
@@ -167,20 +167,19 @@ impl Database {
                         field.value.items().unwrap_or_default().iter().any(|item| {
                             item.value
                                 .scalar()
-                                .is_some_and(|name| name.eq_ignore_ascii_case(b"name"))
+                                .is_some_and(|name| c_string(name).eq_ignore_ascii_case(b"name"))
                         });
                     template.delete_initial_trait |=
                         field.value.items().unwrap_or_default().iter().any(|item| {
-                            item.value
-                                .scalar()
-                                .is_some_and(|name| name.eq_ignore_ascii_case(b"initial_trait"))
+                            item.value.scalar().is_some_and(|name| {
+                                c_string(name).eq_ignore_ascii_case(b"initial_trait")
+                            })
                         });
                     template.delete_visible |=
                         field.value.items().unwrap_or_default().iter().any(|value| {
-                            value
-                                .value
-                                .scalar()
-                                .is_some_and(|value| value.eq_ignore_ascii_case(b"visible"))
+                            value.value.scalar().is_some_and(|value| {
+                                c_string(value).eq_ignore_ascii_case(b"visible")
+                            })
                         });
                 }
             }

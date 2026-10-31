@@ -1015,7 +1015,10 @@ impl Renderer<'_, '_, '_> {
             .content
             .autonomy_states
             .ok_or_else(|| self.content_gap("autonomy states"))?;
-        let state = states.get(id); // compares exact definition bytes.
+        // Compares exact definition bytes.
+        let state = states
+            .get(id)
+            .map_err(|gap| format!("autonomy state {id}: {gap}"))?;
         if state.is_none() && !id.is_empty() && (release || id != "autonomy_free") {
             return Err(format!(
                 "autonomy state {id} is not defined by the recorded content stack"

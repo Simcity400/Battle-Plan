@@ -341,6 +341,7 @@ fn a_mod_resource_takes_its_frame_through_a_file_variable() {
     let (resources, warnings) = crate::resources::read(&stack.layers(&[])).unwrap();
     assert_eq!(
         resources
+            .declarations
             .iter()
             .map(|r| (r.token.as_str(), r.icon_frame))
             .collect::<Vec<_>>(),
@@ -936,6 +937,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     // following declaration as its fields, keeping only the missing-frame entry.
     assert_eq!(
         resources
+            .declarations
             .iter()
             .map(|r| (r.token.as_str(), r.icon_frame))
             .collect::<Vec<_>>(),
@@ -951,6 +953,7 @@ fn malformed_redeclarations_follow_each_native_database_s_duplicate_rule() {
     let (resources, _) = crate::resources::read(&stack.layers(&[])).unwrap();
     assert_eq!(
         resources
+            .declarations
             .iter()
             .map(|r| (r.token.as_str(), r.icon_frame))
             .collect::<Vec<_>>(),

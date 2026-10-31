@@ -561,7 +561,7 @@ fn a_mod_sub_unit_reads_its_stat_sheet() {
         [("synthetic_unknown".to_owned(), "1".to_owned())]
     );
     // A key the lexer folds names the same sub-unit.
-    assert!(content.subunit_named("SYNTHETIC_RANGER").is_some());
+    assert!(content.subunit("SYNTHETIC_RANGER").is_some());
 }
 
 /// A quoted category is no token and sets no flag; a bare one in any case does.
@@ -704,6 +704,38 @@ fn a_redefinition_keeps_transport_fuel_and_kept_words_and_adds_battalion_multipl
         b"sub_units = { ranger = { affects_speed = invalid } } sub_units = { ranger = { affects_speed = no } }",
     );
     assert_eq!(speed.subunit("ranger").unwrap().sheet.words, [("affects_speed".to_owned(), "no".to_owned())]);
+}
+
+/// A key that differs only in ASCII case declares the same sub-unit again: one definition,
+/// under its first spelling and in its first place, read on with the later body's rules, which
+/// every spelling of its token names.
+#[test]
+fn a_case_only_redefinition_is_the_same_sub_unit() {
+    let content = content_with(
+        b"sub_units = { ranger = { need = { rifles = 10 } combat_width = 1 categories = { a } } } \
+          sub_units = { RANGER = { need = { tanks = 5 } categories = { b } } }",
+    );
+    let ranger = content.subunit("Ranger").unwrap();
+    assert_eq!(ranger.key, "ranger");
+    assert_eq!(ranger.requirements, [("tanks".to_owned(), 500_000)]);
+    assert_eq!(ranger.sheet.combat_width, 0);
+    assert_eq!(ranger.sheet.categories, ["a", "b"]);
+    assert_eq!(content.len(), 4);
+    let tokens = [LexicalTokenRow {
+        token: 7,
+        literal: b"RANGER".to_vec(),
+    }];
+    let named = content
+        .subunit_of_token(TokenNames::from_rows(&tokens, true), 7)
+        .unwrap();
+    assert!(std::ptr::eq(named, ranger));
+    let armored: Vec<_> = content
+        .archetype_subunits("tanks")
+        .unwrap()
+        .iter()
+        .map(|unit| unit.key.as_str())
+        .collect();
+    assert_eq!(armored, ["armor", "ranger"]);
 }
 
 /// A bare key in another ASCII case is the field; a quoted one is no keyword and reads nothing.

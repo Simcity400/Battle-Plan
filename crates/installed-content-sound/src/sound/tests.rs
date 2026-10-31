@@ -219,6 +219,80 @@ fn a_repeated_category_takes_the_later_compressor_and_sounds_read_their_priority
     assert!(catalog.notes.is_empty(), "{:?}", catalog.notes.lines());
 }
 
+/// A category declared again adds its effects to its one list, and the lists resolve in
+/// category order: reopening an earlier category does not take an effect back from a later one.
+#[test]
+fn reopening_a_category_keeps_the_category_order_resolution() {
+    let stack = Stack::new("sound_catalog_category_reopen");
+    stack.write(
+        &stack.base(),
+        "sound/a.asset",
+        r#"sound = { name = s file = "a.wav" }
+           soundeffect = { name = e sounds = { sound = s } }
+           soundeffect = { name = f sounds = { sound = s } }
+           category = { name = A soundeffects = { e } }
+           category = { name = B soundeffects = { e } }
+           category = { name = A soundeffects = { e f } }"#,
+    );
+    let catalog = Catalog::read(&stack.layers(&[])).unwrap();
+    let category = |effect: &str| {
+        let effect = &catalog.effects[catalog.effect(effect).unwrap()];
+        catalog.categories[effect.category.unwrap()].name.as_str()
+    };
+    assert_eq!(category("e"), "B");
+    assert_eq!(category("f"), "A");
+    assert_eq!(
+        catalog.notes.lines(),
+        ["sound/a.asset: soundeffect e moves from category A to B"]
+    );
+}
+
+/// A quoted key has no keyword identity: it names no property and is refused by name.
+#[test]
+fn quoted_property_keys_are_no_keywords() {
+    let stack = Stack::new("sound_catalog_quoted_keys");
+    stack.write(
+        &stack.base(),
+        "sound/a.asset",
+        r#"sound = { name = s file = "a.wav" "priority" = 4 VOLUME = 0.5 }
+           soundeffect = { name = e sounds = { sound = s } "volume" = 0.1 "loop" = yes LOOP = no }
+           falloff = { name = f "max_distance" = 90 }
+           category = { name = c "soundeffects" = { e } compressor = { "ratio" = 4 } }"#,
+    );
+    let catalog = Catalog::read(&stack.layers(&[])).unwrap();
+    assert_eq!(catalog.sounds[0].priority, 1.0);
+    assert_eq!(catalog.sounds[0].volume, 0.5);
+    let effect = &catalog.effects[0];
+    assert_eq!(
+        effect.volume,
+        Effect::new(String::new(), String::new()).volume
+    );
+    assert!(!effect.looping);
+    assert_eq!(effect.category, None);
+    assert_eq!(
+        catalog.falloffs[0].max_distance,
+        Falloff::default().max_distance
+    );
+    assert_eq!(
+        catalog.categories[0].compressor.unwrap().ratio,
+        Compressor::default().ratio
+    );
+    let notes = catalog.notes.lines();
+    for expected in [
+        "sound/a.asset: sound s refused field priority",
+        "sound/a.asset: soundeffect e refused field volume",
+        "sound/a.asset: soundeffect e refused field loop",
+        "sound/a.asset: falloff f refused field max_distance",
+        "sound/a.asset: category c refused field soundeffects",
+        "sound/a.asset: compressor refused field ratio",
+    ] {
+        assert!(
+            notes.contains(&expected.to_owned()),
+            "{expected}: {notes:?}"
+        );
+    }
+}
+
 #[test]
 fn escaped_quotes_stay_part_of_sound_names_and_references() {
     let stack = Stack::new("sound_catalog_quotes");

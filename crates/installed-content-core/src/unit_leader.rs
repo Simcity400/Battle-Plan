@@ -388,9 +388,7 @@ impl Schema<'_> {
                 // `type` dispatches on the value token's id: a category keyword is
                 // stored and nothing more read; any other value, a `{` included,
                 // is reported, with a current block skipped.
-                Some(b"type")
-                    if leader_category(value_keyword(field.value).as_deref()).is_some() =>
-                {
+                Some(b"type") if leader_category(field.value_keyword().as_deref()).is_some() => {
                     Shape::One
                 }
                 Some(b"type") => Shape::Skip,
@@ -574,14 +572,6 @@ fn leader_category(keyword: Option<&[u8]>) -> Option<i32> {
         b"operative" => Some(3),
         _ => None,
     }
-}
-
-/// A value token as a reader that dispatches on its id sees it: the
-/// lexer's folded copy of a bare token it looked up, as
-/// [`Item::value_keyword`] gives it after the read.
-fn value_keyword(token: &Token) -> Option<Vec<u8>> {
-    (token.kind == Kind::Bare && crate::parser::looked_up(&token.text, false))
-        .then(|| token.text.to_ascii_lowercase())
 }
 
 /// A block value under a modifier entry, whose reading depends on the
