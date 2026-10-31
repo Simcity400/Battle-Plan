@@ -1,5 +1,4 @@
 use super::*;
-use crate::prepared::frame_changes::FrameChangeTracker;
 use crate::{
     prepared::series::{LateIndex, Reader, tests::Fixture},
     products::country_history::HistoryScan,
@@ -24,10 +23,7 @@ struct Sources {
     focus: crate::prepared_focus::FocusIndex,
     identities: HistoryScan,
     facts: Observer,
-    nukes: country_nukes::prepared::Prepared,
     projects: special_projects::prepared::Prepared,
-    #[serde(skip, default = "FrameChangeTracker::new")]
-    changes: FrameChangeTracker,
 }
 impl Sources {
     fn new(source: &Source) -> Self {
@@ -42,9 +38,7 @@ impl Sources {
             focus: Default::default(),
             identities: HistoryScan::new(false, &[]),
             facts: Default::default(),
-            nukes: Default::default(),
             projects: special_projects::prepared::Prepared::new(source.replay_ref(), 1),
-            changes: FrameChangeTracker::new(),
         }
     }
     fn observe(
@@ -71,8 +65,6 @@ impl Sources {
             .prepare_changes(frame, &mut self.idea_changes, source, context)?;
         self.focus
             .observe_frame(source.replay_ref(), frame, cancelled)?;
-        let changes = self.changes.observe(frame, source.replay_ref().format);
-        self.nukes.observe(frame, source.replay_ref(), &changes)?;
         self.projects.observe(source, context, frame, cancelled)?;
         self.facts
             .observe(source.replay_ref(), frame, &self.identities, cancelled)
@@ -125,7 +117,6 @@ impl Sources {
             .unwrap();
         self.focus.flush(&mut writer, cancelled).unwrap();
         self.facts.flush(&mut writer, 1, cancelled).unwrap();
-        self.nukes.flush(&mut writer, 1, cancelled).unwrap();
         if projects {
             self.projects.flush(&mut writer, 1, cancelled).unwrap();
         }
@@ -153,6 +144,24 @@ impl Sources {
         )
         .unwrap();
     }
+}
+
+/// The prepared feed's page, the stockpile increases its nukes family publishes read from the
+/// recording's rows, as that family's own tests hold its publication to them.
+fn query(
+    source: &Source,
+    params: query::Params,
+    context: &LoadContext,
+    store: &store::Store,
+    key: &store::SourceKey,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<query::Page>> {
+    let branch = params
+        .branch_id
+        .parse()
+        .map_err(|_| crate::invalid("Invalid prepared feed branch"))?;
+    let nukes = country_nukes::row::feed(&source.replay(), branch, cancelled)?;
+    super::query(source, params, context, store, key, Some(&nukes), cancelled)
 }
 
 fn actor(index: u32) -> EventFeedCountry {

@@ -199,7 +199,7 @@ impl RecordedHistories {
 
 /// Decode and seal the published identity page once per page and clipping bound.
 /// The retained result belongs to the current query's bounded observation entry.
-pub(crate) fn read_prepared_histories(
+pub fn read_prepared_histories(
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,

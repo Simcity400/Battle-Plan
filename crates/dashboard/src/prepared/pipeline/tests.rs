@@ -3816,12 +3816,12 @@ fn check_peace_pending() {
 }
 
 #[test]
-fn progressive_factory_and_nukes_queries_join_prefix_and_tail_then_zoom_exactly_without_writing() {
+fn progressive_factory_queries_join_prefix_and_tail_then_zoom_exactly_without_writing() {
     // The pages and coverage below are those hourly preparation publishes.
-    independent::with_test_hourly(progressive_factories_and_nukes);
+    independent::with_test_hourly(progressive_factories);
 }
 
-fn progressive_factories_and_nukes() {
+fn progressive_factories() {
     fn sampled(hour: i32) -> DecodedFrame {
         let count = if hour < 2 { 1 } else { 2 };
         let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
@@ -3836,16 +3836,6 @@ fn progressive_factories_and_nukes() {
                     })
                     .collect(),
             ));
-        *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
-            (0..count)
-                .map(|index| replay_data::rows::NukeRow {
-                    country: 100_000 + index,
-                    nuke_type: 0,
-                    amount_raw: (amount + i64::from(index)) * 100_000_000,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
         frame
     }
     let mut replay =
@@ -3860,7 +3850,7 @@ fn progressive_factories_and_nukes() {
             .unwrap();
     }
     let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("progressive-factories-nukes");
+    let source = fixture.source("progressive-factories");
     let flag = AtomicBool::new(false);
     let (store, key) = super::super::files(&source, None).unwrap();
     let query = |product: &str, params: serde_json::Value| {
@@ -3881,7 +3871,7 @@ fn progressive_factories_and_nukes() {
         .collect();
     let summary = |kind: &str, from: i32| serde_json::json!({"branchId":"1","family":{"kind":kind},"tags":tags,"from":from,"to":29,"width":30});
     let lines = |data: &serde_json::Value, _: &str| data["summaries"].as_array().unwrap().clone();
-    for kind in ["country-factories", "country-nukes"] {
+    for kind in ["country-factories"] {
         let cold = query("series-summary", summary(kind, 0));
         assert!(
             cold["coverage"]["firstHour"]
@@ -3914,7 +3904,6 @@ fn progressive_factories_and_nukes() {
         );
     }
     let mut factories = crate::products::country_factories::prepared::Prepared::default();
-    let mut nukes = crate::products::country_nukes::prepared::Prepared::default();
     let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
     for hour in 0..=1 {
         let frame = sampled(hour);
@@ -3926,19 +3915,10 @@ fn progressive_factories_and_nukes() {
                     .observe(&frame, replay.format),
             )
             .unwrap();
-        nukes
-            .observe(
-                &frame,
-                &replay,
-                &crate::prepared::frame_changes::FrameChangeTracker::new()
-                    .observe(&frame, replay.format),
-            )
-            .unwrap();
         identities.observe(&frame);
     }
     let mut writer = store.replace(key.clone()).unwrap();
     factories.flush(&mut writer, 1, &flag).unwrap();
-    nukes.flush(&mut writer, 1, &flag).unwrap();
     json(&mut writer, "country-identities-1", &identities).unwrap();
     json(
         &mut writer,
@@ -3952,10 +3932,10 @@ fn progressive_factories_and_nukes() {
     )
     .unwrap();
     writer.commit().unwrap();
-    let range_counts: Vec<_> = ["factories-values-1-6", "nukes-values-1"]
+    let range_counts: Vec<_> = ["factories-values-1-6"]
         .map(|section| store.range_count(&key, section).unwrap())
         .into();
-    for kind in ["country-factories", "country-nukes"] {
+    for kind in ["country-factories"] {
         let rough = query("series-summary", summary(kind, 0));
         assert_eq!(rough["coverage"]["lastHour"], 1);
         assert_eq!(
@@ -3990,11 +3970,8 @@ fn progressive_factories_and_nukes() {
         );
         let mut top = summary(kind, 0);
         top["tags"] = serde_json::json!([]);
-        top["family"]["top"] = if kind == "country-factories" {
-            serde_json::json!({"count":1,"mode":"built","groups":["military"]})
-        } else {
-            serde_json::json!(1)
-        };
+        top["family"]["top"] =
+            serde_json::json!({"count":1,"mode":"built","groups":["military"]});
         let ranked = query("series-summary", top);
         assert!(
             ranked["series"]
@@ -4005,7 +3982,7 @@ fn progressive_factories_and_nukes() {
             "transient ranks use the same sampled numeric value"
         );
     }
-    for (index, section) in ["factories-values-1-6", "nukes-values-1"]
+    for (index, section) in ["factories-values-1-6"]
         .into_iter()
         .enumerate()
     {
@@ -4014,117 +3991,6 @@ fn progressive_factories_and_nukes() {
             range_counts[index]
         );
     }
-}
-
-#[test]
-fn progressive_nukes_bind_an_unprepared_origin_outside_the_view_and_keep_unchanged_read_dates() {
-    // The pages and coverage below are those hourly preparation publishes.
-    independent::with_test_hourly(progressive_nukes_origin);
-}
-
-fn progressive_nukes_origin() {
-    let original = String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap();
-    let make = |hour: i32| {
-        let mut frame = scale_frame(1, hour, 2);
-        if hour >= 4
-            && let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
-        {
-            rows[0].tag = b"later alias".to_vec();
-            rows[1].tag = original.as_bytes().to_vec();
-        }
-        *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
-            (0..2)
-                .map(|index| replay_data::rows::NukeRow {
-                    country: 100_000 + index,
-                    nuke_type: 0,
-                    amount_raw: if hour == 29 {
-                        0
-                    } else {
-                        (7 + i64::from(index)) * 100_000_000
-                    },
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        frame
-    };
-    let mut replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![make(0), make(1)])]).unwrap();
-    for block in 1..15 {
-        replay = replay
-            .append(&[continuation_records(
-                &replay,
-                1,
-                vec![make(block * 2), make(block * 2 + 1)],
-            )])
-            .unwrap();
-    }
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("progressive-nukes-origin");
-    let flag = AtomicBool::new(false);
-    let context = crate::products::LoadContext { content: None };
-    let check = || {
-        let data = crate::products::country_nukes::prepared::query(
-            &source,
-            "series-summary",
-            &serde_json::json!({"branchId":"1","family":{"kind":"country-nukes","originHour":3},
-            "tags":[original],"from":4,"to":29,"width":30}),
-            &context,
-            &flag,
-        )
-        .unwrap();
-        let alias = data["series"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|series| series["tag"] == "later alias")
-            .expect("exact origin selects its later alias");
-        assert_eq!(alias["runs"][0]["total"], 7);
-        assert!(
-            data["series"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|series| series["tag"] == original)
-                .all(|series| series["runs"].as_array().unwrap().is_empty()),
-            "a reused tag must not select its replacement holder"
-        );
-        assert_eq!(
-            data["readHours"],
-            serde_json::json!((4..=29).collect::<Vec<_>>()),
-            "equal values retain every fresh supplying date"
-        );
-        assert_eq!(
-            data["emptyReadHours"],
-            serde_json::json!([29]),
-            "the complete zero census retains its empty-read fact"
-        );
-    };
-    check();
-    let (store, key) = super::super::files(&source, None).unwrap();
-    let mut nukes = crate::products::country_nukes::prepared::Prepared::default();
-    let mut identities = crate::products::country_history::HistoryScan::new(false, &[]);
-    for hour in 0..=1 {
-        let frame = make(hour);
-        nukes
-            .observe(
-                &frame,
-                &replay,
-                &crate::prepared::frame_changes::FrameChangeTracker::new()
-                    .observe(&frame, replay.format),
-            )
-            .unwrap();
-        identities.observe(&frame);
-    }
-    let mut writer = store.replace(key.clone()).unwrap();
-    nukes.flush(&mut writer, 1, &flag).unwrap();
-    json(&mut writer, "country-identities-1", &identities).unwrap();
-    publish_coverage(&mut writer, 1, 0, 1, false).unwrap();
-    writer.commit().unwrap();
-    let ranges = store.range_count(&key, "nukes-values-1").unwrap();
-    check();
-    assert_eq!(store.range_count(&key, "nukes-values-1").unwrap(), ranges);
 }
 
 #[test]
@@ -5095,105 +4961,6 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_and_aliases
 }
 
 #[test]
-fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
-    use crate::products::{LoadContext, Product, country_nukes::*};
-    let make = |hour| {
-        let mut frame = scale_frame(1, hour, 24);
-        *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
-            (0..24)
-                .map(|index| replay_data::rows::NukeRow {
-                    country: 100_000 + index,
-                    nuke_type: if index == 1 && hour >= 104 { 1 } else { 0 },
-                    amount_raw: i64::from(if hour == 103 { 0 } else { index % 101 }) * 100_000_000,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        if hour >= 104
-            && let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
-        {
-            rows[0].tag = b"later nuclear alias".to_vec();
-        }
-        frame
-    };
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![make(100), make(101)])]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    let check = |source: &Source| {
-        for top in [None, Some(10)] {
-            let params = NukesParams {
-                branch_id: "1".into(),
-                tags: if top.is_some() {
-                    vec![]
-                } else {
-                    vec![String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap()]
-                },
-                top,
-                origin_hour: None,
-            };
-            let mut actual=crate::products::country_nukes::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-nukes","top":top,"originHour":null},"from":100,"to":source.metadata().unwrap().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
-            assert_eq!(
-                actual["coverage"]["complete"].as_bool(),
-                Some(true),
-                "nuclear parity reads must have complete prepared coverage"
-            );
-            for field in ["summaries", "coverage"] {
-                actual.as_object_mut().unwrap().remove(field);
-            }
-            assert_eq!(
-                actual,
-                serde_json::to_value(CountryNukes::load(source, &params, &context, &flag).unwrap())
-                    .unwrap()
-            );
-        }
-    };
-    let source = fixture.source("nukes-first");
-    run(&source, None, &flag, |_| {}).unwrap();
-    check(&source);
-    let second = replay
-        .append(&[continuation_records(&replay, 1, vec![make(103)])])
-        .unwrap();
-    fixture.replace(&second);
-    let source = fixture.source("nukes-second");
-    run(&source, None, &flag, |_| {}).unwrap();
-    check(&source);
-    let resumed = fixture.source("nukes-resume");
-    assert_eq!(run(&resumed, None, &flag, |_| {}).unwrap().new_blocks, 0);
-    check(&resumed);
-    let third = second
-        .append(&[continuation_records(&second, 1, vec![make(104)])])
-        .unwrap();
-    fixture.replace(&third);
-    let source = fixture.source("nukes-append");
-    assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
-    check(&source);
-    let (store, key) = super::super::files(&source, None).unwrap();
-    let mut reads =
-        crate::prepared::series::Reader::new(&store, &key, "nukes-mixes-1".into(), &flag).unwrap();
-    let page = reads.events(&[u64::MAX], 100, 104, 0, 10).unwrap();
-    assert_eq!(
-        page.rows.iter().map(|row| row.hour).collect::<Vec<_>>(),
-        vec![100, 101, 103, 104]
-    );
-    assert_eq!(page.rows[2].row, serde_json::json!(true));
-    // Prepared on their own, the stockpiles keep their continuation apart.
-    let file = store
-        .read(&key, "nukes-continuation-1", 0)
-        .unwrap()
-        .unwrap();
-    let json: serde_json::Value =
-        serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap();
-    assert_eq!(json["scan"]["scanned"]["read_hours"], serde_json::json!([]));
-    assert_eq!(
-        json["scan"]["scanned"]["empty_read_hours"],
-        serde_json::json!([])
-    );
-}
-
-#[test]
 fn prepared_country_factories_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, country_factories::*};
     let make = |hour| {
@@ -5412,82 +5179,6 @@ fn prepared_leaders_pipeline_resumes_appended_outcomes_under_the_current_key() {
             );
         }
     }
-}
-
-#[test]
-fn prepared_feed_uses_accepted_live_prefix_and_keeps_unprepared_reads_pending() {
-    independent::with_test_hourly(check_prepared_feed_prefix);
-}
-
-fn check_prepared_feed_prefix() {
-    let frames: Vec<_> = (100..=102)
-        .map(|hour| {
-            let mut frame = crate::products::event_feed::prepared::tests::frame(hour, 3);
-            *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
-                (0..3)
-                    .map(|index| replay_data::rows::NukeRow {
-                        country: 100_000 + index,
-                        amount_raw: i64::from(hour - 100) * 100_000_000,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-            frame.metrics.table_ns[TableId::Nukes.index()] = 1;
-            frame
-        })
-        .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("feed-live-prefix");
-    let flag = AtomicBool::new(false);
-    run(&source, None, &flag, |_| {}).unwrap();
-    let (store, key) = super::super::files(&source, None).unwrap();
-    let mut writer = store.extend(&key).unwrap();
-    publish_coverage(&mut writer, 1, 100, 101, false).unwrap();
-    writer.commit().unwrap();
-    let mut requests = 0;
-    let mut query = |hour| {
-        requests += 1;
-        assert!(requests <= 2, "coverage checks never request-loop");
-        let request = crate::transport::ProductRequest {
-            source_id: source.key().source_id.clone(),
-            revision: source.key().revision.clone(),
-            product: "event-feed".into(),
-            params: serde_json::json!({"branchId":"1", "lastHour":hour, "pageSize":256, "categories":["milestones"]}),
-        };
-        let reply: serde_json::Value = serde_json::from_str(
-            &super::super::query::query(&source, &request, None, &flag).unwrap(),
-        )
-        .unwrap();
-        reply["data"].clone()
-    };
-    let prefix = query(101);
-    assert_eq!(prefix["coverage"]["lastHour"], 101);
-    assert_eq!(prefix["coverage"]["complete"], false);
-    assert_eq!(
-        prefix["reply"]["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|row| row["kind"] == "nukesIncreased")
-            .count(),
-        3
-    );
-    assert!(
-        prefix["reply"]["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row["readHour"].as_i64().unwrap() <= 101)
-    );
-    let pending = query(102);
-    assert_eq!(pending["coverage"], prefix["coverage"]);
-    assert_eq!(
-        pending["pending"],
-        serde_json::json!([{"firstHour": 102, "lastHour": 102}])
-    );
-    assert_eq!(pending["reply"]["rows"], prefix["reply"]["rows"]);
-    assert_eq!(requests, 2);
 }
 
 #[test]

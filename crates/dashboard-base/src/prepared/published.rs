@@ -32,6 +32,8 @@ pub struct Opened {
     /// The last hour before the query's first hole.
     through: Option<i32>,
     directory: Arc<Directory>,
+    /// The root's range and the generation read: equal stamps, equal publications.
+    stamp: ([u64; 3], u64),
 }
 
 /// The series publication of `root`, as of its last segment ending by `through`; None when
@@ -50,6 +52,11 @@ fn pinned<'s>(
 }
 
 impl Opened {
+    /// What identifies the publication read: equal stamps, equal publications.
+    pub fn stamp(&self) -> ([u64; 3], u64) {
+        self.stamp
+    }
+
     /// `read` of the publication pinned for this query and its directory.
     pub fn read<T>(
         &self,
@@ -76,6 +83,19 @@ pub fn open(
     schema: u64,
     branch: u64,
 ) -> io::Result<Option<Opened>> {
+    open_through(source, content, family, schema, branch, None)
+}
+
+/// [`open`], as of its last segment ending by `limit` too: what a query joining it with another
+/// family's coverage reads, never past it.
+pub fn open_through(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    family: &str,
+    schema: u64,
+    branch: u64,
+    limit: Option<i32>,
+) -> io::Result<Option<Opened>> {
     let (store, key) = files(source, content)?;
     let Some(session) = store.session(&key)? else {
         return Ok(None);
@@ -85,9 +105,13 @@ pub fn open(
         return Ok(None);
     };
     let section = roots::root_section(family, branch);
-    let through = coverage::declared()
+    let hole = coverage::declared()
         .before
         .map(|before| before.saturating_sub(1));
+    let through = match (hole, limit) {
+        (Some(hole), Some(limit)) => Some(hole.min(limit)),
+        (hole, limit) => hole.or(limit),
+    };
     let range = snapshot
         .read(&section, published.root)?
         .ok_or_else(|| crate::invalid("A family's root range is missing"))?
@@ -128,5 +152,6 @@ pub fn open(
         identity: published.identity,
         through,
         directory,
+        stamp: (held.0, held.1),
     }))
 }

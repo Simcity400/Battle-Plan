@@ -5,10 +5,9 @@
 //! cancelled guarantees, other relations and other tables' slice reads,
 //! which its kept frames leave out), a gap, two branches, append, resume and
 //! refusals of the feed and of the identities it reads, with one and several
-//! pre-pass workers; it observes every hour once, each from a frame its
-//! workers read; and its query answers from the coverage of every family it
-//! reads while the hourly walk has accepted nothing, as hourly preparation
-//! answers it, and waits while one of them is still the walk's.
+//! pre-pass workers; and it observes every hour once, each from a frame its
+//! workers read. Its query reads the nuclear stockpiles, which only a native
+//! recording prepares: a row recording's feed is refused.
 use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
@@ -184,7 +183,7 @@ fn decoded(bytes: &[u8]) -> serde_json::Value {
 
 /// Families prepared on their own whose state hourly preparation keeps in
 /// its branch state: their names and fields.
-const KEPT: [(&str, &str); 2] = [("event_feed", "feed"), ("nukes", "nukes")];
+const KEPT: [(&str, &str); 1] = [("event_feed", "feed")];
 
 /// Every section both modes publish is byte-identical (with `refusals`, but
 /// for each branch's coverage page, whose refusals the families keep in
@@ -296,17 +295,8 @@ fn event_feed_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_do
     let recorded = hours(&replay);
     let mut fixture = Fixture::new(&replay);
     let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "feed-parity", &plain));
-    // Alone, with the identity history it reads prepared on its own too, and
-    // with the stockpiles its query reads.
-    let registries: [Vec<&'static dyn Own>; 3] = [
-        vec![feed()],
-        vec![feed(), &independent::IDENTITIES],
-        vec![
-            feed(),
-            &independent::IDENTITIES,
-            &independent::census::NUKES,
-        ],
-    ];
+    // Alone, and with the identity history it reads prepared on its own too.
+    let registries: [Vec<&'static dyn Own>; 2] = [vec![feed()], vec![feed(), &independent::IDENTITIES]];
     for families in registries {
         let own: Vec<&str> = families.iter().map(|own| own.family().name).collect();
         for (workers, together) in [(1, true), (3, false)] {
@@ -495,146 +485,18 @@ fn event_feed_prepared_on_its_own_refuses_where_hourly_preparation_does() {
             assert_eq!(refused.hour, hour, "{label}");
             assert_eq!(refused.from.as_deref(), from, "{label}: where it came from");
             assert!(own_refused[&2].is_none(), "{label}: branch 2 goes on");
+            // The event-choice list reads the feed's facts alone.
             independent::with_test_families(&[feed()], || {
-                let error = refusal(&source, None, 1, "event-feed", &flag).unwrap_err();
+                let error = refusal(&source, None, 1, "event-choices", &flag).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{label}");
                 assert_eq!(
                     error.to_string(),
                     format!("Injected refusal of {family} at hour {hour}"),
                     "{label}"
                 );
-                refusal(&source, None, 2, "event-feed", &flag).unwrap();
+                refusal(&source, None, 2, "event-choices", &flag).unwrap();
             });
             clear(source);
         }
     }
-}
-
-fn query(source: &Source, params: serde_json::Value) -> serde_json::Value {
-    let request = crate::transport::ProductRequest {
-        source_id: source.key().source_id.clone(),
-        revision: source.key().revision.clone(),
-        product: "event-feed".into(),
-        params,
-    };
-    let reply =
-        super::super::super::query::query(source, &request, None, &AtomicBool::new(false)).unwrap();
-    let mut reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
-    reply["data"].take()
-}
-
-/// The widget's default page of `branch` at `last`: every category.
-fn page(branch: &str, last: i32) -> serde_json::Value {
-    serde_json::json!({"branchId": branch, "lastHour": last, "pageSize": 256,
-        "categories": ["warsPeace", "diplomacy", "politics", "milestones"]})
-}
-
-/// Every family whose pages the feed's query reads.
-const READ: [&str; 8] = [
-    "event_feed",
-    "identities",
-    "groups",
-    "subjects",
-    "ideas",
-    "focus",
-    "nukes",
-    "projects",
-];
-
-#[test]
-fn event_feed_answers_from_its_families_while_the_hourly_walk_accepts_nothing() {
-    let replay = scenario(LAST, true);
-    let mut fixture = Fixture::new(&replay);
-    let branches = [("1", LAST), ("2", 104)];
-    // The replies of hourly preparation, with every block accepted.
-    let expected: Vec<serde_json::Value> = independent::with_test_hourly(|| {
-        let source = fixture.source("feed-hourly-replies");
-        plain(&source);
-        let replies = branches
-            .iter()
-            .map(|&(branch, last)| query(&source, page(branch, last)))
-            .collect();
-        clear(source);
-        replies
-    });
-    assert!(
-        expected.iter().all(|reply| !reply.is_null()),
-        "hourly preparation answers"
-    );
-    // The hourly walk stalls: it is cancelled at its first commit.
-    let stalled = |source: &Source| {
-        let flag = AtomicBool::new(false);
-        let mut commits = 0;
-        let error = independent::with_test_one_after_another(|| {
-            run_checked(
-                source,
-                None,
-                &flag,
-                |_| {},
-                |_| {
-                    commits += 1;
-                    flag.store(true, Ordering::Release);
-                    Ok(())
-                },
-            )
-        })
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(commits, 1);
-        assert_eq!(
-            unprepared_blocks(source, None).unwrap(),
-            Some(replay.index.len()),
-            "the hourly walk accepted no block"
-        );
-    };
-    let flag = AtomicBool::new(false);
-    // Prepared on its own while another family it reads is still the walk's,
-    // the feed waits for the walk.
-    let without_nukes: Vec<&str> = READ
-        .iter()
-        .copied()
-        .filter(|&family| family != "nukes")
-        .collect();
-    independent::with_test_only(&without_nukes, || {
-        let source = fixture.source("feed-waiting");
-        stalled(&source);
-        for &(branch, last) in &branches {
-            let id = branch.parse().unwrap();
-            assert!(
-                product_coverage(&source, None, id, "event-feed", &flag)
-                    .unwrap()
-                    .is_none(),
-                "branch {branch}: the stockpiles' coverage is the walk's"
-            );
-            assert!(
-                !query(&source, page(branch, last)).is_null(),
-                "branch {branch}: the feed answers an empty pending prefix while the stockpiles are pending"
-            );
-        }
-        clear(source);
-    });
-    // With every family it reads prepared on its own, it answers as hourly
-    // preparation does.
-    independent::with_test_only(&READ, || {
-        let source = fixture.source("feed-stalled");
-        stalled(&source);
-        for (position, &(branch, last)) in branches.iter().enumerate() {
-            let id = branch.parse().unwrap();
-            assert!(
-                coverage(&source, None, id, &flag).unwrap().is_none(),
-                "branch {branch}: the hourly walk covers nothing"
-            );
-            assert!(
-                complete(&source, None, id, "event-feed", &flag).unwrap(),
-                "branch {branch}: the feed's families cover the branch"
-            );
-            let reply = query(&source, page(branch, last));
-            assert!(!reply.is_null(), "branch {branch}: the feed answers");
-            assert_eq!(
-                reply, expected[position],
-                "branch {branch}: the feed answers as hourly preparation does"
-            );
-        }
-        clear(source);
-    });
 }

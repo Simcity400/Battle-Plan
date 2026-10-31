@@ -1,7 +1,9 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+use replay::container::Replay;
 use replay_data::{
-    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::NukeRow, rows::TableRows,
+    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::NukeRow, rows::TableId,
+    rows::TableRows,
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 

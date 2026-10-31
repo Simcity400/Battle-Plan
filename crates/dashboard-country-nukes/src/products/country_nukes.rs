@@ -1,4 +1,6 @@
-//! Every country's nuclear stockpile as the game's top bar shows it.
+//! Every country's nuclear stockpile as the game's top bar shows it, prepared as the `nukes`
+//! series family ([`facts`], [`emit`]) and answered from its publication ([`query`]), which the
+//! scoreboard and the event feed read too.
 //!
 //! The top bar displays a signed integer: each nuclear amount truncates,
 //! then the amounts add with signed-dword wrapping. Ready count instead
@@ -15,32 +17,29 @@ use dashboard_base::{
     products::MAX_PRODUCT_REPLY_BYTES,
     products::Product,
     products::country_groups::HourSpan,
-    products::country_history::{
-        RecordedHistories, branch_histories, observe_identity, selected_identities,
-    },
+    products::country_history::{RecordedHistories, selected_identities},
     products::validate_tag,
-};
-use dashboard_text::metadata::{
-    IdentityTrack, link_slot, slot_read, tagged_countries, validate_campaign,
 };
 use engine_native::{
     raid_tooltip_operands::NUCLEAR_BOMB_TOKEN, raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
 };
-use replay::container::Replay;
-use replay_data::{
-    rows::CountryLinkRow, rows::CountryRow, rows::NukeRow, rows::TableId, rows::tables,
-};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 use ts_rs::TS;
+
+pub mod emit;
+pub mod facts;
+pub mod query;
+#[cfg(any(test, feature = "test-support"))]
+pub mod row;
+pub mod served;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use row::{scan, scanned_branch};
 
 pub struct CountryNukes;
 
@@ -115,103 +114,9 @@ pub fn displayed_amount(raw: i64) -> i32 {
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn counts_by_slot(
-    rows: &[NukeRow],
-    links: &[CountryLinkRow],
-) -> (HashMap<u32, BTreeMap<u32, Option<i32>>>, usize, bool) {
-    let mut result = HashMap::<u32, BTreeMap<u32, Option<i32>>>::new();
-    let mut unreadable = 0;
-    let mut resolved = true;
-    for row in rows {
-        let Some(slot) = link_slot(links, row.country) else {
-            resolved = false;
-            unreadable += 1;
-            continue;
-        };
-        match result.entry(slot).or_default().entry(row.nuke_type) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(Some(displayed_amount(row.amount_raw)));
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                entry.insert(None);
-                unreadable += 1;
-            }
-        }
-    }
-    (result, unreadable, resolved)
-}
-
-fn stockpile(values: &BTreeMap<u32, Option<i32>>) -> Option<(Vec<NukeCount>, Option<i32>)> {
-    let counts: Vec<_> = values
-        .iter()
-        .map(|(&ordinal, value)| value.map(|value| NukeCount { ordinal, value }))
-        .collect::<Option<_>>()?;
-    // Only a hole inside this country's recorded array prefix makes its total unknown.
-    let total = values
-        .keys()
-        .enumerate()
-        .all(|(index, ordinal)| usize::try_from(*ordinal) == Ok(index))
-        .then(|| {
-            counts
-                .iter()
-                .fold(0i32, |total, count| total.wrapping_add(count.value))
-        });
-    Some((counts, total))
-}
-
-fn empty_stockpiles(
-    countries: &[CountryRow],
-    links: &[CountryLinkRow],
-    by_slot: &HashMap<u32, BTreeMap<u32, Option<i32>>>,
-    resolved: bool,
-) -> bool {
-    let tagged = tagged_countries(countries, links);
-    let valid = tagged
-        .iter()
-        .all(|(tag, lookup)| lookup.found().is_some() && std::str::from_utf8(tag).is_ok());
-    let slots = tagged
-        .values()
-        .filter_map(|lookup| lookup.found().map(|(_, slot)| slot))
-        .collect::<BTreeSet<_>>();
-    empty_resolved(by_slot, |slot| slots.contains(&slot), valid, resolved)
-}
-fn empty_resolved(
-    by_slot: &HashMap<u32, BTreeMap<u32, Option<i32>>>,
-    selected: impl Fn(u32) -> bool,
-    valid: bool,
-    resolved: bool,
-) -> bool {
-    resolved
-        && valid
-        && by_slot
-            .iter()
-            .filter(|(slot, _)| selected(**slot))
-            .all(|(_, values)| stockpile(values).is_some_and(|(_, total)| total == Some(0)))
-}
-
-/// A fresh complete supplying read, with the native empty-census decision.
-fn supplying_read(
-    decoded: &DecodedFrame,
-    format: replay_data::format::FormatVersion,
-) -> Option<bool> {
-    if !slot_read(format, &decoded.metrics, TableId::Nukes, decoded.hour) {
-        return None;
-    }
-    let rows = decoded.complete::<tables::Nukes>().ok()?;
-    let (Ok(countries), Ok(links)) = (
-        decoded.complete::<tables::Countries>(),
-        decoded.complete::<tables::CountryLinks>(),
-    ) else {
-        return Some(false);
-    };
-    let (by_slot, _, resolved) = counts_by_slot(rows, links);
-    Some(empty_stockpiles(countries, links, &by_slot, resolved))
-}
-
 /// Maps recorded nuclear ordinals to their name tokens. The token spelling
 /// and displayed name come from recorded content.
-fn name_token(ordinal: u32) -> Option<u32> {
+pub(crate) fn name_token(ordinal: u32) -> Option<u32> {
     match ordinal {
         0 => Some(NUCLEAR_BOMB_TOKEN),
         1 => Some(THERMONUCLEAR_BOMB_TOKEN),
@@ -230,399 +135,6 @@ pub struct ScannedNukes {
     pub refused: BTreeMap<u32, usize>,
     pub unreadable: usize,
     pub unknown_hours: u64,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct Track {
-    runs: Vec<NukeRun>,
-    segments: Vec<HourSpan>,
-    last: Option<((u32, u32), i32)>,
-    last_identity: IdentityTrack,
-}
-
-pub mod prepared;
-#[derive(Clone, PartialEq, Eq)]
-struct Current {
-    identity: (u32, u32),
-    values: Option<(Vec<NukeCount>, Option<i32>)>,
-}
-#[derive(Default)]
-struct Rates {
-    unreadable: usize,
-    refused: BTreeMap<u32, usize>,
-    unknown: u64,
-}
-impl Track {
-    fn advance(&mut self, hour: i32) {
-        let Some(segment) = self.segments.last_mut() else {
-            return;
-        };
-        let before = segment.last_hour;
-        segment.last_hour = hour;
-        self.last_identity.advance(hour);
-        if let Some((_, at)) = &mut self.last
-            && *at == before
-        {
-            *at = hour;
-            if let Some(run) = self.runs.last_mut() {
-                run.last_hour = hour;
-            }
-        }
-    }
-}
-#[derive(Default, Serialize, Deserialize)]
-pub(crate) struct Scan {
-    scanned: ScannedNukes,
-    tracks: BTreeMap<String, Track>,
-    frontier: Option<i32>,
-    live: BTreeSet<String>,
-    #[serde(skip)]
-    countries: dashboard_base::products::force_census::Countries,
-    #[serde(skip)]
-    current: BTreeMap<String, Current>,
-    #[serde(skip)]
-    supplied_slots: BTreeSet<u32>,
-    #[serde(skip)]
-    rates: Rates,
-    #[serde(skip)]
-    read: Option<bool>,
-    #[serde(skip)]
-    empty: bool,
-    /// Whether the last hour observed joined its countries and links, and
-    /// whether its stockpile table was complete.
-    #[serde(skip)]
-    joined: bool,
-    #[serde(skip)]
-    complete: bool,
-    #[serde(skip)]
-    observed: Vec<String>,
-    #[cfg(test)]
-    #[serde(skip)]
-    work: dashboard_base::prepared::observer_tests::Work,
-}
-impl Scan {
-    /// What observing `hour` does when it follows the last hour observed with
-    /// the same country keys, links, name tokens, availability and stockpile
-    /// rows, the stockpile table read (`read`) or not as then: the read hour
-    /// it dates and the unchanged hour's counts, in constant time. False, with
-    /// nothing changed, when observing it would take another path: the hour
-    /// does not follow, its read flag differs, the countries and links did
-    /// not join, or a read of a stockpile table that is not complete names
-    /// its reason from the frame.
-    fn advance_quiet(&mut self, hour: i32, read: bool) -> bool {
-        let continuous = self
-            .frontier
-            .is_some_and(|at| at.checked_add(1) == Some(hour));
-        if !continuous || self.read != Some(read) || !self.joined || read && !self.complete {
-            return false;
-        }
-        self.observed.clear();
-        if read {
-            self.scanned.read_hours.push(hour);
-        }
-        self.unchanged(hour, read);
-        true
-    }
-    /// An hour whose stockpile inputs are the hour before's: the rates of the
-    /// last read count again, and a complete read of all-empty stockpiles is
-    /// dated empty again.
-    fn unchanged(&mut self, hour: i32, complete_read: bool) {
-        self.scanned.unreadable += self.rates.unreadable;
-        self.scanned.unknown_hours += self.rates.unknown;
-        for (&ordinal, &count) in &self.rates.refused {
-            *self.scanned.refused.entry(ordinal).or_default() += count;
-        }
-        if complete_read && self.empty {
-            self.scanned.empty_read_hours.push(hour);
-        }
-        self.frontier = Some(hour);
-    }
-    pub(crate) fn observe(
-        &mut self,
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-    ) {
-        self.observe_changes(decoded, format, None);
-        self.seal();
-    }
-    fn seal(&mut self) {
-        if let Some(hour) = self.frontier {
-            for tag in &self.live {
-                self.tracks
-                    .get_mut(tag)
-                    .expect("live nuclear holder")
-                    .advance(hour);
-            }
-        }
-    }
-    fn observe_changes(
-        &mut self,
-        decoded: &DecodedFrame,
-        format: replay_data::format::FormatVersion,
-        changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-    ) {
-        self.observed.clear();
-        let hour = decoded.hour;
-        if self.scanned.tokens.len() < 2
-            && changes.is_none_or(|changes| changes.rows_changed[TableId::LexicalTokens.index()])
-            && let Ok(lexical) = decoded.complete::<tables::LexicalTokens>()
-        {
-            for ordinal in 0..=1 {
-                if self.scanned.tokens.contains_key(&ordinal) {
-                    continue;
-                }
-                let token = name_token(ordinal).expect("native mapping");
-                if let Ok(index) = lexical.binary_search_by_key(&token, |row| row.token)
-                    && let Ok(text) = std::str::from_utf8(&lexical[index].literal)
-                {
-                    self.scanned.tokens.insert(ordinal, text.to_owned());
-                }
-            }
-        }
-        let continuous = self
-            .frontier
-            .is_some_and(|at| at.checked_add(1) == Some(hour));
-        let read = slot_read(format, &decoded.metrics, TableId::Nukes, hour);
-        let rows = decoded.complete::<tables::Nukes>().ok();
-        if read && rows.is_some() {
-            self.scanned.read_hours.push(hour);
-        }
-        let joined = self.countries.update(decoded);
-        self.joined = joined.is_ok();
-        self.complete = rows.is_some();
-        let changed = !continuous
-            || self.read != Some(read)
-            || !matches!(joined, Ok(false))
-            || changes.is_none_or(|changes| changes.rows_changed[TableId::Nukes.index()]);
-        if !changed {
-            self.unchanged(hour, read && rows.is_some());
-            return;
-        }
-        if !continuous {
-            self.seal();
-        }
-        let partial = continuous && matches!(joined, Ok(false)) && !self.current.is_empty();
-        self.read = Some(read);
-        let mut rates = Rates::default();
-        let mut current = BTreeMap::new();
-        self.empty = false;
-        if joined.is_ok()
-            && let (Ok(_countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            )
-        {
-            let (by_slot, unreadable, resolved) =
-                counts_by_slot(rows.filter(|_| read).unwrap_or_default(), links);
-            rates.unreadable += unreadable;
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.filter(|_| read).map_or(0, |rows| rows.len());
-            }
-            if read {
-                for row in rows.into_iter().flatten() {
-                    self.scanned.types.insert(row.nuke_type);
-                    if name_token(row.nuke_type).is_none() {
-                        *rates.refused.entry(row.nuke_type).or_default() += 1;
-                    }
-                }
-            }
-            self.empty = read
-                && rows.is_some()
-                && empty_resolved(
-                    &by_slot,
-                    |slot| self.countries.contains_slot(slot),
-                    self.countries.tags_valid(),
-                    resolved,
-                );
-            let mut slots = self.supplied_slots.clone();
-            if read {
-                slots.extend(by_slot.keys().copied());
-            }
-            let candidates = if partial {
-                self.countries.in_slots(&slots)
-            } else {
-                self.countries.tags.clone()
-            };
-            rates.unreadable += self.countries.unreadable_tags;
-            for (tag, identity) in &candidates {
-                let Some(identity) = *identity else {
-                    continue;
-                };
-                let Ok(tag) = std::str::from_utf8(tag) else {
-                    continue;
-                };
-                let values = if rows.is_none() {
-                    None
-                } else if read {
-                    by_slot.get(&identity.0).and_then(stockpile)
-                } else {
-                    self.current
-                        .get(tag)
-                        .filter(|before| continuous && before.identity == identity)
-                        .and_then(|before| before.values.clone())
-                        .or_else(|| {
-                            self.tracks
-                                .get(tag)
-                                .filter(|_| continuous && self.live.contains(tag))
-                                .and_then(|track| {
-                                    track
-                                        .last
-                                        .filter(|(seen, at)| {
-                                            *seen == identity && Some(*at) == self.frontier
-                                        })
-                                        .and_then(|_| {
-                                            track
-                                                .runs
-                                                .last()
-                                                .map(|run| (run.counts.clone(), run.total))
-                                        })
-                                })
-                        })
-                };
-                rates.unknown +=
-                    u64::from(values.as_ref().is_some_and(|(_, total)| total.is_none()));
-                current.insert(tag.to_owned(), Current { identity, values });
-            }
-            if read || rows.is_none() {
-                self.supplied_slots = by_slot.keys().copied().collect();
-            }
-        }
-        for (tag, after) in &current {
-            if continuous && self.current.get(tag) == Some(after) {
-                continue;
-            }
-            let track = self.tracks.entry(tag.clone()).or_default();
-            if self.live.contains(tag)
-                && let Some(before) = self.frontier
-            {
-                track.advance(before);
-            }
-            observe_identity(
-                &mut track.segments,
-                &mut track.last_identity,
-                after.identity,
-                hour,
-            );
-            if let Some((counts, total)) = &after.values {
-                let continues = track.last.is_some_and(|(seen, at)| {
-                    seen == after.identity && at.checked_add(1) == Some(hour)
-                });
-                match track.runs.last_mut() {
-                    Some(run) if continues && run.counts == *counts && run.total == *total => {
-                        run.last_hour = hour
-                    }
-                    _ => track.runs.push(NukeRun {
-                        first_hour: hour,
-                        last_hour: hour,
-                        starts_segment: !continues,
-                        counts: counts.clone(),
-                        total: *total,
-                    }),
-                }
-                track.last = Some((after.identity, hour));
-            }
-            self.observed.push(tag.clone());
-            #[cfg(test)]
-            {
-                self.work.history_visits += 1;
-            }
-        }
-        for tag in self
-            .live
-            .iter()
-            .filter(|tag| !partial && !current.contains_key(*tag))
-        {
-            if let Some(before) = self.frontier {
-                self.tracks
-                    .get_mut(tag)
-                    .expect("departed nuclear holder")
-                    .advance(before);
-            }
-            self.observed.push(tag.clone());
-        }
-        if partial {
-            self.current.extend(current);
-        } else {
-            self.live = current.keys().cloned().collect();
-            self.current = current;
-        }
-        self.scanned.unreadable += rates.unreadable;
-        self.scanned.unknown_hours += rates.unknown;
-        for (&ordinal, &count) in &rates.refused {
-            *self.scanned.refused.entry(ordinal).or_default() += count;
-        }
-        self.rates = rates;
-        if self.empty {
-            self.scanned.empty_read_hours.push(hour);
-        }
-        self.frontier = Some(hour);
-    }
-    fn finish(mut self) -> ScannedNukes {
-        self.seal();
-        // Stockpile totals use this country's own array count; independent countries
-        // can have different counts. A complete contiguous prefix proves that array,
-        // even when another country records more types.
-        let Self {
-            mut scanned,
-            tracks,
-            ..
-        } = self;
-        for (tag, track) in tracks {
-            if track.runs.is_empty() {
-                continue;
-            }
-            scanned.segments.insert(tag.clone(), track.segments);
-            scanned.series.insert(tag, track.runs);
-        }
-        scanned.read_hours.sort_unstable();
-        scanned.read_hours.dedup();
-        scanned.empty_read_hours.sort_unstable();
-        scanned.empty_read_hours.dedup();
-        scanned
-    }
-}
-
-pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<ScannedNukes> {
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Nukes,
-        TableId::LexicalTokens,
-    ];
-    let mut observer = Scan::default();
-    dashboard_core::blocks::scan_blocks(
-        replay,
-        replay.index.iter().filter(|block| block.branch == branch),
-        &selected,
-        cancelled,
-        |blocks| {
-            for (_, frames) in blocks {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancelled_error());
-                }
-                let Ok(frames) = frames else {
-                    continue;
-                };
-                let mut decoder = FrameDecoder::for_tables(&selected);
-                for frame in frames {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(cancelled_error());
-                    }
-                    let Ok(decoded) = decoder.advance(&frame) else {
-                        break;
-                    };
-                    if validate_campaign(decoded, replay).is_err() {
-                        break;
-                    }
-                    observer.observe(decoded, replay.format);
-                }
-            }
-            Ok(())
-        },
-    )?;
-    Ok(observer.finish())
 }
 
 fn cancelled_error() -> io::Error {
@@ -690,52 +202,7 @@ fn membership(
         ));
     }
     let membership = if let Some(history) = history.filter(|_| params.top.is_none()) {
-        let selected = if let Some(hour) = params.origin_hour {
-            params
-                .tags
-                .first()
-                .and_then(|tag| history.countries.get(tag))
-                .and_then(|country| {
-                    country
-                        .identities
-                        .iter()
-                        .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                })
-                .map(|run| (run.slot, run.country_id))
-                .into_iter()
-                .collect()
-        } else {
-            selected_identities(history, &params.tags)
-        };
-        let aliases: BTreeMap<String, Vec<HourSpan>> = history
-            .countries
-            .iter()
-            .filter_map(|(tag, country)| {
-                let spans: Vec<_> = country
-                    .identities
-                    .iter()
-                    .filter(|run| selected.contains(&(run.slot, run.country_id)))
-                    .map(|run| HourSpan {
-                        first_hour: run.first_hour,
-                        last_hour: run.last_hour,
-                    })
-                    .collect();
-                (!spans.is_empty()).then(|| (tag.clone(), spans))
-            })
-            .collect();
-        if params.origin_hour.is_some() {
-            let mut spans: Vec<_> = aliases.values().flatten().collect();
-            spans.sort_by_key(|span| span.first_hour);
-            if spans
-                .windows(2)
-                .any(|pair| pair[0].last_hour >= pair[1].first_hour)
-            {
-                return Err(io::Error::other(
-                    "NuclearDrillIdentityAmbiguous: multiple recorded tags hold the selected native country at one hour",
-                ));
-            }
-        }
-        Some(aliases)
+        Some(history_membership(params, history)?)
     } else {
         params
             .top
@@ -751,6 +218,60 @@ fn membership(
             .transpose()?
     };
     Ok(membership)
+}
+
+/// The hours each tag held a native country the selection names: one its tags held, or the
+/// one its tag held at its origin hour.
+pub(crate) fn history_membership(
+    params: &NukesParams,
+    history: &RecordedHistories,
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    let selected = if let Some(hour) = params.origin_hour {
+        params
+            .tags
+            .first()
+            .and_then(|tag| history.countries.get(tag))
+            .and_then(|country| {
+                country
+                    .identities
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+            })
+            .map(|run| (run.slot, run.country_id))
+            .into_iter()
+            .collect()
+    } else {
+        selected_identities(history, &params.tags)
+    };
+    let aliases: BTreeMap<String, Vec<HourSpan>> = history
+        .countries
+        .iter()
+        .filter_map(|(tag, country)| {
+            let spans: Vec<_> = country
+                .identities
+                .iter()
+                .filter(|run| selected.contains(&(run.slot, run.country_id)))
+                .map(|run| HourSpan {
+                    first_hour: run.first_hour,
+                    last_hour: run.last_hour,
+                })
+                .collect();
+            (!spans.is_empty()).then(|| (tag.clone(), spans))
+        })
+        .collect();
+    if params.origin_hour.is_some() {
+        let mut spans: Vec<_> = aliases.values().flatten().collect();
+        spans.sort_by_key(|span| span.first_hour);
+        if spans
+            .windows(2)
+            .any(|pair| pair[0].last_hour >= pair[1].first_hour)
+        {
+            return Err(io::Error::other(
+                "NuclearDrillIdentityAmbiguous: multiple recorded tags hold the selected native country at one hour",
+            ));
+        }
+    }
+    Ok(aliases)
 }
 fn requested_selected(
     scanned: &ScannedNukes,
@@ -889,28 +410,6 @@ fn reply_too_large() -> io::Error {
     )
 }
 
-#[derive(Default)]
-struct Scans {
-    branch: Option<(u64, Arc<ScannedNukes>)>,
-}
-
-pub fn scanned_branch(
-    source: &Source,
-    branch: u64,
-    cancelled: &AtomicBool,
-) -> io::Result<Arc<ScannedNukes>> {
-    let state = source.state::<Scans>();
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((id, scanned)) = &cache.branch
-        && *id == branch
-    {
-        return Ok(Arc::clone(scanned));
-    }
-    let scanned = Arc::new(scan(&source.replay(), branch, cancelled)?);
-    cache.branch = Some((branch, Arc::clone(&scanned)));
-    Ok(scanned)
-}
-
 fn names(catalogue: &Catalogue, scanned: &ScannedNukes) -> Vec<NukeTypeInfo> {
     type_info(scanned, |token| {
         catalogue.localisation.get(token)?;
@@ -921,6 +420,7 @@ fn names(catalogue: &Catalogue, scanned: &ScannedNukes) -> Vec<NukeTypeInfo> {
 impl Product for CountryNukes {
     const KEY: &'static str = "country-nukes";
     const CONTENT_DEPENDENT: bool = true;
+    const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = NukesParams;
     type Reply = CountryNukesReply;
 
@@ -952,44 +452,23 @@ impl Product for CountryNukes {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "test-support"))]
     fn load(
         source: &Source,
         params: &Self::Params,
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let scanned = scanned_branch(
-            source,
-            params.branch_id.parse().expect("validated branch"),
-            cancelled,
-        )?;
-        let history = (params.origin_hour.is_some() || !params.tags.is_empty())
-            .then(|| {
-                branch_histories(
-                    source,
-                    params.branch_id.parse().expect("validated branch"),
-                    false,
-                    &[],
-                    cancelled,
-                )
-            })
-            .transpose()?;
-        present(
-            source,
-            params,
-            context,
-            cancelled,
-            &scanned,
-            history.as_deref(),
-            None,
-        )
+        row::load(source, params, context, cancelled)
     }
 }
 
 #[cfg(test)]
+mod columnar_tests;
+#[cfg(test)]
 mod tests;
 
-fn present(
+pub(crate) fn present(
     source: &Source,
     params: &NukesParams,
     context: &LoadContext,

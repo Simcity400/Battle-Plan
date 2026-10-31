@@ -1,6 +1,10 @@
 //! Backward native-date pages composed from the owning families' event ranges.
 use super::*;
-use crate::prepared::series::{self, DatedRow, LateIndex, Reader};
+use crate::prepared::series::{self, DatedRow, EventsPage, LateIndex, Reader};
+use crate::products::country_nukes::{
+    NukeTypeInfo,
+    query::{Feed, Increase},
+};
 use crate::products::special_projects::prepared::completion_stream;
 #[cfg(test)]
 thread_local! {
@@ -72,15 +76,97 @@ struct Cursor {
     before: Position,
 }
 
-const FAMILIES: [&str; 7] = [
-    "country-group-changes",
-    "subject-changes",
-    "idea-changes",
-    "focus-completions",
-    "event-feed-facts",
-    country_nukes::prepared::INCREASES,
-    completion_stream::FAMILY,
+/// Each source's pages, by source; the stockpile increases ([`INCREASES`]) are the nukes
+/// family's publication's.
+const FAMILIES: [Option<&str>; 7] = [
+    Some("country-group-changes"),
+    Some("subject-changes"),
+    Some("idea-changes"),
+    Some("focus-completions"),
+    Some("event-feed-facts"),
+    None,
+    Some(completion_stream::FAMILY),
 ];
+const INCREASES: usize = 5;
+/// The key every increase is read under.
+const INCREASE_KEY: u64 = 0;
+
+/// Where a source's events are read: its pages, or the increases the feed is given.
+enum Events<'a> {
+    Pages(Reader<'a>),
+    Increases(&'a [Increase]),
+}
+
+impl Events<'_> {
+    fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
+        match self {
+            Self::Pages(reader) => reader.event_count_through(key, hour),
+            Self::Increases(rows) if key == INCREASE_KEY => {
+                Ok(rows.partition_point(|row| row.hour <= hour) as u64)
+            }
+            Self::Increases(_) => Ok(0),
+        }
+    }
+
+    /// The event of `key` at `ordinal`.
+    fn event(&mut self, key: u64, ordinal: u64) -> io::Result<DatedRow> {
+        match self {
+            Self::Pages(reader) => event(reader, key, ordinal),
+            Self::Increases(_) => self
+                .events(&[key], i32::MIN, i32::MAX, ordinal, 1)?
+                .rows
+                .pop()
+                .ok_or_else(|| crate::invalid("Prepared feed event reference is missing")),
+        }
+    }
+
+    /// The events of `keys` dated `from..=to` from ordinal `cursor`, `size` at most, as a
+    /// source's pages give them.
+    fn events(
+        &mut self,
+        keys: &[u64],
+        from: i32,
+        to: i32,
+        cursor: u64,
+        size: u32,
+    ) -> io::Result<EventsPage> {
+        let rows = match self {
+            Self::Pages(reader) => return reader.events(keys, from, to, cursor, size),
+            Self::Increases(rows) => *rows,
+        };
+        if from > to || size == 0 {
+            return Err(crate::invalid("invalid event page"));
+        }
+        let held = if keys.contains(&INCREASE_KEY) {
+            rows
+        } else {
+            &[]
+        };
+        let base = if from == i32::MIN {
+            0
+        } else {
+            held.partition_point(|row| row.hour < from)
+        };
+        let last = held.partition_point(|row| row.hour <= to);
+        let first = usize::try_from(cursor).unwrap_or(usize::MAX).max(base);
+        let end = first.saturating_add(size as usize).min(last);
+        let mut page = Vec::new();
+        for ordinal in first..end {
+            page.push(DatedRow {
+                key: INCREASE_KEY,
+                hour: held[ordinal].hour,
+                ordinal: ordinal as u64,
+                row: serde_json::to_value(&held[ordinal])?,
+            });
+        }
+        Ok(EventsPage {
+            first: first as u64,
+            total: (last - base) as u64,
+            rows: page,
+            cursor: (end < last).then_some(end as u64),
+        })
+    }
+}
 /// The feed facts' catalogue: diagnostics, observed tables and late
 /// references. Each opener's continuing facts are entries apart.
 pub(in crate::products::event_feed) type FactsCatalogue = (Builder, BTreeSet<String>, LateIndex);
@@ -94,7 +180,6 @@ struct Metadata {
     definitions: Option<BTreeMap<String, replay_data::rows::ModifierDefinitionRow>>,
     focus: FocusMetadata,
     facts: FactsCatalogue,
-    nukes: country_nukes::prepared::IncreaseCatalogue,
     projects: completion_stream::Metadata,
 }
 impl Metadata {
@@ -123,7 +208,7 @@ fn metadata(
     branch: u64,
 ) -> io::Result<Option<Arc<Metadata>>> {
     let mut stamps = Vec::new();
-    for family in FAMILIES {
+    for family in FAMILIES.into_iter().flatten() {
         let Some(ranges) = series::catalogue_ranges(store, key, family, branch)? else {
             return Ok(None);
         };
@@ -147,19 +232,19 @@ fn metadata(
             .map(|(_, value)| value)
             .ok_or_else(|| crate::invalid("Prepared feed catalogue disappeared"))
     }
-    let groups = read(store, key, FAMILIES[0], branch)?;
-    let subjects = read(store, key, FAMILIES[1], branch)?;
-    let ideas: idea_history::ChangeMetadata = read(store, key, FAMILIES[2], branch)?;
+    let family = |source: usize| FAMILIES[source].expect("a source's pages");
+    let groups = read(store, key, family(0), branch)?;
+    let subjects = read(store, key, family(1), branch)?;
+    let ideas: idea_history::ChangeMetadata = read(store, key, family(2), branch)?;
     let definitions = ideas.definition_index()?;
     let value = Arc::new(Metadata {
         groups,
         subjects,
         ideas,
         definitions,
-        focus: read(store, key, FAMILIES[3], branch)?,
-        facts: read(store, key, FAMILIES[4], branch)?,
-        nukes: read(store, key, FAMILIES[5], branch)?,
-        projects: read(store, key, FAMILIES[6], branch)?,
+        focus: read(store, key, family(3), branch)?,
+        facts: read(store, key, family(4), branch)?,
+        projects: read(store, key, family(6), branch)?,
     });
     cache
         .0
@@ -175,7 +260,7 @@ enum SourceRow {
     Idea(idea_history::Addition),
     Focus(national_focus::FocusCompletion),
     Fact(Box<Fact>),
-    Increase(country_nukes::prepared::StockpileIncrease),
+    Increase(Increase),
     Project(completion_stream::Change),
 }
 fn decode(source: usize, row: DatedRow) -> io::Result<(Position, SourceRow)> {
@@ -283,10 +368,7 @@ fn keys(source: usize, categories: &BTreeSet<EventFeedCategory>, observations: b
         ],
         3 => vec![(0, EventFeedCategory::Milestones)],
         6 => vec![(completion_stream::KEY, EventFeedCategory::Milestones)],
-        5 => vec![(
-            country_nukes::prepared::INCREASE_KEY,
-            EventFeedCategory::Milestones,
-        )],
+        INCREASES => vec![(INCREASE_KEY, EventFeedCategory::Milestones)],
         _ => FACT_KEYS
             .iter()
             .copied()
@@ -320,7 +402,7 @@ type WarEnds = BTreeSet<(i32, String, String)>;
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn candidates(
-    readers: &mut [Reader<'_>],
+    readers: &mut [Events<'_>],
     native_ends: &mut Reader<'_>,
     metadata: &Metadata,
     bounds: (i32, i32),
@@ -392,7 +474,7 @@ fn candidates(
                 }) else {
                     break;
                 };
-                let hour = event(reader, key, last)?.hour;
+                let hour = reader.event(key, last)?.hour;
                 if hour < lower {
                     break;
                 }
@@ -420,7 +502,7 @@ fn candidates(
                             high = mid;
                             continue;
                         };
-                        let row = event(reader, key, ordinary)?;
+                        let row = reader.event(key, ordinary)?;
                         let position = order(source, row)?.0;
                         if position >= *before {
                             low = ordinary + 1;
@@ -485,7 +567,7 @@ fn candidates(
                         break;
                     }
                 }
-                let row = event(reader, key, ordinal)?;
+                let row = reader.event(key, ordinal)?;
                 let (position, row) = order(source, row)?;
                 retain(&mut held, position, row);
             }
@@ -549,6 +631,7 @@ fn project(
     position: &Position,
     row: SourceRow,
     metadata: &Metadata,
+    nuke_types: &[NukeTypeInfo],
     politics: Option<&politics_content::PoliticsContent>,
     catalogue: Option<&Catalogue>,
     nuclear_art: &Result<Option<String>, String>,
@@ -602,17 +685,15 @@ fn project(
                     None
                 }
             };
-            let kind = change
-                .type_ordinal
-                .and_then(|ordinal| change.types.iter().find(|kind| kind.ordinal == ordinal));
-            let item = nuclear_item(builder, kind, catalogue, icon)?;
+            // A whole-stockpile increase names no type.
+            let item = nuclear_item(builder, None, catalogue, icon)?;
             builder.row(
                 EventFeedKind::NukesIncreased,
                 RowDate {
                     hour: change.hour,
-                    read_hour: change.read_hour,
+                    read_hour: change.hour,
                     name_hour: change.hour,
-                    exact: change.exact,
+                    exact: false,
                 },
                 vec![change.tag],
                 Some(item),
@@ -643,9 +724,7 @@ fn project(
                 fact.row.item = Some(builder.item(item)?);
             }
             if let Some(info) = fact.nuke_type.and_then(|kind| {
-                metadata
-                    .nukes
-                    .types
+                nuke_types
                     .iter()
                     .find(|info| info.ordinal == kind && info.supported)
             }) {
@@ -725,6 +804,7 @@ pub(crate) fn query(
     context: &LoadContext,
     store: &store::Store,
     key: &store::SourceKey,
+    nukes: Option<&Feed>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Page>> {
     check_cancel(cancelled)?;
@@ -762,12 +842,16 @@ pub(crate) fn query(
             "Prepared feed cursor belongs to another view",
         ));
     }
-    let Some(metadata) = metadata(source, store, key, branch)? else {
+    let (Some(metadata), Some(nukes)) = (metadata(source, store, key, branch)?, nukes) else {
         return Ok(None);
     };
     let mut readers: Vec<_> = FAMILIES
         .iter()
-        .map(|family| Reader::new(store, key, format!("{family}-{branch}"), cancelled))
+        .map(|family| match family {
+            Some(family) => Reader::new(store, key, format!("{family}-{branch}"), cancelled)
+                .map(Events::Pages),
+            None => Ok(Events::Increases(&nukes.increases)),
+        })
         .collect::<io::Result<_>>()?;
     let mut native_ends = Reader::new(store, key, format!("event-feed-facts-{branch}"), cancelled)?;
     let (mut rows, peace, has_older) = candidates(
@@ -816,7 +900,10 @@ pub(crate) fn query(
             _ => None,
         })
         .collect::<io::Result<_>>()?;
-    let current = readers[6].values_at(
+    let Events::Pages(completions) = &mut readers[6] else {
+        return Err(crate::invalid("Prepared feed projects are not pages"));
+    };
+    let current = completions.values_at(
         &projects.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
         live,
     )?;
@@ -835,7 +922,8 @@ pub(crate) fn query(
     });
     let mut builder = Builder::new(first, live);
     let texts = ScopedTexts::rising(source, branch, cancelled);
-    diagnostics(&mut builder, &metadata, live)?;
+    diagnostics(&mut builder, &metadata, nukes, live)?;
+    let nuke_types = nukes.types();
     let mut project_refusals = catalogue::Refusals::default();
     for row in rows.values() {
         if let SourceRow::Project(change) = row {
@@ -1000,6 +1088,7 @@ pub(crate) fn query(
             &position,
             row,
             &metadata,
+            &nuke_types,
             politics.as_deref(),
             catalogue.as_deref(),
             &nuclear_art,
@@ -1047,12 +1136,12 @@ pub(crate) fn query(
         }
         // A page is an I/O unit. Shrinking it changes no source selection or cursor bound.
         params.page_size /= 2;
-        return query(source, params, context, store, key, cancelled);
+        return query(source, params, context, store, key, Some(nukes), cancelled);
     }
     Ok(Some(page))
 }
 
-fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Result<()> {
+fn diagnostics(builder: &mut Builder, metadata: &Metadata, nukes: &Feed, live: i32) -> io::Result<()> {
     builder.feed.unavailable = metadata.facts.0.feed.unavailable.clone();
     builder.unavailable_keys = metadata.facts.0.unavailable_keys.clone();
     builder
@@ -1071,12 +1160,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Res
     let counted = |count: usize| {
         u32::try_from(count).map_err(|_| crate::invalid("Feed refusal count exceeds u32"))
     };
-    if !metadata
-        .nukes
-        .read_spans
-        .iter()
-        .any(|span| span.first_hour <= live)
-    {
+    if nukes.first_read.is_none_or(|first| first > live) {
         builder.unavailable(
             "nukesIncreased",
             "Nuclear stockpile",
@@ -1084,7 +1168,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Res
             None,
         );
     }
-    for (ordinal, count) in &metadata.nukes.refused_types {
+    for (ordinal, count) in &nukes.refused {
         builder.unavailable(
             "nuclearType",
             "Nuclear type",
@@ -1092,7 +1176,7 @@ fn diagnostics(builder: &mut Builder, metadata: &Metadata, live: i32) -> io::Res
             Some(counted(*count)?),
         );
     }
-    for (reason, spans) in &metadata.nukes.refusals {
+    for (reason, spans) in &nukes.refusals {
         let count: u64 = spans
             .iter()
             .filter(|span| span.first_hour <= live)

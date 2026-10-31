@@ -356,7 +356,6 @@ unsaved_while_own!(
     own_casualties => "casualties",
     own_research => "research",
     own_projects => "projects",
-    own_nukes => "nukes",
     own_factories => "factories",
     own_repairs => "repairs",
     own_feed => "event_feed",
@@ -428,8 +427,6 @@ struct BranchState {
     air: Box<crate::products::air_force::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_navy")]
     navy: Box<crate::products::navy::prepared::Prepared>,
-    #[serde(default, skip_serializing_if = "own_nukes")]
-    nukes: Box<crate::products::country_nukes::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_factories")]
     factories: Box<crate::products::country_factories::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_repairs")]
@@ -534,7 +531,6 @@ impl BranchState {
             )),
             air: Default::default(),
             navy: Default::default(),
-            nukes: Default::default(),
             factories: Default::default(),
             repairs: Default::default(),
             construction: Default::default(),
@@ -3237,7 +3233,6 @@ fn run_planned(
                         identities,
                         air,
                         navy,
-                        nukes,
                         factories,
                         repairs,
                         construction,
@@ -3284,19 +3279,6 @@ fn run_planned(
                     let intelligence_content = &intelligence_content;
                     let (prepared_store, prepared_key) = (&store, &key);
                     let mut jobs = vec![
-                        lanes::Job::new(
-                            &[("nukes", 4)],
-                            521,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "nukes",
-                                    observe,
-                                    nukes.observe(frame, replay, changes)
-                                )?;
-                                Ok(())
-                            },
-                        ),
                         lanes::Job::new(
                             &[("factories", 5)],
                             4210,
@@ -3893,7 +3875,6 @@ fn run_planned(
                                     Some(changes)
                                 )
                             )?;
-                            lanes.serial("nukes", frame, changes, &mut family_timings)?;
                             lanes.serial("factories", frame, changes, &mut family_timings)?;
                             lanes.serial("projects", frame, changes, &mut family_timings)?;
                             lanes.serial("peace", frame, changes, &mut family_timings)?;
@@ -4394,7 +4375,6 @@ fn run_planned(
                         + branch.wars.bytes()
                         + branch.air.bytes()
                         + branch.navy.bytes()
-                        + branch.nukes.bytes()
                         + branch.factories.bytes()
                         + branch.repairs.bytes()
                         + branch.parts.bytes()
@@ -4456,7 +4436,6 @@ fn run_planned(
                         wars,
                         factories,
                         repairs,
-                        nukes,
                         navy,
                         air,
                         leaders,
@@ -4650,14 +4629,6 @@ fn run_planned(
                                 )))
                             },
                         ),
-                        flush::Task::new(&[(17, "nukes")], move |_, writer, mut family_timings| {
-                            Ok(Some(time_family!(
-                                family_timings,
-                                "nukes",
-                                flush,
-                                nukes.flush(writer, branch, cancelled)
-                            )))
-                        }),
                         flush::Task::new(&[(18, "navy")], move |_, writer, mut family_timings| {
                             Ok(Some(time_family!(
                                 family_timings,

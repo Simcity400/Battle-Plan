@@ -386,8 +386,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     Descriptor {
         status: &["country-nukes"],
         queries: &["country-nukes", "scoreboard", "event-feed"],
-        sections: &["nukes"],
-        walk: true,
+        // 2: stockpiles on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         ..family("nukes")
     },
     Descriptor {

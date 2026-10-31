@@ -1,11 +1,10 @@
-//! Country factories, nuclear stockpiles and dockyard repairs prepared on
-//! their own. Each joins its hourly country table to the countries' keys
-//! and links: its observer acts when a joined key, link,
-//! availability or row of its table changes, or when the table's read flag
-//! does, and an hour between repeats the last read's counts and advances its
-//! series in constant time. So a block is read by its changes
-//! ([`prepass::Family`] fields: the countries' keys, every link, the census
-//! operands and, for the stockpiles, the name tokens): a pre-pass
+//! Country factories and dockyard repairs prepared on their own. Each joins
+//! its hourly country table to the countries' keys and links: its observer
+//! acts when a joined key, link, availability or row of its table changes, or
+//! when the table's read flag does, and an hour between repeats the last
+//! read's counts and advances its series in constant time. So a block is read
+//! by its changes ([`prepass::Family`] fields: the countries' keys, every
+//! link and the census operands): a pre-pass
 //! worker keeps the frames of the hours the census observes (countries
 //! reduced to the keys it reads), with a frame at each hour its table's read
 //! is due to begin or end by the recording's cadence (none for a table read
@@ -32,7 +31,7 @@ use crate::{
         frame_changes::FrameChanges,
         prepass::{self, Extract, Folded},
     },
-    products::{country_factories, country_nukes, dockyard_repairs},
+    products::{country_factories, dockyard_repairs},
 };
 use dashboard_base::prepared::kept::{Reduced, consecutive, kept_changes, observe_hours};
 use replay::{container::QuietHours, container::Replay, container::TableFields};
@@ -103,7 +102,6 @@ macro_rules! census {
 }
 
 census!(country_factories::prepared::Prepared, FACTORIES_FAMILY);
-census!(country_nukes::prepared::Prepared, NUKES_FAMILY);
 census!(dockyard_repairs::Prepared, REPAIRS_FAMILY);
 
 // --- Families --------------------------------------------------------------
@@ -145,45 +143,6 @@ fn factory_fields() -> io::Result<Vec<TableFields>> {
 
 fn factory_start(format: FormatVersion) -> Box<dyn Extract> {
     CensusExtract::start(format, TableId::CountryFactories)
-}
-
-/// The tables the stockpile census reads.
-const NUKE_TABLES: &[TableId] = &[
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::Nukes,
-    TableId::LexicalTokens,
-];
-
-static NUKES_FAMILY: prepass::Family = prepass::Family {
-    name: "nukes",
-    extract: "nukes.extract",
-    sequential: "nukes.sequential",
-    fallback: "nukes.fallback",
-    tables: NUKE_TABLES,
-    fields: Some(nuke_fields),
-    start: nuke_start,
-};
-
-/// What the stockpile census reads. Campaign is checked on every read and
-/// read by nothing else here.
-fn nuke_fields() -> io::Result<Vec<TableFields>> {
-    Ok(vec![
-        // Country keys, as the factory census reads them.
-        TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
-        TableFields::all(TableId::CountryLinks),
-        // Every stockpile field: any row change is a new read of the
-        // holder's counts. A read with equal rows dates a read again; its
-        // read flag is kept with the quiet hours.
-        TableFields::all(TableId::Nukes),
-        // The type names are read from the tokens while one is unnamed.
-        TableFields::all(TableId::LexicalTokens),
-    ])
-}
-
-fn nuke_start(format: FormatVersion) -> Box<dyn Extract> {
-    CensusExtract::start(format, TableId::Nukes)
 }
 
 /// Hourly repair use with the production census's carried daily output.
@@ -625,26 +584,6 @@ impl Own for Factories {
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         CensusBranch::<country_factories::prepared::Prepared>::load(load, branch)
-    }
-}
-
-/// Nuclear stockpiles: totals, parts, compositions, supplying reads and the
-/// stockpile increases the event feed reads.
-pub(in crate::prepared::pipeline) struct Nukes;
-
-pub(in crate::prepared::pipeline) static NUKES: Nukes = Nukes;
-
-impl Own for Nukes {
-    fn family(&self) -> &'static prepass::Family {
-        &NUKES_FAMILY
-    }
-
-    fn timing(&self) -> &'static str {
-        "independent.nukes"
-    }
-
-    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
-        CensusBranch::<country_nukes::prepared::Prepared>::load(load, branch)
     }
 }
 

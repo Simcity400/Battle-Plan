@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, PoisonError, atomic::AtomicBool},
 };
 
 #[derive(Deserialize)]
@@ -819,6 +819,113 @@ fn volunteers_reply(
         None => aid::unpublished(prefix),
     };
     Ok(serde_json::to_value(aid::finish(source, branch, reply)?)?)
+}
+
+/// A `country-nukes` series request answered from the nukes family's publication, named through
+/// the identity history; null before the family publishes the branch.
+fn nukes_series(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::country_nukes;
+    if !matches!(
+        product,
+        "series-state" | "series-summary" | "series-next-change"
+    ) {
+        return Err(crate::invalid("Unknown prepared series family"));
+    }
+    let accepted = match dashboard_base::prepared::coverage::product_coverage(
+        source,
+        content,
+        branch,
+        "country-nukes",
+        cancelled,
+    ) {
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
+        result => result?,
+    };
+    let Some(shared) = &accepted else {
+        return Ok(Value::Null);
+    };
+    // Pinned through the coverage the stockpiles share with the identities: no read passes it.
+    let Some(opened) = published::open_through(
+        source,
+        content,
+        "nukes",
+        country_nukes::emit::SCHEMA,
+        branch,
+        (!shared.complete).then_some(shared.last_hour),
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let (store, key) = super::files(source, content)?;
+    // The identities prepared through the accepted coverage, never read from the recording.
+    let history = match &accepted {
+        Some(coverage) => dashboard_base::products::country_history::read_prepared_histories(
+            &store,
+            &key,
+            branch,
+            Some(coverage.last_hour),
+        )?,
+        None => None,
+    }
+    .unwrap_or_default();
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    opened.read(cancelled, |snapshot, directory| {
+        country_nukes::query::series(
+            source, product, params, &context, snapshot, directory, &history, accepted, cancelled,
+        )
+    })
+}
+
+/// The event feed's view of the nukes family's publication on `branch`, read once per
+/// publication; none before the family publishes the branch.
+fn nukes_feed(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Arc<crate::products::country_nukes::query::Feed>>> {
+    use crate::products::country_nukes;
+    type Kept = std::collections::BTreeMap<u64, (([u64; 3], u64), Arc<country_nukes::query::Feed>)>;
+    #[derive(Default)]
+    struct Feeds(Kept);
+    let Some(opened) = published::open(
+        source,
+        content,
+        "nukes",
+        country_nukes::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let state = source.state::<Feeds>();
+    if let Some((stamp, feed)) = state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .get(&branch)
+        && *stamp == opened.stamp()
+    {
+        return Ok(Some(Arc::clone(feed)));
+    }
+    let feed = Arc::new(opened.read(cancelled, |snapshot, directory| {
+        country_nukes::query::feed(snapshot, directory)
+    })?);
+    state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0
+        .insert(branch, (opened.stamp(), Arc::clone(&feed)));
+    Ok(Some(feed))
 }
 
 /// A `country-stability` series request answered from the stability family's publication;
@@ -2036,6 +2143,7 @@ fn query_data(
                 live = kept;
             }
             params.last_hour = live;
+            let nukes = nukes_feed(source, content, branch, cancelled)?;
             let mut data = serde_json::to_value(crate::products::event_feed::prepared::query(
                 source,
                 params,
@@ -2044,6 +2152,7 @@ fn query_data(
                 },
                 &store,
                 &key,
+                nukes.as_deref(),
                 cancelled,
             )?)?;
             super::prefix::Prefix {
@@ -3268,15 +3377,7 @@ fn query_data(
                     );
                 }
                 Some("country-nukes") => {
-                    return crate::products::country_nukes::prepared::query(
-                        source,
-                        product,
-                        &request.params,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        cancelled,
-                    );
+                    return nukes_series(source, content, product, &request.params, branch, cancelled);
                 }
                 _ => {}
             }

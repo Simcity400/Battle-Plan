@@ -38,7 +38,6 @@ pub(super) fn walk_state(branch: u64, hour: i32, state: &BranchState) -> Line {
         casualties => "casualties",
         research => "research",
         projects => "projects",
-        nukes => "nukes",
         factories => "factories",
         repairs => "repairs",
         feed => "event_feed",

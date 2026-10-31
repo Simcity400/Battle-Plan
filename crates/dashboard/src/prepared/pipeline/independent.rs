@@ -386,7 +386,6 @@ static ROWS: &[&dyn Own] = &[
     &evaluated::PROJECTS,
     &evaluated::OCCUPATION,
     &census::FACTORIES,
-    &census::NUKES,
     &census::REPAIRS,
     &event_feed::FEED,
     &windowed::DIVISIONS,

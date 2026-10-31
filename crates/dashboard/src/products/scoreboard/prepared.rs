@@ -196,12 +196,6 @@ fn binding(column: ScoreboardColumnKey, branch: u64) -> io::Result<Binding> {
                 Some("commandPower"),
                 None,
             ),
-            Nukes => (
-                "nukes",
-                format!("nukes-values-{branch}"),
-                Some(""),
-                Some(format!("nukes-mixes-{branch}")),
-            ),
             Territory => (
                 "territory",
                 format!(
@@ -410,7 +404,6 @@ fn cells(
         Factories | FactoriesBuilt | FactoriesTopbar => {
             factory_warnings(&serde_json::from_value(metadata)?, warnings)
         }
-        Nukes => nuke_warnings(&serde_json::from_value(metadata)?, warnings),
         _ => {}
     }
     let selected: Vec<_> = rows
@@ -525,6 +518,51 @@ fn army_cells(
             .map(|(amount, known)| Cell {
                 amount,
                 read_hour: (with_reads && known).then_some(hour),
+                at_least: false,
+            })
+            .collect(),
+    ))
+}
+
+/// Nuclear totals at `hour` from the nukes family's publication, dated `hour` where the country's
+/// stockpile was read then; none before the family publishes the branch.
+fn nukes_cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
+    branch: u64,
+    rows: &[(String, CountryIdentityRun)],
+    (hour, with_reads): (i32, bool),
+    warnings: &mut Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Vec<Cell>>> {
+    check_cancel(cancelled)?;
+    if rows.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(opened) = published::open(
+        source,
+        content,
+        "nukes",
+        country_nukes::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(None);
+    };
+    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
+    let (found, scanned) = opened.read(cancelled, |snapshot, directory| {
+        Ok((
+            country_nukes::query::cells(snapshot, directory, &tags, hour)?,
+            country_nukes::query::scanned(directory),
+        ))
+    })?;
+    nuke_warnings(&scanned, warnings);
+    Ok(Some(
+        found
+            .into_iter()
+            .map(|(amount, read)| Cell {
+                amount,
+                read_hour: (with_reads && read).then_some(hour),
                 at_least: false,
             })
             .collect(),
@@ -790,6 +828,15 @@ pub(crate) fn query(
                     branch,
                     rows,
                     (params.hour, with_reads),
+                    cancelled,
+                ),
+                _ if column == ScoreboardColumnKey::Nukes => nukes_cells(
+                    source,
+                    context.content.as_ref(),
+                    branch,
+                    rows,
+                    (params.hour, with_reads),
+                    warnings,
                     cancelled,
                 ),
                 _ => cells(

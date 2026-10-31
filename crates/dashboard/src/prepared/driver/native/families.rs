@@ -22,6 +22,7 @@ use dashboard_base::prepared::{
     series::{compress, decompress},
 };
 use dashboard_country_fuel::products::country_fuel;
+use dashboard_country_nukes::products::country_nukes;
 use dashboard_diplomacy::products::diplomacy_state;
 use dashboard_equipment_losses::products::equipment_losses;
 use dashboard_equipment_stockpile::products::equipment_stockpile;
@@ -150,6 +151,11 @@ pub(crate) static REGISTERED: &[Registered] = &[
         load: free,
         bind: manpower,
     },
+    Registered {
+        name: "nukes",
+        load: free,
+        bind: nukes,
+    },
 ];
 
 /// `branch`'s extent in `extents`; a branch the recording holds no hour of is none of a
@@ -234,6 +240,7 @@ projected!(
     style_runs::facts::Hour,
     place_names::facts::Hour,
     country_people::facts::Hour,
+    country_nukes::facts::Hour,
 );
 
 /// A family's emit on the series engine.
@@ -281,6 +288,7 @@ emits!(
     diplomacy_state::emit::Emit => diplomacy_state::facts::Hour,
     place_names::emit::Emit => place_names::facts::Hour,
     country_people::emit::Emit => country_people::facts::Hour,
+    country_nukes::emit::Emit => country_nukes::facts::Hour,
 );
 
 impl<E: Emits> Emits for Box<E> {
@@ -1546,5 +1554,78 @@ impl Native for Manpower {
         let directory = directory(stage, branch, published, country_people::emit::SCHEMA)?;
         let emit = country_people::emit::Emit::resume(&directory, saved)?;
         Ok(Series::new(emit, published.frontier.first_hour))
+    }
+}
+
+struct Nukes<'p> {
+    replay: &'p Replay,
+}
+
+fn nukes<'p>(
+    id: FamilyId,
+    content: &'p Content<'p>,
+    stage: Stage<'p, 'p>,
+    taken: Taken<'p>,
+) -> Made<'p> {
+    let replay = content.source.replay_ref();
+    bound(id, Nukes { replay }, stage, taken)
+}
+
+impl Native for Nukes<'_> {
+    type Operator = country_nukes::facts::Projector;
+    type Branch = Series<Box<country_nukes::emit::Emit>>;
+
+    fn tables(&self) -> &'static [TableId] {
+        country_nukes::facts::TABLES
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        Ok(country_nukes::facts::needs())
+    }
+
+    fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
+        country_nukes::facts::Projector::new(self.replay.format, self.replay.capture_mode)
+    }
+
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        let emit = country_nukes::emit::Emit::new(self.replay.format);
+        Ok(Series::new(Box::new(emit), first))
+    }
+
+    fn observe(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        hour: country_nukes::facts::Hour,
+    ) -> io::Result<()> {
+        state.observe(stage, branch, hour.hour, hour)
+    }
+
+    fn flush(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: Option<i32>,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        state.flush(stage, branch)
+    }
+
+    fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        state.save()
+    }
+
+    fn resume(
+        &self,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
+        saved: &[u8],
+    ) -> io::Result<Self::Branch> {
+        let directory = directory(stage, branch, published, country_nukes::emit::SCHEMA)?;
+        let emit = country_nukes::emit::Emit::load(self.replay.format, &directory, saved)?;
+        Ok(Series::new(Box::new(emit), published.frontier.first_hour))
     }
 }

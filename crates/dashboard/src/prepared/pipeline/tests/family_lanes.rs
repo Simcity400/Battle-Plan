@@ -200,7 +200,6 @@ fn family_lanes_match_every_section_and_keep_the_time_budget() {
 /// on its own is no lane job otherwise. Resources and army fold their block
 /// facts instead (`prepass.rs`).
 const LANE_FAMILIES: &[&str] = &[
-    "nukes",
     "factories",
     "projects",
     "peace",

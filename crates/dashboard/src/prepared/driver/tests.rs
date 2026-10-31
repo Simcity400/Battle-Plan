@@ -35,7 +35,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
             family.id.name()
         );
     }
-    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 13);
+    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 14);
     for segments in [
         "stability",
         "supply",
@@ -46,6 +46,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
         "stockpile",
         "fuel",
         "diplomacy_state",
+        "nukes",
     ] {
         assert_eq!(
             rows.backend(segments),
@@ -538,16 +539,19 @@ fn shared_queries_name_every_supplier_of_their_coverage_and_refusals() {
     );
     plan::with_test_hourly(|| {
         let hourly = plan::current();
-        // Supply health still joins the segment-prepared supply with the walk's identities.
-        assert!(hourly.joint("event-feed").is_none());
+        // Supply health still joins the segment-prepared supply with the walk's identities,
+        // and the feed the segment-prepared stockpiles with the walk's families.
+        assert_eq!(names(hourly.joint("event-feed").unwrap()), feed);
         assert_eq!(names(hourly.joint("supply-health").unwrap()), supply);
         assert_eq!(hourly.gating("event-choices"), None);
         assert_eq!(
             hourly.gating("production-line-detail"),
             Some("production-lines")
         );
-        let walk = vec![crate::prepared::coverage::WALK];
-        assert_eq!(crate::prepared::pipeline::gate("event-feed"), walk);
+        assert_eq!(
+            crate::prepared::pipeline::gate("event-feed"),
+            vec!["nukes", crate::prepared::coverage::WALK]
+        );
         assert_eq!(
             crate::prepared::pipeline::gate("supply-health"),
             vec!["identities", "supply"]
