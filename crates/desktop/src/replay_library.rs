@@ -159,7 +159,7 @@ pub async fn set_replay_folder(folder: String) -> Result<ReplayLibrary, String> 
         let library = scan(Path::new(&folder))?;
         // Kept as chosen: the recorder shows it under Save to.
         let chosen = PathBuf::from(folder);
-        RecorderSettings::update(|shared| shared.save_folder = Some(chosen))
+        RecorderSettings::update(|shared| shared.choose_save_folder(chosen))
             .map_err(|error| format!("Recorder settings could not be saved: {error}"))?;
         Ok(library)
     })

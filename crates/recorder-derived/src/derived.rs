@@ -21,7 +21,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs, io,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -364,7 +364,8 @@ fn run(
     user_dir: Option<PathBuf>,
     census: bool,
 ) -> io::Result<()> {
-    let replay = Replay::open(fs::read(path)?)?;
+    // Blocks are read as they are checked, never the whole recording at once.
+    let replay = Replay::open_path(path)?;
     println!(
         "recording: format {}, {} blocks",
         replay.format.version(),

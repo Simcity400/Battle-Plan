@@ -1928,11 +1928,10 @@ pub fn unprepared_blocks(
 ) -> io::Result<Option<usize>> {
     let (store, key) = super::files(source, content)?;
     let saved = store.saved_key()?;
-    if !saved.as_ref().is_some_and(|previous| {
-        previous == &key
-            || previous.recording_size() < key.recording_size()
-            || key.renames(previous)
-    }) {
+    if !saved
+        .as_ref()
+        .is_some_and(|previous| previous == &key || key.appends(previous))
+    {
         return Ok(None);
     }
     let Some((state, _)) = checkpoint(&store, &key, saved.as_ref())? else {
@@ -2383,11 +2382,9 @@ fn run_planned(
         store.saved_key()
     )?;
     // Reuse compares unchanged input stamps and the recorded index/semantic metadata.
-    let reuse = saved.as_ref().is_some_and(|previous| {
-        previous == &key
-            || previous.recording_size() < key.recording_size()
-            || key.renames(previous)
-    });
+    let reuse = saved
+        .as_ref()
+        .is_some_and(|previous| previous == &key || key.appends(previous));
     let planned_checkpoint = if reuse {
         time_family!(
             family_timings,

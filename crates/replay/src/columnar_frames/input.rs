@@ -3,7 +3,10 @@
 //! for every walker's buffers.
 
 use super::invalid;
-use replay_columnar::envelope::{self, Extent, Kind};
+use replay_columnar::{
+    envelope::{self, Extent, Kind},
+    walk::Allowance,
+};
 use std::{
     collections::VecDeque,
     fs::File,
@@ -27,6 +30,9 @@ pub struct Limits {
     pub budget: Arc<Budget>,
     /// The strings a walker's dictionary holds before it drops those no live cell names.
     pub dictionary_bytes: usize,
+    /// Every walk's tables at once, shared by the recordings handed the same allowance: a
+    /// restart or section naming more slots than it leaves is refused before they are made.
+    pub tables: Arc<Allowance>,
 }
 
 impl Default for Limits {
@@ -34,8 +40,47 @@ impl Default for Limits {
         Self {
             budget: Arc::new(Budget::new(2048 << 20)),
             dictionary_bytes: 32 << 20,
+            tables: Allowance::new(physical_memory()),
         }
     }
+}
+
+/// The machine's physical memory: tables needing more cannot be walked on it.
+#[cfg(windows)]
+fn physical_memory() -> usize {
+    // MEMORYSTATUSEX.
+    #[repr(C)]
+    #[derive(Default)]
+    struct Status {
+        length: u32,
+        load: u32,
+        total_physical: u64,
+        available_physical: u64,
+        total_commit: u64,
+        available_commit: u64,
+        total_virtual: u64,
+        available_virtual: u64,
+        available_extended_virtual: u64,
+    }
+    const _: () = assert!(size_of::<Status>() == 64);
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut Status) -> i32;
+    }
+    let mut status = Status {
+        length: size_of::<Status>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: the C-layout buffer is writable and its length names its complete size.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return usize::MAX;
+    }
+    usize::try_from(status.total_physical).unwrap_or(usize::MAX)
+}
+
+#[cfg(not(windows))]
+fn physical_memory() -> usize {
+    usize::MAX
 }
 
 /// What walkers' buffers hold at once, admitted in arrival order: a walker waits until those

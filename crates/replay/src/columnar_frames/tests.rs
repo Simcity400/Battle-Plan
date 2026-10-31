@@ -1205,6 +1205,7 @@ fn walkers_past_the_budget_wait_for_those_walking() {
     let limits = Limits {
         budget: budget.clone(),
         dictionary_bytes,
+        ..Limits::default()
     };
     let file = Recording::open(bytes, limits).unwrap();
     assert_eq!(file.segments().len(), 8);

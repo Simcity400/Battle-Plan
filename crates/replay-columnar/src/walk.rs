@@ -10,7 +10,14 @@ use crate::{
     section::{self, Changes, Scratch},
     state::{Column, Kind, Table},
 };
-use std::{collections::HashMap, fmt, io, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt, io,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 #[cfg(test)]
 mod tests;
@@ -476,6 +483,67 @@ fn each_text_id(
     Ok(())
 }
 
+/// The table storage the states sharing it hold at once: each table's keys and cells over its
+/// slots, charged before a restart rebuilds a table and as a section grows one, so a recording
+/// naming more slots than it allows is refused before they are allocated.
+#[derive(Debug)]
+pub struct Allowance {
+    limit: usize,
+    held: AtomicUsize,
+}
+
+impl Allowance {
+    pub fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit,
+            held: AtomicUsize::new(0),
+        })
+    }
+
+    /// The bytes held now.
+    pub fn held(&self) -> usize {
+        self.held.load(Ordering::Acquire)
+    }
+
+    fn charge(&self, bytes: usize) -> io::Result<()> {
+        self.held
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                held.checked_add(bytes).filter(|&total| total <= self.limit)
+            })
+            .map(drop)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "The recording's tables need more memory than its reader allows",
+                )
+            })
+    }
+
+    fn release(&self, bytes: usize) {
+        self.held.fetch_sub(bytes, Ordering::AcqRel);
+    }
+}
+
+/// Charges a table of `kinds` over `slots` slots to `allowance` in place of `charged`.
+fn charge_to(
+    allowance: Option<&Allowance>,
+    charged: &mut usize,
+    kinds: &[Kind],
+    slots: usize,
+) -> io::Result<()> {
+    let Some(allowance) = allowance else {
+        return Ok(());
+    };
+    let bytes = Table::storage_bytes(kinds, slots)?;
+    if bytes > *charged {
+        allowance.charge(bytes - *charged)?;
+    } else {
+        allowance.release(*charged - bytes);
+    }
+    *charged = bytes;
+    Ok(())
+}
+
 /// Every schema table while a branch is walked.
 pub struct State {
     pub(crate) kinds: Vec<Vec<Kind>>,
@@ -497,6 +565,17 @@ pub struct State {
     /// The ids a dictionary trim keeps.
     named: Vec<u32>,
     scratch: Scratch,
+    /// What its tables' storage is charged to, and each table's charge.
+    allowance: Option<Arc<Allowance>>,
+    charged: Vec<usize>,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(allowance) = &self.allowance {
+            allowance.release(self.charged.iter().sum());
+        }
+    }
 }
 
 impl State {
@@ -525,7 +604,41 @@ impl State {
             dictionary: Dictionary::default(),
             named: Vec::new(),
             scratch: Scratch::default(),
+            allowance: None,
+            charged: engine_allocation::filled(count, 0)?,
         })
+    }
+
+    /// Charges its tables' storage to `allowance` from now on, refusing what would pass it.
+    pub fn allow(&mut self, allowance: Arc<Allowance>) -> io::Result<()> {
+        let held: usize = self
+            .tables
+            .iter()
+            .zip(&self.kinds)
+            .map(|(table, kinds)| Table::storage_bytes(kinds, table.slots()))
+            .sum::<io::Result<usize>>()?;
+        allowance.charge(held)?;
+        if let Some(previous) = self.allowance.replace(allowance) {
+            previous.release(self.charged.iter().sum());
+        }
+        for (charged, (table, kinds)) in self
+            .charged
+            .iter_mut()
+            .zip(self.tables.iter().zip(&self.kinds))
+        {
+            *charged = Table::storage_bytes(kinds, table.slots())?;
+        }
+        Ok(())
+    }
+
+    /// Charges `table`'s storage over `slots` slots in place of what it was charged.
+    fn charge(&mut self, table: usize, slots: usize) -> io::Result<()> {
+        charge_to(
+            self.allowance.as_deref(),
+            &mut self.charged[table],
+            &self.kinds[table],
+            slots,
+        )
     }
 
     /// Each table's column count, as a manifest is read with.
@@ -704,11 +817,22 @@ impl State {
 
     /// Replaces `table` with a restart's.
     pub fn restore(&mut self, table: usize, bytes: &[u8]) -> io::Result<Acquisition> {
-        let kinds = self
-            .kinds
-            .get(table)
-            .ok_or_else(|| invalid("Restart names a table past the schema"))?;
-        let restored = restart::read(bytes, kinds, &mut self.scratch)?;
+        if table >= self.kinds.len() {
+            return Err(invalid("Restart names a table past the schema"));
+        }
+        // The table it replaces goes first, and the slots it names are charged before they are
+        // allocated.
+        let slots = restart::slots(bytes)?;
+        self.tables[table] = Table::new(&self.kinds[table])?;
+        self.charge(table, 0)?;
+        self.charge(table, slots)?;
+        let restored = match restart::read(bytes, &self.kinds[table], &mut self.scratch) {
+            Ok(restored) => restored,
+            Err(error) => {
+                self.charge(table, 0)?;
+                return Err(error);
+            }
+        };
         self.tables[table] = restored.table;
         self.statuses[table] = restored.status;
         self.sampled[table] = restored.acquisition.last_read;
@@ -804,14 +928,21 @@ impl State {
                 return Err(invalid("Section length differs from its manifest's"));
             }
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
-            section::apply(
+            let (allowance, kinds) = (self.allowance.as_deref(), &self.kinds[table]);
+            let charged = &mut self.charged[table];
+            // The slots its inserts add are charged before they are made.
+            let applied = section::apply_admitted(
                 bytes,
-                &self.kinds[table],
+                kinds,
                 truncated,
                 &mut self.tables[table],
                 &mut self.scratch,
                 &mut self.changes[table],
-            )?;
+                &mut |slots| charge_to(allowance, charged, kinds, slots),
+            );
+            let held = charge_to(allowance, charged, kinds, self.tables[table].slots());
+            applied?;
+            held?;
             if truncated {
                 let changes = &self.changes[table];
                 let live = self.tables[table].live();

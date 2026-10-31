@@ -9,7 +9,9 @@
 //! pins it for its whole duration ([`pin`]) and reads every page through that publication alone
 //! ([`Published::scope`]): no reader runs without it. A query finding a file of it removed by a
 //! later publication starts again on the later one, whose snapshot was decoded before any of its
-//! files could go.
+//! files could go. Another process's publication, which no hook here sees, is decoded when a
+//! query next finds the folder's manifest is not the one decoded. A folder's publication is held
+//! while a source binds it ([`lease`]), and goes with the last.
 
 use super::{
     coverage::{self, Page, Versions},
@@ -307,8 +309,20 @@ enum Held {
     Undecoded,
 }
 
-/// What each store folder this process bound or published to publishes now.
-static CURRENT: Mutex<BTreeMap<PathBuf, Held>> = Mutex::new(BTreeMap::new());
+/// A store manifest's on-disk identity ([`store::manifest_identity`]); none without one.
+type Manifest = Option<(u64, u64, u64)>;
+
+/// A bound store folder: what it publishes now as this process last decoded it, none before
+/// its first decoding, the manifest that was decoded from, none while not known, and how many
+/// sources bind it.
+struct Bound {
+    held: Option<Held>,
+    manifest: Option<Manifest>,
+    leases: usize,
+}
+
+/// What each store folder a source of this process binds publishes now.
+static CURRENT: Mutex<BTreeMap<PathBuf, Bound>> = Mutex::new(BTreeMap::new());
 /// Held while a publication is decoded and made current, so an earlier never replaces a later.
 static DECODING: Mutex<()> = Mutex::new(());
 
@@ -316,8 +330,65 @@ fn held(folder: &Path) -> Option<Held> {
     CURRENT
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
+        .get(folder)?
+        .held
+        .clone()
+}
+
+/// A source's binding of a store folder: the folder's publication is kept decoded while any
+/// source binds it, and released with the last binding.
+pub struct Lease {
+    folder: PathBuf,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let mut current = CURRENT.lock().unwrap_or_else(PoisonError::into_inner);
+        let released = match current.get_mut(&self.folder) {
+            Some(bound) if bound.leases > 1 => {
+                bound.leases -= 1;
+                None
+            }
+            _ => current.remove(&self.folder),
+        };
+        drop(current);
+        // Its files close outside the lock.
+        drop(released);
+    }
+}
+
+/// Binds `store`'s folder until the lease drops ([`Lease`]).
+pub fn lease(store: &store::Store) -> Lease {
+    let folder = store.folder().to_owned();
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(folder.clone())
+        .or_insert(Bound {
+            held: None,
+            manifest: None,
+            leases: 0,
+        })
+        .leases += 1;
+    Lease { folder }
+}
+
+/// Whether a source binds `folder`, its publication held.
+#[cfg(test)]
+pub(crate) fn bound(folder: &Path) -> bool {
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains_key(folder)
+}
+
+/// The manifest `folder`'s publication was decoded from; None while it is not bound.
+fn decoded_manifest(folder: &Path) -> Option<Option<Manifest>> {
+    CURRENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
         .get(folder)
-        .cloned()
+        .map(|bound| bound.manifest)
 }
 
 fn decoded_of(folder: &Path) -> Option<Arc<Published>> {
@@ -327,19 +398,29 @@ fn decoded_of(folder: &Path) -> Option<Arc<Published>> {
     }
 }
 
-fn make_current(folder: &Path, held: Held) {
-    CURRENT
+/// Makes `held`, decoded from `manifest`, what a bound `folder` publishes now.
+fn make_current(folder: &Path, manifest: Option<Manifest>, held: Held) {
+    if let Some(bound) = CURRENT
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(folder.to_owned(), held);
+        .get_mut(folder)
+    {
+        bound.held = Some(held);
+        bound.manifest = manifest;
+    }
 }
 
 /// Decodes the publication `store`'s folder holds now, whichever key it was committed with, and
 /// makes it current: binding a source of another key leaves that publication current for its
-/// own key's queries.
+/// own key's queries. Only a bound folder's is kept ([`lease`]).
 pub fn refresh(store: &store::Store) {
     let _decoding = DECODING.lock().unwrap_or_else(PoisonError::into_inner);
     let folder = store.folder();
+    if decoded_manifest(folder).is_none() {
+        return;
+    }
+    // Read before the publication is, so one landing between the two is decoded again.
+    let manifest = store.manifest_identity().ok();
     let held = match decode(store, decoded_of(folder).as_deref()) {
         Ok(Some(published)) => Held::Decoded(Arc::new(published)),
         Ok(None) => Held::Nothing,
@@ -347,12 +428,28 @@ pub fn refresh(store: &store::Store) {
         Err(error) if store::is_superseded(&error) => return,
         Err(_) => Held::Undecoded,
     };
-    make_current(folder, held);
+    make_current(folder, manifest, held);
+}
+
+/// Decodes `store`'s publication again when its manifest is not the one decoded: another
+/// process published to it, or cleared it, since.
+fn refresh_changed(store: &store::Store) {
+    let Ok(manifest) = store.manifest_identity() else {
+        return;
+    };
+    if decoded_manifest(store.folder()).is_some_and(|decoded| decoded != Some(manifest)) {
+        refresh(store);
+    }
 }
 
 fn published(folder: &Path, publication: Option<io::Result<store::Snapshot>>) {
     let _decoding = DECODING.lock().unwrap_or_else(PoisonError::into_inner);
-    // The committing writer holds the store until this returns: none of its files can go.
+    if decoded_manifest(folder).is_none() {
+        return;
+    }
+    // The committing writer holds the store until this returns: none of its files can go, and
+    // its manifest is the one committed.
+    let manifest = store::manifest_identity(folder).ok();
     let held = match publication {
         None => Held::Nothing,
         Some(Ok(snapshot)) => match build(snapshot, decoded_of(folder).as_deref()) {
@@ -361,7 +458,7 @@ fn published(folder: &Path, publication: Option<io::Result<store::Snapshot>>) {
         },
         Some(Err(_)) => Held::Undecoded,
     };
-    make_current(folder, held);
+    make_current(folder, manifest, held);
 }
 
 /// Decodes, from now on, every publication of this process's stores as it is made.
@@ -391,9 +488,10 @@ pub fn pin(published: &Arc<Published>) -> Pinned {
     Pinned(())
 }
 
-/// The gates `store` publishes to `key`, from memory alone: the snapshot this thread's query
-/// pinned, else the folder's current publication when it is `key`'s, else a view publishing
-/// nothing; None while the folder's publication is not decoded, as when it could not be.
+/// The gates `store` publishes to `key`: the snapshot this thread's query pinned, else the
+/// folder's current publication when it is `key`'s, decoded again first when the folder's
+/// manifest changed since ([`refresh_changed`]), else a view publishing nothing; None while the
+/// folder's publication is not decoded, as when it could not be, or while no source binds it.
 pub fn current(store: &store::Store, key: &store::SourceKey) -> Option<Arc<Published>> {
     let folder = store.folder();
     let pinned = PINNED.with(|pinned| {
@@ -407,6 +505,7 @@ pub fn current(store: &store::Store, key: &store::SourceKey) -> Option<Arc<Publi
     if pinned.is_some() {
         return pinned;
     }
+    refresh_changed(store);
     match held(folder)? {
         Held::Decoded(published) if published.key() == key => Some(published),
         Held::Decoded(_) | Held::Nothing => Some(Arc::new(Published::empty(folder, key))),

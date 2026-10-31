@@ -129,6 +129,37 @@ impl Drop for Fixture {
     }
 }
 
+/// A gathering stopped before it starts hashes nothing and says it was stopped; one never
+/// stopped gathers as [`gather`] does, the cache it leaves kept for the next.
+#[test]
+fn a_stopped_gathering_hashes_no_more_files() {
+    let fixture = Fixture::with_files("stopped", 16);
+    let options = GatherOptions {
+        game_dir: fixture.options.game_dir.clone(),
+        user_dir: fixture.options.user_dir.clone(),
+        cache_dir: fixture.root.join("cold cache"),
+        dlc_order: None,
+    };
+    let game_dir = fs::canonicalize(&options.game_dir).unwrap();
+    let probed = || {
+        PROBED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(path, _)| path.starts_with(&game_dir))
+            .count()
+    };
+    let before = probed();
+    let stopped = Arc::new(AtomicBool::new(true));
+    let error = gather_cancellable(&options, stopped).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert_eq!(probed(), before, "a stopped gathering probes no file");
+    let going = gather_cancellable(&options, Arc::new(AtomicBool::new(false))).unwrap();
+    assert_eq!(going.stats.files_read, going.stats.files);
+    let warm = gather(&options).unwrap();
+    assert_eq!(warm.stats.cache_hits, warm.stats.files);
+}
+
 #[test]
 fn unchanged_warm_hash_cache_preserves_bytes_and_verification() {
     let fixture = Fixture::new("unchanged");

@@ -14,6 +14,20 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
+/// [`Shape::proof_at`], read.
+fn proven(recording: &Recording, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
+    let branch = recording.run(run)?.branch;
+    let mut proof = blake3::Hasher::new();
+    for earlier in 0..run {
+        let held = recording.run(earlier)?;
+        if held.branch == branch {
+            proof.update(&held.chain);
+        }
+    }
+    proof.update(&recording.chain_through(run, ordinal)?);
+    Ok(*proof.finalize().as_bytes())
+}
+
 /// A segment's place in its branch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Placed {
@@ -108,14 +122,15 @@ impl Shape {
         &self.branches
     }
 
-    /// The proof of the recorded input through ordinal `ordinal` of run `run`: the hour digest
-    /// chain the recording holds before the page holding it, which a recording grown from this
-    /// one holds alike; None when it cannot be read.
+    /// The proof of the recorded input of run `run`'s branch through its ordinal `ordinal`: the
+    /// hour digest chain of every earlier run of the branch, whole, then of `run` through that
+    /// ordinal ([`Recording::chain_through`]). A recording grown from this one proves the same
+    /// there; one whose hours of the branch to it differ does not. None when it cannot be read.
     fn proof_at(&self, recording: &Recording, run: u32, ordinal: u32) -> Option<[u8; 32]> {
         let mut proofs = self.proofs.lock().unwrap_or_else(PoisonError::into_inner);
         *proofs
             .entry((run, ordinal))
-            .or_insert_with(|| recording.chain_before(run, ordinal).ok())
+            .or_insert_with(|| proven(recording, run, ordinal).ok())
     }
 
     /// The proof of the recorded input through segment `at`'s last hour: zeros, which no

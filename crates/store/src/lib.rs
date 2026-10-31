@@ -338,6 +338,13 @@ impl SourceKey {
     }
 
     /// The same recording under another name: a rename keeps its size, time and content.
+    /// Whether a store prepared under `previous` is added to under this key ([`Store::append`]):
+    /// the same content, and the recording grown or renamed.
+    pub fn appends(&self, previous: &SourceKey) -> bool {
+        self.content == previous.content
+            && (self.recording.size > previous.recording.size || self.renames(previous))
+    }
+
     pub fn renames(&self, previous: &SourceKey) -> bool {
         self.recording.path != previous.recording.path
             && self.recording.size == previous.recording.size
@@ -403,6 +410,23 @@ impl SourceKey {
     }
 }
 
+/// The on-disk identity of the manifest of the store in `folder` (its length, last write and
+/// creation times), or none before the first commit. Every commit replaces the manifest and Clear
+/// removes it, so a changed identity means some writer, in this process or another, changed the
+/// store. Reads file metadata only.
+pub fn manifest_identity(folder: &Path) -> io::Result<Option<(u64, u64, u64)>> {
+    use std::os::windows::fs::MetadataExt;
+    match fs::metadata(folder.join(MANIFEST)) {
+        Ok(metadata) => Ok(Some((
+            metadata.len(),
+            metadata.last_write_time(),
+            metadata.creation_time(),
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Range readers are independent of this object and keep their bytes until closed.
 pub struct Store {
     directory: PathBuf,
@@ -438,21 +462,9 @@ impl Store {
         })
     }
 
-    /// The manifest's on-disk identity (its length, last write and creation
-    /// times), or none before the first commit. Every commit replaces the
-    /// manifest and Clear removes it, so a changed identity means some writer,
-    /// in this process or another, changed the store. Reads file metadata only.
+    /// The manifest's on-disk identity ([`manifest_identity`]).
     pub fn manifest_identity(&self) -> io::Result<Option<(u64, u64, u64)>> {
-        use std::os::windows::fs::MetadataExt;
-        match fs::metadata(self.directory.join(MANIFEST)) {
-            Ok(metadata) => Ok(Some((
-                metadata.len(),
-                metadata.last_write_time(),
-                metadata.creation_time(),
-            ))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+        manifest_identity(&self.directory)
     }
 
     /// Reads just the manifest header, never enumerating or opening pack files.
@@ -819,9 +831,7 @@ impl Store {
     /// reopen never accepts an unequal key; this operation publishes a new key last.
     pub fn append(&self, previous: &SourceKey, key: SourceKey) -> io::Result<Writer> {
         // The store is its recording's identity, so a renamed recording appends, or rebinds unchanged.
-        if (key.recording.size <= previous.recording.size && !key.renames(previous))
-            || key.content != previous.content
-        {
+        if !key.appends(previous) {
             return Err(invalid(
                 "append requires recording growth and unchanged content",
             ));

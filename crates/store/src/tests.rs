@@ -641,6 +641,23 @@ fn a_recording_renamed_unchanged_rebinds_its_prepared_store() {
     fixture.store.append(&previous, current).unwrap();
 }
 
+/// A store is added to only under a key of the same content, its recording grown or renamed;
+/// content bound otherwise is prepared anew.
+#[test]
+fn a_store_is_added_to_only_under_the_same_content() {
+    let fixture = Fixture::new();
+    let previous = fixture.save(b"accepted accumulator");
+    assert!(!previous.appends(&previous));
+    fs::write(&fixture.recording, b"synthetic appended tail").unwrap();
+    let grown = fixture.key();
+    assert!(grown.appends(&previous));
+    fs::write(&fixture.content[0], b"another language").unwrap();
+    let rebound = fixture.key();
+    assert!(!rebound.appends(&previous));
+    assert!(fixture.store.append(&previous, rebound.clone()).is_err());
+    fixture.store.replace(rebound).unwrap().commit().unwrap();
+}
+
 #[test]
 fn a_verified_appended_prefix_can_restore_its_accepted_accumulator() {
     let fixture = Fixture::new();

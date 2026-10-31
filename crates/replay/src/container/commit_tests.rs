@@ -549,9 +549,7 @@ fn rollback_reuses_one_recoverable_copy_and_refuses_nonordinary_stale_paths() {
     let second = save_in_place(&file.0, &segment(0, records(2, &[2]))).unwrap();
     drop(second);
     let second = Replay::open_path(&file.0).unwrap();
-    let mut name = file.0.as_os_str().to_owned();
-    name.push(".rollback.tmp");
-    let temporary = PathBuf::from(name);
+    let temporary = crate::container::commit::rollback_temporary(&file.0);
     std::fs::create_dir(&temporary).unwrap();
     assert!(Replay::roll_back(&file.0, first.revision()).is_err());
     assert_eq!(
@@ -564,6 +562,37 @@ fn rollback_reuses_one_recoverable_copy_and_refuses_nonordinary_stale_paths() {
     assert!(!temporary.exists());
     assert_eq!(file.bytes(), first.bytes());
     assert!(second.read_block(&second.index[1]).is_ok());
+}
+
+/// A file name of the most units Windows allows still rolls back and is written whole: the
+/// temporaries beside it are named for it in a bounded name, the same whatever its case.
+#[test]
+fn the_longest_legal_file_name_rolls_back_and_writes() {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let folder = std::env::temp_dir().join(format!(
+        "replay-long-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&folder).unwrap();
+    let name = format!("{}.battleplan", "a".repeat(255 - ".battleplan".len()));
+    let path = folder.join(&name);
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+    first.write_atomic(&path).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), first.bytes());
+    drop(save_in_place(&path, &segment(0, records(2, &[2]))).unwrap());
+    Replay::roll_back(&path, first.revision()).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), first.bytes());
+    let temporary = crate::container::commit::rollback_temporary(&path);
+    assert_eq!(temporary.parent(), Some(folder.as_path()));
+    assert!(temporary.file_name().unwrap().len() < 64);
+    assert_eq!(
+        crate::container::commit::rollback_temporary(&folder.join(name.to_uppercase())),
+        temporary
+    );
+    let left: Vec<_> = std::fs::read_dir(&folder).unwrap().collect();
+    assert_eq!(left.len(), 1, "no temporary is left");
+    std::fs::remove_dir_all(folder).unwrap();
 }
 
 #[test]

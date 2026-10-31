@@ -109,6 +109,16 @@ pub struct Restored {
     pub view: Vec<u32>,
 }
 
+/// The slots a restart's table spans, read before anything is allocated for them.
+pub fn slots(bytes: &[u8]) -> io::Result<usize> {
+    let mut reader = Reader::new(bytes);
+    Status::read(&mut reader)?;
+    get_hour(&mut reader)?;
+    get_hour(&mut reader)?;
+    reader.varint()?;
+    reader.count()
+}
+
 pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<Restored> {
     let mut reader = Reader::new(bytes);
     let status = Status::read(&mut reader)?;

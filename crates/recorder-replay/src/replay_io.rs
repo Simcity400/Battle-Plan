@@ -2995,7 +2995,7 @@ fn finalize_campaign(
 ) -> Result<CampaignOutcome> {
     // Before the recording that records their sessions' ends, so a reader finds them with it.
     if !unsaved {
-        publish_columnar(campaign_dir, replay_dir);
+        publish_columnar(campaign_dir, replay_dir, admitted);
     }
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
@@ -3063,17 +3063,23 @@ fn finalize_campaign(
 /// Publishes the campaign's finished columnar recordings, one per capture, in capture order:
 /// each as its session's next in the campaign's folder of `replay_dir` ([`campaign_folder`]).
 /// A partial one no writer holds is finished from its last revision first; one with none is
-/// reported and left, and one its collector still writes holds back the rest. Any other failure
-/// is reported and stops there, so a session's captures publish in order.
+/// reported and left, and one its collector still writes holds back the rest. With `admitted`,
+/// the loads a Battle Plan Recorder session admitted, each holds only the branches of loads it did not
+/// refuse, as the save holds them ([`keep_admitted`]); one holding none is left unpublished. Any
+/// other failure is reported and stops there, so a session's captures publish in order.
 ///
 /// [`campaign_folder`]: replay::columnar_file::campaign_folder
-fn publish_columnar(campaign_dir: &Path, replay_dir: &Path) {
-    if let Err(error) = publish_captures(campaign_dir, replay_dir) {
+fn publish_columnar(campaign_dir: &Path, replay_dir: &Path, admitted: Option<&BTreeSet<i64>>) {
+    if let Err(error) = publish_captures(campaign_dir, replay_dir, admitted) {
         eprintln!("Columnar recordings not published: {error}");
     }
 }
 
-fn publish_captures(campaign_dir: &Path, replay_dir: &Path) -> std::io::Result<()> {
+fn publish_captures(
+    campaign_dir: &Path,
+    replay_dir: &Path,
+    admitted: Option<&BTreeSet<i64>>,
+) -> std::io::Result<()> {
     use replay::columnar_file::{
         CAPTURE_NAME_BYTES, campaign_folder, capture_name, capture_of, published_name,
         same_recording,
@@ -3099,6 +3105,17 @@ fn publish_captures(campaign_dir: &Path, replay_dir: &Path) -> std::io::Result<(
         return Ok(());
     }
     captures.sort_unstable();
+    // The branches of the loads the session refused, which the save leaves out too.
+    let refused: BTreeSet<BranchId> = match admitted {
+        Some(admitted) => read_branch_loads(campaign_dir)
+            .map_err(std::io::Error::other)?
+            .loads
+            .into_iter()
+            .filter(|(_, load)| !admitted.contains(load))
+            .map(|(branch, _)| branch)
+            .collect(),
+        None => BTreeSet::new(),
+    };
     let folder = campaign_folder(replay_dir, campaign.as_encoded_bytes());
     let (published, mut next) = published_captures(&folder, session)?;
     let mut name = [0; CAPTURE_NAME_BYTES];
@@ -3113,6 +3130,20 @@ fn publish_captures(campaign_dir: &Path, replay_dir: &Path) -> std::io::Result<(
                     eprintln!(
                         "Columnar recording {} not recovered: {error}",
                         partial.display()
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !refused.is_empty() {
+            match keep_admitted(&finished, &refused) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    eprintln!(
+                        "Columnar recording {} not published without its refused loads: {error}",
+                        finished.display()
                     );
                     continue;
                 }
@@ -3213,6 +3244,50 @@ fn finish_unfinished_columnar(partial: &Path, finished: &Path) -> std::io::Resul
     fs::rename(partial, finished)?;
     println!("Columnar recording recovered through hour {last_hour}");
     Ok(true)
+}
+
+/// Rewrites the finished capture at `finished` in place without the runs of the branches
+/// `refused` names, as the save leaves their loads out; whether any run is left to publish. One
+/// holding none of them is left as it is.
+fn keep_admitted(finished: &Path, refused: &BTreeSet<BranchId>) -> std::io::Result<bool> {
+    use replay::columnar_frames::{Limits, Recording};
+    let native = Recording::open_path(finished, Limits::default())?;
+    let mut any = false;
+    for run in 0..native.run_count() {
+        any |= refused.contains(&native.run(run)?.branch);
+    }
+    if !any {
+        return Ok(true);
+    }
+    let staged = replay::publication::temporary_beside(finished, "admitted");
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&staged)?;
+    let kept = replay::columnar_file::keep_branches(
+        &native,
+        |branch| !refused.contains(&branch),
+        file,
+        replay::columnar_file::Settings::RECORDING,
+        |file| file.sync_data(),
+    );
+    drop(native);
+    let placed = match kept {
+        Ok(Some(written)) => {
+            let synced = written.file.sync_all();
+            drop(written);
+            synced
+                .and_then(|()| fs::rename(&staged, finished))
+                .map(|()| true)
+        }
+        Ok(None) => Ok(false),
+        Err(error) => Err(error),
+    };
+    if !matches!(placed, Ok(true)) {
+        let _ = fs::remove_file(&staged);
+    }
+    placed
 }
 
 /// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.
@@ -7394,6 +7469,90 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    /// A native recording of `runs`, each a branch, its first hour and its hours, of the
+    /// allocation campaign, every hour of every table unread.
+    pub(super) fn native_recording(runs: &[(u64, i32, i32)]) -> Vec<u8> {
+        use replay::{
+            columnar_file::{Capture, FileWriter, Hour, Settings},
+            columnar_frames::schema,
+            native_frame::FrameWriter,
+        };
+        use replay_data::{identity::CaptureMode, rows::TABLE_COUNT};
+        use replay_frame::frame::{FrameInput, Metrics, TableInput};
+        let campaign = recorder_test_support::test_support::ALLOCATION_CAMPAIGN.to_vec();
+        let schema = schema().unwrap();
+        let mut file = FileWriter::create(
+            std::io::Cursor::new(Vec::new()),
+            replay_columnar::envelope::Identity {
+                schema: replay_columnar::envelope::schema_digest(&schema),
+                campaign: campaign.clone(),
+                content: Vec::new(),
+                capture_mode: CaptureMode::Full.byte(),
+            },
+            schema.iter().map(Vec::len).collect(),
+            Settings::RECORDING,
+        )
+        .unwrap();
+        for &(branch, first, hours) in runs {
+            let mut writer = FrameWriter::new().unwrap();
+            file.start_run(branch, replay_columnar::envelope::epoch::LOAD, first)
+                .unwrap();
+            for hour in first..first + hours {
+                let input = FrameInput {
+                    branch,
+                    hour,
+                    tables: std::array::from_fn(|index| {
+                        TableInput::Sampled(
+                            if replay_data::scope::records(CaptureMode::Full, TableId::ALL[index]) {
+                                TableView::Unavailable {
+                                    reason: "not in this test".into(),
+                                }
+                            } else {
+                                TableView::NotRecorded {
+                                    mode: CaptureMode::Full,
+                                }
+                            },
+                        )
+                    }),
+                    metrics: Metrics {
+                        total_ns: 1,
+                        table_ns: [0; TABLE_COUNT],
+                        pool_bytes: 0,
+                        dropped_frames: 0,
+                    },
+                };
+                let prepared = writer.hour(&input).unwrap();
+                let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
+                file.hour(Hour {
+                    hour,
+                    manifest: &prepared.manifest,
+                    sections: &sections,
+                    statuses: prepared.statuses(),
+                    read: prepared.read(),
+                })
+                .unwrap();
+                drop(sections);
+                writer.commit(prepared).unwrap();
+            }
+        }
+        file.finish_with_capture(
+            &Capture {
+                campaign_id: campaign,
+                content: Vec::new(),
+                capture_mode: CaptureMode::Full.byte(),
+                sessions: vec![b"session".to_vec()],
+                run_sessions: vec![0; runs.len()],
+                stop: None,
+                format: replay_data::format::FormatVersion::CURRENT.version(),
+                controls: Vec::new(),
+            },
+            |_| Ok(()),
+        )
+        .unwrap()
+        .file
+        .into_inner()
+    }
+
     /// Names by tag, with no name chosen.
     fn unnamed() -> Naming<'static> {
         static SETTINGS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -7452,15 +7611,15 @@ mod tests {
         fs::write(&partial, b"still written").unwrap();
         fs::write(campaign.join("columnar.2.h4col"), b"third").unwrap();
         let written = fs::OpenOptions::new().write(true).open(&partial).unwrap();
-        publish_columnar(&campaign, &replays);
+        publish_columnar(&campaign, &replays, None);
         assert_eq!(fs::read(folder.join("session-1.1.h4col")).unwrap(), b"first");
         assert!(campaign.join("columnar.2.h4col").exists());
         drop(written);
-        publish_columnar(&campaign, &replays);
+        publish_columnar(&campaign, &replays, None);
         assert!(partial.exists());
         assert_eq!(fs::read(folder.join("session-1.2.h4col")).unwrap(), b"third");
         fs::write(campaign.join("columnar.3.h4col"), b"third").unwrap();
-        publish_columnar(&campaign, &replays);
+        publish_columnar(&campaign, &replays, None);
         assert_eq!(fs::read_dir(&campaign).unwrap().count(), 1);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 4);
         fs::remove_dir_all(root).unwrap();

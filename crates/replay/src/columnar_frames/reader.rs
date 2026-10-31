@@ -319,6 +319,7 @@ pub struct Recording {
     source: Arc<Source>,
     /// The identity block every run's chain starts from.
     identity: Vec<u8>,
+    root_identity: envelope::Identity,
     /// The root's control records' extents.
     controls: Box<[Extent]>,
     /// The campaign its identity names.
@@ -328,6 +329,7 @@ pub struct Recording {
     damage: Box<[Damage]>,
     budget: Arc<Budget>,
     dictionary_bytes: usize,
+    tables: Arc<replay_columnar::walk::Allowance>,
     /// Whether walks check every hour against the pages' hour digest chain.
     verify: bool,
     /// The tables walks restore and apply.
@@ -393,13 +395,15 @@ impl Recording {
         Ok(Self {
             identity: root.identity.chain_bytes()?,
             controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&root.controls)?)?,
-            campaign: root.identity.campaign,
+            campaign: root.identity.campaign.clone(),
+            root_identity: root.identity,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
             segments: engine_allocation::boxed_slice(segments)?,
             damage: engine_allocation::boxed_slice(damage)?,
             budget: limits.budget,
             dictionary_bytes: limits.dictionary_bytes,
+            tables: limits.tables,
             verify: false,
             selected: [true; TABLE_COUNT],
         })
@@ -579,19 +583,111 @@ impl Recording {
             .map(|restart| restart.page)
     }
 
-    /// The hour digest chain before the page of run `run` holding ordinal `ordinal`: after the
-    /// pages before it, or at the run's start. A recording grown from this one holds the same
-    /// there, every page but a run's last being whole.
-    pub fn chain_before(&self, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
+    /// The hour digest chain of run `run` through ordinal `ordinal`: after every hour from the
+    /// run's start to it, that one too. A recording grown from this one holds the same there; a
+    /// recording whose hours to it differ does not. The page holding it is read whole unless it
+    /// ends there.
+    pub fn chain_through(&self, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
         let pages = &self.run(run)?.pages;
-        let at = pages.partition_point(|page| page.first <= ordinal);
-        match at.checked_sub(1) {
-            Some(at) if ordinal - pages[at].first < pages[at].hours => match at.checked_sub(1) {
-                Some(before) => Ok(self.page(run, before)?.chain),
-                None => Ok(envelope::chain_start(&self.identity, run)),
-            },
-            _ => Err(invalid("No page of the run holds the ordinal")),
+        let at = pages
+            .partition_point(|page| page.first <= ordinal)
+            .checked_sub(1)
+            .filter(|&at| ordinal - pages[at].first < pages[at].hours)
+            .ok_or_else(|| invalid("No page of the run holds the ordinal"))?;
+        if ordinal - pages[at].first + 1 == pages[at].hours {
+            return Ok(self.page(run, at)?.chain);
         }
+        let mut chain = match at.checked_sub(1) {
+            Some(before) => self.page(run, before)?.chain,
+            None => envelope::chain_start(&self.identity, run),
+        };
+        self.page_hours(run, at, ordinal, |_, manifest, _, sections| {
+            chain = envelope::chain_hour(&chain, manifest, sections.iter().copied());
+            Ok(true)
+        })?;
+        Ok(chain)
+    }
+
+    /// Each hour of run `run`'s page `at` from its first through ordinal `through`, as it was
+    /// written: its ordinal, its manifest's bytes and its manifest, and its sections' bytes in
+    /// its manifest's order, every unit of the page decoded whichever tables walks select.
+    /// `visit` stops it by returning false.
+    pub fn page_hours(
+        &self,
+        run: u32,
+        at: usize,
+        through: u32,
+        mut visit: impl FnMut(u32, &[u8], &Manifest<'_>, &[&[u8]]) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let held = self.run(run)?;
+        let page = self.page(run, at)?;
+        let scope = DamageScope::Page {
+            run,
+            first: page.first,
+            hours: page.hours,
+        };
+        let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
+        let last = page
+            .first
+            .checked_add(page.hours)
+            .and_then(|end| end.checked_sub(1))
+            .ok_or_else(|| damaged(invalid("names no hours")))?;
+        let mut decoder = Decoder::new()?;
+        let mut units: Vec<Vec<u8>> = engine_allocation::vec(TABLE_COUNT + 1)?;
+        units.resize_with(TABLE_COUNT + 1, Vec::new);
+        for extent in &page.units {
+            let unit = units
+                .get_mut(extent.stream as usize)
+                .ok_or_else(|| damaged(invalid("holds a unit of no stream")))?;
+            decoder
+                .append(&self.source, extent, unit)
+                .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
+        }
+        let columns = engine_allocation::collect_vec(schema()?.iter().map(Vec::len))?;
+        let (manifests, units) = units.split_first().expect("a manifest stream");
+        let mut manifest_unit = Reader::new(manifests);
+        let mut tables =
+            engine_allocation::collect_vec(units.iter().map(|unit| Reader::new(unit)))?;
+        let mut sections: Vec<&[u8]> = engine_allocation::vec(TABLE_COUNT)?;
+        for ordinal in page.first..=through.min(last) {
+            let bytes = framing::next_manifest(&mut manifest_unit, manifests.len())
+                .map_err(damaged)?
+                .ok_or_else(|| damaged(invalid("does not hold exactly its hours")))?;
+            let manifest = Manifest::read(bytes, &columns).map_err(damaged)?;
+            if manifest.branch != held.branch
+                || i64::from(manifest.hour) != i64::from(held.first_hour) + i64::from(ordinal)
+            {
+                return Err(damaged(invalid(
+                    "holds an hour off its run's branch and hours",
+                )));
+            }
+            sections.clear();
+            for section in &manifest.sections {
+                let unit = tables
+                    .get_mut(section.table)
+                    .ok_or_else(|| damaged(invalid("holds a section of a table with no unit")))?;
+                sections
+                    .push(framing::next_section(unit, section.bytes as usize).map_err(damaged)?);
+            }
+            if !visit(ordinal, bytes, &manifest, &sections)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// `extent`, one of a page's units or its restart's, decoded.
+    pub fn extent_bytes(&self, extent: &Extent) -> io::Result<Vec<u8>> {
+        let mut raw = Vec::new();
+        Decoder::new()?
+            .append(&self.source, extent, &mut raw)
+            .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
+        Ok(raw)
+    }
+
+    /// The identity its root names.
+    pub fn root_identity(&self) -> &envelope::Identity {
+        &self.root_identity
     }
 
     /// The file's length through its last valid footer.
@@ -1109,6 +1205,7 @@ impl<'r> Walker<'r> {
             let recording = self.recording;
             let run = recording.shared(segment.run)?;
             *state = State::new(schema()?)?;
+            state.allow(Arc::clone(&recording.tables))?;
             state.set_dictionary(Dictionary::run(run.clone(), recording.dictionary_bytes, 0));
             return recording.select_in(state);
         };
@@ -1167,6 +1264,7 @@ impl<'r> Walker<'r> {
         self.admit(raw, stored)?;
         self.lost.clear();
         *state = State::new(schema()?)?;
+        state.allow(Arc::clone(&recording.tables))?;
         recording.select_in(state)?;
         state.set_dictionary(Dictionary::run(
             held.clone(),

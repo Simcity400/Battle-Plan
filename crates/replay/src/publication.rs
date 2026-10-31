@@ -20,6 +20,23 @@ use windows_sys::Win32::{
 /// FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS.
 const RENAME_REPLACE_POSIX: u32 = 0x1 | 0x2;
 
+/// The temporary file beside `path` for `purpose`, named by a digest of `path`'s file name: any
+/// legal file name leaves it room, and the same file, whatever the case of its name, always has
+/// the same one.
+pub fn temporary_beside(path: &Path, purpose: &str) -> std::path::PathBuf {
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase();
+    let digest = blake3::hash(name.as_bytes());
+    let hex: String = digest.as_bytes()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    path.with_file_name(format!("{hex}.{purpose}.tmp"))
+}
+
 /// Where a folder's recordings with unsaved hours wait, each as saving it would be.
 pub fn unsaved_folder(folder: &Path) -> std::path::PathBuf {
     folder.join(".unsaved")

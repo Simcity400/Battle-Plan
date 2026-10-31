@@ -36,6 +36,19 @@ pub enum Kind {
     Opaque,
 }
 
+impl Kind {
+    /// The bytes one slot of a column of this kind holds, a list's or opaque cell's items aside.
+    pub fn slot_bytes(self) -> usize {
+        match self {
+            Self::U8 | Self::I8 | Self::Bool => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::U32 | Self::I32 | Self::Bytes | Self::OptionalI32 | Self::OptionalU32 => 4,
+            Self::U64 | Self::I64 | Self::OptionalI64 | Self::OptionalU64 => 8,
+            Self::U32List | Self::U64List | Self::Opaque => size_of::<Box<[u8]>>(),
+        }
+    }
+}
+
 /// Slots, one bit each; bits past the end are clear. Every bit names a `u32` slot.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Bits {
@@ -944,6 +957,13 @@ impl Table {
         }
         table.live = live;
         Ok(table)
+    }
+
+    /// The bytes a table of `kinds` holds over `slots` slots: each slot's key and its cell in
+    /// every column, a list's or opaque cell's items aside.
+    pub fn storage_bytes(kinds: &[Kind], slots: usize) -> io::Result<usize> {
+        let slot = size_of::<u128>() + kinds.iter().map(|kind| kind.slot_bytes()).sum::<usize>();
+        slots.checked_mul(slot).ok_or_else(engine_allocation::oom)
     }
 
     pub fn kinds(&self) -> impl Iterator<Item = Kind> + '_ {

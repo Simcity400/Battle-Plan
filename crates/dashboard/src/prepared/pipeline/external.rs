@@ -45,11 +45,7 @@ impl<'a> BoundSource<'a> {
 
     fn saved(&self) -> io::Result<Option<store::SourceKey>> {
         let saved = self.store.saved_key()?;
-        Ok(saved.filter(|previous| {
-            previous == &self.key
-                || previous.recording_size() < self.key.recording_size()
-                || self.key.renames(previous)
-        }))
+        Ok(saved.filter(|previous| previous == &self.key || self.key.appends(previous)))
     }
 
     fn checkpoint(

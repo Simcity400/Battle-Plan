@@ -12,6 +12,7 @@ type Cached = Option<(
     )>,
     Arc<store::Store>,
     store::SourceKey,
+    super::gates::Lease,
 )>;
 
 pub type SettingsStamp = (u64, Option<std::time::SystemTime>);
@@ -67,7 +68,7 @@ pub fn files(
             bound_settings(source, &value.options.user_dir),
         )
     });
-    if let Some((saved, store, key)) = cache.as_ref()
+    if let Some((saved, store, key, _)) = cache.as_ref()
         && saved == &options
     {
         return Ok((Arc::clone(store), key.clone()));
@@ -106,10 +107,12 @@ pub fn files(
     // Establish the manifest binding once; query reads retain it through this
     // source-local key rather than revisiting the resolved content inputs.
     store.is_reusable(&key)?;
-    // The folder's publication is decoded once here, whichever key it is under; each later
-    // publication decodes its own. One that cannot be decoded leaves its queries pending.
+    // The folder's publication is decoded once here, whichever key it is under, and kept while
+    // the source binds it; each later publication decodes its own. One that cannot be decoded
+    // leaves its queries pending.
+    let lease = super::gates::lease(&store);
     super::gates::refresh(&store);
-    *cache = Some((options, Arc::clone(&store), key.clone()));
+    *cache = Some((options, Arc::clone(&store), key.clone(), lease));
     Ok((store, key))
 }
 
@@ -120,7 +123,7 @@ pub fn refresh_saved_binding(
 ) -> std::io::Result<store::SourceKey> {
     let cache = source.state::<Cached>();
     let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((_, _, current)) = cache.as_mut()
+    if let Some((_, _, current, _)) = cache.as_mut()
         && *current == key
         && let Some(saved) = store.saved_key()?.filter(|saved| saved == &key)
     {
@@ -220,6 +223,39 @@ mod tests {
             by_path
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A store's publication is held while a source binds it and goes with the last source, and
+    /// a manifest changed by another writer than this process's, as another process's Clear, is
+    /// decoded again before the next query takes the folder's publication.
+    #[test]
+    fn a_bound_publication_follows_its_manifest_and_goes_with_its_last_source() {
+        use crate::test_fixtures::{CAMPAIGN, records, source};
+        let input = records(1, vec![source(1, 100, Some(1))]);
+        let replay = replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+        let (bound, root) = crate::test_fixtures::file_source(replay);
+        let (store, key) = files(&bound, None).unwrap();
+        let folder = store.folder().to_owned();
+        assert!(super::super::gates::bound(&folder));
+        let mut writer = store.replace(key.clone()).unwrap();
+        writer.write("synthetic", &b"published"[..]).unwrap();
+        writer.commit().unwrap();
+        let published = super::super::gates::current(&store, &key).unwrap();
+        assert!(Arc::ptr_eq(
+            &published,
+            &super::super::gates::current(&store, &key).unwrap()
+        ));
+        // Removed behind this process's back: the next query decodes the folder publishing
+        // nothing.
+        std::fs::remove_file(folder.join("manifest")).unwrap();
+        let after = super::super::gates::current(&store, &key).unwrap();
+        assert!(!Arc::ptr_eq(&published, &after));
+        assert_eq!(after.key(), &key);
+        drop(bound);
+        assert!(!super::super::gates::bound(&folder));
+        assert!(super::super::gates::current(&store, &key).is_none());
+        let _ = store.clear();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

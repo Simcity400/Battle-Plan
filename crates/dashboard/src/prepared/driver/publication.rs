@@ -298,9 +298,8 @@ impl<'s> Publisher<'s> {
     ) -> io::Result<(Self, Resume)> {
         let (mut writer, replaced) = match store.saved_key()? {
             Some(saved) if saved == key => (store.extend(&key)?, false),
-            Some(saved) if saved.recording_size() < key.recording_size() || key.renames(&saved) => {
-                (store.append(&saved, key.clone())?, false)
-            }
+            // Content bound otherwise, as when its game language changed, prepares anew.
+            Some(saved) if key.appends(&saved) => (store.append(&saved, key.clone())?, false),
             _ => (store.replace(key.clone())?, true),
         };
         let found: Vec<(String, u64)> = writer

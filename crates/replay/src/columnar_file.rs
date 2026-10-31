@@ -1272,6 +1272,185 @@ pub fn referenced_ids(table: &Table, refusal: Option<u32>) -> io::Result<Vec<u32
     Ok(ids)
 }
 
+/// `recording` with only the runs of the branches `keep` keeps, written to `out` at `settings`
+/// as its writer wrote them: each kept run's hours and restarts byte for byte, in their order,
+/// its chain started again from its place in the new file. The capture names only the kept runs
+/// and their sessions, and holds no branch start, gap or event loss of a branch left out; `sync`
+/// makes what is written durable before what names it
+/// ([`FileWriter::finish`]). None, with nothing written, when it keeps no run. A recording that
+/// cannot be read whole, or whose pages its writer at `settings` would not have closed so, is
+/// refused.
+pub fn keep_branches<W: Write + Seek>(
+    recording: &crate::columnar_frames::Recording,
+    keep: impl Fn(u64) -> bool,
+    out: W,
+    settings: Settings,
+    sync: impl FnMut(&mut W) -> io::Result<()>,
+) -> io::Result<Option<Finished<W>>> {
+    if !recording.damage().is_empty() {
+        return Err(invalid(
+            "A columnar recording that cannot be read whole is not rewritten",
+        ));
+    }
+    let mut capture = recording
+        .capture()?
+        .ok_or_else(|| invalid("A columnar recording names no capture"))?;
+    if capture.run_sessions.len() != recording.run_count() as usize {
+        return Err(invalid("A capture names a session for every run"));
+    }
+    let mut kept = Vec::new();
+    for run in 0..recording.run_count() {
+        if keep(recording.run(run)?.branch) {
+            engine_allocation::reserve(&mut kept, 1)?;
+            kept.push(run);
+        }
+    }
+    if kept.is_empty() {
+        return Ok(None);
+    }
+    let columns =
+        engine_allocation::collect_vec(crate::columnar_frames::schema()?.iter().map(Vec::len))?;
+    let mut writer = FileWriter::create(out, recording.root_identity().clone(), columns, settings)?;
+    for &run in &kept {
+        let held = recording.run(run)?;
+        writer.start_run(held.branch, held.epoch, held.first_hour)?;
+        // Each restart's chunk's first id, by its restart ordinal.
+        let mut starts = Vec::new();
+        for at in 0..held.pages() {
+            let page = recording.page(run, at)?;
+            let mut position = Position::Open;
+            recording.page_hours(run, at, u32::MAX, |_, bytes, manifest, written| {
+                let mut sections = engine_allocation::vec(written.len())?;
+                sections.extend(
+                    manifest
+                        .sections
+                        .iter()
+                        .map(|section| section.table)
+                        .zip(written.iter().copied()),
+                );
+                position = writer.hour(Hour {
+                    hour: manifest.hour,
+                    manifest: bytes,
+                    sections: &sections,
+                    statuses: &manifest.statuses,
+                    read: &manifest.read,
+                })?;
+                Ok(true)
+            })?;
+            let last = at + 1 == held.pages();
+            match (position, &page.restart) {
+                (Position::Full { restart: false }, None) => {
+                    writer.close_position()?;
+                }
+                (Position::Full { restart: true }, Some(restart)) => {
+                    if restart.ordinal as usize != starts.len() {
+                        return Err(invalid("A run's restarts are out of order"));
+                    }
+                    engine_allocation::reserve(&mut starts, 1)?;
+                    starts.push(restart.ids.0);
+                    let chunk = recording.extent_bytes(&restart.chunk)?;
+                    let strings = chunk_strings(&chunk)?;
+                    if strings.len() != restart.ids.1 as usize {
+                        return Err(invalid("A restart's chunk differs from its ids"));
+                    }
+                    let mut states = Vec::new();
+                    engine_allocation::reserve(&mut states, restart.tables.len())?;
+                    for (table, state) in restart.tables.iter().enumerate() {
+                        if state.table as usize != table {
+                            return Err(invalid("A restart holds every table in order"));
+                        }
+                        let ids = state
+                            .chunks
+                            .iter()
+                            .map(|&chunk| starts.get(chunk as usize).copied())
+                            .collect::<Option<Vec<u32>>>()
+                            .ok_or_else(|| invalid("A restart names a chunk of no restart"))?;
+                        states.push(RestartState {
+                            bytes: recording.extent_bytes(&state.extent)?,
+                            ids,
+                        });
+                    }
+                    writer.close_with_restart(&strings, &states)?;
+                }
+                // The run's last position, short or due a restart it ends without, closes with it.
+                (Position::Open | Position::Full { restart: true }, None) if last => {}
+                _ => return Err(invalid("A page closes otherwise than its writer closes it")),
+            }
+        }
+        writer.finish_run()?;
+    }
+    let mut sessions = Vec::new();
+    let mut run_sessions = Vec::new();
+    for &run in &kept {
+        let session = &capture.sessions[capture.run_sessions[run as usize] as usize];
+        let at = match sessions.iter().position(|held| held == session) {
+            Some(at) => at,
+            None => {
+                engine_allocation::reserve(&mut sessions, 1)?;
+                sessions.push(engine_allocation::copy_vec(session)?);
+                sessions.len() - 1
+            }
+        };
+        engine_allocation::reserve(&mut run_sessions, 1)?;
+        run_sessions.push(at as u32);
+    }
+    let mut controls = Vec::new();
+    for record in std::mem::take(&mut capture.controls) {
+        if !of_left_out(&record, &keep)? {
+            engine_allocation::reserve(&mut controls, 1)?;
+            controls.push(record);
+        }
+    }
+    let stop = capture.stop.filter(|stop| keep(stop.branch));
+    writer
+        .finish_with_capture(
+            &Capture {
+                sessions,
+                run_sessions,
+                stop,
+                controls,
+                ..capture
+            },
+            sync,
+        )
+        .map(Some)
+}
+
+/// Whether `record`, a capture's control record as the row recording encodes it, is a branch
+/// start, gap or event loss of a branch `keep` leaves out.
+fn of_left_out(record: &[u8], keep: &impl Fn(u64) -> bool) -> io::Result<bool> {
+    use crate::spool::{ControlRecord, RECORD_HEADER_BYTES, Record};
+    let payload = record
+        .get(RECORD_HEADER_BYTES..)
+        .ok_or_else(|| invalid("A capture's control record is shorter than its header"))?;
+    let branch = match Record::decode(&mut crate::codec::Decoder::new(payload))? {
+        Record::BranchStart(start) => Some(start.id),
+        Record::Gap(gap) => Some(gap.branch),
+        Record::Control(ControlRecord::EventLoss { branch, .. }) => Some(branch),
+        _ => None,
+    };
+    Ok(branch.is_some_and(|branch| !keep(branch)))
+}
+
+/// A restart's dictionary chunk's strings, as [`FileWriter::close_with_restart`] wrote them.
+fn chunk_strings(chunk: &[u8]) -> io::Result<Vec<&[u8]>> {
+    let mut reader = Reader::new(chunk);
+    let count = reader.count()?;
+    // Each string takes at least the byte of its length.
+    if count > chunk.len() {
+        return Err(invalid(
+            "A dictionary chunk counts more strings than it holds",
+        ));
+    }
+    let mut strings = engine_allocation::vec(count)?;
+    for _ in 0..count {
+        let length = reader.count()?;
+        strings.push(reader.raw(length)?);
+    }
+    reader.finish()?;
+    Ok(strings)
+}
+
 /// The restart ordinals whose dictionary chunks hold `ids`, ascending. `starts` holds each
 /// chunk's first id, ascending from 0; an empty chunk starts where the next does, so the
 /// last chunk starting at or before an id holds it.

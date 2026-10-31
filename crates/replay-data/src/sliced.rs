@@ -38,6 +38,7 @@ use engine_allocation as allocation;
 use std::io;
 
 pub(crate) mod ranges;
+#[macro_use]
 mod update;
 pub use update::{SliceUpdate, takes_keyed_updates};
 
@@ -100,104 +101,6 @@ macro_rules! sliced_by_owner_country {
     )+};
 }
 sliced_by_owner_country!(RelationOpinionRow, RelationTupleRow);
-
-macro_rules! dispatch {
-    ($previous:expr, $fresh:expr, |$old:ident, $new:ident| $body:expr) => {
-        match ($previous, $fresh) {
-            (TableRows::ResearchTechnologies($old), TableRows::ResearchTechnologies($new)) => {
-                Ok(TableRows::ResearchTechnologies($body?))
-            }
-            (TableRows::ResearchInputs($old), TableRows::ResearchInputs($new)) => {
-                Ok(TableRows::ResearchInputs($body?))
-            }
-            (TableRows::ResearchAppliedBonuses($old), TableRows::ResearchAppliedBonuses($new)) => {
-                Ok(TableRows::ResearchAppliedBonuses($body?))
-            }
-            (TableRows::ResearchModifiers($old), TableRows::ResearchModifiers($new)) => {
-                Ok(TableRows::ResearchModifiers($body?))
-            }
-            (TableRows::AirCountryRelations($old), TableRows::AirCountryRelations($new)) => {
-                Ok(TableRows::AirCountryRelations($body?))
-            }
-            (
-                TableRows::AirNavalPatrolHistories($old),
-                TableRows::AirNavalPatrolHistories($new),
-            ) => Ok(TableRows::AirNavalPatrolHistories($body?)),
-            (TableRows::RaidAirSites($old), TableRows::RaidAirSites($new)) => {
-                Ok(TableRows::RaidAirSites($body?))
-            }
-            (TableRows::StateResourceInputs($old), TableRows::StateResourceInputs($new)) => {
-                Ok(TableRows::StateResourceInputs($body?))
-            }
-            (TableRows::StateResources($old), TableRows::StateResources($new)) => {
-                Ok(TableRows::StateResources($body?))
-            }
-            (TableRows::StateCores($old), TableRows::StateCores($new)) => {
-                Ok(TableRows::StateCores($body?))
-            }
-            (TableRows::StateDynamicModifiers($old), TableRows::StateDynamicModifiers($new)) => {
-                Ok(TableRows::StateDynamicModifiers($body?))
-            }
-            (
-                TableRows::CountryBuildingResources($old),
-                TableRows::CountryBuildingResources($new),
-            ) => Ok(TableRows::CountryBuildingResources($body?)),
-            (TableRows::RelationOpinions($old), TableRows::RelationOpinions($new)) => {
-                Ok(TableRows::RelationOpinions($body?))
-            }
-            (TableRows::RelationTuples($old), TableRows::RelationTuples($new)) => {
-                Ok(TableRows::RelationTuples($body?))
-            }
-            (TableRows::CountryStabilityInputs($old), TableRows::CountryStabilityInputs($new)) => {
-                Ok(TableRows::CountryStabilityInputs($body?))
-            }
-            (TableRows::CountryStabilityLines($old), TableRows::CountryStabilityLines($new)) => {
-                Ok(TableRows::CountryStabilityLines($body?))
-            }
-            (TableRows::CombatLogEquipment($old), TableRows::CombatLogEquipment($new)) => {
-                Ok(TableRows::CombatLogEquipment($body?))
-            }
-            (TableRows::NavalMissionCountries($old), TableRows::NavalMissionCountries($new)) => {
-                Ok(TableRows::NavalMissionCountries($body?))
-            }
-            (TableRows::NavalMissionCommanders($old), TableRows::NavalMissionCommanders($new)) => {
-                Ok(TableRows::NavalMissionCommanders($body?))
-            }
-            (TableRows::SupplyNodes($old), TableRows::SupplyNodes($new)) => {
-                Ok(TableRows::SupplyNodes($body?))
-            }
-            (TableRows::TradeRoutes($old), TableRows::TradeRoutes($new)) => {
-                Ok(TableRows::TradeRoutes($body?))
-            }
-            (TableRows::TrainInventory($old), TableRows::TrainInventory($new)) => {
-                Ok(TableRows::TrainInventory($body?))
-            }
-            (TableRows::AvailableAdvisors($old), TableRows::AvailableAdvisors($new)) => {
-                Ok(TableRows::AvailableAdvisors($body?))
-            }
-            (TableRows::Focus($old), TableRows::Focus($new)) => Ok(TableRows::Focus($body?)),
-            (TableRows::Projects($old), TableRows::Projects($new)) => {
-                Ok(TableRows::Projects($body?))
-            }
-            (TableRows::ProjectHistory($old), TableRows::ProjectHistory($new)) => {
-                Ok(TableRows::ProjectHistory($body?))
-            }
-            (TableRows::CompletedFocuses($old), TableRows::CompletedFocuses($new)) => {
-                Ok(TableRows::CompletedFocuses($body?))
-            }
-            (TableRows::CountryMarket($old), TableRows::CountryMarket($new)) => {
-                Ok(TableRows::CountryMarket($body?))
-            }
-            (TableRows::MarketContractTerms($old), TableRows::MarketContractTerms($new)) => {
-                Ok(TableRows::MarketContractTerms($body?))
-            }
-            (TableRows::LendLeaseAgreements($old), TableRows::LendLeaseAgreements($new)) => {
-                Ok(TableRows::LendLeaseAgreements($body?))
-            }
-            _ => Err(invalid("cannot merge different sliced table types")),
-        }
-    };
-}
 
 /// Replace the rows of every owner `read` selects in `previous` (a complete
 /// table in key order) with `fresh` (in key order), in one linear pass.
@@ -269,13 +172,12 @@ pub fn merge_slice(
             }
         }
     }
-    dispatch!(previous, fresh, |old, new| merge(
-        old,
-        new,
-        |row| row.key(),
-        &read,
-        &live
-    ))
+    sliced_pair!(
+        previous,
+        fresh,
+        |old, new, wrap| Ok(wrap(merge(old, new, |row| row.key(), &read, &live)?)),
+        Err(invalid("cannot merge different sliced table types"))
+    )
 }
 
 /// The hour `owner`'s rows of `table` were read at, from SliceReads rows
@@ -315,38 +217,13 @@ pub fn try_owners(rows: &TableRows) -> io::Result<Vec<u32>> {
         owners.dedup();
         Ok(owners)
     }
-    match rows {
-        TableRows::CountryMarket(rows) => collect(rows),
-        TableRows::MarketContractTerms(rows) => collect(rows),
-        TableRows::LendLeaseAgreements(rows) => collect(rows),
-        TableRows::ResearchTechnologies(rows) => collect(rows),
-        TableRows::ResearchInputs(rows) => collect(rows),
-        TableRows::ResearchAppliedBonuses(rows) => collect(rows),
-        TableRows::ResearchModifiers(rows) => collect(rows),
-        TableRows::AirCountryRelations(rows) => collect(rows),
-        TableRows::AirNavalPatrolHistories(rows) => collect(rows),
-        TableRows::RaidAirSites(rows) => collect(rows),
-        TableRows::StateResourceInputs(rows) => collect(rows),
-        TableRows::StateResources(rows) => collect(rows),
-        TableRows::StateDynamicModifiers(rows) => collect(rows),
-        TableRows::StateCores(rows) => collect(rows),
-        TableRows::CountryBuildingResources(rows) => collect(rows),
-        TableRows::RelationOpinions(rows) => collect(rows),
-        TableRows::RelationTuples(rows) => collect(rows),
-        TableRows::CountryStabilityInputs(rows) => collect(rows),
-        TableRows::CountryStabilityLines(rows) => collect(rows),
-        TableRows::NavalMissionCountries(rows) => collect(rows),
-        TableRows::NavalMissionCommanders(rows) => collect(rows),
-        TableRows::SupplyNodes(rows) => collect(rows),
-        TableRows::TradeRoutes(rows) => collect(rows),
-        TableRows::TrainInventory(rows) => collect(rows),
-        TableRows::AvailableAdvisors(rows) => collect(rows),
-        TableRows::Focus(rows) => collect(rows),
-        TableRows::CompletedFocuses(rows) => collect(rows),
-        TableRows::Projects(rows) => collect(rows),
-        TableRows::ProjectHistory(rows) => collect(rows),
-        _ => Ok(Vec::new()),
-    }
+    // The tables merge_slice merges, so a slice it merges always names its owners.
+    sliced_pair!(
+        rows,
+        rows,
+        |held, _same, _wrap| collect(held),
+        Ok(Vec::new())
+    )
 }
 
 #[cfg(test)]
@@ -375,6 +252,40 @@ mod tests {
                 "{table:?}"
             );
         }
+    }
+
+    /// A truncated read of combat equipment losses names its rows' owners, so its rows replace
+    /// exactly those owners' held rows, as a spool merges a truncated slice.
+    #[test]
+    fn a_truncated_equipment_loss_read_replaces_only_its_owners() {
+        let row = |country, variant, amount_raw| CombatLogEquipmentRow {
+            country,
+            variant,
+            amount_raw,
+            ..Default::default()
+        };
+        let previous =
+            TableRows::CombatLogEquipment(vec![row(1, 1, 10), row(2, 1, 10), row(3, 1, 10)]);
+        let fresh = TableRows::CombatLogEquipment(vec![row(2, 1, 20), row(2, 2, 5)]);
+        let returned = try_owners(&fresh).unwrap();
+        assert_eq!(returned, [2]);
+        let merged = merge_slice(
+            &previous,
+            fresh,
+            |owner| returned.binary_search(&owner).is_ok(),
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(
+            merged,
+            TableRows::CombatLogEquipment(vec![
+                row(1, 1, 10),
+                row(2, 1, 20),
+                row(2, 2, 5),
+                row(3, 1, 10)
+            ])
+        );
+        assert_eq!(owners(&merged), [1, 2, 3]);
     }
 
     #[test]

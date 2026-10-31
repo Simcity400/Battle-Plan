@@ -161,6 +161,18 @@ pub fn save_folder(settings: &RecorderSettings) -> PathBuf {
     settings.effective_save_folder()
 }
 
+/// Keeps `root`, the folder a session now records in, among the recorder's session roots: the
+/// save folder chosen away from as its capture began, it may have been forgotten with nothing
+/// there yet. Kept under the settings' lock, which forgetting a folder reads it again under; its
+/// session folder keeps it from then on.
+fn keep_session_root(settings: &Path, root: &Path) {
+    if let Err(error) = RecorderSettings::update_at(settings, |settings| {
+        settings.keep_session_root(root.to_path_buf())
+    }) {
+        eprintln!("The session's save folder could not be kept listed: {error}");
+    }
+}
+
 /// The save folder, created and in canonical form so campaign folders compare equal.
 fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
     let root = save_folder(settings);
@@ -910,6 +922,7 @@ impl Recorder {
                 if session_dir.borrow().is_none() {
                     session_dir.replace(Some(session.to_path_buf()));
                     self.lock().session = Some((session.to_path_buf(), target.clone()));
+                    keep_session_root(&settings_path, &root);
                 }
                 if !self.control.stopping() {
                     self.live(app, &target, session, status, names, probe);

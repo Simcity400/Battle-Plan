@@ -369,10 +369,8 @@ pub(super) fn trailer_regions(trailers: &[(usize, Vec<u8>)]) -> Vec<(u64, u64)> 
         .collect()
 }
 
-fn rollback_temporary(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(".rollback.tmp");
-    PathBuf::from(name)
+pub(super) fn rollback_temporary(path: &Path) -> PathBuf {
+    crate::publication::temporary_beside(path, "rollback")
 }
 
 fn remove_rollback_temporary(path: &Path) -> io::Result<()> {

@@ -91,6 +91,15 @@ fn same(written: &DecodedFrame, read: &DecodedFrame) {
 /// `hours` hours from hour 1 written through a frame writer into a file, with the frames a
 /// walker applying each hour as written gives.
 fn written(hours: i32, settings: Settings) -> (Vec<u8>, Vec<DecodedFrame>) {
+    written_with(hours, settings, frame)
+}
+
+/// [`written`], hour `hour` being `frame(hour)`.
+fn written_with(
+    hours: i32,
+    settings: Settings,
+    frame: impl Fn(i32) -> FrameInput,
+) -> (Vec<u8>, Vec<DecodedFrame>) {
     let mut writer = FrameWriter::new().unwrap();
     let mut file = FileWriter::create(
         Cursor::new(Vec::new()),
@@ -548,5 +557,226 @@ fn capture_and_published_names_read_back_as_written() {
     assert_eq!(
         campaign_folder(Path::new("replays"), b"Ab-1"),
         Path::new("replays").join("61622d31")
+    );
+}
+
+/// Each hour of run `run`'s page `at` as its file holds it: its ordinal, manifest and sections.
+fn hours_of(recording: &Recording, run: u32, at: usize) -> Vec<(u32, Vec<u8>, Vec<Vec<u8>>)> {
+    let mut hours = Vec::new();
+    recording
+        .page_hours(run, at, u32::MAX, |ordinal, manifest, _, sections| {
+            hours.push((
+                ordinal,
+                manifest.to_vec(),
+                sections.iter().map(|section| section.to_vec()).collect(),
+            ));
+            Ok(true)
+        })
+        .unwrap();
+    hours
+}
+
+/// The chain through an hour covers every hour of its run to it: where its page ends, the
+/// page's own chain; within its page, the page's hours to it as well. A recording whose hours
+/// differ only within that page gives another chain through it.
+#[test]
+fn the_chain_through_an_hour_covers_every_hour_of_its_run_to_it() {
+    let unit = envelope::UNIT_ORDINALS;
+    let hours = unit as i32 + 10;
+    let (bytes, _) = written(hours, EVERY_UNIT);
+    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    let mut chain = envelope::chain_start(&identity().chain_bytes().unwrap(), 0);
+    let mut through = Vec::new();
+    for at in 0..2 {
+        recording
+            .page_hours(0, at, u32::MAX, |_, manifest, _, sections| {
+                chain = envelope::chain_hour(&chain, manifest, sections.iter().copied());
+                through.push(chain);
+                Ok(true)
+            })
+            .unwrap();
+        assert_eq!(through.last(), Some(&recording.page(0, at).unwrap().chain));
+    }
+    assert_eq!(through.len(), hours as usize);
+    for ordinal in [0, 3, unit - 1, unit, unit + 4, unit + 9] {
+        assert_eq!(
+            recording.chain_through(0, ordinal).unwrap(),
+            through[ordinal as usize],
+            "{ordinal}"
+        );
+    }
+    assert!(recording.chain_through(0, unit + 10).is_err());
+    // Hour 724 is ordinal 723, on the second page.
+    let changed = |hour: i32| {
+        let mut input = frame(hour);
+        if hour == 724
+            && let TableInput::Sampled(TableView::Complete(TableRows::Countries(rows))) =
+                &mut input.tables[TableId::Countries.index()]
+        {
+            rows[0].stability_raw += 1;
+        }
+        input
+    };
+    let (other, _) = written_with(hours, EVERY_UNIT, changed);
+    let other = Recording::open(other, Limits::default()).unwrap();
+    for (ordinal, same) in [
+        (unit - 1, true),
+        (unit + 1, true),
+        (unit + 3, false),
+        (unit + 5, false),
+    ] {
+        assert_eq!(
+            other.chain_through(0, ordinal).unwrap() == recording.chain_through(0, ordinal).unwrap(),
+            same,
+            "{ordinal}"
+        );
+    }
+}
+
+/// `runs`, each a branch, its first hour and its hours, written into one file with a restart
+/// after every unit, its capture `capture`.
+fn written_runs(runs: &[(u64, i32, i32)], capture: &Capture) -> Vec<u8> {
+    let mut file = FileWriter::create(
+        Cursor::new(Vec::new()),
+        identity(),
+        schema().unwrap().iter().map(Vec::len).collect(),
+        EVERY_UNIT,
+    )
+    .unwrap();
+    for &(branch, first, hours) in runs {
+        let mut writer = FrameWriter::new().unwrap();
+        file.start_run(branch, envelope::epoch::LOAD, first).unwrap();
+        for hour in first..first + hours {
+            let mut input = frame(hour);
+            input.branch = branch;
+            let prepared = writer.hour(&input).unwrap();
+            let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
+            let position = file.hour(given(&prepared, &sections)).unwrap();
+            drop(sections);
+            writer.commit(prepared).unwrap();
+            if let Position::Full { restart } = position {
+                if restart {
+                    let (strings, tables) = writer.restart().unwrap();
+                    file.close_with_restart(&strings, &tables).unwrap();
+                } else {
+                    file.close_position().unwrap();
+                }
+            }
+        }
+    }
+    file.finish_with_capture(capture, |_| Ok(()))
+        .unwrap()
+        .file
+        .into_inner()
+}
+
+/// Keeping some branches rewrites their runs hour for hour, restarts and all, each chained from
+/// its new place, and the capture names only their runs and sessions; keeping none writes
+/// nothing.
+#[test]
+fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions() {
+    let unit = envelope::UNIT_ORDINALS as i32;
+    let runs = [(1, 1, 2 * unit + 5), (2, 5_000, unit + 3), (3, 9_000, 2 * unit)];
+    use crate::spool::{ControlRecord, Record, encode_record};
+    use replay_frame::branches::{BranchReason, BranchStart, Gap, Parentage};
+    let control = |record: Record| encode_record(&record).unwrap();
+    let start = |id: u64| {
+        control(Record::BranchStart(BranchStart {
+            id,
+            session: 1,
+            loaded_hour: None,
+            first_hour: 1,
+            parent: Parentage::Unknown,
+            reason: BranchReason::SessionStart,
+        }))
+    };
+    let gap = control(Record::Gap(Gap {
+        branch: 2,
+        first_hour: 5_000,
+        last_hour: 5_001,
+        reason: "lost in this test".into(),
+    }));
+    let detach = control(Record::Control(ControlRecord::Detach {
+        session: 1,
+        last_hour: None,
+    }));
+    let capture = Capture {
+        campaign_id: b"columnar file test".to_vec(),
+        content: vec![1, 2, 3],
+        capture_mode: CaptureMode::Full.byte(),
+        sessions: vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()],
+        run_sessions: vec![0, 1, 2],
+        stop: Some(Stop {
+            branch: 2,
+            last_hour: Some(5_000 + unit + 2),
+            reason: "stopped in this test".into(),
+        }),
+        format: FormatVersion::CURRENT.version(),
+        controls: vec![start(1), start(2), gap.clone(), start(3), detach.clone()],
+    };
+    let original = Recording::open(written_runs(&runs, &capture), Limits::default()).unwrap();
+    assert!(original.damage().is_empty(), "{:?}", original.damage());
+    let kept = keep_branches(&original, |branch| branch != 2, Cursor::new(Vec::new()), EVERY_UNIT, |_| Ok(()))
+        .unwrap()
+        .unwrap()
+        .file
+        .into_inner();
+    let mut rewritten = Recording::open(kept, Limits::default()).unwrap();
+    assert!(rewritten.damage().is_empty(), "{:?}", rewritten.damage());
+    assert_eq!(rewritten.run_count(), 2);
+    assert_eq!(
+        rewritten.capture().unwrap(),
+        Some(Capture {
+            sessions: vec![b"first".to_vec(), b"third".to_vec()],
+            run_sessions: vec![0, 1],
+            stop: None,
+            controls: vec![start(1), start(3), detach.clone()],
+            ..capture.clone()
+        })
+    );
+    for (new, old) in [(0, 0), (1, 2)] {
+        let (kept, held) = (rewritten.run(new).unwrap(), original.run(old).unwrap());
+        assert_eq!(
+            (kept.branch, kept.epoch, kept.first_hour, kept.ordinals, kept.pages()),
+            (held.branch, held.epoch, held.first_hour, held.ordinals, held.pages())
+        );
+        for at in 0..kept.pages() {
+            assert_eq!(hours_of(&rewritten, new, at), hours_of(&original, old, at));
+            assert_eq!(
+                rewritten.page(new, at).unwrap().restart.is_some(),
+                original.page(old, at).unwrap().restart.is_some()
+            );
+        }
+    }
+    assert_eq!(rewritten.run(0).unwrap().chain, original.run(0).unwrap().chain);
+    assert_ne!(rewritten.run(1).unwrap().chain, original.run(2).unwrap().chain);
+    // Every walk, from each run's start and from every restart, checks every hour's chain.
+    rewritten.verify(true);
+    let stop = AtomicBool::new(false);
+    for segment in rewritten.segments().to_vec() {
+        let mut state = State::new(schema().unwrap()).unwrap();
+        let mut walker = Walker::new(&rewritten, &stop).unwrap();
+        walker.begin(&segment, &mut state).unwrap();
+        assert!(walker.walk(&segment, &mut state, |_, _, _| Ok(true)).unwrap());
+    }
+    // One session's runs alone name that session alone; a stop on a kept branch stays.
+    let second = keep_branches(&original, |branch| branch == 2, Cursor::new(Vec::new()), EVERY_UNIT, |_| Ok(()))
+        .unwrap()
+        .unwrap()
+        .file
+        .into_inner();
+    assert_eq!(
+        Recording::open(second, Limits::default()).unwrap().capture().unwrap(),
+        Some(Capture {
+            sessions: vec![b"second".to_vec()],
+            run_sessions: vec![0],
+            controls: vec![start(2), gap, detach],
+            ..capture.clone()
+        })
+    );
+    assert!(
+        keep_branches(&original, |_| false, Cursor::new(Vec::new()), EVERY_UNIT, |_| Ok(()))
+            .unwrap()
+            .is_none()
     );
 }

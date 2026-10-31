@@ -90,6 +90,10 @@ pub struct RecorderSettings {
     /// Where recordings are saved; absent is the recorder's default folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_folder: Option<PathBuf>,
+    /// Folders saved into before the save folder whose sessions may hold hours waiting to be
+    /// saved: listed and saved from until none waits there ([`Self::choose_save_folder`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub earlier_save_folders: Vec<PathBuf>,
     /// The Paradox user folder; absent finds it automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_folder: Option<PathBuf>,
@@ -142,6 +146,7 @@ impl Default for RecorderSettings {
             record_every_campaign: true,
             auto_save: true,
             save_folder: None,
+            earlier_save_folders: Vec::new(),
             user_folder: None,
             start_with_windows: false,
             start_with_replay: true,
@@ -225,6 +230,57 @@ impl RecorderSettings {
     /// the replay app lists it.
     pub fn effective_save_folder(&self) -> PathBuf {
         self.save_folder.clone().unwrap_or_else(default_save_folder)
+    }
+
+    /// Save into `folder` from now on. The folder saved into until now stays among the session
+    /// roots, since its sessions may hold hours waiting to be saved, until it is forgotten.
+    pub fn choose_save_folder(&mut self, folder: PathBuf) {
+        let before = self.effective_save_folder();
+        if !same_path(&before, &folder)
+            && !self
+                .earlier_save_folders
+                .iter()
+                .any(|earlier| same_path(earlier, &before))
+        {
+            self.earlier_save_folders.push(before);
+        }
+        self.earlier_save_folders
+            .retain(|earlier| !same_path(earlier, &folder));
+        self.save_folder = Some(folder);
+    }
+
+    /// Every folder whose sessions may hold hours waiting to be saved: the save folder, then each
+    /// earlier one.
+    pub fn session_roots(&self) -> Vec<PathBuf> {
+        let current = self.effective_save_folder();
+        let mut roots = Vec::with_capacity(1 + self.earlier_save_folders.len());
+        roots.extend(
+            self.earlier_save_folders
+                .iter()
+                .filter(|earlier| !same_path(earlier, &current))
+                .cloned(),
+        );
+        roots.insert(0, current);
+        roots
+    }
+
+    /// Keep `root`, a folder a session records in, among the session roots; whether it was not.
+    pub fn keep_session_root(&mut self, root: PathBuf) -> bool {
+        if self
+            .session_roots()
+            .iter()
+            .any(|known| same_path(known, &root))
+        {
+            return false;
+        }
+        self.earlier_save_folders.push(root);
+        true
+    }
+
+    /// Forget `folder` as an earlier save folder, none of its sessions waiting to be saved now.
+    pub fn forget_save_folder(&mut self, folder: &Path) {
+        self.earlier_save_folders
+            .retain(|earlier| !same_path(earlier, folder));
     }
 
     pub fn name_chosen(&self, folder: &Path, campaign: &[u8]) -> bool {
@@ -357,6 +413,64 @@ mod tests {
             Path::new(r"\\?\UNC\server\share\a.battleplan"),
             Path::new("//server/share/A.battleplan")
         ));
+    }
+
+    /// A folder saved into before stays a session root after another is chosen, once, until it
+    /// is forgotten or chosen again.
+    #[test]
+    fn earlier_save_folders_stay_session_roots_until_forgotten() {
+        let root = scratch("save-folders");
+        let path = root.join("settings.json");
+        let default = default_save_folder();
+        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+            settings.choose_save_folder(PathBuf::from(r"C:\first"));
+        })
+        .unwrap();
+        assert_eq!(
+            settings.session_roots(),
+            [PathBuf::from(r"C:\first"), default.clone()]
+        );
+        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+            settings.choose_save_folder(PathBuf::from(r"C:\second"));
+            settings.choose_save_folder(PathBuf::from(r"c:/SECOND"));
+        })
+        .unwrap();
+        assert_eq!(
+            settings.session_roots(),
+            [
+                PathBuf::from("c:/SECOND"),
+                default.clone(),
+                PathBuf::from(r"C:\first")
+            ]
+        );
+        // Chosen again, a folder is the save folder alone.
+        let mut chosen = settings.clone();
+        chosen.choose_save_folder(PathBuf::from(r"C:\FIRST"));
+        assert_eq!(
+            chosen.session_roots(),
+            [
+                PathBuf::from(r"C:\FIRST"),
+                default.clone(),
+                PathBuf::from("c:/SECOND")
+            ]
+        );
+        let (settings, ()) = RecorderSettings::update_at(&path, |settings| {
+            settings.forget_save_folder(Path::new(r"c:\First"));
+            settings.forget_save_folder(&default);
+        })
+        .unwrap();
+        assert_eq!(settings.session_roots(), [PathBuf::from("c:/SECOND")]);
+        assert_eq!(RecorderSettings::load_from(&path).unwrap(), settings);
+        // A session's folder forgotten before the session began is kept again, once.
+        let mut kept = settings.clone();
+        assert!(!kept.keep_session_root(PathBuf::from(r"\\?\C:\Second")));
+        assert!(kept.keep_session_root(PathBuf::from(r"C:\first")));
+        assert!(!kept.keep_session_root(PathBuf::from("c:/first")));
+        assert_eq!(
+            kept.session_roots(),
+            [PathBuf::from("c:/SECOND"), PathBuf::from(r"C:\first")]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -8976,6 +8976,7 @@ dependencies = [
  "recorder-platform",
  "recorder-test-support",
  "replay",
+ "replay-columnar",
  "replay-data",
  "replay-frame",
  "replay-identity",

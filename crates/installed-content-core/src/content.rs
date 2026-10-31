@@ -18,6 +18,10 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Instant, UNIX_EPOCH},
 };
 
@@ -1588,6 +1592,7 @@ impl ResolvedLayer {
                 }
                 let mut archive = physfs_zip::Archive::open(path)?;
                 for (relative, member) in self.files.iter() {
+                    cache.continuing()?;
                     let key = format!(
                         "{RECORD_DIGEST_SCHEME}\0{}\0{}",
                         text_path(path)?,
@@ -3742,6 +3747,8 @@ const HASH_CACHE_MAGIC: &[u8; 8] = b"HOI4HC\x00\x02";
 struct HashCache {
     entries: BTreeMap<String, CachedHash>,
     dirty: bool,
+    /// Set to stop the gathering this cache serves: every later probe is refused.
+    cancelled: Option<Arc<AtomicBool>>,
 }
 
 /// The first `count` bytes of `rest`, taken off it; `None` when it holds fewer.
@@ -3793,6 +3800,7 @@ impl HashCache {
         rest.is_empty().then_some(Self {
             entries,
             dirty: false,
+            cancelled: None,
         })
     }
 
@@ -3833,6 +3841,7 @@ impl HashCache {
     /// makes the file's reads refuse it as changed: every covered read is verified against the
     /// digest taken here, as for a file changed after resolution.
     fn probe_listed(&self, path: &Path, listed: Option<&Stamp>) -> io::Result<Probe> {
+        self.continuing()?;
         #[cfg(test)]
         hash_cache_tests::PROBED
             .lock()
@@ -3882,6 +3891,21 @@ impl HashCache {
             || priority.clone().enter(job_priority::Level::Normal),
             |(path, listed)| self.probe_listed(path, listed.as_ref()),
         )
+    }
+
+    /// Refused once the gathering it serves is stopped.
+    fn continuing(&self) -> io::Result<()> {
+        if self
+            .cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "content verification was stopped",
+            ));
+        }
+        Ok(())
     }
 
     /// Counts a probe and keeps a digest read now.
@@ -4231,7 +4255,16 @@ fn append_builtin(
 
 /// Hashes only covered bytes. Call on a background thread before injection.
 pub fn gather(options: &GatherOptions) -> io::Result<GatheredContent> {
-    gather_selected(options, None)
+    gather_selected(options, None, None)
+}
+
+/// [`gather`], stopped with [`io::ErrorKind::Interrupted`] once `cancelled` is set: no file is
+/// hashed after, and the digests taken before are kept for the next gathering.
+pub fn gather_cancellable(
+    options: &GatherOptions,
+    cancelled: Arc<AtomicBool>,
+) -> io::Result<GatheredContent> {
+    gather_selected(options, None, Some(cancelled))
 }
 
 /// Resolves exactly the replay's recorded ids and order and verifies every
@@ -4249,6 +4282,7 @@ pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<Reso
             dlc_order: Some(identity.dlc.iter().map(|dlc| dlc.id.clone()).collect()),
         },
         Some(identity),
+        None,
     )?;
     Ok(ResolvedContent {
         layers: content.layers,
@@ -4260,6 +4294,7 @@ pub fn resolve(identity: &Identity, options: &ResolveOptions) -> io::Result<Reso
 fn gather_selected(
     options: &GatherOptions,
     recorded: Option<&Identity>,
+    cancelled: Option<Arc<AtomicBool>>,
 ) -> io::Result<GatheredContent> {
     let coverage = recorded
         .map(|identity| CoveragePolicy::recorded(identity.coverage_policy))
@@ -4292,6 +4327,7 @@ fn gather_selected(
             dirty: true,
             ..HashCache::default()
         });
+    cache.cancelled = cancelled;
     let result = (|| {
         let mut stats = HashStats::default();
         let mut changed = Vec::new();

@@ -5,7 +5,7 @@ use replay::{container::Replay, spool::ControlRecord};
 use replay_data::{BranchId, Hour, cadence::refresh_text, codec::invalid, rows::TableId};
 use replay_frame::{frame::FrameDecoder, frame::TableView};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, ffi::OsString, fs, io, path::Path};
+use std::{collections::BTreeMap, ffi::OsString, io, path::Path};
 
 pub const USAGE: &str = "recorder metrics <campaign.battleplan> <branch> <first-hour> <last-hour>\nrecorder <campaign.battleplan> <branch> <first-hour> <last-hour>";
 
@@ -24,8 +24,8 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let branch = number::<BranchId>(branch)?;
     let first = number::<Hour>(first)?;
     let last = number::<Hour>(last)?;
-    let replay = Replay::open(fs::read(Path::new(path)).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
+    // Blocks are read as the interval needs them, never the whole recording at once.
+    let replay = Replay::open_path(Path::new(path)).map_err(|error| error.to_string())?;
     let report = report(&replay, branch, first, last).map_err(|error| error.to_string())?;
     println!("{report}");
     if report["failures"]
@@ -214,6 +214,28 @@ mod tests {
         );
         assert_eq!(output["pool_bytes_max"], 70);
         assert_eq!(output["failures"], json!({}));
+    }
+
+    /// A recording read through its file reports as one held whole does.
+    #[test]
+    fn a_recording_read_through_its_file_reports_as_one_held_whole() {
+        let held = replay(records());
+        let path = std::env::temp_dir().join(format!(
+            "hoi4-metrics-file-{}-{}.battleplan",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        held.write_atomic(&path).unwrap();
+        let read = Replay::open_path(&path).unwrap();
+        assert_eq!(
+            report(&read, 9, 2, 4).unwrap(),
+            report(&held, 9, 2, 4).unwrap()
+        );
+        drop(read);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

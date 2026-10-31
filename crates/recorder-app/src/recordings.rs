@@ -81,6 +81,8 @@ pub struct Library {
     names: Arc<Mutex<Names>>,
     namer: Option<Arc<Namer>>,
     installation: Arc<dyn Fn() -> Result<(PathBuf, PathBuf), String> + Send + Sync>,
+    /// The recorder settings it forgets earlier save folders in.
+    settings: PathBuf,
 }
 
 impl Default for Library {
@@ -91,6 +93,7 @@ impl Default for Library {
             names: Arc::default(),
             namer: None,
             installation: Arc::new(WaitingNames::installation_key),
+            settings: RecorderSettings::path(),
         }
     }
 }
@@ -279,6 +282,60 @@ impl Cache {
     }
 }
 
+/// Whether no hour of `root`'s sessions can wait to be saved, as read now: it is there, and each
+/// of its session folders has a completion record listing none waiting. One it cannot read, or
+/// a session without a readable completion record, may still hold some.
+fn settled(root: &Path) -> bool {
+    if !root.is_dir() {
+        return false;
+    }
+    let entries = match fs::read_dir(root.join("sessions")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
+    };
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {}
+            Ok(_) => continue,
+            Err(_) => return false,
+        }
+        let record = fs::read(entry.path().join("completed.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let none_waiting = record
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|record| match record.get("waiting") {
+                None => true,
+                Some(waiting) => waiting.as_array().is_some_and(Vec::is_empty),
+            });
+        if !none_waiting {
+            return false;
+        }
+    }
+    true
+}
+
+/// Forgets each of `folders`, earlier save folders, that is [`settled`] when the recorder
+/// settings at `path` are changed: read again under their lock, as a session registers its folder
+/// under it once the session exists ([`RecorderSettings::keep_session_root`]), so none started
+/// since the folders were found settled is forgotten.
+fn forget_settled(path: &Path, folders: &[PathBuf]) -> std::io::Result<()> {
+    RecorderSettings::update_at(path, |settings| {
+        for folder in folders {
+            let root = folder.canonicalize().unwrap_or_else(|_| folder.clone());
+            if settled(&root) {
+                settings.forget_save_folder(folder);
+            }
+        }
+    })
+    .map(drop)
+}
+
 fn version(path: &Path) -> Option<(SystemTime, u64)> {
     let metadata = fs::metadata(path).ok()?;
     Some((metadata.modified().ok()?, metadata.len()))
@@ -292,7 +349,22 @@ impl Library {
             names: Arc::default(),
             namer: Some(namer),
             installation: Arc::new(|| Err("custom recording namer".into())),
+            settings: std::env::temp_dir().join(format!(
+                "hoi4-library-settings-{}-{}.json",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )),
         }
+    }
+
+    /// The library forgetting earlier save folders in the recorder settings at `path`.
+    #[cfg(test)]
+    pub fn with_settings(mut self, path: PathBuf) -> Self {
+        self.settings = path;
+        self
     }
 
     pub fn register_panel(&self, panel: &str) {
@@ -411,13 +483,28 @@ impl Library {
                 );
             }
         }
-        let mut sessions = controller::session_folders(&root);
+        // Sessions of the save folder and of each folder saved into before it whose hours may
+        // still wait: changing the save folder leaves them to save or discard.
+        let roots: Vec<(PathBuf, PathBuf)> = settings
+            .session_roots()
+            .into_iter()
+            .map(|root| (root.canonicalize().unwrap_or_else(|_| root.clone()), root))
+            .collect();
+        let mut sessions: Vec<PathBuf> = roots
+            .iter()
+            .flat_map(|(root, _)| controller::session_folders(root))
+            .collect();
         // Newest first: session folders are named by game start and time.
-        sessions.sort_by(|left, right| right.cmp(left));
+        sessions.sort_by(|left, right| {
+            right
+                .file_name()
+                .cmp(&left.file_name())
+                .then_with(|| right.cmp(left))
+        });
         cache
             .sessions
             .retain(|session, _| sessions.contains(session));
-        for session in sessions {
+        for session in &sessions {
             if Some(session.as_path()) == live.session {
                 continue;
             }
@@ -427,12 +514,12 @@ impl Library {
                 .entry(session.clone())
                 .or_insert_with(|| (None, Vec::new()));
             if entry.0 != stamp || stamp.is_none() {
-                *entry = (stamp, controller::waiting_campaigns(&session));
+                *entry = (stamp, controller::waiting_campaigns(session));
             }
             for waiting in entry.1.clone() {
                 add(
                     &waiting.target,
-                    &session,
+                    session,
                     Unsaved {
                         session: session.display().to_string(),
                         campaign: waiting.campaign.clone(),
@@ -448,6 +535,20 @@ impl Library {
                     },
                 );
             }
+        }
+        // An earlier save folder is forgotten once nothing there runs, may yet end, or waits.
+        let forgotten: Vec<PathBuf> = roots
+            .iter()
+            .skip(1)
+            .filter(|(root, _)| {
+                live.session.is_none_or(|live| !live.starts_with(root)) && settled(root)
+            })
+            .map(|(_, chosen)| chosen.clone())
+            .collect();
+        if !forgotten.is_empty()
+            && let Err(error) = forget_settled(&self.settings, &forgotten)
+        {
+            eprintln!("Earlier save folders could not be forgotten: {error}");
         }
         let settings_stamp = version(&RecorderSettings::path());
         let installation = (self.installation)();
@@ -685,6 +786,159 @@ mod tests {
         }));
         library.register_panel("panel");
         library
+    }
+
+    /// Hours left waiting in a folder saved into before the save folder changed stay listed,
+    /// and that folder is forgotten once nothing there runs or waits.
+    #[test]
+    fn hours_waiting_in_an_earlier_save_folder_stay_listed_until_none_waits() {
+        let root = scratch();
+        let (earlier, current) = (root.join("earlier"), root.join("current"));
+        // A folder that cannot be read now, as on a drive not connected, is kept.
+        let gone = root.join("gone");
+        fs::create_dir_all(&current).unwrap();
+        let path = root.join("settings.json");
+        let settings = RecorderSettings {
+            save_folder: Some(current.clone()),
+            earlier_save_folders: vec![earlier.clone(), gone.clone()],
+            ..RecorderSettings::default()
+        };
+        settings.save_to(&path).unwrap();
+        let ended = earlier.join("sessions").join("1-1");
+        write(&ended.join(OTHER).join("spool.0000.h4s"), 100);
+        let waiting = |waiting: serde_json::Value| {
+            fs::write(
+                ended.join("completed.json"),
+                serde_json::to_vec(&serde_json::json!({"target": earlier, "waiting": waiting}))
+                    .unwrap(),
+            )
+            .unwrap();
+        };
+        waiting(serde_json::json!([
+            {"campaign": OTHER, "hours": 1, "first_hour": 3, "last_hour": 3}
+        ]));
+        let library = namer(BTreeMap::new(), Arc::default()).with_settings(path.clone());
+        let names = BTreeMap::new();
+        let live = Live {
+            session: None,
+            target: None,
+            campaign: None,
+            hour: None,
+            set_aside: &[],
+            names: &names,
+        };
+        let listed = library.list(
+            &settings,
+            library.view("panel", 1, true),
+            &live,
+            &BTreeMap::new(),
+            || {},
+        );
+        let rows: Vec<_> = listed
+            .unsaved
+            .iter()
+            .map(|row| (row.session.clone(), row.campaign.clone()))
+            .collect();
+        assert_eq!(rows, [(ended.display().to_string(), OTHER.to_owned())]);
+        assert_eq!(
+            RecorderSettings::load_from(&path)
+                .unwrap()
+                .earlier_save_folders,
+            [earlier.clone(), gone.clone()]
+        );
+        // A session still running there keeps the folder, whatever waits.
+        waiting(serde_json::json!([]));
+        let running = earlier.join("sessions").join("2-2");
+        fs::create_dir_all(&running).unwrap();
+        let live = Live {
+            session: Some(&running),
+            ..live
+        };
+        let listed = library.list(
+            &settings,
+            library.view("panel", 1, true),
+            &live,
+            &BTreeMap::new(),
+            || {},
+        );
+        assert!(listed.unsaved.is_empty());
+        assert_eq!(
+            RecorderSettings::load_from(&path)
+                .unwrap()
+                .earlier_save_folders,
+            [earlier.clone(), gone.clone()]
+        );
+        // Ended, its completion record unreadable: it may hold hours, so the folder is kept.
+        let live = Live {
+            session: None,
+            ..live
+        };
+        for unreadable in [&b"not a record"[..], b"null", b"[]", b"\"done\""] {
+            fs::write(running.join("completed.json"), unreadable).unwrap();
+            library.list(
+                &settings,
+                library.view("panel", 1, true),
+                &live,
+                &BTreeMap::new(),
+                || {},
+            );
+            assert_eq!(
+                RecorderSettings::load_from(&path)
+                    .unwrap()
+                    .earlier_save_folders,
+                [earlier.clone(), gone.clone()]
+            );
+        }
+        // Ended with nothing waiting: the folder is forgotten, the unreadable one kept.
+        fs::write(running.join("completed.json"), b"{}").unwrap();
+        library.list(
+            &settings,
+            library.view("panel", 1, true),
+            &live,
+            &BTreeMap::new(),
+            || {},
+        );
+        assert_eq!(
+            RecorderSettings::load_from(&path)
+                .unwrap()
+                .earlier_save_folders,
+            [gone]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A folder found settled is not forgotten when a session began there before the settings
+    /// change: the change reads it again under the settings' lock.
+    #[test]
+    fn a_session_begun_after_its_folder_was_found_settled_keeps_it() {
+        let root = scratch();
+        let earlier = root.join("earlier");
+        fs::create_dir_all(&earlier).unwrap();
+        let path = root.join("settings.json");
+        let settings = RecorderSettings {
+            save_folder: Some(root.join("current")),
+            earlier_save_folders: vec![earlier.clone()],
+            ..RecorderSettings::default()
+        };
+        settings.save_to(&path).unwrap();
+        assert!(settled(&earlier));
+        fs::create_dir_all(earlier.join("sessions").join("3-3")).unwrap();
+        forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();
+        assert_eq!(
+            RecorderSettings::load_from(&path)
+                .unwrap()
+                .earlier_save_folders,
+            [earlier.clone()]
+        );
+        fs::write(earlier.join("sessions").join("3-3").join("completed.json"), b"{}").unwrap();
+        forget_settled(&path, std::slice::from_ref(&earlier)).unwrap();
+        assert!(
+            RecorderSettings::load_from(&path)
+                .unwrap()
+                .earlier_save_folders
+                .is_empty()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

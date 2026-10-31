@@ -256,7 +256,7 @@ pub async fn choose_save_folder(
         else {
             return Ok(None);
         };
-        update(move |settings| settings.save_folder = Some(folder)).map(Some)
+        update(move |settings| settings.choose_save_folder(folder)).map(Some)
     })
     .await
 }
@@ -345,8 +345,9 @@ pub async fn recordings(
     .await
 }
 
-/// The running session, or a session folder of this recorder's save folder, and a recorded
-/// campaign in it; with the folder the running session saves into.
+/// The running session, or a session folder of this recorder's save folder or of one it saved
+/// into before whose hours still wait, and a recorded campaign in it; with the folder the
+/// running session saves into.
 fn waiting_part(
     recorder: &Recorder,
     session: &str,
@@ -362,12 +363,13 @@ fn waiting_part(
     if let Some(target) = recorder.live_target(&session) {
         return Ok((session, Some(target)));
     }
-    let root = save_folder(&RecorderSettings::load().unwrap_or_default());
-    let sessions = root
-        .join("sessions")
-        .canonicalize()
-        .map_err(|error| format!("Unknown recording: {error}"))?;
-    if session.parent() != Some(sessions.as_path()) {
+    let settings = RecorderSettings::load().unwrap_or_default();
+    let known = settings.session_roots().iter().any(|root| {
+        root.join("sessions")
+            .canonicalize()
+            .is_ok_and(|sessions| session.parent() == Some(sessions.as_path()))
+    });
+    if !known {
         return Err("Unknown recording".into());
     }
     Ok((session, None))

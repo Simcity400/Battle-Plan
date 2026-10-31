@@ -8,7 +8,9 @@ use crate::{
     windows::{self, Event, Process, ProcessMemory},
 };
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
-use installed_content_core::{content::GatherOptions, content::GatheredContent, content::gather};
+use installed_content_core::{
+    content::GatherOptions, content::GatheredContent, content::gather_cancellable,
+};
 use installed_content_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
 use replay::{compression::Compression, recorder_settings::RecorderSettings};
@@ -1589,6 +1591,49 @@ pub(crate) struct CaptureOptions<'a> {
     pub alloc_fault: Option<&'a AllocationFault>,
 }
 
+/// The installed content's verification beside a capture: stopped and waited for whenever the
+/// capture leaves without taking it, so no scan outlives the capture that started it.
+struct ContentScan {
+    cancelled: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<std::io::Result<GatheredContent>>>,
+}
+
+impl ContentScan {
+    fn start(options: GatherOptions) -> Self {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&cancelled);
+        Self {
+            cancelled,
+            thread: Some(std::thread::spawn(move || {
+                gather_cancellable(&options, stopping)
+            })),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+
+    /// The finished scan's content, waiting for it.
+    fn take(mut self) -> Result<std::io::Result<GatheredContent>, String> {
+        let thread = self.thread.take().ok_or("content was taken twice")?;
+        thread
+            .join()
+            .map_err(|_| "content hashing worker panicked".to_owned())
+    }
+}
+
+impl Drop for ContentScan {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            self.cancelled.store(true, Ordering::Release);
+            let _ = thread.join();
+        }
+    }
+}
+
 /// The command line's capture: the capture root is also the publication folder,
 /// every campaign is recorded, and status is read only to print it.
 fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
@@ -1845,9 +1890,9 @@ pub(crate) fn capture(
         dlc_order: None,
     };
     println!("Verifying installed content hashes in the background...");
-    let hash_thread = std::thread::spawn(move || gather(&gather_options));
+    let scan = ContentScan::start(gather_options);
     let mut next_discovery = Instant::now();
-    while !hash_thread.is_finished() {
+    while !scan.is_finished() {
         if process.handle.signaled()? {
             return Err("game exited while content identity was being gathered".into());
         }
@@ -1865,10 +1910,7 @@ pub(crate) fn capture(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let content = hash_thread
-        .join()
-        .map_err(|_| "content hashing worker panicked")?
-        .map_err(|e| e.to_string())?;
+    let content = scan.take()?.map_err(|e| e.to_string())?;
     println!(
         "Content: {} files, {:.1} MB covered, {} cache hits, {:.3} s.",
         content.stats.files,
@@ -4869,6 +4911,54 @@ mod tests {
     use super::*;
     use replay::container::Replay;
     use std::{cell::RefCell, collections::BTreeMap};
+
+    /// A capture leaving before its content is verified stops the scan and waits for it: once
+    /// the scan is dropped it has ended, its hash cache written, and no scan of it goes on.
+    #[test]
+    fn a_dropped_content_scan_is_stopped_and_has_ended() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-content-scan-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let (game_dir, user_dir) = (root.join("game"), root.join("user"));
+        fs::create_dir_all(game_dir.join("common")).unwrap();
+        fs::create_dir_all(game_dir.join("dlc")).unwrap();
+        fs::create_dir_all(&user_dir).unwrap();
+        fs::write(game_dir.join("hoi4.exe"), b"synthetic executable").unwrap();
+        for index in 0..2_000 {
+            fs::write(
+                game_dir.join(format!("common/f{index:04}.txt")),
+                format!("file {index}"),
+            )
+            .unwrap();
+        }
+        fs::write(user_dir.join("settings.txt"), b"language=l_english").unwrap();
+        fs::write(
+            user_dir.join("dlc_load.json"),
+            br#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        )
+        .unwrap();
+        let cache_dir = root.join("cache");
+        let scan = ContentScan::start(GatherOptions {
+            game_dir,
+            user_dir,
+            cache_dir: cache_dir.clone(),
+            dlc_order: None,
+        });
+        let cancelled = Arc::clone(&scan.cancelled);
+        drop(scan);
+        assert!(cancelled.load(Ordering::Acquire));
+        // The scan ended before the drop returned: the cache it writes on leaving is there.
+        let written = fs::read_dir(&cache_dir)
+            .unwrap()
+            .any(|entry| entry.unwrap().file_type().unwrap().is_file());
+        assert!(written);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn one_recorder_at_a_time_holds_a_game_and_a_reused_pid_is_another_game() {

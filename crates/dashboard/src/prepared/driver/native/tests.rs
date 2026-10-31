@@ -458,6 +458,82 @@ fn one_walk_of_each_segment_serves_every_family_each_hour_once() {
     }
 }
 
+/// A store whose recording grew while its content came to be bound otherwise, as when the
+/// game's language changed, is prepared anew under the new key, never added to.
+#[test]
+fn a_grown_recording_bound_to_other_content_is_prepared_anew() {
+    let plan = test_plan();
+    let fixture = Fixture::new();
+    let (recording, _) = opened(&RUNS);
+    let shape = Shape::new(&recording).unwrap();
+    let mut writer = fixture.store.replace(fixture.key.clone()).unwrap();
+    writer.write("synthetic", &b"prepared"[..]).unwrap();
+    writer.commit().unwrap();
+    let path = fixture.root.join("recording");
+    std::fs::write(&path, b"synthetic and more hours").unwrap();
+    let settings = fixture.root.join("settings.txt");
+    std::fs::write(&settings, b"language=\"l_german\"").unwrap();
+    let key = store::SourceKey::capture(&path, &[settings]).unwrap();
+    assert!(!key.appends(&fixture.key));
+    let (publisher, resume) = Publisher::open(
+        &fixture.store,
+        key.clone(),
+        Binding::new(b"synthetic recording", b"synthetic content"),
+        plan,
+        &Family::planned(plan, &["alpha"]).unwrap(),
+        &|_, branch, frontier| shape.accepts(&recording, branch, frontier),
+    )
+    .unwrap();
+    assert!(resume.replaced);
+    drop(publisher);
+}
+
+/// A proof covers every hour through its frontier: a recording grown from another proves the
+/// same through the hours they share, and one whose hours on the frontier's own page differ
+/// proves otherwise, though no page comes before it.
+#[test]
+fn a_proof_covers_every_hour_through_its_frontier() {
+    let (recording, _) = opened(&[(1, 0, 2)]);
+    let shape = Shape::new(&recording).unwrap();
+    let first = shape.proof(&recording, 0);
+    assert_ne!(first, [0; 32]);
+    let (grown, _) = opened(&[(1, 0, 3)]);
+    let grown_shape = Shape::new(&grown).unwrap();
+    assert_eq!(grown_shape.get(0).last, shape.get(0).last);
+    assert_eq!(grown_shape.proof(&grown, 0), first);
+    assert_eq!(
+        grown_shape.proof_through(&grown, 0, 3),
+        shape.proof_through(&recording, 0, 3)
+    );
+    let (other, _) = opened(&[(1, 1, 2)]);
+    let other_shape = Shape::new(&other).unwrap();
+    assert_eq!(other_shape.get(0).last, shape.get(0).last);
+    assert_ne!(other_shape.proof(&other, 0), first);
+    assert_ne!(
+        other_shape.proof_through(&other, 0, 3),
+        shape.proof_through(&recording, 0, 3)
+    );
+    // A branch's later run proves its earlier runs too: only the first run of branch 1 differs.
+    let (runs, _) = opened(&RUNS);
+    let (earlier, _) = opened(&[(1, 1, 6), (2, 50_000, 4), (1, 100_000, 3)]);
+    let (runs_shape, earlier_shape) = (Shape::new(&runs).unwrap(), Shape::new(&earlier).unwrap());
+    let last_of = |shape: &Shape, run: u32| {
+        (0..shape.len())
+            .rfind(|&at| shape.get(at).run == run)
+            .unwrap()
+    };
+    let (third, second) = (last_of(&runs_shape, 2), last_of(&runs_shape, 1));
+    assert_eq!(last_of(&earlier_shape, 2), third);
+    assert_ne!(
+        earlier_shape.proof(&earlier, third),
+        runs_shape.proof(&runs, third)
+    );
+    assert_eq!(
+        earlier_shape.proof(&earlier, second),
+        runs_shape.proof(&runs, second)
+    );
+}
+
 /// A family takes up every branch its committed publication finished: a run of the same
 /// recording walks nothing, and one of the recording grown by a branch walks that branch alone.
 #[test]

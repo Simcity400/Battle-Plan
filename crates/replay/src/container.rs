@@ -1676,9 +1676,7 @@ impl AtomicPublisher for FilePublisher {
 }
 
 fn temporary_path(destination: &Path) -> PathBuf {
-    let mut name = destination.as_os_str().to_owned();
-    name.push(".tmp");
-    PathBuf::from(name)
+    crate::publication::temporary_beside(destination, "write")
 }
 
 #[cfg(windows)]
