@@ -1,22 +1,18 @@
-//! Reached-hour recruitment, manpower pools and exile/election state. Nothing
-//! here reads live memory; totals use the recorded controlled-state order.
-use super::{LoadContext, Product, check_reply_budget, validate_tag};
-use crate::{Source, content, invalid};
-use replay::container::SeekResult;
+//! The game's recruitment, manpower pool, election and exile rules, and the country-people
+//! reply they make: one country's manpower operands at an hour ([`Operands`]) through
+//! [`manpower_view`], its election schedule through [`politics_view`] and its exile cards.
+//! The product (`dashboard-manpower`) reads the operands its family prepared. Nothing here
+//! reads live memory; totals use the recorded controlled-state order.
+#[cfg(any(test, feature = "test-support"))]
+use crate::invalid;
 use replay_data::rows::{Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io,
-    sync::{
-        OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::BTreeMap;
+use std::{io, sync::OnceLock};
 use ts_rs::TS;
 
-pub struct CountryPeople;
 #[derive(Clone, Debug, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PeopleParams {
@@ -66,88 +62,6 @@ pub struct PeopleReply {
     pub exiles: Vec<PeopleExile>,
     pub warnings: Vec<String>,
 }
-impl Product for CountryPeople {
-    const KEY: &'static str = "country-people";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = PeopleParams;
-    type Reply = PeopleReply;
-    fn types() -> Vec<String> {
-        vec![
-            PeopleParams::decl(),
-            PeopleFact::decl(),
-            PeopleState::decl(),
-            PeopleExile::decl(),
-            PeopleReply::decl(),
-        ]
-    }
-    fn validate(p: &PeopleParams) -> Result<(), &'static str> {
-        validate_tag(&p.tag)?;
-        p.branch_id
-            .parse::<u64>()
-            .map_err(|_| "Invalid people branch")?;
-        Ok(())
-    }
-    fn load(
-        source: &Source,
-        p: &PeopleParams,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<PeopleReply> {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(invalid("People request cancelled"));
-        }
-        let frame = match source.replay().seek_selected(
-            p.branch_id.parse().unwrap(),
-            p.hour,
-            Some(TABLES),
-        )? {
-            SeekResult::Frame(frame) => frame,
-            SeekResult::Gap { reason, .. } => {
-                return Err(invalid(format!("People unavailable: {reason}")));
-            }
-        };
-        let defines = context
-            .content
-            .as_ref()
-            .ok_or_else(|| invalid("Recorded content is unavailable"))
-            .and_then(|options| {
-                content::check_replay(&source.replay(), options.allow_unverified, &mut Vec::new())?;
-                let content = source.content(&options.options)?;
-                content_defines(&content.layers).map_err(invalid)
-            });
-        let mut reply = read(&frame, p, defines.as_ref().ok().copied())?;
-        if let Err(error) = defines {
-            reply
-                .warnings
-                .push(format!("1 refused mobilisation rate: {error}"));
-        }
-        check_reply_budget(&reply)?;
-        Ok(reply)
-    }
-}
-const TABLES: &[TableId] = &[
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::States,
-    TableId::CountryCounterInputs,
-    TableId::CountryStabilityInputs,
-    TableId::SliceReads,
-    TableId::Politics,
-    TableId::Divisions,
-    TableId::DivisionLandInputs,
-    TableId::ModifierDefinitions,
-    TableId::LexicalTokens,
-    TableId::SimulationFeatures,
-    TableId::StateResourceInputs,
-    TableId::StateCores,
-    TableId::Ships,
-    TableId::Fleets,
-    TableId::TaskForces,
-    TableId::AirWings,
-    TableId::DivisionTemplateIcons,
-    TableId::SentVolunteers,
-];
 fn scalar<T: Copy>(value: &Recorded<Option<T>>) -> Option<T> {
     value.require("people operand").ok().copied().flatten()
 }
@@ -314,116 +228,298 @@ pub fn next_election_date(row: &replay_data::rows::PoliticsRow) -> Option<i32> {
     }
 }
 
-pub fn read(
-    frame: &DecodedFrame,
-    p: &PeopleParams,
-    defines: Option<RecruitmentDefines>,
-) -> io::Result<PeopleReply> {
-    let countries = frame.complete::<tables::Countries>()?;
-    let links = frame.complete::<tables::CountryLinks>()?;
-    let tagged = crate::metadata::tagged_countries(countries, links);
-    let (country, _) = tagged
-        .get(p.tag.as_bytes())
-        .and_then(|lookup| lookup.found())
-        .ok_or_else(|| invalid("Country unavailable at this hour"))?;
-    let canonical = |raw: u32| {
-        links
-            .iter()
-            .find(|link| link.id == raw)
-            .map(|link| link.canonical_slot)
-    };
-    let equal = |first: u32, second: u32| {
-        first == second
-            || (first != 0
-                && second != 0
-                && canonical(first).is_some_and(|slot| canonical(second) == Some(slot)))
-    };
-    let same = |raw: u32| equal(raw, country.id);
-    let mut reply = PeopleReply {
-        branch_id: p.branch_id.clone(),
-        tag: p.tag.clone(),
-        hour: frame.hour,
-        read_hour: None,
-        manpower: Vec::new(),
-        politics: Vec::new(),
+/// One controlled state's manpower operands, as the pool and its recruitment read them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateOperands {
+    pub available: i32,
+    pub locked: Option<i32>,
+    pub total: Option<i32>,
+    /// Local manpower, local non-core manpower, recruitment add and recruitment factor; none
+    /// where StateResourceInputs is unavailable, holds no row for the state or any is unread.
+    pub resources: Option<[i64; 4]>,
+    /// Whether the country cores the state; none where StateCores is unavailable or holds no
+    /// row for it.
+    pub core: Option<bool>,
+}
+
+/// The deployed manpower labels, in [`Operands::deployed`]'s order.
+pub const DEPLOYED: [&str; 5] = [
+    "Deployed army",
+    "Deployed navy",
+    "Required navy crews",
+    "Deployed air force",
+    "Deployed exile air force",
+];
+
+/// One country's manpower operands at an hour: everything its manpower view reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Operands {
+    pub residual: i32,
+    /// Each controlled state in recorded order, none where States holds no row for it; none
+    /// where the controlled-state roster or States is unavailable.
+    pub states: Option<Vec<(u32, Option<StateOperands>)>>,
+    /// The applied recruitment ratio, raw.
+    pub applied: Option<i64>,
+    /// The hour the country's recruitment inputs were read.
+    pub read_hour: Option<i32>,
+    /// Effective mobilisation speed, conscription, conscription factor and non-core manpower.
+    pub effective: Option<[i64; 4]>,
+    /// Deployed army, navy, required navy crews, air force and exile air force ([`DEPLOYED`]).
+    pub deployed: [Option<i32>; 5],
+}
+
+/// The modifiers [`Operands::effective`] holds, in its order.
+pub const RECRUITMENT_MODIFIERS: [&str; 4] = [
+    "mobilization_speed",
+    "conscription",
+    "conscription_factor",
+    "non_core_manpower",
+];
+
+/// A country's manpower view: its facts, controlled states, recruitment read and warnings.
+pub struct ManpowerView {
+    pub facts: Vec<PeopleFact>,
+    pub states: Vec<PeopleState>,
+    pub read_hour: Option<i32>,
+    pub warnings: Vec<String>,
+}
+
+/// The manpower view of `operands`, with the recorded content's recruitment defines.
+pub fn manpower_view(operands: &Operands, defines: Option<RecruitmentDefines>) -> ManpowerView {
+    let mut view = ManpowerView {
+        facts: Vec::new(),
         states: Vec::new(),
-        exiles: Vec::new(),
+        read_hour: operands.read_hour,
         warnings: Vec::new(),
     };
-    let counters = frame
-        .complete::<tables::CountryCounterInputs>()
-        .ok()
-        .and_then(|rows| rows.iter().find(|row| same(row.country)));
-    let state_rows = frame.complete::<tables::States>().ok();
-    let states = counters
-        .and_then(|row| row.controlled_states.require("controlled states").ok())
-        .and_then(Option::as_deref);
-    let mut available = Some(country.manpower_residual);
+    let mut available = Some(operands.residual);
     let mut locked = Some(0_i32);
     let mut total = Some(0_i32);
-    match (states, state_rows) {
-        (Some(states), Some(rows)) => {
-            let rows: BTreeMap<_, _> = rows.iter().map(|row| (row.id, row)).collect();
-            for id in states {
-                let Some(row) = rows.get(id) else {
+    let mut resources = Vec::new();
+    match &operands.states {
+        Some(states) => {
+            for (id, row) in states {
+                let Some(row) = row else {
                     available = None;
                     locked = None;
                     total = None;
-                    reply
-                        .warnings
-                        .push(format!("1 missing controlled state {id}: manpower pool and effective recruitment unavailable"));
+                    view.warnings.push(format!("1 missing controlled state {id}: manpower pool and effective recruitment unavailable"));
                     continue;
                 };
-                let l = row.manpower_locked.require("locked").ok().copied();
-                let t = row.population.require("population").ok().copied();
-                available = available.map(|sum| sum.wrapping_add(row.manpower_available));
-                locked = locked.zip(l).map(|(sum, value)| sum.wrapping_add(value));
-                total = total.zip(t).map(|(sum, value)| sum.wrapping_add(value));
-                reply.states.push(PeopleState {
+                available = available.map(|sum| sum.wrapping_add(row.available));
+                locked = locked.zip(row.locked).map(|(sum, value)| sum.wrapping_add(value));
+                total = total.zip(row.total).map(|(sum, value)| sum.wrapping_add(value));
+                view.states.push(PeopleState {
                     state: *id,
-                    available: row.manpower_available,
-                    locked: l,
-                    total: t,
+                    available: row.available,
+                    locked: row.locked,
+                    total: row.total,
                     effective: None,
                     recruitable: None,
                 });
+                resources.push((row.resources, row.core));
             }
         }
-        _ => {
+        None => {
             available = None;
             locked = None;
             total = None;
-            reply.warnings.push(
+            view.warnings.push(
                 "1 refused manpower pool: controlled-state roster or States unavailable".into(),
             );
         }
     }
-    reply.manpower.extend([
+    view.facts.extend([
         fact("Available manpower", available, "people"),
         fact("Locked population", locked, "people"),
         fact("Total population", total, "people"),
     ]);
-    let input = frame
-        .complete::<tables::CountryStabilityInputs>()
-        .ok()
-        .and_then(|rows| rows.iter().find(|row| same(row.country)));
-    let reads = frame.complete::<tables::SliceReads>().ok();
-    reply.read_hour = reads.and_then(|reads| {
-        input.and_then(|row| {
-            replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
-        })
-    });
-    let applied = input.and_then(|row| scalar(&row.recruitment_ratio));
-    reply.manpower.push(fact(
+    let applied = operands.applied;
+    view.facts.push(fact(
         "Applied recruitment ratio",
         applied.map(applied_fraction),
         "ratio",
     ));
     if applied.is_none() {
-        reply
-            .warnings
+        view.warnings
             .push("1 refused applied recruitment ratio: country operand unavailable".into());
     }
+    let effective = operands.effective;
+    let target = effective.map(|values| recruitment_target(values[1], values[2]));
+    let daily = applied
+        .zip(target)
+        .zip(defines.map(|value| value.speed))
+        .zip(effective)
+        .map(|(((applied, target), base), values)| {
+            mobilisation_change(applied, target, base, values[0])
+        });
+    view.facts.push(fact("Recruitment target", target, "ratio"));
+    view.facts.push(fact(
+        "Daily mobilisation",
+        daily.map(applied_fraction),
+        "dailyRatio",
+    ));
+    view.facts.push(fact(
+        "Mobilising reserves",
+        target
+            .zip(applied)
+            .map(|(target, applied)| target.wrapping_sub(applied_fraction(applied))),
+        "ratio",
+    ));
+    if effective.is_none() {
+        view.warnings.push(
+            "1 refused effective recruitment: country modifier operands or definitions unavailable"
+                .into(),
+        );
+    }
+    let mut recruitable = Some(operands.residual);
+    for (state, (resources, core)) in view.states.iter_mut().zip(resources) {
+        let value = (|| {
+            let rate = state_recruitment(applied?, resources?, core?, effective?[3], defines?);
+            let amount = i64::from(state.total?).wrapping_mul(rate) / 100_000;
+            Some((rate, amount as i32))
+        })();
+        state.effective = value.map(|value| value.0.to_string());
+        state.recruitable = value.map(|value| value.1);
+        recruitable = recruitable
+            .zip(state.recruitable)
+            .map(|(total, value)| total.wrapping_add(value));
+    }
+    if operands
+        .states
+        .as_ref()
+        .is_none_or(|states| states.len() != view.states.len())
+    {
+        recruitable = None;
+    }
+    view.facts.push(fact(
+        "Effective recruitable population",
+        recruitable,
+        "people",
+    ));
+    for (label, value) in DEPLOYED.into_iter().zip(operands.deployed) {
+        view.facts.push(fact(label, value, "people"));
+        if value.is_none() {
+            view.warnings.push(format!(
+                "1 refused {label}: required unit manpower or exact roster membership unavailable"
+            ));
+        }
+    }
+    if recruitable.is_none() {
+        view.warnings.push("1 refused effective recruitment: state recruitment operands, cores or recorded content unavailable".into());
+    }
+    view
+}
+
+/// The election facts of a schedule, and the warning a refused part of it gives.
+pub fn politics_view(
+    allowed: Option<bool>,
+    interval: Option<i32>,
+    next: Option<i32>,
+) -> (Vec<PeopleFact>, Option<String>) {
+    let facts = vec![
+        fact(
+            "Elections",
+            allowed.map(|value| if value { "Allowed" } else { "Not held" }),
+            "text",
+        ),
+        fact("Election interval", interval, "months"),
+        if allowed == Some(false) {
+            fact("Next election", Some("Not held"), "text")
+        } else {
+            fact("Next election", next, "date")
+        },
+    ];
+    let refused = allowed.is_none() || interval.is_none() || (allowed == Some(true) && next.is_none());
+    (
+        facts,
+        refused.then(|| "1 refused election details: Politics operands unavailable".into()),
+    )
+}
+
+/// The warnings of exile cards: a refused host for the country itself, each refused field's
+/// count, and the cards whose deployed air crews are unknown.
+pub fn exile_warnings(host_refused: bool, exiles: &[PeopleExile], refusals: [u32; 5]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if host_refused {
+        warnings.push("1 refused exile status: country host unavailable".into());
+    }
+    for (count, field) in refusals.into_iter().zip([
+        "host roster",
+        "legitimacy",
+        "manpower",
+        "manpower cap",
+        "leader resources",
+    ]) {
+        if count != 0 {
+            warnings.push(format!("{count} refused exile {field}: operands unavailable"));
+        }
+    }
+    let missing_air = exiles
+        .iter()
+        .filter(|exile| exile.deployed_air.is_none())
+        .count();
+    if missing_air != 0 {
+        warnings.push(format!("{missing_air} refused exile deployed air crews: wing attribution or manpower unavailable"));
+    }
+    warnings
+}
+
+/// The country's manpower operands in `frame`, the effective modifiers read through
+/// the hour's modifier definitions; `same` tells the country's raw references.
+#[cfg(any(test, feature = "test-support"))]
+pub fn frame_operands(
+    frame: &DecodedFrame,
+    country: &replay_data::rows::CountryRow,
+    same: impl Fn(u32) -> bool,
+    equal: impl Fn(u32, u32) -> bool,
+) -> Operands {
+    let counters = frame
+        .complete::<tables::CountryCounterInputs>()
+        .ok()
+        .and_then(|rows| rows.iter().find(|row| same(row.country)));
+    let state_rows = frame.complete::<tables::States>().ok();
+    let roster = counters
+        .and_then(|row| row.controlled_states.require("controlled states").ok())
+        .and_then(Option::as_deref);
+    let resource_inputs = frame.complete::<tables::StateResourceInputs>().ok();
+    let cores = frame.complete::<tables::StateCores>().ok();
+    let states = roster.zip(state_rows).map(|(roster, rows)| {
+        let rows: BTreeMap<_, _> = rows.iter().map(|row| (row.id, row)).collect();
+        roster
+            .iter()
+            .map(|id| {
+                let row = rows.get(id).map(|row| StateOperands {
+                    available: row.manpower_available,
+                    locked: row.manpower_locked.require("locked").ok().copied(),
+                    total: row.population.require("population").ok().copied(),
+                    resources: (|| {
+                        let values = resource_inputs?.iter().find(|row| row.state == *id)?;
+                        Some([
+                            scalar(&values.local_manpower)?,
+                            scalar(&values.local_noncore_manpower)?,
+                            scalar(&values.recruitment_add)?,
+                            scalar(&values.recruitment_factor)?,
+                        ])
+                    })(),
+                    core: cores
+                        .and_then(|cores| cores.iter().find(|row| row.state == *id))
+                        .map(|row| row.cores.iter().any(|&raw| same(raw))),
+                });
+                (*id, row)
+            })
+            .collect()
+    });
+    let input = frame
+        .complete::<tables::CountryStabilityInputs>()
+        .ok()
+        .and_then(|rows| rows.iter().find(|row| same(row.country)));
+    let reads = frame.complete::<tables::SliceReads>().ok();
+    let read_hour = reads.and_then(|reads| {
+        input.and_then(|row| {
+            replay_data::sliced::read_hour(reads, TableId::CountryStabilityInputs, row.country)
+        })
+    });
     let modifiers = counters
         .and_then(|row| {
             row.recruitment_modifiers
@@ -435,15 +531,7 @@ pub fn read(
     let effective = modifiers.and_then(|values| {
         let registry = replay_derive::modifier_registry::Registry::from_frame(frame).ok();
         let mut result = [0; 4];
-        for (index, name) in [
-            "mobilization_speed",
-            "conscription",
-            "conscription_factor",
-            "non_core_manpower",
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (index, name) in RECRUITMENT_MODIFIERS.into_iter().enumerate() {
             result[index] = match values[index] {
                 None => 0,
                 Some(raw) => {
@@ -455,78 +543,6 @@ pub fn read(
         }
         Some(result)
     });
-    let target = effective.map(|values| recruitment_target(values[1], values[2]));
-    let daily = applied
-        .zip(target)
-        .zip(defines.map(|value| value.speed))
-        .zip(effective)
-        .map(|(((applied, target), base), values)| {
-            mobilisation_change(applied, target, base, values[0])
-        });
-    reply
-        .manpower
-        .push(fact("Recruitment target", target, "ratio"));
-    reply.manpower.push(fact(
-        "Daily mobilisation",
-        daily.map(applied_fraction),
-        "dailyRatio",
-    ));
-    reply.manpower.push(fact(
-        "Mobilising reserves",
-        target
-            .zip(applied)
-            .map(|(target, applied)| target.wrapping_sub(applied_fraction(applied))),
-        "ratio",
-    ));
-    if effective.is_none() {
-        reply.warnings.push(
-            "1 refused effective recruitment: country modifier operands or definitions unavailable"
-                .into(),
-        );
-    }
-    let resource_inputs = frame.complete::<tables::StateResourceInputs>().ok();
-    let cores = frame.complete::<tables::StateCores>().ok();
-    let mut recruitable = Some(country.manpower_residual);
-    for state in &mut reply.states {
-        let value = (|| {
-            let values = resource_inputs?
-                .iter()
-                .find(|row| row.state == state.state)?;
-            let core = cores?
-                .iter()
-                .find(|row| row.state == state.state)?
-                .cores
-                .iter()
-                .any(|&raw| same(raw));
-            let rate = state_recruitment(
-                applied?,
-                [
-                    scalar(&values.local_manpower)?,
-                    scalar(&values.local_noncore_manpower)?,
-                    scalar(&values.recruitment_add)?,
-                    scalar(&values.recruitment_factor)?,
-                ],
-                core,
-                effective?[3],
-                defines?,
-            );
-            let amount = i64::from(state.total?).wrapping_mul(rate) / 100_000;
-            Some((rate, amount as i32))
-        })();
-        state.effective = value.map(|value| value.0.to_string());
-        state.recruitable = value.map(|value| value.1);
-        recruitable = recruitable
-            .zip(state.recruitable)
-            .map(|(total, value)| total.wrapping_add(value));
-    }
-    if state_rows.is_none() || states.is_none_or(|states| states.len() != reply.states.len()) {
-        recruitable = None;
-    }
-    reply.manpower.push(fact(
-        "Effective recruitable population",
-        recruitable,
-        "people",
-    ));
     let army = frame
         .complete::<tables::Divisions>()
         .ok()
@@ -544,7 +560,6 @@ pub fn read(
                     .ok()
                     .map(|exile| !*exile)
             };
-            let mut total = 0_i32;
             let amount = |id| {
                 land.get(&id).map(|row| {
                     row.manpower
@@ -553,6 +568,7 @@ pub fn read(
                         .map_or(0, |entry| entry.amount)
                 })
             };
+            let mut total = 0_i32;
             for division in divisions
                 .iter()
                 .filter(|division| same(division.roster_owner))
@@ -614,26 +630,50 @@ pub fn read(
             Some((total, required))
         });
     let air_wings = frame.complete::<tables::AirWings>().ok();
-    let air = air_wings.and_then(|wings| ordinary_air_manpower(wings, same));
-    let exile_air =
-        |country| air_wings.and_then(|wings| exile_air_manpower(wings, |raw| equal(raw, country)));
-    for (label, value) in [
-        ("Deployed army", army),
-        ("Deployed navy", navy.and_then(|values| values.0)),
-        ("Required navy crews", navy.and_then(|values| values.1)),
-        ("Deployed air force", air),
-        ("Deployed exile air force", exile_air(country.id)),
-    ] {
-        reply.manpower.push(fact(label, value, "people"));
-        if value.is_none() {
-            reply.warnings.push(format!(
-                "1 refused {label}: required unit manpower or exact roster membership unavailable"
-            ));
-        }
+    Operands {
+        residual: country.manpower_residual,
+        states,
+        applied: input.and_then(|row| scalar(&row.recruitment_ratio)),
+        read_hour,
+        effective,
+        deployed: [
+            army,
+            navy.and_then(|values| values.0),
+            navy.and_then(|values| values.1),
+            air_wings.and_then(|wings| ordinary_air_manpower(wings, &same)),
+            air_wings.and_then(|wings| exile_air_manpower(wings, |raw| equal(raw, country.id))),
+        ],
     }
-    if recruitable.is_none() {
-        reply.warnings.push("1 refused effective recruitment: state recruitment operands, cores or recorded content unavailable".into());
-    }
+}
+
+/// The reply `frame` gives: the reference the prepared reply is held to.
+#[cfg(any(test, feature = "test-support"))]
+pub fn read(
+    frame: &DecodedFrame,
+    p: &PeopleParams,
+    defines: Option<RecruitmentDefines>,
+) -> io::Result<PeopleReply> {
+    let countries = frame.complete::<tables::Countries>()?;
+    let links = frame.complete::<tables::CountryLinks>()?;
+    let tagged = crate::metadata::tagged_countries(countries, links);
+    let (country, _) = tagged
+        .get(p.tag.as_bytes())
+        .and_then(|lookup| lookup.found())
+        .ok_or_else(|| invalid("Country unavailable at this hour"))?;
+    let canonical = |raw: u32| {
+        links
+            .iter()
+            .find(|link| link.id == raw)
+            .map(|link| link.canonical_slot)
+    };
+    let equal = |first: u32, second: u32| {
+        first == second
+            || (first != 0
+                && second != 0
+                && canonical(first).is_some_and(|slot| canonical(second) == Some(slot)))
+    };
+    let same = |raw: u32| equal(raw, country.id);
+    let manpower = manpower_view(&frame_operands(frame, country, same, equal), defines);
     let politics = frame
         .complete::<tables::Politics>()
         .ok()
@@ -650,54 +690,29 @@ pub fn read(
             .ok()
             .copied()
     });
-    let next = politics.and_then(next_election_date);
-    reply.politics.extend([
-        fact(
-            "Elections",
-            allowed.map(|value| if value { "Allowed" } else { "Not held" }),
-            "text",
-        ),
-        fact("Election interval", interval, "months"),
-        if allowed == Some(false) {
-            fact("Next election", Some("Not held"), "text")
-        } else {
-            fact("Next election", next, "date")
-        },
-    ]);
-    if allowed.is_none() || interval.is_none() || (allowed == Some(true) && next.is_none()) {
-        reply
-            .warnings
-            .push("1 refused election details: Politics operands unavailable".into());
-    }
-    if input.and_then(|row| scalar(&row.exile_host)).is_none() {
-        reply
-            .warnings
-            .push("1 refused exile status: country host unavailable".into());
-    }
+    let (politics_facts, politics_warning) =
+        politics_view(allowed, interval, politics.and_then(next_election_date));
+    let host_refused = frame
+        .complete::<tables::CountryStabilityInputs>()
+        .ok()
+        .and_then(|rows| rows.iter().find(|row| same(row.country)))
+        .and_then(|row| scalar(&row.exile_host))
+        .is_none();
     let (exiles, exile_refusals) = exiles(frame, |raw, host| same(raw) || same(host));
-    reply.exiles = exiles;
-    for (count, field) in exile_refusals.into_iter().zip([
-        "host roster",
-        "legitimacy",
-        "manpower",
-        "manpower cap",
-        "leader resources",
-    ]) {
-        if count != 0 {
-            reply.warnings.push(format!(
-                "{count} refused exile {field}: operands unavailable"
-            ));
-        }
-    }
-    let missing_air = reply
-        .exiles
-        .iter()
-        .filter(|exile| exile.deployed_air.is_none())
-        .count();
-    if missing_air != 0 {
-        reply.warnings.push(format!("{missing_air} refused exile deployed air crews: wing attribution or manpower unavailable"));
-    }
-    Ok(reply)
+    let mut warnings = manpower.warnings;
+    warnings.extend(politics_warning);
+    warnings.extend(exile_warnings(host_refused, &exiles, exile_refusals));
+    Ok(PeopleReply {
+        branch_id: p.branch_id.clone(),
+        tag: p.tag.clone(),
+        hour: frame.hour,
+        read_hour: manpower.read_hour,
+        manpower: manpower.facts,
+        politics: politics_facts,
+        states: manpower.states,
+        exiles,
+        warnings,
+    })
 }
 
 /// Every government in exile the hour's sliced reads show, as the exile cards
@@ -781,6 +796,7 @@ pub fn exiles(
     (rows_out, refusals)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn ordinary_air_manpower(
     wings: &[replay_data::rows::AirWingRow],
     same: impl Fn(u32) -> bool,

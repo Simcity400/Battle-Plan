@@ -83,6 +83,7 @@ pub const UI_PREPARED_ROUTES: &[&str] = &[
     "equipment-stockpile-at",
     "equipment-stockpile-catalogue",
     "equipment-stockpile-chart",
+    "country-people",
     "series-next-change",
     "events-page",
     "events-clusters",

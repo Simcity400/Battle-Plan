@@ -114,7 +114,7 @@ const SHOWN: Record<string, readonly string[]> = {
   'idea-timeline': ['0.through'],
   'national-spirits': ['0.through', '0.hour'],
   'spirit-history': ['0.through'],
-  'ruling-party': ['0.to', '1.hours.0'],
+  'ruling-party': ['0.to', '1.hours.0', '2.hour'],
   'resource-balance': ['0.from', '0.to', '0.hours.0'],
   'equipment-stockpile': ['1.hour'],
   'dockyards-and-repairs': ['0.hour'],

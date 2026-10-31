@@ -52,12 +52,29 @@ pub fn live_division(divisions: &[DivisionRow], reference: u64) -> Option<&Divis
 pub fn listed_manpower(
     references: impl IntoIterator<Item = u64>,
     divisions: &[DivisionRow],
-    mut ordinary: impl FnMut(&DivisionRow) -> Option<bool>,
+    ordinary: impl FnMut(&DivisionRow) -> Option<bool>,
+    contribution: impl FnMut(u64) -> Option<i32>,
+) -> Option<i32> {
+    listed_manpower_with(
+        references,
+        |reference| live_division(divisions, reference),
+        ordinary,
+        contribution,
+    )
+}
+
+/// [`listed_manpower`] with `live` finding a live division by its reference.
+pub fn listed_manpower_with<D>(
+    references: impl IntoIterator<Item = u64>,
+    mut live: impl FnMut(u64) -> Option<D>,
+    mut ordinary: impl FnMut(D) -> Option<bool>,
     mut contribution: impl FnMut(u64) -> Option<i32>,
 ) -> Option<i32> {
     let mut total = 0_i32;
     for reference in references {
-        if let Some(division) = live_division(divisions, reference)
+        // Null references are native skips, as nonlive ones are.
+        if reference != 0
+            && let Some(division) = live(reference)
             && ordinary(division)?
         {
             total = total.wrapping_add(contribution(reference)?);

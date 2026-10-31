@@ -1138,11 +1138,11 @@ fn a_rewritten_or_emptied_range_anywhere_in_a_section_is_a_new_publication() {
             writer.write_at("values", range, bytes).unwrap();
         }
         writer.commit().unwrap();
-        published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap()
+        crate::prepared::query::observations::published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap()
     };
     let first = publish(&[(0, b"a"), (1, b"b"), (2, b"c")]);
     assert_eq!(
-        published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap(),
+        crate::prepared::query::observations::published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap(),
         first,
         "an unchanged section keeps its publication"
     );

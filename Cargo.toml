@@ -171,6 +171,7 @@ dashboard-equipment-stockpile = { path = "crates/dashboard-equipment-stockpile" 
 dashboard-military-air-ledger = { path = "crates/dashboard-military-air-ledger" }
 dashboard-stability = { path = "crates/dashboard-stability" }
 dashboard-place-names = { path = "crates/dashboard-place-names" }
+dashboard-manpower = { path = "crates/dashboard-manpower" }
 dashboard-world = { path = "crates/dashboard-world" }
 dashboard-world-tension = { path = "crates/dashboard-world-tension" }
 dashboard-keyed = { path = "crates/dashboard-keyed" }

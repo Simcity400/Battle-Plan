@@ -24,6 +24,31 @@ use std::{
 type Value = Arc<dyn Any + Send + Sync>;
 type Slot = Arc<Mutex<Option<Value>>>;
 
+/// The publication of store sections, from the manifest alone without opening their pages: every
+/// range's identity, which a rewritten, appended or emptied range changes.
+pub fn published(
+    store: &store::Store,
+    key: &store::SourceKey,
+    sections: &[&str],
+) -> io::Result<[u8; 32]> {
+    let mut hash = blake3::Hasher::new();
+    if let Some(session) = store.session(key)? {
+        for section in sections {
+            let count = session.range_count(section).unwrap_or(0);
+            hash.update(&count.to_le_bytes());
+            for range in 0..count {
+                let id = session
+                    .range_id(section, range)?
+                    .map_or([u64::MAX; 3], |id| id.cache_key());
+                for part in id {
+                    hash.update(&part.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
 /// Bytes a source's products keep together. Each product's own budget scales
 /// with the recording's blocks, which alone let a long playback keep every hour.
 pub const CACHE_BYTES: usize = 1 << 30;

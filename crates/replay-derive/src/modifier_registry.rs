@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 /// `engine_native::modifier_definition::CLAMP_MAXIMUM`: the getter clamps an eligible value to
 /// [0, 100000].
-const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
+pub const CLAMP_MAXIMUM: u32 = engine_native::modifier_definition::CLAMP_MAXIMUM;
 
 pub struct Registry<'a> {
     by_name: BTreeMap<Vec<u8>, &'a ModifierDefinitionRow>,
@@ -108,13 +108,39 @@ impl<'a> Registry<'a> {
     /// clamped to [0, 100000] under `CLAMP_MAXIMUM`, else the stored value. An absent
     /// entry is zero without consulting the definition.
     pub fn effective(&self, definition: &ModifierDefinitionRow, raw: i64) -> Result<i64, String> {
+        Ok(self.rule(definition)?.of(raw))
+    }
+
+    /// What [`Self::effective`] makes of every present entry of `definition`.
+    pub fn rule(&self, definition: &ModifierDefinitionRow) -> Result<Effective, String> {
         Ok(if !self.eligible(definition)? {
-            0
+            Effective::Zero
         } else if definition.flags & CLAMP_MAXIMUM != 0 {
-            raw.clamp(0, 100_000)
+            Effective::Clamped
         } else {
-            raw
+            Effective::Stored
         })
+    }
+}
+
+/// A definition's effective value of a present entry ([`Registry::rule`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effective {
+    /// Ineligible: zero.
+    Zero,
+    /// Clamped to [0, 100000].
+    Clamped,
+    /// The stored value.
+    Stored,
+}
+
+impl Effective {
+    pub fn of(self, raw: i64) -> i64 {
+        match self {
+            Self::Zero => 0,
+            Self::Clamped => raw.clamp(0, 100_000),
+            Self::Stored => raw,
+        }
     }
 }
 

@@ -82,6 +82,8 @@ pub use dashboard_special_projects::products::special_projects;
 pub use dashboard_stability::products::{country_stability, stability_parts};
 // The product, and the name ladder dashboard-base keeps for it, under one path.
 pub use dashboard_place_names::products::place_names;
+// The product, and the game rules dashboard-base keeps for it, under one path.
+pub use dashboard_manpower::products::country_people;
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
@@ -354,7 +356,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_stability::CountryStability>(),
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
-    register::<country_people::CountryPeople>(),
+    register_prepared::<country_people::CountryPeople>(),
     register_prepared::<country_fuel::CountryFuel>(),
     register::<country_fuel::CountryFuelAwards>(),
     register::<country_fuel::CountryFuelAwardHistory>(),

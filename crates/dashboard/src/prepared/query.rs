@@ -470,6 +470,72 @@ fn names_reply(
     })
 }
 
+/// A country's manpower view at an hour: its operands from the manpower family, its holder's
+/// elections and exiles from `politics_state`, and each exile card's air crews from the family;
+/// null past what the family has accepted.
+fn people_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::{country_people, country_people::query, politics_state::history};
+    use dashboard_base::products::Product as _;
+    let params: country_people::PeopleParams = serde_json::from_value(params.clone())?;
+    country_people::CountryPeople::validate(&params).map_err(crate::invalid)?;
+    let branch = branch(source, &params.branch_id)?;
+    let Some(opened) = published::open(
+        source,
+        content,
+        country_people::NAME,
+        country_people::emit::SCHEMA,
+        branch,
+    )?
+    else {
+        return Ok(Value::Null);
+    };
+    let hour = params.hour;
+    let Some(found) = opened.read(cancelled, |snapshot, directory| {
+        if hour > snapshot.publication().accepted.last {
+            return Ok(None);
+        }
+        query::operands_at(snapshot, directory, &params.tag, hour).map(Some)
+    })?
+    else {
+        return Ok(Value::Null);
+    };
+    let (operands, (slot, _)) =
+        found.ok_or_else(|| crate::invalid("Country unavailable at this hour"))?;
+    let (store, key) = super::files(source, content)?;
+    let politics = history::at_hour(source, &store, &key, branch, slot, hour, cancelled)?;
+    let air = opened.read(cancelled, |snapshot, directory| {
+        politics
+            .iter()
+            .flat_map(|at| &at.exiles)
+            .map(|exile| match &exile.tag {
+                Some(tag) => Ok(query::operands_at(snapshot, directory, tag, hour)?
+                    .and_then(|(operands, _)| operands.deployed[4])),
+                None => Ok(None),
+            })
+            .collect::<io::Result<Vec<_>>>()
+    })?;
+    let defines = content
+        .ok_or_else(|| "Recorded content is unavailable".to_owned())
+        .and_then(|options| {
+            let layers = source
+                .content(&options.options)
+                .map_err(|error| error.to_string())?;
+            country_people::content_defines(&layers.layers)
+        });
+    Ok(serde_json::to_value(query::assemble(
+        &params,
+        &operands,
+        defines,
+        politics.as_ref(),
+        &air,
+    ))?)
+}
+
 /// The equipment stockpile at an hour, its catalogue or its chart lines, from its family's
 /// publication; null before the family publishes the branch, and an hour past what it accepted.
 fn stockpile_reply(
@@ -938,7 +1004,9 @@ impl Hours {
             | "operative-placements"
             | "agency-comparison"
             | "operatives-roster" => range(&["firstHour"], "lastHour"),
-            "equipment-stockpile-at" | "naval-repairs" | "naval-refits" => hour("hour"),
+            "equipment-stockpile-at" | "naval-repairs" | "naval-refits" | "country-people" => {
+                hour("hour")
+            }
             // Names of rows each at its own hour: through the last one asked.
             "place-names" => ["places", "states"]
                 .into_iter()
@@ -1680,6 +1748,7 @@ fn query_data(
             stockpile_reply(source, content, product, &request.params, cancelled)?
         }
         "place-names" => names_reply(source, content, &request.params, cancelled)?,
+        "country-people" => people_reply(source, content, &request.params, cancelled)?,
         product @ ("land-battles"
         | "land-battles-manifest"
         | "land-battles-ranking"

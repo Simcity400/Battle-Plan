@@ -179,31 +179,6 @@ impl Branch {
     }
 }
 
-/// The publication of store sections, from the manifest alone without opening their pages: every
-/// range's identity, which a rewritten, appended or emptied range changes.
-fn published(
-    store: &store::Store,
-    key: &store::SourceKey,
-    sections: &[&str],
-) -> io::Result<[u8; 32]> {
-    let mut hash = blake3::Hasher::new();
-    if let Some(session) = store.session(key)? {
-        for section in sections {
-            let count = session.range_count(section).unwrap_or(0);
-            hash.update(&count.to_le_bytes());
-            for range in 0..count {
-                let id = session
-                    .range_id(section, range)?
-                    .map_or([u64::MAX; 3], |id| id.cache_key());
-                for part in id {
-                    hash.update(&part.to_le_bytes());
-                }
-            }
-        }
-    }
-    Ok(*hash.finalize().as_bytes())
-}
-
 /// The branch's exact sums under the request's measure and membership, built once per
 /// publication of everything they read: the groups, the identity histories, the measure's key
 /// catalogue and its values. Content binds the store key.
@@ -228,7 +203,7 @@ fn branch_sums(
     };
     let publication = (
         groups,
-        published(
+        crate::prepared::query::observations::published(
             store,
             key,
             &[

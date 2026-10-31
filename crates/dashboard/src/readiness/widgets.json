@@ -100,7 +100,8 @@
       "kind": "ruling-party",
       "requests": [
         {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "summary", "from": "$first", "to": "$first", "width": "$width", "fields": ["ruling", "election", "leader"], "values": true}},
-        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "state", "hours": ["$first"]}}
+        {"product": "party-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "mode": "state", "hours": ["$first"]}},
+        {"product": "country-people", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$first"}}
       ]
     },
     {

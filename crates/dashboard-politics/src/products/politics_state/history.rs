@@ -955,6 +955,190 @@ pub(crate) fn known(
         .collect())
 }
 
+/// One government in exile at an hour: its holder slot and tag, its host's holder slot and tag,
+/// and its legitimacy, manpower, cap, leaders and resources' read hour, each none where unread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExileAt {
+    pub slot: u32,
+    pub tag: Option<String>,
+    pub host: u32,
+    pub host_tag: Option<String>,
+    pub values: [Option<i128>; 5],
+}
+
+/// One holder's political state at an hour, as the history holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AtHour {
+    /// 1 when the game holds the holder's elections, 0 when it does not.
+    pub held: Option<i128>,
+    /// Whether its schedule was read but its eligibility was not.
+    pub refused: bool,
+    pub interval: Option<i128>,
+    pub next: Option<i128>,
+    /// Whether the exiles part was read at the hour.
+    pub exiles_known: bool,
+    /// The exiles the holder is or hosts, by holder slot.
+    pub exiles: Vec<ExileAt>,
+}
+
+/// The exile fields an [`ExileAt`] holds, in its order.
+const EXILE_FIELDS: [Field; 5] = [
+    Field::ExileLegitimacy,
+    Field::ExileManpower,
+    Field::ExileCap,
+    Field::ExileLeaders,
+    Field::ExileRead,
+];
+
+/// A history's keys by holder and field, and every holder's exile host key: what an hour's read
+/// looks up, made once per publication.
+pub struct Index {
+    keys: HashMap<(u32, Field), u64>,
+    hosts: Vec<(u32, u64)>,
+    tags: BTreeMap<u32, Vec<(i32, String)>>,
+}
+
+impl Index {
+    fn new(metadata: Metadata) -> Self {
+        let mut hosts: Vec<(u32, u64)> = metadata
+            .fields
+            .iter()
+            .filter(|(_, (_, field))| *field == Field::ExileHost)
+            .map(|(&id, &(slot, _))| (slot, id))
+            .collect();
+        hosts.sort_unstable();
+        Self {
+            keys: metadata
+                .fields
+                .into_iter()
+                .map(|(id, place)| (place, id))
+                .collect(),
+            hosts,
+            tags: metadata.tags,
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        self.keys.capacity() * (size_of::<((u32, Field), u64)>() + 1)
+            + self.hosts.capacity() * size_of::<(u32, u64)>()
+            + self
+                .tags
+                .values()
+                .map(|tags| {
+                    64 + tags.capacity() * size_of::<(i32, String)>()
+                        + tags.iter().map(|(_, tag)| tag.capacity()).sum::<usize>()
+                })
+                .sum::<usize>()
+    }
+
+    fn key(&self, slot: u32, field: Field) -> Option<u64> {
+        self.keys.get(&(slot, field)).copied()
+    }
+}
+
+/// `holder`'s elections and the exiles it is or hosts at `hour`; none before the history's first
+/// publication.
+#[allow(clippy::too_many_arguments)]
+pub fn at_hour(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    holder: u32,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<AtHour>> {
+    let catalogue = series::catalogue_section(FAMILY, branch);
+    let values = values_section(branch);
+    let publication = dashboard_base::prepared::query::observations::published(
+        store,
+        key,
+        &[catalogue.as_str(), values.as_str()],
+    )?;
+    let index = dashboard_base::prepared::query::observations::scope(
+        source,
+        "politics-state:index",
+        Some(key),
+    )
+    .get_entry(
+        branch,
+        &(),
+        &publication,
+        cancelled,
+        |index: &Option<Index>| index.as_ref().map_or(0, Index::bytes),
+        || {
+            Ok(series::read_catalogue::<Metadata>(store, key, FAMILY, branch)?
+                .map(|(_, metadata)| Index::new(metadata)))
+        },
+    )?;
+    let Some(index) = index.as_ref() else {
+        return Ok(None);
+    };
+    let mut reader = Reader::new(store, key, values, cancelled)?;
+    let schedule = [
+        Field::ElectionsHeld,
+        Field::ElectionsRefused,
+        Field::ElectionInterval,
+        Field::NextElection,
+    ];
+    let mut wanted: Vec<Option<u64>> = schedule
+        .iter()
+        .map(|field| index.key(holder, field.clone()))
+        .chain([index.key(PART_SLOT, Field::Known(Part::Exiles))])
+        .collect();
+    wanted.extend(index.hosts.iter().map(|&(_, id)| Some(id)));
+    let read = |reader: &mut Reader<'_>, wanted: &[Option<u64>]| -> io::Result<Vec<Option<i128>>> {
+        let keys: Vec<u64> = wanted.iter().flatten().copied().collect();
+        let mut found = reader.values_at(&keys, hour)?.into_iter();
+        Ok(wanted
+            .iter()
+            .map(|key| key.and_then(|_| found.next().flatten()))
+            .collect())
+    };
+    let values = read(&mut reader, &wanted)?;
+    let mut at = AtHour {
+        held: values[0],
+        refused: values[1] == Some(1),
+        interval: values[2],
+        next: values[3],
+        exiles_known: values[4] == Some(1),
+        exiles: Vec::new(),
+    };
+    let tag = |slot: u32| {
+        index
+            .tags
+            .get(&slot)
+            .and_then(|tags| tag_at(tags, hour))
+            .map(str::to_owned)
+    };
+    // Its own exile, and those it hosts, by holder slot.
+    let exiles: Vec<(u32, u32)> = index
+        .hosts
+        .iter()
+        .zip(&values[5..])
+        .filter_map(|(&(slot, _), &host)| {
+            let host = u32::try_from(host?).ok().filter(|&host| host > 0)?;
+            (slot == holder || host == holder).then_some((slot, host))
+        })
+        .collect();
+    for (slot, host) in exiles {
+        let fields: Vec<Option<u64>> = EXILE_FIELDS
+            .iter()
+            .map(|field| index.key(slot, field.clone()))
+            .collect();
+        let read = read(&mut reader, &fields)?;
+        at.exiles.push(ExileAt {
+            slot,
+            tag: tag(slot),
+            host,
+            host_tag: tag(host),
+            values: [read[0], read[1], read[2], read[3], read[4]],
+        });
+    }
+    Ok(Some(at))
+}
+
 pub(crate) fn tag_at(runs: &[(i32, String)], hour: i32) -> Option<&str> {
     runs.iter()
         .rev()

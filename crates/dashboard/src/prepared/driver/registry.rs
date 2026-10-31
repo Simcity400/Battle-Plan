@@ -914,6 +914,14 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         segments: true,
         ..family(products::place_names::NAME)
     },
+    // A country's manpower view: its operands as runs on the segment driver.
+    Descriptor {
+        status: &["country-people"],
+        queries: &["country-people"],
+        gates: &["country-people"],
+        segments: true,
+        ..family(products::country_people::NAME)
+    },
 ];
 
 /// Every recording-wide job.
