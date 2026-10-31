@@ -1481,6 +1481,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 && !crate::allocation::failed()
             {
                 self.encoder = FrameEncoder::new();
+                self.columnar.interrupt();
                 self.settle_failed_slices();
                 self.gap(
                     branch,
@@ -1564,7 +1565,7 @@ impl<B: SegmentBackend> Campaign<B> {
             keyframe: prepared.frame().keyframe(),
             changed: prepared.changed_rows(),
         };
-        let columnar = self.columnar.prepare(prepared.input(), row, &lanes);
+        let columnar = self.columnar.prepare(prepared.input(), row, &lanes)?;
         let mut span = span.switch(crate::spool_phases::Phase::Write);
         let encoded = prepared.take_frame_keeping(spooled)?;
         // Rotate only at an already encoded keyframe; never reset the capture encoder for packing.
@@ -1597,7 +1598,7 @@ impl<B: SegmentBackend> Campaign<B> {
             self.commit_baseline(prepared)?;
             if let Some(hour) = columnar {
                 span = span.switch(crate::spool_phases::Phase::Columnar);
-                self.columnar.commit(hour, true, &lanes);
+                self.columnar.commit(hour, true, &lanes)?;
                 span = span.switch(crate::spool_phases::Phase::Write);
             }
             set_viewed(&mut work.viewed, viewed_flag(&self.encoder))?;
@@ -1606,6 +1607,12 @@ impl<B: SegmentBackend> Campaign<B> {
             )?);
             self.columnar.queued(branch, hour);
         } else {
+            // The file takes the hour once the rows hold it, as a queued hour waits for its write.
+            if let Some(hour) = columnar {
+                span = span.switch(crate::spool_phases::Phase::Columnar);
+                self.columnar.commit(hour, true, &lanes)?;
+                span = span.switch(crate::spool_phases::Phase::Write);
+            }
             let staged = crate::spool_writer::Output::<B>::stage_frame(context, encoded, rotate)?;
             self.spool.write_frame(staged, 0)?;
             self.columnar.written();
@@ -1613,11 +1620,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 return Err(io::ErrorKind::OutOfMemory.into());
             }
             self.commit_baseline(prepared)?;
-            if let Some(hour) = columnar {
-                span = span.switch(crate::spool_phases::Phase::Columnar);
-                self.columnar.commit(hour, false, &lanes);
-                span = span.switch(crate::spool_phases::Phase::Write);
-            }
+            self.columnar.complete(branch, hour);
             self.tracker.record_hour(branch, hour)?;
             #[cfg(feature = "alloc-fault-injection")]
             crate::allocation::committed_hour();
@@ -3391,6 +3394,23 @@ impl Processor {
             .campaigns
             .get_mut(&id)
             .expect("prepared campaign remains admitted");
+        // The native capture holds most tables, so no later hour can be recorded, and no full
+        // refresh brings one back: each is a gap, without the write failure's recovery.
+        if campaign.columnar.halted() {
+            campaign.gap(
+                branch,
+                clock.hour,
+                clock.hour,
+                engine_allocation::string("columnar recording stopped")?,
+            )?;
+            // Older queued frames complete first, so this hour's failure is the witness kept.
+            let completed = self.drain_writer();
+            witness.bind(
+                &mut self.stats.order_counters,
+                &Err(io::ErrorKind::Other.into()),
+            );
+            return completed;
+        }
         // Compare before encoding with the same restart verdict the write uses.
         let helpers = self
             .helper
@@ -6085,6 +6105,51 @@ mod tests {
             [12]
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Once the native capture halts, every later hour is a gap, without the write failure's full
+    /// refresh, and the rows hold no hour the native capture lacks.
+    #[test]
+    fn a_halted_native_capture_gaps_every_later_hour_without_a_full_refresh() {
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-native-halted-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        processor.frame(&captured(10)).unwrap();
+        // The first hour's own refresh request, for the tables it could not read.
+        processor.take_retry_full();
+        let campaign = processor
+            .campaigns
+            .get_mut(std::str::from_utf8(ID).unwrap())
+            .unwrap();
+        campaign.columnar = crate::columnar::Columnar::Unopened;
+        for hour in [11, 12] {
+            processor.frame(&captured(hour)).unwrap();
+            assert!(!processor.take_retry_full(), "hour {hour}");
+        }
+        processor.detach().unwrap();
+        let campaign = processor
+            .campaigns
+            .get_mut(std::str::from_utf8(ID).unwrap())
+            .unwrap();
+        let (mut hours, mut gaps) = (Vec::new(), Vec::new());
+        for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
+            if !file.file_name().to_string_lossy().starts_with("spool.") {
+                continue;
+            }
+            for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
+                match record {
+                    Record::Frame(frame) => hours.push(frame.hour),
+                    Record::Gap(gap) => gaps.push((gap.first_hour, gap.last_hour, gap.reason)),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(hours, [10]);
+        assert_eq!(gaps, [(11, 12, "columnar recording stopped".to_owned())]);
+        drop(processor);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     /// A session's spool holds the spooled tables its mode records; it leaves every other table

@@ -1,7 +1,8 @@
 //! A campaign's columnar recording, written live beside its row spool from the frames the row
-//! encoder takes. It is best effort while the rows remain the recording: its first failure
-//! stops it with the reason, and the rows go on. Its allocations are advisory, so a failed one
-//! stops only it, and an hour reaches the file only once its rows' write completed.
+//! encoder takes. It holds every table the rows leave to it, so an hour it cannot prepare or
+//! commit fails, rows and all, and the next hour starts a run; a failure of its file stops it
+//! with the reason, and every later hour fails. Its allocations are advisory, so a failed one
+//! fails only its hour, and an hour reaches the file only once its rows' write completed.
 
 use replay::{
     columnar_file::{
@@ -47,8 +48,15 @@ pub(crate) fn finished_status() -> Vec<Value> {
         .collect()
 }
 
-/// A campaign's columnar recording; nothing is held while it is off.
-pub(crate) struct Columnar(Option<Box<Live>>);
+/// A campaign's columnar recording.
+pub(crate) enum Columnar {
+    Live(Box<Live>),
+    /// It could not be opened, so no hour can be recorded.
+    Unopened,
+    /// Spool tests' campaigns, whose rows are recorded alone.
+    #[cfg(test)]
+    Off,
+}
 
 /// The spool thread and its conversion helpers, which prepare and commit a columnar hour's
 /// tables. A helper takes tables only between the game's ticks, and the spool thread
@@ -97,7 +105,7 @@ impl native_frame::Lanes for Lanes<'_> {
     }
 }
 
-struct Live {
+pub(crate) struct Live {
     directory: PathBuf,
     /// The file while it is written, and its finished name, which the recorder publishes;
     /// named when the first hour opens it ([`Live::claim`]).
@@ -146,6 +154,8 @@ struct Noted {
 struct Counters {
     stopped: Option<Reason>,
     hours: u64,
+    /// Hours it could not take, which the rows record as gaps.
+    failed: u64,
     /// Runs the file holds.
     runs: u64,
     restarts: u64,
@@ -218,6 +228,7 @@ impl Columnar {
                 counters: Counters {
                     stopped: None,
                     hours: 0,
+                    failed: 0,
                     runs: 0,
                     restarts: 0,
                     stored: 0,
@@ -229,44 +240,66 @@ impl Columnar {
                 },
             })
         });
-        Self(live.ok())
+        match live {
+            Ok(live) => Self::Live(live),
+            Err(_) => Self::Unopened,
+        }
     }
 
     /// A campaign that writes no columnar recording, as spool tests' campaigns.
     #[cfg(test)]
     pub(crate) const fn off() -> Self {
-        Self(None)
+        Self::Off
     }
 
     /// Prepares `input`'s hour on `lanes`, starting a run at a branch change, a gap or a write
-    /// failure, beside what the row encoder makes of it.
+    /// failure, beside what the row encoder makes of it. An error fails the hour, rows and all.
     pub(crate) fn prepare(
         &mut self,
         input: &FrameInput,
         row: RowFrame<'_>,
         lanes: &dyn native_frame::Lanes,
-    ) -> Option<FrameHour> {
-        let live = self.0.as_deref_mut()?;
-        engine_allocation::advisory(|| live.prepare(input, row, lanes))
+    ) -> io::Result<Option<FrameHour>> {
+        match self {
+            Self::Live(live) => engine_allocation::advisory(|| live.prepare(input, row, lanes))
+                .map(Some)
+                .map_err(hour_failed),
+            Self::Unopened => Err(invalid("The columnar recording could not be opened")),
+            #[cfg(test)]
+            Self::Off => Ok(None),
+        }
+    }
+
+    /// Whether no later hour can be recorded: the file stopped, or it could not be opened.
+    pub(crate) fn halted(&self) -> bool {
+        match self {
+            Self::Live(live) => !live.writing(),
+            Self::Unopened => true,
+            #[cfg(test)]
+            Self::Off => false,
+        }
     }
 
     /// Commits a prepared hour on `lanes` once its rows' baseline committed. The file takes it
     /// now when the rows are written as they are encoded; a queued hour waits for
-    /// [`Self::complete`].
+    /// [`Self::complete`]. An error fails the hour, rows and all.
     pub(crate) fn commit(
         &mut self,
         hour: FrameHour,
         queued: bool,
         lanes: &dyn native_frame::Lanes,
-    ) {
-        if let Some(live) = self.0.as_deref_mut() {
-            engine_allocation::advisory(|| live.commit(hour, queued, lanes));
+    ) -> io::Result<()> {
+        match self {
+            Self::Live(live) => {
+                engine_allocation::advisory(|| live.commit(hour, queued, lanes)).map_err(hour_failed)
+            }
+            _ => Err(invalid("A columnar hour commits within its recording")),
         }
     }
 
     /// The rows' write of `hour` of `branch` completed: the file takes the hours through it.
     pub(crate) fn complete(&mut self, branch: u64, hour: i32) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.complete(branch, hour));
         }
     }
@@ -274,7 +307,7 @@ impl Columnar {
     /// The rows' spool takes `records`: the file's capture keeps each branch start, gap and
     /// control record but clock witnesses, in the order the rows were given them.
     pub(crate) fn note(&mut self, records: &[replay::spool::Record]) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.note(records));
         }
     }
@@ -282,28 +315,28 @@ impl Columnar {
     /// [`Self::note`] of a frame's records, which the capture takes once the frame is written
     /// ([`Self::written`]) or its queued write completes ([`Self::queued`]).
     pub(crate) fn stage(&mut self, records: &[replay::spool::Record]) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.stage(records));
         }
     }
 
     /// The frame staged was written.
     pub(crate) fn written(&mut self) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.written());
         }
     }
 
     /// The frame staged, of `hour` of `branch`, was queued for the rows' writer.
     pub(crate) fn queued(&mut self, branch: u64, hour: i32) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.queued(branch, hour));
         }
     }
 
     /// The rows' write failed: hours not yet written are dropped, and the next starts a run.
     pub(crate) fn interrupt(&mut self) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.interrupt());
         }
     }
@@ -312,14 +345,19 @@ impl Columnar {
     /// stopped, when it did) and the footer, durable under its finished name. A file that
     /// holds no hour, or cannot finish, is removed.
     pub(crate) fn finish(&mut self) {
-        if let Some(live) = self.0.as_deref_mut() {
+        if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.finish());
         }
     }
 
     /// None while columnar recording is off.
     pub(crate) fn status(&self) -> Option<Value> {
-        self.0.as_deref().map(Live::status)
+        match self {
+            Self::Live(live) => Some(live.status()),
+            Self::Unopened => Some(json!({"stopped": "the columnar recording could not be opened"})),
+            #[cfg(test)]
+            Self::Off => None,
+        }
     }
 }
 
@@ -439,14 +477,31 @@ impl Live {
         input: &FrameInput,
         row: RowFrame<'_>,
         lanes: &dyn native_frame::Lanes,
-    ) -> Option<FrameHour> {
-        if !self.writing() {
-            return None;
-        }
+    ) -> io::Result<FrameHour> {
+        self.writable()?;
         let started = Instant::now();
         let prepared = self.try_prepare(input, row, lanes);
         self.counters.hour_ns += started.elapsed().as_nanos() as u64;
-        prepared.map_err(|error| self.stop(&error)).ok()
+        if prepared.is_err() {
+            self.fail_hour();
+        }
+        prepared
+    }
+
+    /// Ok while the file takes hours.
+    fn writable(&self) -> io::Result<()> {
+        if self.writing() {
+            Ok(())
+        } else {
+            Err(invalid("The columnar recording stopped"))
+        }
+    }
+
+    /// An hour it could not take: the rows record a gap, and the next hour starts a run.
+    fn fail_hour(&mut self) {
+        self.counters.failed += 1;
+        self.end_run();
+        self.next_epoch = Some(envelope::epoch::WRITE_FAILURE);
     }
 
     fn try_prepare(
@@ -486,16 +541,20 @@ impl Live {
             .hour_on(input, &[], Some(row), lanes)
     }
 
-    fn commit(&mut self, hour: FrameHour, queued: bool, lanes: &dyn native_frame::Lanes) {
-        if !self.writing() {
-            return;
-        }
+    fn commit(
+        &mut self,
+        hour: FrameHour,
+        queued: bool,
+        lanes: &dyn native_frame::Lanes,
+    ) -> io::Result<()> {
+        self.writable()?;
         let started = Instant::now();
         let committed = self.try_commit(hour, queued, lanes);
         self.counters.hour_ns += started.elapsed().as_nanos() as u64;
-        if let Err(error) = committed {
-            self.stop(&error);
+        if committed.is_err() {
+            self.fail_hour();
         }
+        committed
     }
 
     fn try_commit(
@@ -544,7 +603,7 @@ impl Live {
             self.pending.push_back(pending);
             Ok(())
         } else {
-            self.write(pending)
+            self.write(pending).inspect_err(|error| self.stop(error))
         }
     }
 
@@ -792,6 +851,12 @@ impl Live {
     }
 }
 
+/// An hour the recording could not take. Its own allocations are advisory, so its failure is
+/// never the collector's allocation failure.
+fn hour_failed(_: io::Error) -> io::Error {
+    invalid("The columnar recording could not take the hour")
+}
+
 /// The file's identity (this build's schema, the campaign, its content identity and the
 /// session's capture mode) and the capture its root names: this session, as the row
 /// recording encodes it.
@@ -826,6 +891,7 @@ impl Counters {
         Self {
             stopped: None,
             hours: 0,
+            failed: 0,
             runs: 0,
             restarts: 0,
             stored: 0,
@@ -875,6 +941,7 @@ impl Counters {
             "costliest_tables": costliest,
             "retried_tables": retried_tables,
             "hours": self.hours,
+            "failed_hours": self.failed,
             "pending": pending,
             "runs": self.runs,
             "restarts": self.restarts,
@@ -884,7 +951,7 @@ impl Counters {
             "close_max_ns": self.close_max_ns,
             "finished": finished,
             "stopped": self.stopped.as_ref().map(Reason::text),
-            "scope": "cumulative over the campaign: hours committed, runs and restarts written, hours waiting for their rows' write; the sixteen tables with the most frame-writer wall, summed over the lanes; the sixteen tables whose lane hours were most often prepared again on the spool thread, for a string the run had not used or a failure; stored bytes of units, restarts, pages and, once finished, directories and the root (finish adds index raw bytes); spool-thread wall preparing and committing hours, and closing unit positions",
+            "scope": "cumulative over the campaign: hours committed and failed, runs and restarts written, hours waiting for their rows' write; the sixteen tables with the most frame-writer wall, summed over the lanes; the sixteen tables whose lane hours were most often prepared again on the spool thread, for a string the run had not used or a failure; stored bytes of units, restarts, pages and, once finished, directories and the root (finish adds index raw bytes); spool-thread wall preparing and committing hours, and closing unit positions",
         })
     }
 }

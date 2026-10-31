@@ -104,8 +104,8 @@ fn frame(branch: u64, hour: i32) -> FrameInput {
 
 fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i32>) {
     for hour in hours {
-        let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).expect("prepared");
-        columnar.commit(prepared, false, &OneThread);
+        let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).unwrap().expect("prepared");
+        columnar.commit(prepared, false, &OneThread).unwrap();
     }
 }
 
@@ -158,10 +158,10 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     assert_eq!(walked, first as usize + 3);
 }
 
-/// A row write failure starts the next hour's run even when the hours continue, and a
-/// columnar failure stops the file at its last hour, which the root names.
+/// A row write failure, or an hour the recording could not take, starts the next hour's run
+/// even when the hours continue; neither stops the file.
 #[test]
-fn a_write_failure_starts_a_run_and_a_stop_is_named_in_the_root() {
+fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     let folder = Folder::new("interrupt");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session());
     write(&mut columnar, 1, 1..=2);
@@ -175,27 +175,36 @@ fn a_write_failure_starts_a_run_and_a_stop_is_named_in_the_root() {
     let failed = Folder::new("failed");
     let mut columnar = Columnar::open(&failed.0, "campaign", &session());
     write(&mut columnar, 1, 1..=2);
-    let _uncommitted = columnar.prepare(&frame(1, 3), row(), &OneThread).expect("prepared");
+    let _uncommitted = columnar.prepare(&frame(1, 3), row(), &OneThread).unwrap().expect("prepared");
     // Preparing the hour again before its commit would lose the first preparation's strings.
-    assert!(columnar.prepare(&frame(1, 3), row(), &OneThread).is_none());
-    assert!(columnar.status().unwrap()["stopped"].is_string());
-    assert!(columnar.prepare(&frame(1, 4), row(), &OneThread).is_none());
+    assert!(columnar.prepare(&frame(1, 3), row(), &OneThread).is_err());
+    let status = columnar.status().unwrap();
+    assert_eq!((&status["stopped"], &status["failed_hours"]), (&Value::Null, &json!(1)));
+    write(&mut columnar, 1, 4..=4);
     columnar.finish();
     assert!(!failed.0.join(PARTIAL).exists());
     let recording = Recording::open(fs::read(failed.0.join(FINISHED)).unwrap(), Limits::default()).unwrap();
-    assert_eq!(recording.hours(), 2);
-    let stop = recording.capture().unwrap().unwrap().stop.expect("a stop record");
-    assert_eq!((stop.branch, stop.last_hour), (1, Some(2)));
-    assert!(!stop.reason.is_empty());
+    assert_eq!(recording.hours(), 3);
+    assert_eq!(recording.run(1).unwrap().first_hour, 4);
+    assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
+    assert_eq!(recording.capture().unwrap().unwrap().stop, None);
+}
 
-    // A recording that stopped before holding an hour leaves no file.
-    let empty = Folder::new("empty");
-    let mut columnar = Columnar::open(&empty.0, "campaign", &session());
-    let _uncommitted = columnar.prepare(&frame(1, 1), row(), &OneThread).expect("prepared");
-    assert!(columnar.prepare(&frame(1, 1), row(), &OneThread).is_none());
+/// A file that fails stops the recording with its reason, every later hour fails, and a
+/// recording that stopped before holding an hour leaves no file.
+#[test]
+fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
+    let folder = Folder::new("blocked");
+    // The campaign's directory cannot be made under a file, so the first hour's file fails.
+    let blocker = folder.0.join("blocker");
+    fs::write(&blocker, b"").unwrap();
+    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session());
+    let prepared = columnar.prepare(&frame(1, 1), row(), &OneThread).unwrap().expect("prepared");
+    assert!(columnar.commit(prepared, false, &OneThread).is_err());
+    assert!(columnar.status().unwrap()["stopped"].is_string());
+    assert!(columnar.prepare(&frame(1, 2), row(), &OneThread).is_err());
     columnar.finish();
-    assert!(!empty.0.join(PARTIAL).exists());
-    assert!(!empty.0.join(FINISHED).exists());
+    assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
 }
 
 /// Queued hours reach the file only once their rows' write completes; a write failure drops
@@ -206,8 +215,8 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     let folder = Folder::new("queued");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session());
     for hour in 1..=4 {
-        let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).expect("prepared");
-        columnar.commit(prepared, true, &OneThread);
+        let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
+        columnar.commit(prepared, true, &OneThread).unwrap();
     }
     assert_eq!(columnar.status().unwrap()["pending"], 4);
     columnar.complete(1, 2);
@@ -215,8 +224,8 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     // Hours 3 and 4 were cancelled with the rows' failed write.
     columnar.interrupt();
     for hour in 5..=6 {
-        let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).expect("prepared");
-        columnar.commit(prepared, true, &OneThread);
+        let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
+        columnar.commit(prepared, true, &OneThread).unwrap();
         columnar.complete(1, hour);
     }
     columnar.finish();
@@ -332,11 +341,19 @@ fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
 #[test]
 fn an_off_recording_holds_nothing_and_reports_nothing() {
     let mut columnar = Columnar::off();
-    assert!(columnar.prepare(&frame(1, 1), row(), &OneThread).is_none());
+    assert!(columnar.prepare(&frame(1, 1), row(), &OneThread).unwrap().is_none());
     columnar.complete(1, 1);
     columnar.interrupt();
     columnar.finish();
     assert!(columnar.status().is_none());
+}
+
+/// A recording that could not be opened fails every hour and says why.
+#[test]
+fn an_unopened_recording_fails_every_hour() {
+    let mut columnar = Columnar::Unopened;
+    assert!(columnar.prepare(&frame(1, 1), row(), &OneThread).is_err());
+    assert!(columnar.status().unwrap()["stopped"].is_string());
 }
 
 /// A branch change while the old branch's hours still wait for their rows starts the file's
@@ -346,8 +363,8 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     let folder = Folder::new("queued-runs");
     let mut columnar = Columnar::open(&folder.0, "campaign", &session());
     for (branch, hour) in [(1, 1), (1, 2), (2, 3), (2, 4)] {
-        let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).expect("prepared");
-        columnar.commit(prepared, true, &OneThread);
+        let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).unwrap().expect("prepared");
+        columnar.commit(prepared, true, &OneThread).unwrap();
     }
     for (branch, hour) in [(1, 1), (1, 2), (2, 3), (2, 4)] {
         columnar.complete(branch, hour);
