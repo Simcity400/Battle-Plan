@@ -81,3 +81,31 @@ test('first sparse change canonically establishes its scale, including the minim
     assert.equal(fixed5At(runs, 2)?.raw, token);
   }
 });
+
+test('sparse pairs are read by their exact grammar: signs, empty tokens, spaces and every digit of a long raw token', () => {
+  const run = { firstHour: 1, lastHour: 10, raw: '0', readEachHour: true };
+  for (const deltas of ['1:-0', '1:+1', '1: 1', ' 1:1', '1:r', '1:-', '1:', ':1', '1:1 2:r', '1:1 2:r1x',
+    '1:1 2:r9223372036854775808', '1:1 2:r-9223372036854775809', '1:1 2:r1 ', '1e0:1', '1:1e0']) {
+    assert.equal(validateFixed5Runs([{ ...run, deltas }]), false, deltas);
+  }
+  // A long raw token after the first change keeps every digit.
+  const runs = [{ ...run, deltas: '1:1 2:r1234567890123456789' }];
+  assert.equal(validateFixed5Runs(runs), true);
+  assert.equal(fixed5At(runs, 1)?.raw, '0');
+  assert.equal(fixed5At(runs, 3)?.raw, '100000');
+  assert.equal(fixed5At(runs, 4)?.raw, (100000n + 1234567890123456789n).toString());
+});
+
+test('a run changed after it was read is read again, and long gaps keep every hour', () => {
+  const run = { firstHour: 0, lastHour: 1, raw: '0', deltas: '1:1', readEachHour: true };
+  assert.equal(validateFixed5Runs([run]), true);
+  run.deltas = '1:0';
+  assert.equal(validateFixed5Runs([run]), false);
+  run.deltas = '1:-1';
+  assert.equal(fixed5At([run], 1)?.raw, '-100000');
+  const wide = { firstHour: 0, lastHour: 9007199254740991, raw: '0', readEachHour: true };
+  assert.equal(validateFixed5Runs([{ ...wide, deltas: '9007199254740991:1' }]), true);
+  const late = [{ ...wide, deltas: '9007199254740989:1' }];
+  assert.equal(fixed5At(late, 9007199254740988)?.raw, '0');
+  assert.equal(fixed5At(late, 9007199254740989)?.raw, '100000');
+});
