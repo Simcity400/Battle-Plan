@@ -524,17 +524,19 @@ pub struct Settings {
 impl Settings {
     pub fn new(threads: usize) -> Self {
         let threads = threads.max(1);
-        let output_bytes = 768 << 20;
+        // Room for every thread to walk while emits lag: a war segment of a long campaign
+        // projects over half a GiB, so a smaller budget walks one or two segments at a time.
+        let output_bytes = 4 << 30;
         Self {
             threads,
-            window: threads.saturating_mul(2),
+            window: threads.saturating_mul(4),
             output_bytes,
             // The largest segment the budget admits past the first also fits as the first.
             working_bytes: output_bytes,
-            slots: threads.saturating_mul(2),
+            slots: threads.saturating_mul(4),
             carry_bytes: 512 << 20,
             chunk_bytes: 8 << 20,
-            walker_bytes: 2048 << 20,
+            walker_bytes: 4 << 30,
         }
     }
 
