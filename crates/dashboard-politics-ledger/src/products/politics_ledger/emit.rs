@@ -9,7 +9,8 @@
 //! country's open coverage, holds and day parts, and warning rates. A reply reads everything
 //! else back from the publication ([`super::query`]).
 
-use super::facts::{self, CensusRow, Cost, Government, Hour, Power};
+use super::facts::{self, CensusRow, Cost, DatedFacts, Government, Hour, Power};
+use super::rows::Holder;
 use super::tally::{self, Contribution};
 use super::*;
 use dashboard_base::products::politics_content::PoliticsContent;
@@ -19,7 +20,11 @@ use dashboard_series::{
     codec::Decode,
     family::{Actors, Directory, Place},
 };
-use std::collections::{HashMap, HashSet};
+use dashboard_series::hash::{FastMap, Words};
+use std::{collections::HashSet, hash::BuildHasherDefault};
+
+/// A set keyed by [`Words`], as [`FastMap`] is.
+type FastSet<K> = HashSet<K, BuildHasherDefault<Words>>;
 
 /// The family's keys are spelled under it.
 pub const SCHEMA: u64 = 8;
@@ -162,9 +167,67 @@ fn power_day(row: &CountryPowerChangeRow) -> Option<i32> {
         .then(|| row.hour.div_euclid(24) * 24)
 }
 
-fn identity_of(row: &LedgerCoverage) -> Option<(u32, u64)> {
-    row.country
-        .zip(row.epoch.as_deref().and_then(|epoch| epoch.parse().ok()))
+/// A tag's capture coverage at a read, as its account reads and writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Coverage {
+    country: Option<u32>,
+    instance: Option<u32>,
+    read_hour: i32,
+    since_hour: Option<i32>,
+    through_hour: Option<i32>,
+    epoch: Option<u64>,
+    streams: u8,
+    reason: Option<Gap>,
+}
+
+/// Why a read holds no current capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum Gap {
+    Unavailable,
+    Stale,
+}
+
+impl Gap {
+    fn text(self) -> &'static str {
+        match self {
+            Self::Unavailable => "country identity or politics coverage unavailable",
+            Self::Stale => "politics coverage is stale at this read",
+        }
+    }
+}
+
+impl Coverage {
+    /// A capture as the coverage of read `read_hour` names it.
+    fn of(row: &PoliticsCaptureCoverageRow, read_hour: i32) -> Self {
+        Self {
+            country: Some(row.country),
+            instance: Some(row.instance),
+            read_hour,
+            since_hour: Some(row.since_hour),
+            through_hour: Some(row.through_hour),
+            epoch: Some(row.epoch),
+            streams: row.streams,
+            reason: None,
+        }
+    }
+
+    fn identity(&self) -> Option<(u32, u64)> {
+        self.country.zip(self.epoch)
+    }
+
+    /// Whether `value` continues `self`, the coverage a country's last read gave.
+    fn continued_by(&self, value: &Self) -> bool {
+        self.country == value.country
+            && self.instance == value.instance
+            && self.epoch == value.epoch
+            && self.streams == value.streams
+            && self.reason == value.reason
+            && self.through_hour.and_then(|hour| hour.checked_add(1)) == value.through_hour
+            && self
+                .through_hour
+                .zip(value.since_hour)
+                .is_some_and(|(last, first)| first <= last.saturating_add(1))
+    }
 }
 
 /// A row waiting for its identity's tag.
@@ -181,6 +244,103 @@ struct Day {
     tag: u32,
 }
 
+/// A held power row: what its deletion and the account's indexes read of it.
+#[derive(Clone, Copy)]
+struct HeldPower {
+    country: u32,
+    epoch: u64,
+    sequence: u64,
+    hour: i32,
+    index: Indexed,
+}
+
+/// The account's index a held power row is in ([`Emit::index_power`]).
+#[derive(Clone, Copy)]
+enum Indexed {
+    None,
+    DailyGain,
+    /// An addition without an evaluated operand, by its currency's capture bit.
+    UnknownAdd(u8),
+}
+
+impl HeldPower {
+    fn of(row: &CountryPowerChangeRow) -> Self {
+        let index = if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political
+        {
+            Indexed::DailyGain
+        } else if row.operation == PowerOperation::Add && row.requested_delta_raw.is_none() {
+            Indexed::UnknownAdd(match row.currency {
+                PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
+                PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
+            })
+        } else {
+            Indexed::None
+        };
+        Self {
+            country: row.country,
+            epoch: row.epoch,
+            sequence: row.sequence,
+            hour: row.hour,
+            index,
+        }
+    }
+}
+
+/// A held cost: what its day's sums and records read of it.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+struct HeldCost {
+    country: u32,
+    epoch: u64,
+    day_hour: i32,
+    pp_sequence: u64,
+    ordinal: u32,
+    cost_raw: i64,
+}
+
+impl HeldCost {
+    fn of(row: &CountryPowerDailyCostRow) -> Self {
+        Self {
+            country: row.country,
+            epoch: row.epoch,
+            day_hour: row.day_hour,
+            pp_sequence: row.pp_sequence,
+            ordinal: row.ordinal,
+            cost_raw: row.cost_raw,
+        }
+    }
+
+    /// Its row's key in the cost table.
+    fn key(&self) -> u128 {
+        Self::slot(self.country, self.ordinal)
+    }
+
+    /// The cost table's key of `country`'s cost `ordinal`.
+    fn slot(country: u32, ordinal: u32) -> u128 {
+        CountryPowerDailyCostRow {
+            country,
+            ordinal,
+            ..CountryPowerDailyCostRow::default()
+        }
+        .key()
+    }
+
+    fn application(&self) -> (u32, u64, i32, u64) {
+        (self.country, self.epoch, self.day_hour, self.pp_sequence)
+    }
+}
+
+/// What one country's costs of a day and application read alike at an hour
+/// ([`Emit::cost_day`]).
+#[derive(Clone, Copy)]
+struct CostDay {
+    of: (u32, u64, i32, u64),
+    tag: Option<u32>,
+    covered: bool,
+    late: bool,
+    matched: bool,
+    read: i32,
+}
+
 /// A recorded cost: what its revisions keep.
 struct Recorded {
     row: CountryPowerDailyCostRow,
@@ -195,22 +355,6 @@ struct Recorded {
 struct ItemRef {
     key: [u8; 32],
     first: (bool, u32, u64, u64, i32, u32),
-}
-
-/// What makes two payments one item: the facts their hour recorded and what they record.
-fn item_key(dated: Option<&[u8]>, what: &str) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new();
-    match dated {
-        Some(bytes) => {
-            hash.update(&[1]);
-            hash.update(blake3::hash(bytes).as_bytes());
-        }
-        None => {
-            hash.update(&[0]);
-        }
-    }
-    hash.update(what.as_bytes());
-    *hash.finalize().as_bytes()
 }
 
 /// The cells [`ITEM_CELLS`] counts.
@@ -234,16 +378,6 @@ fn item_cells(
         Cell::Boolean(recurring),
         Cell::Boolean(upkeep),
     ]
-}
-
-/// A command power holder, by the operands its allocation recorded.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Holder {
-    kind: String,
-    amount: i128,
-    ability: bool,
-    token: Option<String>,
-    character: Option<(Option<String>, String)>,
 }
 
 /// A hold snapshot's operands: its total, holders and why its total is missing.
@@ -282,9 +416,9 @@ struct Country {
     #[serde(skip)]
     slots: Vec<u32>,
     active: bool,
-    coverage: Option<LedgerCoverage>,
+    coverage: Option<Coverage>,
     /// The fact its capture run holds, and the coverage that fact was written for.
-    capture: Option<(u64, LedgerCoverage)>,
+    capture: Option<(u64, Coverage)>,
     spending: Option<LedgerSpendCoverage>,
     cover: Option<(bool, bool, Option<String>)>,
     identity: Option<(u32, u64)>,
@@ -299,12 +433,12 @@ struct Country {
     warnings: BTreeMap<String, u64>,
     warnings_changed: bool,
     #[serde(skip)]
-    dated: HashMap<[u8; 32], (i32, u64)>,
+    dated: FastMap<[u8; 32], (i32, u64)>,
     /// Its items in the order first paid.
     #[serde(skip)]
     items: Vec<ItemRef>,
     #[serde(skip)]
-    item_index: HashMap<[u8; 32], u32>,
+    item_index: FastMap<[u8; 32], u32>,
     /// Saved in the binary part with `items` ([`Emit::save`]).
     #[serde(skip)]
     rollups: tally::Rollups,
@@ -361,12 +495,12 @@ struct Joined {
     /// Tags whose inputs the hour changed.
     dirty: BTreeSet<u32>,
     /// Command power rows recorded this hour by identity: covered, and their holder's operands.
-    command: BTreeMap<(u32, u64), Vec<(CountryPowerChangeRow, bool, Option<Holder>)>>,
+    command: FastMap<(u32, u64), Vec<(CountryPowerChangeRow, bool, Option<Holder>)>>,
     /// Costs recorded this hour by tag: their amount and whether their application matched.
-    costs: BTreeMap<u32, Vec<(i64, bool)>>,
-    payments: BTreeMap<u32, Vec<Paid>>,
+    costs: FastMap<u32, Vec<(i64, bool)>>,
+    payments: FastMap<u32, Vec<Paid>>,
     /// Raw countries with a political daily gain read before its application.
-    unmatched: BTreeSet<u32>,
+    unmatched: FastSet<u32>,
 }
 
 /// The family's emit on one branch.
@@ -380,40 +514,44 @@ pub struct Emit {
     begun: bool,
     census: BTreeMap<u32, CensusRow>,
     census_complete: bool,
-    known: HashMap<u32, u32>,
+    known: FastMap<u32, u32>,
     tags: Vec<Box<str>>,
-    numbers: HashMap<Box<str>, u32>,
+    numbers: FastMap<Box<str>, u32>,
     countries: Vec<Country>,
-    slot_tags: HashMap<u32, u32>,
+    slot_tags: FastMap<u32, u32>,
     refused: BTreeMap<u32, String>,
-    links: HashMap<u32, u32>,
-    raw_slots: HashMap<u32, Vec<u32>>,
-    witnesses: HashMap<u32, PoliticsCaptureCoverageRow>,
+    links: FastMap<u32, u32>,
+    raw_slots: FastMap<u32, Vec<u32>>,
+    witnesses: FastMap<u32, PoliticsCaptureCoverageRow>,
     extended: Arc<[u32]>,
     extended_through: i32,
     /// The raw countries whose capture moved on at the last hour, ascending.
     advanced: Vec<u32>,
+    /// The extended list and the captures that followed, in the order handed, `advanced` was
+    /// made of: an hour handing both again leaves it as it was.
+    advanced_from: Option<(Arc<[u32]>, Vec<u32>)>,
     /// Tags whose last account read inputs of its hour alone: accounted again at the next.
     volatile: BTreeSet<u32>,
     /// Each held day by tag, day hour, raw country and epoch.
     tag_days: BTreeSet<(u32, i32, u32, u64)>,
-    identities: HashMap<(u32, u64), Vec<(i32, u32)>>,
+    identities: FastMap<(u32, u64), Vec<(i32, u32)>>,
     complete: u16,
-    power: BTreeMap<u128, CountryPowerChangeRow>,
+    power: FastMap<u128, HeldPower>,
     /// Of `power`, the political daily gains by raw country and hour, and the additions without
     /// an evaluated operand by raw country, epoch, hour and currency bit: what an account asks
     /// of a country's rows, found without walking them.
     daily_gains: BTreeSet<(u32, i32, u128)>,
     unknown_adds: BTreeSet<(u32, u64, i32, u8, u128)>,
-    governments: BTreeMap<u128, GovernmentChangeRow>,
-    recorded: HashSet<(u32, u64, u64)>,
+    /// The held government rows' identities.
+    governments: FastMap<u128, (u32, u64, u64)>,
+    recorded: FastSet<(u32, u64, u64)>,
     waiting: BTreeMap<(u8, u128), Waiting>,
-    daily: HashMap<u32, CountryPowerDailyRow>,
+    daily: FastMap<u32, CountryPowerDailyRow>,
     days: BTreeMap<(u32, u64, i32), Day>,
-    costs: BTreeMap<u128, CountryPowerDailyCostRow>,
-    recorded_costs: BTreeMap<(u32, u64, i32, u32), Recorded>,
-    sums: HashMap<(u32, u64, i32, u64), (i64, u32)>,
-    command: HashMap<u32, i64>,
+    costs: FastMap<u128, HeldCost>,
+    recorded_costs: FastMap<(u32, u64, i32, u32), Recorded>,
+    sums: FastMap<(u32, u64, i32, u64), (i64, u32)>,
+    command: FastMap<u32, i64>,
     presence: Option<(Vec<Box<str>>, Vec<Box<str>>)>,
     settled: Option<i32>,
     settled_written: Option<i32>,
@@ -421,9 +559,20 @@ pub struct Emit {
     rolled: Option<i32>,
     warnings: BTreeMap<String, u64>,
     warnings_changed: bool,
-    categories: HashMap<String, u64>,
-    category_currency: HashMap<u64, usize>,
+    /// Each currency's categories by name, with their part dimension.
+    categories: [FastMap<Box<str>, u64>; 2],
+    category_currency: FastMap<u64, usize>,
     tomorrow: BTreeMap<i32, BTreeSet<u32>>,
+    /// The branch's accepted and census keys as interned.
+    branch_keys: [Option<u64>; 2],
+    scratch: Scratch,
+}
+
+/// The buffers each account's parts reuse ([`Emit::write_parts`]).
+#[derive(Default)]
+struct Scratch {
+    values: Vec<(u64, Option<i128>)>,
+    categories: Vec<(u64, Option<usize>)>,
 }
 
 impl Emit {
@@ -437,43 +586,46 @@ impl Emit {
             begun: false,
             census: BTreeMap::new(),
             census_complete: false,
-            known: HashMap::new(),
+            known: FastMap::default(),
             tags: Vec::new(),
-            numbers: HashMap::new(),
+            numbers: FastMap::default(),
             countries: Vec::new(),
-            slot_tags: HashMap::new(),
+            slot_tags: FastMap::default(),
             refused: BTreeMap::new(),
-            links: HashMap::new(),
-            raw_slots: HashMap::new(),
-            witnesses: HashMap::new(),
+            links: FastMap::default(),
+            raw_slots: FastMap::default(),
+            witnesses: FastMap::default(),
             extended: Arc::from(Vec::new()),
             extended_through: 0,
             advanced: Vec::new(),
+            advanced_from: None,
             volatile: BTreeSet::new(),
             tag_days: BTreeSet::new(),
-            identities: HashMap::new(),
+            identities: FastMap::default(),
             complete: 0,
-            power: BTreeMap::new(),
+            power: FastMap::default(),
             daily_gains: BTreeSet::new(),
             unknown_adds: BTreeSet::new(),
-            governments: BTreeMap::new(),
-            recorded: HashSet::new(),
+            governments: FastMap::default(),
+            recorded: FastSet::default(),
             waiting: BTreeMap::new(),
-            daily: HashMap::new(),
+            daily: FastMap::default(),
             days: BTreeMap::new(),
-            costs: BTreeMap::new(),
-            recorded_costs: BTreeMap::new(),
-            sums: HashMap::new(),
-            command: HashMap::new(),
+            costs: FastMap::default(),
+            recorded_costs: FastMap::default(),
+            sums: FastMap::default(),
+            command: FastMap::default(),
             presence: None,
             settled: None,
             settled_written: None,
             rolled: None,
             warnings: BTreeMap::new(),
             warnings_changed: false,
-            categories: HashMap::new(),
-            category_currency: HashMap::new(),
+            categories: [FastMap::default(), FastMap::default()],
+            category_currency: FastMap::default(),
             tomorrow: BTreeMap::new(),
+            branch_keys: [None; 2],
+            scratch: Scratch::default(),
         }
     }
 
@@ -556,18 +708,52 @@ impl Emit {
     }
 
     fn branch_key(&mut self, writer: &mut Writer<'_>, measure: u64, hour: i32) -> io::Result<u64> {
+        let at = match measure {
+            ACCEPTED => Some(0),
+            CENSUS => Some(1),
+            _ => None,
+        };
+        if let Some(&Some(key)) = at.and_then(|at| self.branch_keys.get(at)) {
+            return Ok(key);
+        }
         let actor = self.actors.actor(writer, BRANCH, hour)?;
-        self.key(writer, actor, measure, None)
+        let key = self.key(writer, actor, measure, None)?;
+        if let Some(at) = at {
+            self.branch_keys[at] = Some(key);
+        }
+        Ok(key)
+    }
+
+    /// A payment's event: its own cells, then its item's ([`ITEM_CELLS`]).
+    fn payment<const N: usize>(
+        writer: &mut Writer<'_>,
+        key: u64,
+        hours: (i32, Option<i32>),
+        kind: u64,
+        (head, item): &([Cell; N], [Cell; ITEM_CELLS]),
+    ) -> io::Result<u64> {
+        let fields = writer.cells(head.iter().chain(item).copied())?;
+        Self::put(writer, key, hours, kind, fields)
     }
 
     fn event(
         writer: &mut Writer<'_>,
         key: u64,
+        hours: (i32, Option<i32>),
+        kind: u64,
+        cells: &[Cell],
+    ) -> io::Result<u64> {
+        let fields = writer.cells(cells.iter().copied())?;
+        Self::put(writer, key, hours, kind, fields)
+    }
+
+    fn put(
+        writer: &mut Writer<'_>,
+        key: u64,
         (native, read): (i32, Option<i32>),
         kind: u64,
-        cells: Vec<Cell>,
+        fields: dashboard_series::Blob,
     ) -> io::Result<u64> {
-        let fields = writer.cells(cells)?;
         let sequence = writer.sequence()?;
         writer.event(Event {
             key,
@@ -627,24 +813,23 @@ impl Emit {
             .copied()
     }
 
-    /// `bytes`, an item's facts, interned for `tag`: the event holding them.
+    /// `dated`, an item's facts, interned for `tag`: the event holding them.
     fn dated(
         &mut self,
         writer: &mut Writer<'_>,
         tag: u32,
         hour: i32,
-        bytes: &[u8],
+        dated: &DatedFacts,
     ) -> io::Result<(i32, u64)> {
-        let hash = *blake3::hash(bytes).as_bytes();
-        if let Some(&held) = self.countries[tag as usize].dated.get(&hash) {
+        if let Some(&held) = self.countries[tag as usize].dated.get(&dated.digest) {
             return Ok(held);
         }
         let key = self.tag_key(writer, tag, DATED, None)?;
-        let cell = text(writer, bytes)?;
-        let sequence = Self::event(writer, key, (hour, None), DATED_KIND, vec![cell])?;
+        let cell = text(writer, &dated.bytes)?;
+        let sequence = Self::event(writer, key, (hour, None), DATED_KIND, &[cell])?;
         self.countries[tag as usize]
             .dated
-            .insert(hash, (hour, sequence));
+            .insert(dated.digest, (hour, sequence));
         Ok((hour, sequence))
     }
 
@@ -803,7 +988,7 @@ impl Emit {
                 let size = tally::PERIOD_DAYS[level];
                 let last = (index * size + size) * 24 - 1;
                 let kind = ROLLUP_KIND + level as u64;
-                Self::event(writer, key, (last, Some(at)), kind, tally::cells(&totals))?;
+                Self::event(writer, key, (last, Some(at)), kind, &tally::cells(&totals))?;
             }
         }
         Ok(())
@@ -901,6 +1086,16 @@ impl Emit {
         whole: bool,
         joined: &mut Joined,
     ) -> Vec<u32> {
+        // The captures that moved on the hour before only moving on again touch nothing.
+        if !whole
+            && captures.changed.is_empty()
+            && captures.deleted.is_empty()
+            && *self.advanced == *captures.extended
+        {
+            self.extended = Arc::clone(&captures.extended);
+            self.extended_through = hour;
+            return Vec::new();
+        }
         let mut touched = BTreeSet::new();
         if whole {
             touched.extend(self.witnesses.keys().copied());
@@ -916,46 +1111,66 @@ impl Emit {
                 }
             }
         }
-        let mut advanced = captures.extended.to_vec();
+        let mut followed = Vec::new();
         for &raw in &captures.deleted {
             self.witnesses.remove(&raw);
             touched.insert(raw);
         }
         for row in &captures.changed {
-            let follows = self.witnesses.get(&row.country).is_some_and(|held| {
-                held.instance == row.instance
-                    && held.epoch == row.epoch
-                    && held.streams == row.streams
-                    && held.through_hour == row.since_hour
-                    && row.through_hour == hour
-            });
+            let follows = match self.witnesses.entry(row.country) {
+                std::collections::hash_map::Entry::Occupied(mut held) => {
+                    let follows = {
+                        let held = held.get();
+                        held.instance == row.instance
+                            && held.epoch == row.epoch
+                            && held.streams == row.streams
+                            && held.through_hour == row.since_hour
+                            && row.through_hour == hour
+                    };
+                    held.get_mut().clone_from(row);
+                    follows
+                }
+                std::collections::hash_map::Entry::Vacant(held) => {
+                    held.insert(row.clone());
+                    false
+                }
+            };
             if follows {
-                advanced.push(row.country);
+                followed.push(row.country);
             } else {
                 touched.insert(row.country);
             }
-            self.witnesses.insert(row.country, row.clone());
         }
-        advanced.sort_unstable();
-        let (mut a, mut b) = (0, 0);
-        while a < self.advanced.len() || b < advanced.len() {
-            match (self.advanced.get(a).copied(), advanced.get(b).copied()) {
-                (Some(x), Some(y)) if x == y => {
-                    a += 1;
-                    b += 1;
+        let same = !whole
+            && self.advanced_from.as_ref().is_some_and(|(extended, held)| {
+                **extended == *captures.extended && *held == followed
+            });
+        if !same {
+            let mut advanced = Vec::with_capacity(captures.extended.len() + followed.len());
+            advanced.extend_from_slice(&captures.extended);
+            advanced.extend_from_slice(&followed);
+            advanced.sort_unstable();
+            let (mut a, mut b) = (0, 0);
+            while a < self.advanced.len() || b < advanced.len() {
+                match (self.advanced.get(a).copied(), advanced.get(b).copied()) {
+                    (Some(x), Some(y)) if x == y => {
+                        a += 1;
+                        b += 1;
+                    }
+                    (Some(x), y) if y.is_none_or(|y| x < y) => {
+                        touched.insert(x);
+                        a += 1;
+                    }
+                    (_, Some(y)) => {
+                        touched.insert(y);
+                        b += 1;
+                    }
+                    _ => break,
                 }
-                (Some(x), y) if y.is_none_or(|y| x < y) => {
-                    touched.insert(x);
-                    a += 1;
-                }
-                (_, Some(y)) => {
-                    touched.insert(y);
-                    b += 1;
-                }
-                _ => break,
             }
+            self.advanced = advanced;
+            self.advanced_from = Some((Arc::clone(&captures.extended), followed));
         }
-        self.advanced = advanced;
         self.extended = Arc::clone(&captures.extended);
         self.extended_through = hour;
         for &raw in &touched {
@@ -1021,7 +1236,7 @@ impl Emit {
             }
             lists.push(Cell::List(writer.cells(cells)?));
         }
-        Self::event(writer, key, (hour, None), PRESENCE_KIND, lists)?;
+        Self::event(writer, key, (hour, None), PRESENCE_KIND, &lists)?;
         self.presence = Some(value);
         Ok(())
     }
@@ -1056,7 +1271,7 @@ impl Emit {
         let mut newest = None::<i32>;
         if whole {
             // A table handed whole replaces what was held: rows it no longer holds are gone.
-            let current: HashSet<(u32, u64, u64)> = power
+            let current: FastSet<(u32, u64, u64)> = power
                 .iter()
                 .map(|power| (power.row.country, power.row.epoch, power.row.sequence))
                 .chain(governments.iter().map(|government| {
@@ -1092,7 +1307,7 @@ impl Emit {
         // whether or not the row is recorded again.
         for key in power_deleted {
             if let Some(row) = self.power.remove(&key) {
-                self.index_power(key, &row, false);
+                self.index_power(key, row, false);
                 self.recorded
                     .remove(&(row.country, row.epoch, row.sequence));
                 joined.dirty.extend(self.raw_tag(row.country));
@@ -1101,23 +1316,24 @@ impl Emit {
         }
         for power in &power {
             let key = power.row.key();
-            if let Some(old) = self.power.insert(key, power.row.clone()) {
-                self.index_power(key, &old, false);
+            let held = HeldPower::of(&power.row);
+            if let Some(old) = self.power.insert(key, held) {
+                self.index_power(key, old, false);
             }
-            self.index_power(key, &power.row, true);
+            self.index_power(key, held, true);
             joined.dirty.extend(self.raw_tag(power.row.country));
             newest = newest.max(power_day(&power.row));
         }
         for key in government_deleted {
-            if let Some(row) = self.governments.remove(&key) {
-                self.recorded
-                    .remove(&(row.country, row.epoch, row.sequence));
+            if let Some(identity) = self.governments.remove(&key) {
+                self.recorded.remove(&identity);
             }
             self.waiting.remove(&(2, key));
         }
         for government in &governments {
+            let row = &government.row;
             self.governments
-                .insert(government.row.key(), government.row.clone());
+                .insert(row.key(), (row.country, row.epoch, row.sequence));
             newest = newest.max(Some(government.row.hour.div_euclid(24) * 24));
         }
         // A raw country's daily row is its current tag's reconciliation, and decides whether the
@@ -1133,36 +1349,29 @@ impl Emit {
         }
         for key in cost_deleted {
             if let Some(row) = self.costs.remove(&key) {
-                self.unsum(&row);
+                self.unsum(row);
                 joined.dirty.extend(self.raw_tag(row.country));
             }
             self.waiting.remove(&(1, key));
         }
         for cost in &costs {
             joined.dirty.extend(self.raw_tag(cost.row.country));
-            if let Some(old) = self.costs.insert(cost.row.key(), cost.row.clone()) {
-                self.unsum(&old);
+            let held = HeldCost::of(&cost.row);
+            if let Some(old) = self.costs.insert(cost.row.key(), held) {
+                self.unsum(old);
             }
-            let sum = self
-                .sums
-                .entry((
-                    cost.row.country,
-                    cost.row.epoch,
-                    cost.row.day_hour,
-                    cost.row.pp_sequence,
-                ))
-                .or_default();
+            let sum = self.sums.entry(held.application()).or_default();
             sum.0 = sum.0.wrapping_add(cost.row.cost_raw);
             sum.1 += 1;
         }
         if whole || !costs.is_empty() {
             // A cost key a complete publication removed cannot return.
-            let current: HashSet<(u32, u64, i32, u32)> = self
-                .costs
-                .values()
-                .map(|row| (row.country, row.epoch, row.day_hour, row.ordinal))
-                .collect();
-            self.recorded_costs.retain(|key, _| current.contains(key));
+            let held = &self.costs;
+            self.recorded_costs
+                .retain(|&(country, epoch, day_hour, ordinal), _| {
+                    held.get(&HeldCost::slot(country, ordinal))
+                        .is_some_and(|row| row.epoch == epoch && row.day_hour == day_hour)
+                });
         }
         // Totals the table does not hold whole this hour are unknown; a whole read replaces them.
         let command_known = self.complete & facts::bit(TableId::CountryCommandPower) != 0;
@@ -1188,7 +1397,7 @@ impl Emit {
         // Rows of identities tagged this hour that waited, then the hour's own rows.
         let mut queue: Vec<Waiting> = Vec::new();
         if !tagged.is_empty() {
-            let tagged: HashSet<(u32, u64)> = tagged.into_iter().collect();
+            let tagged: FastSet<(u32, u64)> = tagged.into_iter().collect();
             let keys: Vec<(u8, u128)> = self
                 .waiting
                 .iter()
@@ -1208,12 +1417,8 @@ impl Emit {
                     // Facts are the event hour's or the read before's; any other row's are not.
                     let frameless = |date: i32| date != at && Some(date) != previous;
                     match &mut row {
-                        Waiting::Power(power) if frameless(power.row.hour) => {
-                            power.dating.dated = None;
-                        }
-                        Waiting::Cost(cost) if frameless(cost.row.day_hour) => {
-                            cost.dating.dated = None;
-                        }
+                        Waiting::Power(power) if frameless(power.row.hour) => power.undate(),
+                        Waiting::Cost(cost) if frameless(cost.row.day_hour) => cost.undate(),
                         _ => {}
                     }
                     queue.push(row);
@@ -1222,35 +1427,24 @@ impl Emit {
         }
         queue.extend(power.into_iter().map(Waiting::Power));
         queue.extend(governments.into_iter().map(Waiting::Government));
-        // The applications the daily table holds now, which political gains and costs match:
-        // gathered only for an hour holding any.
-        let applications: HashSet<(u32, u64, i32, u64)> = if queue.is_empty() && costs.is_empty() {
-            HashSet::new()
-        } else {
-            self.daily
-                .values()
-                .filter_map(|row| {
-                    row.pp_sequence
-                        .map(|sequence| (row.country, row.epoch, row.day_hour, sequence))
-                })
-                .collect()
-        };
         for row in queue {
             match row {
                 Waiting::Power(power) => {
-                    self.record_power(writer, power, at, &applications, joined)?
+                    self.record_power(writer, power, at, joined)?
                 }
                 Waiting::Government(government) => {
                     self.record_government(writer, government, at, joined)?
                 }
-                Waiting::Cost(cost) => self.record_cost(writer, cost, at, &applications, joined)?,
+                Waiting::Cost(cost) => self.record_cost(writer, cost, at, &mut None, joined)?,
             }
         }
         for row in daily {
             self.record_daily(writer, row, at, joined)?;
         }
+        // The hour's rows are all in place: a country's costs of one day read alike.
+        let mut run = None;
         for cost in costs {
-            self.record_cost(writer, cost, at, &applications, joined)?;
+            self.record_cost(writer, cost, at, &mut run, joined)?;
         }
         Ok(())
     }
@@ -1265,8 +1459,8 @@ impl Emit {
         );
     }
 
-    fn unsum(&mut self, row: &CountryPowerDailyCostRow) {
-        let key = (row.country, row.epoch, row.day_hour, row.pp_sequence);
+    fn unsum(&mut self, row: HeldCost) {
+        let key = row.application();
         if let Some(sum) = self.sums.get_mut(&key) {
             sum.0 = sum.0.wrapping_sub(row.cost_raw);
             sum.1 -= 1;
@@ -1286,9 +1480,8 @@ impl Emit {
     fn record_power(
         &mut self,
         writer: &mut Writer<'_>,
-        power: Power,
+        mut power: Power,
         at: i32,
-        applications: &HashSet<(u32, u64, i32, u64)>,
         joined: &mut Joined,
     ) -> io::Result<()> {
         let row = &power.row;
@@ -1298,7 +1491,7 @@ impl Emit {
         }
         if row.cause == PowerCause::DailyGain
             && row.currency == PowerCurrency::Political
-            && !applications.contains(&(row.country, row.epoch, row.hour, row.sequence))
+            && !self.applied(row.country, row.epoch, row.hour, row.sequence)
         {
             joined.unmatched.insert(row.country);
         }
@@ -1313,7 +1506,7 @@ impl Emit {
         };
         let covered = self.covered(row.country, row.epoch, row.hour, bit, at);
         let dated = match &power.dating.dated {
-            Some(bytes) => Some(self.dated(writer, tag, at, bytes)?),
+            Some(dated) => Some(self.dated(writer, tag, at, dated)?),
             None => None,
         };
         let measure = POWER[usize::from(row.currency == PowerCurrency::Command)];
@@ -1335,61 +1528,45 @@ impl Emit {
         };
         let category = power.dating.category.as_deref().unwrap_or("");
         let (recurring, upkeep) = (rows::is_recurring(category), category == "upkeep");
-        // Every ability's upkeep is one line a day.
-        let item =
-            if row.currency == PowerCurrency::Command && row.cause == PowerCause::AbilityUpkeep {
-                item_key(None, "ability upkeep")
-            } else {
-                item_key(
-                    power.dating.dated.as_deref(),
-                    &format!(
-                        "power {:?} {:?} {:?} {}",
-                        row.cause,
-                        row.currency,
-                        row.identity,
-                        row.requested_delta_raw.is_some_and(|raw| raw < 0)
-                    ),
-                )
-            };
+        let resolved = match power.resolved.take() {
+            Some(resolved) => resolved,
+            None => power.resolve(),
+        };
         let (ordinal, item, new) = self.item(
             tag,
-            item,
+            resolved.item,
             (false, row.country, row.epoch, row.sequence, 0, 0),
         );
-        let mut cells = vec![
-            Cell::Unsigned(u64::from(row.country)),
-            Cell::Unsigned(u64::from(row.instance)),
-            Cell::Unsigned(row.epoch),
-            Cell::Unsigned(row.sequence),
-            Cell::Integer(i128::from(row.hour)),
-            Cell::Unsigned(row.currency as u64),
-            Cell::Unsigned(row.operation as u64),
-            Cell::Unsigned(row.cause as u64),
-            Cell::Unsigned(row.site as u64),
-            integer(row.requested_delta_raw),
-            Cell::Integer(i128::from(row.balance_before_raw)),
-            Cell::Integer(i128::from(row.balance_after_raw)),
-            Cell::Boolean(covered),
-            identity_cell,
-            integer(dated.map(|(hour, _)| hour)),
-            unsigned(dated.map(|(_, sequence)| sequence)),
-            Cell::Boolean(late),
-        ];
-        cells.extend(item_cells(ordinal, &item, class, recurring, upkeep));
-        let sequence = Self::event(writer, key, (row.hour, Some(at)), POWER_KIND, cells.clone())?;
+        let cells = (
+            [
+                Cell::Unsigned(u64::from(row.country)),
+                Cell::Unsigned(u64::from(row.instance)),
+                Cell::Unsigned(row.epoch),
+                Cell::Unsigned(row.sequence),
+                Cell::Integer(i128::from(row.hour)),
+                Cell::Unsigned(row.currency as u64),
+                Cell::Unsigned(row.operation as u64),
+                Cell::Unsigned(row.cause as u64),
+                Cell::Unsigned(row.site as u64),
+                integer(row.requested_delta_raw),
+                Cell::Integer(i128::from(row.balance_before_raw)),
+                Cell::Integer(i128::from(row.balance_after_raw)),
+                Cell::Boolean(covered),
+                identity_cell,
+                integer(dated.map(|(hour, _)| hour)),
+                unsigned(dated.map(|(_, sequence)| sequence)),
+                Cell::Boolean(late),
+            ],
+            item_cells(ordinal, &item, class, recurring, upkeep),
+        );
+        let sequence = Self::payment(writer, key, (row.hour, Some(at)), POWER_KIND, &cells)?;
         if new {
             let items = self.tag_key(writer, tag, ITEMS, None)?;
-            Self::event(
-                writer,
-                items,
-                (row.hour, Some(at)),
-                POWER_KIND,
-                cells.clone(),
-            )?;
+            Self::payment(writer, items, (row.hour, Some(at)), POWER_KIND, &cells)?;
         }
         if late && class != SKIPPED {
             let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::event(writer, held, (row.hour, Some(at)), POWER_KIND, cells)?;
+            Self::payment(writer, held, (row.hour, Some(at)), POWER_KIND, &cells)?;
         } else if class == BALANCE {
             self.countries[tag as usize].rollups.count(
                 Some((ordinal, row.country, row.epoch)),
@@ -1414,17 +1591,7 @@ impl Emit {
             }
         }
         joined.dirty.insert(tag);
-        if row.currency == PowerCurrency::Command {
-            let holder = rows::is_hold(row)
-                .then(|| holder(row, power.dating.dated.as_deref()))
-                .flatten();
-            joined
-                .command
-                .entry((row.country, row.epoch))
-                .or_default()
-                .push((row.clone(), covered, holder));
-        }
-        if let (Some(charge), Some(category)) = (rows::charge(row), power.dating.category.clone())
+        if let (Some(charge), Some(category)) = (charge, power.dating.category)
             && category.as_ref() != "dailyDeficit"
         {
             joined.payments.entry(tag).or_default().push(Paid {
@@ -1433,6 +1600,13 @@ impl Emit {
                 hour: row.hour,
                 charge,
             });
+        }
+        if power.row.currency == PowerCurrency::Command {
+            joined
+                .command
+                .entry((power.row.country, power.row.epoch))
+                .or_default()
+                .push((power.row, covered, resolved.holder));
         }
         Ok(())
     }
@@ -1481,7 +1655,7 @@ impl Emit {
             text(writer, &row.origin_key)?,
             Cell::Boolean(covered),
         ];
-        Self::event(writer, key, (row.hour, Some(at)), GOVERNMENT_KIND, cells)?;
+        Self::event(writer, key, (row.hour, Some(at)), GOVERNMENT_KIND, &cells)?;
         joined.dirty.insert(tag);
         Ok(())
     }
@@ -1536,11 +1710,13 @@ impl Emit {
                 held,
                 (row.day_hour, Some(at)),
                 DAILY_KIND,
-                cells.clone(),
+                &cells,
             )?;
         } else {
-            let daily = rows::daily(&row, at, reads);
-            let gains = [rows::gain(&daily, false)?, rows::gain(&daily, true)?];
+            let gains = [
+                rows::native_gain(&row, reads, false),
+                rows::native_gain(&row, reads, true),
+            ];
             self.countries[tag as usize]
                 .rollups
                 .add_daily((row.day_hour, row.country, row.epoch), gains);
@@ -1550,7 +1726,7 @@ impl Emit {
             daily_key,
             (row.day_hour, Some(at)),
             DAILY_KIND,
-            cells,
+            &cells,
         )?;
         // The daily table holds one day per country: its earlier days are of no further hour.
         let earlier: Vec<(u32, u64, i32)> = self
@@ -1574,17 +1750,47 @@ impl Emit {
         Ok(())
     }
 
+    /// What every cost of `row`'s country, day and application reads alike at hour `at`.
+    fn cost_day(&self, row: &CountryPowerDailyCostRow, at: i32) -> CostDay {
+        let day = self.days.get(&(row.country, row.epoch, row.day_hour));
+        CostDay {
+            of: (row.country, row.epoch, row.day_hour, row.pp_sequence),
+            tag: self.tag_at(row.country, row.epoch, row.day_hour),
+            covered: self.covered(
+                row.country,
+                row.epoch,
+                row.day_hour,
+                PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::PP_DAILY_COSTS,
+                at,
+            ) && !self.unreconciled(row.country),
+            late: self.late(row.day_hour),
+            matched: self.applied(row.country, row.epoch, row.day_hour, row.pp_sequence)
+                || day.is_some_and(|day| day.row.pp_sequence == Some(row.pp_sequence)),
+            // The day's political application read by then dates the payment's read.
+            read: day
+                .and_then(|day| day.reads.0)
+                .map_or(at, |read| read.max(at)),
+        }
+    }
+
+    /// Records `cost`; `run` holds what the costs recorded before it this hour read alike, for
+    /// a run of one country's day.
     fn record_cost(
         &mut self,
         writer: &mut Writer<'_>,
         cost: Cost,
         at: i32,
-        applications: &HashSet<(u32, u64, i32, u64)>,
+        run: &mut Option<CostDay>,
         joined: &mut Joined,
     ) -> io::Result<()> {
         let row = &cost.row;
         let key = (row.country, row.epoch, row.day_hour, row.ordinal);
-        let Some(tag) = self.tag_at(row.country, row.epoch, row.day_hour) else {
+        let of = (row.country, row.epoch, row.day_hour, row.pp_sequence);
+        let day = match run.filter(|day| day.of == of) {
+            Some(day) => day,
+            None => *run.insert(self.cost_day(row, at)),
+        };
+        let Some(tag) = day.tag else {
             self.waiting.insert((1, row.key()), Waiting::Cost(cost));
             return Ok(());
         };
@@ -1593,31 +1799,21 @@ impl Emit {
             // A revision keeps what the first record read.
             Some(old) => (old.covered, old.dated, true, Some(old.item)),
             None => {
-                let covered = self.covered(
-                    row.country,
-                    row.epoch,
-                    row.day_hour,
-                    PoliticsCaptureCoverageRow::PP | PoliticsCaptureCoverageRow::PP_DAILY_COSTS,
-                    at,
-                ) && !self.unreconciled(row.country);
                 let dated = match &cost.dating.dated {
-                    Some(bytes) => Some(self.dated(writer, tag, at, bytes)?),
+                    Some(dated) => Some(self.dated(writer, tag, at, dated)?),
                     None => None,
                 };
-                (covered, dated, false, None)
+                (day.covered, dated, false, None)
             }
         };
         let cost_key = self.tag_key(writer, tag, COSTS, None)?;
         let identity = identity_cells(writer, &row.identity)?;
-        let late = self.late(row.day_hour);
-        let application = (row.country, row.epoch, row.day_hour, row.pp_sequence);
-        let day = self.days.get(&(row.country, row.epoch, row.day_hour));
-        let matched = applications.contains(&application)
-            || day.is_some_and(|day| day.row.pp_sequence == Some(row.pp_sequence));
-        // The day's political application read by then dates the payment's read.
-        let read = day
-            .and_then(|day| day.reads.0)
-            .map_or(at, |read| read.max(at));
+        let CostDay {
+            late,
+            matched,
+            read,
+            ..
+        } = day;
         let class = if row.cost_raw == 0 {
             SKIPPED
         } else if !matched {
@@ -1635,64 +1831,42 @@ impl Emit {
                 self.countries[tag as usize].items[ordinal as usize],
                 false,
             ),
-            None => {
-                let item = item_key(
-                    cost.dating.dated.as_deref(),
-                    &format!(
-                        "cost {:?} {:?} {:?} {}",
-                        row.cause,
-                        row.component,
-                        row.identity,
-                        row.cost_raw < 0
-                    ),
-                );
-                self.item(
-                    tag,
-                    item,
-                    (true, row.country, row.epoch, 0, row.day_hour, row.ordinal),
-                )
-            }
+            None => self.item(
+                tag,
+                cost.item.unwrap_or_else(|| cost.resolve()),
+                (true, row.country, row.epoch, 0, row.day_hour, row.ordinal),
+            ),
         };
-        let mut cells = vec![
-            Cell::Unsigned(u64::from(row.country)),
-            Cell::Unsigned(u64::from(row.instance)),
-            Cell::Unsigned(row.epoch),
-            Cell::Unsigned(u64::from(row.ordinal)),
-            Cell::Unsigned(row.pp_sequence),
-            Cell::Unsigned(row.component as u64),
-            Cell::Integer(i128::from(row.cost_raw)),
-            Cell::Unsigned(row.cause as u64),
-            Cell::Unsigned(row.site as u64),
-            identity,
-            Cell::Boolean(covered),
-            integer(dated.map(|(hour, _)| hour)),
-            unsigned(dated.map(|(_, sequence)| sequence)),
-            Cell::Boolean(revision),
-            Cell::Boolean(late),
-        ];
-        cells.extend(item_cells(ordinal, &item, class, recurring, upkeep));
-        let sequence = Self::event(
-            writer,
-            cost_key,
-            (row.day_hour, Some(at)),
-            COST_KIND,
-            cells.clone(),
-        )?;
+        let cells = (
+            [
+                Cell::Unsigned(u64::from(row.country)),
+                Cell::Unsigned(u64::from(row.instance)),
+                Cell::Unsigned(row.epoch),
+                Cell::Unsigned(u64::from(row.ordinal)),
+                Cell::Unsigned(row.pp_sequence),
+                Cell::Unsigned(row.component as u64),
+                Cell::Integer(i128::from(row.cost_raw)),
+                Cell::Unsigned(row.cause as u64),
+                Cell::Unsigned(row.site as u64),
+                identity,
+                Cell::Boolean(covered),
+                integer(dated.map(|(hour, _)| hour)),
+                unsigned(dated.map(|(_, sequence)| sequence)),
+                Cell::Boolean(revision),
+                Cell::Boolean(late),
+            ],
+            item_cells(ordinal, &item, class, recurring, upkeep),
+        );
+        let sequence = Self::payment(writer, cost_key, (row.day_hour, Some(at)), COST_KIND, &cells)?;
         if new {
             let items = self.tag_key(writer, tag, ITEMS, None)?;
-            Self::event(
-                writer,
-                items,
-                (row.day_hour, Some(at)),
-                COST_KIND,
-                cells.clone(),
-            )?;
+            Self::payment(writer, items, (row.day_hour, Some(at)), COST_KIND, &cells)?;
         }
         let field = (ordinal, row.country, row.epoch);
         if revision || class == SKIPPED {
         } else if late {
             let held = self.tag_key(writer, tag, LATE, None)?;
-            Self::event(writer, held, (row.day_hour, Some(at)), COST_KIND, cells)?;
+            Self::payment(writer, held, (row.day_hour, Some(at)), COST_KIND, &cells)?;
         } else if class == UNMATCHED || class == CREDIT {
             let field = (class == CREDIT).then_some(field);
             self.countries[tag as usize]
@@ -1723,7 +1897,7 @@ impl Emit {
                 .push((row.cost_raw, matched));
             if matched
                 && row.cost_raw > 0
-                && let Some(category) = cost.dating.category.clone()
+                && let Some(category) = cost.dating.category
             {
                 joined.payments.entry(tag).or_default().push(Paid {
                     currency: PowerCurrency::Political,
@@ -1736,7 +1910,7 @@ impl Emit {
         self.recorded_costs.insert(
             key,
             Recorded {
-                row: row.clone(),
+                row: cost.row,
                 covered,
                 dated,
                 item: ordinal,
@@ -1744,6 +1918,14 @@ impl Emit {
         );
         joined.dirty.insert(tag);
         Ok(())
+    }
+
+    /// Whether the daily table holds the political application (`country`, `epoch`, `day_hour`,
+    /// `sequence`) now: the gains and costs it applies match it. It holds one day a country.
+    fn applied(&self, country: u32, epoch: u64, day_hour: i32, sequence: u64) -> bool {
+        self.daily.get(&country).is_some_and(|row| {
+            row.epoch == epoch && row.day_hour == day_hour && row.pp_sequence == Some(sequence)
+        })
     }
 
     /// Whether raw country `raw`'s daily political cost differs from its components' sum.
@@ -1758,25 +1940,25 @@ impl Emit {
     }
 
     /// Adds held power row `row`, under `key`, to the indexes an account asks, or takes it out.
-    fn index_power(&mut self, key: u128, row: &CountryPowerChangeRow, held: bool) {
-        if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political {
-            let entry = (row.country, row.hour, key);
-            if held {
-                self.daily_gains.insert(entry);
-            } else {
-                self.daily_gains.remove(&entry);
+    fn index_power(&mut self, key: u128, row: HeldPower, held: bool) {
+        match row.index {
+            Indexed::DailyGain => {
+                let entry = (row.country, row.hour, key);
+                if held {
+                    self.daily_gains.insert(entry);
+                } else {
+                    self.daily_gains.remove(&entry);
+                }
             }
-        } else if row.operation == PowerOperation::Add && row.requested_delta_raw.is_none() {
-            let bit = match row.currency {
-                PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
-                PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
-            };
-            let entry = (row.country, row.epoch, row.hour, bit, key);
-            if held {
-                self.unknown_adds.insert(entry);
-            } else {
-                self.unknown_adds.remove(&entry);
+            Indexed::UnknownAdd(bit) => {
+                let entry = (row.country, row.epoch, row.hour, bit, key);
+                if held {
+                    self.unknown_adds.insert(entry);
+                } else {
+                    self.unknown_adds.remove(&entry);
+                }
             }
+            Indexed::None => {}
         }
     }
 
@@ -1816,8 +1998,8 @@ impl Emit {
         joined: &Joined,
     ) -> io::Result<()> {
         let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(hour);
-        let slots = self.countries[tag as usize].slots.clone();
-        let active = self.countries[tag as usize].active && !slots.is_empty();
+        let slots = self.countries[tag as usize].slots.len();
+        let active = self.countries[tag as usize].active && slots != 0;
         let changes_known = self.complete & facts::bit(TableId::CountryPowerChanges) != 0;
         let daily_known = self.complete & facts::bit(TableId::CountryPowerDaily) != 0
             && self.complete & facts::bit(TableId::CountryPowerDailyCosts) != 0;
@@ -1825,34 +2007,35 @@ impl Emit {
         let mut coverage = self.countries[tag as usize].coverage.take();
         let mut spending = None;
         let mut current = false;
-        for &slot in slots.iter().filter(|_| active) {
-            let Some(country) = self.census.get(&slot).cloned() else {
+        for at in (0..slots).filter(|_| active) {
+            let slot = self.countries[tag as usize].slots[at];
+            let Some(country) = self.census.get(&slot).map(|row| row.id) else {
                 continue;
             };
             let witness = self.slot_witness(slot);
-            let mut value = witness.as_ref().map_or_else(
-                || LedgerCoverage {
-                    country: Some(country.id),
+            let mut value = witness.as_ref().map_or(
+                Coverage {
+                    country: Some(country),
                     instance: None,
                     read_hour: hour,
                     since_hour: Some(hour),
                     through_hour: Some(hour),
                     epoch: None,
                     streams: 0,
-                    reason: Some("country identity or politics coverage unavailable".into()),
+                    reason: Some(Gap::Unavailable),
                 },
-                |row| rows::capture(row, hour),
+                |row| Coverage::of(row, hour),
             );
             if value.through_hour != Some(hour) {
-                value = LedgerCoverage {
+                value = Coverage {
                     streams: 0,
                     since_hour: Some(hour),
                     through_hour: Some(hour),
-                    reason: Some("politics coverage is stale at this read".into()),
+                    reason: Some(Gap::Stale),
                     ..value
                 };
             }
-            let raw = witness.as_ref().map_or(country.id, |row| row.country);
+            let raw = witness.as_ref().map_or(country, |row| row.country);
             let steady = self.unreconciled(raw);
             let unreconciled = steady || joined.unmatched.contains(&raw);
             let has_daily = self.has_daily(raw, value.since_hour.unwrap_or(hour), hour);
@@ -1894,7 +2077,7 @@ impl Emit {
                     .into(),
                 )
             } else {
-                value.reason.clone()
+                value.reason.map(|gap| gap.text().to_owned())
             };
             spending = Some(LedgerSpendCoverage {
                 read_hour: hour,
@@ -1907,11 +2090,12 @@ impl Emit {
             // The open piece goes on when the hour continues it.
             coverage = Some(match coverage.take() {
                 Some(mut old)
-                    if adjacent && {
-                        let mut lazy = old.clone();
-                        lazy.through_hour = Some(hour - 1);
-                        rows::continues_coverage(&lazy, &value)
-                    } =>
+                    if adjacent
+                        && Coverage {
+                            through_hour: Some(hour - 1),
+                            ..old
+                        }
+                        .continued_by(&value) =>
                 {
                     old.through_hour = value.through_hour;
                     old
@@ -1983,9 +2167,8 @@ impl Emit {
             }
         }
         let identity = coverage
-            .as_ref()
             .filter(|row| row.through_hour == Some(hour))
-            .and_then(identity_of);
+            .and_then(|row| row.identity());
         let starts = !adjacent || identity != self.countries[tag as usize].identity;
         self.write_coverage(writer, tag, hour, starts, coverage)?;
         self.write_spending(writer, tag, hour, adjacent, starts, spending)?;
@@ -2003,7 +2186,7 @@ impl Emit {
         tag: u32,
         hour: i32,
         starts: bool,
-        coverage: Option<LedgerCoverage>,
+        coverage: Option<Coverage>,
     ) -> io::Result<()> {
         let key = self.tag_key(writer, tag, CAPTURE, None)?;
         let Some(merged) = coverage else {
@@ -2012,8 +2195,10 @@ impl Emit {
             self.carry.value(writer, key, hour, None, false)?;
             return Ok(());
         };
-        let mut signature = merged.clone();
-        signature.through_hour = None;
+        let signature = Coverage {
+            through_hour: None,
+            ..merged
+        };
         let held = self.countries[tag as usize]
             .capture
             .as_ref()
@@ -2028,16 +2213,11 @@ impl Emit {
                     unsigned(merged.instance),
                     Cell::Integer(i128::from(merged.read_hour)),
                     integer(merged.since_hour),
-                    unsigned(
-                        merged
-                            .epoch
-                            .as_deref()
-                            .and_then(|epoch| epoch.parse::<u64>().ok()),
-                    ),
+                    unsigned(merged.epoch),
                     Cell::Unsigned(u64::from(merged.streams)),
-                    optional_text(writer, merged.reason.as_deref().map(str::as_bytes))?,
+                    optional_text(writer, merged.reason.map(|gap| gap.text().as_bytes()))?,
                 ];
-                let sequence = Self::event(writer, facts_key, (hour, None), CAPTURE_KIND, cells)?;
+                let sequence = Self::event(writer, facts_key, (hour, None), CAPTURE_KIND, &cells)?;
                 self.countries[tag as usize].capture = Some((sequence, signature));
                 sequence
             }
@@ -2085,8 +2265,16 @@ impl Emit {
             self.carry
                 .value(writer, key, hour, known.then_some(1), starts)?;
         }
-        let cover = (merged.political, merged.command, merged.reason.clone());
-        if self.countries[tag as usize].cover.as_ref() != Some(&cover) {
+        let held = self.countries[tag as usize]
+            .cover
+            .as_ref()
+            .is_some_and(|(political, command, reason)| {
+                *political == merged.political
+                    && *command == merged.command
+                    && *reason == merged.reason
+            });
+        if !held {
+            let cover = (merged.political, merged.command, merged.reason.clone());
             let key = self.tag_key(writer, tag, COVER_REASONS, None)?;
             let cells = vec![
                 Cell::Integer(i128::from(merged.read_hour)),
@@ -2096,7 +2284,7 @@ impl Emit {
                 Cell::Boolean(merged.command),
                 optional_text(writer, merged.reason.as_deref().map(str::as_bytes))?,
             ];
-            Self::event(writer, key, (hour, None), COVER_KIND, cells)?;
+            Self::event(writer, key, (hour, None), COVER_KIND, &cells)?;
             self.countries[tag as usize].cover = Some(cover);
         }
         self.countries[tag as usize].spending = Some(merged);
@@ -2117,7 +2305,7 @@ impl Emit {
         let mutations_complete = self.complete & facts::bit(TableId::CountryPowerChanges) != 0;
         let slot = self.countries[tag as usize].slots.last().copied();
         let witness = slot.and_then(|slot| self.slot_witness(slot));
-        let snapshot = if active {
+        let (total, refusal) = if active {
             let identity = witness.as_ref().map(|row| (row.country, row.epoch));
             let total = slot.and_then(|slot| self.command.get(&slot).copied());
             let holds = &mut self.countries[tag as usize].holds;
@@ -2150,7 +2338,7 @@ impl Emit {
                     apply_hold(holds, row, holder.clone());
                 }
             }
-            snapshot(holds, total, "CountryCommandPower row unavailable")
+            (total, None)
         } else {
             let refusal = self
                 .refused
@@ -2162,19 +2350,26 @@ impl Emit {
             holds.active.clear();
             holds.identity = None;
             holds.sequence = None;
-            snapshot(
-                holds,
-                total,
-                refusal.as_deref().unwrap_or("Countries unavailable"),
-            )
+            (total, refusal)
+        };
+        let missing = if active {
+            "CountryCommandPower row unavailable"
+        } else {
+            refusal.as_deref().unwrap_or("Countries unavailable")
         };
         let holds = &mut self.countries[tag as usize].holds;
-        let continues =
-            adjacent && holds.last.is_some() && holds.snapshot.as_ref() == Some(&snapshot);
+        settle_holds(holds, total);
+        let continues = adjacent
+            && holds.last.is_some()
+            && holds
+                .snapshot
+                .as_ref()
+                .is_some_and(|held| held.reads(total, &holds.active, missing));
         holds.last = Some(hour);
         if continues {
             return Ok(());
         }
+        let snapshot = Snapshot::of(&holds.active, total, missing);
         holds.snapshot = Some(snapshot.clone());
         let key = self.tag_key(writer, tag, HOLDS, None)?;
         let mut holders = Vec::with_capacity(snapshot.holders.len());
@@ -2199,7 +2394,7 @@ impl Emit {
             Cell::List(writer.cells(holders)?),
             optional_text(writer, snapshot.missing.as_deref().map(str::as_bytes))?,
         ];
-        Self::event(writer, key, (hour, None), HOLD_KIND, cells)?;
+        Self::event(writer, key, (hour, None), HOLD_KIND, &cells)?;
         Ok(())
     }
 
@@ -2232,14 +2427,15 @@ impl Emit {
         category: &str,
     ) -> io::Result<u64> {
         let index = usize::from(currency == PowerCurrency::Command);
-        let spelling = format!("{}:{category}", CURRENCIES[index]);
-        if let Some(&dimension) = self.categories.get(&spelling) {
+        if let Some(&dimension) = self.categories[index].get(category) {
             return Ok(dimension);
         }
-        let dimension = CATEGORY_PARTS + self.categories.len() as u64;
+        let held = self.categories.iter().map(FastMap::len).sum::<usize>();
+        let dimension = CATEGORY_PARTS + held as u64;
+        let spelling = format!("{}:{category}", CURRENCIES[index]);
         let cell = text(writer, spelling.as_bytes())?;
         writer.catalogue(CATEGORY_NAMES + dimension, cell)?;
-        self.categories.insert(spelling, dimension);
+        self.categories[index].insert(category.into(), dimension);
         self.category_currency.insert(dimension, index);
         Ok(dimension)
     }
@@ -2271,7 +2467,9 @@ impl Emit {
             paid.push((dimension, payment.charge));
         }
         let mut income: [Option<i128>; 6] = [None; 6];
-        let mut values = BTreeMap::new();
+        // The day's values by part dimension, ascending.
+        let mut values = std::mem::take(&mut self.scratch.values);
+        values.clear();
         let mut since = [None; 2];
         if let Some((country, epoch)) = identity {
             let parts = self.countries[tag as usize]
@@ -2312,22 +2510,22 @@ impl Emit {
                 });
             }
             parts.last = Some(hour);
-            values = parts.values.clone();
+            values.extend(parts.values.iter().map(|(&dimension, &value)| (dimension, value)));
             since = parts.since;
             if first <= day {
-                let held: Vec<&Day> = self
-                    .days
-                    .range((country, 0, day)..=(country, u64::MAX, day))
-                    .map(|(_, held)| held)
-                    .filter(|held| held.tag == tag && held.row.day_hour == day)
-                    .collect();
+                let held = || {
+                    self.days
+                        .range((country, 0, day)..=(country, u64::MAX, day))
+                        .map(|(_, held)| held)
+                        .filter(move |held| held.tag == tag && held.row.day_hour == day)
+                };
                 // One capture's later read revises its day; only separate captures are ambiguous.
                 let supplied = |command: bool| {
-                    let mut found = held.iter().filter(|held| {
+                    let mut found = held().filter(|held| {
                         if command { held.reads.1 } else { held.reads.0 }
                             .is_some_and(|read| read <= hour)
                     });
-                    let first = found.next().copied();
+                    let first = found.next();
                     if found.next().is_some() { None } else { first }
                 };
                 if let Some(row) = supplied(false).map(|held| &held.row)
@@ -2359,9 +2557,12 @@ impl Emit {
             let key = self.tag_key(writer, tag, PARTS, Some(dimension as u64))?;
             self.carry.value(writer, key, hour, value, starts)?;
         }
-        let categories: Vec<u64> = {
+        // The tag's categories, ascending, with their currency.
+        let mut categories = std::mem::take(&mut self.scratch.categories);
+        categories.clear();
+        {
             let country = &mut self.countries[tag as usize];
-            for &dimension in values.keys() {
+            for &(dimension, _) in &values {
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     country.categories.entry(dimension)
                 {
@@ -2369,20 +2570,25 @@ impl Emit {
                     country.categories_changed = true;
                 }
             }
-            country.categories.keys().copied().collect()
+            categories.extend(country.categories.keys().map(|&dimension| {
+                (dimension, self.category_currency.get(&dimension).copied())
+            }));
+        }
+        let value = |dimension: u64| {
+            values
+                .binary_search_by_key(&dimension, |&(held, _)| held)
+                .map_or(Some(0), |at| values[at].1)
         };
         for index in 0..2 {
             let covered = since[index].is_some_and(|first| first <= day);
-            let mine: Vec<u64> = categories
-                .iter()
-                .copied()
-                .filter(|dimension| self.category_currency.get(dimension) == Some(&index))
-                .collect();
+            let mine = || {
+                categories
+                    .iter()
+                    .filter(move |&&(_, currency)| currency == Some(index))
+                    .map(|&(dimension, _)| dimension)
+            };
             let total = if covered {
-                rows::sum_raw(
-                    mine.iter()
-                        .map(|dimension| values.get(dimension).copied().unwrap_or(Some(0))),
-                )?
+                rows::sum_raw(mine().map(value))?
             } else {
                 None
             };
@@ -2390,16 +2596,15 @@ impl Emit {
             let key = self.tag_key(writer, tag, PARTS, Some(ZERO[index]))?;
             self.carry
                 .value(writer, key, hour, shown.then_some(0), starts)?;
-            for dimension in mine {
+            for dimension in mine() {
                 let key = self.tag_key(writer, tag, PARTS, Some(dimension))?;
-                let value = shown
-                    .then(|| values.get(&dimension).copied().unwrap_or(Some(0)))
-                    .flatten();
+                let value = shown.then(|| value(dimension)).flatten();
                 self.carry.value(writer, key, hour, value, starts)?;
             }
             let key = self.tag_key(writer, tag, PARTS, Some(TOTAL[index]))?;
             self.carry.value(writer, key, hour, total, starts)?;
         }
+        self.scratch = Scratch { values, categories };
         Ok(())
     }
 
@@ -2454,34 +2659,12 @@ impl Emit {
             last: self.last,
             known_from: self.known_from,
             begun: self.begun,
-            census: self.census.values().map(SavedCensus::from).collect(),
             census_complete: self.census_complete,
-            known: self.known.iter().map(|(&slot, &tag)| (slot, tag)).collect(),
             tags: self.tags.iter().map(|tag| tag.to_string()).collect(),
             countries: &self.countries,
             refused: self.refused.clone(),
-            links: self.links.iter().map(|(&raw, &slot)| (raw, slot)).collect(),
-            extended: self.extended.to_vec(),
-            extended_through: self.extended_through,
-            advanced: self.advanced.clone(),
             volatile: self.volatile.iter().copied().collect(),
-            identities: self
-                .identities
-                .iter()
-                .map(|(&identity, tags)| (identity, tags.clone()))
-                .collect(),
             complete: self.complete,
-            recorded: self.recorded.iter().copied().collect(),
-            days: self
-                .days
-                .iter()
-                .map(|(&key, day)| (key, day.reads, day.tag))
-                .collect(),
-            recorded_costs: self
-                .recorded_costs
-                .iter()
-                .map(|(&key, cost)| (key, cost.covered, cost.dated, cost.item))
-                .collect(),
             command: self
                 .command
                 .iter()
@@ -2499,26 +2682,81 @@ impl Emit {
             categories: self
                 .categories
                 .iter()
-                .map(|(spelling, &dimension)| (spelling.clone(), dimension))
+                .zip(CURRENCIES)
+                .flat_map(|(categories, currency)| {
+                    categories.iter().map(move |(category, &dimension)| {
+                        (format!("{currency}:{category}"), dimension)
+                    })
+                })
                 .collect(),
             tomorrow: self.tomorrow.clone(),
         };
         let json = serde_json::to_vec(&state)?;
-        let rows = serde_json::to_vec(&SavedRows {
-            witnesses: self.witnesses.values().map(SavedCapture::from).collect(),
-            daily: self.daily.values().map(SavedDaily::from).collect(),
-            days: self
-                .days
-                .values()
-                .map(|day| SavedDaily::from(&day.row))
-                .collect(),
-            costs: self.costs.values().map(SavedCost::from).collect(),
-            recorded: self
-                .recorded_costs
-                .values()
-                .map(|cost| SavedCost::from(&cost.row))
-                .collect(),
-        })?;
+        // The census, links, captures and held rows with their records, as varints.
+        let mut rows = Vec::new();
+        let mut put = tally::Out(&mut rows);
+        put.len(self.census.len());
+        for row in self.census.values() {
+            put.var(u64::from(row.id));
+            put.var(u64::from(row.slot));
+            put_bytes(&mut put, &row.tag);
+        }
+        put_pairs(&mut put, &self.known);
+        put_pairs(&mut put, &self.links);
+        put_words(&mut put, &self.extended);
+        put.int(self.extended_through);
+        put_words(&mut put, &self.advanced);
+        put.len(self.identities.len());
+        for (&(country, epoch), tags) in &self.identities {
+            put.var(u64::from(country));
+            put.var(epoch);
+            put.len(tags.len());
+            for &(hour, tag) in tags {
+                put.int(hour);
+                put.var(u64::from(tag));
+            }
+        }
+        put.len(self.recorded.len());
+        for &(country, epoch, sequence) in &self.recorded {
+            put.var(u64::from(country));
+            put.var(epoch);
+            put.var(sequence);
+        }
+        put.len(self.witnesses.len());
+        for row in self.witnesses.values() {
+            put_capture(&mut put, row);
+        }
+        put.len(self.daily.len());
+        for row in self.daily.values() {
+            put_daily(&mut put, row);
+        }
+        put.len(self.days.len());
+        for day in self.days.values() {
+            put_daily(&mut put, &day.row);
+            put_hour(&mut put, day.reads.0);
+            put_hour(&mut put, day.reads.1);
+            put.var(u64::from(day.tag));
+        }
+        put.len(self.costs.len());
+        for cost in self.costs.values() {
+            put.var(u64::from(cost.country));
+            put.var(cost.epoch);
+            put.int(cost.day_hour);
+            put.var(cost.pp_sequence);
+            put.var(u64::from(cost.ordinal));
+            put.zig128(i128::from(cost.cost_raw));
+        }
+        put.len(self.recorded_costs.len());
+        for cost in self.recorded_costs.values() {
+            put_cost(&mut put, &cost.row);
+            put.flag(cost.covered);
+            put.flag(cost.dated.is_some());
+            if let Some((hour, sequence)) = cost.dated {
+                put.int(hour);
+                put.var(sequence);
+            }
+            put.var(u64::from(cost.item));
+        }
         // Each country's rollups and items, the bulk of a long campaign's state, as varints.
         let mut binary = Vec::new();
         let mut put = tally::Out(&mut binary);
@@ -2557,34 +2795,13 @@ impl Emit {
         }
         let at = d.position();
         let saved: Loaded = serde_json::from_slice(parts[0])?;
-        let rows: SavedRows = serde_json::from_slice(parts[1])?;
-        let witnesses: Vec<PoliticsCaptureCoverageRow> =
-            rows.witnesses.into_iter().map(Into::into).collect();
-        let daily: Vec<CountryPowerDailyRow> = rows.daily.into_iter().map(Into::into).collect();
-        let days: Vec<CountryPowerDailyRow> = rows.days.into_iter().map(Into::into).collect();
-        let costs = rows
-            .costs
-            .into_iter()
-            .map(CountryPowerDailyCostRow::try_from)
-            .collect::<io::Result<Vec<_>>>()?;
-        let recorded = rows
-            .recorded
-            .into_iter()
-            .map(CountryPowerDailyCostRow::try_from)
-            .collect::<io::Result<Vec<_>>>()?;
         let mut emit = Self::new(content);
         emit.actors = Actors::resume(SCHEMA, directory)?;
         emit.carry = Carry::load(&bytes[at..])?;
         emit.last = saved.last;
         emit.known_from = saved.known_from;
         emit.begun = saved.begun;
-        emit.census = saved
-            .census
-            .into_iter()
-            .map(|row| (row.slot, row.into()))
-            .collect();
         emit.census_complete = saved.census_complete;
-        emit.known = saved.known.into_iter().collect();
         emit.tags = saved.tags.into_iter().map(Into::into).collect();
         emit.numbers = emit
             .tags
@@ -2627,7 +2844,80 @@ impl Emit {
             return Err(invalid("saved countries and tags disagree"));
         }
         emit.refused = saved.refused;
-        emit.links = saved.links.into_iter().collect();
+        let mut rows = Decode::new(parts[1]);
+        for _ in 0..tally::len(&mut rows)? {
+            let id = tally::word(&mut rows)?;
+            let slot = tally::word(&mut rows)?;
+            let tag = Arc::from(read_bytes(&mut rows)?);
+            emit.census.insert(slot, CensusRow { id, slot, tag });
+        }
+        emit.known = read_pairs(&mut rows)?;
+        emit.links = read_pairs(&mut rows)?;
+        emit.extended = Arc::from(read_words(&mut rows)?);
+        emit.extended_through = tally::int(&mut rows)?;
+        emit.advanced = read_words(&mut rows)?;
+        for _ in 0..tally::len(&mut rows)? {
+            let identity = (tally::word(&mut rows)?, rows.var()?);
+            let mut tags = Vec::new();
+            for _ in 0..tally::len(&mut rows)? {
+                tags.push((tally::int(&mut rows)?, tally::word(&mut rows)?));
+            }
+            emit.identities.insert(identity, tags);
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            emit.recorded
+                .insert((tally::word(&mut rows)?, rows.var()?, rows.var()?));
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            let row = read_capture(&mut rows)?;
+            emit.witnesses.insert(row.country, row);
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            let row = read_daily(&mut rows)?;
+            emit.daily.insert(row.country, row);
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            let row = read_daily(&mut rows)?;
+            let reads = (read_hour(&mut rows)?, read_hour(&mut rows)?);
+            let tag = tally::word(&mut rows)?;
+            let key = (row.country, row.epoch, row.day_hour);
+            emit.tag_days.insert((tag, key.2, key.0, key.1));
+            emit.days.insert(key, Day { row, reads, tag });
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            let row = HeldCost {
+                country: tally::word(&mut rows)?,
+                epoch: rows.var()?,
+                day_hour: tally::int(&mut rows)?,
+                pp_sequence: rows.var()?,
+                ordinal: tally::word(&mut rows)?,
+                cost_raw: signed(&mut rows)?,
+            };
+            let sum = emit.sums.entry(row.application()).or_default();
+            sum.0 = sum.0.wrapping_add(row.cost_raw);
+            sum.1 += 1;
+            emit.costs.insert(row.key(), row);
+        }
+        for _ in 0..tally::len(&mut rows)? {
+            let row = read_cost(&mut rows)?;
+            let covered = rows.flag()?;
+            let dated = if rows.flag()? {
+                Some((tally::int(&mut rows)?, rows.var()?))
+            } else {
+                None
+            };
+            let item = tally::word(&mut rows)?;
+            emit.recorded_costs.insert(
+                (row.country, row.epoch, row.day_hour, row.ordinal),
+                Recorded {
+                    row,
+                    covered,
+                    dated,
+                    item,
+                },
+            );
+        }
+        rows.end()?;
         for (&raw, &slot) in &emit.links {
             emit.raw_slots.entry(slot).or_default().push(raw);
         }
@@ -2647,45 +2937,8 @@ impl Emit {
                 emit.countries[tag as usize].slots.push(slot);
             }
         }
-        emit.witnesses = witnesses
-            .into_iter()
-            .map(|row| (row.country, row))
-            .collect();
-        emit.extended = Arc::from(saved.extended);
-        emit.extended_through = saved.extended_through;
-        emit.advanced = saved.advanced;
         emit.volatile = saved.volatile.into_iter().collect();
-        emit.identities = saved.identities.into_iter().collect();
         emit.complete = saved.complete;
-        emit.recorded = saved.recorded.into_iter().collect();
-        emit.daily = daily.into_iter().map(|row| (row.country, row)).collect();
-        if days.len() != saved.days.len() || recorded.len() != saved.recorded_costs.len() {
-            return Err(invalid("saved rows and their records disagree"));
-        }
-        for (row, (key, reads, tag)) in days.into_iter().zip(saved.days) {
-            emit.tag_days.insert((tag, key.2, key.0, key.1));
-            emit.days.insert(key, Day { row, reads, tag });
-        }
-        for row in costs {
-            let sum = emit
-                .sums
-                .entry((row.country, row.epoch, row.day_hour, row.pp_sequence))
-                .or_default();
-            sum.0 = sum.0.wrapping_add(row.cost_raw);
-            sum.1 += 1;
-            emit.costs.insert(row.key(), row);
-        }
-        for (row, (key, covered, dated, item)) in recorded.into_iter().zip(saved.recorded_costs) {
-            emit.recorded_costs.insert(
-                key,
-                Recorded {
-                    row,
-                    covered,
-                    dated,
-                    item,
-                },
-            );
-        }
         emit.command = saved.command.into_iter().collect();
         emit.presence = saved.presence.map(|(present, refused)| {
             (
@@ -2697,9 +2950,16 @@ impl Emit {
         emit.settled_written = saved.settled_written;
         emit.warnings = saved.warnings;
         for (spelling, dimension) in saved.categories {
-            let index = usize::from(spelling.starts_with("Command:"));
+            let (index, category) = CURRENCIES
+                .iter()
+                .enumerate()
+                .find_map(|(index, currency)| {
+                    let category = spelling.strip_prefix(currency)?.strip_prefix(':')?;
+                    Some((index, category))
+                })
+                .ok_or_else(|| invalid("saved category spelling"))?;
             emit.category_currency.insert(dimension, index);
-            emit.categories.insert(spelling, dimension);
+            emit.categories[index].insert(category.into(), dimension);
         }
         emit.tomorrow = saved.tomorrow;
         Ok(emit)
@@ -2714,24 +2974,6 @@ fn reasons(writer: &mut Writer<'_>, reasons: &BTreeMap<String, u64>) -> io::Resu
         cells.push(Cell::List(writer.cells(pair)?));
     }
     Ok(Cell::List(writer.cells(cells)?))
-}
-
-/// The holder a command power row's allocation names, by the operands its facts recorded.
-fn holder(row: &CountryPowerChangeRow, dated: Option<&[u8]>) -> Option<Holder> {
-    let facts = dated
-        .and_then(|bytes| serde_json::from_slice::<items::Dated>(bytes).ok())
-        .map(|dated| dated.facts)
-        .unwrap_or_else(|| items::event_facts(None, &row.identity, row.cause, None));
-    Some(Holder {
-        kind: rows::holder_kind(row),
-        amount: 0,
-        ability: row.cause == PowerCause::AbilityActivation
-            || row.identity.object_kind == PowerObjectKind::Ability,
-        token: facts.token,
-        character: facts
-            .character
-            .map(|character| (character.script_token, character.saved_name)),
-    })
 }
 
 /// Applies a covered command power row to `holds`: allocations add their holder, releases and
@@ -2785,83 +3027,52 @@ fn apply_hold(holds: &mut Holds, row: &CountryPowerChangeRow, holder: Option<Hol
     }
 }
 
-/// The snapshot of `holds` against the hour's total: an observed total never keeps stale
-/// identities or invents a negative remainder.
-fn snapshot(holds: &mut Holds, total: Option<i64>, missing: &str) -> Snapshot {
-    let Some(value) = total else {
-        holds.active.clear();
-        return Snapshot {
-            total: None,
-            holders: Vec::new(),
-            missing: Some(missing.to_owned()),
-        };
-    };
+/// Settles `holds` against the hour's total: an observed total never keeps stale identities
+/// or invents a negative remainder.
+fn settle_holds(holds: &mut Holds, total: Option<i64>) {
     let attributed: i128 = holds.active.values().map(|holder| holder.amount).sum();
-    if value == 0 || attributed > i128::from(value) {
+    if total.is_none_or(|value| value == 0 || attributed > i128::from(value)) {
         holds.active.clear();
     }
-    Snapshot {
-        total,
-        holders: holds
-            .active
-            .iter()
-            .map(|(id, holder)| (id.clone(), holder.clone()))
-            .collect(),
-        missing: None,
-    }
 }
 
-#[derive(Serialize, Deserialize)]
-struct SavedCensus {
-    id: u32,
-    slot: u32,
-    tag: Vec<u8>,
-}
-
-impl From<&CensusRow> for SavedCensus {
-    fn from(row: &CensusRow) -> Self {
+impl Snapshot {
+    /// The settled holders against `total`, `missing` naming why a total is unknown.
+    fn of(active: &BTreeMap<String, Holder>, total: Option<i64>, missing: &str) -> Self {
         Self {
-            id: row.id,
-            slot: row.slot,
-            tag: row.tag.to_vec(),
+            total,
+            holders: active
+                .iter()
+                .map(|(id, holder)| (id.clone(), holder.clone()))
+                .collect(),
+            missing: total.is_none().then(|| missing.to_owned()),
         }
     }
-}
 
-impl From<SavedCensus> for CensusRow {
-    fn from(row: SavedCensus) -> Self {
-        Self {
-            id: row.id,
-            slot: row.slot,
-            tag: Arc::from(row.tag),
-        }
+    /// Whether it is [`Self::of`] these.
+    fn reads(&self, total: Option<i64>, active: &BTreeMap<String, Holder>, missing: &str) -> bool {
+        self.total == total
+            && self.missing.as_deref() == total.is_none().then_some(missing)
+            && self.holders.len() == active.len()
+            && self
+                .holders
+                .iter()
+                .zip(active)
+                .all(|((id, holder), (held, active))| id == held && holder == active)
     }
 }
-
-type RecordedCost = ((u32, u64, i32, u32), bool, Option<(i32, u64)>, u32);
-type RecordedDay = ((u32, u64, i32), (Option<i32>, Option<i32>), u32);
 
 #[derive(Serialize)]
 struct Saved<'a> {
     last: Option<i32>,
     known_from: Option<i32>,
     begun: bool,
-    census: Vec<SavedCensus>,
     census_complete: bool,
-    known: Vec<(u32, u32)>,
     tags: Vec<String>,
     countries: &'a [Country],
     refused: BTreeMap<u32, String>,
-    links: Vec<(u32, u32)>,
-    extended: Vec<u32>,
-    extended_through: i32,
-    advanced: Vec<u32>,
     volatile: Vec<u32>,
-    identities: Vec<((u32, u64), Vec<(i32, u32)>)>,
     complete: u16,
-    recorded: Vec<(u32, u64, u64)>,
-    days: Vec<RecordedDay>,
-    recorded_costs: Vec<RecordedCost>,
     command: Vec<(u32, i64)>,
     presence: Option<(Vec<String>, Vec<String>)>,
     settled: Option<i32>,
@@ -2876,22 +3087,12 @@ struct Loaded {
     last: Option<i32>,
     known_from: Option<i32>,
     begun: bool,
-    census: Vec<SavedCensus>,
     census_complete: bool,
-    known: Vec<(u32, u32)>,
     tags: Vec<String>,
     countries: Vec<Country>,
     refused: BTreeMap<u32, String>,
-    links: Vec<(u32, u32)>,
-    extended: Vec<u32>,
-    extended_through: i32,
-    advanced: Vec<u32>,
     volatile: Vec<u32>,
-    identities: Vec<((u32, u64), Vec<(i32, u32)>)>,
     complete: u16,
-    recorded: Vec<(u32, u64, u64)>,
-    days: Vec<RecordedDay>,
-    recorded_costs: Vec<RecordedCost>,
     command: Vec<(u32, i64)>,
     presence: Option<(Vec<String>, Vec<String>)>,
     settled: Option<i32>,
@@ -2901,205 +3102,209 @@ struct Loaded {
     tomorrow: BTreeMap<i32, BTreeSet<u32>>,
 }
 
-/// A capture row as the saved state keeps it.
-#[derive(Serialize, Deserialize)]
-struct SavedCapture(u32, u32, u64, i32, i32, u8);
+/// The saved state's varints ([`tally::Out`]): a length before its bytes, a flag before a value
+/// that may be missing, enums by their recorded wire values.
+fn put_bytes(put: &mut tally::Out<'_>, bytes: &[u8]) {
+    put.len(bytes.len());
+    put.0.extend_from_slice(bytes);
+}
 
-impl From<&PoliticsCaptureCoverageRow> for SavedCapture {
-    fn from(row: &PoliticsCaptureCoverageRow) -> Self {
-        Self(
-            row.country,
-            row.instance,
-            row.epoch,
-            row.since_hour,
-            row.through_hour,
-            row.streams,
-        )
+fn put_some(put: &mut tally::Out<'_>, value: Option<u64>) {
+    put.flag(value.is_some());
+    if let Some(value) = value {
+        put.var(value);
     }
 }
 
-impl From<SavedCapture> for PoliticsCaptureCoverageRow {
-    fn from(row: SavedCapture) -> Self {
-        Self {
-            country: row.0,
-            instance: row.1,
-            epoch: row.2,
-            since_hour: row.3,
-            through_hour: row.4,
-            streams: row.5,
-        }
+fn put_signed(put: &mut tally::Out<'_>, value: Option<i64>) {
+    put.flag(value.is_some());
+    if let Some(value) = value {
+        put.zig128(i128::from(value));
     }
 }
 
-type Political = (
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<u64>,
-);
-
-/// A daily row as the saved state keeps it.
-#[derive(Serialize, Deserialize)]
-struct SavedDaily {
-    country: u32,
-    instance: u32,
-    epoch: u64,
-    day_hour: i32,
-    pp: Political,
-    cp: (Option<i64>, Option<i64>, Option<u64>),
-}
-
-impl From<&CountryPowerDailyRow> for SavedDaily {
-    fn from(row: &CountryPowerDailyRow) -> Self {
-        Self {
-            country: row.country,
-            instance: row.instance,
-            epoch: row.epoch,
-            day_hour: row.day_hour,
-            pp: rows::daily_political(row),
-            cp: rows::daily_command(row),
-        }
+fn put_hour(put: &mut tally::Out<'_>, value: Option<i32>) {
+    put.flag(value.is_some());
+    if let Some(value) = value {
+        put.int(value);
     }
 }
 
-impl From<SavedDaily> for CountryPowerDailyRow {
-    fn from(row: SavedDaily) -> Self {
-        Self {
-            country: row.country,
-            instance: row.instance,
-            epoch: row.epoch,
-            day_hour: row.day_hour,
-            pp_gross_gain_raw: row.pp.0,
-            pp_cost_raw: row.pp.1,
-            pp_net_gain_raw: row.pp.2,
-            pp_realized_delta_raw: row.pp.3,
-            pp_sequence: row.pp.4,
-            cp_gain_raw: row.cp.0,
-            cp_realized_delta_raw: row.cp.1,
-            cp_sequence: row.cp.2,
-        }
+fn put_pairs(put: &mut tally::Out<'_>, pairs: &FastMap<u32, u32>) {
+    put.len(pairs.len());
+    for (&key, &value) in pairs {
+        put.var(u64::from(key));
+        put.var(u64::from(value));
     }
 }
 
-/// An item identity as the saved state keeps it: its kinds by their recorded wire values.
-#[derive(Serialize, Deserialize)]
-struct SavedIdentity {
-    action: u8,
-    item_token: Option<u32>,
-    item_key: Vec<u8>,
-    slot_key: Vec<u8>,
-    character: Option<u32>,
-    object_kind: u8,
-    object_reference: Option<u64>,
-    target_country: Option<u32>,
-    target_state: Option<u32>,
-    target_region: Option<u32>,
-    origin_kind: u8,
-    origin_token: Option<u32>,
-    origin_key: Vec<u8>,
-}
-
-impl From<&PowerIdentity> for SavedIdentity {
-    fn from(identity: &PowerIdentity) -> Self {
-        Self {
-            action: identity.action as u8,
-            item_token: identity.item_token,
-            item_key: identity.item_key.clone(),
-            slot_key: identity.slot_key.clone(),
-            character: identity.character,
-            object_kind: identity.object_kind as u8,
-            object_reference: identity.object_reference,
-            target_country: identity.target_country,
-            target_state: identity.target_state,
-            target_region: identity.target_region,
-            origin_kind: identity.origin_kind as u8,
-            origin_token: identity.origin_token,
-            origin_key: identity.origin_key.clone(),
-        }
+fn put_words(put: &mut tally::Out<'_>, words: &[u32]) {
+    put.len(words.len());
+    for &word in words {
+        put.var(u64::from(word));
     }
 }
 
-impl TryFrom<SavedIdentity> for PowerIdentity {
-    type Error = io::Error;
-    fn try_from(identity: SavedIdentity) -> io::Result<Self> {
-        Ok(Self {
-            action: PowerAction::try_from(identity.action)?,
-            item_token: identity.item_token,
-            item_key: identity.item_key,
-            slot_key: identity.slot_key,
-            character: identity.character,
-            object_kind: PowerObjectKind::try_from(identity.object_kind)?,
-            object_reference: identity.object_reference,
-            target_country: identity.target_country,
-            target_state: identity.target_state,
-            target_region: identity.target_region,
-            origin_kind: PowerOriginKind::try_from(identity.origin_kind)?,
-            origin_token: identity.origin_token,
-            origin_key: identity.origin_key,
-        })
+fn put_capture(put: &mut tally::Out<'_>, row: &PoliticsCaptureCoverageRow) {
+    put.var(u64::from(row.country));
+    put.var(u64::from(row.instance));
+    put.var(row.epoch);
+    put.int(row.since_hour);
+    put.int(row.through_hour);
+    put.var(u64::from(row.streams));
+}
+
+fn put_daily(put: &mut tally::Out<'_>, row: &CountryPowerDailyRow) {
+    put.var(u64::from(row.country));
+    put.var(u64::from(row.instance));
+    put.var(row.epoch);
+    put.int(row.day_hour);
+    put_signed(put, row.pp_gross_gain_raw);
+    put_signed(put, row.pp_cost_raw);
+    put_signed(put, row.pp_net_gain_raw);
+    put_signed(put, row.pp_realized_delta_raw);
+    put_some(put, row.pp_sequence);
+    put_signed(put, row.cp_gain_raw);
+    put_signed(put, row.cp_realized_delta_raw);
+    put_some(put, row.cp_sequence);
+}
+
+fn put_cost(put: &mut tally::Out<'_>, row: &CountryPowerDailyCostRow) {
+    put.var(u64::from(row.country));
+    put.var(u64::from(row.instance));
+    put.var(u64::from(row.ordinal));
+    put.var(row.epoch);
+    put.int(row.day_hour);
+    put.var(row.pp_sequence);
+    put.var(row.component as u64);
+    put.zig128(i128::from(row.cost_raw));
+    put.var(row.cause as u64);
+    put.var(row.site as u64);
+    let identity = &row.identity;
+    put.var(identity.action as u64);
+    put_some(put, identity.item_token.map(u64::from));
+    put_bytes(put, &identity.item_key);
+    put_bytes(put, &identity.slot_key);
+    put_some(put, identity.character.map(u64::from));
+    put.var(identity.object_kind as u64);
+    put_some(put, identity.object_reference);
+    put_some(put, identity.target_country.map(u64::from));
+    put_some(put, identity.target_state.map(u64::from));
+    put_some(put, identity.target_region.map(u64::from));
+    put.var(identity.origin_kind as u64);
+    put_some(put, identity.origin_token.map(u64::from));
+    put_bytes(put, &identity.origin_key);
+}
+
+fn damaged() -> io::Error {
+    invalid("saved state is damaged")
+}
+
+fn read_bytes(input: &mut Decode<'_>) -> io::Result<Vec<u8>> {
+    let len = tally::len(input)?;
+    Ok(input.bytes(len)?.to_vec())
+}
+
+fn read_some(input: &mut Decode<'_>) -> io::Result<Option<u64>> {
+    Ok(if input.flag()? { Some(input.var()?) } else { None })
+}
+
+fn read_word(input: &mut Decode<'_>) -> io::Result<Option<u32>> {
+    read_some(input)?
+        .map(|value| u32::try_from(value).map_err(|_| damaged()))
+        .transpose()
+}
+
+fn signed(input: &mut Decode<'_>) -> io::Result<i64> {
+    i64::try_from(input.zig128()?).map_err(|_| damaged())
+}
+
+fn read_signed(input: &mut Decode<'_>) -> io::Result<Option<i64>> {
+    Ok(if input.flag()? { Some(signed(input)?) } else { None })
+}
+
+fn read_hour(input: &mut Decode<'_>) -> io::Result<Option<i32>> {
+    Ok(if input.flag()? {
+        Some(tally::int(input)?)
+    } else {
+        None
+    })
+}
+
+fn narrow<T: TryFrom<u64>>(input: &mut Decode<'_>) -> io::Result<T> {
+    T::try_from(input.var()?).map_err(|_| damaged())
+}
+
+fn read_pairs(input: &mut Decode<'_>) -> io::Result<FastMap<u32, u32>> {
+    let mut pairs = FastMap::default();
+    for _ in 0..tally::len(input)? {
+        pairs.insert(tally::word(input)?, tally::word(input)?);
     }
+    Ok(pairs)
 }
 
-/// A cost row as the saved state keeps it.
-#[derive(Serialize, Deserialize)]
-struct SavedCost {
-    country: u32,
-    instance: u32,
-    ordinal: u32,
-    epoch: u64,
-    day_hour: i32,
-    pp_sequence: u64,
-    component: u8,
-    cost_raw: i64,
-    cause: u16,
-    site: u16,
-    identity: SavedIdentity,
-}
-
-impl From<&CountryPowerDailyCostRow> for SavedCost {
-    fn from(row: &CountryPowerDailyCostRow) -> Self {
-        Self {
-            country: row.country,
-            instance: row.instance,
-            ordinal: row.ordinal,
-            epoch: row.epoch,
-            day_hour: row.day_hour,
-            pp_sequence: row.pp_sequence,
-            component: row.component as u8,
-            cost_raw: row.cost_raw,
-            cause: row.cause as u16,
-            site: row.site as u16,
-            identity: (&row.identity).into(),
-        }
+fn read_words(input: &mut Decode<'_>) -> io::Result<Vec<u32>> {
+    let mut words = Vec::new();
+    for _ in 0..tally::len(input)? {
+        words.push(tally::word(input)?);
     }
+    Ok(words)
 }
 
-impl TryFrom<SavedCost> for CountryPowerDailyCostRow {
-    type Error = io::Error;
-    fn try_from(row: SavedCost) -> io::Result<Self> {
-        Ok(Self {
-            country: row.country,
-            instance: row.instance,
-            ordinal: row.ordinal,
-            epoch: row.epoch,
-            day_hour: row.day_hour,
-            pp_sequence: row.pp_sequence,
-            component: PowerDailyCostKind::try_from(row.component)?,
-            cost_raw: row.cost_raw,
-            cause: PowerCause::try_from(row.cause)?,
-            site: PowerSite::try_from(row.site)?,
-            identity: row.identity.try_into()?,
-        })
-    }
+fn read_capture(input: &mut Decode<'_>) -> io::Result<PoliticsCaptureCoverageRow> {
+    Ok(PoliticsCaptureCoverageRow {
+        country: tally::word(input)?,
+        instance: tally::word(input)?,
+        epoch: input.var()?,
+        since_hour: tally::int(input)?,
+        through_hour: tally::int(input)?,
+        streams: narrow(input)?,
+    })
 }
 
-/// The rows the saved state holds beside its records.
-#[derive(Serialize, Deserialize)]
-struct SavedRows {
-    witnesses: Vec<SavedCapture>,
-    daily: Vec<SavedDaily>,
-    days: Vec<SavedDaily>,
-    costs: Vec<SavedCost>,
-    recorded: Vec<SavedCost>,
+fn read_daily(input: &mut Decode<'_>) -> io::Result<CountryPowerDailyRow> {
+    Ok(CountryPowerDailyRow {
+        country: tally::word(input)?,
+        instance: tally::word(input)?,
+        epoch: input.var()?,
+        day_hour: tally::int(input)?,
+        pp_gross_gain_raw: read_signed(input)?,
+        pp_cost_raw: read_signed(input)?,
+        pp_net_gain_raw: read_signed(input)?,
+        pp_realized_delta_raw: read_signed(input)?,
+        pp_sequence: read_some(input)?,
+        cp_gain_raw: read_signed(input)?,
+        cp_realized_delta_raw: read_signed(input)?,
+        cp_sequence: read_some(input)?,
+    })
+}
+
+fn read_cost(input: &mut Decode<'_>) -> io::Result<CountryPowerDailyCostRow> {
+    Ok(CountryPowerDailyCostRow {
+        country: tally::word(input)?,
+        instance: tally::word(input)?,
+        ordinal: tally::word(input)?,
+        epoch: input.var()?,
+        day_hour: tally::int(input)?,
+        pp_sequence: input.var()?,
+        component: PowerDailyCostKind::try_from(narrow::<u8>(input)?)?,
+        cost_raw: signed(input)?,
+        cause: PowerCause::try_from(narrow::<u16>(input)?)?,
+        site: PowerSite::try_from(narrow::<u16>(input)?)?,
+        identity: PowerIdentity {
+            action: PowerAction::try_from(narrow::<u8>(input)?)?,
+            item_token: read_word(input)?,
+            item_key: read_bytes(input)?,
+            slot_key: read_bytes(input)?,
+            character: read_word(input)?,
+            object_kind: PowerObjectKind::try_from(narrow::<u8>(input)?)?,
+            object_reference: read_some(input)?,
+            target_country: read_word(input)?,
+            target_state: read_word(input)?,
+            target_region: read_word(input)?,
+            origin_kind: PowerOriginKind::try_from(narrow::<u8>(input)?)?,
+            origin_token: read_word(input)?,
+            origin_key: read_bytes(input)?,
+        },
+    })
 }

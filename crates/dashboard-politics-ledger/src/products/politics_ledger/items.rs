@@ -405,6 +405,9 @@ pub(super) struct FrameTexts<'a> {
     scripted: std::cell::RefCell<
         BTreeMap<u32, std::rc::Rc<dashboard_text::scripted_text::ScriptedText<'a>>>,
     >,
+    /// Each organisation's name by reference and root: an organisation's research and
+    /// production costs name it alike.
+    organisations: std::cell::RefCell<BTreeMap<(u64, u32), Result<String, String>>>,
 }
 
 impl<'a> FrameTexts<'a> {
@@ -628,26 +631,36 @@ fn event_text<'a>(
                 format!("organisation {reference:#x}: its action-hour frame is unavailable")
             })?;
             let root = own.map_or(0, |own| own.naming.slot);
-            // The name never depends on the root unless its text is scripted, so one context
-            // per hour serves every country's plain names.
-            let any = texts
-                .scripted
-                .borrow()
-                .keys()
-                .next()
-                .copied()
-                .unwrap_or(root);
-            let (template, scopes) = texts
-                .scripted(content, frame, any)?
-                .organisation_template(reference)?;
-            let name = if template.contains('[') {
-                texts
-                    .scripted(content, frame, root)?
-                    .expand_in(&template, &scopes)?
-            } else {
-                template
-            };
-            plain_text(&name)
+            if let Some(name) = texts.organisations.borrow().get(&(reference, root)) {
+                return name.clone();
+            }
+            let name = (|| -> Result<String, String> {
+                // The name never depends on the root unless its text is scripted, so one
+                // context per hour serves every country's plain names.
+                let any = texts
+                    .scripted
+                    .borrow()
+                    .keys()
+                    .next()
+                    .copied()
+                    .unwrap_or(root);
+                let (template, scopes) = texts
+                    .scripted(content, frame, any)?
+                    .organisation_template(reference)?;
+                let name = if template.contains('[') {
+                    texts
+                        .scripted(content, frame, root)?
+                        .expand_in(&template, &scopes)?
+                } else {
+                    template
+                };
+                plain_text(&name)
+            })();
+            texts
+                .organisations
+                .borrow_mut()
+                .insert((reference, root), name.clone());
+            name
         })();
         match result {
             Ok(name) => found.name = Some(name),

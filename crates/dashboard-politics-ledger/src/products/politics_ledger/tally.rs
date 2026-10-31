@@ -2,9 +2,8 @@
 //! each settled period into a rollup ([`super::emit`]) and a reply folds the hours no rollup
 //! holds with the same code, so both count alike.
 
-use dashboard_series::{Cell, codec::Decode};
+use dashboard_series::{Cell, codec::Decode, hash::FastMap};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::io;
 
 /// Days per rollup period, by level: each level's period is sixteen of the level below.
@@ -239,10 +238,14 @@ impl Entry {
     }
 
     pub fn add_day(&mut self, day: &Day) -> io::Result<()> {
-        self.merge(&Self {
-            recurring: Some(Recurring::of(day)),
-            ..Self::default()
-        })
+        let day = Recurring::of(day);
+        match &mut self.recurring {
+            Some(held) => held.merge(&day),
+            None => {
+                self.recurring = Some(day);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -283,7 +286,7 @@ impl Gain {
 /// count.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
-    pub entries: HashMap<Field, Entry>,
+    pub entries: FastMap<Field, Entry>,
     pub gains: [Gain; 2],
     /// Costs whose day's political application is not recorded.
     pub unmatched: u64,
@@ -402,7 +405,7 @@ pub fn read(cells: &[Cell]) -> io::Result<Totals> {
         })
     };
     let mut totals = Totals {
-        entries: HashMap::with_capacity(rows.len() / STRIDE),
+        entries: FastMap::with_capacity_and_hasher(rows.len() / STRIDE, Default::default()),
         gains: [gain(1)?, gain(5)?],
         unmatched: narrow(&head[9])?,
         read: narrow(&head[0])?,
@@ -463,9 +466,9 @@ pub fn read(cells: &[Cell]) -> io::Result<Totals> {
 /// periods' totals.
 #[derive(Clone, Debug, Default)]
 pub struct Rollups {
-    pub days: HashMap<(i32, Field), Day>,
+    pub days: FastMap<(i32, Field), Day>,
     /// Each open day's latest daily gains, by day and capture identity.
-    pub daily: HashMap<(i32, u32, u64), [GainDay; 2]>,
+    pub daily: FastMap<(i32, u32, u64), [GainDay; 2]>,
     pub open: [std::collections::BTreeMap<i32, Totals>; 3],
 }
 
@@ -521,32 +524,38 @@ impl Rollups {
     /// Every period whose days are all settled before `settled`, lowest level first, with its
     /// level, index and totals: each folded into the level above it.
     pub fn settle(&mut self, settled: i32) -> io::Result<Vec<(usize, i32, Totals)>> {
-        let ready: Vec<(i32, Field)> = self
-            .days
-            .keys()
-            .filter(|(day, _)| *day < settled)
-            .copied()
-            .collect();
-        for key in ready {
-            let day = self.days.remove(&key).expect("a settled day");
-            let (index, _, _) = period(0, day.day.div_euclid(24));
-            let totals = self.open[0].entry(index).or_default();
-            totals.read = totals.read.max(day.day + day.lag);
-            totals.entries.entry(key.1).or_default().add_day(&day)?;
-        }
-        let ready: Vec<(i32, u32, u64)> = self
-            .daily
-            .keys()
-            .filter(|(day, _, _)| *day < settled)
-            .copied()
-            .collect();
-        for key in ready {
-            let gains = self.daily.remove(&key).expect("a settled day");
-            let (index, _, _) = period(0, key.0.div_euclid(24));
-            let totals = self.open[0].entry(index).or_default();
-            for (gain, day) in totals.gains.iter_mut().zip(gains) {
-                gain.add(day)?;
+        let Self { days, daily, open } = self;
+        let mut failed = None;
+        days.retain(|&(at, field), day| {
+            if at >= settled {
+                return true;
             }
+            let (index, _, _) = period(0, day.day.div_euclid(24));
+            let totals = open[0].entry(index).or_default();
+            totals.read = totals.read.max(day.day + day.lag);
+            if let Err(error) = totals.entries.entry(field).or_default().add_day(day) {
+                failed.get_or_insert(error);
+            }
+            false
+        });
+        if let Some(error) = failed.take() {
+            return Err(error);
+        }
+        daily.retain(|&(at, _, _), gains| {
+            if at >= settled {
+                return true;
+            }
+            let (index, _, _) = period(0, at.div_euclid(24));
+            let totals = open[0].entry(index).or_default();
+            for (gain, day) in totals.gains.iter_mut().zip(*gains) {
+                if let Err(error) = gain.add(day) {
+                    failed.get_or_insert(error);
+                }
+            }
+            false
+        });
+        if let Some(error) = failed.take() {
+            return Err(error);
         }
         let mut closed = Vec::new();
         let settled_day = settled.div_euclid(24);

@@ -122,21 +122,85 @@ pub struct Captures {
 #[derive(Clone, Debug)]
 pub struct Dating {
     /// Its item's facts at its hour, serialized; None where no frame of its hour was read.
-    pub dated: Option<Arc<[u8]>>,
+    pub dated: Option<DatedFacts>,
     /// The category its payment is spent in, for a payment.
     pub category: Option<Arc<str>>,
+}
+
+/// An item's facts at its hour, serialized, and their digest.
+#[derive(Clone, Debug)]
+pub struct DatedFacts {
+    pub bytes: Arc<[u8]>,
+    pub digest: [u8; 32],
+}
+
+impl DatedFacts {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            digest: *blake3::hash(&bytes).as_bytes(),
+            bytes: Arc::from(bytes),
+        }
+    }
+}
+
+impl Dating {
+    fn digest(&self) -> Option<&[u8; 32]> {
+        self.dated.as_ref().map(|dated| &dated.digest)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Power {
     pub row: CountryPowerChangeRow,
     pub dating: Dating,
+    /// Its item and holder, worked out with its facts; None to work them out when recorded.
+    pub resolved: Option<Resolved>,
+}
+
+/// What a power row's facts make of it ([`rows::power_item`], [`rows::holder`]).
+#[derive(Clone, Debug)]
+pub struct Resolved {
+    pub(super) item: [u8; 32],
+    pub(super) holder: Option<rows::Holder>,
+}
+
+impl Power {
+    pub fn resolve(&self) -> Resolved {
+        Resolved {
+            item: rows::power_item(&self.row, self.dating.digest()),
+            holder: rows::holder(
+                &self.row,
+                self.dating.dated.as_ref().map(|dated| &*dated.bytes),
+            ),
+        }
+    }
+
+    /// Its row as no frame of its hour dated it.
+    pub fn undate(&mut self) {
+        self.dating.dated = None;
+        self.resolved = None;
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Cost {
     pub row: CountryPowerDailyCostRow,
     pub dating: Dating,
+    /// Its item ([`rows::cost_item`]), worked out with its facts; None to work it out when
+    /// recorded.
+    pub item: Option<[u8; 32]>,
+}
+
+impl Cost {
+    pub fn resolve(&self) -> [u8; 32] {
+        rows::cost_item(&self.row, self.dating.digest())
+    }
+
+    /// Its row as no frame of its hour dated it.
+    pub fn undate(&mut self) {
+        self.dating.dated = None;
+        self.item = None;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -176,8 +240,21 @@ impl segments::Item for Hour {
     fn heap(&self) -> usize {
         use std::mem::size_of;
         let dating = |dating: &Dating| {
-            dating.dated.as_ref().map_or(0, |bytes| bytes.len())
+            dating.dated.as_ref().map_or(0, |dated| dated.bytes.len())
                 + dating.category.as_ref().map_or(0, |text| text.len())
+        };
+        let holder = |power: &Power| {
+            power
+                .resolved
+                .as_ref()
+                .and_then(|resolved| resolved.holder.as_ref())
+                .map_or(0, |holder| {
+                    holder.kind.capacity()
+                        + holder.token.as_ref().map_or(0, String::capacity)
+                        + holder.character.as_ref().map_or(0, |(script, saved)| {
+                            script.as_ref().map_or(0, String::capacity) + saved.capacity()
+                        })
+                })
         };
         let identity = |identity: &PowerIdentity| {
             identity.item_key.capacity()
@@ -197,7 +274,9 @@ impl segments::Item for Hour {
             + self
                 .power
                 .iter()
-                .map(|power| dating(&power.dating) + identity(&power.row.identity))
+                .map(|power| {
+                    dating(&power.dating) + identity(&power.row.identity) + holder(power)
+                })
                 .sum::<usize>()
             + self.governments.capacity() * size_of::<Government>()
             + self
@@ -228,6 +307,8 @@ impl segments::Item for Hour {
 /// Columns read in place.
 struct Fields {
     through: usize,
+    /// A capture's epoch, first hour, streams and instance.
+    capture: [usize; 4],
     allocated: usize,
     literal: usize,
 }
@@ -295,6 +376,12 @@ impl Projector {
             content: content.as_ref().ok().cloned().flatten(),
             fields: Fields {
                 through: columns::field(TableId::PoliticsCaptureCoverage, "through_hour")?,
+                capture: [
+                    columns::field(TableId::PoliticsCaptureCoverage, "epoch")?,
+                    columns::field(TableId::PoliticsCaptureCoverage, "since_hour")?,
+                    columns::field(TableId::PoliticsCaptureCoverage, "streams")?,
+                    columns::field(TableId::PoliticsCaptureCoverage, "instance")?,
+                ],
                 allocated: columns::field(
                     TableId::CountryCommandPower,
                     "allocated_command_power_raw",
@@ -342,6 +429,40 @@ impl Projector {
         Ok((rows, deleted))
     }
 
+    /// The capture `slot` holds, read in place where its columns are recorded and valid, else
+    /// as the row decoder reads it.
+    fn capture(&self, state: &State, slot: u32) -> io::Result<PoliticsCaptureCoverageRow> {
+        let table = TableId::PoliticsCaptureCoverage;
+        let held = columns::table(state, table)?;
+        let [epoch, since, streams, instance] = self.fields.capture;
+        let at = slot as usize;
+        let fast = (|| {
+            if ![epoch, since, self.fields.through, streams, instance]
+                .iter()
+                .all(|&field| held.recorded(field, slot))
+            {
+                return None;
+            }
+            let row = PoliticsCaptureCoverageRow {
+                country: u32::try_from(held.key(slot)?).ok()?,
+                instance: *columns::plain::<u32>(held, instance).ok()?.get(at)?,
+                epoch: *columns::plain::<u64>(held, epoch).ok()?.get(at)?,
+                since_hour: *columns::plain::<i32>(held, since).ok()?.get(at)?,
+                through_hour: *columns::plain::<i32>(held, self.fields.through)
+                    .ok()?
+                    .get(at)?,
+                streams: *columns::plain::<u8>(held, streams).ok()?.get(at)?,
+            };
+            (row.since_hour <= row.through_hour
+                && row.streams & !PoliticsCaptureCoverageRow::ALL_STREAMS == 0)
+                .then_some(row)
+        })();
+        match fast {
+            Some(row) => Ok(row),
+            None => columns::row(state, table, slot, self.format.version()),
+        }
+    }
+
     /// The captures the hour changed, and those it only extended to the hour.
     fn captures(&mut self, state: &State, hour: i32, whole: bool) -> io::Result<Captures> {
         let table = TableId::PoliticsCaptureCoverage;
@@ -352,13 +473,10 @@ impl Projector {
                 ..Captures::default()
             });
         }
-        let format = self.format.version();
         if whole {
             let mut changed = Vec::new();
             for slot in live(state, table)? {
-                changed.push(columns::row::<PoliticsCaptureCoverageRow>(
-                    state, table, slot, format,
-                )?);
+                changed.push(self.capture(state, slot)?);
             }
             self.extended = Arc::from(Vec::new());
             return Ok(Captures {
@@ -407,9 +525,7 @@ impl Projector {
                     .ok_or_else(|| dashboard_core::invalid("A changed capture holds no row"))?;
                 extended.push(key as u32);
             } else {
-                changed.push(columns::row::<PoliticsCaptureCoverageRow>(
-                    state, table, slot, format,
-                )?);
+                changed.push(self.capture(state, slot)?);
             }
         }
         for &slot in &changes.inserted {
@@ -417,9 +533,7 @@ impl Projector {
                 .binary_search_by_key(&slot, |&(slot, _)| slot)
                 .is_err()
             {
-                changed.push(columns::row::<PoliticsCaptureCoverageRow>(
-                    state, table, slot, format,
-                )?);
+                changed.push(self.capture(state, slot)?);
             }
         }
         extended.sort_unstable();
@@ -594,7 +708,7 @@ impl Projector {
                 target,
                 modifiers: modifier_rows,
             };
-            dating.dated = Some(Arc::from(serde_json::to_vec(&value)?));
+            dating.dated = Some(DatedFacts::new(serde_json::to_vec(&value)?));
         }
         Ok(())
     }
@@ -740,6 +854,7 @@ impl Operator<World> for Projector {
                     category: rows::charge(&row).map(|_| Arc::from("")),
                 },
                 row,
+                resolved: None,
             })
             .collect();
         let mut costs: Vec<Cost> = costs
@@ -750,6 +865,7 @@ impl Operator<World> for Projector {
                     category: (row.cost_raw != 0).then(|| Arc::from("")),
                 },
                 row,
+                item: None,
             })
             .collect();
         // The rows dated at the hour, and at the hour before when its frame is held.
@@ -844,6 +960,12 @@ impl Operator<World> for Projector {
                     content.as_deref(),
                 ));
             }
+        }
+        for power in &mut power {
+            power.resolved = Some(power.resolve());
+        }
+        for cost in &mut costs {
+            cost.item = Some(cost.resolve());
         }
         let mut handed_governments = Vec::with_capacity(governments.len());
         for row in governments {

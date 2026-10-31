@@ -2,7 +2,7 @@ use crate::{
     add,
     budget::{Budget, Slab},
     cache::Cache,
-    codec::{Binary, Encode},
+    codec::Binary,
     format::{Definition, Meta, NodeRef, Root, State},
     hierarchy, invalid,
     pages::{PageRead, PageWrite},
@@ -730,14 +730,17 @@ impl<'a> Writer<'a> {
         self.blob(&mut text.as_bytes(), text.len() as u64)
     }
     pub fn cells(&mut self, input: impl IntoIterator<Item = Cell>) -> io::Result<Blob> {
+        let input = input.into_iter();
         let held = self.columns.heap.len();
         let at = add(self.heap, held as u64)?;
+        self.columns
+            .heap
+            .reserve(input.size_hint().0.saturating_mul(Cell::SIZE))?;
         let mut len = 0_u64;
         for cell in input {
-            let mut bytes = [0; Cell::SIZE];
-            let encoded = cell.encode(&mut Encode::new(&mut bytes));
-            let appended = encoded
-                .and_then(|()| self.columns.heap.extend(&bytes))
+            let appended = cell
+                .bytes()
+                .and_then(|bytes| self.columns.heap.extend(&bytes))
                 .and_then(|()| add(len, Cell::SIZE as u64));
             match appended {
                 Ok(next) => len = next,

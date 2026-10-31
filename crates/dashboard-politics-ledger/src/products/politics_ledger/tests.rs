@@ -110,6 +110,7 @@ fn decision(country: u32, sequence: u64, hour: i32, charge: i64) -> Power {
             dated: None,
             category: Some(Arc::from("decisions")),
         },
+        resolved: None,
     }
 }
 
@@ -134,6 +135,7 @@ fn daily_gain(country: u32, sequence: u64, day: i32, gain: i64) -> Power {
             dated: None,
             category: None,
         },
+        resolved: None,
     }
 }
 
@@ -173,6 +175,7 @@ fn upkeep_cost(country: u32, day: i32, sequence: u64, cost: i64) -> Cost {
             dated: None,
             category: Some(Arc::from("dailyCosts")),
         },
+        item: None,
     }
 }
 

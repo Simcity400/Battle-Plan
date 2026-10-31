@@ -93,16 +93,49 @@ pub(super) fn gain(row: &LedgerDaily, command: bool) -> io::Result<super::tally:
             row.pp_read_hour,
         )
     };
+    Ok(gain_day(gain, net, applied, read.is_some(), command))
+}
+
+/// [`gain`] of a native daily row whose political and command parts were read at `reads`.
+pub(super) fn native_gain(
+    row: &CountryPowerDailyRow,
+    reads: (Option<i32>, Option<i32>),
+    command: bool,
+) -> super::tally::GainDay {
+    let (gain, net, applied, read) = if command {
+        (row.cp_gain_raw, row.cp_gain_raw, row.cp_realized_delta_raw, reads.1)
+    } else {
+        (
+            row.pp_gross_gain_raw,
+            row.pp_net_gain_raw,
+            row.pp_realized_delta_raw,
+            reads.0,
+        )
+    };
+    gain_day(
+        gain.map(i128::from),
+        net.map(i128::from),
+        applied.map(i128::from),
+        read.is_some(),
+        command,
+    )
+}
+
+fn gain_day(
+    gain: Option<i128>,
+    net: Option<i128>,
+    applied: Option<i128>,
+    read: bool,
+    command: bool,
+) -> super::tally::GainDay {
     let gained = gain
-        .filter(|_| read.is_some())
+        .filter(|_| read)
         .map(|gain| if command { gain.max(0) } else { gain });
     let lost = match net.zip(applied) {
-        Some((net, applied)) if read.is_some() && net > 0 && applied < net => {
-            (net - applied.max(0)) as u128
-        }
+        Some((net, applied)) if read && net > 0 && applied < net => (net - applied.max(0)) as u128,
         _ => 0,
     };
-    Ok((gained, lost, read.is_some()))
+    (gained, lost, read)
 }
 
 /// Whether a daily row holds its political part, and its command part.
@@ -171,20 +204,6 @@ pub(super) fn government(
         origin_token: row.origin_token,
         origin_key: row.origin_key.clone(),
         covered,
-    }
-}
-
-/// A capture as the coverage of read `read_hour` names it.
-pub(super) fn capture(row: &PoliticsCaptureCoverageRow, read_hour: i32) -> LedgerCoverage {
-    LedgerCoverage {
-        country: Some(row.country),
-        instance: Some(row.instance),
-        read_hour,
-        since_hour: Some(row.since_hour),
-        through_hour: Some(row.through_hour),
-        epoch: Some(row.epoch.to_string()),
-        streams: row.streams,
-        reason: None,
     }
 }
 
@@ -338,6 +357,99 @@ pub(super) fn holder_kind(row: &CountryPowerChangeRow) -> String {
     }
 }
 
+/// A command power holder, by the operands its allocation recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Holder {
+    pub kind: String,
+    pub amount: i128,
+    pub ability: bool,
+    pub token: Option<String>,
+    pub character: Option<(Option<String>, String)>,
+}
+
+/// The holder a command hold names, by the operands its facts (`dated`, serialized) recorded;
+/// None for any other row.
+pub(super) fn holder(row: &CountryPowerChangeRow, dated: Option<&[u8]>) -> Option<Holder> {
+    if row.currency != PowerCurrency::Command || !is_hold(row) {
+        return None;
+    }
+    let facts = dated
+        .and_then(|bytes| serde_json::from_slice::<items::Dated>(bytes).ok())
+        .map(|dated| dated.facts)
+        .unwrap_or_else(|| items::event_facts(None, &row.identity, row.cause, None));
+    Some(Holder {
+        kind: holder_kind(row),
+        amount: 0,
+        ability: row.cause == PowerCause::AbilityActivation
+            || row.identity.object_kind == PowerObjectKind::Ability,
+        token: facts.token,
+        character: facts
+            .character
+            .map(|character| (character.script_token, character.saved_name)),
+    })
+}
+
+/// What makes two payments one item: the digest of the facts their hour recorded, and what they
+/// record. Every ability's upkeep is one item.
+pub(super) fn power_item(row: &CountryPowerChangeRow, dated: Option<&[u8; 32]>) -> [u8; 32] {
+    if row.currency == PowerCurrency::Command && row.cause == PowerCause::AbilityUpkeep {
+        return *blake3::hash(&[ABILITY_UPKEEP]).as_bytes();
+    }
+    let mut hash = item_hash(POWER, dated, row.cause, row.currency as u8, &row.identity);
+    hash.update(&[u8::from(row.requested_delta_raw.is_some_and(|raw| raw < 0))]);
+    *hash.finalize().as_bytes()
+}
+
+pub(super) fn cost_item(row: &CountryPowerDailyCostRow, dated: Option<&[u8; 32]>) -> [u8; 32] {
+    let mut hash = item_hash(COST, dated, row.cause, row.component as u8, &row.identity);
+    hash.update(&[u8::from(row.cost_raw < 0)]);
+    *hash.finalize().as_bytes()
+}
+
+const POWER: u8 = 0;
+const COST: u8 = 1;
+const ABILITY_UPKEEP: u8 = 2;
+
+/// An item's hash over every field it is told apart by, each length-prefixed or fixed-width.
+fn item_hash(
+    kind: u8,
+    dated: Option<&[u8; 32]>,
+    cause: PowerCause,
+    part: u8,
+    identity: &PowerIdentity,
+) -> blake3::Hasher {
+    fn optional(hash: &mut blake3::Hasher, value: Option<u64>) {
+        match value {
+            Some(value) => hash.update(&[1]).update(&value.to_le_bytes()),
+            None => hash.update(&[0]),
+        };
+    }
+    fn bytes(hash: &mut blake3::Hasher, value: &[u8]) {
+        hash.update(&(value.len() as u64).to_le_bytes()).update(value);
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(&[kind]);
+    match dated {
+        Some(digest) => hash.update(&[1]).update(digest),
+        None => hash.update(&[0]),
+    };
+    hash.update(&(cause as u16).to_le_bytes())
+        .update(&[part, identity.action as u8]);
+    optional(&mut hash, identity.item_token.map(u64::from));
+    bytes(&mut hash, &identity.item_key);
+    bytes(&mut hash, &identity.slot_key);
+    optional(&mut hash, identity.character.map(u64::from));
+    hash.update(&[identity.object_kind as u8]);
+    optional(&mut hash, identity.object_reference);
+    optional(&mut hash, identity.target_country.map(u64::from));
+    optional(&mut hash, identity.target_state.map(u64::from));
+    optional(&mut hash, identity.target_region.map(u64::from));
+    hash.update(&[identity.origin_kind as u8]);
+    optional(&mut hash, identity.origin_token.map(u64::from));
+    bytes(&mut hash, &identity.origin_key);
+    hash
+}
+
 pub(super) fn mutation_id(country: u32, epoch: u64, sequence: u64) -> String {
     format!("{country}:{epoch}:{sequence}")
 }
@@ -440,20 +552,6 @@ pub(super) fn amount(value: Option<&str>) -> io::Result<Option<i128>> {
         .map(str::parse)
         .transpose()
         .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))
-}
-
-/// Whether `value` continues `old`, the coverage a country's last read gave.
-pub(super) fn continues_coverage(old: &LedgerCoverage, value: &LedgerCoverage) -> bool {
-    old.country == value.country
-        && old.instance == value.instance
-        && old.epoch == value.epoch
-        && old.streams == value.streams
-        && old.reason == value.reason
-        && old.through_hour.and_then(|hour| hour.checked_add(1)) == value.through_hour
-        && old
-            .through_hour
-            .zip(value.since_hour)
-            .is_some_and(|(last, first)| first <= last.saturating_add(1))
 }
 
 pub(super) fn merge_spending_coverage(

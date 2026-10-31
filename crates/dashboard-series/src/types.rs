@@ -181,43 +181,48 @@ pub enum Cell {
     Text(Blob),
     List(Blob),
 }
-impl Binary for Cell {
-    const SIZE: usize = 17;
-    fn encode(&self, e: &mut Encode<'_>) -> io::Result<()> {
-        let mut bytes = [0; 16];
-        let mut d = Encode::new(&mut bytes);
-        let tag = match self {
+impl Cell {
+    /// Its encoding: its tag, then its value in sixteen bytes, zero after the value.
+    #[inline]
+    pub fn bytes(&self) -> io::Result<[u8; 17]> {
+        let mut bytes = [0; 17];
+        bytes[0] = match self {
             Self::Null => 0,
             Self::Integer(v) => {
-                d.i128(*v)?;
+                bytes[1..17].copy_from_slice(&v.to_le_bytes());
                 1
             }
             Self::Unsigned(v) => {
-                d.u64(*v)?;
+                bytes[1..9].copy_from_slice(&v.to_le_bytes());
                 2
             }
             Self::Number(v) => {
                 if !v.is_finite() {
                     return Err(invalid("nonfinite event field"));
                 }
-                d.f64(*v)?;
+                bytes[1..9].copy_from_slice(&v.to_bits().to_le_bytes());
                 3
             }
             Self::Boolean(v) => {
-                d.u8(u8::from(*v))?;
+                bytes[1] = u8::from(*v);
                 4
             }
-            Self::Text(v) => {
-                v.encode(&mut d)?;
-                5
-            }
-            Self::List(v) => {
-                v.encode(&mut d)?;
-                6
+            Self::Text(v) | Self::List(v) => {
+                if (v.len == 0) != (v.at == NONE) {
+                    return Err(invalid("invalid variable-width reference"));
+                }
+                bytes[1..9].copy_from_slice(&v.at.to_le_bytes());
+                bytes[9..17].copy_from_slice(&v.len.to_le_bytes());
+                if matches!(self, Self::Text(_)) { 5 } else { 6 }
             }
         };
-        e.u8(tag)?;
-        e.bytes(&bytes)
+        Ok(bytes)
+    }
+}
+impl Binary for Cell {
+    const SIZE: usize = 17;
+    fn encode(&self, e: &mut Encode<'_>) -> io::Result<()> {
+        e.bytes(&self.bytes()?)
     }
     fn decode(d: &mut Decode<'_>) -> io::Result<Self> {
         let tag = d.u8()?;
