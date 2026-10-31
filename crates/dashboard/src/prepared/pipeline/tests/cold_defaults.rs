@@ -161,63 +161,6 @@ fn cold_cumulative_values_are_absent_instead_of_zero() {
 }
 
 #[test]
-fn stockpile_cold_sample_is_reused_when_preparation_moves() {
-    independent::with_test_hourly(|| {
-        use dashboard_base::prepared::query::{observations, progressive};
-        let replay = Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(
-                1,
-                vec![scale_frame(1, 10, 2), scale_frame(1, 11, 2)],
-            )],
-        )
-        .unwrap();
-        let mut fixture = Fixture::new(&replay);
-        let source = fixture.source("stockpile-cold-cache");
-        let flag = AtomicBool::new(false);
-        let request = serde_json::json!({"branchId":"1","tag":String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap(),
-            "from":11,"to":11,"width":1,"included":[]});
-        let query = || {
-            crate::products::equipment_stockpile::prepared::query(
-                &source,
-                &request,
-                &crate::products::LoadContext { content: None },
-                &flag,
-            )
-            .unwrap()
-            .unwrap()
-        };
-        let cold = query();
-        assert_eq!(cold["coverage"]["lastHour"], 9);
-        let computations = observations::usage(&source, "stockpile:at-hour").2;
-        assert_eq!(computations, 1);
-        let (store, key) = crate::prepared::files(&source, None).unwrap();
-        let mut writer = store.replace(key).unwrap();
-        json(
-            &mut writer,
-            &coverage_section(1),
-            &Coverage {
-                schema: SCHEMA,
-                first_hour: 10,
-                last_hour: 10,
-                complete: false,
-            },
-        )
-        .unwrap();
-        writer.commit().unwrap();
-        let (mut advanced, refused) = progressive::without_block_decodes(query);
-        assert!(!refused, "a re-ask must not repeat the stockpile look-back");
-        assert_eq!(advanced["coverage"]["lastHour"], 10);
-        advanced["coverage"] = cold["coverage"].clone();
-        assert_eq!(advanced, cold, "only preparation metadata changes");
-        assert_eq!(
-            observations::usage(&source, "stockpile:at-hour").2,
-            computations
-        );
-    });
-}
-
-#[test]
 fn battle_prefix_pages_preserve_the_complete_pages_observed_facts() {
     independent::with_test_hourly(|| {
         let replay = Replay::from_records(

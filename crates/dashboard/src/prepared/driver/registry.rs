@@ -413,10 +413,19 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
     },
     Descriptor {
         status: &["equipment-stockpile"],
-        queries: &["equipment-stockpile"],
-        gates: &["equipment-stockpile"],
-        sections: &["stockpile"],
-        walk: true,
+        queries: &[
+            "equipment-stockpile-at",
+            "equipment-stockpile-catalogue",
+            "equipment-stockpile-chart",
+        ],
+        gates: &[
+            "equipment-stockpile-at",
+            "equipment-stockpile-catalogue",
+            "equipment-stockpile-chart",
+        ],
+        // 2: snapshot events on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         content: Content::Bound,
         ..family("stockpile")
     },

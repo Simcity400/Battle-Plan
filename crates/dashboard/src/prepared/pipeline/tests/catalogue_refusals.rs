@@ -369,13 +369,12 @@ fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warn
                 "categories": ["milestones"]}),
             &["/reply/warnings"],
         ),
-        // A tag selection answers one reply per tag. The equipment database
-        // loads here and names the stack's lines itself; they stay once.
+        // Two holders answer one catalogue. The equipment database loads
+        // here and names the stack's lines itself; they stay once.
         (
-            "equipment-stockpile",
-            json!({"branchId": "1", "tags": ["AAA", "BBB"], "from": 100, "to": 103,
-                "width": 10}),
-            &["/0/warnings", "/1/warnings"],
+            "equipment-stockpile-catalogue",
+            json!({"branchId": "1", "holders": [{"tag": "AAA"}, {"tag": "BBB"}]}),
+            &["/warnings"],
         ),
     ];
     let mut missing = Vec::new();
@@ -398,14 +397,14 @@ fn served_replies_carry_the_stacks_live_diagnostics_where_they_keep_content_warn
         }
     }
     // Where a reply's own content refuses, nothing else names the stack's
-    // lines: a tag selection's replies and a naval summary's sampled reply
+    // lines: a stockpile hour's reply and a naval summary's sampled reply
     // each gain them where they are served.
     let shapes = [
         (
-            "equipment-stockpile",
-            "equipment-stockpile",
-            json!([{"warnings": []}, {"warnings": ["kept"]}]),
-            &["/0/warnings", "/1/warnings"][..],
+            "equipment-stockpile-at",
+            "equipment-stockpile-at",
+            json!({"warnings": ["kept"]}),
+            &["/warnings"][..],
         ),
         (
             "series-summary",

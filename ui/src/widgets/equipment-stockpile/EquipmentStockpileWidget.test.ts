@@ -17,12 +17,15 @@ import { contentKey, resolveOptions, setToken } from '../../dashboard/options.ts
 import { PlaybackController } from '../../dashboard/playback.ts';
 import { object } from '../../dashboard/validation.ts';
 import type { DashboardClient, ProductRequest } from '../../dashboard/client';
-import type { BranchMetadata, CountryGroupReply, EquipmentStockpileReply, HourSpan, StockpileArtworkReply } from '../../generated/dashboard';
+import type { BranchMetadata, CountryGroupReply, EquipmentStockpileReply, HourSpan, StockpileArtworkReply, StockpileCatalogueReply, StockpileChoicePeak,
+  StockpileHolder } from '../../generated/dashboard';
 import type { TooltipContent } from '../../charts/tooltip';
+import { clipToSpans } from '../../charts/series.ts';
 import { definition, OPTIONS } from './definition.ts';
 import type { DatedCountrySelection } from '../../dashboard/datedCountry';
 import { datedCountryToken } from '../../dashboard/datedCountry.ts';
-import { variantKey } from './stockpileData.ts';
+import { balanceAt, shareRuns, stockAt, stockGroups, stockRuns, variantKey } from './stockpileData.ts';
+import { stockpileGroupKey } from './stockpileCatalogue.ts';
 
 registerWidgets([definition]);
 const span = { firstHour: 100, lastHour: 200 };
@@ -44,16 +47,54 @@ const branch: BranchMetadata = { id: '1', sessionId: '1', firstHour: 0, lastHour
 const unusedTransport = async () => { throw new Error('The stockpile fixture must replace this transport.'); };
 const fixtureClient = (): DashboardClient => ({ available: true, openSource: unusedTransport, releaseSource: unusedTransport,
   product: unusedTransport, setMapViews: unusedTransport, onMapStates: unusedTransport });
-interface PickOwner { scope: string; client: object; numbers?: EquipmentStockpileReply }
+interface PickOwner { scope: string; client: object }
+
+/** The catalogue preparation answers for these holders' replies, each within its hours, from the
+ * widget's own at-hour reading of them. */
+function catalogueOf(replies: readonly EquipmentStockpileReply[], holders: readonly StockpileHolder[]): StockpileCatalogueReply {
+  const within = (spans: readonly HourSpan[], at: number) => holders[at]?.within ? clipToSpans(spans.map(span => ({ ...span, value: 0, breakBefore: false })),
+    holders[at].within!).map(({ firstHour, lastHour }) => ({ firstHour, lastHour })) : [...spans];
+  const spans = (pick: (reply: EquipmentStockpileReply) => readonly HourSpan[]) =>
+    replies.flatMap((reply, at) => within(pick(reply), at)).sort((a, b) => a.firstHour - b.firstHour);
+  const hours = (pick: (reply: EquipmentStockpileReply) => readonly number[]) => [...new Set(replies.flatMap((reply, at) => pick(reply)
+    .filter(hour => !holders[at]?.within || holders[at].within!.some(span => span.firstHour <= hour && hour <= span.lastHour))))].sort((a, b) => a - b);
+  const variants = new Map<string, StockpileCatalogueReply['variants'][number]>();
+  const logistics = new Map<string, boolean>();
+  const types = new Map<string, StockpileCatalogueReply['types'][number]>();
+  const choices: Record<string, StockpileChoicePeak> = {};
+  for (const reply of replies) {
+    for (const variant of reply.variants) if (!variants.has(variant.id)) variants.set(variant.id, { id: variant.id, token: variant.token,
+      archetype: variant.archetype, names: variant.names, designs: [...new Set(variant.names.flatMap(name => name.design ?? []))] });
+    for (const item of reply.logistics) logistics.set(item.key, (logistics.get(item.key) ?? false)
+      || [...item.balance, ...item.stock, ...item.available].some(run => run.amountRaw !== '0'));
+    for (const type of reply.types) if (!types.has(type.key)) types.set(type.key, type);
+    for (const grouping of ['type', 'domain', 'variant'] as const) for (const group of stockGroups(reply, grouping, Infinity)) {
+      const stock = stockRuns(reply, group), share = shareRuns(reply, group);
+      const peak = [...reply.stockHours, ...reply.balanceHours].reduce((most, span) => {
+        const held = stockAt(reply, group, span.firstHour) ?? 0n, need = balanceAt(reply, group, span.firstHour)?.need ?? 0n;
+        return [most, held, need].reduce((a, b) => a > b ? a : b);
+      }, 0n);
+      const kept = choices[stockpileGroupKey(group)];
+      choices[stockpileGroupKey(group)] = { raw: String(kept && BigInt(kept.raw) > peak ? BigInt(kept.raw) : peak),
+        stockDrawable: !!kept?.stockDrawable || stock.length > 0, shareDrawable: !!kept?.shareDrawable || share.length > 0 };
+    }
+  }
+  return { branchId: replies[0].branchId, tags: holders.map(holder => holder.tag), campaignKey: replies[0].campaignKey, decimals: replies[0].decimals,
+    types: [...types.values()], variants: [...variants.values()], logistics: [...logistics].map(([key, nonzero]) => ({ key, nonzero })),
+    reads: hours(reply => reply.reads), lineReads: hours(reply => reply.lineReads), logisticsReads: hours(reply => reply.logisticsReads),
+    stockHours: spans(reply => reply.stockHours), lineHours: spans(reply => reply.lineHours), balanceHours: spans(reply => reply.balanceHours),
+    aiHours: spans(reply => reply.aiHours), needBoundRaw: replies[0].needBoundRaw, choices, warnings: [...new Set(replies.flatMap(reply => reply.warnings))] };
+}
 interface ChoiceOwner { pickOwner: object; chosenScope: string; extent: readonly number[] }
 const host = globalThis as typeof globalThis & {
   __stockCountryPick?: { owner: object; selection: DatedCountrySelection } | null;
   __stockCatalogue?: CountryGroupReply; __stockReplies?: EquipmentStockpileReply[];
   __stockFollow?: () => void;
   __stockChip?: { props: { hour: number | null; label: { name: string } | null } };
-  __stockActorNumbers?: (client: object) => NumericReply<EquipmentStockpileReply[]>;
+  __stockCatalogueNumbers?: (client: object) => NumericReply<StockpileCatalogueReply>;
   __stockReply?: EquipmentStockpileReply; __stockRequests?: ProductRequest[]; __stockWithin?: HourSpan[];
-  __stockNumbers?: (client: object) => NumericReply<EquipmentStockpileReply>;
+  __stockHourNumbers?: (client: object) => NumericReply<EquipmentStockpileReply>;
+  __stockCatalogueOf?: typeof catalogueOf;
   __stockOwner?: (next: PickOwner) => PickOwner; __stockChoiceOwner?: (next: ChoiceOwner) => ChoiceOwner;
   __stockDrill?: DrillState; __stockDrillOwner?: object | null;
   __stockSelection?: { owner: object; key: string; mode: string } | null;
@@ -68,23 +109,24 @@ const host = globalThis as typeof globalThis & {
  * stack. Only transport/DOM leaves are replaced. SSR seeds committed state and memo
  * ownership; it cannot certify browser portals, effects or animation. */
 async function fixture() {
-  const stores = new WeakMap<object, NumericReply<EquipmentStockpileReply>>();
   const owners = new WeakMap<object, PickOwner>();
   let choice: ChoiceOwner | undefined;
-  const actorStores = new WeakMap<object, NumericReply<EquipmentStockpileReply[]>>();
-  host.__stockActorNumbers = client => {
-    let store = actorStores.get(client);
-    if (!store) { store = new NumericReply(); actorStores.set(client, store); }
-    return store;
+  // Each client keeps its held numbers across renders, as its mounted hooks would.
+  const stores = <T,>() => {
+    const kept = new WeakMap<object, NumericReply<T>[]>();
+    let calls = 0;
+    return (client: object) => {
+      const list = kept.get(client) ?? []; kept.set(client, list);
+      const at = calls++ % 2;
+      return (list[at] ??= new NumericReply<T>());
+    };
   };
-  host.__stockNumbers = client => {
-    let store = stores.get(client);
-    if (!store) { store = new NumericReply(); stores.set(client, store); }
-    return store;
-  };
+  host.__stockCatalogueNumbers = stores<StockpileCatalogueReply>();
+  host.__stockHourNumbers = stores<EquipmentStockpileReply>();
+  host.__stockCatalogueOf = catalogueOf;
   host.__stockOwner = next => {
     const previous = owners.get(next.client);
-    if (previous && previous.scope === next.scope && previous.numbers === next.numbers) return previous;
+    if (previous && previous.scope === next.scope) return previous;
     owners.set(next.client, next); return next;
   };
   host.__stockChoiceOwner = next => {
@@ -96,11 +138,22 @@ async function fixture() {
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'stockpile-drill-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
-        if (path.endsWith('/dashboard/products.ts')) return `export function useProduct(_client, request, active, validate) {
+        if (path.endsWith('/dashboard/products.ts')) return `function answer(request) {
+          const replies = globalThis.__stockReplies, reply = globalThis.__stockReply;
+          const of = tag => replies?.find(item => item.tag === tag) ?? reply;
+          if (request.product === 'equipment-stockpile-catalogue') {
+            const held = request.params.holders.map(holder => of(holder.tag));
+            return held.every(Boolean) ? globalThis.__stockCatalogueOf(held, request.params.holders) : undefined;
+          }
+          return of(request.params.tag);
+        }
+        export function useProduct(_client, request, active, validate) {
           if (!request || !active) return { retry() {} };
           globalThis.__stockRequests?.push(request);
-          return { data: globalThis.__stockReply ? validate(globalThis.__stockReply) : undefined, retry() {} };
+          const data = answer(request);
+          return { data: data ? validate(data) : undefined, retry() {} };
         }
+        export async function loadProduct() { throw new Error('The stockpile fixture reads its chart lines at once.'); }
         // A followed read answers the hour it was asked for at once.
         export function useFollowedProduct(client, request, moving, active, validate) {
           const product = useProduct(client, request, active, validate);
@@ -112,6 +165,20 @@ async function fixture() {
           return { data: replies.length && replies.every(Boolean) ? replies.map(validate) : undefined, retry() {} };
         }
 export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ...useProducts(client, requests, ...rest), requests });`;
+        if (path.endsWith('/dashboard/viewRead.ts')) return `import { shareRuns, stockGroups, stockRuns } from '../widgets/equipment-stockpile/stockpileData.ts';
+          // Chart lines are read at once, from the widget's own reading of the hour's reply.
+          export function useViewRead(reads, view) {
+            const reply = globalThis.__stockReply;
+            if (reads == null || !view || !reply) return { data: undefined, retry() {} };
+            const lines = JSON.parse(JSON.parse(reads)[0])[5];
+            const groups = ['type', 'domain', 'variant'].flatMap(grouping => stockGroups(reply, grouping, Infinity));
+            const key = group => JSON.stringify([group.kind, group.kind === 'variant' ? group.variants[0]?.id : group.key]);
+            return { data: new Map(lines.map(line => {
+              const group = groups.find(item => key(item) === line.group);
+              const runs = !group || line.measure === 'need' ? [] : line.measure === 'share' ? shareRuns(reply, group) : stockRuns(reply, group);
+              return [line.key, { ...view, buckets: [], runs }];
+            })), retry() {} };
+          }`;
         if (path.endsWith('/dashboard/useCountryGroups.ts')) return `export const useCountryGroups = (_runtime, track) => ({
           data: globalThis.__stockCatalogue ?? { branchId: track?.branch.id, warnings: [], humans: [], factions: [], wars: [], warStarts: [], capitulations: [],
             identityChanges: [], unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [
@@ -142,12 +209,12 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
         if (path.endsWith('/charts/drill/DrillHost.tsx')) return `export default props => {
           globalThis.__stockHost = props; return props.open ? props.children : props.main;
         };`;
-        if (path.endsWith('/equipment-stockpile/useEquipmentStockpile.ts')) return source.replace('new NumericReply<EquipmentStockpileReply>()',
-          'globalThis.__stockNumbers(runtime.client)').replace('new NumericReply<EquipmentStockpileReply[]>()', 'globalThis.__stockActorNumbers(runtime.client)');
+        if (path.endsWith('/equipment-stockpile/useEquipmentStockpile.ts')) return source.replaceAll('new NumericReply<StockpileCatalogueReply>()',
+          'globalThis.__stockCatalogueNumbers(client)').replaceAll('new NumericReply<EquipmentStockpileReply>()', 'globalThis.__stockHourNumbers(client)');
         if (path.endsWith('/equipment-stockpile/StockpileDrill.tsx')) return source.replace('const tokens = useChartTokens()',
           'globalThis.__stockHour = hour; const tokens = useChartTokens()');
         if (path.endsWith('/equipment-stockpile/EquipmentStockpileWidget.tsx')) return source
-          .replace('({ scope, client: runtime.client, numbers })', 'globalThis.__stockOwner({ scope, client: runtime.client, numbers })')
+          .replace('({ scope, client: runtime.client })', 'globalThis.__stockOwner({ scope, client: runtime.client })')
           .replace('({ pickOwner, chosenScope, extent })', 'globalThis.__stockChoiceOwner({ pickOwner, chosenScope, extent })')
           .replace('const [drill, dispatch] = useReducer(reduceDrill, CLOSED);', `const [drill] = useReducer(reduceDrill, globalThis.__stockDrill ?? CLOSED);
             const dispatch = action => { globalThis.__stockDrill = reduceDrill(globalThis.__stockDrill ?? CLOSED, action); };`)
@@ -183,7 +250,7 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
     return renderToStaticMarkup(createElement(Widget, { widget: chosen, runtime: scope, active, countrySlot: {} as HTMLElement, onDiagnostics() {}, setOption() {} }));
   };
   return { widget, runtime, rows, pins, render, async close() {
-    for (const key of ['__stockCountryPick', '__stockCatalogue', '__stockReplies', '__stockChip', '__stockFollow', '__stockActorNumbers', '__stockReply', '__stockRequests', '__stockWithin', '__stockNumbers', '__stockOwner', '__stockChoiceOwner', '__stockDrill',
+    for (const key of ['__stockCountryPick', '__stockCatalogue', '__stockReplies', '__stockChip', '__stockFollow', '__stockCatalogueNumbers', '__stockReply', '__stockRequests', '__stockWithin', '__stockHourNumbers', '__stockCatalogueOf', '__stockOwner', '__stockChoiceOwner', '__stockDrill',
       '__stockDrillOwner', '__stockSelection', '__stockChoices', '__stockRowPick', '__stockCharts', '__stockParts', '__stockHour', '__stockHost', '__stockArtwork', '__stockTooltip'] as const) delete host[key];
     await vite.close();
   } };
@@ -291,7 +358,8 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
     assert.match(view.render(pinned), /Available <b>20<\/b> − needed <b>15<\/b> = <b class="is-positive">surplus \+5<\/b>/);
     // Per model: the game's output a day, the IC its lines put in a day, and their lowest to highest cost per unit.
     assert.match(view.render(pinned), /<span role="cell">Recorded rifles<\/span><b role="cell">999<\/b><b role="cell">45<\/b><b role="cell">0\.55–0\.65<\/b>/);
-    assert.ok(host.__stockRequests!.every(request => object(request.params) && request.params.tag === 'AAA' && request.product === 'equipment-stockpile'));
+    assert.ok(host.__stockRequests!.every(request => object(request.params) && (request.product === 'equipment-stockpile-at' ? request.params.tag === 'AAA'
+      : request.product === 'equipment-stockpile-catalogue' && JSON.stringify(request.params.holders) === '[{"tag":"AAA"}]')));
   } finally { await view.close(); }
 });
 
@@ -382,8 +450,5 @@ test('actual request/render ownership retains held numeric parts through content
     assert.deepEqual(host.__stockRequests, []);
     host.__stockReply = undefined;
     assert.match(view.render(view.widget, { ...view.runtime, client: fixtureClient() }), /Loading the stockpile/);
-    host.__stockReply = { ...reply, logistics: [{ ...reply.logistics[0], balance: raw('600000') }, reply.logistics[1]] };
-    view.render();
-    assert.equal(host.__stockHost!.open, false);
   } finally { await view.close(); }
 });

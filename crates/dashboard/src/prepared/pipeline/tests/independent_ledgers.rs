@@ -1,12 +1,12 @@
-//! Construction, equipment stockpiles, production, country experience and
-//! fuel prepared on their own beside the hourly walk, publish and save
+//! Construction, production, country experience and fuel prepared on their
+//! own beside the hourly walk, publish and save
 //! exactly what hourly preparation does, refuse where it refuses, answer
 //! their queries while the hourly walk has accepted nothing, and build no
 //! frame for the quiet hours between their changes and daily reads.
 use super::family_lanes::{assert_payloads_equal, assert_versions, payloads};
 use super::*;
 use crate::prepared::prepass;
-use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION, STOCKPILE};
+use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION};
 use replay_data::{
     rows::BuildingConstructionRow, rows::BuildingRow, rows::ConstructionLineOutputRow,
     rows::CountryAppearanceRow, rows::CountryExperienceGainRow, rows::CountryExperienceRow,
@@ -32,16 +32,15 @@ const INFANTRY: u32 = 601;
 
 /// The families, under their status and refusal names, with the prefix of
 /// every section each publishes and its field in the hourly branch state.
-const LEDGERS: [(&str, &str); 5] = [
+const LEDGERS: [(&str, &str); 4] = [
     ("construction", "construction"),
-    ("stockpile", "stockpile"),
     ("production", "production"),
     ("experience", "experience"),
     ("fuel", "fuel"),
 ];
 
-fn ledgers() -> [&'static dyn independent::Own; 5] {
-    [&CONSTRUCTION, &STOCKPILE, &PRODUCTION, &EXPERIENCE, &FUEL]
+fn ledgers() -> [&'static dyn independent::Own; 4] {
+    [&CONSTRUCTION, &PRODUCTION, &EXPERIENCE, &FUEL]
 }
 
 /// The day of `hour` as read at daily slot `slot`: it advances at the slot.
@@ -543,68 +542,6 @@ fn economy_ledgers_prepared_on_their_own_publish_and_save_what_hourly_preparatio
 }
 
 #[test]
-fn stockpile_variant_changes_and_missing_intervals_publish_and_save_as_hourly_preparation() {
-    use replay_data::rows::{VariantChangeRow, VariantScalarChange};
-    for rename in [true, false] {
-        let label = if rename { "rename" } else { "unavailable" };
-        let renamed = b"Renamed equipment";
-        let frames = (0..32)
-            .map(|offset| {
-                let mut frame = ledger_frame(1, BASE + offset);
-                if rename
-                    && offset >= 25
-                    && let TableView::Complete(TableRows::VariantDefinitions(rows)) =
-                        &mut *frame.tables[TableId::VariantDefinitions.index()]
-                {
-                    rows[0].display_name = renamed.to_vec();
-                }
-                if offset == 25 {
-                    *frame.tables[TableId::VariantChanges.index()] = if rename {
-                        TableView::Complete(TableRows::VariantChanges(vec![VariantChangeRow {
-                            sequence: 1,
-                            hour: frame.hour,
-                            variant: 10,
-                            scalar: Some(VariantScalarChange {
-                                display_name: Some(renamed.to_vec()),
-                                ..Default::default()
-                            }),
-                            ..Default::default()
-                        }]))
-                    } else {
-                        TableView::Unavailable {
-                            reason: "synthetic variant change interval unavailable".into(),
-                        }
-                    };
-                }
-                frame
-            })
-            .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let mut fixture = Fixture::new(&replay);
-        let expected = hourly(&mut fixture, "stockpile-variant-changes", plain);
-        let source = fixture.source("stockpile-variant-changes");
-        independent::with_test_families(&ledgers(), || {
-            prepass::with_test_prepass(2, None, || plain(&source))
-        });
-        let actual = payloads(&source, None);
-        clear(source);
-        assert_same(&actual, &expected, label, true);
-        if rename {
-            let continuation = decoded(&actual[&("stockpile-continuation-1".into(), 0)]);
-            assert!(
-                continuation["names"]["versions"]["10"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|version| version["first_hour"] == BASE + 25
-                        && version["raw"]["display_name"] == "Renamed equipment"),
-                "a writer-observed rename is dated between the daily variant reads"
-            );
-        }
-    }
-}
-
-#[test]
 fn economy_ledgers_prepared_on_their_own_commit_resume_reload_and_append_as_hourly_preparation() {
     let first = scenario(3, false);
     let grown = scenario(5, true);
@@ -650,7 +587,6 @@ fn economy_ledgers_prepared_on_their_own_refuse_where_hourly_preparation_does() 
     let replay = scenario(5, true);
     let products = [
         ("construction", "construction-log"),
-        ("stockpile", "equipment-stockpile"),
         ("production", "production-select"),
         ("experience", "country-experience"),
         ("fuel", "country-fuel"),
@@ -766,7 +702,6 @@ fn economy_ledgers_answer_from_their_own_coverage_while_the_hourly_walk_accepts_
                 "construction-log",
                 "construction-log-manifest",
                 "construction-spending",
-                "equipment-stockpile",
                 "production-select",
                 "production-spending",
                 "country-experience",
@@ -1293,97 +1228,6 @@ fn banked_experience_summaries_draw_the_prefix_without_decoding_the_tail() {
             assert_eq!(complete, expected, "the complete reply is unchanged");
             assert_eq!(complete["coverage"]["complete"], true);
         }
-        clear(source);
-    });
-}
-
-/// Before the stockpile's coverage completes, a table at one hour answers
-/// from the recording without a prepared page: each holder's last stock, line
-/// and logistics reads carry to the hour as preparation carries them, looking
-/// back over earlier blocks within a day. Its values at the hour are those
-/// the complete reply gives. The old reply waited for complete coverage.
-#[test]
-fn a_stockpile_table_at_an_hour_answers_from_the_recording_before_coverage_completes() {
-    independent::with_test_hourly(|| {
-        let replay = daily_scenario();
-        let mut fixture = Fixture::new(&replay);
-        let table = |source: &Source, hour: i32| {
-            query(
-                source,
-                "equipment-stockpile",
-                serde_json::json!({ "branchId": "1", "tag": "000", "from": BASE + hour,
-                    "to": BASE + hour, "width": 1, "included": [] }),
-            )
-            .unwrap()
-        };
-        // Before the first reads, inside a block after a read, after reads
-        // in earlier blocks of the day before, and at the branch's end.
-        let hours = [6, 10, 40, 83];
-        let source = fixture.source("stockpile-at-hour");
-        let (store, key) = super::super::super::files(&source, None).unwrap();
-        let mut writer = store.replace(key.clone()).unwrap();
-        json(
-            &mut writer,
-            &coverage_section(1),
-            &Coverage {
-                schema: SCHEMA,
-                first_hour: BASE,
-                last_hour: BASE + 5,
-                complete: false,
-            },
-        )
-        .unwrap();
-        writer.commit().unwrap();
-        let cold: Vec<_> = hours.iter().map(|&hour| table(&source, hour)).collect();
-        clear(source);
-        let source = fixture.source("stockpile-at-hour");
-        plain(&source);
-        let at = |runs: &serde_json::Value, hour: i32| {
-            runs.as_array()
-                .unwrap()
-                .iter()
-                .find(|run| {
-                    run["firstHour"].as_i64().unwrap() <= i64::from(BASE + hour)
-                        && i64::from(BASE + hour) <= run["lastHour"].as_i64().unwrap()
-                })
-                .map(|run| run["amountRaw"].clone())
-        };
-        for (&hour, cold) in hours.iter().zip(&cold) {
-            assert!(!cold.is_null(), "a table at {hour} before completion");
-            assert_eq!(cold["coverage"]["complete"], false);
-            assert_eq!(cold["pending"], serde_json::json!([]));
-            assert_eq!(
-                cold["approximate"],
-                serde_json::json!([{"firstHour": BASE + hour, "lastHour": BASE + hour}])
-            );
-            let complete = table(&source, hour);
-            assert!(complete["prepared"].is_object());
-            for (list, key, fields) in [
-                (
-                    "variants",
-                    "id",
-                    &["stock", "daily", "dailyIc", "unitCostLow", "unitCostHigh"][..],
-                ),
-                ("logistics", "key", &["balance", "stock", "available"][..]),
-            ] {
-                for row in complete[list].as_array().unwrap() {
-                    let sampled = cold[list]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .find(|other| other[key] == row[key]);
-                    for field in fields {
-                        let expected = at(&row[*field], hour);
-                        let actual = sampled.and_then(|sampled| at(&sampled[*field], hour));
-                        assert_eq!(actual, expected, "{list} {field} at {hour}");
-                    }
-                }
-            }
-        }
-        assert!(
-            at(&cold[2]["variants"][0]["stock"], 40).is_some(),
-            "the stock read of the day before carries to the hour"
-        );
         clear(source);
     });
 }

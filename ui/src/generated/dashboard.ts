@@ -3817,6 +3817,7 @@ export type ProductionBreakdownParams = { branchId: string, tag: string, key: st
  */
 originHour?: number, };
 export type ProductionLineBreakdownReply = { branchId: string, tag: string, key: string, groups: Array<ProductionModifierChoice>, reads: Array<number>, runs: Array<ProductionModifierRun>, warnings: Array<string>, };
+export type StockpileAtParams = { branchId: string, tag: string, hour: number, };
 export type AmountRun = { firstHour: number, lastHour: number, amountRaw: string | null, };
 export type Domain = "land" | "air" | "naval";
 export type StockVariant = {
@@ -3874,11 +3875,6 @@ key: string, balance: Array<AmountRun>, stock: Array<AmountRun>,
  * or unrecorded observations. It is independent of the stock series.
  */
 available: Array<AmountRun>, };
-export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
-export type StockpileOperandSummary = { field: string, id: string, key: string, values: ChartSummary, presence: ChartSummary, samples: Array<[string | null, string | null, string | null, string | null]>, rowSamples: Array<[number | null, number | null, number | null, number | null]>, };
-export type StockpileGroupSummary = { key: string, operands: Array<StockpileOperandSummary>, };
-export type StockpileNamesPage = { first: string, total: string, rows: Array<StockVariantName>, incoming: StockVariantName | null, cursor: string | null, };
-export type StockpileDisplay = { from: number, to: number, stockRecorded: boolean, linesRecorded: boolean, balanceRecorded: boolean, aiRecorded: boolean, operands: Array<StockpileOperandSummary>, groups: Array<StockpileGroupSummary>, coverage: Array<ChartSummary>, nonzeroLogistics: Array<string>, choices: { [key in string]?: StockpileChoicePeak }, designs: { [key in string]?: Array<string> }, };
 export type EquipmentStockpileReply = { branchId: string, tag: string,
 /**
  * The recorded campaign identity (`ReplayMetadata::campaign_key`). A variant's
@@ -3932,6 +3928,62 @@ aiHours: Array<HourSpan>,
  * at it is not a real sum.
  */
 needBoundRaw: string, warnings: Array<string>, };
+export type StockpileHolder = { tag: string, within?: Array<HourSpan>, };
+export type StockpileCatalogueParams = { branchId: string, holders: Array<StockpileHolder>,
+/**
+ * The types a group counts; empty counts every type.
+ */
+included: Array<string>, };
+export type StockpileChoicePeak = { raw: string, stockDrawable: boolean, shareDrawable: boolean, };
+export type StockpileCatalogueVariant = {
+/**
+ * Its native handle, as a decimal string.
+ */
+id: string,
+/**
+ * Its final nonempty equipment token; empty where no read named it.
+ */
+token: string,
+/**
+ * Its type's archetype key; null where content does not resolve its type.
+ */
+archetype: string | null, names: Array<StockVariantName>,
+/**
+ * Every design recorded under its handle in the branch.
+ */
+designs: Array<string>, };
+export type StockpileCatalogueLogistics = {
+/**
+ * The archetype key, or the unresolved mark and the recorded token's spelling.
+ */
+key: string, nonzero: boolean, };
+export type StockpileCatalogueReply = { branchId: string, tags: Array<string>, campaignKey: string, decimals: number,
+/**
+ * Every archetype a variant or logistics type belongs to, in the equipment database's order.
+ */
+types: Array<StockType>, variants: Array<StockpileCatalogueVariant>, logistics: Array<StockpileCatalogueLogistics>,
+/**
+ * The hours the stockpile, the production lines and the logistics record (while the
+ * game computed a balance) were read for the holders within their hours, ascending.
+ */
+reads: Array<number>, lineReads: Array<number>, logisticsReads: Array<number>, stockHours: Array<HourSpan>, lineHours: Array<HourSpan>, balanceHours: Array<HourSpan>,
+/**
+ * Hours the holder was AI-controlled, so the game computed no balance.
+ */
+aiHours: Array<HourSpan>, needBoundRaw: string,
+/**
+ * Each group's peak and drawability, by its key (`[kind, key]` as JSON).
+ */
+choices: { [key in string]?: StockpileChoicePeak }, warnings: Array<string>, };
+export type StockpileMeasure = "stock" | "share" | "need";
+export type StockpileLine = {
+/**
+ * The group's key: `[kind, key]` as JSON, a variant's key its handle.
+ */
+group: string, measure: StockpileMeasure, };
+export type StockpileChartParams = { branchId: string, holders: Array<StockpileHolder>, included: Array<string>, lines: Array<StockpileLine>, from: number, to: number, width: number, };
+export type StockpileChartLine = { group: string, measure: StockpileMeasure, summary: ChartSummary, };
+export type StockpileChartReply = { branchId: string, lines: Array<StockpileChartLine>, warnings: Array<string>, };
 export type StockpileArtworkParams = { branchId: string, tag: string, hour: number,
 /**
  * Exact variant rows need their own pictures, instead of a type's best.
@@ -5781,8 +5833,8 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "division-equipment-history", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
+export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "division-equipment-history", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile-at", "equipment-stockpile-catalogue", "equipment-stockpile-chart", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** Products served separately from whole-branch history reads. */
-export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;
+export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "equipment-stockpile-at", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;
 /** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */
 export const COUNTRY_COLOURS_OVER_BUDGET = "Country colours exceed the product reply budget";

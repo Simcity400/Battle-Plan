@@ -5,16 +5,15 @@ import { createPortal } from 'react-dom';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
-import { dayLabel, drawLine, drawValueRule, placeEndLabels } from '../../charts/draw';
+import { dayLabel, drawValueRule, placeEndLabels } from '../../charts/draw';
 import { drawLineSummary, extentOfSummary, pickSummaryLines, summaryGeometry } from '../../charts/chartSummary';
 import { jumpItem } from '../../charts/jump';
-import { pickLines } from '../../charts/linePick';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import type { DrillAction } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
 import { lineStyles } from '../../charts/palette';
-import { clipToSpans, extentOfAll, lineEndHour, runAt } from '../../charts/series';
+import { clipToSpans, lineEndHour, runAt } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
 import type { ChartLayer } from '../../charts/TimeChart';
 import type { ChartTokens } from '../../charts/tokens';
@@ -36,12 +35,13 @@ import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useParityRows } from '../../dashboard/parityRows';
-import type { EquipmentStockpileReply } from '../../generated/dashboard';
+import type { EquipmentStockpileReply, StockpileCatalogueReply, StockpileHolder } from '../../generated/dashboard';
 import { BREAKDOWN, OPTIONS } from './definition';
-import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
+import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, labelAt,
   SAVED_DESIGN_UNAVAILABLE, overTimeTooltip, shareModeOf, shareOf, stockAt, stockChoices, stockGroups, dailyAt, chartDrawable } from './stockpileData';
-import { usePreparedStockpileChart } from './usePreparedStockpileChart';
-import { groupIn } from './preparedStockpileChart';
+import { useStockpileChart } from './useStockpileChart';
+import { groupIn, servedHour, stockpileGroupKey } from './stockpileCatalogue';
+import type { PreparedStockpileReply } from './stockpileCatalogue';
 import type { Grouping, StockGroup } from './stockpileData';
 import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
 import StockpileDrill from './StockpileDrill.tsx';
@@ -70,7 +70,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data: reply, numbers: legacyNumbers, error, retry } = useEquipmentStockpile(widget, runtime, active, within);
+  const { track, tag, holders, catalogue, data: reply, error, retry } = useEquipmentStockpile(widget, runtime, active, within);
   const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
     balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
   const windowHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -88,8 +88,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
   const anchor = useRef<HTMLDivElement>(null);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, widget.time, within]);
-  const numbers = runtime.client.preparedQuery ? undefined : legacyNumbers;
-  const pickOwner = useMemo(() => ({ scope, client: runtime.client, numbers }), [scope, runtime.client, numbers]);
+  const pickOwner = useMemo(() => ({ scope, client: runtime.client }), [scope, runtime.client]);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
   const [selection, setSelection] = useState<{ owner: object; key: string; mode: StockpileMode } | null>(null);
@@ -108,7 +107,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const [countryPick, setCountryPick] = useState<{ owner: object; selection: DatedCountrySelection } | null>(null);
   const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
   const missingSavedDate = saved && shownDrill.breakdown === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
-  const actor = useStockpileCountry(selectedCountry, runtime, track, active, at);
+  const actor = useStockpileCountry(selectedCountry, runtime, track, active, at, included);
   const detailData = selectedCountry ? actor.data : undefined;
   useEffect(() => {
     const warnings = (saved || shownDrill.breakdown !== null ? detailData : data)?.warnings;
@@ -130,7 +129,8 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const showingDetail = saved || shownDrill.breakdown !== null;
   const exactData = showingDetail ? detailData : data;
   const exactGroups = showingDetail ? picked ? [picked] : [] : groups;
-  const exactHour = showingDetail ? at : head;
+  // Figures are shown at the hour their reply answers, which a followed read holds while the next loads.
+  const exactHour = showingDetail ? servedHour(detailData, at) : servedHour(data, head);
   const parityLabel = showingDetail ? 'Equipment stockpile breakdown exact values' : 'Equipment stockpile exact values';
   useParityRows(anchor, () => stockpileParityModel(exactData, exactGroups, exactHour, parityLabel),
     { ready: () => stockpileParityModel(exactData, exactGroups, exactHour, parityLabel).complete });
@@ -163,10 +163,10 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   };
   const main = data ? <div className="equipment-stockpile">
     {options.view === 'time'
-      ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead}
-        within={within} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
+      ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track}
+        extent={extent} playhead={playhead} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
         onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
-      : <StockpileTable data={data} hour={head} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
+      : <StockpileTable data={data} hour={servedHour(data, head)} included={included} count={count} setCount={setOption ? value => setOption('count', value) : undefined} narrow={narrowTableOf(options)}
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
@@ -174,7 +174,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
-        : picked && detailData ? <StockpileDrill data={detailData} group={picked} hour={at} client={runtime.client} track={track} aliases={actor.spans}
+        : picked && detailData ? <StockpileDrill data={detailData} catalogue={actor.catalogue} holders={actor.holders} included={included} group={picked}
+    hour={servedHour(detailData, at)}
+    client={runtime.client} track={track}
     extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
     hoursPerSecond={motionOf(runtime.clock.getSnapshot())} active={active && (saved || shownDrill.breakdown !== null)}
     pickOwner={detailPickOwner} onPick={hour => act(saved
@@ -202,8 +204,9 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
 /** The chosen groups over time, each in its own palette colour, with the zero line
  * emphasised and names at the line ends: the surplus as a share
  * of need where the game computed it, else what was in stock. */
-function OverTime({ data, within, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
-  data: EquipmentStockpileReply; within?: readonly import('../../charts/series').Span[] | null; tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
+function OverTime({ data, catalogue, holders, included, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
+  data: EquipmentStockpileReply; catalogue: StockpileCatalogueReply | undefined; holders: readonly StockpileHolder[]; included: readonly string[];
+  tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
   extent: [number, number]; playhead: number | null; active: boolean; grouping: Grouping; groups: StockGroup[];
   onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption'];
   pickOwner: object; onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
@@ -211,7 +214,9 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
   // The share chart wherever the balance is recorded; variants have none of their own.
   const shareMode = shareModeOf(data, grouping);
   const head = Math.floor(playhead ?? extent[1]);
-  const series = useMemo(() => new Map(groups.map(group => [group.key, chartRuns(data, group, grouping)])), [data, groups, grouping]);
+  // The legend's figures are as of the hour the shown reply answers; the keyboard steps through every read.
+  const shown = servedHour(data, head);
+  const navigation = (data as PreparedStockpileReply).prepared;
   const drawable = useMemo(() => groups.filter(group => chartDrawable(data, group, grouping)), [data, groups, grouping]);
   // Choices are stored as `setToken(choiceKey)` (the kit's `storedChoices`), so a key a
   // setting cannot store can be chosen too, and a variant is stored with its design, so
@@ -235,7 +240,9 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
   const playback = (options.playback as PlaybackMode) ?? 'draw-in';
   const until = shownUntil(playhead, playback, options.afterPlayhead === true);
   const selectedGroups = useMemo(() => groups.filter(group => chosen.includes(group.key)), [groups, chosen]);
-  const incoming = usePreparedStockpileChart(runtime.client, track, data.tag, selectedGroups, grouping, head, active, [shareMode ? 'reads-2' : 'reads-0'], within ?? undefined);
+  const requests = useMemo(() => selectedGroups.map(group => ({ key: group.key, group: stockpileGroupKey(group), measure: shareMode ? 'share' as const : 'stock' as const })),
+    [selectedGroups, shareMode]);
+  const incoming = useStockpileChart(runtime.client, track, catalogue, holders, included, requests, head, active);
   // Each line keeps its colour from the game's order where it is free.
   const styles = useMemo(() => lineStyles(chosen.map(key => ({ key, preferred: groups.findIndex(group => group.key === key) })), tokens.categories), [chosen, groups, tokens]);
   // Only the hours shown (a date range, or the branch): an axis dragged past a range
@@ -244,21 +251,19 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
     const group = groups.find(item => item.key === key);
     const style = styles.get(key);
     const summary = incoming.summaries.get(key);
-    return group && style ? [{ group: groupIn(incoming.displayData ?? data, group), color: style.color, dash: style.primary, summary,
-      runs: clipToSpans(incoming.prepared ? summary?.runs ?? [] : series.get(key) ?? [], [{ firstHour: extent[0], lastHour: extent[1] }]) }] : [];
-  }), [chosen, groups, styles, series, incoming.summaries, incoming.displayData, incoming.prepared, data, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+    return group && style ? [{ group, color: style.color, dash: style.primary, summary,
+      runs: clipToSpans(summary?.runs ?? [], [{ firstHour: extent[0], lastHour: extent[1] }]) }] : [];
+  }), [chosen, groups, styles, incoming.summaries, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const chosenScope = JSON.stringify(chosen);
   const choiceOwner = useMemo(() => ({ pickOwner, chosenScope, extent }), [pickOwner, chosenScope, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selection, setSelection] = useState<{ owner: object; hour: number; keys: readonly string[] } | null>(null);
   const pending = selection?.owner === choiceOwner ? selection : null;
   const layers = useMemo<ChartLayer[]>(() => [
     { draw: (ctx, frame, chartTokens) => drawValueRule(ctx, frame, chartTokens, 0) },
-    ...lines.map((line): ChartLayer => ({
-      draw: (ctx, frame, chartTokens, state) => line.summary
-        ? drawLineSummary(ctx, frame, chartTokens, line.summary, line.color, false, state.playhead, { dash: line.dash.length ? line.dash : undefined })
-        : drawLine(ctx, frame, chartTokens, line.runs, line.color, { until: state.playhead ?? undefined, dash: line.dash.length ? line.dash : undefined }),
-      extent: x => line.summary ? extentOfSummary(line.summary, x[0], Math.min(x[1], until ?? x[1])) : extentOfAll([line.runs], x[0], Math.min(x[1], until ?? x[1])),
-    })),
+    ...lines.flatMap((line): ChartLayer[] => line.summary ? [{
+      draw: (ctx, frame, chartTokens, state) => drawLineSummary(ctx, frame, chartTokens, line.summary!, line.color, false, state.playhead, { dash: line.dash.length ? line.dash : undefined }),
+      extent: x => extentOfSummary(line.summary!, x[0], Math.min(x[1], until ?? x[1])),
+    }] : []),
   ], [lines, until]);
   const actions = new Map(groups.map(group => {
     const choice = choiceKey(group, head, chosenTokens.map(contentKey));
@@ -282,10 +287,10 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
         selected={chosen.map(setToken)} onToggle={value => pick(contentKey(value))} onReset={() => setOption(chosenKey, '')} /></div>}
     {!endLabels && <Legend label="Shown over time" items={lines.map(line => {
       if (shareMode) {
-        const value = shareOf(balanceAt(data, line.group, head));
+        const value = shareOf(balanceAt(data, line.group, shown));
         return { id: line.group.key, label: labelAt(line.group, grouping, head), color: line.color, value: value == null ? 'Not recorded' : formatPercent(value) };
       }
-      const stock = stockAt(data, line.group, head);
+      const stock = stockAt(data, line.group, shown);
       return { id: line.group.key, label: labelAt(line.group, grouping, head), color: line.color, value: stock == null ? 'Not recorded' : formatAmount(stock, data.decimals) };
     })} />}
     <p className="stockpile-caption">{caption}</p>
@@ -309,13 +314,12 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
         revision={`${head}:${data.branchId}:${chosen.join(' ')}:${grouping}:${viewport}:${endLabels}:${shareMode}`}
         // The keyboard steps through the reads; the kit adds the start of a range or zoom
         // that begins between two reads, so the value carried into it is reachable too.
-        keyHours={shareMode ? data.logisticsReads : data.reads}
+        keyHours={shareMode ? navigation?.logisticsReads ?? data.logisticsReads : navigation?.reads ?? data.reads}
         pickOwner={choiceOwner} onPick={(hour, context) => {
-          const reached = incoming.data?.prepared?.from === hour ? incoming.data : undefined;
+          const reached = incoming.data?.prepared?.hour === hour ? incoming.data : undefined;
           const known = new Set(lines.filter(line => runAt(line.summary?.runs ?? [], hour) || reached
             && (shareMode ? shareOf(balanceAt(reached, groupIn(reached, line.group), hour)) : stockAt(reached, groupIn(reached, line.group), hour)) !== null).map(line => line.group.key));
-          const keys = incoming.prepared ? pickSummaryLines(lines.flatMap(line => line.summary ? [{ key: line.group.key, summary: line.summary }] : []), hour, known, context)
-            : pickLines(lines.map(line => ({ key: line.group.key, runs: line.runs })), hour, context);
+          const keys = pickSummaryLines(lines.flatMap(line => line.summary ? [{ key: line.group.key, summary: line.summary }] : []), hour, known, context);
           if (keys.length === 1) {
             const group = lines.find(line => line.group.key === keys[0])?.group;
             if (group) { setSelection(null); onPick(group, hour, shareMode ? 'balance' : 'stock'); }
@@ -323,7 +327,7 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
         }}
         tooltip={hour => {
           if (hour < extent[0] || hour > extent[1]) return null;
-          const reached = incoming.prepared ? incoming.data?.prepared?.from === hour ? incoming.data : undefined : data;
+          const reached = incoming.data?.prepared?.hour === hour ? incoming.data : undefined;
           if (!reached) return null;
           const ai = shareMode && balanceMode(reached, hour) === 'ai';
           // A variant is named as recorded at the hovered hour.
@@ -335,21 +339,16 @@ function OverTime({ data, within, tokens, viewport, options, runtime, track, ext
         overlay={(ctx, frame, chartTokens) => {
           if (!endLabels) return;
           const ends = lines.flatMap(line => {
-            if (line.summary) {
-              const end = summaryGeometry(frame, line.summary, false, until).end;
-              const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
-                ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
-              return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
-            }
+            if (!line.summary) return [];
+            const end = summaryGeometry(frame, line.summary, false, until).end;
             // At the end of the line drawn, never past the recorded hours.
-            const last = lineEndHour(line.runs, frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
-            const run = last == null ? null : runAt(line.runs, last);
-            return run && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: frame.toY(run.value), text: labelAt(line.group, grouping, last) }] : [];
+            const last = line.summary.buckets.filter(bucket => bucket !== null).at(-1)?.lastHour
+              ?? lineEndHour(line.summary.runs ?? [], frame.x[0], Math.min(until ?? extent[1], frame.x[1], extent[1]));
+            return end && last != null ? [{ id: line.group.key, color: line.color, muted: false, y: end.y, text: labelAt(line.group, grouping, last) }] : [];
           });
           placeEndLabels(ctx, frame, chartTokens, ends);
         }}
-        onSummaryView={incoming.onSummaryView} onHover={incoming.onHover} onNavigateHour={incoming.onNavigateHour}
-        keyboardHour={incoming.keyboardHour} keyboardRevision={incoming.keyboardRevision}
+        onSummaryView={incoming.onSummaryView} onHover={incoming.onHover}
         onContextMenu={(hour, x, y) => onMenu(hour, x, y)} />
     </div>
   </>;

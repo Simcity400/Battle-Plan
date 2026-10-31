@@ -2678,7 +2678,9 @@ fn corpus_checks_new_main_products_through_their_shared_preparation() {
     let cases: &[Case<'_>] = &[
         ("subjects", &autonomy, &[], None, None),
         ("occupied-states", &[], &[], Some(0), None),
-        ("equipment-stockpile", &equipment, &[], None, None),
+        ("equipment-stockpile-at", &equipment, &[], None, None),
+        ("equipment-stockpile-catalogue", &equipment, &[], None, None),
+        ("equipment-stockpile-chart", &equipment, &[], None, None),
         ("equipment-produced", &equipment, &[], None, None),
         (
             "equipment-design-detail",
@@ -2895,7 +2897,9 @@ fn shared_equipment_and_autonomy_reader_notes_are_not_repeated_by_products() {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     let checks = check(Arc::clone(&catalogue.content), "english");
     for key in [
-        "equipment-stockpile",
+        "equipment-stockpile-at",
+        "equipment-stockpile-catalogue",
+        "equipment-stockpile-chart",
         "equipment-produced",
         "equipment-design-detail",
         "production-spending",

@@ -9,9 +9,10 @@ import { campaignToken } from '../../dashboard/chosen.ts';
 import type { ChoiceSource } from '../../dashboard/chosen';
 import { contentKey, setToken } from '../../dashboard/options.ts';
 import { DOMAINS, UNRESOLVED_ARM, UNRESOLVED_MARK, domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
-import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '../../generated/dashboard';
+import type { AmountRun, Domain, EquipmentStockpileReply, HourSpan, StockpileCatalogueReply, StockType, StockVariant, StockVariantName } from '../../generated/dashboard';
 import { chartSummaryFrom } from '../../charts/chartSummary.ts';
-import type { PreparedStockpileReply, StockpilePrepared, StockpileOperand } from './preparedStockpileChart';
+import type { ChartSummary } from '../../charts/chartSummary';
+import type { PreparedStockpileReply } from './stockpileCatalogue';
 
 /** A country's equipment stockpile, from the recorded `Stockpiles` and production
  * lines, and its logistics record: the game's own surplus or shortage per equipment
@@ -23,6 +24,8 @@ import type { PreparedStockpileReply, StockpilePrepared, StockpileOperand } from
  * The game computes the balance only for player-controlled countries. */
 
 const RAW = /^-?\d{1,20}$/;
+/** A group's peak: a sum of 64-bit amounts, held in 128 bits, never below zero. */
+const PEAK = /^\d{1,39}$/;
 const HOUR = (value: unknown) => Number.isInteger(value);
 
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
@@ -30,10 +33,20 @@ const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readon
 const amounts = (runs: readonly AmountRun[]) => Array.isArray(runs) && ordered(runs)
   && runs.every(run => HOUR(run.firstHour) && HOUR(run.lastHour) && (run.amountRaw === null || RAW.test(run.amountRaw)));
 const ascending = (hours: unknown) => Array.isArray(hours) && hours.every((hour, index) => HOUR(hour) && (index === 0 || hours[index - 1] < hour));
+const typesValid = (types: readonly StockType[]) => Array.isArray(types) && types.every(type => typeof type.key === 'string' && type.key.length > 0
+  && (type.name === null || typeof type.name === 'string') && DOMAINS.includes(type.domain)
+  && (type.needNote === null || typeof type.needNote === 'string'))
+  && new Set(types.map(type => type.key)).size === types.length;
+const namesValid = (names: readonly StockVariantName[]) => Array.isArray(names) && names.every((name, index) => HOUR(name.firstHour)
+  && (name.name === null || typeof name.name === 'string') && typeof name.known === 'boolean'
+  && (name.design === null || (typeof name.design === 'string' && name.design.length > 0))
+  && (index === 0 || names[index - 1].firstHour < name.firstHour));
+const spansValid = (spans: unknown) => Array.isArray(spans) && ordered(spans);
+const strings = (values: unknown) => Array.isArray(values) && values.every(value => typeof value === 'string');
 
-/** Checks the reply's shape: types in order with a known domain, each variant's runs
- * in hour order without overlaps and with exact raw values, names in hour order, and
- * reads and known spans ascending. */
+/** Checks an hour's reply (`equipment-stockpile-at`): types in order with a known domain,
+ * each variant's runs in hour order without overlaps and with exact raw values, names in
+ * hour order, and reads and known spans ascending. */
 export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
   const reply = data as EquipmentStockpileReply;
   // A dashboard bridge from before the per-day output sends only a weekly figure, which
@@ -45,15 +58,10 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
   }
   const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && typeof reply.tag === 'string' && typeof reply.campaignKey === 'string'
     && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
-    && Array.isArray(reply.types) && reply.types.every(type => typeof type.key === 'string' && type.key.length > 0
-      && (type.name === null || typeof type.name === 'string') && DOMAINS.includes(type.domain)
-      && (type.needNote === null || typeof type.needNote === 'string'))
-    && new Set(reply.types.map(type => type.key)).size === reply.types.length
+    && typesValid(reply.types)
     && Array.isArray(reply.variants) && reply.variants.every(variant => RAW.test(variant.id) && typeof variant.token === 'string'
       && (variant.archetype === null || reply.types.some(type => type.key === variant.archetype))
-      && Array.isArray(variant.names) && variant.names.every((name, index) => HOUR(name.firstHour) && (name.name === null || typeof name.name === 'string') && typeof name.known === 'boolean'
-        && (name.design === null || (typeof name.design === 'string' && name.design.length > 0))
-        && (index === 0 || variant.names[index - 1].firstHour < name.firstHour))
+      && namesValid(variant.names)
       && amounts(variant.stock) && amounts(variant.daily) && amounts(variant.dailyIc)
       && amounts(variant.unitCostLow) && amounts(variant.unitCostHigh))
     && new Set(reply.variants.map(variant => variant.id)).size === reply.variants.length
@@ -66,21 +74,45 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
     && Array.isArray(reply.aiHours) && ordered(reply.aiHours) && RAW.test(reply.needBoundRaw)
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The equipment stockpile reply is malformed.');
-  const prepared = (reply as PreparedStockpileReply).prepared;
-  return prepared === undefined ? reply : { ...reply, prepared: preparedStockpile(prepared) } as PreparedStockpileReply;
+  return reply;
 }
 
-/** The prepared display with its summaries decoded from the dashboard's columns. */
-function preparedStockpile(prepared: StockpilePrepared): StockpilePrepared {
-  const malformed = () => new Error('The equipment stockpile summary is malformed.');
-  const summary = (value: unknown) => { const decoded = chartSummaryFrom(value); if (!decoded) throw malformed(); return decoded; };
-  const operands = (rows: unknown): StockpileOperand[] => {
-    if (!Array.isArray(rows)) throw malformed();
-    return rows.map((row: StockpileOperand) => ({ ...row, values: summary(row?.values), presence: summary(row?.presence) }));
-  };
-  if (!prepared || !Array.isArray(prepared.coverage) || prepared.groups !== undefined && !Array.isArray(prepared.groups)) throw malformed();
-  return { ...prepared, operands: operands(prepared.operands), coverage: prepared.coverage.map(summary),
-    ...(prepared.groups && { groups: prepared.groups.map(group => ({ ...group, operands: operands(group?.operands) })) }) };
+/** Checks the catalogue (`equipment-stockpile-catalogue`): types as an hour's reply has them, each
+ * variant's names in hour order and its designs, logistics types once each, reads ascending, known
+ * spans ordered, and each group's peak exact. */
+export function validateStockpileCatalogue(data: unknown): StockpileCatalogueReply {
+  const reply = data as StockpileCatalogueReply;
+  const ok = typeof reply === 'object' && reply != null && typeof reply.branchId === 'string' && strings(reply.tags)
+    && typeof reply.campaignKey === 'string' && Number.isInteger(reply.decimals) && reply.decimals >= 0 && reply.decimals <= 12
+    && typesValid(reply.types)
+    && Array.isArray(reply.variants) && reply.variants.every(variant => RAW.test(variant.id) && typeof variant.token === 'string'
+      && (variant.archetype === null || reply.types.some(type => type.key === variant.archetype))
+      && namesValid(variant.names) && strings(variant.designs))
+    && new Set(reply.variants.map(variant => variant.id)).size === reply.variants.length
+    && Array.isArray(reply.logistics) && reply.logistics.every(item => typeof item.key === 'string' && typeof item.nonzero === 'boolean'
+      && (item.key.startsWith(UNRESOLVED_MARK) || reply.types.some(type => type.key === item.key)))
+    && new Set(reply.logistics.map(item => item.key)).size === reply.logistics.length
+    && ascending(reply.reads) && ascending(reply.lineReads) && ascending(reply.logisticsReads)
+    && spansValid(reply.stockHours) && spansValid(reply.lineHours) && spansValid(reply.balanceHours) && spansValid(reply.aiHours)
+    && RAW.test(reply.needBoundRaw) && typeof reply.choices === 'object' && reply.choices != null
+    && Object.values(reply.choices).every(choice => !!choice && PEAK.test(choice.raw) && typeof choice.stockDrawable === 'boolean' && typeof choice.shareDrawable === 'boolean')
+    && strings(reply.warnings);
+  if (!ok) throw new Error('The equipment stockpile catalogue is malformed.');
+  return reply;
+}
+
+/** The chart reply's lines (`equipment-stockpile-chart`), decoded from the dashboard's columns, one per
+ * line asked, each marking the hours preparation can still revise as approximate. */
+export function validateStockpileChart(data: unknown, count: number): ChartSummary[] {
+  const reply = data as { lines?: unknown; warnings?: unknown; approximate?: unknown };
+  const lines = reply && typeof reply === 'object' && Array.isArray(reply.lines) && strings(reply.warnings) ? reply.lines : null;
+  const approximate = reply?.approximate ?? [];
+  if (!lines || lines.length !== count || !spansValid(approximate)) throw new Error('The equipment stockpile chart is malformed.');
+  return lines.map(line => {
+    const summary = chartSummaryFrom((line as { summary?: unknown } | null)?.summary);
+    if (!summary) throw new Error('The equipment stockpile chart is malformed.');
+    return (approximate as HourSpan[]).length ? { ...summary, approximate: approximate as HourSpan[] } : summary;
+  });
 }
 
 /** Lookups built once per reply (held weakly, so a new reply builds its own): types and

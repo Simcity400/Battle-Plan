@@ -4,11 +4,11 @@ import type { EquipmentStockpileReply } from '../../generated/dashboard';
 import type { ParityList } from '../../dashboard/parityRows';
 import { balanceMode, balanceOperandsAt, dailyAt, dailyIcAt, stockAt, variantName } from './stockpileData.ts';
 import type { StockGroup } from './stockpileData';
-import type { PreparedStockpileReply } from './preparedStockpileChart';
+import type { PreparedStockpileReply } from './stockpileCatalogue';
 
 /** Exact displayed facts require one dated reply, independent of chart density. */
 export function stockpileParityModel(reply: EquipmentStockpileReply | undefined, groups: readonly StockGroup[], hour: number, label: string): ParityList {
-  const complete = !!reply && (!(reply as PreparedStockpileReply).prepared || (reply as PreparedStockpileReply).prepared!.from === hour);
+  const complete = !!reply && (!(reply as PreparedStockpileReply).prepared || (reply as PreparedStockpileReply).prepared!.hour === hour);
   const raw = (value: bigint | null) => value === null ? null : String(value);
   const rows = reply ? groups.map(group => {
     const logistics = balanceOperandsAt(reply, group, hour);

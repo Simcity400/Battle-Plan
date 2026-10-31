@@ -350,7 +350,6 @@ macro_rules! unsaved_while_own {
 unsaved_while_own!(
     own_production => "production",
     own_construction => "construction",
-    own_stockpile => "stockpile",
     own_subjects => "subjects",
     own_ideas => "ideas",
     own_experience => "experience",
@@ -442,8 +441,6 @@ struct BranchState {
     resources: Box<crate::products::resource_balance::prepared::Prepared>,
     #[serde(default, skip_serializing_if = "own_trade")]
     trade: Box<crate::products::trade_flows::prepared::Prepared>,
-    #[serde(default, skip_serializing_if = "own_stockpile")]
-    stockpile: Box<crate::products::equipment_stockpile::prepared::Prepared>,
     #[serde(skip)]
     groups: Box<crate::products::country_groups::Scan>,
     group_changes: Box<crate::products::country_groups::changes::Prepared>,
@@ -547,7 +544,6 @@ impl BranchState {
             construction: Default::default(),
             resources: Default::default(),
             trade: Default::default(),
-            stockpile: Default::default(),
             groups: Box::new(crate::products::country_groups::Scan::new(replay, branch)),
             subjects: Box::new(crate::products::subjects::Scan::new(replay, branch)),
             group_changes: Default::default(),
@@ -2694,13 +2690,6 @@ fn run_planned(
         observe,
         crate::products::war_casualties::prepared::prepared_content(source, &context)
     )?;
-    let stockpile_content = time_family!(
-        family_timings,
-        "content.stockpile",
-        observe,
-        crate::products::equipment_stockpile::prepared::Prepared::content(source, content)
-    );
-
     let intelligence_content = time_family!(
         family_timings,
         "content.intelligence",
@@ -3259,7 +3248,6 @@ fn run_planned(
                         construction,
                         resources,
                         trade,
-                        stockpile,
                         groups,
                         group_changes,
                         air_ledger,
@@ -3297,7 +3285,6 @@ fn run_planned(
                     let score_naming = &score_naming;
                     let load_context = &context;
                     let leader_content = leader_content.as_ref();
-                    let stockpile_content = &stockpile_content;
                     let raid_content = raid_content.as_deref();
                     let idea_content = idea_content.as_deref().ok();
                     let intelligence_content = &intelligence_content;
@@ -3462,25 +3449,6 @@ fn run_planned(
                                         cancelled,
                                         changes,
                                     )
-                                )?;
-                                Ok(())
-                            },
-                        ),
-                        lanes::Job::new(
-                            &[("stockpile", 19)],
-                            4300,
-                            move |_family, frame, changes, mut family_timings| {
-                                time_family!(
-                                    family_timings,
-                                    "stockpile",
-                                    observe,
-                                    stockpile.bind_content(stockpile_content)
-                                );
-                                time_family!(
-                                    family_timings,
-                                    "stockpile",
-                                    observe,
-                                    stockpile.observe_changed(replay.format, frame, changes)
                                 )?;
                                 Ok(())
                             },
@@ -3973,7 +3941,6 @@ fn run_planned(
                             );
                             lanes.serial("navy", frame, changes, &mut family_timings)?;
                             lanes.serial("air", frame, changes, &mut family_timings)?;
-                            lanes.serial("stockpile", frame, changes, &mut family_timings)?;
                             coordinator_order = 20;
                             family!(
                                 refused,
@@ -4450,7 +4417,6 @@ fn run_planned(
                         + branch.nukes.bytes()
                         + branch.factories.bytes()
                         + branch.repairs.bytes()
-                        + branch.stockpile.bytes()
                         + branch.parts.bytes()
                         + branch.experience.buffered_bytes()
                         + branch.fuel.buffered_bytes()
@@ -4518,7 +4484,6 @@ fn run_planned(
                         construction,
                         resources,
                         trade,
-                        stockpile,
                         identities,
                         groups,
                         group_changes,
@@ -4804,17 +4769,6 @@ fn run_planned(
                                 trade.flush(writer, source, context, branch, cancelled)
                             )))
                         }),
-                        flush::Task::new(
-                            &[(25, "stockpile")],
-                            move |_, writer, mut family_timings| {
-                                Ok(Some(time_family!(
-                                    family_timings,
-                                    "stockpile",
-                                    flush,
-                                    stockpile.flush(writer, branch, cancelled)
-                                )))
-                            },
-                        ),
                         flush::Task::new(
                             &[(26, "identities"), (32, "event_feed"), (42, "territory")],
                             move |step, writer, mut family_timings| {

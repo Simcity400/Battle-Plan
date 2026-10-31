@@ -1,5 +1,5 @@
-//! The economy ledgers prepared on their own: construction, the equipment
-//! stockpile, production, country experience and fuel. Each is read daily:
+//! The economy ledgers prepared on their own: construction, production,
+//! country experience and fuel. Each is read daily:
 //! its observer acts when a field it reads changes or when one of its tables'
 //! daily reads is dated, and an hour between does nothing but advance its
 //! accepted hours (and, for fuel, carry its ownership proofs and settle the
@@ -36,7 +36,6 @@ use crate::{
         construction_log::{self, NameSource},
         country_fuel,
         country_groups::HourSpan,
-        equipment_stockpile,
     },
 };
 use replay::{container::QuietHours, container::Replay, container::TableFields};
@@ -652,163 +651,6 @@ impl Branch for ConstructionBranch {
     }
 }
 
-// --- Equipment stockpile ---------------------------------------------------
-
-/// The tables the prepared stockpile reads: its numbers and the variant
-/// catalogue that names them.
-const STOCKPILE_TABLES: &[TableId] = &[
-    TableId::Campaign,
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryAppearance,
-    TableId::LexicalTokens,
-    TableId::VariantDefinitions,
-    TableId::VariantModules,
-    TableId::VariantUpgrades,
-    TableId::VariantChanges,
-    TableId::Stockpiles,
-    TableId::ProductionLines,
-    TableId::LogisticsEquipment,
-];
-
-/// The stock, logistics and variant reads the stockpile dates.
-const STOCKPILE_READS: &[TableId] = &[
-    TableId::Stockpiles,
-    TableId::LogisticsEquipment,
-    TableId::VariantDefinitions,
-];
-
-static STOCKPILE_FAMILY: prepass::Family = prepass::Family {
-    name: "stockpile",
-    extract: "stockpile.extract",
-    sequential: "stockpile.sequential",
-    fallback: "stockpile.fallback",
-    tables: STOCKPILE_TABLES,
-    fields: Some(stockpile_fields),
-    start: stockpile_start,
-};
-
-/// What the stockpile's holders and naming read.
-fn stockpile_fields() -> io::Result<Vec<TableFields>> {
-    Ok(vec![
-        // Holders are the countries' keys, slots and tags; the balances
-        // change every hour and are not read.
-        TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
-        TableFields::all(TableId::CountryLinks),
-        // Each change of a numeric table is a row change the holders read;
-        // they are daily and change only at their reads.
-        TableFields::all(TableId::Stockpiles).when_read(),
-        TableFields::all(TableId::ProductionLines),
-        TableFields::all(TableId::LogisticsEquipment).when_read(),
-        // The variant catalogue's tables: any change of them renames
-        // variants (`naming_changed` tests their allocations).
-        TableFields::all(TableId::CountryAppearance),
-        TableFields::all(TableId::LexicalTokens),
-        TableFields::all(TableId::VariantDefinitions).when_read(),
-        TableFields::all(TableId::VariantModules),
-        TableFields::all(TableId::VariantUpgrades),
-        TableFields::all(TableId::VariantChanges),
-    ])
-}
-
-fn stockpile_start(format: FormatVersion) -> Box<dyn Extract> {
-    DailyExtract::start(format, STOCKPILE_READS)
-}
-
-/// Equipment stockpiles.
-pub(in crate::prepared::pipeline) struct Stockpile;
-
-pub(in crate::prepared::pipeline) static STOCKPILE: Stockpile = Stockpile;
-
-impl Own for Stockpile {
-    fn family(&self) -> &'static prepass::Family {
-        &STOCKPILE_FAMILY
-    }
-
-    fn timing(&self) -> &'static str {
-        "independent.stockpile"
-    }
-
-    fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
-        Ok(Box::new(StockpileBranch {
-            prepared: read(load, &continuation("stockpile", branch))?.unwrap_or_default(),
-            format: load.replay.format,
-            bound: false,
-        }))
-    }
-}
-
-/// One branch's stockpile observer.
-struct StockpileBranch {
-    prepared: Box<equipment_stockpile::prepared::Prepared>,
-    format: FormatVersion,
-    /// Its equipment content is bound, as hourly preparation binds it before
-    /// each frame.
-    bound: bool,
-}
-
-impl Ledger for StockpileBranch {
-    fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        if !self.bound {
-            self.prepared
-                .bind_content(&equipment_stockpile::prepared::Prepared::content(
-                    block.source,
-                    block.context.content.as_ref(),
-                ));
-            self.bound = true;
-        }
-        Ok(())
-    }
-
-    fn observe(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
-        self.prepared.observe_changed(self.format, frame, changes)
-    }
-
-    fn quiet(&mut self, first: i32, last: i32, _: &DecodedFrame) -> io::Result<bool> {
-        self.prepared.advance_quiet(first, last)
-    }
-}
-
-impl Branch for StockpileBranch {
-    fn fold(
-        &mut self,
-        facts: Box<dyn Any + Send>,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<(Folded, Option<i32>)> {
-        fold(self, &STOCKPILE_FAMILY, facts, block, observed, check)
-    }
-
-    fn observe_block(
-        &mut self,
-        block: &Block<'_>,
-        observed: &mut Observed<'_>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<Option<i32>> {
-        observe_block(self, &STOCKPILE_FAMILY, block, None, observed, check)
-    }
-
-    fn pending(&self) -> usize {
-        self.prepared.bytes()
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        _: &Replay,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        self.prepared.flush(writer, branch, cancelled)
-    }
-
-    fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        save(writer, &continuation("stockpile", branch), &*self.prepared)
-    }
-}
-
 // --- Production ------------------------------------------------------------
 
 /// The output and variant reads production dates.
@@ -1373,7 +1215,6 @@ fn count_names(family: &str) -> Option<[&'static str; 3]> {
             "construction.observed",
             "construction.quiet",
         ],
-        "stockpile" => ["stockpile.frames", "stockpile.observed", "stockpile.quiet"],
         "production" => [
             "production.frames",
             "production.observed",

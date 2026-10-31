@@ -116,7 +116,7 @@ const SHOWN: Record<string, readonly string[]> = {
   'spirit-history': ['0.through'],
   'ruling-party': ['0.to', '1.hours.0'],
   'resource-balance': ['0.from', '0.to', '0.hours.0'],
-  'equipment-stockpile': ['0.from', '0.to'],
+  'equipment-stockpile': ['1.hour'],
   fuel: ['0.to', '1.reads.0.hour'],
   factories: ['0.from', '0.to'],
   territory: ['0.reads.0.hour'],

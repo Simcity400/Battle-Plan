@@ -30,7 +30,6 @@ pub(super) fn walk_state(branch: u64, hour: i32, state: &BranchState) -> Line {
     walked!(
         production => "production",
         construction => "construction",
-        stockpile => "stockpile",
         subject_changes => "subjects",
         subject_late => "subjects",
         idea_changes => "ideas",

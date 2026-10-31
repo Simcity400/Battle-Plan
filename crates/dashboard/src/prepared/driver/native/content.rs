@@ -51,7 +51,7 @@ pub(crate) struct Content<'s> {
     styles: Once<style_runs::Configured>,
     equipment: Once<Option<Arc<Catalogue>>>,
     politics: Once<Politics>,
-    stockpile: Once<equipment_stockpile::prepared::choices::Content>,
+    stockpile: Once<equipment_stockpile::emit::Content>,
 }
 
 impl<'s> Content<'s> {
@@ -109,10 +109,10 @@ impl<'s> Content<'s> {
         })
     }
 
-    /// The stockpile's equipment choices.
-    pub(crate) fn stockpile(&self) -> io::Result<&equipment_stockpile::prepared::choices::Content> {
+    /// The equipment types the stockpile classifies variants and logistics tokens by.
+    pub(crate) fn stockpile(&self) -> io::Result<&equipment_stockpile::emit::Content> {
         self.stockpile.get(|| {
-            Ok(equipment_stockpile::prepared::Prepared::content(
+            Ok(equipment_stockpile::emit::Content::load(
                 self.source,
                 self.context.content.as_ref(),
             ))

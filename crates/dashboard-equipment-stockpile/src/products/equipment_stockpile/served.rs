@@ -1,53 +1,77 @@
-//! The equipment stockpile's served replies: every country's whole history,
-//! some countries' chart fields over each span and their stockpiles at each
-//! hour, and each batch of countries' together.
+//! The equipment stockpile's served replies: every country's catalogue, and some countries'
+//! stockpiles at each hour and their arms' lines over each span.
 
 use dashboard_base::prepared::served::{self, Ask, Plan};
 use serde_json::json;
 use std::io;
 
-pub static PLAN: Plan = Plan {
-    queries,
+pub static AT: Plan = Plan {
+    queries: at,
     unordered: &[],
 };
 
-const FIELDS: [&str; 4] = ["stock", "balance", "logistics-stock", "available"];
+pub static CATALOGUE: Plan = Plan {
+    queries: catalogue,
+    unordered: &[],
+};
+
+pub static CHART: Plan = Plan {
+    queries: chart,
+    unordered: &[],
+};
+
 /// Pixels a summary draws over.
 const WIDTH: u32 = 64;
 
-fn queries(ask: &mut dyn Ask) -> io::Result<()> {
+fn at(ask: &mut dyn Ask) -> io::Result<()> {
     for branch in ask.branches().to_vec() {
         let id = branch.name();
-        let (first, last) = (branch.first_hour, branch.last_hour);
         let countries = ask.countries(branch.id)?;
-        for tag in &countries {
+        for tag in served::some(&countries) {
+            for hour in branch.hours() {
+                ask.ask(
+                    "equipment-stockpile-at",
+                    json!({ "branchId": id, "tag": tag, "hour": hour }),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn catalogue(ask: &mut dyn Ask) -> io::Result<()> {
+    for branch in ask.branches().to_vec() {
+        let id = branch.name();
+        for tag in ask.countries(branch.id)? {
             ask.ask(
-                "equipment-stockpile",
-                json!({ "branchId": id, "tag": tag, "from": first, "to": last, "width": WIDTH }),
+                "equipment-stockpile-catalogue",
+                json!({ "branchId": id, "holders": [{ "tag": tag }] }),
             )?;
         }
+    }
+    Ok(())
+}
+
+fn chart(ask: &mut dyn Ask) -> io::Result<()> {
+    for branch in ask.branches().to_vec() {
+        let id = branch.name();
+        let countries = ask.countries(branch.id)?;
+        let lines: Vec<_> = ["land", "air", "naval"]
+            .into_iter()
+            .flat_map(|arm| {
+                let group = json!(["domain", arm]).to_string();
+                ["stock", "share", "need"]
+                    .map(|measure| json!({ "group": group, "measure": measure }))
+            })
+            .collect();
         for tag in served::some(&countries) {
             for (from, to) in branch.spans() {
                 ask.ask(
-                    "equipment-stockpile",
+                    "equipment-stockpile-chart",
                     json!({
-                        "branchId": id, "tag": tag, "from": from, "to": to,
-                        "width": WIDTH, "fields": FIELDS,
+                        "branchId": id, "holders": [{ "tag": tag }], "lines": lines,
+                        "from": from, "to": to, "width": WIDTH,
                     }),
-                )?;
-            }
-            for hour in branch.hours() {
-                ask.ask(
-                    "equipment-stockpile",
-                    json!({ "branchId": id, "tag": tag, "from": hour, "to": hour, "width": 1 }),
-                )?;
-            }
-        }
-        for batch in served::batches(&countries) {
-            for hour in [first, branch.middle(), last] {
-                ask.ask(
-                    "equipment-stockpile",
-                    json!({ "branchId": id, "tags": batch, "from": hour, "to": hour, "width": 1 }),
                 )?;
             }
         }

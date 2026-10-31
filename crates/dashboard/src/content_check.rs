@@ -464,7 +464,10 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             }
             Ok("Authored occupation-law names and icons checked; occupied state names and law assignments require recorded state identities.".into())
         }
-        equipment_stockpile::EquipmentStockpile::KEY | market_lendlease::MarketLendLease::KEY => {
+        equipment_stockpile::EquipmentStockpileAt::KEY
+        | equipment_stockpile::EquipmentStockpileCatalogue::KEY
+        | equipment_stockpile::EquipmentStockpileChart::KEY
+        | market_lendlease::MarketLendLease::KEY => {
             let catalogue = content.catalogue()?;
             let equipment = content.equipment()?;
             for archetype in equipment.equipment.iter().filter(|kind| kind.is_archetype) {

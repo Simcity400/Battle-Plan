@@ -3044,15 +3044,15 @@ dependencies = [
 name = "dashboard-equipment-stockpile"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "dashboard-base",
  "dashboard-core",
+ "dashboard-series",
  "dashboard-text",
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
- "engine-land-inputs",
  "engine-native",
- "engine-stability",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",

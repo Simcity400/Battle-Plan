@@ -431,8 +431,6 @@ const PENDING_UNDER_COUNTED: &[&str] = &[
     "production",
     // A rename adds catalogue keys and parts without numeric repair rates.
     "repairs",
-    // Choices::advance moves catalogue bounds without value or choice rows.
-    "stockpile",
     // The whole-scan catalogue advances without available tension values.
     "tension",
     // Territory::bytes omits the private HistoryScan its flush writes.

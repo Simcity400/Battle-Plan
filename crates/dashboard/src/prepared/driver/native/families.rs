@@ -246,6 +246,7 @@ emits!(
     division_equipment::emit::Emit => division_equipment::facts::Hour,
     style_runs::emit::Emit => style_runs::facts::Hour,
     politics_ledger::emit::Emit => politics_ledger::facts::Hour,
+    equipment_stockpile::emit::Emit => equipment_stockpile::columnar::Hour,
 );
 
 impl<E: Emits> Emits for Box<E> {
@@ -1197,7 +1198,7 @@ impl Native for Ledger<'_> {
 
 struct Stockpile<'p> {
     format: FormatVersion,
-    content: &'p equipment_stockpile::prepared::choices::Content,
+    content: &'p equipment_stockpile::emit::Content,
 }
 
 fn stockpile<'p>(
@@ -1215,7 +1216,7 @@ fn stockpile<'p>(
 
 impl Native for Stockpile<'_> {
     type Operator = equipment_stockpile::columnar::Projector;
-    type Branch = Box<equipment_stockpile::prepared::Emit>;
+    type Branch = Series<Box<equipment_stockpile::emit::Emit>>;
 
     fn tables(&self) -> &'static [TableId] {
         equipment_stockpile::columnar::TABLES
@@ -1229,20 +1230,19 @@ impl Native for Stockpile<'_> {
         equipment_stockpile::columnar::Projector::new(self.format)
     }
 
-    fn branch(&self, _: u64, _: i32) -> io::Result<Self::Branch> {
-        Ok(Box::new(equipment_stockpile::prepared::Emit::new(
-            self.content,
-        )))
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        let emit = equipment_stockpile::emit::Emit::new(self.format, self.content.clone());
+        Ok(Series::new(Box::new(emit), first))
     }
 
     fn observe(
         &self,
         state: &mut Self::Branch,
-        _: &mut Stage<'_, '_>,
-        _: u64,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
         hour: equipment_stockpile::columnar::Hour,
     ) -> io::Result<()> {
-        state.observe(hour)
+        state.observe(stage, branch, hour.hour, hour)
     }
 
     fn flush(
@@ -1251,24 +1251,29 @@ impl Native for Stockpile<'_> {
         stage: &mut Stage<'_, '_>,
         branch: u64,
         _: Option<i32>,
-        cancelled: &AtomicBool,
+        _: &AtomicBool,
     ) -> io::Result<()> {
-        state.flush(stage.pages()?, branch, cancelled)
+        state.flush(stage, branch)
     }
+
     fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
-        let mut out = Vec::new();
-        state.save(&mut out)?;
-        compress(&out, 3).map(Some)
+        state.save()
     }
 
     fn resume(
         &self,
-        _: &mut Stage<'_, '_>,
-        _: u64,
-        _: &Published,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
         saved: &[u8],
     ) -> io::Result<Self::Branch> {
-        let saved = decompress(saved)?;
-        equipment_stockpile::prepared::Emit::restore(&saved, self.content).map(Box::new)
+        let directory = directory(stage, branch, published, equipment_stockpile::emit::SCHEMA)?;
+        let emit = equipment_stockpile::emit::Emit::load(
+            self.format,
+            self.content.clone(),
+            &directory,
+            saved,
+        )?;
+        Ok(Series::new(Box::new(emit), published.frontier.first_hour))
     }
 }

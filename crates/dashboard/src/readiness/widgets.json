@@ -112,7 +112,8 @@
     {
       "kind": "equipment-stockpile",
       "requests": [
-        {"product": "equipment-stockpile", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "tag": "$tag", "from": "$first", "to": "$first", "width": 1, "included": []}}
+        {"product": "equipment-stockpile-catalogue", "route": "prepared", "params": {"branchId": "$branch", "holders": [{"tag": "$tag"}], "included": []}},
+        {"product": "equipment-stockpile-at", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "hour": "$first"}}
       ]
     },
     {

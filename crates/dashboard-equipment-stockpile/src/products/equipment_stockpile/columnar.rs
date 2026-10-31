@@ -1,7 +1,7 @@
 //! The stockpile's hours from a columnar walk ([`replay::segments`]). Each segment keeps, from
 //! the tables' change lists, which holder every stock, line and logistics row belongs to and
 //! which holders' rows changed since their last read in the segment. An hour that reads a table
-//! hands the ordered emit ([`super::prepared::Emit`]) only those holders' totals, read from
+//! hands the ordered emit ([`super::emit::Emit`]) only those holders' totals, read from
 //! typed columns: every key's at a holder's first read since the segment's last whole hour,
 //! else the keys whose total changed since it last sent them. An hour that reads nothing and
 //! changes nothing the stockpile reads is quiet: it carries nothing but its hour.
@@ -22,6 +22,7 @@ use replay_data::{
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    hash::{Hash, Hasher},
     io,
     mem::size_of,
     sync::Arc,
@@ -75,22 +76,65 @@ pub struct Hour {
 pub(crate) struct Facts {
     /// Whether the stock and line tables, and the logistics record, were read (`slot_read`).
     pub(crate) reads: [bool; 2],
+    /// Whether Countries and CountryLinks are complete, so tags resolve to holders.
+    pub(crate) countries: bool,
     /// Whether each numeric table's rows name holders: it, Countries and CountryLinks are
     /// complete.
     pub(crate) usable: [bool; 3],
-    /// Every holder, at an hour they may have changed.
+    /// Every holder, at a whole hour: any holder or table usable may have changed, and every
+    /// holder's next read of each table is whole.
     pub(crate) holders: Option<Arc<Holders>>,
+    /// Whether this hour's item is the first to carry `holders`, which it is charged for.
+    pub(crate) charged: bool,
     pub(crate) evidence: VariantHour,
     /// The operands of the definitions a complete variant read built.
-    pub(crate) variants: Vec<(u64, RawVariant)>,
+    pub(crate) variants: Vec<Variant>,
     /// The holder slots read this hour, ascending.
     pub(crate) rows: Vec<Read>,
+}
+
+/// A definition's naming operands at a complete variant read.
+pub(crate) struct Variant {
+    pub(crate) id: u64,
+    /// The operands but the hour they were read at, digested: equal operands, equal digests.
+    pub(crate) digest: u128,
+    pub(crate) raw: RawVariant,
+}
+
+impl Variant {
+    fn new(id: u64, mut raw: RawVariant) -> Self {
+        struct Digest(blake3::Hasher);
+        impl Hasher for Digest {
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.update(bytes);
+            }
+            fn finish(&self) -> u64 {
+                unreachable!("a digest is read whole")
+            }
+        }
+        let hour = std::mem::replace(&mut raw.first_hour, 0);
+        let mut digest = Digest(blake3::Hasher::new());
+        raw.hash(&mut digest);
+        raw.first_hour = hour;
+        let bytes = digest.0.finalize();
+        let digest = u128::from_le_bytes(bytes.as_bytes()[..16].try_into().expect("16 bytes"));
+        Self { id, digest, raw }
+    }
 }
 
 /// The holders the complete Countries and CountryLinks resolve.
 pub(crate) struct Holders {
     /// Each tag's canonical slot and country id, as `CountryReads` resolves them.
     pub(crate) identities: BTreeMap<String, (u32, u32)>,
+}
+
+impl Holders {
+    fn heap(&self) -> usize {
+        self.identities
+            .keys()
+            .map(|tag| size_of::<(String, (u32, u32))>() + tag.capacity())
+            .sum()
+    }
 }
 
 /// A table's totals for one holder slot, by key.
@@ -175,22 +219,18 @@ impl Item for Hour {
         let Some(facts) = &self.facts else {
             return 0;
         };
-        // Holders go with whole hours alone, each counting them though they share them.
-        let holders = facts.holders.as_ref().map_or(0, |holders| {
-            size_of::<Holders>()
-                + holders
-                    .identities
-                    .keys()
-                    .map(|tag| size_of::<(String, (u32, u32))>() + tag.capacity())
-                    .sum::<usize>()
-        });
+        // The projector and every whole hour until the holders change share them.
+        let holders = match &facts.holders {
+            Some(holders) if facts.charged => size_of::<Holders>() + holders.heap(),
+            _ => 0,
+        };
         holders
             + size_of::<Facts>()
-            + facts.variants.capacity() * size_of::<(u64, RawVariant)>()
+            + facts.variants.capacity() * size_of::<Variant>()
             + facts
                 .variants
                 .iter()
-                .map(|(_, raw)| variant_heap(raw))
+                .map(|variant| variant_heap(&variant.raw))
                 .sum::<usize>()
             + facts.rows.capacity() * size_of::<Read>()
             + facts.rows.iter().map(Read::heap).sum::<usize>()
@@ -486,6 +526,8 @@ pub struct Projector {
     complete: [bool; 3],
     usable: [bool; 3],
     holders: Arc<Holders>,
+    /// Whether no item carried `holders` yet.
+    uncharged: bool,
     /// The holders' slots, ascending.
     slots: Vec<u32>,
     owners: [Owners; 3],
@@ -496,6 +538,8 @@ pub struct Projector {
     /// sent.
     stale: [bool; 2],
     sent: HashMap<u32, Sent>,
+    /// The logistics tokens whose spelling a read sent in this segment: the emit keeps each.
+    spelled: HashSet<u32>,
     naming: naming::Naming,
 }
 
@@ -516,11 +560,13 @@ impl Projector {
             holders: Arc::new(Holders {
                 identities: BTreeMap::new(),
             }),
+            uncharged: true,
             slots: Vec::new(),
             owners: Default::default(),
             dirty: Default::default(),
             stale: [true; 2],
             sent: HashMap::new(),
+            spelled: HashSet::new(),
             naming: naming::Naming::new()?,
         })
     }
@@ -846,18 +892,22 @@ impl Projector {
         Ok((totals, counts))
     }
 
-    /// The spellings LexicalTokens holds of `tokens`.
+    /// The spellings LexicalTokens holds of `tokens` not sent in this segment yet.
     fn spellings(
-        &self,
+        &mut self,
         state: &segments::State,
         tokens: impl Iterator<Item = u32>,
     ) -> io::Result<Vec<(u32, String)>> {
         let held = columns::table(state, TableId::LexicalTokens)?;
         let mut spellings = Vec::new();
         for token in tokens {
+            if self.spelled.contains(&token) {
+                continue;
+            }
             if let Some(slot) = held.slot(u128::from(token)) {
                 let literal = self.literal(state, slot)?;
                 spellings.push((token, String::from_utf8_lossy(&literal).into_owned()));
+                self.spelled.insert(token);
             }
         }
         Ok(spellings)
@@ -937,6 +987,7 @@ impl Projector {
                 .sum::<usize>()
             + self.sent.capacity() * size_of::<(u32, Sent)>()
             + self.sent.values().map(Sent::heap).sum::<usize>()
+            + self.spelled.capacity() * size_of::<u32>()
             + self.naming.heap()
     }
 }
@@ -948,6 +999,7 @@ impl Operator<World> for Projector {
 
     fn start(&mut self, _: segments::Start<'_>, _: u64, _: i32) -> io::Result<()> {
         self.cold = true;
+        self.spelled.clear();
         Ok(())
     }
 
@@ -993,9 +1045,11 @@ impl Operator<World> for Projector {
             self.slots.sort_unstable();
             self.slots.dedup();
             self.holders = Arc::new(resolved);
+            self.uncharged = true;
         }
         self.complete = NUMERIC.map(|table| columns::complete(state, table));
-        let usable = self.complete.map(|complete| complete && roster.complete());
+        let countries = roster.complete();
+        let usable = self.complete.map(|complete| complete && countries);
         // As a row block reads the whole tables where a numeric table became or stopped
         // being complete, or the holders changed.
         let whole = opens || holders || usable != self.usable;
@@ -1032,24 +1086,40 @@ impl Operator<World> for Projector {
             Vec::new()
         };
         self.cold = false;
+        // A complete variant read that built nothing leaves every name as it is.
         let quiet = !whole
             && !reads[0]
             && !reads[1]
-            && evidence == (VariantHour::Carried { complete: true })
+            && matches!(
+                evidence,
+                VariantHour::Carried { complete: true } | VariantHour::Read
+            )
             && variants.is_empty();
+        let facts = if quiet {
+            None
+        } else {
+            let variants = {
+                let _cpu = replay_frame::cpu::scope("stockpile.columnar.digests", None);
+                variants
+                    .into_iter()
+                    .map(|(id, raw)| Variant::new(id, raw))
+                    .collect()
+            };
+            Some(Box::new(Facts {
+                reads,
+                countries,
+                usable,
+                holders: whole.then(|| Arc::clone(&self.holders)),
+                charged: whole && std::mem::take(&mut self.uncharged),
+                evidence,
+                variants,
+                rows,
+            }))
+        };
         out.push(Hour {
             branch: hour.branch,
             hour: hour.hour,
-            facts: (!quiet).then(|| {
-                Box::new(Facts {
-                    reads,
-                    usable,
-                    holders: whole.then(|| Arc::clone(&self.holders)),
-                    evidence,
-                    variants,
-                    rows,
-                })
-            }),
+            facts,
         })
     }
 
@@ -1088,12 +1158,9 @@ fn relevant(state: &segments::State, table: TableId, mask: u64) -> io::Result<bo
             .any(|written| written & mask != 0))
 }
 
-/// What a projected hour held, for tests.
+/// What a projected hour read, for tests.
 #[cfg(test)]
 pub(crate) struct Shape {
-    pub(crate) hour: i32,
-    pub(crate) quiet: bool,
-    pub(crate) holders: bool,
     /// Each slot read, ascending, with whether its stock, lines and logistics totals were
     /// whole.
     pub(crate) reads: Vec<(u32, [Option<bool>; 3])>,
@@ -1122,12 +1189,6 @@ impl Hour {
                 .map(|totals| matches!(totals, Totals::Whole(_)))
         }
         Shape {
-            hour: self.hour,
-            quiet: self.facts.is_none(),
-            holders: self
-                .facts
-                .as_ref()
-                .is_some_and(|facts| facts.holders.is_some()),
             reads: self
                 .facts
                 .iter()

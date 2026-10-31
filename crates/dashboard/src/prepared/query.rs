@@ -405,6 +405,63 @@ fn supply_reply(
     Ok(serde_json::to_value(reply)?)
 }
 
+/// The equipment stockpile at an hour, its catalogue or its chart lines, from its family's
+/// publication; null before the family publishes the branch, and an hour past what it accepted.
+fn stockpile_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::equipment_stockpile::{at, catalogue, content::Reading, emit};
+    let id = params["branchId"]
+        .as_str()
+        .ok_or_else(|| crate::invalid("Invalid stockpile branch"))?;
+    let branch = branch(source, id)?;
+    let Some(opened) = super::families::open(source, content, "stockpile", emit::SCHEMA, branch)?
+    else {
+        return Ok(Value::Null);
+    };
+    let (_, key) = super::files(source, content)?;
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    let reading = Reading::new(source, &context, &key)?;
+    let mut data = match product {
+        "equipment-stockpile-at" => {
+            let params: at::StockpileAtParams = serde_json::from_value(params.clone())?;
+            params.validate().map_err(crate::invalid)?;
+            let reply = opened.read(cancelled, |snapshot, directory| {
+                at::query(snapshot, directory, &params, &reading, cancelled)
+            })?;
+            match reply {
+                Some(reply) => serde_json::to_value(reply)?,
+                None => return Ok(Value::Null),
+            }
+        }
+        "equipment-stockpile-catalogue" => {
+            let params: catalogue::StockpileCatalogueParams =
+                serde_json::from_value(params.clone())?;
+            params.validate().map_err(crate::invalid)?;
+            serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
+                catalogue::query(snapshot, directory, &params, &reading, cancelled)
+            })?)?
+        }
+        _ => {
+            let params: catalogue::StockpileChartParams = serde_json::from_value(params.clone())?;
+            params.validate().map_err(crate::invalid)?;
+            serde_json::to_value(opened.read(cancelled, |snapshot, directory| {
+                catalogue::chart(snapshot, directory, &params, &reading, cancelled)
+            })?)?
+        }
+    };
+    // A later read can still classify a variant again until the branch is prepared.
+    super::prefix::read_or_empty(source, content, product, branch, None, cancelled)?
+        .mark_revisable(source, branch, &mut data)?;
+    Ok(data)
+}
+
 /// Keyboard navigation over supply health's runs; null before the identity histories or the
 /// family publish the branch.
 fn supply_next_change(
@@ -820,7 +877,7 @@ impl Hours {
             | "operative-placements"
             | "agency-comparison"
             | "operatives-roster" => range(&["firstHour"], "lastHour"),
-            "equipment-stockpile" if !named("navigation") => range(&["from"], "to"),
+            "equipment-stockpile-at" => hour("hour"),
             "politics-ledger" if !named("navigation") && !named("marks") && !named("within") => {
                 range(&["from"], "hour")
             }
@@ -864,7 +921,8 @@ impl Hours {
             | "politics-state-history"
             | "politics-ledger"
             | "scoreboard"
-            | "equipment-stockpile"
+            | "equipment-stockpile-catalogue"
+            | "equipment-stockpile-chart"
             | "equipment-losses"
             | "land-battles"
             | "land-battles-manifest"
@@ -1513,15 +1571,10 @@ fn query_data(
             &key,
             cancelled,
         )?,
-        "equipment-stockpile" => {
-            serde_json::to_value(crate::products::equipment_stockpile::prepared::query(
-                source,
-                &request.params,
-                &crate::products::LoadContext {
-                    content: content.cloned(),
-                },
-                cancelled,
-            )?)?
+        product @ ("equipment-stockpile-at"
+        | "equipment-stockpile-catalogue"
+        | "equipment-stockpile-chart") => {
+            stockpile_reply(source, content, product, &request.params, cancelled)?
         }
         product @ ("land-battles"
         | "land-battles-manifest"

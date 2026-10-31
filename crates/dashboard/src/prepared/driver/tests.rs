@@ -35,7 +35,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
             family.id.name()
         );
     }
-    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 11);
+    assert_eq!(rows.own().len(), registry::FAMILIES.len() - 12);
     for segments in [
         "stability",
         "supply",
@@ -43,6 +43,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
         "division-equipment",
         "country-styles",
         "politics_ledger",
+        "stockpile",
     ] {
         assert_eq!(
             rows.backend(segments),
