@@ -8,8 +8,8 @@
 //! each as a later read can still decide it by `L`, as the replies show a branch preparing.
 
 use super::emit::{
-    self, ACTOR_META, BOUNDS, CAPACITY, CONSUMPTION, DAY, DAY_MEASURES, DROPS, FUEL, LAG, READ,
-    REASONS, SEGMENT, STRIPS, TAG_META, UNNAMED, day_values, kind, left_out_of, native_name,
+    self, ACTOR_META, BOUNDS, CAPACITY, CONSUMPTION, DAY, DAY_MEASURES, DEMAND, DROPS, FUEL, LAG,
+    READ, REASONS, SEGMENT, STRIPS, TAG_META, UNNAMED, day_values, kind, left_out_of, native_name,
 };
 use super::*;
 use dashboard_base::{
@@ -162,20 +162,21 @@ fn optional_hour(cell: Cell) -> io::Result<Option<i32>> {
     }
 }
 
-/// The read and consumption a [`kind::READ`] event holds, held from `first` to `last`.
+/// The read and consumption a [`kind::READ`] event holds, held from `first` to `last`, the
+/// read's day as recorded, and its recipients cell.
 fn decode<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
     event: EventView,
     (first, last): (i32, i32),
-) -> io::Result<(RawRead, demand::RawConsumption)> {
+) -> io::Result<(RawRead, demand::RawConsumption, Cell)> {
     let EventView::Family(event) = event else {
         return Err(invalid("Prepared fuel read is missing"));
     };
     if event.kind != kind::READ || event.native_hour != first {
         return Err(invalid("Prepared fuel supplying read is missing"));
     }
-    let mut cells = [Cell::Null; 21];
+    let mut cells = [Cell::Null; 22];
     if event.fields.len != (cells.len() * Cell::SIZE) as u64 {
         return Err(invalid("Prepared fuel read is not valid"));
     }
@@ -297,7 +298,134 @@ fn decode<P: PageRead>(
             integer(cells[20])?,
         ],
     };
-    Ok((read, consumption))
+    Ok((read, consumption, cells[21]))
+}
+
+/// The bytes of a Text cell.
+fn text_bytes<P: PageRead>(snapshot: &mut Snapshot<'_, P>, cell: Cell) -> io::Result<Vec<u8>> {
+    let Cell::Text(blob) = cell else {
+        return Err(invalid("Prepared fuel detail is not valid"));
+    };
+    let length =
+        usize::try_from(blob.len).map_err(|_| invalid("Prepared fuel detail is not valid"))?;
+    let mut bytes = engine_allocation::vec(length)?;
+    bytes.resize(length, 0);
+    if length != 0 {
+        snapshot.cell_bytes(blob, 0, &mut bytes)?;
+    }
+    Ok(bytes)
+}
+
+/// `actor`'s read at `hour`, if it read then, with its day as recorded, and its applied day as
+/// the award products read it.
+pub(super) fn recorded_at<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    actor: u64,
+    hour: i32,
+) -> io::Result<Option<(RawRead, pack::Awards)>> {
+    let Some(key) = directory.key(actor, READ, None) else {
+        return Ok(None);
+    };
+    let selection = Selection {
+        key,
+        membership: None,
+    };
+    let Some(event) = snapshot.latest_event(selection, hour, None)? else {
+        return Ok(None);
+    };
+    if !matches!(event, EventView::Family(read) if read.native_hour == hour) {
+        return Ok(None);
+    }
+    let (read, _, recipients) = decode(snapshot, directory, event, (hour, hour))?;
+    let awards = match (&read.awards_reason, &read.day, recipients) {
+        (Some(reason), ..) => Err(reason.to_string()),
+        (None, Some(RawDay::Awards(sums)), Cell::Text(_)) => Ok((
+            (**sums).clone(),
+            pack::take_recipients(&text_bytes(snapshot, recipients)?)?,
+        )),
+        _ => return Err(invalid("Prepared fuel read is not valid")),
+    };
+    Ok(Some((read, awards)))
+}
+
+/// `actor`'s demand packs at its reads at `hours`, ascending: each the chain's events from its
+/// keyframe through the read.
+pub(super) fn demand_over<P: PageRead>(
+    snapshot: &mut Snapshot<'_, P>,
+    directory: &Directory,
+    actor: u64,
+    hours: &[i32],
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<(i32, pack::Demand)>> {
+    let not_valid = || invalid("Prepared fuel demand is not valid");
+    let (Some(key), Some(&first), Some(&last)) = (
+        directory.key(actor, DEMAND, None),
+        hours.first(),
+        hours.last(),
+    ) else {
+        return Ok(Vec::new());
+    };
+    let selection = [Selection {
+        key,
+        membership: None,
+    }];
+    let start = match snapshot.latest_event(selection[0], first, None)? {
+        Some(EventView::Family(event)) if event.kind == kind::KEYFRAME => event.native_hour,
+        Some(EventView::Family(event)) if event.kind == kind::DELTA => {
+            i32::try_from(integer(snapshot.field(event.fields, 0)?)?).map_err(|_| not_valid())?
+        }
+        Some(_) => return Err(not_valid()),
+        None => first,
+    };
+    let query = EventQuery {
+        selection: &selection,
+        native: Span::new(start, last)?,
+        as_of: None,
+        order: EventOrder::Native,
+    };
+    let mut events = Vec::new();
+    let mut cursor = None;
+    loop {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let page = snapshot.event_page(query, cursor, BUDGET, |event| {
+            match event {
+                EventView::Family(event) => events.push(event),
+                _ => return Err(not_valid()),
+            }
+            Ok(())
+        })?;
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let mut chain = pack::Chain::default();
+    let mut keyframe = None;
+    let mut next = 0;
+    let mut packs = Vec::new();
+    for &hour in hours {
+        while let Some(event) = events.get(next).filter(|event| event.native_hour <= hour) {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            next += 1;
+            if event.kind == kind::KEYFRAME {
+                let cell = snapshot.field(event.fields, 0)?;
+                chain.keyframe(text_bytes(snapshot, cell)?)?;
+                keyframe = Some(event.native_hour);
+            } else if event.kind == kind::DELTA
+                && keyframe.map(i128::from) == Some(integer(snapshot.field(event.fields, 0)?)?)
+            {
+                let cell = snapshot.field(event.fields, 1)?;
+                chain.delta(text_bytes(snapshot, cell)?)?;
+            } else {
+                return Err(not_valid());
+            }
+        }
+        if keyframe.is_some() {
+            packs.push((hour, chain.pack()?));
+        }
+    }
+    Ok(packs)
 }
 
 /// Whether a slot read through `last` overlaps the kept day of `actor`'s read at `first`.
@@ -371,8 +499,10 @@ fn read_of_run<P: PageRead>(
             None,
         )?
         .ok_or_else(|| invalid("Prepared fuel supplying read is missing"))?;
-    let (mut read, consumption) = decode(snapshot, directory, event, (first, run.span.last))?;
-    if read.day.is_some() && dropped(snapshot, directory, actor, first, last)? {
+    let (mut read, consumption, _) = decode(snapshot, directory, event, (first, run.span.last))?;
+    if read.left_out.is_some() {
+        read.day = None;
+    } else if dropped(snapshot, directory, actor, first, last)? {
         read.day = None;
         read.left_out = Some(DayLeftOut::Overlaps);
     }
@@ -438,7 +568,7 @@ pub(super) fn tag_meta(directory: &Directory, actor: Option<u64>) -> (bool, [usi
 }
 
 /// A native country's conflict flag and the tags that held it.
-fn native_meta(directory: &Directory, actor: u64) -> Option<(bool, Vec<String>)> {
+pub(super) fn native_meta(directory: &Directory, actor: u64) -> Option<(bool, Vec<String>)> {
     let meta = directory.scalar(ACTOR_META + actor)?;
     let [_, Scalar::Boolean(conflict), tags] = meta.list() else {
         return None;
@@ -1182,13 +1312,174 @@ pub(super) fn summary_at(
         .ok_or_else(|| invalid("Current fuel consumption actor or supplying read was not recorded"))
 }
 
-/// What the detail products read of a native country over a window: the tags that held it,
-/// whether several held it at once, and those tags' reads holding the window's hours (at
-/// least).
+/// The supplying read the detail products' error names when `basis` names none.
+const UNRECORDED: &str = "Fuel actor identity changed or supplying read is not recorded (carried display hours are not reads)";
+
+/// Whether `read` is of `basis`'s native country identity.
+fn authentic(read: &RawRead, basis: &FuelAwardsParams) -> io::Result<bool> {
+    let reference = basis
+        .country
+        .parse::<u32>()
+        .map_err(|_| invalid("Fuel country reference invalid"))?;
+    Ok(read.country == reference && read.country_instance == Some(basis.country_instance))
+}
+
+/// `basis`'s supplying read, its day as recorded, and its applied day as the award products
+/// read it.
+pub(super) fn basis_awards(
+    source: &Source,
+    basis: &FuelAwardsParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<(RawRead, pack::Awards)> {
+    let branch = basis.branch_id.parse::<u64>().map_err(io::Error::other)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if reference_fixture(source) {
+        let reads = detail::basis_reads(source, branch, basis.hour, cancelled)?;
+        let row = detail::authenticated(&reads, basis)?;
+        let read = read_of(row, basis.hour, false, None, &mut Reasons::default());
+        return Ok((read, awards_detail(row, basis.hour)));
+    }
+    let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
+        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+    let found = opened.read(cancelled, |snapshot, directory| {
+        match directory.actor(basis.tag.as_bytes()) {
+            Some(actor) => recorded_at(snapshot, directory, actor, basis.hour),
+            None => Ok(None),
+        }
+    })?;
+    match found {
+        Some((read, awards)) if authentic(&read, basis)? => Ok((read, awards)),
+        _ => Err(invalid(UNRECORDED)),
+    }
+}
+
+/// `basis`'s supplying read's demand pack as the demand products read it.
+pub(super) fn basis_demand(
+    source: &Source,
+    basis: &FuelAwardsParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<pack::Demand> {
+    let branch = basis.branch_id.parse::<u64>().map_err(io::Error::other)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if reference_fixture(source) {
+        let reads = detail::basis_reads(source, branch, basis.hour, cancelled)?;
+        let row = detail::authenticated(&reads, basis)?;
+        return Ok(demand::pack_of(row, basis.hour).map(pack::Pack::of));
+    }
+    let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
+        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+    opened.read(cancelled, |snapshot, directory| {
+        let Some(actor) = directory.actor(basis.tag.as_bytes()) else {
+            return Err(invalid(UNRECORDED));
+        };
+        match recorded_at(snapshot, directory, actor, basis.hour)? {
+            Some((read, _)) if authentic(&read, basis)? => {}
+            _ => return Err(invalid(UNRECORDED)),
+        }
+        demand_over(snapshot, directory, actor, &[basis.hour], cancelled)?
+            .pop()
+            .map(|(_, demand)| demand)
+            .ok_or_else(|| invalid("Prepared fuel demand is missing"))
+    })
+}
+
+/// The applied days, as the award products read them, of the supplying reads `reads` (each a
+/// tag and its read's hour) of window `window` on `basis`'s branch; a read the branch holds
+/// none of is left out.
+pub(super) fn window_awards(
+    source: &Source,
+    basis: &FuelAwardsParams,
+    window: i32,
+    context: &LoadContext,
+    reads: &[(String, i32)],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<(String, i32), pack::Awards>> {
+    let branch = basis.branch_id.parse::<u64>().map_err(io::Error::other)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if reference_fixture(source) {
+        let hours = reads.iter().map(|(_, hour)| *hour).collect();
+        let rows = detail::window_reads(source, branch, window, &hours, cancelled)?;
+        return Ok(reads
+            .iter()
+            .filter_map(|(tag, hour)| {
+                let row = rows.get(hour)?.get(tag)?;
+                Some(((tag.clone(), *hour), awards_detail(row, *hour)))
+            })
+            .collect());
+    }
+    let _ = window;
+    let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
+        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+    opened.read(cancelled, |snapshot, directory| {
+        let mut found = BTreeMap::new();
+        for (tag, hour) in reads {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            if let Some(actor) = directory.actor(tag.as_bytes())
+                && let Some((_, awards)) = recorded_at(snapshot, directory, actor, *hour)?
+            {
+                found.insert((tag.clone(), *hour), awards);
+            }
+        }
+        Ok(found)
+    })
+}
+
+/// The demand packs, as the demand products read them, of the supplying reads `reads` (each a
+/// tag and its read's hour) of window `window` on `basis`'s branch; a read the branch holds
+/// none of is left out.
+pub(super) fn window_demand(
+    source: &Source,
+    basis: &FuelAwardsParams,
+    window: i32,
+    context: &LoadContext,
+    reads: &[(String, i32)],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<(String, i32), pack::Demand>> {
+    let branch = basis.branch_id.parse::<u64>().map_err(io::Error::other)?;
+    #[cfg(any(test, feature = "test-support"))]
+    if reference_fixture(source) {
+        let hours = reads.iter().map(|(_, hour)| *hour).collect();
+        let rows = detail::window_reads(source, branch, window, &hours, cancelled)?;
+        return Ok(reads
+            .iter()
+            .filter_map(|(tag, hour)| {
+                let row = rows.get(hour)?.get(tag)?;
+                let demand = demand::pack_of(row, *hour).map(pack::Pack::of);
+                Some(((tag.clone(), *hour), demand))
+            })
+            .collect());
+    }
+    let _ = window;
+    let opened = published::open(source, context.content.as_ref(), NAME, emit::SCHEMA, branch)?
+        .ok_or_else(|| invalid("Fuel summary preparation is not available"))?;
+    let mut by_tag: BTreeMap<&str, Vec<i32>> = BTreeMap::new();
+    for (tag, hour) in reads {
+        by_tag.entry(tag).or_default().push(*hour);
+    }
+    opened.read(cancelled, |snapshot, directory| {
+        let mut found = BTreeMap::new();
+        for (tag, hours) in &mut by_tag {
+            let Some(actor) = directory.actor(tag.as_bytes()) else {
+                continue;
+            };
+            hours.sort_unstable();
+            hours.dedup();
+            for (hour, demand) in demand_over(snapshot, directory, actor, hours, cancelled)? {
+                found.insert((tag.to_string(), hour), demand);
+            }
+        }
+        Ok(found)
+    })
+}
+
+/// What the detail products read of a native country over a window: whether several tags
+/// held it at once, and the reads of the tags that held it holding the window's hours (at
+/// least), each with its tag.
 pub(super) struct ActorWindow {
-    pub aliases: Vec<String>,
     pub conflict: bool,
-    pub reads: Vec<RawRead>,
+    pub reads: Vec<(String, RawRead)>,
 }
 
 /// `country`'s window `window` on `branch` ([`ActorWindow`]).
@@ -1208,11 +1499,15 @@ pub(super) fn actor_window(
         let aliases: Vec<String> = summary.actor_tags(country).cloned().collect();
         let reads = aliases
             .iter()
-            .flat_map(|tag| summary.countries[tag].reads.iter().cloned())
+            .flat_map(|tag| {
+                summary.countries[tag]
+                    .reads
+                    .iter()
+                    .map(move |read| (tag.clone(), read.clone()))
+            })
             .collect();
         return Ok(ActorWindow {
             conflict: summary.actor_conflicts.contains(country),
-            aliases,
             reads,
         });
     }
@@ -1239,7 +1534,6 @@ pub(super) fn actor_window_in<P: PageRead>(
         .and_then(|actor| native_meta(directory, actor))
     else {
         return Ok(ActorWindow {
-            aliases: Vec::new(),
             conflict: false,
             reads: Vec::new(),
         });
@@ -1250,14 +1544,10 @@ pub(super) fn actor_window_in<P: PageRead>(
             continue;
         };
         for (read, _) in reads_within(snapshot, directory, actor, (first, last), cancelled)? {
-            reads.push(read);
+            reads.push((tag.clone(), read));
         }
     }
-    Ok(ActorWindow {
-        aliases,
-        conflict,
-        reads,
-    })
+    Ok(ActorWindow { conflict, reads })
 }
 
 /// The consumption reads of `basis`'s native country over `window` in the segment holding

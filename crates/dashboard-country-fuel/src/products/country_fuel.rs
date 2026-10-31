@@ -70,13 +70,12 @@
 use dashboard_base::products::{CountryParams, Product};
 use dashboard_base::source::Source;
 use dashboard_core::config::LoadContext;
-use dashboard_text::metadata::{link_slot, slot_read, tagged_countries, validate_campaign};
+use dashboard_text::metadata::slot_read;
 use engine_fuel::{
     ccountry_fuel_status::HISTORY_RING_ENTRIES, ccountry_fuel_status::MODIFIER_SCALE,
     ccountry_fuel_status::QUANTITY_SCALE,
 };
-use replay_data::{rows::CountryFuelRow, rows::FuelAwardDay, rows::TableId, rows::tables};
-use replay_frame::frame::FrameDecoder;
+use replay_data::{rows::CountryFuelRow, rows::FuelAwardDay, rows::TableId};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -85,18 +84,24 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {dashboard_text::metadata::IdentityTrack, replay_data::cadence, std::collections::VecDeque};
+use {
+    dashboard_text::metadata::{IdentityTrack, link_slot, tagged_countries, validate_campaign},
+    replay_data::{cadence, rows::tables},
+    replay_frame::frame::FrameDecoder,
+    std::collections::VecDeque,
+};
 
 pub struct CountryFuel;
 #[cfg(any(test, feature = "test-support"))]
 pub mod oracle;
-#[cfg(any(test, feature = "test-support"))]
-use oracle::scanned;
 #[cfg(test)]
 use oracle::scan;
+#[cfg(any(test, feature = "test-support"))]
+use oracle::scanned;
 mod detail;
 pub mod emit;
 pub mod facts;
+mod pack;
 pub mod query;
 pub mod served;
 pub use detail::{CountryFuelAwardHistory, FuelAwardHistoryReply};
@@ -222,6 +227,16 @@ fn award_day(row: &CountryFuelRow, hour: i32) -> Result<&FuelAwardDay, String> {
     Ok(day)
 }
 
+/// `row`'s applied day at a read at `hour` as the award products read it.
+#[cfg(any(test, feature = "test-support"))]
+fn awards_detail(row: &CountryFuelRow, hour: i32) -> pack::Awards {
+    let sums = awards_of(row, hour)?;
+    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
+        unreachable!("a day with sums is recorded");
+    };
+    Ok((sums, day.recipients.clone()))
+}
+
 fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
     let day = award_day(row, hour)?;
     Ok(AwardSums {
@@ -239,15 +254,12 @@ fn awards_of(row: &CountryFuelRow, hour: i32) -> Result<AwardSums, String> {
 /// identity, owner, host and retained name operands, so changed retained text
 /// is a separate row, with no generated-name backfill.
 fn recipients_of(
-    row: &CountryFuelRow,
+    recipients: &[replay_data::rows::FuelAwardDayRecipient],
     cancelled: &AtomicBool,
     mut format_name: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> io::Result<Vec<FuelAwardPart>> {
-    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
-        return Err(dashboard_core::invalid("Fuel awards not recorded"));
-    };
-    let mut rows = engine_allocation::vec(day.recipients.len())?;
-    for part in &day.recipients {
+    let mut rows = engine_allocation::vec(recipients.len())?;
+    for part in recipients {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if part.kind > 2 {
             return Err(dashboard_core::invalid("Fuel recipient kind unsupported"));
@@ -547,6 +559,7 @@ pub struct CountryFuelAwards;
 impl Product for CountryFuelAwards {
     const KEY: &'static str = "country-fuel-awards";
     const CONTENT_DEPENDENT: bool = true;
+    const PUBLISHED: bool = true;
     type Params = FuelAwardsParams;
     type Reply = FuelAwardsReply;
     fn types() -> Vec<String> {
@@ -576,16 +589,11 @@ impl Product for CountryFuelAwards {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let country = CountryParams {
-            branch_id: params.branch_id.clone(),
-            tag: params.tag.clone(),
-        };
-        let reads = detail::basis_reads(source, country.branch(), params.hour, cancelled)?;
-        let row = detail::authenticated(&reads, params)?;
-        let totals =
-            FuelAwardTotals::from(&awards_of(row, params.hour).map_err(dashboard_core::invalid)?);
+        let (_, awards) = query::basis_awards(source, params, context, cancelled)?;
+        let (sums, recipients) = awards.map_err(dashboard_core::invalid)?;
+        let totals = FuelAwardTotals::from(&sums);
         let catalogue = std::sync::OnceLock::new();
-        let recipients = recipients_of(row, cancelled, |bytes| {
+        let recipients = recipients_of(&recipients, cancelled, |bytes| {
             if bytes.is_empty() {
                 return Ok(String::new());
             }
@@ -647,6 +655,8 @@ type Identity = (u32, u32);
 struct ScannedFuel {
     reads: Vec<RawRead>,
     consumption: Vec<demand::RawConsumption>,
+    /// Each read's applied day and demand pack as the detail products read them.
+    details: Vec<(pack::Awards, pack::Demand)>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -976,9 +986,12 @@ impl Scan {
                 .filter(|_| fuel.is_some() && read)
                 .and_then(|identity| by_slot.get(&identity.0))
                 .map(|row| {
+                    let (consumption, demand) =
+                        demand::summary_of(row, hour, hour, false, &mut self.reasons);
                     (
                         read_of(row, hour, false, None, &mut self.reasons),
-                        demand::summary_of(row, hour, hour, false, &mut self.reasons),
+                        consumption,
+                        (awards_detail(row, hour), demand),
                     )
                 });
             accept_country(country, hour, fuel.is_some(), read, supplied);
@@ -994,7 +1007,11 @@ fn accept_country(
     hour: i32,
     available: bool,
     read: bool,
-    supplied: Option<(RawRead, demand::RawConsumption)>,
+    supplied: Option<(
+        RawRead,
+        demand::RawConsumption,
+        (pack::Awards, pack::Demand),
+    )>,
 ) {
     let continuous = country.track.step(country.identity, hour);
     country.open &= continuous;
@@ -1017,7 +1034,7 @@ fn accept_country(
         }
         return;
     }
-    let Some((mut fuel, mut consumption)) = supplied else {
+    let Some((mut fuel, mut consumption, detail)) = supplied else {
         country.open = false;
         country.demand_open = false;
         return;
@@ -1045,6 +1062,7 @@ fn accept_country(
     consumption.starts_segment = !country.demand_open;
     country.result.reads.push(fuel);
     country.result.consumption.push(consumption);
+    country.result.details.push(detail);
     country.open = true;
     country.demand_open = true;
 }

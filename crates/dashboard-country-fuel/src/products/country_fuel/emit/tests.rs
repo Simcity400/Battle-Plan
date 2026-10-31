@@ -3,8 +3,8 @@
 //! segment, levels and days at every walked hour are what the scan of the recording through the
 //! cut gives, however the walk is cut into segments, published and resumed; and the charts of
 //! the days, dated late with the last day read from the reads, are those of the days kept on
-//! the hours they describe. The detail products' windows and consumption segments are the
-//! scan's too.
+//! the hours they describe. The detail products' windows, consumption segments, applied days
+//! and demand packs are the scan's too.
 
 use super::super::tests::{award_row, fuel_frame, fuel_slot};
 use super::super::{
@@ -24,8 +24,9 @@ use replay::{
 };
 use replay_data::{
     rows::{
-        CountryFuelRow, CountryLinkRow, CountryRow, FuelDemandRead, FuelDemandUnit, Recorded,
-        StateRow, TableRows, TableSchema, tables,
+        CountryFuelRow, CountryLinkRow, CountryRow, FuelDemandFleet, FuelDemandGroup,
+        FuelDemandRead, FuelDemandSite, FuelDemandUnit, FuelDemandWing, Recorded, StateRow,
+        TableRows, TableSchema, tables,
     },
     scope::CaptureMode,
 };
@@ -258,8 +259,8 @@ struct State {
 
 /// What a branch shows: each tag's state at each walked hour, its meta (read, days left out
 /// by reason), the countries whose tags are not UTF-8, each native country's tags, whether two
-/// held it at once and its tags' reads, and the consumption reads the detail products join
-/// with each read of a native country.
+/// held it at once and its tags' reads, the consumption reads the detail products join with
+/// each read of a native country, and each read's applied day and demand pack.
 #[derive(Debug, PartialEq)]
 struct Shown {
     states: BTreeMap<(String, i32), State>,
@@ -267,6 +268,7 @@ struct Shown {
     unnamed: BTreeSet<u32>,
     natives: Natives,
     joined: Joined,
+    details: BTreeMap<(String, i32), String>,
 }
 
 /// Each native country's tags, whether two held it at once and its tags' reads.
@@ -289,8 +291,14 @@ fn scanned_natives(scanned: &ScannedBranch) -> (Natives, Joined) {
         let number: u32 = country.parse().unwrap();
         let mut reads: Vec<String> = tags
             .iter()
-            .flat_map(|tag| &scanned.countries[tag].reads)
-            .map(|read| serde_json::to_string(&FuelRead::from(read)).unwrap())
+            .flat_map(|tag| {
+                scanned.countries[tag].reads.iter().map(move |read| {
+                    format!(
+                        "{tag} {}",
+                        serde_json::to_string(&FuelRead::from(read)).unwrap()
+                    )
+                })
+            })
             .collect();
         reads.sort();
         let mut spans: Vec<(i32, i32)> = tags
@@ -429,12 +437,19 @@ fn expected(frames: &[DecodedFrame]) -> Shown {
         }
     }
     let (natives, joined) = scanned_natives(&scanned);
+    let mut details = BTreeMap::new();
+    for (tag, country) in &scanned.countries {
+        for (read, detail) in country.reads.iter().zip(&country.details) {
+            details.insert((tag.clone(), read.first_hour), format!("{detail:?}"));
+        }
+    }
     Shown {
         states,
         meta,
         unnamed: scanned.unnamed,
         natives,
         joined,
+        details,
     }
 }
 
@@ -455,6 +470,7 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
     let last = snapshot.publication().accepted.last;
     let mut states = BTreeMap::new();
     let mut meta = BTreeMap::new();
+    let mut details = BTreeMap::new();
     for (actor, described) in directory.actors.iter().enumerate() {
         let actor = actor as u64;
         if native_of(&described.name).is_some() {
@@ -472,12 +488,14 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
                 None => Vec::new(),
             });
         }
+        let mut firsts = BTreeSet::new();
         for &hour in hours.iter().filter(|&&hour| hour <= last) {
             let Some((read, consumption)) =
                 query::read_at(&mut snapshot, &directory, actor, hour).unwrap()
             else {
                 continue;
             };
+            firsts.insert(read.first_hour);
             let segment = query::segment_at(&mut snapshot, &directory, consumption.country, hour)
                 .unwrap()
                 .map(|span| (span.first_hour, span.last_hour));
@@ -512,6 +530,19 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
                 },
             );
         }
+        let firsts: Vec<i32> = firsts.into_iter().collect();
+        let mut packs: BTreeMap<i32, pack::Demand> =
+            query::demand_over(&mut snapshot, &directory, actor, &firsts, &cancelled)
+                .unwrap()
+                .into_iter()
+                .collect();
+        for &first in &firsts {
+            let (_, awards) = query::recorded_at(&mut snapshot, &directory, actor, first)
+                .unwrap()
+                .unwrap();
+            let demand = packs.remove(&first).expect("every read holds a pack");
+            details.insert((tag.clone(), first), format!("{:?}", (awards, demand)));
+        }
     }
     meta.retain(|_, (read, _)| *read);
     let window = (*hours.iter().min().unwrap(), *hours.iter().max().unwrap());
@@ -521,18 +552,31 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
         let Some(country) = native_of(&described.name) else {
             continue;
         };
+        let Some((_, aliases)) = directory
+            .actor(&native_name(country))
+            .and_then(|actor| query::native_meta(&directory, actor))
+            .filter(|(_, aliases)| !aliases.is_empty())
+        else {
+            continue;
+        };
         let held =
             query::actor_window_in(&mut snapshot, &directory, country, window, &cancelled).unwrap();
-        if held.aliases.is_empty() {
-            continue;
-        }
         let mut reads: Vec<String> = held
             .reads
             .iter()
-            .map(|read| serde_json::to_string(&FuelRead::from(read)).unwrap())
+            .map(|(tag, read)| {
+                format!(
+                    "{tag} {}",
+                    serde_json::to_string(&FuelRead::from(read)).unwrap()
+                )
+            })
             .collect();
         reads.sort();
-        for read in held.reads.iter().filter(|read| read.country == country) {
+        for (_, read) in held
+            .reads
+            .iter()
+            .filter(|(_, read)| read.country == country)
+        {
             let reads = query::actor_consumption_in(
                 &mut snapshot,
                 &directory,
@@ -544,8 +588,10 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
             .unwrap();
             joined.insert((country, read.first_hour), joined_reads(reads));
         }
-        let aliases = held.aliases.into_iter().collect();
-        natives.insert(country, (aliases, held.conflict, reads));
+        natives.insert(
+            country,
+            (aliases.into_iter().collect(), held.conflict, reads),
+        );
     }
     Shown {
         states,
@@ -553,6 +599,7 @@ fn shown(pages: &Memory, root: u64, hours: &[i32]) -> Shown {
         unnamed: query::unnamed(&directory),
         natives,
         joined,
+        details,
     }
 }
 
@@ -650,6 +697,10 @@ fn check(label: &str, runs: &[(u64, Vec<Hourly>)]) {
             assert_eq!(actual.unnamed, expected.unnamed, "{at}");
             assert_eq!(actual.natives, expected.natives, "{at}");
             assert_eq!(actual.joined, expected.joined, "{at}");
+            for (read, detail) in &expected.details {
+                assert_eq!(actual.details.get(read), Some(detail), "{at}: {read:?}");
+            }
+            assert_eq!(actual.details.len(), expected.details.len(), "{at}");
         }
         finals.push(shown(&pages, roots.last().unwrap().1, &walked));
     }
@@ -964,6 +1015,147 @@ fn later_runs_opening_with_refused_joins_start_cold() {
 }
 
 /// A plain publication of `runs`, each written on the hours it describes, cut once at `last`.
+/// GER's demand pack at walked hour `t` of a pack test: divisions sliding in and out, a rate
+/// moving, task forces coming and going, air sites gaining wings, commands and a fleet
+/// renamed; every fourth hour the pack before it again, and the one at hour 45 refused.
+fn varied(t: i32) -> FuelDemandRead {
+    let t = (if t % 4 == 2 { t - 1 } else { t }) as u64;
+    let unit = |reference: u64, rate: Option<i64>| FuelDemandUnit {
+        reference,
+        parent: reference / 7,
+        ordinal: (reference % 5) as u32,
+        owners: (reference % 2 == 0).then_some([11, 9, 11]),
+        rate_raw: rate,
+        reason: if rate.is_none() {
+            b"no rate".to_vec()
+        } else {
+            Vec::new()
+        },
+        name: (reference % 3 != 0).then(|| format!("Division {reference}").into_bytes()),
+        group: Some(70),
+        ..Default::default()
+    };
+    FuelDemandRead {
+        country_instance: Some(9),
+        divisions: (t / 3..t / 3 + 4 + t % 3)
+            .map(|reference| {
+                unit(
+                    reference,
+                    Some(reference as i64 * 5 + (reference == t) as i64),
+                )
+            })
+            .collect(),
+        task_forces: if t % 5 == 0 {
+            Vec::new()
+        } else {
+            vec![unit(900, None)]
+        },
+        sites: (0..2)
+            .map(|site| FuelDemandSite {
+                list: site,
+                ordinal: u32::from(site),
+                base: 5000 + u64::from(site),
+                container_owner: Some(11),
+                capacity_raw: Some(100),
+                wings: (0..1 + (t + u64::from(site)) % 3)
+                    .map(|index| FuelDemandWing {
+                        reference: 60 + index,
+                        owner: Some(11),
+                        pool_ordinal: 1,
+                        wing_ordinal: index as u32,
+                        name: Some(b"Wing".to_vec()),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect(),
+        groups: vec![FuelDemandGroup {
+            reference: 70,
+            country: 11,
+            members: (0..t % 4).collect(),
+            ..Default::default()
+        }],
+        fleets: vec![FuelDemandFleet {
+            reference: 80,
+            name: (t % 10 != 0).then(|| b"Fleet".to_vec()),
+            ..Default::default()
+        }],
+        // One refusal, late enough that a chain first runs past its keyframes.
+        reason: if t == 45 {
+            b"fuel demand pack refused".to_vec()
+        } else {
+            Vec::new()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn demand_chains_rebuild_every_reads_pack_across_cuts_and_resumes() {
+    let start = fuel_slot(100);
+    let inputs: Vec<Hourly> = (0..60)
+        .filter(|t| *t != 41)
+        .map(|t| {
+            let mut input = frame(start + t);
+            let (pack, parts) = varied(t).split(11).unwrap();
+            if let TableRows::CountryFuel(rows) = rows(&mut input, TableId::CountryFuel) {
+                rows[0].demand = Recorded::Value(pack);
+            }
+            *input.tables[TableId::FuelDemandParts.index()] =
+                TableView::Complete(TableRows::FuelDemandParts(parts));
+            (input, true)
+        })
+        .collect();
+    check("demand chains", &runs_of(inputs));
+}
+
+#[test]
+fn a_tag_no_longer_read_leaves_its_pack_out_of_the_saved_emit() {
+    let start = fuel_slot(100);
+    let inputs: Vec<Hourly> = (0..=48)
+        .map(|t| {
+            let mut input = frame(start + t);
+            let (pack, parts) = varied(1).split(11).unwrap();
+            if let TableRows::CountryFuel(rows) = rows(&mut input, TableId::CountryFuel) {
+                rows[0].demand = Recorded::Value(pack);
+                if t >= 30 {
+                    rows.clear();
+                }
+            }
+            *input.tables[TableId::FuelDemandParts.index()] =
+                TableView::Complete(TableRows::FuelDemandParts(parts));
+            (input, t % 24 == 0)
+        })
+        .collect();
+    let (_, projected) = walk(&runs_of(inputs), &BTreeSet::new());
+    let budget = Budget::new(1 << 30);
+    let mut writer = Writer::new(&budget, identity(), start).unwrap();
+    let mut emit = Emit::new(FormatVersion::CURRENT);
+    let mut saved = BTreeMap::new();
+    for hour in projected {
+        let at = hour.hour - start;
+        emit.hour(&mut writer, hour).unwrap();
+        let mut bytes = Vec::new();
+        emit.save(&mut bytes).unwrap();
+        let actor = emit.actors.find(b"GER").unwrap();
+        let Entity::Tag(tag) = &emit.entities[actor as usize] else {
+            panic!("GER is a tag");
+        };
+        saved.insert(at, (bytes, tag.stream.is_some()));
+    }
+    let mut keyframe = Vec::new();
+    pack::keyframe(
+        &pack::Encoded::of(&Ok(pack::Pack::of(&varied(1)))).unwrap(),
+        &mut keyframe,
+    );
+    let holds = |bytes: &[u8]| bytes.windows(keyframe.len()).any(|at| at == keyframe);
+    assert!(saved[&24].1, "a tag still read keeps its chain");
+    assert!(holds(&saved[&24].0), "the saved emit holds its pack");
+    assert!(!saved[&48].1, "a tag no read supplied leaves it");
+    assert!(!holds(&saved[&48].0), "the saved emit holds no pack of it");
+}
+
 fn plain(runs: &[(u64, Vec<(i32, i32, i128, bool)>)], first: i32, last: i32) -> (Memory, u64) {
     let budget = Budget::new(1 << 30);
     let cache = Cache::new(&budget);

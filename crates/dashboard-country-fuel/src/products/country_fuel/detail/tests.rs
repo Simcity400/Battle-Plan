@@ -1,4 +1,4 @@
-use super::super::tests::{award_row, fuel_frame, replay_source};
+use super::super::tests::{award_row, day_recipients, fuel_frame, replay_source};
 use super::*;
 use replay_data::{rows::Recorded, rows::TableRows};
 use replay_frame::frame::TableView;
@@ -11,7 +11,12 @@ fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() 
         .find(|&hour| cadence::is_refresh(TableId::CountryFuel, hour))
         .unwrap();
     let row = award_row(first);
-    let key = recipients_of(&row, &cancelled, dashboard_text::catalogue::display_text).unwrap()[0]
+    let key = recipients_of(
+        &day_recipients(&row),
+        &cancelled,
+        dashboard_text::catalogue::display_text,
+    )
+    .unwrap()[0]
         .key
         .clone();
     let frames = (first..=first + 3 * DAY_HOURS)
@@ -99,10 +104,14 @@ fn recipient_history_follows_native_aliases_without_crossing_reset_boundaries() 
 fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifetimes() {
     let cancelled = AtomicBool::new(false);
     let first = award_row(1000);
-    let key = recipients_of(&first, &cancelled, dashboard_text::catalogue::display_text).unwrap()
-        [0]
-    .key
-    .clone();
+    let key = recipients_of(
+        &day_recipients(&first),
+        &cancelled,
+        dashboard_text::catalogue::display_text,
+    )
+    .unwrap()[0]
+        .key
+        .clone();
     let params = FuelAwardHistoryParams {
         branch_id: "1".into(),
         tag: "GER".into(),
@@ -112,7 +121,7 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
         window: 1,
         recipient_key: key,
     };
-    let mut reads = Reads::new();
+    let mut awards = BTreeMap::new();
     let mut supplying = Vec::new();
     for hour in [1000, 1024, 1048, 1072, 1096] {
         let mut row = award_row(hour);
@@ -137,19 +146,10 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
         }
         let mut read = read_of(&row, hour, hour == 1000, None, &mut Default::default());
         read.last_hour = hour + 1;
-        supplying.push(read);
-        reads.insert(hour, BTreeMap::from([("GER".into(), row)]));
+        supplying.push(("GER".to_owned(), read));
+        awards.insert(("GER".to_owned(), hour), awards_detail(&row, hour));
     }
-    let runs = history_runs(
-        &supplying,
-        &reads,
-        &[&params.tag],
-        &params,
-        977,
-        (999, 1100),
-        &cancelled,
-    )
-    .unwrap();
+    let runs = history_runs(&supplying, &awards, &params, 977, (999, 1100), &cancelled).unwrap();
     let at = |hour| runs.iter().find(|run| run.first_hour == hour).unwrap();
     assert_eq!(at(1000).amount_raw.as_deref(), Some("-12"));
     assert_eq!(at(1024).amount_raw.as_deref(), Some("0"));
@@ -167,8 +167,7 @@ fn exact_recipient_history_preserves_zero_corrections_names_gaps_and_reset_lifet
     assert!(
         history_runs(
             &supplying,
-            &reads,
-            &[&params.tag],
+            &awards,
             &params,
             977,
             (999, 1100),
@@ -231,7 +230,7 @@ fn history_uses_one_visible_all_country_window_and_authenticates_basis_and_keys(
     let window = window_reads(&source, 1, 3, &hours, &cancelled).unwrap();
     assert_eq!(window[&hour].len(), count as usize);
     let key = recipients_of(
-        &award_row(hour),
+        &day_recipients(&award_row(hour)),
         &cancelled,
         dashboard_text::catalogue::display_text,
     )

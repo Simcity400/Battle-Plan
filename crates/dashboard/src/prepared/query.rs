@@ -947,6 +947,17 @@ fn series_coverage(product: &str, params: &Value) -> io::Result<(Option<i32>, bo
     }
 }
 
+/// Whether a prepared query answers `product`; any other is its product route's.
+pub(crate) fn answers(product: &str) -> bool {
+    Hours::of(&ProductRequest {
+        source_id: String::new(),
+        revision: String::new(),
+        product: product.into(),
+        params: Value::Null,
+    })
+    .is_ok()
+}
+
 /// What a product request asks of its branch, as its request type names its hours.
 #[derive(Clone, Copy, Debug)]
 enum Hours {

@@ -499,6 +499,16 @@ fn a_new_tag_has_the_same_absent_sample_evidence_as_a_single_country_scan() {
     );
 }
 
+/// `row`'s applied day's recipients, as the award products read them.
+pub(super) fn day_recipients(
+    row: &replay_data::rows::CountryFuelRow,
+) -> Vec<replay_data::rows::FuelAwardDayRecipient> {
+    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
+        panic!("the fixture's day is recorded");
+    };
+    day.recipients.clone()
+}
+
 /// The day of 24 applied updates through `hour`, each gaining [1, -2, 3, 0]
 /// (own gain 2), transferring [1, -3, 4, 1], consuming 1 and paying one
 /// recipient 1, whose retained name reads "before" at even hours and "after"
@@ -610,7 +620,7 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
         ["24", "-72", "96", "24"].map(str::to_owned)
     );
     let recipients = super::recipients_of(
-        &row,
+        &day_recipients(&row),
         &AtomicBool::new(false),
         dashboard_text::catalogue::display_text,
     )
@@ -630,7 +640,7 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
     );
     assert!(
         super::recipients_of(
-            &row,
+            &day_recipients(&row),
             &AtomicBool::new(true),
             dashboard_text::catalogue::display_text
         )
@@ -643,7 +653,7 @@ fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing
     recorded.recipients[0].kind = 1;
     recorded.recipients[0].name = None;
     let recipients = super::recipients_of(
-        &row,
+        &day_recipients(&row),
         &AtomicBool::new(false),
         dashboard_text::catalogue::display_text,
     )
@@ -680,7 +690,7 @@ fn cached_receipt_names_obey_viewer_language_without_losing_numeric_receipts() {
     let row = award_row(1000);
     let mut localisation = installed_content_localisation::localisation::Localisation::default();
     localisation.language = "french".into();
-    let rows = super::recipients_of(&row, &AtomicBool::new(false), |bytes| {
+    let rows = super::recipients_of(&day_recipients(&row), &AtomicBool::new(false), |bytes| {
         dashboard_text::scripted_text::stored_text(
             &localisation,
             "english",
@@ -700,7 +710,7 @@ fn cached_receipt_names_obey_viewer_language_without_losing_numeric_receipts() {
                 .contains("viewer's language is french")
     }));
     localisation.language = "english".into();
-    let rows = super::recipients_of(&row, &AtomicBool::new(false), |bytes| {
+    let rows = super::recipients_of(&day_recipients(&row), &AtomicBool::new(false), |bytes| {
         dashboard_text::scripted_text::stored_text(
             &localisation,
             "english",

@@ -804,8 +804,17 @@ impl Served {
             params: params.clone(),
         };
         let cancelled = AtomicBool::new(false);
-        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            super::query::query(&self.source, &request, self.content.as_ref(), &cancelled)
+        let routed = crate::products::find(product).filter(|_| !super::query::answers(product));
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match routed {
+            // The product's own route, as the service asks it.
+            Some(registered) => {
+                let context = crate::config::LoadContext {
+                    content: self.content.clone(),
+                };
+                (registered.load)(&self.source, SOURCE, params.clone(), &context, &cancelled)
+                    .map_err(io::Error::other)
+            }
+            None => super::query::query(&self.source, &request, self.content.as_ref(), &cancelled),
         }));
         match answered {
             Ok(Ok(text)) => match serde_json::from_str::<Value>(&text) {

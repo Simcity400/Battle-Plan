@@ -781,7 +781,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["country-fuel"],
         gates: &["country-fuel"],
         // 2: facts on the segment driver, published as a series root.
-        version: 2,
+        // 3: the detail products' recipients and demand packs published with it.
+        version: 3,
         segments: true,
         ..family("fuel")
     },

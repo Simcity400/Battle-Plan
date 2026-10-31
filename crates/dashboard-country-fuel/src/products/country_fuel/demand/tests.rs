@@ -1,7 +1,8 @@
 use super::super::tests::{award_row, fuel_frame, replay_source, reply_read};
 use super::*;
 use replay_data::{
-    rows::FuelDemandFleet, rows::FuelDemandGroup, rows::Recorded, rows::TableId, rows::TableRows,
+    rows::FuelDemandFleet, rows::FuelDemandGroup, rows::FuelDemandSite, rows::FuelDemandWing,
+    rows::Recorded, rows::TableId, rows::TableRows,
 };
 use replay_frame::frame::TableView;
 
@@ -26,7 +27,7 @@ fn row(pack: FuelDemandRead) -> CountryFuelRow {
     }
 }
 fn consumption(row: &CountryFuelRow) -> FuelConsumptionRead {
-    FuelConsumptionRead::from(&summary_of(row, 100, 100, true, &mut Default::default()))
+    FuelConsumptionRead::from(&summary_of(row, 100, 100, true, &mut Default::default()).0)
 }
 
 #[test]
@@ -196,7 +197,7 @@ fn repeated_air_occurrences_and_partial_names_do_not_discard_known_quantities() 
     assert_eq!(summary.known_daily_raw[0], "-240000");
     assert!(summary.native_daily_raw[0].is_none());
     assert!(summary.native_daily_raw[1].is_none());
-    let pack = pack_of(&row, 100).unwrap();
+    let pack = Pack::of(pack_of(&row, 100).unwrap());
     let source = replay_source(
         vec![fuel_frame(100, true, 9001, (1, 2, 3, 4))],
         "fuel-current-consumers",
@@ -204,7 +205,7 @@ fn repeated_air_occurrences_and_partial_names_do_not_discard_known_quantities() 
     let cache = std::sync::OnceLock::new();
     let mut names =
         |bytes: &[u8]| read_name(&source, &LoadContext { content: None }, &cache, bytes);
-    let parts: Vec<_> = occurrences(pack)
+    let parts: Vec<_> = occurrences(&pack)
         .map(|row| part_of(row, &mut names).unwrap())
         .collect();
     assert_eq!(parts[0].amount_raw.as_deref(), Some("-240000"));

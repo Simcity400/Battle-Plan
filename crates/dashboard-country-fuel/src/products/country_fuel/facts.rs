@@ -61,8 +61,39 @@ pub struct Country {
     /// Its fuel row's level and capacity, where the hour may have changed them: None without
     /// a row.
     pub(super) level: Option<Option<(i64, i64)>>,
-    /// On a read hour, its row's read and current consumption, before the day's rules.
-    pub(super) supplied: Option<Box<(RawRead, demand::RawConsumption)>>,
+    /// On a read hour, what its row supplies.
+    pub(super) supplied: Option<Box<Supplied>>,
+}
+
+/// What a read hour supplies of a tag's row: its read and current consumption, before the
+/// day's rules, and what the detail products read of it.
+pub struct Supplied {
+    pub(super) read: RawRead,
+    pub(super) consumption: demand::RawConsumption,
+    /// Its applied day's recipients ([`pack::recipients`]), where the day is not refused.
+    pub(super) recipients: Option<Vec<u8>>,
+    /// Its demand pack; None where it is the one the projection last supplied for the tag.
+    pub(super) pack: Option<Handed>,
+}
+
+/// A demand pack as the projection hands it on.
+pub(super) enum Handed {
+    Whole(Arc<pack::Encoded>),
+    /// The delta ([`pack::delta`]) from the pack the projection last supplied for the tag.
+    Delta(Vec<u8>),
+}
+
+impl Supplied {
+    /// Counts the pack whole: the projection's cache shares it only until the row changes.
+    fn heap(&self) -> usize {
+        read_heap(&self.read)
+            + self.recipients.as_ref().map_or(0, Vec::capacity)
+            + match &self.pack {
+                None => 0,
+                Some(Handed::Whole(pack)) => size_of::<pack::Encoded>() + pack.heap(),
+                Some(Handed::Delta(bytes)) => bytes.capacity(),
+            }
+    }
 }
 
 /// One projected hour.
@@ -108,7 +139,8 @@ impl Hour {
         };
         let mut reasons = Reasons::default();
         let read = read_of(&row, hour, false, None, &mut reasons);
-        let consumption = demand::summary_of(&row, hour, hour, false, &mut reasons);
+        let (consumption, demand) = demand::summary_of(&row, hour, hour, false, &mut reasons);
+        let pack = Arc::new(pack::Encoded::of(&demand).expect("a test pack encodes"));
         Self {
             branch,
             hour,
@@ -124,7 +156,12 @@ impl Hour {
                 present: true,
                 seen: Sample::Owns(identity),
                 level: Some(Some(level)),
-                supplied: Some(Box::new((read, consumption))),
+                supplied: Some(Box::new(Supplied {
+                    read,
+                    consumption,
+                    recipients: recipients_of_day(&row, hour),
+                    pack: Some(Handed::Whole(pack)),
+                })),
             }],
             prior: Sample::Absent,
             unnamed: Vec::new(),
@@ -155,7 +192,7 @@ impl Item for Hour {
                 .countries
                 .iter()
                 .filter_map(|country| country.supplied.as_deref())
-                .map(|(read, _)| size_of::<(RawRead, demand::RawConsumption)>() + read_heap(read))
+                .map(|supplied| size_of::<Supplied>() + supplied.heap())
                 .sum::<usize>()
             + self.unnamed.capacity() * size_of::<u32>()
     }
@@ -231,6 +268,18 @@ struct Summary {
     status: columns::Status,
     hour: i32,
     consumption: demand::RawConsumption,
+    pack: Arc<pack::Encoded>,
+}
+
+/// `row`'s applied-day recipients at a read at `hour`, encoded, where the day is not refused.
+fn recipients_of_day(row: &CountryFuelRow, hour: i32) -> Option<Vec<u8>> {
+    awards_of(row, hour).ok()?;
+    let replay_data::rows::Recorded::Value(day) = &row.award_day else {
+        return None;
+    };
+    let mut out = Vec::new();
+    pack::recipients(&mut out, &day.recipients);
+    Some(out)
 }
 
 /// A tag the countries hold: its index and the country holding it.
@@ -262,6 +311,9 @@ pub struct Projector {
     by_country: HashMap<u32, BTreeMap<u128, Arc<FuelDemandPartRow>>>,
     reasons: Reasons,
     summaries: HashMap<u32, Summary>,
+    /// The pack the projection last supplied for each tag, by index, while it supplied one at
+    /// every read hour since.
+    packs: HashMap<u32, Arc<pack::Encoded>>,
 }
 
 impl Projector {
@@ -282,6 +334,7 @@ impl Projector {
             by_country: HashMap::new(),
             reasons: Reasons::default(),
             summaries: HashMap::new(),
+            packs: HashMap::new(),
         }
     }
 
@@ -318,15 +371,42 @@ impl Projector {
         }
     }
 
+    /// `pack` as handed on for tag `index`: nothing where it is the pack the projection last
+    /// supplied for the tag, the delta from that pack where both hold lists, else whole.
+    fn changed(&mut self, index: u32, pack: Arc<pack::Encoded>) -> io::Result<Option<Handed>> {
+        let handed = match self.packs.get(&index) {
+            Some(last) if Arc::ptr_eq(last, &pack) || **last == *pack => return Ok(None),
+            Some(last)
+                if matches!(
+                    (&**last, &*pack),
+                    (pack::Encoded::Pack { .. }, pack::Encoded::Pack { .. })
+                ) =>
+            {
+                let mut bytes = Vec::new();
+                pack::delta(last, &pack, &mut bytes)?;
+                Handed::Delta(bytes)
+            }
+            _ => Handed::Whole(Arc::clone(&pack)),
+        };
+        self.packs.insert(index, pack);
+        Ok(Some(handed))
+    }
+
     fn supplied(
         &mut self,
         row: &Arc<CountryFuelRow>,
         state: &State,
         hour: i32,
-    ) -> io::Result<(RawRead, demand::RawConsumption)> {
+        index: u32,
+    ) -> io::Result<Supplied> {
         let status = columns::status(state, TableId::FuelDemandParts);
+        let read = read_of(row, hour, false, None, &mut self.reasons);
+        let recipients = recipients_of_day(row, hour);
+        // A row whose level moved holds the same pack while its demand and parts do not move.
         if let Some(cached) = self.summaries.get(&row.country)
-            && Arc::ptr_eq(row, &cached.row)
+            && (Arc::ptr_eq(row, &cached.row)
+                || (row.demand == cached.row.demand
+                    && row.country_instance == cached.row.country_instance))
             && cached.status == status
             && (cached.hour == hour
                 || matches!(&row.demand,
@@ -336,10 +416,13 @@ impl Projector {
             let mut consumption = cached.consumption.clone();
             consumption.first_hour = hour;
             consumption.last_hour = hour;
-            return Ok((
-                read_of(row, hour, false, None, &mut self.reasons),
+            let pack = Arc::clone(&cached.pack);
+            return Ok(Supplied {
+                read,
                 consumption,
-            ));
+                recipients,
+                pack: self.changed(index, pack)?,
+            });
         }
         let parts = self
             .by_country
@@ -369,7 +452,9 @@ impl Projector {
             &view,
             self.format,
         )?;
-        let consumption = demand::summary_of(&rows[0], hour, hour, false, &mut self.reasons);
+        let (consumption, demand) =
+            demand::summary_of(&rows[0], hour, hour, false, &mut self.reasons);
+        let pack = Arc::new(pack::Encoded::of(&demand)?);
         self.summaries.insert(
             row.country,
             Summary {
@@ -377,12 +462,15 @@ impl Projector {
                 status,
                 hour,
                 consumption: consumption.clone(),
+                pack: Arc::clone(&pack),
             },
         );
-        Ok((
-            read_of(row, hour, false, None, &mut self.reasons),
+        Ok(Supplied {
+            read,
             consumption,
-        ))
+            recipients,
+            pack: self.changed(index, pack)?,
+        })
     }
 }
 
@@ -483,8 +571,9 @@ impl Operator<World> for Projector {
                         .map(Arc::new)
                 },
             )?;
-            for (_, old, _) in &edits {
-                if let Some(old) = old {
+            // An updated row keeps its summary: its pack is reused while its demand is unchanged.
+            for (_, old, now) in &edits {
+                if let (Some(old), None) = (old, now) {
                     self.summaries.remove(&old.country);
                 }
             }
@@ -592,7 +681,7 @@ impl Operator<World> for Projector {
                     || whole[TableId::CountryFuel.index()]);
             let supplied = if read {
                 row.as_ref()
-                    .map(|row| self.supplied(row, state, hour.hour).map(Box::new))
+                    .map(|row| self.supplied(row, state, hour.hour, index).map(Box::new))
                     .transpose()?
             } else {
                 None
@@ -605,6 +694,15 @@ impl Operator<World> for Projector {
                 level: sample.then(|| row.as_ref().map(|row| (row.current_raw, row.maximum_raw))),
                 supplied,
             });
+        }
+        // A tag a read hour supplies nothing loses its pack, as the emit's chain does.
+        if read {
+            let supplied: BTreeSet<u32> = projected
+                .iter()
+                .filter(|country| country.supplied.is_some())
+                .map(|country| country.index)
+                .collect();
+            self.packs.retain(|index, _| supplied.contains(index));
         }
         out.push(Hour {
             branch: hour.branch,

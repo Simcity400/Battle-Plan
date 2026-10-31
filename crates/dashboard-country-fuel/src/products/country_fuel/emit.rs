@@ -14,7 +14,8 @@
 use super::{
     AwardSums, DAY_HOURS, DayLeftOut, GAIN_UNITS, Identity, QUANTITY_UNITS, RawDay, RawRead,
     demand::RawConsumption,
-    facts::{self, Sample},
+    facts::{self, Handed, Sample, Supplied},
+    pack::{self, Encoded},
 };
 use dashboard_series::{
     Blob, Cell, Event, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
@@ -37,17 +38,22 @@ use std::{
 };
 
 /// The family's keys are spelled under it.
-pub const SCHEMA: u64 = 1;
+pub const SCHEMA: u64 = 2;
 
 /// A tag's keys: its supplying read (its runs' value; its events the reads), fuel level and
 /// capacity, positive current consumption by family, the day measures ([`DAY_MEASURES`], dated
-/// [`LAG`] hours late) and the drops of overlapped days.
+/// [`LAG`] hours late), the drops of overlapped days and its reads' demand packs, as chains of
+/// a keyframe and at most [`CHAIN`] - 1 deltas, an event at each read that changes the pack.
 pub const READ: u64 = 0;
 pub const FUEL: u64 = 1;
 pub const CAPACITY: u64 = 2;
 pub const CONSUMPTION: u64 = 3;
 pub const DAY: u64 = 6;
 pub const DROPS: u64 = DAY + DAY_MEASURES.len() as u64;
+pub const DEMAND: u64 = DROPS + 1;
+
+/// Events in a demand chain, its keyframe's included.
+pub const CHAIN: u8 = 16;
 /// A native country's key: the first hour of its consumption segment.
 pub const SEGMENT: u64 = 0;
 
@@ -83,14 +89,21 @@ pub const LATE: u64 = 1;
 pub mod kind {
     /// On a tag's read key: `[Unsigned country, instance, continuity, Boolean starts,
     /// Integer fuel, capacity, lend-lease, left-out, reason, day, Boolean consumption starts,
-    /// Integer segment start, native ×3, known ×3, positive ×3]`; left-out an Unsigned
-    /// ([`super::left_out_code`]), a reason an Unsigned reason id, each Null where none; the day
-    /// a List of the ring's 6 or the awards' 15 Integers, or Null; a native rate an Integer, or
-    /// the Unsigned id of why it is unknown.
+    /// Integer segment start, native ×3, known ×3, positive ×3, recipients]`; left-out an
+    /// Unsigned ([`super::left_out_code`]), a reason an Unsigned reason id, each Null where
+    /// none; the day as recorded, left out or not, a List of the ring's 6 or the awards' 14
+    /// Integers; a native rate an Integer, or the Unsigned id of why it is unknown; the
+    /// recipients a Text of the applied day's ([`super::pack::recipients`]), Null where the day
+    /// is refused.
     pub const READ: u64 = 0;
     /// On a tag's drops key, at a slot read's hour: `[Integer hour]`, the read whose kept day
     /// it overlaps.
     pub const DROP: u64 = 1;
+    /// On a tag's demand key: `[Text pack]`, a whole pack ([`super::pack::keyframe`]).
+    pub const KEYFRAME: u64 = 2;
+    /// On a tag's demand key: `[Integer keyframe hour, Text delta]`, the pack as the change
+    /// from the event before ([`super::pack::delta`]).
+    pub const DELTA: u64 = 3;
 }
 
 /// Family cells: the countries whose tags are not UTF-8, the first and last hours walked, each
@@ -215,6 +228,16 @@ struct Keys {
     current: [KeyHandle; 6],
     days: [KeyHandle; 15],
     drops: Option<KeyHandle>,
+    demand: Option<KeyHandle>,
+}
+
+/// A tag's demand chain as its last event left it: the pack, the chain's keyframe hour and its
+/// events.
+#[derive(Clone, Debug)]
+struct Stream {
+    pack: Arc<Encoded>,
+    keyframe: i32,
+    events: u8,
 }
 
 /// One tag.
@@ -241,6 +264,14 @@ struct Tag {
     unsettled: VecDeque<Unsettled>,
     read: bool,
     left_out: [u64; 3],
+    #[serde(skip)]
+    stream: Option<Stream>,
+    /// The pack the projection last supplied it, which a read supplying none repeats, and the
+    /// delta it was handed as from the pack before.
+    #[serde(skip)]
+    supplied: Option<Arc<Encoded>>,
+    #[serde(skip)]
+    handed: Option<(Arc<Encoded>, Vec<u8>)>,
     #[serde(skip)]
     stale: bool,
 }
@@ -271,12 +302,12 @@ enum Entity {
 }
 
 /// One tag at an hour, as the projection or a removal gives it.
-struct Offer<'a> {
+struct Offer {
     identity: Option<Identity>,
     present: bool,
     seen: Sample,
     level: Option<Option<(i64, i64)>>,
-    supplied: Option<&'a (RawRead, RawConsumption)>,
+    supplied: Option<Box<Supplied>>,
 }
 
 /// The family's emit on one branch.
@@ -504,6 +535,7 @@ impl Emit {
             current,
             days,
             drops: None,
+            demand: None,
         };
         self.tag_mut(actor).keys = Some(keys);
         Ok(keys)
@@ -538,7 +570,7 @@ impl Emit {
     }
 
     /// Keeps one projected hour.
-    pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+    pub fn hour(&mut self, writer: &mut Writer<'_>, mut hour: facts::Hour) -> io::Result<()> {
         let at = hour.hour;
         let previous = self.last;
         let adjacent = previous.and_then(|last| last.checked_add(1)) == Some(at);
@@ -572,15 +604,19 @@ impl Emit {
         };
         let mut touched = BTreeSet::new();
         let mut handed = Vec::with_capacity(hour.countries.len());
-        for country in &hour.countries {
+        let mut supplied = Vec::new();
+        for country in std::mem::take(&mut hour.countries) {
             let actor = named(&self.named, country.index)?;
             handed.push(actor);
+            if country.supplied.is_some() {
+                supplied.push(actor);
+            }
             let offer = Offer {
                 identity: country.identity,
                 present: country.present,
                 seen: country.seen,
                 level: country.level,
-                supplied: country.supplied.as_deref(),
+                supplied: country.supplied,
             };
             self.offer(writer, at, adjacent, actor, offer, &hour, &mut touched)?;
         }
@@ -607,6 +643,9 @@ impl Emit {
                 self.offer(writer, at, adjacent, actor, offer, &hour, &mut touched)?;
             }
         }
+        if hour.read {
+            self.retire(&mut supplied);
+        }
         self.segments(writer, at, adjacent, &touched)?;
         for id in &hour.unnamed {
             self.unnamed_stale |= self.unnamed.insert(*id);
@@ -614,6 +653,22 @@ impl Emit {
         self.drain(writer, at)?;
         self.last = Some(at);
         Ok(())
+    }
+
+    /// Drops the demand chain of every tag a read hour supplied nothing (`supplied` the tags it
+    /// did): its next read starts a chain anew, so the saved emit holds no pack of a tag gone.
+    fn retire(&mut self, supplied: &mut [u64]) {
+        supplied.sort_unstable();
+        for (actor, entity) in self.entities.iter_mut().enumerate() {
+            if let Entity::Tag(tag) = entity
+                && (tag.stream.is_some() || tag.supplied.is_some())
+                && supplied.binary_search(&(actor as u64)).is_err()
+            {
+                tag.stream = None;
+                tag.supplied = None;
+                tag.handed = None;
+            }
+        }
     }
 
     /// Every open run and read ends at `last`, the hour before a walk's gap.
@@ -681,12 +736,28 @@ impl Emit {
         at: i32,
         adjacent: bool,
         actor: u64,
-        offer: Offer<'_>,
+        mut offer: Offer,
         hour: &facts::Hour,
         touched: &mut BTreeSet<u64>,
     ) -> io::Result<()> {
         let from = at - DAY_HOURS - 1;
         let tag = tag_of(&mut self.entities, actor);
+        match offer
+            .supplied
+            .as_mut()
+            .and_then(|supplied| supplied.pack.take())
+        {
+            Some(Handed::Whole(pack)) => {
+                tag.supplied = Some(pack);
+                tag.handed = None;
+            }
+            Some(Handed::Delta(bytes)) => {
+                let before = tag.supplied.take().ok_or_else(invalid)?;
+                tag.supplied = Some(Arc::new(pack::apply(&before, &bytes)?));
+                tag.handed = Some((before, bytes));
+            }
+            None => {}
+        }
         if offer.present && !tag.present {
             // A tag a country holds again takes up the shared samples since none did.
             let since = tag.absent_since.unwrap_or(i32::MIN);
@@ -747,19 +818,10 @@ impl Emit {
             }
             return Ok(());
         }
-        let Some((read, consumption)) = offer.supplied else {
+        let Some(supplied) = offer.supplied else {
             return self.close(writer, actor, at, touched);
         };
-        self.read(
-            writer,
-            at,
-            actor,
-            identity,
-            read,
-            consumption,
-            offer.level,
-            touched,
-        )
+        self.read(writer, at, actor, identity, *supplied, offer.level, touched)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -769,11 +831,21 @@ impl Emit {
         at: i32,
         actor: u64,
         identity: Identity,
-        read: &RawRead,
-        consumption: &RawConsumption,
+        supplied: Supplied,
         level: Option<Option<(i64, i64)>>,
         touched: &mut BTreeSet<u64>,
     ) -> io::Result<()> {
+        let Supplied {
+            read,
+            consumption,
+            recipients,
+            ..
+        } = supplied;
+        let pack = tag_of(&mut self.entities, actor)
+            .supplied
+            .clone()
+            .ok_or_else(invalid)?;
+        let (read, consumption) = (&read, &consumption);
         let keys = self.keys(writer, actor)?;
         let native = self.native(writer, read.country, at)?;
         let slot = self.cadence.is_refresh(at);
@@ -860,7 +932,7 @@ impl Emit {
             consumption,
             (starts, consumption_starts, segment),
             left_out,
-            day,
+            recipients.as_deref(),
         )?;
         let sequence = writer.sequence()?;
         writer.event(Event {
@@ -871,6 +943,7 @@ impl Emit {
             kind: kind::READ,
             fields,
         })?;
+        self.demand(writer, actor, at, pack)?;
         let level = level.flatten();
         let mut values = [
             (Some(i128::from(at)), starts),
@@ -923,7 +996,7 @@ impl Emit {
         consumption: &RawConsumption,
         (starts, consumption_starts, segment): (bool, bool, i32),
         left_out: Option<DayLeftOut>,
-        day: Option<&RawDay>,
+        recipients: Option<&[u8]>,
     ) -> io::Result<Blob> {
         let reason = match &read.awards_reason {
             Some(reason) => Cell::Unsigned(self.reason(writer, reason)?),
@@ -936,7 +1009,7 @@ impl Emit {
                 Err(reason) => Cell::Unsigned(self.reason(writer, reason)?),
             };
         }
-        let day = match day {
+        let day = match &read.day {
             None => Cell::Null,
             Some(RawDay::Ring {
                 gained,
@@ -998,7 +1071,85 @@ impl Emit {
         cells.extend(native);
         cells.extend(consumption.known_daily.map(Cell::Integer));
         cells.extend(consumption.positive_daily.map(Cell::Integer));
+        cells.push(match recipients {
+            None => Cell::Null,
+            Some([]) => Cell::Text(Blob::EMPTY),
+            Some(bytes) => Cell::Text(writer.blob(&mut &bytes[..], bytes.len() as u64)?),
+        });
         writer.cells(cells)
+    }
+
+    /// Writes `actor`'s demand pack at its read at `at`, where it changed: a delta of the pack
+    /// before it, or a keyframe where the chain is full or either pack is refused.
+    fn demand(
+        &mut self,
+        writer: &mut Writer<'_>,
+        actor: u64,
+        at: i32,
+        pack: Arc<Encoded>,
+    ) -> io::Result<()> {
+        let tag = tag_of(&mut self.entities, actor);
+        let stream = tag.stream.take();
+        let handed = tag.handed.take();
+        if let Some(stream) = &stream
+            && (Arc::ptr_eq(&stream.pack, &pack) || *stream.pack == *pack)
+        {
+            tag.stream = Some(Stream {
+                pack,
+                ..stream.clone()
+            });
+            return Ok(());
+        }
+        let key = match tag.keys.ok_or_else(invalid)?.demand {
+            Some(key) => key,
+            None => {
+                let key = self.key(writer, actor, DEMAND, WALKED)?;
+                if let Some(keys) = &mut self.tag_mut(actor).keys {
+                    keys.demand = Some(key);
+                }
+                key
+            }
+        };
+        let mut bytes = Vec::new();
+        let (shape, keyframe, events) = match &stream {
+            Some(stream)
+                if stream.events < CHAIN
+                    && matches!(*stream.pack, Encoded::Pack { .. })
+                    && matches!(*pack, Encoded::Pack { .. }) =>
+            {
+                match handed {
+                    // The projection's delta, where it is from the pack published last.
+                    Some((before, delta)) if Arc::ptr_eq(&before, &stream.pack) => bytes = delta,
+                    _ => pack::delta(&stream.pack, &pack, &mut bytes)?,
+                }
+                (kind::DELTA, stream.keyframe, stream.events + 1)
+            }
+            _ => {
+                pack::keyframe(&pack, &mut bytes);
+                (kind::KEYFRAME, at, 1)
+            }
+        };
+        let blob = writer.blob(&mut bytes.as_slice(), bytes.len() as u64)?;
+        let fields = if shape == kind::DELTA {
+            writer.cells([Cell::Integer(i128::from(keyframe)), Cell::Text(blob)])?
+        } else {
+            writer.cells([Cell::Text(blob)])?
+        };
+        let sequence = writer.sequence()?;
+        writer.event(Event {
+            key,
+            native_hour: at,
+            read_hour: None,
+            sequence,
+            kind: shape,
+            fields,
+        })?;
+        self.tag_mut(actor).stream = Some(Stream {
+            pack,
+            keyframe,
+            events,
+        });
+        Ok(())
     }
 
     /// The consumption segment of each native country `touched`, whose holders or holders'
@@ -1224,11 +1375,28 @@ impl Emit {
         let json = serde_json::to_vec(&saved)?;
         out.extend_from_slice(&(json.len() as u64).to_le_bytes());
         out.extend_from_slice(&json);
-        let mut current = Vec::new();
-        self.current.save(&mut current)?;
-        out.extend_from_slice(&(current.len() as u64).to_le_bytes());
-        out.extend_from_slice(&current);
-        self.days.save(out)
+        for carry in [&self.current, &self.days] {
+            let mut saved = Vec::new();
+            carry.save(&mut saved)?;
+            out.extend_from_slice(&(saved.len() as u64).to_le_bytes());
+            out.extend_from_slice(&saved);
+        }
+        // Each tag's last demand pack, as a keyframe: the next read's delta starts from it.
+        let mut bytes = Vec::new();
+        for (actor, entity) in self.entities.iter().enumerate() {
+            if let Entity::Tag(tag) = entity
+                && let Some(stream) = &tag.stream
+            {
+                bytes.clear();
+                pack::keyframe(&stream.pack, &mut bytes);
+                out.extend_from_slice(&(actor as u64).to_le_bytes());
+                out.extend_from_slice(&stream.keyframe.to_le_bytes());
+                out.push(stream.events);
+                out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                out.extend_from_slice(&bytes);
+            }
+        }
+        Ok(())
     }
 
     /// The emit [`Self::save`] saved, going on with the publication `directory` reads.
@@ -1248,8 +1416,20 @@ impl Emit {
         let saved: Saved<'static> = serde_json::from_slice(d.bytes(length)?)?;
         let length = usize::try_from(d.u64()?).map_err(|_| invalid())?;
         emit.current = Carry::load(d.bytes(length)?)?;
-        let at = d.position();
-        emit.days = Carry::load(&bytes[at..])?;
+        let length = usize::try_from(d.u64()?).map_err(|_| invalid())?;
+        emit.days = Carry::load(d.bytes(length)?)?;
+        let mut streams = Vec::new();
+        while d.position() < bytes.len() {
+            let actor = d.u64()?;
+            let keyframe = i32::from_le_bytes(d.bytes(4)?.try_into().map_err(|_| invalid())?);
+            let events = d.bytes(1)?[0];
+            let length = usize::try_from(d.u64()?).map_err(|_| invalid())?;
+            let pack = pack::encoded_of(d.bytes(length)?)?;
+            if events == 0 || events > CHAIN {
+                return Err(invalid());
+            }
+            streams.push((actor, keyframe, events, pack));
+        }
         for (actor, tag) in saved.tags {
             let entity = emit
                 .entities
@@ -1271,6 +1451,7 @@ impl Emit {
                     current,
                     days,
                     drops: key(DROPS),
+                    demand: key(DEMAND),
                 });
             }
             if tag.present {
@@ -1310,6 +1491,21 @@ impl Emit {
                 )
             {
                 return Err(invalid());
+            }
+        }
+        for (actor, keyframe, events, pack) in streams {
+            match emit.entities.get_mut(actor as usize) {
+                Some(Entity::Tag(tag))
+                    if tag.stream.is_none()
+                        && tag.keys.is_some_and(|keys| keys.demand.is_some()) =>
+                {
+                    tag.stream = Some(Stream {
+                        pack: Arc::new(pack),
+                        keyframe,
+                        events,
+                    });
+                }
+                _ => return Err(invalid()),
             }
         }
         emit.queue = saved.queue.into();

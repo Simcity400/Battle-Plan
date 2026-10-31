@@ -2,9 +2,8 @@
 //! completed updates and receipts cached by divisions and task forces.
 //! Raw arithmetic/topology belongs to the supplying FuelDemandRead.
 use super::*;
-use replay_data::{
-    rows::FuelDemandRead, rows::FuelDemandSite, rows::FuelDemandUnit, rows::FuelDemandWing,
-};
+use pack::{Pack, Site, Wing};
+use replay_data::{rows::FuelDemandRead, rows::FuelDemandUnit};
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -174,14 +173,14 @@ struct Occurrence<'a> {
     name: Option<&'a [u8]>,
     name_reason: &'a [u8],
 }
-fn reason(bytes: &[u8]) -> Option<String> {
+pub(super) fn reason(bytes: &[u8]) -> Option<String> {
     (!bytes.is_empty()).then(|| {
         std::str::from_utf8(bytes)
             .unwrap_or("Fuel refusal text is not UTF-8")
             .to_owned()
     })
 }
-fn pack_of(row: &CountryFuelRow, hour: i32) -> Result<&FuelDemandRead, String> {
+pub(super) fn pack_of(row: &CountryFuelRow, hour: i32) -> Result<&FuelDemandRead, String> {
     let replay_data::rows::Recorded::Value(pack) = &row.demand else {
         return Err("Individual current fuel consumption was not recorded".into());
     };
@@ -224,14 +223,9 @@ fn unit(kind: u32, index: usize, row: &FuelDemandUnit) -> Occurrence<'_> {
         name_reason: &row.name_reason,
     }
 }
-fn wing(pack: &FuelDemandRead, site_index: usize, index: usize) -> Option<Occurrence<'_>> {
+fn wing(pack: &Pack, site_index: usize, index: usize) -> Option<Occurrence<'_>> {
     let site = pack.sites.get(site_index)?;
     let row = site.wings.get(index)?;
-    let rate = if let Some(reason) = reason(&row.reason) {
-        Err(reason)
-    } else {
-        pack.wing_rate(row).map_err(str::to_owned)
-    };
     Some(Occurrence {
         key: wing_key(site_index, index, site, row),
         kind: 1,
@@ -251,12 +245,12 @@ fn wing(pack: &FuelDemandRead, site_index: usize, index: usize) -> Option<Occurr
             wing_ordinal: row.wing_ordinal,
             reason: reason(&site.reason),
         }),
-        rate,
+        rate: row.rate.clone(),
         name: row.name.as_deref(),
         name_reason: &row.name_reason,
     })
 }
-fn wing_key(site_index: usize, index: usize, site: &FuelDemandSite, row: &FuelDemandWing) -> Key {
+fn wing_key(site_index: usize, index: usize, site: &Site, row: &Wing) -> Key {
     Key::Wing(
         site_index,
         index,
@@ -270,7 +264,7 @@ fn wing_key(site_index: usize, index: usize, site: &FuelDemandSite, row: &FuelDe
         site.container_owner,
     )
 }
-fn occurrences(pack: &FuelDemandRead) -> impl Iterator<Item = Occurrence<'_>> {
+fn occurrences(pack: &Pack) -> impl Iterator<Item = Occurrence<'_>> {
     pack.divisions
         .iter()
         .enumerate()
@@ -286,7 +280,7 @@ fn occurrences(pack: &FuelDemandRead) -> impl Iterator<Item = Occurrence<'_>> {
                 .map(move |index| wing(pack, site, index).expect("enumerated fuel wing"))
         }))
 }
-fn occurrence<'a>(pack: &'a FuelDemandRead, key: &Key) -> Option<Occurrence<'a>> {
+fn occurrence<'a>(pack: &'a Pack, key: &Key) -> Option<Occurrence<'a>> {
     let row = match key {
         Key::Unit(0, index, ..) => unit(0, *index, pack.divisions.get(*index)?),
         Key::Unit(2, index, ..) => unit(2, *index, pack.task_forces.get(*index)?),
@@ -296,26 +290,31 @@ fn occurrence<'a>(pack: &'a FuelDemandRead, key: &Key) -> Option<Occurrence<'a>>
     (&row.key == key).then_some(row)
 }
 
+/// `row`'s current consumption read at `hour`, and its demand pack as the demand products
+/// read it.
 pub(super) fn summary_of(
     row: &CountryFuelRow,
     hour: i32,
     segment: i32,
     starts: bool,
     reasons: &mut Reasons,
-) -> RawConsumption {
+) -> (RawConsumption, pack::Demand) {
     let mut known = [0_i128; 3];
     let mut positive = [0_i128; 3];
-    let native_daily = match pack_of(row, hour) {
+    let (native_daily, demand) = match pack_of(row, hour) {
         Err(reason) => {
-            let reason = reasons.intern(&reason);
-            std::array::from_fn(|_| Err(Arc::clone(&reason)))
+            let interned = reasons.intern(&reason);
+            (
+                std::array::from_fn(|_| Err(Arc::clone(&interned))),
+                Err(reason),
+            )
         }
-        Ok(pack) => {
+        Ok(raw) => {
             // native_rates orders Army/Navy/Air; the established Fuel consumers order
             // Army/Air/Navy. No new arithmetic law lives in the product.
-            let rates = pack.native_rates();
+            let rates = raw.native_rates();
             let rates = [rates[0], rates[2], rates[1]];
-            let causes = [&pack.army_reason, &pack.air_reason, &pack.navy_reason];
+            let causes = [&raw.army_reason, &raw.air_reason, &raw.navy_reason];
             let native = std::array::from_fn(|index| {
                 rates[index]
                     .map(engine_fuel::fuel_demand::daily_required)
@@ -323,17 +322,18 @@ pub(super) fn summary_of(
                         reasons.intern(&reason(causes[index]).unwrap_or_else(|| message.into()))
                     })
             });
-            for row in occurrences(pack) {
+            let pack = Pack::of(raw);
+            for row in occurrences(&pack) {
                 if let Ok(rate) = row.rate {
                     let value = i128::from(engine_fuel::fuel_demand::daily_required(rate));
                     known[row.kind as usize] += value;
                     positive[row.kind as usize] += value.max(0);
                 }
             }
-            native
+            (native, Ok(pack))
         }
     };
-    RawConsumption {
+    let consumption = RawConsumption {
         first_hour: hour,
         last_hour: hour,
         starts_segment: starts,
@@ -346,7 +346,8 @@ pub(super) fn summary_of(
         native_daily,
         known_daily: known,
         positive_daily: positive,
-    }
+    };
+    (consumption, demand)
 }
 
 fn stored_name(
@@ -511,6 +512,7 @@ pub struct CountryFuelDemand;
 impl Product for CountryFuelDemand {
     const KEY: &'static str = "country-fuel-demand";
     const CONTENT_DEPENDENT: bool = true;
+    const PUBLISHED: bool = true;
     type Params = FuelAwardsParams;
     type Reply = FuelDemandReply;
     fn types() -> Vec<String> {
@@ -532,14 +534,10 @@ impl Product for CountryFuelDemand {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let branch = params
-            .branch_id
-            .parse()
-            .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))?;
         let read = query::summary_at(source, params, context, cancelled)?;
-        let raw = detail::basis_reads(source, branch, params.hour, cancelled)?;
-        let pack = pack_of(detail::authenticated(&raw, params)?, params.hour)
+        let pack = query::basis_demand(source, params, context, cancelled)?
             .map_err(dashboard_core::invalid)?;
+        let pack = &pack;
         let catalogue = std::sync::OnceLock::new();
         let mut format = |bytes: &[u8]| read_name(source, context, &catalogue, bytes);
         let mut parts = Vec::new();
@@ -578,9 +576,9 @@ impl Product for CountryFuelDemand {
         for (index, site) in pack.sites.iter().enumerate() {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let mut wings = Vec::new();
-            for ordinal in 0..site.wings.len() {
+            for (ordinal, wing) in site.wings.iter().enumerate() {
                 wings.push(
-                    serde_json::to_string(&wing_key(index, ordinal, site, &site.wings[ordinal]))
+                    serde_json::to_string(&wing_key(index, ordinal, site, wing))
                         .map_err(|error| dashboard_core::invalid(error.to_string()))?,
                 );
             }
@@ -768,20 +766,15 @@ fn stacked_history(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<FuelDemandStackReply> {
-    let branch = basis
-        .branch_id
-        .parse()
-        .map_err(|error: std::num::ParseIntError| dashboard_core::invalid(error.to_string()))?;
     let selected = query::summary_at(source, basis, context, cancelled)?;
-    let basis_raw = detail::basis_reads(source, branch, basis.hour, cancelled)?;
-    let pack = pack_of(detail::authenticated(&basis_raw, basis)?, basis.hour)
-        .map_err(dashboard_core::invalid)?;
+    let pack =
+        query::basis_demand(source, basis, context, cancelled)?.map_err(dashboard_core::invalid)?;
     let mut parsed = Vec::new();
     for key in keys {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let parsed_key = serde_json::from_str::<Key>(key)
             .map_err(|error| dashboard_core::invalid(error.to_string()))?;
-        if occurrence(pack, &parsed_key).is_none() {
+        if occurrence(&pack, &parsed_key).is_none() {
             return Err(dashboard_core::invalid(
                 "Current fuel occurrence is absent from the original supplying read",
             ));
@@ -794,11 +787,11 @@ fn stacked_history(
         .into_iter()
         .filter(|(_, read)| read.last_hour >= first_hour && read.first_hour <= last_hour)
         .collect();
-    let hours = actor_reads
+    let supplying: Vec<(String, i32)> = actor_reads
         .iter()
-        .map(|(_, read)| read.first_hour)
+        .map(|(tag, read)| (tag.clone(), read.first_hour))
         .collect();
-    let raw = detail::window_reads(source, branch, window, &hours, cancelled)?;
+    let packs = query::window_demand(source, basis, window, context, &supplying, cancelled)?;
     let catalogue = std::sync::OnceLock::new();
     let mut format = |bytes: &[u8]| read_name(source, context, &catalogue, bytes);
     let mut parts: Vec<_> = keys
@@ -821,11 +814,10 @@ fn stacked_history(
                     ));
                 }
             }
-            let pack = raw
-                .get(&read.first_hour)
-                .and_then(|rows| rows.get(&tag))
+            let pack = packs
+                .get(&(tag, read.first_hour))
                 .ok_or_else(|| "Supplying current fuel read unavailable".to_string())
-                .and_then(|row| pack_of(row, read.first_hour));
+                .and_then(|pack| pack.as_ref().map_err(String::clone));
             for (part, key) in parts.iter_mut().zip(&parsed) {
                 dashboard_text::metadata::check_cancel(cancelled)?;
                 let value = match &pack {
@@ -896,6 +888,7 @@ pub struct CountryFuelDemandStack;
 impl Product for CountryFuelDemandStack {
     const KEY: &'static str = "country-fuel-demand-stack";
     const CONTENT_DEPENDENT: bool = true;
+    const PUBLISHED: bool = true;
     type Params = FuelDemandStackParams;
     type Reply = FuelDemandStackReply;
     fn types() -> Vec<String> {
@@ -955,6 +948,7 @@ pub struct CountryFuelDemandHistory;
 impl Product for CountryFuelDemandHistory {
     const KEY: &'static str = "country-fuel-demand-history";
     const CONTENT_DEPENDENT: bool = true;
+    const PUBLISHED: bool = true;
     type Params = FuelDemandHistoryParams;
     type Reply = FuelDemandHistoryReply;
     fn types() -> Vec<String> {

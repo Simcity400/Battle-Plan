@@ -1,5 +1,5 @@
-//! Bounded lazy receipt windows. One visible window is shared by all countries
-//! and recipient selections; the branch summary keeps no recipient payloads.
+//! A recipient's receipts over a window, from the applied days fuel's publication holds of
+//! the supplying reads. The test fixtures read the same days from the recording's rows.
 use super::*;
 
 /// Matches the existing production-detail window duration; not a roster cap.
@@ -44,7 +44,9 @@ pub struct FuelAwardHistoryReply {
     pub warnings: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 type Reads = BTreeMap<i32, BTreeMap<String, CountryFuelRow>>;
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct DetailCache {
     /// A window's reads, and the hours scanned for them.
@@ -55,6 +57,7 @@ struct DetailCache {
 
 /// Decode each necessary block once, retaining only actual requested reads.
 /// All country's rows share the same decode; no country-proportional rescans.
+#[cfg(any(test, feature = "test-support"))]
 fn scan_reads(
     source: &Source,
     branch: u64,
@@ -147,6 +150,7 @@ fn scan_reads(
     Ok(reads)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn basis_reads(
     source: &Source,
     branch: u64,
@@ -177,6 +181,7 @@ pub(super) fn basis_reads(
     Ok(reads)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn authenticated<'a>(
     reads: &'a Reads,
     params: &FuelAwardsParams,
@@ -193,6 +198,7 @@ pub(super) fn authenticated<'a>(
 
 /// The reads of window `window` at `hours`, its supplying reads a selection asks: one window is
 /// kept, each hour of it scanned once whatever selection asked it first.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn window_reads(
     source: &Source,
     branch: u64,
@@ -218,17 +224,16 @@ pub(super) fn window_reads(
 }
 
 fn recipient_amount(
-    row: &CountryFuelRow,
-    hour: i32,
+    awards: &pack::Awards,
     key: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<Result<String, String>> {
-    let day = match award_day(row, hour) {
-        Ok(day) => day,
-        Err(reason) => return Ok(Err(reason)),
+    let recipients = match awards {
+        Ok((_, recipients)) => recipients,
+        Err(reason) => return Ok(Err(reason.clone())),
     };
     let mut amount = 0_i128;
-    for part in &day.recipients {
+    for part in recipients {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if part.kind > 2 {
             return Ok(Err(format!(
@@ -253,9 +258,8 @@ fn recipient_amount(
 }
 
 fn history_runs(
-    supplying: &[RawRead],
-    reads: &Reads,
-    aliases: &[&String],
+    supplying: &[(String, RawRead)],
+    awards: &BTreeMap<(String, i32), pack::Awards>,
     params: &FuelAwardHistoryParams,
     continuity: i32,
     (first, last): (i32, i32),
@@ -264,10 +268,10 @@ fn history_runs(
     let mut runs = Vec::new();
     let mut cursor = i64::from(first);
     let mut previous_known = false;
-    let start = supplying.partition_point(|read| read.last_hour < first);
-    for read in supplying[start..]
+    let start = supplying.partition_point(|(_, read)| read.last_hour < first);
+    for (tag, read) in supplying[start..]
         .iter()
-        .take_while(|read| read.first_hour <= last)
+        .take_while(|(_, read)| read.first_hour <= last)
     {
         dashboard_text::metadata::check_cancel(cancelled)?;
         if i64::from(read.first_hour) > cursor {
@@ -292,15 +296,8 @@ fn history_runs(
                 || format!("Fuel day left out: {:?}", read.left_out),
                 str::to_owned,
             ))
-        } else if let Some(row) = reads.get(&read.first_hour).and_then(|rows| {
-            let mut matching = aliases
-                .iter()
-                .filter_map(|tag| rows.get(*tag))
-                .filter(|row| row.country.to_string() == params.country);
-            let first = matching.next()?;
-            matching.next().is_none().then_some(first)
-        }) {
-            recipient_amount(row, read.first_hour, &params.recipient_key, cancelled)?
+        } else if let Some(day) = awards.get(&(tag.clone(), read.first_hour)) {
+            recipient_amount(day, &params.recipient_key, cancelled)?
         } else {
             Err("Fuel supplying read unavailable in the detail window".into())
         };
@@ -336,6 +333,7 @@ impl Product for CountryFuelAwardHistory {
     const KEY: &'static str = "country-fuel-award-history";
     // Keys use receipt-time raw operands; numeric history does not read content.
     const CONTENT_DEPENDENT: bool = false;
+    const PUBLISHED: bool = true;
     type Params = FuelAwardHistoryParams;
     type Reply = FuelAwardHistoryReply;
     fn types() -> Vec<String> {
@@ -378,13 +376,12 @@ impl Product for CountryFuelAwardHistory {
             country: params.country.clone(),
             country_instance: params.country_instance,
         };
-        let basis = basis_reads(source, branch, params.hour, cancelled)?;
-        let row = authenticated(&basis, &basis_params)?;
-        let day = award_day(row, params.hour).map_err(dashboard_core::invalid)?;
-        let continuity = day.continuity_start_hour.ok_or_else(|| {
+        let (read, awards) = query::basis_awards(source, &basis_params, context, cancelled)?;
+        let (_, recipients) = awards.map_err(dashboard_core::invalid)?;
+        let continuity = read.continuity_start_hour.ok_or_else(|| {
             dashboard_core::invalid("Fuel receipt continuity boundary not recorded")
         })?;
-        let parts = recipients_of(row, cancelled, |_| Ok(String::new()))?;
+        let parts = recipients_of(&recipients, cancelled, |_| Ok(String::new()))?;
         if !parts.iter().any(|part| part.key == params.recipient_key) {
             return Err(dashboard_core::invalid(
                 "Fuel recipient key is absent from the selected supplying read",
@@ -398,17 +395,16 @@ impl Product for CountryFuelAwardHistory {
             params.window,
             cancelled,
         )?;
-        let aliases: Vec<_> = actor.aliases.iter().collect();
-        let mut supplying: Vec<RawRead> = actor
+        let mut supplying: Vec<(String, RawRead)> = actor
             .reads
             .into_iter()
-            .filter(|read| read.country.to_string() == params.country)
+            .filter(|(_, read)| read.country.to_string() == params.country)
             .collect();
-        supplying.sort_by_key(|read| read.first_hour);
+        supplying.sort_by_key(|(_, read)| read.first_hour);
         if actor.conflict
             || supplying
                 .windows(2)
-                .any(|reads| reads[0].last_hour >= reads[1].first_hour)
+                .any(|reads| reads[0].1.last_hour >= reads[1].1.first_hour)
         {
             return Err(dashboard_core::invalid(
                 "Conflicting aliases for the selected native fuel recipient",
@@ -417,16 +413,22 @@ impl Product for CountryFuelAwardHistory {
         let (first_hour, last_hour) =
             dashboard_base::products::production_lines::detail_window(params.window)
                 .expect("validated fuel window");
-        let hours = supplying
+        let within: Vec<(String, i32)> = supplying
             .iter()
-            .filter(|read| read.last_hour >= first_hour && read.first_hour <= last_hour)
-            .map(|read| read.first_hour)
+            .filter(|(_, read)| read.last_hour >= first_hour && read.first_hour <= last_hour)
+            .map(|(tag, read)| (tag.clone(), read.first_hour))
             .collect();
-        let reads = window_reads(source, branch, params.window, &hours, cancelled)?;
+        let awards = query::window_awards(
+            source,
+            &basis_params,
+            params.window,
+            context,
+            &within,
+            cancelled,
+        )?;
         let runs = history_runs(
             &supplying,
-            &reads,
-            &aliases,
+            &awards,
             params,
             continuity,
             (first_hour, last_hour),

@@ -228,9 +228,11 @@ fn load_json<P: Product>(
         None => source.reads_uncovered(),
     };
     // Replies persist between sessions, interactive ones once slow to compute.
-    let entry = (!P::MACHINE_DEPENDENT && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
-        .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
-        .flatten();
+    let entry = (!P::MACHINE_DEPENDENT
+        && !P::PUBLISHED
+        && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
+    .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
+    .flatten();
     let mut reply = bounded_json(
         &Envelope {
             source_id: lease_id,
