@@ -143,6 +143,317 @@ fn exact_with(
     Ok((tracks, sums))
 }
 
+/// Exact sums and member tracks over the whole branch, kept per publication: a window's are
+/// their slice, as [`exact`] reads them.
+struct Branch {
+    tracks: Vec<CountryTrack>,
+    sums: Sums,
+}
+
+impl Branch {
+    fn bytes(&self) -> usize {
+        use std::mem::size_of;
+        let spans = |spans: &Vec<HourSpan>| spans.capacity() * size_of::<HourSpan>();
+        // A B-tree entry's share of sparse nodes, conservatively.
+        let entry = 2 * size_of::<(String, Vec<FactionTotalRun>)>() + 64;
+        size_of::<Self>()
+            + self.tracks.capacity() * size_of::<CountryTrack>()
+            + self
+                .tracks
+                .iter()
+                .map(|track| {
+                    track.tag.capacity() + track.runs.capacity() * size_of::<MeasureRun>()
+                })
+                .sum::<usize>()
+            + self
+                .sums
+                .series
+                .iter()
+                .map(|(id, runs)| {
+                    entry + id.capacity() + runs.capacity() * size_of::<FactionTotalRun>()
+                })
+                .sum::<usize>()
+            + spans(&self.sums.recorded)
+            + spans(&self.sums.disjoint)
+            + spans(&self.sums.overflow)
+    }
+}
+
+/// The publication of store sections, from the manifest alone without opening their pages: every
+/// range's identity, which a rewritten, appended or emptied range changes.
+fn published(
+    store: &store::Store,
+    key: &store::SourceKey,
+    sections: &[&str],
+) -> io::Result<[u8; 32]> {
+    let mut hash = blake3::Hasher::new();
+    if let Some(session) = store.session(key)? {
+        for section in sections {
+            let count = session.range_count(section).unwrap_or(0);
+            hash.update(&count.to_le_bytes());
+            for range in 0..count {
+                let id = session
+                    .range_id(section, range)?
+                    .map_or([u64::MAX; 3], |id| id.cache_key());
+                for part in id {
+                    hash.update(&part.to_le_bytes());
+                }
+            }
+        }
+    }
+    Ok(*hash.finalize().as_bytes())
+}
+
+/// The branch's exact sums under the request's measure and membership, built once per
+/// publication of everything they read: the groups, the identity histories, the measure's key
+/// catalogue and its values. Content binds the store key.
+#[allow(clippy::too_many_arguments)]
+fn branch_sums(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    params: &FactionTotalsParams,
+    groups: [u64; 3],
+    values: &mut Reader<'_>,
+    values_section: &str,
+    keys: &BTreeMap<String, u64>,
+    history: &History,
+    members: &NativeMembers,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<Branch>> {
+    let family = match params.source {
+        FactionMeasure::Territory { .. } => "territory",
+        FactionMeasure::Factories { .. } => "factories",
+    };
+    let publication = (
+        groups,
+        published(
+            store,
+            key,
+            &[
+                format!("country-identities-{branch}").as_str(),
+                series::catalogue_section(family, branch).as_str(),
+                values_section,
+            ],
+        )?,
+    );
+    crate::prepared::query::observations::scope(source, "faction-totals:branch", Some(key))
+        .get_entry(
+            branch,
+            &(&params.source, params.membership),
+            &publication,
+            cancelled,
+            Branch::bytes,
+            || {
+                let window = HourSpan {
+                    first_hour: i32::MIN + 1,
+                    last_hour: history.last_hour,
+                };
+                let (tracks, sums) = exact(values, keys, history, members, &window, cancelled)?;
+                Ok(Branch { tracks, sums })
+            },
+        )
+}
+
+/// A window's exact sums and, for member parts, its members' tracks, sliced from the branch's
+/// kept sums: what [`exact`] over the window gives.
+#[allow(clippy::too_many_arguments)]
+fn sliced(
+    source: &Source,
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    params: &FactionTotalsParams,
+    groups: [u64; 3],
+    values: &mut Reader<'_>,
+    values_section: &str,
+    keys: &BTreeMap<String, u64>,
+    history: &History,
+    members: &NativeMembers,
+    window: &HourSpan,
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<CountryTrack>, Sums)> {
+    let whole = branch_sums(
+        source,
+        store,
+        key,
+        branch,
+        params,
+        groups,
+        values,
+        values_section,
+        keys,
+        history,
+        members,
+        cancelled,
+    )?;
+    let tracks = if params.parts == Some(true) {
+        slice_tracks(&whole, members, window, cancelled)?
+    } else {
+        Vec::new()
+    };
+    Ok((tracks, slice_sums(&whole, window)))
+}
+
+fn clipped_runs(runs: &[FactionTotalRun], window: &HourSpan) -> Vec<FactionTotalRun> {
+    let start = runs.partition_point(|run| run.last_hour < window.first_hour);
+    runs[start..]
+        .iter()
+        .take_while(|run| run.first_hour <= window.last_hour)
+        .map(|run| FactionTotalRun {
+            first_hour: run.first_hour.max(window.first_hour),
+            last_hour: run.last_hour.min(window.last_hour),
+            starts_segment: run.starts_segment && run.first_hour >= window.first_hour,
+            value: run.value,
+        })
+        .collect()
+}
+
+/// A window's exact sums, sliced from the branch's.
+fn slice_sums(branch: &Branch, window: &HourSpan) -> Sums {
+    Sums {
+        series: branch
+            .sums
+            .series
+            .iter()
+            .map(|(id, runs)| (id.clone(), clipped_runs(runs, window)))
+            .collect(),
+        recorded: clipped(&branch.sums.recorded, window),
+        disjoint: clipped(&branch.sums.disjoint, window),
+        overflowed: branch
+            .sums
+            .overflow
+            .iter()
+            .map(|span| {
+                let (first, last) = (
+                    span.first_hour.max(window.first_hour),
+                    span.last_hour.min(window.last_hour),
+                );
+                (i64::from(last) - i64::from(first) + 1).max(0) as usize
+            })
+            .sum(),
+        ..Sums::default()
+    }
+}
+
+/// A window's member tracks, sliced from the branch's: the members it reads, each run clipped.
+fn slice_tracks(
+    branch: &Branch,
+    members: &NativeMembers,
+    window: &HourSpan,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<CountryTrack>> {
+    let read = HourSpan {
+        first_hour: window.first_hour.saturating_sub(1),
+        last_hour: window.last_hour,
+    };
+    let tags: BTreeSet<String> = members
+        .clone()
+        .within(&read, cancelled)?
+        .tags()
+        .into_iter()
+        .collect();
+    Ok(branch
+        .tracks
+        .iter()
+        .filter(|track| tags.contains(&track.tag))
+        .map(|track| {
+            let start = track
+                .runs
+                .partition_point(|run| run.last_hour < window.first_hour);
+            CountryTrack {
+                tag: track.tag.clone(),
+                runs: track.runs[start..]
+                    .iter()
+                    .take_while(|run| run.first_hour <= window.last_hour)
+                    .map(|run| MeasureRun {
+                        first_hour: run.first_hour.max(window.first_hour),
+                        last_hour: run.last_hour.min(window.last_hour),
+                        starts_segment: run.starts_segment && run.first_hour >= window.first_hour,
+                        value: run.value,
+                    })
+                    .collect(),
+            }
+        })
+        .collect())
+}
+
+/// A faction's exact total over the view, its bins laid from the view's hours: each bin holds
+/// the runs its hours hold, and breaks where they start one or leave hours unknown.
+fn folded(runs: &[FactionTotalRun], view: (f64, f64, u32)) -> io::Result<ChartSummary> {
+    let bounds = (view.0.floor() as i32, view.1.floor() as i32);
+    let (exact, bins) = series::summary_bins(bounds, view)?;
+    let mut buckets: Vec<Option<ChartBucket>> = vec![None; bins.len()];
+    let window = match (bins.first(), bins.last()) {
+        (Some(first), Some(last)) => HourSpan {
+            first_hour: first.0,
+            last_hour: last.1,
+        },
+        _ => HourSpan {
+            first_hour: 1,
+            last_hour: 0,
+        },
+    };
+    let start = runs.partition_point(|run| run.last_hour < window.first_hour);
+    let shown = runs[start..]
+        .iter()
+        .take_while(|run| run.first_hour <= window.last_hour);
+    for run in shown.clone() {
+        let value = run.value as f64;
+        let bin = bins.partition_point(|(_, end)| *end < run.first_hour);
+        for (index, &(first, last)) in bins.iter().enumerate().skip(bin) {
+            if first > run.last_hour {
+                break;
+            }
+            let (first, last) = (first.max(run.first_hour), last.min(run.last_hour));
+            let piece = ChartBucket {
+                absolute_total: u128::from(run.value.unsigned_abs())
+                    * (i64::from(last) - i64::from(first) + 1) as u128,
+                first_hour: first,
+                last_hour: last,
+                first_value: value,
+                last_value: value,
+                last_value_hour: first,
+                min_hour: first,
+                min_value: value,
+                max_hour: first,
+                max_value: value,
+                first_break: run.starts_segment && first == run.first_hour,
+                has_break: false,
+            };
+            // Merging into no bucket would mark a gap that is not there.
+            buckets[index] = if buckets[index].is_some() {
+                merge(buckets[index], Some(piece))
+            } else {
+                Some(piece)
+            };
+        }
+    }
+    for (bucket, &(first, last)) in buckets.iter_mut().zip(&bins) {
+        if let Some(bucket) = bucket {
+            bucket.has_break |= bucket.first_hour > first || bucket.last_hour < last;
+        }
+    }
+    Ok(ChartSummary {
+        approximate: Vec::new(),
+        from: view.0,
+        to: view.1,
+        width: view.2,
+        buckets,
+        runs: exact.then(|| {
+            shown
+                .map(|run| ChartRun {
+                    first_hour: run.first_hour,
+                    last_hour: run.last_hour,
+                    value: run.value as f64,
+                    break_before: run.starts_segment,
+                })
+                .collect()
+        }),
+    })
+}
+
 /// The A-state supplies dated coverage; its columns use the shared reader grid.
 fn coverage(spans: &[HourSpan], view: (f64, f64, u32)) -> io::Result<ChartSummary> {
     series::summary_budget(view.0, view.1, view.2, 1)?;
@@ -880,7 +1191,7 @@ pub fn query(
             )
         }
     };
-    let mut values = Reader::new(&store, &key, section, cancelled)?;
+    let mut values = Reader::new(&store, &key, section.clone(), cancelled)?;
     if matches!(params.source, FactionMeasure::Factories { .. })
         && let Some(coverage) = crate::prepared::coverage::product_coverage(
             source,
@@ -930,7 +1241,21 @@ pub fn query(
             first_hour: hour,
             last_hour: hour,
         };
-        let (tracks, sums) = exact(&mut values, &keys, &history, &members, &window, cancelled)?;
+        let (tracks, sums) = sliced(
+            source,
+            &store,
+            &key,
+            branch,
+            &params,
+            page,
+            &mut values,
+            &section,
+            &keys,
+            &history,
+            &members,
+            &window,
+            cancelled,
+        )?;
         measures.tracks = tracks;
         return Ok(serde_json::to_value(build_reply(
             source,
@@ -962,7 +1287,21 @@ pub fn query(
     series::summary_budget(view.0, view.1, view.2, 1)?;
     let (is_exact, _) = series::summary_bins((window.first_hour, window.last_hour), view)?;
     if is_exact {
-        let (tracks, sums) = exact(&mut values, &keys, &history, &members, &window, cancelled)?;
+        let (tracks, sums) = sliced(
+            source,
+            &store,
+            &key,
+            branch,
+            &params,
+            page,
+            &mut values,
+            &section,
+            &keys,
+            &history,
+            &members,
+            &window,
+            cancelled,
+        )?;
         measures.tracks = tracks;
         let reply = build_reply(
             source,
@@ -1048,6 +1387,8 @@ pub fn query(
         &store,
         &key,
         branch,
+        page,
+        &section,
         view,
         cancelled,
     )
@@ -1068,6 +1409,8 @@ fn dense_reply(
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
+    groups: [u64; 3],
+    values_section: &str,
     view: (f64, f64, u32),
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
@@ -1075,6 +1418,21 @@ fn dense_reply(
         first_hour: view.0.floor() as i32,
         last_hour: view.1.floor() as i32,
     };
+    // Every view, column ranking and endpoint reads the branch's exact sums, built once.
+    let whole = branch_sums(
+        source,
+        store,
+        key,
+        branch,
+        params,
+        groups,
+        values,
+        values_section,
+        keys,
+        history,
+        members,
+        cancelled,
+    )?;
     // Exact sums inside the window also read the hour before it, for its segment flags.
     let nearby = members.clone().within(
         &HourSpan {
@@ -1084,8 +1442,15 @@ fn dense_reply(
         cancelled,
     )?;
     let bounded = nearby.clone().within(&window, cancelled)?;
-    let mut present = Reader::new(store, key, format!("territory-present-{branch}"), cancelled)?;
-    let mut rosters = Reader::new(store, key, format!("territory-rosters-{branch}"), cancelled)?;
+    // Only member parts read presence and rosters, each member's on its own.
+    let mut readers = if params.parts == Some(true) {
+        Some((
+            Reader::new(store, key, format!("territory-present-{branch}"), cancelled)?,
+            Reader::new(store, key, format!("territory-rosters-{branch}"), cancelled)?,
+        ))
+    } else {
+        None
+    };
     let ranks = params.faction_id.is_none() && params.inventory != Some(true);
     let mut summaries = BTreeMap::new();
     let mut member_summaries = BTreeMap::new();
@@ -1100,22 +1465,10 @@ fn dense_reply(
             continue;
         }
         let (tags, known, unknown) = bindings(&bounded, id, cancelled)?;
-        let summary = dense(
-            values,
-            keys,
-            &mut present,
-            present_keys,
-            &mut rosters,
-            &bounded,
-            &tags,
-            &known,
-            &unknown,
-            view,
-            cancelled,
-        )?;
+        let summary = folded(whole.sums.series.get(id).map_or(&[][..], Vec::as_slice), view)?;
         series::summary_budget(view.0, view.1, view.2, summaries.len() + 1)?;
         summaries.insert(id.clone(), summary);
-        if params.parts == Some(true) {
+        if let Some((present, rosters)) = &mut readers {
             for (&index, within) in &tags {
                 let id = serde_json::to_string(&bounded.countries[index].identity)?;
                 series::summary_budget(
@@ -1129,9 +1482,9 @@ fn dense_reply(
                     dense(
                         values,
                         keys,
-                        &mut present,
+                        present,
                         present_keys,
-                        &mut rosters,
+                        rosters,
                         &bounded,
                         &BTreeMap::from([(index, within.clone())]),
                         &known,
@@ -1154,9 +1507,7 @@ fn dense_reply(
             &valued,
             params.top,
             view,
-            &mut |hours| {
-                exact(values, keys, history, &nearby, hours, cancelled).map(|(_, sums)| sums.series)
-            },
+            &mut |hours| Ok(slice_sums(&whole, hours).series),
             cancelled,
         )?)
     } else {
@@ -1184,17 +1535,17 @@ fn dense_reply(
         .collect();
     let mut tracks: BTreeMap<String, Vec<MeasureRun>> = BTreeMap::new();
     for hour in endpoints {
-        let (point_tracks, point) = exact(
-            values,
-            keys,
-            history,
-            &nearby,
-            &HourSpan {
-                first_hour: hour,
-                last_hour: hour,
-            },
-            cancelled,
-        )?;
+        let at = HourSpan {
+            first_hour: hour,
+            last_hour: hour,
+        };
+        let point = slice_sums(&whole, &at);
+        // Only member parts read the members' tracks.
+        let point_tracks = if params.parts == Some(true) {
+            slice_tracks(&whole, &nearby, &at, cancelled)?
+        } else {
+            Vec::new()
+        };
         for (id, runs) in point.series {
             sums.series
                 .get_mut(&id)

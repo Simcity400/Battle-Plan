@@ -264,23 +264,14 @@ impl Total {
         (value.unsigned_abs() <= MAX_EXACT_JS_INTEGER).then_some(value)
     }
 
-    fn flush(&mut self, end: i64, window: Option<&HourSpan>) -> usize {
+    /// Closes the stretch since the last flush; the hours it overflowed, where it did.
+    fn flush(&mut self, end: i64) -> Option<(i64, i64)> {
         if self.since >= end {
-            return 0;
+            return None;
         }
         let Some(value) = self.recorded_value() else {
-            // Count faction-hours, so a changed event boundary cannot hide overflow.
-            return if self.complete() {
-                let (first, last) = window.map_or((self.since, end), |window| {
-                    (
-                        self.since.max(i64::from(window.first_hour)),
-                        end.min(i64::from(window.last_hour) + 1),
-                    )
-                });
-                last.saturating_sub(first).max(0) as usize
-            } else {
-                0
-            };
+            // Faction-hours, so a changed event boundary cannot hide overflow.
+            return self.complete().then_some((self.since, end));
         };
         let first_hour = self.since as i32;
         let last_hour = (end - 1) as i32;
@@ -299,7 +290,7 @@ impl Total {
                 value,
             }),
         }
-        0
+        None
     }
 }
 
@@ -309,6 +300,8 @@ struct Sums {
     recorded: Vec<HourSpan>,
     disjoint: Vec<HourSpan>,
     overflowed: usize,
+    /// Each faction's overflowed hours, which `overflowed` counts.
+    overflow: Vec<HourSpan>,
     #[cfg(any(test, feature = "test-support"))]
     roster_events: usize,
     #[cfg(any(test, feature = "test-support"))]
@@ -463,7 +456,21 @@ fn sum_prepared(
         for &index in &affected {
             let total = &mut totals[index];
             unknown -= usize::from(total.active && total.recorded_value().is_none());
-            sums.overflowed = sums.overflowed.saturating_add(total.flush(hour, window));
+            if let Some((first, end)) = total.flush(hour) {
+                let (first, end) = window.map_or((first, end), |window| {
+                    (
+                        first.max(i64::from(window.first_hour)),
+                        end.min(i64::from(window.last_hour) + 1),
+                    )
+                });
+                if first < end {
+                    sums.overflowed = sums.overflowed.saturating_add((end - first) as usize);
+                    sums.overflow.push(HourSpan {
+                        first_hour: first as i32,
+                        last_hour: (end - 1) as i32,
+                    });
+                }
+            }
             total.since = hour;
             total.starts_segment = total.recorded_value().is_none();
         }

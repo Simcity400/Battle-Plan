@@ -272,9 +272,28 @@ fn faction_prepared_exact_matches_native_oracle_after_commits_resume_append_and_
                 let old = FactionTotals::load(&source, &params, &context, &flag).unwrap();
                 let mut values = Reader::new(&fixture.store, &fixture.key, section, &flag).unwrap();
                 let last = all.last().unwrap().hour;
+                let whole = span(i32::MIN + 1, history.last_hour);
+                let (tracks, branch) =
+                    exact(&mut values, &keys, &history, &members, &whole, &flag).unwrap();
+                let branch = Branch {
+                    tracks,
+                    sums: branch,
+                };
                 for window in [span(100, last), span(last, last), span(101, last)] {
-                    let (_, sums) =
+                    let (tracks, sums) =
                         exact(&mut values, &keys, &history, &members, &window, &flag).unwrap();
+                    // A window's slice of the whole branch's sums is the window's own.
+                    let sliced = slice_sums(&branch, &window);
+                    assert_eq!(sliced.series, sums.series, "{source_measure:?} {membership:?}, {window:?}");
+                    assert_eq!(
+                        (&sliced.recorded, &sliced.disjoint, sliced.overflowed),
+                        (&sums.recorded, &sums.disjoint, sums.overflowed)
+                    );
+                    assert_eq!(
+                        format!("{:?}", slice_tracks(&branch, &members, &window, &flag).unwrap()),
+                        format!("{tracks:?}"),
+                        "{source_measure:?} {membership:?}, {window:?}"
+                    );
                     for (id, expected) in &full.series {
                         let expected: Vec<_> = expected
                             .iter()
@@ -763,6 +782,8 @@ fn faction_prepared_dense_top_keeps_mid_column_leaders_and_exact_reached_ranks()
             &fixture.store,
             &fixture.key,
             1,
+            [0; 3],
+            "values",
             (100.0, 119.0, 2),
             &flag,
         )
@@ -782,7 +803,8 @@ fn faction_prepared_dense_top_keeps_mid_column_leaders_and_exact_reached_ranks()
             );
             assert!(summaries["401"].buckets[1].is_none());
             let steady = summaries["402"].buckets[0].unwrap();
-            assert_eq!((steady.first_hour, steady.last_hour), (100, 109));
+            // Twenty hours in two columns take eight-hour bins: the first ends at hour 107.
+            assert_eq!((steady.first_hour, steady.last_hour), (100, 107));
             assert!(
                 steady.has_break,
                 "the steady leader's line breaks at the hour it ranked second"
@@ -1061,4 +1083,73 @@ fn faction_dense_top_ties_in_faction_order_and_never_ranks_a_missing_column() {
     for id in ["A", "B", "C"] {
         assert_eq!(all[id], original[id]);
     }
+}
+
+#[test]
+fn a_faction_s_view_folds_its_exact_runs_into_the_view_s_bins() {
+    let started = |run: FactionTotalRun| FactionTotalRun { starts_segment: true, ..run };
+    let runs = [started(total(0, 99, 5)), total(100, 149, 7), started(total(200, 299, 3))];
+    let fold = |width| {
+        folded(&runs, (0.0, 399.0, width))
+            .unwrap()
+            .buckets
+            .iter()
+            .map(|bucket| bucket.map(|bucket| (bucket.first_hour, bucket.last_hour, bucket.min_value, bucket.max_value,
+                bucket.last_value, bucket.first_break, bucket.has_break)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fold(4), [
+        Some((0, 99, 5.0, 5.0, 5.0, true, false)),
+        Some((100, 149, 7.0, 7.0, 7.0, false, true)),
+        Some((200, 299, 3.0, 3.0, 3.0, true, false)),
+        None,
+    ]);
+    // A wider bin holds both runs it covers, and its hours left unknown break it.
+    assert_eq!(fold(2), [Some((0, 149, 5.0, 7.0, 7.0, true, true)), Some((200, 299, 3.0, 3.0, 3.0, true, true))]);
+    let summary = folded(&runs, (0.0, 399.0, 4)).unwrap();
+    assert_eq!(summary.buckets[0].unwrap().absolute_total, 500);
+    assert!(summary.runs.is_none(), "a wide view lists no runs");
+    // An hourly view lists the runs it shows, whole.
+    let hourly = folded(&runs, (90.0, 109.0, 40)).unwrap();
+    assert_eq!(hourly.runs.unwrap().iter().map(|run| (run.first_hour, run.last_hour)).collect::<Vec<_>>(), [(0, 99), (100, 149)]);
+}
+
+#[test]
+fn a_slice_counts_only_its_own_overflowed_faction_hours() {
+    let branch = Branch {
+        tracks: Vec::new(),
+        sums: Sums {
+            // Two factions overflow, across both edges of the window and inside it.
+            overflow: vec![span(90, 104), span(108, 130), span(101, 102)],
+            ..Sums::default()
+        },
+    };
+    assert_eq!(slice_sums(&branch, &span(100, 119)).overflowed, 5 + 12 + 2);
+    assert_eq!(slice_sums(&branch, &span(105, 107)).overflowed, 0);
+    assert_eq!(slice_sums(&branch, &span(0, 200)).overflowed, 15 + 23 + 2);
+}
+
+#[test]
+fn a_rewritten_or_emptied_range_anywhere_in_a_section_is_a_new_publication() {
+    let fixture = Fixture::new();
+    let publish = |ranges: &[(u64, &[u8])]| {
+        let mut writer = fixture.writer();
+        for &(range, bytes) in ranges {
+            writer.write_at("values", range, bytes).unwrap();
+        }
+        writer.commit().unwrap();
+        published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap()
+    };
+    let first = publish(&[(0, b"a"), (1, b"b"), (2, b"c")]);
+    assert_eq!(
+        published(&fixture.store, &fixture.key, &["groups", "values"]).unwrap(),
+        first,
+        "an unchanged section keeps its publication"
+    );
+    // The middle range alone, then the last emptied as a catalogue retires its patches.
+    let middle = publish(&[(1, b"d")]);
+    assert_ne!(middle, first);
+    let emptied = publish(&[(2, b"")]);
+    assert_ne!(emptied, middle);
+    assert_ne!(publish(&[(1, b"e")]), emptied, "a rewrite behind an emptied tail");
 }
