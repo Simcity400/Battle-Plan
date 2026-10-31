@@ -4,7 +4,7 @@ use replay_data::{
     rows::ProvinceNameRow, rows::ProvinceRow, rows::Recorded, rows::StateRow, rows::TableRows,
     rows::TableSchema,
 };
-use replay_frame::{frame::Metrics, frame::TableView};
+use replay_frame::frame::Metrics;
 
 fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
@@ -178,7 +178,7 @@ fn state_names_use_recorded_custom_owner_and_content_precedence() {
             .map(|state_id| StateNameRequest { state_id, hour: 1 })
             .to_vec(),
     };
-    let reply = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let reply = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     assert!(reply.places.is_empty());
     for (state, expected) in
         reply.states[..3]
@@ -233,7 +233,7 @@ fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
         },
     ]);
     assert!(cat.state_content.set(Ok(content)).is_ok());
-    let reply = PlaceNames::load(
+    let reply = read_recorded(
         &source,
         &PlaceNamesParams {
             land: false,
@@ -289,12 +289,12 @@ fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
         }],
         states: Vec::new(),
     };
-    let places = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let places = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     params.states.push(StateNameRequest {
         state_id: 64,
         hour: 1,
     });
-    let mixed = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let mixed = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         serde_json::to_vec(&places.places).unwrap(),
         serde_json::to_vec(&mixed.places).unwrap()
@@ -345,7 +345,7 @@ fn state_names_key_recorded_renames_by_each_requested_hour_and_keep_gaps() {
             hour: 1,
         },
     ]);
-    let reply = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let reply = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         reply.states[0].name.as_deref(),
         Some("Renamed second hour state")
@@ -384,21 +384,21 @@ fn state_names_preserve_successful_empty_names_and_stored_language_failures() {
     let (mut cat, _folder) = catalogue();
     let empty = BTreeMap::from([(64, Ok(String::new()))]);
     let mut f = frame(1);
-    let (name, missing) = state_name_at(&f, 64, &cat, Ok(&empty));
+    let (name, missing) = state_name(&FrameInputs::new(&f), 64, &cat, Ok(&empty));
     assert_eq!(name.as_deref(), Some(""));
     assert!(missing.is_none());
     let mut states = f.complete::<tables::States>().unwrap().to_vec();
     states[0].custom_name = b"Stored state".to_vec();
     set::<tables::States>(&mut f, states);
     cat.recorded_language = "other-language".into();
-    let (name, missing) = state_name_at(&f, 64, &cat, Err("state templates unavailable"));
+    let (name, missing) = state_name(&FrameInputs::new(&f), 64, &cat, Err("state templates unavailable"));
     assert!(name.is_none());
     assert!(missing.unwrap().contains("other-language"));
     *f.tables[TableId::States.index()] = TableView::Unavailable {
         reason: "No state read".into(),
     };
     assert_eq!(
-        state_name_at(&f, 64, &cat, Ok(&empty)),
+        state_name(&FrameInputs::new(&f), 64, &cat, Ok(&empty)),
         (
             None,
             Some("Not in this recording: state 64 at this hour".into())
@@ -422,7 +422,7 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
         places: Vec::new(),
         states: vec![state.clone(); 5000],
     };
-    let reply = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let reply = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.states.len(), params.states.len());
     assert!(
         reply
@@ -431,12 +431,12 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
             .all(|state| { state.name.as_deref() == Some("Mod state") && state.missing.is_none() })
     );
     let context = LoadContext { content: None };
-    let reply = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap();
+    let reply = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap();
     let entry_bytes = serde_json::to_vec(&reply.states[0]).unwrap().len() + 1;
     params
         .states
         .resize(MAX_PRODUCT_REPLY_BYTES / entry_bytes + 1, state);
-    let error = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap_err();
+    let error = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap_err();
     assert!(error.to_string().contains("reply exceeds its size budget"));
     let states = params.states.split_off(params.states.len() / 2);
     params.places = states
@@ -446,7 +446,7 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
             hour: request.hour,
         })
         .collect();
-    let error = PlaceNames::load(&source, &params, &context, &AtomicBool::new(false)).unwrap_err();
+    let error = read_recorded(&source, &params, &context, &AtomicBool::new(false)).unwrap_err();
     assert!(error.to_string().contains("reply exceeds its size budget"));
 }
 
@@ -610,7 +610,7 @@ fn place_names_have_no_chosen_request_count_limit() {
             5000
         ],
     };
-    assert!(PlaceNames::validate(&params).is_ok());
+    assert!(validate(&params).is_ok());
     params.places.push(PlaceNameRequest {
         province_id: 18,
         hour: 2,
@@ -619,7 +619,7 @@ fn place_names_have_no_chosen_request_count_limit() {
         state_id: 65,
         hour: 2,
     });
-    assert!(PlaceNames::validate(&params).is_ok());
+    assert!(validate(&params).is_ok());
 }
 
 fn resolved(
@@ -629,8 +629,7 @@ fn resolved(
     names: Result<&StateNames, &str>,
     regions: Result<&BTreeMap<u32, Result<String, String>>, &str>,
 ) -> (Option<String>, Option<String>) {
-    let text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content().unwrap(), 0);
-    name_at(frame, &text, province, cat, names, regions, false)
+    place_name(&FrameInputs::new(frame), province, cat, names, regions, false)
 }
 fn name(
     frame: &DecodedFrame,

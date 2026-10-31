@@ -48,6 +48,7 @@ dashboard-naval = { workspace = true, features = ["test-support"] }
 dashboard-occupation = { workspace = true, features = ["test-support"] }
 dashboard-party-history = { workspace = true, features = ["test-support"] }
 dashboard-peace-deals = { workspace = true, features = ["test-support"] }
+dashboard-place-names = { workspace = true, features = ["test-support"] }
 dashboard-politics = { workspace = true, features = ["test-support"] }
 dashboard-politics-ledger = { workspace = true, features = ["test-support"] }
 dashboard-raids = { workspace = true, features = ["test-support"] }

@@ -80,6 +80,8 @@ pub use dashboard_resource_balance::products::resource_balance;
 pub use dashboard_resource_balance::products::trade_flows;
 pub use dashboard_special_projects::products::special_projects;
 pub use dashboard_stability::products::{country_stability, stability_parts};
+// The product, and the name ladder dashboard-base keeps for it, under one path.
+pub use dashboard_place_names::products::place_names;
 pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
@@ -340,7 +342,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<division_equipment::DivisionEquipment>(),
     register_prepared::<division_equipment::history::DivisionEquipmentHistory>(),
     register::<training_queue::TrainingQueue>(),
-    register::<place_names::PlaceNames>(),
+    register_prepared::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
     register::<country_colours::CountryColours>(),
     register::<faction_details::FactionDetails>(),

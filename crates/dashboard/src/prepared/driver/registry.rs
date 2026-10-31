@@ -902,6 +902,14 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &["map-pages"],
         ..family("map-pages")
     },
+    // Provinces' and states' names at hours: their name inputs as events on the segment driver.
+    Descriptor {
+        status: &["place-names"],
+        queries: &["place-names"],
+        gates: &["place-names"],
+        segments: true,
+        ..family(products::place_names::NAME)
+    },
 ];
 
 /// Every recording-wide job.

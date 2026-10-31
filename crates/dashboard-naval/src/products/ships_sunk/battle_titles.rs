@@ -440,7 +440,7 @@ impl Product for ShipsSunkBattleTitles {
                 .into_iter()
                 .map(|(province_id, hour)| place_names::PlaceNameRequest { province_id, hour })
                 .collect();
-            let names = place_names::PlaceNames::load(
+            let names = place_names::read_recorded(
                 source,
                 &place_names::PlaceNamesParams {
                     land: false,

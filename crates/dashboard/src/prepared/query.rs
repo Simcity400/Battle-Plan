@@ -405,6 +405,34 @@ fn supply_reply(
     Ok(serde_json::to_value(reply)?)
 }
 
+/// Provinces' and states' names at their hours from the place-names family's publication; null
+/// before the family publishes the branch, and while an hour asked is past what it accepted.
+fn names_reply(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    params: &Value,
+    cancelled: &AtomicBool,
+) -> io::Result<Value> {
+    use crate::products::place_names::{self, PlaceNamesParams, emit, query};
+    let params: PlaceNamesParams = serde_json::from_value(params.clone())?;
+    place_names::validate(&params).map_err(crate::invalid)?;
+    let branch = branch(source, &params.branch_id)?;
+    let Some(opened) = published::open(source, content, place_names::NAME, emit::SCHEMA, branch)?
+    else {
+        return Ok(Value::Null);
+    };
+    let context = crate::products::LoadContext {
+        content: content.cloned(),
+    };
+    let reply = opened.read(cancelled, |snapshot, directory| {
+        query::reply(source, &context, snapshot, directory, branch, &params, cancelled)
+    })?;
+    Ok(match reply {
+        Some(reply) => serde_json::to_value(reply)?,
+        None => Value::Null,
+    })
+}
+
 /// The equipment stockpile at an hour, its catalogue or its chart lines, from its family's
 /// publication; null before the family publishes the branch, and an hour past what it accepted.
 fn stockpile_reply(
@@ -874,6 +902,15 @@ impl Hours {
             | "agency-comparison"
             | "operatives-roster" => range(&["firstHour"], "lastHour"),
             "equipment-stockpile-at" => hour("hour"),
+            // Names of rows each at its own hour: through the last one asked.
+            "place-names" => ["places", "states"]
+                .into_iter()
+                .filter_map(|field| params.get(field).and_then(Value::as_array))
+                .flatten()
+                .filter_map(|entry| entry.get("hour")?.as_i64())
+                .max()
+                .and_then(|hour| i32::try_from(hour).ok())
+                .map_or(Self::Branch, Self::At),
             "politics-ledger" if !named("navigation") && !named("marks") && !named("within") => {
                 range(&["from"], "hour")
             }
@@ -1609,6 +1646,7 @@ fn query_data(
         | "equipment-stockpile-chart") => {
             stockpile_reply(source, content, product, &request.params, cancelled)?
         }
+        "place-names" => names_reply(source, content, &request.params, cancelled)?,
         product @ ("land-battles"
         | "land-battles-manifest"
         | "land-battles-ranking"

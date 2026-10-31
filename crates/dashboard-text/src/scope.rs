@@ -183,20 +183,27 @@ fn view_rows<T: TableSchema>(view: Option<&SharedView>) -> &[T::Row] {
 pub(crate) fn table<T: TableSchema>(
     frame: &dyn replay_frame::frame::DecodedSource,
 ) -> (&[T::Row], String) {
-    match frame.view(T::ID.index()) {
-        TableView::Complete(rows) => (
-            rows.rows::<T>().unwrap_or_default(),
-            "the complete table has no row for it".into(),
-        ),
-        TableView::Truncated { rows, missing } => (
-            rows.rows::<T>().unwrap_or_default(),
-            format!("the table is truncated ({missing} rows missing)"),
-        ),
-        TableView::Unavailable { reason } => (&[], format!("the table is unavailable: {reason}")),
-        TableView::NotRecorded { mode } => (
-            &[],
-            format!("the table is not recorded in a {mode} recording"),
-        ),
+    let view = frame.view(T::ID.index());
+    let rows = match view {
+        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
+            rows.rows::<T>().unwrap_or_default()
+        }
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => &[],
+    };
+    (rows, gap(view))
+}
+
+/// Why `view` may hold no row for a key.
+pub fn gap(view: &TableView) -> String {
+    match view {
+        TableView::Complete(_) => "the complete table has no row for it".into(),
+        TableView::Truncated { missing, .. } => {
+            format!("the table is truncated ({missing} rows missing)")
+        }
+        TableView::Unavailable { reason } => format!("the table is unavailable: {reason}"),
+        TableView::NotRecorded { mode } => {
+            format!("the table is not recorded in a {mode} recording")
+        }
     }
 }
 

@@ -276,7 +276,7 @@ fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
     let context = LoadContext {
         content: Some(content),
     };
-    let names = place_names::PlaceNames::load(
+    let names = place_names::read_recorded(
         &source,
         &place_names::PlaceNamesParams {
             land: false,

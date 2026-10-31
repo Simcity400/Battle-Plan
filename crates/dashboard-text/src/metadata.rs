@@ -1432,6 +1432,11 @@ mod local_player_tests {
     }
 }
 
+/// Why [`recorded_rows`] refuses `table` at `hour`: the recording's mode leaves it out.
+pub fn not_recorded(hour: i32, table: TableId, mode: impl std::fmt::Display) -> String {
+    format!("hour {hour} {table:?} is not recorded in a {mode} recording")
+}
+
 /// The rows a table holds this hour, complete or truncated; an unavailable table
 /// holds none. For products that use whatever rows were recorded.
 pub fn recorded_rows<T: replay_data::rows::TableSchema>(
@@ -1449,11 +1454,9 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
             })
         }
         TableView::Unavailable { .. } => Ok(&[]),
-        TableView::NotRecorded { mode } => Err(crate::invalid(format!(
-            "hour {} {:?} is not recorded in a {mode} recording",
-            frame.hour(),
-            T::ID
-        ))),
+        TableView::NotRecorded { mode } => {
+            Err(crate::invalid(not_recorded(frame.hour(), T::ID, mode)))
+        }
     }
 }
 

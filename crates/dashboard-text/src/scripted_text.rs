@@ -40,8 +40,8 @@ mod entries;
 mod numeric;
 pub mod operands;
 pub use entries::{
-    Environment, StateContent, StateNameUsage, StateNames, live_state_warnings, read_state_content,
-    state_display_name,
+    Environment, StateContent, StateNameUsage, StateNames, live_state_warnings,
+    province_primary_name, read_state_content, state_display_name, victory_point_name,
 };
 mod properties;
 pub mod random;

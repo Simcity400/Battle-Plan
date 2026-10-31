@@ -25,6 +25,7 @@ use dashboard_country_fuel::products::country_fuel;
 use dashboard_diplomacy::products::diplomacy_state;
 use dashboard_equipment_losses::products::equipment_losses;
 use dashboard_equipment_stockpile::products::equipment_stockpile;
+use dashboard_place_names::products::place_names;
 use dashboard_forces::products::{army_size, supply_health};
 use dashboard_politics_ledger::products::politics_ledger;
 use dashboard_stability::products::country_stability as stability;
@@ -122,6 +123,11 @@ pub(crate) static REGISTERED: &[Registered] = &[
         load: |content| content.styles().map(drop),
         bind: styles,
     },
+    Registered {
+        name: place_names::NAME,
+        load: free,
+        bind: names,
+    },
 ];
 
 /// `branch`'s extent in `extents`; a branch the recording holds no hour of is none of a
@@ -204,6 +210,7 @@ projected!(
     politics_ledger::facts::Hour,
     equipment_stockpile::columnar::Hour,
     style_runs::facts::Hour,
+    place_names::facts::Hour,
 );
 
 /// A family's emit on the series engine.
@@ -249,6 +256,7 @@ emits!(
     equipment_stockpile::emit::Emit => equipment_stockpile::columnar::Hour,
     country_fuel::emit::Emit => country_fuel::facts::Hour,
     diplomacy_state::emit::Emit => diplomacy_state::facts::Hour,
+    place_names::emit::Emit => place_names::facts::Hour,
 );
 
 impl<E: Emits> Emits for Box<E> {
@@ -1272,5 +1280,74 @@ impl Native for Stockpile<'_> {
             saved,
         )?;
         Ok(Series::new(Box::new(emit), published.frontier.first_hour))
+    }
+}
+
+struct Names;
+
+fn names<'p>(
+    id: FamilyId,
+    _: &'p Content<'p>,
+    stage: Stage<'p, 'p>,
+    taken: Taken<'p>,
+) -> Made<'p> {
+    bound(id, Names, stage, taken)
+}
+
+impl Native for Names {
+    type Operator = place_names::facts::Projector;
+    type Branch = Series<place_names::emit::Emit>;
+
+    fn tables(&self) -> &'static [TableId] {
+        place_names::facts::TABLES
+    }
+
+    fn needs(&self) -> io::Result<Needs> {
+        place_names::facts::needs()
+    }
+
+    fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
+        place_names::facts::Projector::new()
+    }
+
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        Ok(Series::new(place_names::emit::Emit::new(), first))
+    }
+
+    fn observe(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        hour: place_names::facts::Hour,
+    ) -> io::Result<()> {
+        state.observe(stage, branch, hour.hour, hour)
+    }
+
+    fn flush(
+        &self,
+        state: &mut Self::Branch,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        _: Option<i32>,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        state.flush(stage, branch)
+    }
+
+    fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        state.save()
+    }
+
+    fn resume(
+        &self,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
+        saved: &[u8],
+    ) -> io::Result<Self::Branch> {
+        let directory = directory(stage, branch, published, place_names::emit::SCHEMA)?;
+        let emit = place_names::emit::Emit::resume(&directory, saved)?;
+        Ok(Series::new(emit, published.frontier.first_hour))
     }
 }

@@ -671,22 +671,9 @@ impl<'a> ScriptedText<'a> {
         &self,
         id: u32,
     ) -> Result<Option<String>, String> {
-        if let Some(raw) = self
-            .province_name_override(id)?
-            .filter(|raw| !raw.is_empty())
-        {
-            // Test raw length, then return even an empty localisation.
-            return self
-                .localisation
-                .localise(raw)
-                .map(Some)
-                .map_err(|e| e.to_string());
-        }
-        let text = self.province_victory_point_name(id)?;
-        if !text.is_empty() {
-            return Ok(Some(text));
-        }
-        Ok(None)
+        province_primary_name(self.localisation, self.province_name_override(id), || {
+            self.province_victory_point_name(id)
+        })
     }
 
     /// Effect/map display names, distinct from province GetName.
@@ -782,15 +769,7 @@ impl<'a> ScriptedText<'a> {
             }
         };
         let tag = installed_content_country_names::country_names::original_or_own_tag(self.frame, owner)?;
-        for key in [
-            format!("{tag}_VICTORY_POINTS_{id}"),
-            format!("VICTORY_POINTS_{id}"),
-        ] {
-            if self.localisation.get(&key).is_some() {
-                return self.localise(&key);
-            }
-        }
-        Ok(String::new())
+        victory_point_name(self.localisation, id, tag)
     }
 
     pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
@@ -828,6 +807,39 @@ impl<'a> ScriptedText<'a> {
             .localise(&name.name)
             .map_err(|e| e.to_string())
     }
+}
+
+/// A province's primary display name: its nonempty recorded rename localised, even to empty
+/// text; else its nonempty victory-point name; else none.
+pub fn province_primary_name(
+    localisation: &Localisation,
+    rename: Result<Option<&[u8]>, String>,
+    victory_point: impl FnOnce() -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    if let Some(raw) = rename?.filter(|raw| !raw.is_empty()) {
+        return localisation
+            .localise(raw)
+            .map(Some)
+            .map_err(|e| e.to_string());
+    }
+    let text = victory_point()?;
+    Ok((!text.is_empty()).then_some(text))
+}
+
+/// Province `id`'s victory-point name under its state owner's original-or-own `tag`: the
+/// owner's key, else the plain one, whichever is defined first; empty when neither is.
+pub fn victory_point_name(localisation: &Localisation, id: u32, tag: &str) -> Result<String, String> {
+    for key in [
+        format!("{tag}_VICTORY_POINTS_{id}"),
+        format!("VICTORY_POINTS_{id}"),
+    ] {
+        if localisation.get(&key).is_some() {
+            return localisation
+                .localise(key.as_bytes())
+                .map_err(|refusal| refusal.to_string());
+        }
+    }
+    Ok(String::new())
 }
 
 /// Shared with state tables: name precedence without another ID scan.

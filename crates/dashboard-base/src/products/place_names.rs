@@ -21,26 +21,31 @@
 //! carry it between reads). IDs and raw owner links are 32-bit; names retain
 //! byte strings.
 
-use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, recorded_rows};
+use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, recorded_rows};
 use crate::{
     Source,
     catalogue::{self, Catalogue, Refusals},
-    metadata::{check_cancel, validate_campaign},
-    scripted_text::{self, ScriptedText, StateNames},
+    metadata::{self, check_cancel, validate_campaign},
+    scope,
+    scripted_text::{self, StateNames},
     transport::json_len,
 };
+use installed_content_country_names::country_names;
 use replay::container::Replay;
-use replay_data::{rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_data::rows::{StateRow, TableId, tables};
+use replay_frame::frame::{DecodedFrame, DecodedSource, FrameDecoder, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    borrow::Cow,
+    cell::{OnceCell, RefCell},
+    collections::{BTreeMap, HashMap},
     io,
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
-pub struct PlaceNames;
+/// What a name of an hour the recording holds no frame of is missing for.
+pub const NOT_RECORDED: &str = "Not in this recording: the row hour was not recorded";
 
 /// The tables province and state names are read from.
 pub const NAME_TABLES: [TableId; 8] = [
@@ -177,41 +182,284 @@ fn region_provinces(
     provinces
 }
 
-fn name_at(
-    frame: &DecodedFrame,
-    text: &ScriptedText<'_>,
-    province_id: u32,
+/// A state's recorded name inputs at an hour.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateInputs {
+    pub custom: Vec<u8>,
+    pub owner_name: Vec<u8>,
+    /// Whose original-or-own tag its provinces' victory-point names are keyed by.
+    pub owner: Owner,
+}
+
+/// A state owner's original-or-own tag, as victory-point names read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// The tag of the owner's canonical slot, slot zero's for no owner, or why it is unknown.
+    Tag(Result<String, String>),
+    /// The raw owner link resolves to no country.
+    Unlinked(u32),
+}
+
+/// What place names are read from at an hour: the frame, or what preparation kept of it.
+pub trait Inputs {
+    fn hour(&self) -> i32;
+    /// Province `id`'s state, zero for none; none without its Provinces row.
+    fn province(&self, id: u32) -> Option<u32>;
+    /// Province `id`'s ProvinceNames row's name.
+    fn rename(&self, id: u32) -> Option<&[u8]>;
+    /// Whether ProvinceNames holds every row, so a province without one has no rename.
+    fn renames_complete(&self) -> bool;
+    /// Why ProvinceNames may hold no row of a province.
+    fn renames_gap(&self) -> &str;
+    /// The capture mode that leaves States out of the recording.
+    fn states_unrecorded(&self) -> Option<String>;
+    /// State `id`'s inputs; none without its States row.
+    fn state(&self, id: u32) -> Option<Cow<'_, StateInputs>>;
+    /// Why States may hold no row of a state.
+    fn states_gap(&self) -> &str;
+    /// Slot zero's original-or-own tag, or why it is unknown.
+    fn reserved_tag(&self) -> Result<&str, &str>;
+}
+
+/// [`Inputs`] read from a decoded frame, each table indexed at its first read.
+pub struct FrameInputs<'f> {
+    frame: &'f DecodedFrame,
+    provinces: OnceCell<HashMap<u32, u32>>,
+    renames: OnceCell<(HashMap<u32, &'f [u8]>, String)>,
+    states: OnceCell<(HashMap<u32, &'f StateRow>, String)>,
+    links: OnceCell<HashMap<u32, u32>>,
+    tags: RefCell<HashMap<u32, Result<String, String>>>,
+    reserved: OnceCell<Result<String, String>>,
+}
+
+impl<'f> FrameInputs<'f> {
+    pub fn new(frame: &'f DecodedFrame) -> Self {
+        Self {
+            frame,
+            provinces: OnceCell::new(),
+            renames: OnceCell::new(),
+            states: OnceCell::new(),
+            links: OnceCell::new(),
+            tags: RefCell::new(HashMap::new()),
+            reserved: OnceCell::new(),
+        }
+    }
+
+    fn renames(&self) -> &(HashMap<u32, &'f [u8]>, String) {
+        self.renames.get_or_init(|| {
+            let frame: &'f DecodedFrame = self.frame;
+            let view: &'f TableView = &frame.tables[TableId::ProvinceNames.index()];
+            let mut renames = HashMap::new();
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } = view {
+                for row in rows.rows::<tables::ProvinceNames>().unwrap_or_default() {
+                    renames.entry(row.province).or_insert(&row.name[..]);
+                }
+            }
+            (renames, scope::gap(view))
+        })
+    }
+
+    fn states(&self) -> &(HashMap<u32, &'f StateRow>, String) {
+        self.states.get_or_init(|| {
+            let frame: &'f DecodedFrame = self.frame;
+            let view: &'f TableView = &frame.tables[TableId::States.index()];
+            let mut states = HashMap::new();
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } = view {
+                for row in rows.rows::<tables::States>().unwrap_or_default() {
+                    states.entry(row.id).or_insert(row);
+                }
+            }
+            (states, scope::gap(view))
+        })
+    }
+
+    /// The canonical slot of each raw country link.
+    fn links(&self) -> &HashMap<u32, u32> {
+        self.links.get_or_init(|| {
+            match &*self.frame.tables[TableId::CountryLinks.index()] {
+                TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows
+                    .rows::<tables::CountryLinks>()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|link| (link.id, link.canonical_slot))
+                    .collect(),
+                _ => HashMap::new(),
+            }
+        })
+    }
+
+    fn tag(&self, slot: u32) -> Result<String, String> {
+        if let Some(tag) = self.tags.borrow().get(&slot) {
+            return tag.clone();
+        }
+        let tag = country_names::original_or_own_tag(self.frame, slot).map(str::to_owned);
+        self.tags.borrow_mut().insert(slot, tag.clone());
+        tag
+    }
+
+    /// Every province's state, by id.
+    pub fn provinces(&self) -> &HashMap<u32, u32> {
+        self.provinces.get_or_init(|| {
+            let mut provinces = HashMap::new();
+            for row in recorded_rows::<tables::Provinces>(self.frame)
+                .ok()
+                .unwrap_or_default()
+            {
+                provinces.entry(row.id).or_insert(row.state);
+            }
+            provinces
+        })
+    }
+
+    /// Every state's id.
+    pub fn state_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.states().0.keys().copied()
+    }
+}
+
+impl Inputs for FrameInputs<'_> {
+    fn hour(&self) -> i32 {
+        self.frame.hour
+    }
+
+    fn province(&self, id: u32) -> Option<u32> {
+        self.provinces().get(&id).copied()
+    }
+
+    fn rename(&self, id: u32) -> Option<&[u8]> {
+        self.renames().0.get(&id).copied()
+    }
+
+    fn renames_complete(&self) -> bool {
+        let frame: &dyn DecodedSource = self.frame;
+        frame.complete_status(TableId::ProvinceNames).is_ok()
+    }
+
+    fn renames_gap(&self) -> &str {
+        &self.renames().1
+    }
+
+    fn states_unrecorded(&self) -> Option<String> {
+        match &*self.frame.tables[TableId::States.index()] {
+            TableView::NotRecorded { mode } => Some(mode.to_string()),
+            _ => None,
+        }
+    }
+
+    fn state(&self, id: u32) -> Option<Cow<'_, StateInputs>> {
+        let row = self.states().0.get(&id)?;
+        let owner = if row.owner == 0 {
+            Owner::Tag(self.tag(0))
+        } else {
+            match self.links().get(&row.owner) {
+                Some(&slot) => Owner::Tag(self.tag(slot)),
+                None => Owner::Unlinked(row.owner),
+            }
+        };
+        Some(Cow::Owned(StateInputs {
+            custom: row.custom_name.clone(),
+            owner_name: row.owner_name.clone(),
+            owner,
+        }))
+    }
+
+    fn states_gap(&self) -> &str {
+        &self.states().1
+    }
+
+    fn reserved_tag(&self) -> Result<&str, &str> {
+        self.reserved
+            .get_or_init(|| self.tag(0))
+            .as_deref()
+            .map_err(String::as_str)
+    }
+}
+
+/// Province `id`'s rename as `GetName` reads it: unknown while ProvinceNames is incomplete.
+fn rename(inputs: &impl Inputs, id: u32) -> Result<Option<&[u8]>, String> {
+    match inputs.rename(id) {
+        Some(name) => Ok(Some(name)),
+        None if inputs.renames_complete() => Ok(None),
+        None => Err(format!(
+            "GetName of province {id}: ProvinceNames {}",
+            inputs.renames_gap()
+        )),
+    }
+}
+
+/// The original-or-own tag province `id`'s victory-point name is keyed by: its state owner's,
+/// not its controller's; a null state uses the country at slot zero.
+fn victory_point_tag(inputs: &impl Inputs, id: u32, state: u32) -> Result<String, String> {
+    if state == 0 {
+        return inputs
+            .reserved_tag()
+            .map(str::to_owned)
+            .map_err(str::to_owned);
+    }
+    let held = inputs.state(state).ok_or_else(|| {
+        format!(
+            "province {id}: state {state} has no States row: {}",
+            inputs.states_gap()
+        )
+    })?;
+    match &held.owner {
+        Owner::Tag(tag) => tag.clone(),
+        Owner::Unlinked(link) => Err(format!(
+            "province {id}: state owner's link {link} resolves to no country"
+        )),
+    }
+}
+
+/// State `id`'s display name as places show it.
+fn state_display(
+    inputs: &impl Inputs,
+    id: u32,
+    cat: &Catalogue,
+    names: Result<&StateNames, &str>,
+    missing: impl FnOnce() -> String,
+) -> Result<String, String> {
+    if let Some(mode) = inputs.states_unrecorded() {
+        return Err(metadata::not_recorded(inputs.hour(), TableId::States, &mode));
+    }
+    let held = inputs.state(id).ok_or_else(missing)?;
+    let row = StateRow {
+        id,
+        custom_name: held.custom.clone(),
+        owner_name: held.owner_name.clone(),
+        ..Default::default()
+    };
+    scripted_text::state_display_name(&row, cat, names, scripted_text::StateNameUsage::Place)
+}
+
+/// Province `id`'s name, and why it is missing, by Land's ladder (`land`) or the native one.
+pub fn place_name(
+    inputs: &impl Inputs,
+    id: u32,
     cat: &Catalogue,
     names: Result<&StateNames, &str>,
     regions: Result<&BTreeMap<u32, Result<String, String>>, &str>,
     land: bool,
 ) -> (Option<String>, Option<String>) {
-    let province = match recorded_rows::<tables::Provinces>(frame)
-        .ok()
-        .and_then(|rows| rows.iter().find(|province| province.id == province_id))
-    {
-        Some(province) => province,
-        None => {
-            return (
-                None,
-                Some(format!(
-                    "Not in this recording: province {province_id} at this hour"
-                )),
-            );
-        }
+    let Some(state) = inputs.province(id) else {
+        return (
+            None,
+            Some(format!("Not in this recording: province {id} at this hour")),
+        );
     };
-    let province_name = text
-        .province_display_name_primary(province_id)
-        .and_then(|name| name.map(|name| catalogue::plain_text(&name)).transpose());
+    let province_name = scripted_text::province_primary_name(&cat.localisation, rename(inputs, id), || {
+        let tag = victory_point_tag(inputs, id, state)?;
+        scripted_text::victory_point_name(&cat.localisation, id, &tag)
+    })
+    .and_then(|name| name.map(|name| catalogue::plain_text(&name)).transpose());
     if let Ok(Some(name)) = &province_name
         && (!land || !name.is_empty())
     {
         // Preserve successful empty localisation.
         return (Some(name.clone()), None);
     }
-    if province.state == 0 {
+    if state == 0 {
         if land {
-            let missing = format!("province {province_id}: no state name available");
+            let missing = format!("province {id}: no state name available");
             return (
                 None,
                 Some(match province_name {
@@ -222,10 +470,8 @@ fn name_at(
         }
         let region = regions.map_err(str::to_owned).and_then(|regions| {
             regions
-                .get(&province_id)
-                .ok_or_else(|| {
-                    format!("province {province_id}: no content-defined strategic region")
-                })?
+                .get(&id)
+                .ok_or_else(|| format!("province {id}: no content-defined strategic region"))?
                 .clone()
         });
         // Region identity is independent of an unread province override/owner.
@@ -236,21 +482,9 @@ fn name_at(
             (Err(province), Err(region)) => (None, Some(format!("{province}; {region}"))),
         };
     }
-    let state_name = recorded_rows::<tables::States>(frame)
-        .map_err(|error| error.to_string())
-        .and_then(|rows| {
-            rows.iter()
-                .find(|state| state.id == province.state)
-                .ok_or_else(|| format!("state {}: Not in this recording", province.state))
-        })
-        .and_then(|state| {
-            scripted_text::state_display_name(
-                state,
-                cat,
-                names,
-                scripted_text::StateNameUsage::Place,
-            )
-        });
+    let state_name = state_display(inputs, state, cat, names, || {
+        format!("state {state}: Not in this recording")
+    });
     // Template text remains valid when empty; absence of
     // recorded/template inputs remains an error, distinct from that result.
     match (province_name, state_name) {
@@ -261,7 +495,22 @@ fn name_at(
     }
 }
 
-fn named_place(request: &PlaceNameRequest, name: (Option<String>, Option<String>)) -> PlaceName {
+/// State `id`'s name, and why it is missing.
+pub fn state_name(
+    inputs: &impl Inputs,
+    id: u32,
+    cat: &Catalogue,
+    names: Result<&StateNames, &str>,
+) -> (Option<String>, Option<String>) {
+    match state_display(inputs, id, cat, names, || {
+        format!("Not in this recording: state {id} at this hour")
+    }) {
+        Ok(name) => (Some(name), None),
+        Err(reason) => (None, Some(reason)),
+    }
+}
+
+pub fn named_place(request: &PlaceNameRequest, name: (Option<String>, Option<String>)) -> PlaceName {
     let (name, missing) = name;
     PlaceName {
         province_id: request.province_id,
@@ -271,34 +520,7 @@ fn named_place(request: &PlaceNameRequest, name: (Option<String>, Option<String>
     }
 }
 
-fn state_name_at(
-    frame: &DecodedFrame,
-    state_id: u32,
-    cat: &Catalogue,
-    names: Result<&StateNames, &str>,
-) -> (Option<String>, Option<String>) {
-    let name = recorded_rows::<tables::States>(frame)
-        .map_err(|error| error.to_string())
-        .and_then(|rows| {
-            rows.iter()
-                .find(|state| state.id == state_id)
-                .ok_or_else(|| format!("Not in this recording: state {state_id} at this hour"))
-        })
-        .and_then(|state| {
-            scripted_text::state_display_name(
-                state,
-                cat,
-                names,
-                scripted_text::StateNameUsage::Place,
-            )
-        });
-    match name {
-        Ok(name) => (Some(name), None),
-        Err(reason) => (None, Some(reason)),
-    }
-}
-
-fn named_state(
+pub fn named_state(
     request: &StateNameRequest,
     name: (Option<String>, Option<String>),
 ) -> PlaceStateName {
@@ -346,7 +568,7 @@ fn read_names(
                 request,
                 (
                     None,
-                    Some("Not in this recording: the row hour was not recorded".into()),
+                    Some(NOT_RECORDED.into()),
                 ),
             )
         })
@@ -359,7 +581,7 @@ fn read_names(
                 request,
                 (
                     None,
-                    Some("Not in this recording: the row hour was not recorded".into()),
+                    Some(NOT_RECORDED.into()),
                 ),
             )
         })
@@ -436,27 +658,14 @@ fn read_names(
             };
             validate_campaign(decoded, replay)?;
             if let Some(requested) = hours.remove(&frame.hour) {
-                let text = if requested
-                    .iter()
-                    .any(|request| matches!(request, RequestedName::Place(_)))
-                {
-                    Some(ScriptedText::new(
-                        decoded,
-                        &cat.localisation,
-                        cat.scripted_content().map_err(crate::invalid)?,
-                        0,
-                    ))
-                } else {
-                    None
-                };
+                let inputs = FrameInputs::new(decoded);
                 for request in requested {
                     match request {
                         RequestedName::Place(at) => {
                             places[at] = named_place(
                                 &params.places[at],
-                                name_at(
-                                    decoded,
-                                    text.as_ref().unwrap(),
+                                place_name(
+                                    &inputs,
                                     params.places[at].province_id,
                                     cat,
                                     names,
@@ -468,7 +677,7 @@ fn read_names(
                         RequestedName::State(at) => {
                             states[at] = named_state(
                                 &params.states[at],
-                                state_name_at(decoded, params.states[at].state_id, cat, names),
+                                state_name(&inputs, params.states[at].state_id, cat, names),
                             );
                         }
                     }
@@ -479,61 +688,53 @@ fn read_names(
     Ok((places, states))
 }
 
-impl Product for PlaceNames {
-    const KEY: &'static str = "place-names";
-    const CONTENT_DEPENDENT: bool = true;
-    const INTERACTIVE: bool = true;
-    type Params = PlaceNamesParams;
-    type Reply = PlaceNamesReply;
+/// The product's request and reply types.
+pub fn types() -> Vec<String> {
+    vec![
+        PlaceNamesParams::decl(),
+        PlaceNameRequest::decl(),
+        StateNameRequest::decl(),
+        PlaceName::decl(),
+        PlaceStateName::decl(),
+        PlaceNamesReply::decl(),
+    ]
+}
 
-    fn types() -> Vec<String> {
-        vec![
-            PlaceNamesParams::decl(),
-            PlaceNameRequest::decl(),
-            StateNameRequest::decl(),
-            PlaceName::decl(),
-            PlaceStateName::decl(),
-            PlaceNamesReply::decl(),
-        ]
+pub fn validate(params: &PlaceNamesParams) -> Result<(), &'static str> {
+    if params.branch_id.parse::<u64>().is_err() {
+        return Err("Invalid place names branch");
     }
+    Ok(())
+}
 
-    fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        if params.branch_id.parse::<u64>().is_err() {
-            return Err("Invalid place names branch");
-        }
-        Ok(())
+/// The reply read from the recording's row frames, for the live readers that still read them.
+pub fn read_recorded(
+    source: &Source,
+    params: &PlaceNamesParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<PlaceNamesReply> {
+    validate(params).map_err(crate::invalid)?;
+    check_cancel(cancelled)?;
+    let branch = params
+        .branch_id
+        .parse::<u64>()
+        .map_err(|_| crate::invalid("Invalid place names branch"))?;
+    let replay = source.replay_ref();
+    if !replay.branches.iter().any(|entry| entry.id == branch) {
+        return Err(crate::invalid("Unknown place names branch"));
     }
-
-    fn load(
-        source: &Source,
-        params: &Self::Params,
-        context: &LoadContext,
-        cancelled: &AtomicBool,
-    ) -> io::Result<Self::Reply> {
-        Self::validate(params).map_err(crate::invalid)?;
-        check_cancel(cancelled)?;
-        let branch = params
-            .branch_id
-            .parse::<u64>()
-            .map_err(|_| crate::invalid("Invalid place names branch"))?;
-        let replay = source.replay_ref();
-        if !replay.branches.iter().any(|entry| entry.id == branch) {
-            return Err(crate::invalid("Unknown place names branch"));
-        }
-        checked(resolve(
-            source,
-            params,
-            context,
-            true,
-            |cat, names, regions| {
-                read_names(replay, branch, params, cat, names, regions, cancelled)
-            },
-        )?)
-    }
+    checked(resolve(
+        source,
+        params,
+        context,
+        true,
+        |cat, names, regions| read_names(replay, branch, params, cat, names, regions, cancelled),
+    )?)
 }
 
 /// The reply `read` resolves, with the catalogue's refusal lines when `reported`.
-fn resolve(
+pub fn resolve(
     source: &Source,
     params: &PlaceNamesParams,
     context: &LoadContext,
@@ -641,34 +842,21 @@ fn named_at_frame(
 ) -> io::Result<PlaceNamesReply> {
     check_cancel(flag)?;
     resolve(source, params, context, reported, |cat, names, regions| {
-        let text = ScriptedText::new(
-            frame,
-            &cat.localisation,
-            cat.scripted_content().map_err(crate::invalid)?,
-            0,
-        );
+        let inputs = FrameInputs::new(frame);
         let places = params
             .places
             .iter()
             .map(|request| {
                 named_place(
                     request,
-                    name_at(
-                        frame,
-                        &text,
-                        request.province_id,
-                        cat,
-                        names,
-                        regions,
-                        params.land,
-                    ),
+                    place_name(&inputs, request.province_id, cat, names, regions, params.land),
                 )
             })
             .collect();
         let states = params
             .states
             .iter()
-            .map(|request| named_state(request, state_name_at(frame, request.state_id, cat, names)))
+            .map(|request| named_state(request, state_name(&inputs, request.state_id, cat, names)))
             .collect();
         Ok((places, states))
     })
