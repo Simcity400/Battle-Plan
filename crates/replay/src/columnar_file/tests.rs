@@ -513,3 +513,40 @@ fn an_unfinished_file_finishes_from_its_last_revision() {
     assert_eq!(recording.capture().unwrap(), Some(stopped));
     walks(&recording, &frames[..hour as usize]);
 }
+
+/// Capture and published names read back as written, and no other name is a capture's.
+#[test]
+fn capture_and_published_names_read_back_as_written() {
+    let mut out = [0; CAPTURE_NAME_BYTES];
+    assert_eq!(capture_name(0, false, &mut out), "columnar.0.h4col");
+    assert_eq!(
+        capture_name(u32::MAX, true, &mut out),
+        "columnar.4294967295.h4col.partial"
+    );
+    for (n, partial) in [(0, false), (7, true), (u32::MAX, false)] {
+        let name = capture_name(n, partial, &mut out).to_owned();
+        assert_eq!(capture_of(OsStr::new(&name)), Some((n, partial)));
+    }
+    for name in [
+        "columnar.h4col",
+        "columnar.h4col.partial",
+        "columnar.01.h4col",
+        "columnar.+1.h4col",
+        "columnar..h4col",
+        "columnar.4294967296.h4col",
+        "columnar.1.h4col.counts.json",
+        "other.1.h4col",
+    ] {
+        assert_eq!(capture_of(OsStr::new(name)), None, "{name}");
+    }
+    let published = published_name(OsStr::new("session-1.5"), 12);
+    assert_eq!(published, "session-1.5.12.h4col");
+    assert_eq!(published_of(&published), Some(("session-1.5", 12)));
+    for name in [".0.h4col", "session.h4col", "session.00.h4col", "session.0.h4col.partial"] {
+        assert_eq!(published_of(OsStr::new(name)), None, "{name}");
+    }
+    assert_eq!(
+        campaign_folder(Path::new("replays"), b"Ab-1"),
+        Path::new("replays").join("61622d31")
+    );
+}

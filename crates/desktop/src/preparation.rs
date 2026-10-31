@@ -220,9 +220,8 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A session's native recording lands beside its recording after the
-    /// recording is published; the next scan requests admission once more, as
-    /// it does when one is replaced.
+    /// A native recording of a recording's campaign landing wakes the next
+    /// scan's admission once more, as one replaced does.
     #[test]
     fn a_native_recording_landing_wakes_library_admission_once() {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -232,7 +231,14 @@ mod tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("session.battleplan"), b"synthetic recording").unwrap();
+        // A recording's header up to its campaign id, all the scan reads of it.
+        let mut header = b"H4RP".to_vec();
+        let format = replay_data::format::FormatVersion::CURRENT.version();
+        header.extend_from_slice(&format.to_le_bytes());
+        header.extend_from_slice(&[0; 4]);
+        header.extend_from_slice(&8_u32.to_le_bytes());
+        header.extend_from_slice(b"campaign");
+        std::fs::write(root.join("session.battleplan"), header).unwrap();
         let scan = || {
             replay_library::scan(&root)
                 .unwrap()
@@ -245,14 +251,18 @@ mod tests {
         let mut admission = LibraryAdmission::default();
         assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
         assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
-        let native = root.join("session.session-1.h4col");
+        let folder = replay::columnar_file::campaign_folder(&root, b"campaign");
+        std::fs::create_dir(&folder).unwrap();
+        let native = folder.join("session-1.0.h4col");
         std::fs::write(&native, b"synthetic native recording").unwrap();
         assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
         assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
         std::fs::write(&native, b"another synthetic native recording").unwrap();
         assert!(admission.prepare_changed(&runtime, &scan()).unwrap());
-        // Another replay's native recording is not this one's.
-        std::fs::write(root.join("other.session-1.h4col"), b"synthetic").unwrap();
+        // Another campaign's native recording is not this one's.
+        let other = replay::columnar_file::campaign_folder(&root, b"other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("session-1.0.h4col"), b"synthetic").unwrap();
         assert!(!admission.prepare_changed(&runtime, &scan()).unwrap());
         assert_eq!(admission.requests, 3);
         runtime.shutdown();

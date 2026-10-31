@@ -5,8 +5,8 @@
 
 use replay::{
     columnar_file::{
-        CAMPAIGN_FILE as FINISHED, Capture, PARTIAL_FILE as PARTIAL, Closed, FileWriter, Hour, Position, RestartState,
-        Settings, Stop,
+        CAPTURE_NAME_BYTES, Capture, Closed, FileWriter, Hour, Position, RestartState, Settings,
+        Stop, capture_name, capture_of,
     },
     columnar_frames::schema,
     native_frame::{self, FrameHour, FrameWriter, RowFrame},
@@ -30,8 +30,6 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-/// The file while it is written; finishing renames it to [`FINISHED`], which the recorder
-/// moves beside the row recording it finalizes.
 /// Game hours between the file's published revisions: at most what a dead collector loses.
 const REVISION_HOURS: i32 = 168;
 
@@ -101,7 +99,8 @@ impl native_frame::Lanes for Lanes<'_> {
 
 struct Live {
     directory: PathBuf,
-    /// The file while it is written, and its finished name.
+    /// The file while it is written, and its finished name, which the recorder publishes;
+    /// named when the first hour opens it ([`Live::claim`]).
     partial: PathBuf,
     finished_path: PathBuf,
     /// The file's identity until the first hour opens it.
@@ -202,8 +201,8 @@ impl Columnar {
             let (identity, capture) = identity(campaign, session)?;
             engine_allocation::boxed(Live {
                 directory: owned_path(directory, None)?,
-                partial: owned_path(directory, Some(PARTIAL))?,
-                finished_path: owned_path(directory, Some(FINISHED))?,
+                partial: PathBuf::new(),
+                finished_path: PathBuf::new(),
                 identity: Some(identity),
                 capture: Some(capture),
                 noted: HashSet::new(),
@@ -740,7 +739,7 @@ impl Live {
             let columns = engine_allocation::collect_vec(schema()?.iter().map(Vec::len))?;
             // The row spool creates the campaign's directory at its first segment, after this.
             fs::create_dir_all(&self.directory)?;
-            let file = File::create(&self.partial)?;
+            let file = self.claim()?;
             self.file = Some(FileWriter::create(
                 file,
                 identity,
@@ -749,6 +748,27 @@ impl Live {
             )?);
         }
         Ok(self.file.as_mut().expect("opened"))
+    }
+
+    /// Creates the file under the capture number after every one the directory holds, so the
+    /// recorder publishes those still waiting first and none is overwritten.
+    fn claim(&mut self) -> io::Result<File> {
+        let mut n = 0_u32;
+        for entry in fs::read_dir(&self.directory)? {
+            if let Some((taken, _)) = capture_of(&entry?.file_name()) {
+                let next = taken.checked_add(1);
+                n = n.max(next.ok_or_else(|| invalid("Every capture number is taken"))?);
+            }
+        }
+        let mut name = [0; CAPTURE_NAME_BYTES];
+        let partial = owned_path(&self.directory, Some(capture_name(n, true, &mut name)))?;
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)?;
+        self.finished_path = owned_path(&self.directory, Some(capture_name(n, false, &mut name)))?;
+        self.partial = partial;
+        Ok(file)
     }
 
     fn account(&mut self, closed: &Closed) {

@@ -11,16 +11,87 @@ use replay_columnar::{
     manifest::Status,
     state::{Bits, Column, Table},
 };
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::{
+    ffi::{OsStr, OsString},
+    io::{self, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+};
 use zstd::zstd_safe::{CCtx, CParameter};
 
 #[cfg(test)]
 mod tests;
 
-/// A campaign's finished columnar recording in its spool directory, written beside the rows.
-pub const CAMPAIGN_FILE: &str = "columnar.h4col";
-/// The same file while its collector writes it.
-pub const PARTIAL_FILE: &str = "columnar.h4col.partial";
+/// The longest name [`capture_name`] writes.
+pub const CAPTURE_NAME_BYTES: usize = "columnar.4294967295.h4col.partial".len();
+
+/// The name in its campaign's spool directory of the session's `n`th capture's columnar
+/// recording, counting from 0: `columnar.<n>.h4col`, `.partial` appended while its collector
+/// writes it. Written into `out`, so the collector names it without allocating.
+pub fn capture_name(n: u32, partial: bool, out: &mut [u8; CAPTURE_NAME_BYTES]) -> &str {
+    let mut cursor = io::Cursor::new(&mut out[..]);
+    let suffix = if partial { ".partial" } else { "" };
+    write!(cursor, "columnar.{n}.h4col{suffix}").expect("the longest name fits");
+    let length = cursor.position() as usize;
+    std::str::from_utf8(&out[..length]).expect("ASCII")
+}
+
+/// The capture a spool directory's file `name` holds ([`capture_name`]), and whether it is
+/// still partial.
+pub fn capture_of(name: &OsStr) -> Option<(u32, bool)> {
+    let name = name.to_str()?.strip_prefix("columnar.")?;
+    let (number, partial) = match name.strip_suffix(".h4col.partial") {
+        Some(number) => (number, true),
+        None => (name.strip_suffix(".h4col")?, false),
+    };
+    Some((counted(number)?, partial))
+}
+
+/// The folder of `replay_dir` holding `campaign`'s published columnar recordings: its id's
+/// bytes, ASCII lower-cased as recordings are matched, in hex.
+pub fn campaign_folder(replay_dir: &Path, campaign: &[u8]) -> PathBuf {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut name = String::with_capacity(2 * campaign.len());
+    for byte in campaign.iter().map(u8::to_ascii_lowercase) {
+        name.push(char::from(HEX[usize::from(byte >> 4)]));
+        name.push(char::from(HEX[usize::from(byte & 15)]));
+    }
+    replay_dir.join(name)
+}
+
+/// The published name of `session`'s `n`th capture in its campaign's folder, counting from 0:
+/// `<session dir>.<n>.h4col`.
+pub fn published_name(session: &OsStr, n: u32) -> OsString {
+    let mut name = session.to_os_string();
+    name.push(format!(".{n}.h4col"));
+    name
+}
+
+/// The session dir and capture a published name holds ([`published_name`]).
+pub fn published_of(name: &OsStr) -> Option<(&str, u32)> {
+    let (session, number) = name.to_str()?.strip_suffix(".h4col")?.rsplit_once('.')?;
+    Some((session, counted(number)?)).filter(|(session, _)| !session.is_empty())
+}
+
+/// Whether the recordings at `a` and `b` are one: of one length and ending in one footer, which
+/// names a root whose digest covers everything it names.
+pub fn same_recording(a: &Path, b: &Path) -> io::Result<bool> {
+    let end = |path: &Path| -> io::Result<(u64, [u8; envelope::FOOTER_BYTES])> {
+        let mut file = std::fs::File::open(path)?;
+        let length = file.seek(SeekFrom::End(0))?;
+        let mut footer = [0; envelope::FOOTER_BYTES];
+        let held = length.min(envelope::FOOTER_BYTES as u64) as usize;
+        read_at(&mut file, length - held as u64, &mut footer[..held])?;
+        Ok((length, footer))
+    };
+    Ok(end(a)? == end(b)?)
+}
+
+/// A capture number as names write it: decimal, without leading zeros.
+fn counted(number: &str) -> Option<u32> {
+    let valid = number.bytes().all(|byte| byte.is_ascii_digit())
+        && (number == "0" || !number.starts_with('0'));
+    number.parse().ok().filter(|_| valid)
+}
 
 /// Compression and restart cadence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

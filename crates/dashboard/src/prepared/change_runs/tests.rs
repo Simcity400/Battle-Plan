@@ -45,6 +45,20 @@ fn encoded(value: &impl IdentityCodec) -> Vec<u8> {
     out
 }
 
+/// A capture is the replay's only when the replay records an hour of it: a continuation of a
+/// branch the replay holds, published before a save that failed, is not yet.
+#[test]
+fn a_capture_is_the_replay_s_only_when_it_records_an_hour_of_it() {
+    let replay = recorded(CAMPAIGN, true);
+    assert!(records_any(&replay, &[(1, 100, 2)]));
+    assert!(records_any(&replay, &[(1, 90, 11)]));
+    assert!(records_any(&replay, &[(2, 100, 1), (1, 101, 5)]));
+    assert!(!records_any(&replay, &[(1, 102, 2)]));
+    assert!(!records_any(&replay, &[(1, 90, 10)]));
+    assert!(!records_any(&replay, &[(2, 100, 2)]));
+    assert!(!records_any(&replay, &[(1, 100, 0)]));
+}
+
 /// A native recording's capture serves only the replay of its sessions: of its campaign and
 /// capture mode, each run's branch of the session it names, with that session's content.
 #[test]
@@ -156,9 +170,9 @@ fn the_index_is_placed_from_the_loaded_recording_without_reading_it_again() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// Native recordings beside a replay that cannot be indexed whole are refused by name, and an
-/// index left from recordings since gone is removed; a replay still being recorded with none
-/// has nothing refused: its index holds no native recording and its session pending.
+/// Native recordings of a replay's campaign that cannot be indexed whole are refused by name,
+/// and an index left from recordings since gone is removed; a replay still being recorded with
+/// none has nothing refused: its index holds no native recording and its session pending.
 #[test]
 fn native_recordings_that_cannot_be_indexed_whole_are_refused_by_name() {
     let (source, root) = file_source(replay(CAMPAIGN));
@@ -171,17 +185,18 @@ fn native_recordings_that_cannot_be_indexed_whole_are_refused_by_name() {
     assert_eq!(outcome(&source).unwrap(), Outcome::Indexed);
     fs::write(&target, b"an index of native recordings since gone").unwrap();
     assert_eq!(outcome(&source).unwrap(), Outcome::Stale);
-    let native = root.join("campaign.session-1.h4col");
+    let native = columnar_file::campaign_folder(&root, CAMPAIGN).join("session-1.0.h4col");
+    fs::create_dir_all(native.parent().unwrap()).unwrap();
     fs::write(&native, [0_u8; 4_096]).unwrap();
     let reason = prepare(&source, &stop).unwrap().unwrap();
-    assert!(reason.contains("campaign.session-1.h4col"), "{reason}");
+    assert!(reason.contains("session-1.0.h4col"), "{reason}");
     assert!(!target.exists());
     assert_eq!(outcome(&source).unwrap(), Outcome::Refused(reason));
     crate::prepared::clear(&source, None, &stop).unwrap();
     fs::remove_dir_all(&root).unwrap();
 }
 
-/// A replay that records its session's end, with no native recording beside it, is refused,
+/// A replay that records its session's end, with no native recording of it, is refused,
 /// naming the session, and the index there is removed: no native recording is not taken for
 /// none needed. The refusal stands while its native recordings are as they were.
 #[test]
@@ -276,7 +291,9 @@ fn a_refused_index_is_the_campaign_map_s_status_and_restored_until_its_natives_c
         .unwrap()
         .expect("a refusal that stands is restored");
     assert_eq!(map(&restored.sections).error, refused.error);
-    fs::write(root.join("campaign.session-1.h4col"), [0_u8; 4_096]).unwrap();
+    let folder = columnar_file::campaign_folder(&root, CAMPAIGN);
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("session-1.0.h4col"), [0_u8; 4_096]).unwrap();
     assert_eq!(outcome(&source).unwrap(), Outcome::Stale);
     assert!(driver::restore(&source, None, &stop).unwrap().is_none());
     for (source, root) in [(source, root), (live, live_root)] {

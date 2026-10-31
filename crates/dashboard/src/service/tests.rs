@@ -1285,7 +1285,7 @@ fn library_preparation_failed_opens_stop_at_one_attempt_for_repeated_inputs() {
 /// A recording refused for want of an ended session's native recording is
 /// prepared, its campaign map's status naming the refusal: terminal for the
 /// recording and its native recordings as they are, so later scans admit
-/// nothing. A native recording landing beside it admits it again. The next
+/// nothing. A native recording of its campaign landing admits it again. The next
 /// start restores the refusal that stands, preparing nothing again.
 #[test]
 fn library_preparation_refused_for_a_native_recording_retries_once_one_lands() {
@@ -1327,7 +1327,12 @@ fn library_preparation_refused_for_a_native_recording_retries_once_one_lands() {
         refused,
         "an unchanged refusal is not prepared again"
     );
-    std::fs::write(path.with_file_name("ended.session-1.h4col"), [0_u8; 4_096]).unwrap();
+    let folder = replay::columnar_file::campaign_folder(
+        path.parent().unwrap(),
+        crate::test_fixtures::CAMPAIGN,
+    );
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("session-1.0.h4col"), [0_u8; 4_096]).unwrap();
     admit_library(&service, paths);
     assert_ne!(
         admission_of(&source),
@@ -1336,7 +1341,7 @@ fn library_preparation_refused_for_a_native_recording_retries_once_one_lands() {
     );
     crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
     assert!(
-        map(&source).contains("ended.session-1.h4col"),
+        map(&source).contains("session-1.0.h4col"),
         "{}",
         map(&source)
     );

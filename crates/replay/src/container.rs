@@ -510,6 +510,21 @@ impl Replay {
         Ok(crate::identity::is_campaign_uuid(&id).then(|| id.to_vec()))
     }
 
+    /// The campaign id a recording's header names, of whatever identity, from its first bytes.
+    pub fn read_campaign_id(input: &mut impl Read) -> io::Result<Vec<u8>> {
+        let mut prefix = [0; 14];
+        input.read_exact(&mut prefix)?;
+        expect_magic(&mut Decoder::new(&prefix[..4]), HEADER_MAGIC)?;
+        FormatVersion::read(u16::from_le_bytes([prefix[4], prefix[5]]))?;
+        let length = u32::from_le_bytes(prefix[10..].try_into().unwrap());
+        let mut id = Vec::new();
+        input.take(u64::from(length)).read_to_end(&mut id)?;
+        if id.is_empty() || id.len() as u64 != u64::from(length) {
+            return Err(invalid("empty or truncated campaign identity"));
+        }
+        Ok(id)
+    }
+
     /// The first and last recorded hours across every branch, from the
     /// checksummed trailer's block index; `None` for a recording with no blocks.
     pub fn read_hour_span(path: &Path) -> io::Result<Option<(Hour, Hour)>> {

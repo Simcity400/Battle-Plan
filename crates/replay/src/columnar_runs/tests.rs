@@ -429,9 +429,62 @@ fn two_sessions_native_recordings_are_indexed_whole_gaps_and_all() {
     }
 }
 
+/// A session captured several times, as a detach and reattach in one process captures it, is
+/// indexed whole from its captures in the order given; captures leaving a block of its hours
+/// between them unheld, or holding one twice, are refused, naming them.
+#[test]
+fn a_session_of_several_captures_is_indexed_whole_from_them_in_order() {
+    let unit = UNIT_ORDINALS as i32;
+    let sessions = [session(1)];
+    let branches = [branch(1, 1, 100)];
+    let index = [
+        block(1, 100, 100 + unit - 1),
+        block(1, 100 + unit, 100 + 2 * unit - 1),
+        block(1, 100 + 2 * unit, 100 + 3 * unit - 1),
+    ];
+    let controls = [detach(1, 100 + 3 * unit - 1)];
+    let held = Sessions {
+        campaign: b"countries synthetic",
+        capture_mode: CaptureMode::Full.byte(),
+        sessions: &sessions,
+        branches: &branches,
+        index: &index,
+        controls: &controls,
+    };
+    let capture = |first: i32, units: u32| {
+        let runs = [(1, first, units)];
+        let bytes = countries(&runs, 0, Some(&captured(&sessions[0], 1)));
+        Recording::open(bytes, Limits::default()).unwrap()
+    };
+    let whole = whole_of(named(vec![capture(100, 1), capture(100 + unit, 2)]), held)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        whole
+            .recordings
+            .iter()
+            .map(|recording| recording.run(0).unwrap().first_hour)
+            .collect::<Vec<_>>(),
+        [100, 100 + unit]
+    );
+    for (captures, fault) in [
+        (vec![capture(100, 1), capture(100 + 2 * unit, 1)], "No native run holds"),
+        (vec![capture(100, 2), capture(100 + unit, 2)], "Two native runs"),
+    ] {
+        let Err(reason) = whole_of(named(captures), held).unwrap() else {
+            panic!("captures not holding their session's hours together were taken");
+        };
+        assert!(
+            reason.contains("native 0, native 1 do not hold session 1's hours together")
+                && reason.contains(fault),
+            "{reason}"
+        );
+    }
+}
+
 /// Native recordings that do not hold a replay's hours whole are refused, naming why: a
-/// session with none, a session with two, a recording of no session of the replay, one naming
-/// no capture, and one whose hours stop short of the replay's.
+/// session with none, a session with two holding its hours twice, a recording of no session of
+/// the replay, one naming no capture, and one whose hours stop short of the replay's.
 #[test]
 fn native_recordings_not_holding_a_replay_whole_are_refused_by_name() {
     let replay = TwoSessions::new(100 + UNIT_ORDINALS as i32);
@@ -445,7 +498,7 @@ fn native_recordings_not_holding_a_replay_whole_are_refused_by_name() {
     assert!(missing.contains("session 2"), "{missing}");
     let twice = refused(vec![replay.native(0, 0), replay.native(0, 1)]);
     assert!(
-        twice.contains("both native recordings of session 1"),
+        twice.contains("native 0, native 1 do not hold session 1's hours together"),
         "{twice}"
     );
     let stranger = {

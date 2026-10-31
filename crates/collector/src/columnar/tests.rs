@@ -17,6 +17,10 @@ use replay_data::{
 };
 use replay_frame::frame::{Metrics, TableInput, TableView};
 
+/// The first capture's file in its campaign's directory, finished and while it is written.
+const FINISHED: &str = "columnar.0.h4col";
+const PARTIAL: &str = "columnar.0.h4col.partial";
+
 /// Removes the directory even when an assertion fails.
 struct Folder(PathBuf);
 
@@ -307,6 +311,22 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
         recording.capture().unwrap().unwrap().controls,
         [encoded(&start), encoded(&summary), encoded(&detach)]
     );
+}
+
+/// Each capture in the campaign's directory takes the next capture number, so a later one
+/// never overwrites an earlier one's file.
+#[test]
+fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
+    let folder = Folder::new("captures");
+    for hours in [1..=2, 3..=5] {
+        let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+        write(&mut columnar, 1, hours);
+        columnar.finish();
+    }
+    for (name, hours) in [("columnar.0.h4col", 2), ("columnar.1.h4col", 3)] {
+        let recording = Recording::open(fs::read(folder.0.join(name)).unwrap(), Limits::default()).unwrap();
+        assert_eq!(recording.hours(), hours, "{name}");
+    }
 }
 
 #[test]

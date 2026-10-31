@@ -2993,6 +2993,10 @@ fn finalize_campaign(
     naming: Naming<'_>,
     committed: &mut Option<Box<Committed<'static>>>,
 ) -> Result<CampaignOutcome> {
+    // Before the recording that records their sessions' ends, so a reader finds them with it.
+    if !unsaved {
+        publish_columnar(campaign_dir, replay_dir);
+    }
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
             committed(recording, replay, blocks);
@@ -3015,9 +3019,6 @@ fn finalize_campaign(
         &mut hand,
     )?;
     if let Some(recording) = &outcome.replay {
-        if !unsaved {
-            publish_columnar(campaign_dir, recording);
-        }
         let replay = held_recording(recording)?;
         let mut report =
             merge_reports(checkpointed, outcome.report.take(), &replay)?.unwrap_or_default();
@@ -3059,68 +3060,142 @@ fn finalize_campaign(
     Ok(outcome)
 }
 
-/// Moves the session's finished columnar recording beside `recording`, named for the session:
-/// a recording continues across sessions, and each session's columnar file holds its own
-/// hours. A move that fails is reported and leaves the file where it was.
-fn publish_columnar(campaign_dir: &Path, recording: &Path) {
-    let source = campaign_dir.join(replay::columnar_file::CAMPAIGN_FILE);
-    if !source.is_file() {
-        if let Err(error) = finish_unfinished_columnar(campaign_dir, &source) {
-            eprintln!("Columnar recording not recovered: {error}");
-        }
-    }
-    if !source.is_file() {
-        return;
-    }
-    let (Some(stem), Some(session)) = (
-        recording.file_stem(),
-        campaign_dir.parent().and_then(Path::file_name),
-    ) else {
-        return;
-    };
-    let mut name = stem.to_os_string();
-    name.push(".");
-    name.push(session);
-    name.push(".h4col");
-    let target = recording.with_file_name(name);
-    let moved = fs::rename(&source, &target).or_else(|_| {
-        // Another volume: copy beside the target, then publish it by name.
-        let mut staged = target.clone().into_os_string();
-        staged.push(".partial");
-        let staged = PathBuf::from(staged);
-        let copied = fs::copy(&source, &staged)
-            .and_then(|_| replay::publication::sync_file(&staged))
-            .and_then(|_| fs::rename(&staged, &target));
-        if copied.is_err() {
-            let _ = fs::remove_file(&staged);
-        }
-        copied.and_then(|_| fs::remove_file(&source))
-    });
-    match moved {
-        Ok(()) => println!("Columnar recording: {}", target.display()),
-        Err(error) => eprintln!(
-            "Columnar recording not moved beside {}: {error}",
-            recording.display()
-        ),
+/// Publishes the campaign's finished columnar recordings, one per capture, in capture order:
+/// each as its session's next in the campaign's folder of `replay_dir` ([`campaign_folder`]).
+/// A partial one no writer holds is finished from its last revision first; one with none is
+/// reported and left, and one its collector still writes holds back the rest. Any other failure
+/// is reported and stops there, so a session's captures publish in order.
+///
+/// [`campaign_folder`]: replay::columnar_file::campaign_folder
+fn publish_columnar(campaign_dir: &Path, replay_dir: &Path) {
+    if let Err(error) = publish_captures(campaign_dir, replay_dir) {
+        eprintln!("Columnar recordings not published: {error}");
     }
 }
 
-/// Finishes the columnar recording an ended collector left partial, at the last revision it
-/// published, the capture recording that its hours stop there; none published leaves it, as
-/// does a collector still writing it.
-fn finish_unfinished_columnar(campaign_dir: &Path, finished: &Path) -> std::io::Result<()> {
-    use replay::columnar_file::{PARTIAL_FILE, Settings, Stop, Unfinished};
-    let partial = campaign_dir.join(PARTIAL_FILE);
-    if !partial.is_file() {
+fn publish_captures(campaign_dir: &Path, replay_dir: &Path) -> std::io::Result<()> {
+    use replay::columnar_file::{
+        CAPTURE_NAME_BYTES, campaign_folder, capture_name, capture_of, published_name,
+        same_recording,
+    };
+    let (Some(session_dir), Some(campaign)) = (campaign_dir.parent(), campaign_dir.file_name())
+    else {
+        return Ok(());
+    };
+    let Some(session) = session_dir.file_name() else {
+        return Ok(());
+    };
+    let entries = match fs::read_dir(campaign_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    let mut captures = Vec::new();
+    for entry in entries {
+        if let Some(capture) = capture_of(&entry?.file_name()) {
+            captures.push(capture);
+        }
+    }
+    if captures.is_empty() {
         return Ok(());
     }
-    let Some(mut file) = open_unwritten(&partial)? else {
-        return Ok(());
+    captures.sort_unstable();
+    let folder = campaign_folder(replay_dir, campaign.as_encoded_bytes());
+    let (published, mut next) = published_captures(&folder, session)?;
+    let mut name = [0; CAPTURE_NAME_BYTES];
+    'captures: for (n, partial) in captures {
+        let finished = campaign_dir.join(capture_name(n, false, &mut name));
+        if partial {
+            let partial = campaign_dir.join(capture_name(n, true, &mut name));
+            match finish_unfinished_columnar(&partial, &finished) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    eprintln!(
+                        "Columnar recording {} not recovered: {error}",
+                        partial.display()
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // A move across volumes stopped after its copy landed: the capture is published.
+        for copy in &published {
+            if same_recording(copy, &finished)? {
+                fs::remove_file(&finished)?;
+                continue 'captures;
+            }
+        }
+        fs::create_dir_all(&folder)?;
+        let target = folder.join(published_name(session, next));
+        move_published(&finished, &target)?;
+        println!("Columnar recording: {}", target.display());
+        next = next
+            .checked_add(1)
+            .ok_or_else(|| std::io::Error::other("a session's captures pass 2^32"))?;
+    }
+    Ok(())
+}
+
+/// The captures of `session` that `folder` holds, and the number after every one.
+fn published_captures(
+    folder: &Path,
+    session: &std::ffi::OsStr,
+) -> std::io::Result<(Vec<PathBuf>, u32)> {
+    let entries = match fs::read_dir(folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+        entries => entries?,
+    };
+    let (mut published, mut next) = (Vec::new(), 0_u32);
+    for entry in entries {
+        let entry = entry?;
+        if let Some((held, number)) = replay::columnar_file::published_of(&entry.file_name())
+            && session.to_str() == Some(held)
+        {
+            next = next.max(
+                number
+                    .checked_add(1)
+                    .ok_or_else(|| std::io::Error::other("a session's captures pass 2^32"))?,
+            );
+            published.push(entry.path());
+        }
+    }
+    Ok((published, next))
+}
+
+/// Moves `source` to `target`; across volumes, copies it beside `target`, then publishes it by
+/// name.
+fn move_published(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::rename(source, target).or_else(|_| {
+        let mut staged = target.as_os_str().to_os_string();
+        staged.push(".partial");
+        let staged = PathBuf::from(staged);
+        let copied = fs::copy(source, &staged)
+            .and_then(|_| replay::publication::sync_file(&staged))
+            .and_then(|_| fs::rename(&staged, target));
+        if copied.is_err() {
+            let _ = fs::remove_file(&staged);
+        }
+        copied.and_then(|_| fs::remove_file(source))
+    })
+}
+
+/// Finishes the columnar recording at `partial` an ended collector left, at the last revision
+/// it published, the capture recording that its hours stop there, and names it `finished`; not
+/// while its collector still writes it. One with no revision holding a capture and an hour is
+/// refused as invalid data.
+fn finish_unfinished_columnar(partial: &Path, finished: &Path) -> std::io::Result<bool> {
+    use replay::columnar_file::{Settings, Stop, Unfinished};
+    let Some(mut file) = open_unwritten(partial)? else {
+        return Ok(false);
     };
     let unfinished = Unfinished::read(&mut file)?;
     let (Some(mut capture), Some((branch, last_hour))) = (unfinished.capture.clone(), unfinished.last)
     else {
-        return Err(std::io::Error::other("its last revision holds no capture or no hour"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "its last revision holds no capture or no hour",
+        ));
     };
     capture.stop = Some(Stop {
         branch,
@@ -3135,9 +3210,9 @@ fn finish_unfinished_columnar(campaign_dir: &Path, finished: &Path) -> std::io::
         Settings::RECORDING,
     )?;
     drop(file);
-    fs::rename(&partial, finished)?;
+    fs::rename(partial, finished)?;
     println!("Columnar recording recovered through hour {last_hour}");
-    Ok(())
+    Ok(true)
 }
 
 /// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.
@@ -7355,6 +7430,40 @@ mod tests {
         fs::write(campaign.join("spool.0001.h4s"), b"synthetic").unwrap();
         assert!(has_campaign_spools(&session).unwrap());
         fs::remove_dir_all(session).unwrap();
+    }
+
+    /// A campaign's finished captures publish in capture order, each as its session's next in
+    /// the campaign's folder. A partial one its collector still holds holds back the later ones,
+    /// one released with no revision to finish it from is left, and one whose move landed its
+    /// copy but kept its source is not published again.
+    #[test]
+    fn captures_publish_in_order_as_their_sessions_next() {
+        let root =
+            recorder_test_support::test_support::allocation_test_directory("native-captures");
+        let campaign = root.join("spool").join("session-1").join("Campaign-A");
+        let replays = root.join("replays");
+        let folder = replay::columnar_file::campaign_folder(&replays, b"campaign-a");
+        fs::create_dir_all(&campaign).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("session-1.0.h4col"), b"published before").unwrap();
+        fs::write(folder.join("session-2.4.h4col"), b"another session's").unwrap();
+        fs::write(campaign.join("columnar.0.h4col"), b"first").unwrap();
+        let partial = campaign.join("columnar.1.h4col.partial");
+        fs::write(&partial, b"still written").unwrap();
+        fs::write(campaign.join("columnar.2.h4col"), b"third").unwrap();
+        let written = fs::OpenOptions::new().write(true).open(&partial).unwrap();
+        publish_columnar(&campaign, &replays);
+        assert_eq!(fs::read(folder.join("session-1.1.h4col")).unwrap(), b"first");
+        assert!(campaign.join("columnar.2.h4col").exists());
+        drop(written);
+        publish_columnar(&campaign, &replays);
+        assert!(partial.exists());
+        assert_eq!(fs::read(folder.join("session-1.2.h4col")).unwrap(), b"third");
+        fs::write(campaign.join("columnar.3.h4col"), b"third").unwrap();
+        publish_columnar(&campaign, &replays);
+        assert_eq!(fs::read_dir(&campaign).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 4);
+        fs::remove_dir_all(root).unwrap();
     }
 
     pub(super) fn long_finalization_records(promote_hour: Option<i32>) -> Vec<Record> {

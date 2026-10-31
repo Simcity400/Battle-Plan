@@ -368,9 +368,10 @@ pub struct Whole {
 
 /// `recordings`, each with its name, as the native recordings one index of `replay` holds:
 /// each undamaged and naming its capture, which is the capture of one of `replay`'s sessions
-/// ([`captures`]), no session's twice, ordered as `replay`'s sessions are, and together holding
-/// exactly the hours `replay` records of the sessions whose capture it records the end of, gaps
-/// and all ([`uncovered`]), none or not. A session it records no end of is still being
+/// ([`captures`]), ordered as `replay`'s sessions are and a session's several as given, and
+/// together holding exactly the hours `replay` records of the sessions whose capture it records
+/// the end of, gaps and all ([`uncovered`]), none or not; a session's several hold its hours
+/// together, none twice and none left between them. A session it records no end of is still being
 /// recorded: its hours are pending, and a native recording of it is left for when it ends. Why
 /// not, naming the recording, the session or the hours at fault.
 pub fn whole(
@@ -414,16 +415,33 @@ fn whole_of(
         if !replay.ended(replay.sessions[session].id) {
             continue;
         }
-        if let Some((_, other, _, _)) = placed.iter().find(|(at, _, _, _)| *at == session) {
-            return Ok(Err(format!(
-                "{other} and {name} are both native recordings of session {}",
-                replay.sessions[session].id
-            )));
-        }
         engine_allocation::reserve(&mut placed, 1)?;
         placed.push((session, name, recording, held));
     }
+    // Stable: a session's captures keep the order given, the order they were published in.
     placed.sort_by_key(|&(session, _, _, _)| session);
+    for captures in placed.chunk_by(|a, b| a.0 == b.0) {
+        let [(session, ..), _, ..] = captures else {
+            continue;
+        };
+        let mut runs = Vec::new();
+        for (_, _, _, held) in captures {
+            engine_allocation::reserve(&mut runs, held.len())?;
+            runs.extend_from_slice(held);
+        }
+        let session = *session;
+        let blocks = replay.index.iter().filter(move |block| {
+            !replay.open(block.branch) && replay.of_branch(block.branch) == Some(session)
+        });
+        if let Some(reason) = uncovered(blocks, &runs) {
+            let names: Vec<&str> = captures.iter().map(|(_, name, _, _)| name.as_str()).collect();
+            return Ok(Err(format!(
+                "{} do not hold session {}'s hours together: {reason}",
+                names.join(", "),
+                replay.sessions[session].id
+            )));
+        }
+    }
     let mut runs = Vec::new();
     for (_, _, _, held) in &placed {
         engine_allocation::reserve(&mut runs, held.len())?;

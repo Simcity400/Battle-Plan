@@ -52,8 +52,7 @@ use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
 use shape::Shape;
 use std::{
     collections::BTreeMap,
-    fs, io,
-    path::Path,
+    io,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64},
@@ -76,37 +75,13 @@ pub(crate) fn names() -> Vec<&'static str> {
         .collect()
 }
 
-/// The native columnar recording beside `source`'s replay that it is prepared from: an undamaged
-/// `<replay stem>.*.h4col` recording exactly the replay's hours, whose capture is the replay's
-/// ([`columnar_runs::captures`]). None when there is none.
+/// The native columnar recording of `source`'s replay that it is prepared from: an undamaged
+/// one of its campaign's ([`crate::prepared::change_runs::native_files`]) recording exactly the
+/// replay's hours, whose capture is the replay's ([`columnar_runs::captures`]). None when there
+/// is none.
 pub(crate) fn recording(source: &Source) -> io::Result<Option<Recording>> {
-    let path = source.path();
-    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-        return Ok(None);
-    };
-    let folder = match path.parent() {
-        Some(folder) if !folder.as_os_str().is_empty() => folder,
-        _ => Path::new("."),
-    };
-    let prefix = format!("{stem}.");
-    // A replay held in a folder that is gone has nothing beside it.
-    let entries = match fs::read_dir(folder) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut candidates = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        if entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".h4col"))
-        {
-            candidates.push(entry.path());
-        }
-    }
-    candidates.sort();
+    let campaign = &source.replay_ref().campaign_id;
+    let candidates = crate::prepared::change_runs::native_files(source.path(), campaign)?;
     for candidate in candidates {
         let recording = match Recording::open_path(&candidate, Limits::default()) {
             Ok(recording) => recording,
