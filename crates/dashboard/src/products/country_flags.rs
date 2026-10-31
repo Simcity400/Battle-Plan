@@ -522,6 +522,28 @@ pub(crate) struct FlagCache {
     reported: Reported,
 }
 
+impl FlagFiles {
+    /// Files that keep only whether each decodes, for searches that choose a flag and draw none.
+    pub(crate) fn probing() -> Self {
+        Self {
+            probing: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// The image a probing search keeps of a file that decodes: none of its pixels.
+fn probed() -> Arc<Rgba8Image> {
+    static PROBED: std::sync::OnceLock<Arc<Rgba8Image>> = std::sync::OnceLock::new();
+    Arc::clone(PROBED.get_or_init(|| {
+        Arc::new(Rgba8Image {
+            width: 0,
+            height: 0,
+            pixels: Vec::new(),
+        })
+    }))
+}
+
 impl FlagCache {
     /// A search reading through `files`, which other searches of the same layers keep.
     pub(crate) fn over(files: Arc<FlagFiles>) -> Self {
@@ -543,6 +565,8 @@ impl FlagCache {
 pub(crate) struct FlagFiles {
     /// Each file by the stack it was read from, its set, its path and the cell it is decoded at.
     files: Mutex<BTreeMap<(Stack, usize, String, [u32; 2]), (FlagFile, BTreeSet<String>)>>,
+    /// It keeps whether each file decodes, never its pixels: a decoded file's image is empty.
+    probing: bool,
     /// The recorded layers below the visual mods, searched when the mods' search fails, and
     /// the cells of the recording's own defines their files are decoded at.
     recorded: OnceLock<(
@@ -593,6 +617,7 @@ fn flag_file(
     let (file, noted) = installed_content_core::content::observe_overlay_refusals(|| {
         io::Result::Ok(match layers.read_uncovered(asset) {
             Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
+                Ok(_) if files.probing => FlagFile::Image(probed()),
                 Ok(image) => FlagFile::Image(Arc::new(image)),
                 Err(reason) => FlagFile::Refused(reason),
             },
@@ -926,6 +951,8 @@ pub struct FlagFolders {
     layers: installed_content_core::ResolvedLayers,
     /// The normal, medium and small cells of the recording's defines.
     cells: [[u32; 2]; 3],
+    /// Whether each file the searches read decodes, read once for every chain.
+    files: Arc<FlagFiles>,
 }
 
 impl FlagFolders {
@@ -933,13 +960,21 @@ impl FlagFolders {
     pub fn read(content: &ResolvedContent) -> io::Result<Self> {
         let layers = content.layers.recorded_only();
         let cells = flag_cells(&layers)?;
-        Ok(Self { layers, cells })
+        Ok(Self {
+            layers,
+            cells,
+            files: Arc::new(FlagFiles::probing()),
+        })
     }
 
     /// Folders of `layers` at `cells`, for tests building their own.
     #[cfg(test)]
     pub(crate) fn of(layers: installed_content_core::ResolvedLayers, cells: [[u32; 2]; 3]) -> Self {
-        Self { layers, cells }
+        Self {
+            layers,
+            cells,
+            files: Arc::new(FlagFiles::probing()),
+        }
     }
 
     /// The key each atlas draws for `chain`: its first candidate whose file that atlas decodes,
@@ -950,13 +985,13 @@ impl FlagFolders {
         let mut choice = CountryFlagChoice::default();
         for set in [FlagSet::Normal, FlagSet::Medium, FlagSet::Small] {
             let at = atlas(set);
-            // Each search reads its files afresh: preparation keeps choices, never pixels.
+            // Each file is read once for every chain, keeping whether it decodes, never its pixels.
             let (found, findings) = find_flag(
                 &self.layers,
                 &[set],
                 &self.cells,
                 &chain.candidates,
-                &mut FlagCache::default(),
+                &mut FlagCache::over(Arc::clone(&self.files)),
             )
             .map_err(|error| match error.kind() {
                 io::ErrorKind::InvalidData => io::Error::other(error.to_string()),

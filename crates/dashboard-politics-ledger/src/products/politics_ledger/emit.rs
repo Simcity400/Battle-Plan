@@ -305,7 +305,16 @@ struct Country {
     #[serde(skip)]
     item_index: HashMap<[u8; 32], u32>,
     rollups: tally::Rollups,
+    /// Its series keys as interned, by measure and by part dimension: an account finds each
+    /// without hashing.
+    #[serde(skip)]
+    keys: [Option<u64>; MEASURES],
+    #[serde(skip)]
+    part_keys: Vec<Option<u64>>,
 }
+
+/// The measures a tag's keys are cached for: every one below [`CENSUS`].
+const MEASURES: usize = CENSUS as usize;
 
 impl Country {
     /// Counts its rates through `through`.
@@ -379,9 +388,20 @@ pub struct Emit {
     witnesses: HashMap<u32, PoliticsCaptureCoverageRow>,
     extended: Arc<[u32]>,
     extended_through: i32,
+    /// The raw countries whose capture moved on at the last hour, ascending.
+    advanced: Vec<u32>,
+    /// Tags whose last account read inputs of its hour alone: accounted again at the next.
+    volatile: BTreeSet<u32>,
+    /// Each held day by tag, day hour, raw country and epoch.
+    tag_days: BTreeSet<(u32, i32, u32, u64)>,
     identities: HashMap<(u32, u64), Vec<(i32, u32)>>,
     complete: u16,
     power: BTreeMap<u128, CountryPowerChangeRow>,
+    /// Of `power`, the political daily gains by raw country and hour, and the additions without
+    /// an evaluated operand by raw country, epoch, hour and currency bit: what an account asks
+    /// of a country's rows, found without walking them.
+    daily_gains: BTreeSet<(u32, i32, u128)>,
+    unknown_adds: BTreeSet<(u32, u64, i32, u8, u128)>,
     governments: BTreeMap<u128, GovernmentChangeRow>,
     recorded: HashSet<(u32, u64, u64)>,
     waiting: BTreeMap<(u8, u128), Waiting>,
@@ -425,9 +445,14 @@ impl Emit {
             witnesses: HashMap::new(),
             extended: Arc::from(Vec::new()),
             extended_through: 0,
+            advanced: Vec::new(),
+            volatile: BTreeSet::new(),
+            tag_days: BTreeSet::new(),
             identities: HashMap::new(),
             complete: 0,
             power: BTreeMap::new(),
+            daily_gains: BTreeSet::new(),
+            unknown_adds: BTreeSet::new(),
             governments: BTreeMap::new(),
             recorded: HashSet::new(),
             waiting: BTreeMap::new(),
@@ -496,8 +521,35 @@ impl Emit {
         measure: u64,
         dimension: Option<u64>,
     ) -> io::Result<u64> {
-        let actor = self.countries[tag as usize].actor;
-        self.key(writer, actor, measure, dimension)
+        let country = &self.countries[tag as usize];
+        let held = match dimension {
+            None => country.keys.get(measure as usize).copied().flatten(),
+            Some(dimension) if measure == PARTS => {
+                country.part_keys.get(dimension as usize).copied().flatten()
+            }
+            Some(_) => None,
+        };
+        if let Some(key) = held {
+            return Ok(key);
+        }
+        let key = self.key(writer, country.actor, measure, dimension)?;
+        let country = &mut self.countries[tag as usize];
+        match dimension {
+            None => {
+                if let Some(slot) = country.keys.get_mut(measure as usize) {
+                    *slot = Some(key);
+                }
+            }
+            Some(dimension) if measure == PARTS => {
+                let at = usize::try_from(dimension).map_err(|_| invalid("part dimension"))?;
+                if at >= country.part_keys.len() {
+                    country.part_keys.resize(at + 1, None);
+                }
+                country.part_keys[at] = Some(key);
+            }
+            Some(_) => {}
+        }
+        Ok(key)
     }
 
     fn branch_key(&mut self, writer: &mut Writer<'_>, measure: u64, hour: i32) -> io::Result<u64> {
@@ -658,6 +710,7 @@ impl Emit {
             !adjacent,
         )?;
         let mut joined = Joined::default();
+        joined.dirty.extend(std::mem::take(&mut self.volatile));
         if !adjacent || hour.complete != self.complete {
             joined.dirty.extend(0..self.countries.len() as u32);
         }
@@ -668,6 +721,7 @@ impl Emit {
             }
             joined.dirty.extend(entry.remove());
         }
+        let identities = ::replay_frame::cpu::scope("politics_ledger.emit.identities", None);
         let census_changed = hour.census.is_some() || census_complete != self.census_complete;
         self.census_complete = census_complete;
         if census_changed {
@@ -695,10 +749,16 @@ impl Emit {
         if census_changed {
             self.presence(writer, at)?;
         }
+        drop(identities);
+        let rows = ::replay_frame::cpu::scope("politics_ledger.emit.rows", None);
         self.apply_rows(writer, hour, at, previous, tagged, &mut joined)?;
+        drop(rows);
+        let accounts = ::replay_frame::cpu::scope("politics_ledger.emit.accounts", None);
         for tag in std::mem::take(&mut joined.dirty) {
             self.account(writer, tag, at, previous, &joined)?;
         }
+        drop(accounts);
+        let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.settle", None);
         self.settle(writer, at)
     }
 
@@ -826,8 +886,11 @@ impl Emit {
         }
     }
 
-    /// The hour's captures: the raw countries whose capture changed, left or joined the list of
-    /// extended captures.
+    /// The hour's captures: the raw countries whose capture changed, or moved on this hour and
+    /// not the hour before, or the hour before and not now. A capture moves on when only its
+    /// last hour reached does, or when its read follows the one held, of the same capture and
+    /// streams, its window starting at the hour the held one reached: its tag's account holds
+    /// unchanged for it.
     fn apply_captures(
         &mut self,
         captures: &facts::Captures,
@@ -840,41 +903,58 @@ impl Emit {
             touched.extend(self.witnesses.keys().copied());
             self.witnesses.clear();
         }
+        // A capture leaving the extended list keeps the last hour it reached.
         if *self.extended != *captures.extended {
-            let (old, new) = (Arc::clone(&self.extended), &captures.extended);
-            let (mut a, mut b) = (0, 0);
-            while a < old.len() || b < new.len() {
-                match (old.get(a).copied(), new.get(b).copied()) {
-                    (Some(x), Some(y)) if x == y => {
-                        a += 1;
-                        b += 1;
-                    }
-                    (Some(x), y) if y.is_none_or(|y| x < y) => {
-                        // A capture leaving the list keeps the last hour it reached.
-                        if let Some(row) = self.witnesses.get_mut(&x) {
-                            row.through_hour = self.extended_through;
-                        }
-                        touched.insert(x);
-                        a += 1;
-                    }
-                    (_, Some(y)) => {
-                        touched.insert(y);
-                        b += 1;
-                    }
-                    _ => break,
+            for &raw in self.extended.iter() {
+                if captures.extended.binary_search(&raw).is_err()
+                    && let Some(row) = self.witnesses.get_mut(&raw)
+                {
+                    row.through_hour = self.extended_through;
                 }
             }
         }
-        self.extended = Arc::clone(&captures.extended);
-        self.extended_through = hour;
+        let mut advanced = captures.extended.to_vec();
         for &raw in &captures.deleted {
             self.witnesses.remove(&raw);
             touched.insert(raw);
         }
         for row in &captures.changed {
-            touched.insert(row.country);
+            let follows = self.witnesses.get(&row.country).is_some_and(|held| {
+                held.instance == row.instance
+                    && held.epoch == row.epoch
+                    && held.streams == row.streams
+                    && held.through_hour == row.since_hour
+                    && row.through_hour == hour
+            });
+            if follows {
+                advanced.push(row.country);
+            } else {
+                touched.insert(row.country);
+            }
             self.witnesses.insert(row.country, row.clone());
         }
+        advanced.sort_unstable();
+        let (mut a, mut b) = (0, 0);
+        while a < self.advanced.len() || b < advanced.len() {
+            match (self.advanced.get(a).copied(), advanced.get(b).copied()) {
+                (Some(x), Some(y)) if x == y => {
+                    a += 1;
+                    b += 1;
+                }
+                (Some(x), y) if y.is_none_or(|y| x < y) => {
+                    touched.insert(x);
+                    a += 1;
+                }
+                (_, Some(y)) => {
+                    touched.insert(y);
+                    b += 1;
+                }
+                _ => break,
+            }
+        }
+        self.advanced = advanced;
+        self.extended = Arc::clone(&captures.extended);
+        self.extended_through = hour;
         for &raw in &touched {
             if let Some(tag) = self.raw_tag(raw) {
                 joined.dirty.insert(tag);
@@ -985,22 +1065,44 @@ impl Emit {
                 }))
                 .collect();
             self.recorded.retain(|key| current.contains(key));
+            // What the replacement leaves out changes the accounts of the tags holding it.
+            let raws: BTreeSet<u32> = self
+                .daily
+                .keys()
+                .copied()
+                .chain(self.power.values().map(|row| row.country))
+                .chain(self.costs.values().map(|row| row.country))
+                .collect();
+            for raw in raws {
+                self.dirty_days(raw, joined);
+            }
             self.waiting.clear();
             self.power.clear();
+            self.daily_gains.clear();
+            self.unknown_adds.clear();
             self.governments.clear();
             self.daily.clear();
             self.costs.clear();
             self.sums.clear();
         }
+        // A held power row an account reads changing re-accounts its raw country's current tag,
+        // whether or not the row is recorded again.
         for key in power_deleted {
             if let Some(row) = self.power.remove(&key) {
+                self.index_power(key, &row, false);
                 self.recorded
                     .remove(&(row.country, row.epoch, row.sequence));
+                joined.dirty.extend(self.raw_tag(row.country));
             }
             self.waiting.remove(&(0, key));
         }
         for power in &power {
-            self.power.insert(power.row.key(), power.row.clone());
+            let key = power.row.key();
+            if let Some(old) = self.power.insert(key, power.row.clone()) {
+                self.index_power(key, &old, false);
+            }
+            self.index_power(key, &power.row, true);
+            joined.dirty.extend(self.raw_tag(power.row.country));
             newest = newest.max(power_day(&power.row));
         }
         for key in government_deleted {
@@ -1015,13 +1117,16 @@ impl Emit {
                 .insert(government.row.key(), government.row.clone());
             newest = newest.max(Some(government.row.hour.div_euclid(24) * 24));
         }
+        // A raw country's daily row is its current tag's reconciliation, and decides whether the
+        // days it holds under any tag count as that tag's income.
         for key in daily_deleted {
             self.daily.remove(&(key as u32));
-            joined.dirty.extend(self.raw_tag(key as u32));
+            self.dirty_days(key as u32, joined);
         }
         for row in &daily {
             self.daily.insert(row.country, row.clone());
             newest = newest.max(Some(row.day_hour));
+            self.dirty_days(row.country, joined);
         }
         for key in cost_deleted {
             if let Some(row) = self.costs.remove(&key) {
@@ -1031,6 +1136,7 @@ impl Emit {
             self.waiting.remove(&(1, key));
         }
         for cost in &costs {
+            joined.dirty.extend(self.raw_tag(cost.row.country));
             if let Some(old) = self.costs.insert(cost.row.key(), cost.row.clone()) {
                 self.unsum(&old);
             }
@@ -1113,15 +1219,19 @@ impl Emit {
         }
         queue.extend(power.into_iter().map(Waiting::Power));
         queue.extend(governments.into_iter().map(Waiting::Government));
-        // The applications the daily table holds now, which political gains and costs match.
-        let applications: HashSet<(u32, u64, i32, u64)> = self
-            .daily
-            .values()
-            .filter_map(|row| {
-                row.pp_sequence
-                    .map(|sequence| (row.country, row.epoch, row.day_hour, sequence))
-            })
-            .collect();
+        // The applications the daily table holds now, which political gains and costs match:
+        // gathered only for an hour holding any.
+        let applications: HashSet<(u32, u64, i32, u64)> = if queue.is_empty() && costs.is_empty() {
+            HashSet::new()
+        } else {
+            self.daily
+                .values()
+                .filter_map(|row| {
+                    row.pp_sequence
+                        .map(|sequence| (row.country, row.epoch, row.day_hour, sequence))
+                })
+                .collect()
+        };
         for row in queue {
             match row {
                 Waiting::Power(power) => {
@@ -1140,6 +1250,16 @@ impl Emit {
             self.record_cost(writer, cost, at, &applications, joined)?;
         }
         Ok(())
+    }
+
+    /// Dirties raw country `raw`'s current tag and every tag holding a day of it.
+    fn dirty_days(&self, raw: u32, joined: &mut Joined) {
+        joined.dirty.extend(self.raw_tag(raw));
+        joined.dirty.extend(
+            self.days
+                .range((raw, 0, i32::MIN)..=(raw, u64::MAX, i32::MAX))
+                .map(|(_, day)| day.tag),
+        );
     }
 
     fn unsum(&mut self, row: &CountryPowerDailyCostRow) {
@@ -1437,9 +1557,16 @@ impl Emit {
             .filter(|key| key.2 < row.day_hour)
             .collect();
         for key in earlier {
-            self.days.remove(&key);
+            if let Some(day) = self.days.remove(&key) {
+                self.tag_days.remove(&(day.tag, key.2, key.0, key.1));
+                joined.dirty.insert(day.tag);
+            }
         }
-        self.days.insert(key, Day { row, reads, tag });
+        if let Some(old) = self.days.insert(key, Day { row, reads, tag }) {
+            self.tag_days.remove(&(old.tag, key.2, key.0, key.1));
+            joined.dirty.insert(old.tag);
+        }
+        self.tag_days.insert((tag, key.2, key.0, key.1));
         joined.dirty.insert(tag);
         Ok(())
     }
@@ -1627,44 +1754,52 @@ impl Emit {
         })
     }
 
-    /// The currencies an addition without an evaluated operand leaves unknown, among the
-    /// hour's power rows of `witness`'s capture.
-    fn unknown_additions(&self, witness: &PoliticsCaptureCoverageRow) -> u8 {
-        let first = u128::from(witness.country) << 64;
-        let mut bits = 0;
-        for row in self
-            .power
-            .range(first..=first | u128::from(u64::MAX))
-            .map(|(_, row)| row)
-        {
-            if row.operation != PowerOperation::Add
-                || row.requested_delta_raw.is_some()
-                || row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political
-                || witness.epoch != row.epoch
-                || row.hour < witness.since_hour
-                || row.hour > witness.through_hour
-            {
-                continue;
+    /// Adds held power row `row`, under `key`, to the indexes an account asks, or takes it out.
+    fn index_power(&mut self, key: u128, row: &CountryPowerChangeRow, held: bool) {
+        if row.cause == PowerCause::DailyGain && row.currency == PowerCurrency::Political {
+            let entry = (row.country, row.hour, key);
+            if held {
+                self.daily_gains.insert(entry);
+            } else {
+                self.daily_gains.remove(&entry);
             }
-            bits |= match row.currency {
+        } else if row.operation == PowerOperation::Add && row.requested_delta_raw.is_none() {
+            let bit = match row.currency {
                 PowerCurrency::Political => PoliticsCaptureCoverageRow::PP,
                 PowerCurrency::Command => PoliticsCaptureCoverageRow::CP,
             };
+            let entry = (row.country, row.epoch, row.hour, bit, key);
+            if held {
+                self.unknown_adds.insert(entry);
+            } else {
+                self.unknown_adds.remove(&entry);
+            }
         }
-        bits
+    }
+
+    /// The currencies an addition without an evaluated operand leaves unknown, among the
+    /// hour's power rows of `witness`'s capture.
+    fn unknown_additions(&self, witness: &PoliticsCaptureCoverageRow) -> u8 {
+        let (country, epoch) = (witness.country, witness.epoch);
+        if witness.since_hour > witness.through_hour {
+            return 0;
+        }
+        self.unknown_adds
+            .range(
+                (country, epoch, witness.since_hour, 0, 0)
+                    ..=(country, epoch, witness.through_hour, u8::MAX, u128::MAX),
+            )
+            .fold(0, |bits, &(.., bit, _)| bits | bit)
     }
 
     /// Whether `raw`'s hour holds a political daily gain within `since..=hour`.
     fn has_daily(&self, raw: u32, since: i32, hour: i32) -> bool {
-        let first = u128::from(raw) << 64;
-        self.power
-            .range(first..=first | u128::from(u64::MAX))
-            .any(|(_, row)| {
-                row.cause == PowerCause::DailyGain
-                    && row.currency == PowerCurrency::Political
-                    && row.hour >= since
-                    && row.hour <= hour
-            })
+        since <= hour
+            && self
+                .daily_gains
+                .range((raw, since, 0)..=(raw, hour, u128::MAX))
+                .next()
+                .is_some()
     }
 
     /// One tag's accounting at `hour`: its coverage, spending coverage, holds, income, parts
@@ -1721,6 +1856,9 @@ impl Emit {
             let unknown = witness
                 .as_ref()
                 .map_or(0, |witness| self.unknown_additions(witness));
+            if has_daily || unknown != 0 || joined.unmatched.contains(&raw) {
+                self.volatile.insert(tag);
+            }
             let political = value.streams & PoliticsCaptureCoverageRow::PP != 0
                 && changes_known
                 && daily_known
@@ -1822,6 +1960,9 @@ impl Emit {
         }
         // A cost read at the hour without its matched application, or negative, leaves the
         // read's political spending unknown.
+        if joined.costs.get(&tag).is_some_and(|costs| !costs.is_empty()) {
+            self.volatile.insert(tag);
+        }
         if let Some(spending) = spending.as_mut() {
             for &(amount, matched) in joined.costs.get(&tag).into_iter().flatten() {
                 if !matched {
@@ -2062,10 +2203,11 @@ impl Emit {
     /// `tag`'s current daily income by currency: its latest recorded day the daily table holds.
     fn write_income(&mut self, writer: &mut Writer<'_>, tag: u32, hour: i32) -> io::Result<()> {
         let current = self
-            .days
-            .values()
-            .filter(|day| day.tag == tag && self.daily.contains_key(&day.row.country))
-            .max_by_key(|day| day.row.day_hour)
+            .tag_days
+            .range((tag, i32::MIN, 0, 0)..=(tag, i32::MAX, u32::MAX, u64::MAX))
+            .rev()
+            .find(|&&(_, _, country, _)| self.daily.contains_key(&country))
+            .and_then(|&(_, day_hour, country, epoch)| self.days.get(&(country, epoch, day_hour)))
             .map(|day| (day.row.pp_net_gain_raw, day.row.cp_gain_raw));
         let values = [
             current.and_then(|(pp, _)| pp),
@@ -2200,8 +2342,11 @@ impl Emit {
                     income[5] = Some(i128::from(cp));
                 }
             }
-            // A day's income and spending alike end at its midnight.
-            if (!values.is_empty() || income.iter().any(Option::is_some))
+            // A day's income and spending alike end at its midnight, where a currency covered
+            // since within the day is covered whole.
+            if (!values.is_empty()
+                || income.iter().any(Option::is_some)
+                || since.iter().flatten().any(|&first| first > day))
                 && let Some(next) = day.checked_add(24)
             {
                 self.tomorrow.entry(next).or_default().insert(tag);
@@ -2315,6 +2460,8 @@ impl Emit {
             links: self.links.iter().map(|(&raw, &slot)| (raw, slot)).collect(),
             extended: self.extended.to_vec(),
             extended_through: self.extended_through,
+            advanced: self.advanced.clone(),
+            volatile: self.volatile.iter().copied().collect(),
             identities: self
                 .identities
                 .iter()
@@ -2464,6 +2611,8 @@ impl Emit {
             .collect();
         emit.extended = Arc::from(saved.extended);
         emit.extended_through = saved.extended_through;
+        emit.advanced = saved.advanced;
+        emit.volatile = saved.volatile.into_iter().collect();
         emit.identities = saved.identities.into_iter().collect();
         emit.complete = saved.complete;
         emit.recorded = saved.recorded.into_iter().collect();
@@ -2472,6 +2621,7 @@ impl Emit {
             return Err(invalid("saved rows and their records disagree"));
         }
         for (row, (key, reads, tag)) in days.into_iter().zip(saved.days) {
+            emit.tag_days.insert((tag, key.2, key.0, key.1));
             emit.days.insert(key, Day { row, reads, tag });
         }
         for row in costs {
@@ -2663,6 +2813,8 @@ struct Saved<'a> {
     links: Vec<(u32, u32)>,
     extended: Vec<u32>,
     extended_through: i32,
+    advanced: Vec<u32>,
+    volatile: Vec<u32>,
     identities: Vec<((u32, u64), Vec<(i32, u32)>)>,
     complete: u16,
     recorded: Vec<(u32, u64, u64)>,
@@ -2691,6 +2843,8 @@ struct Loaded {
     links: Vec<(u32, u32)>,
     extended: Vec<u32>,
     extended_through: i32,
+    advanced: Vec<u32>,
+    volatile: Vec<u32>,
     identities: Vec<((u32, u64), Vec<(i32, u32)>)>,
     complete: u16,
     recorded: Vec<(u32, u64, u64)>,

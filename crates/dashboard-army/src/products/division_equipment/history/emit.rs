@@ -263,8 +263,10 @@ impl Emit {
 
     /// Keeps one projected item.
     pub fn hour(&mut self, writer: &mut Writer<'_>, hour: Hour) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope("division_equipment.emit", None);
         match hour.projected {
             Projected::Lead(input) => {
+                let _cpu = ::replay_frame::cpu::scope("division_equipment.emit.lead", None);
                 let (engine, _) = self.handed.as_mut().ok_or_else(|| {
                     io::Error::other("A division equipment segment leads with no engine before it")
                 })?;

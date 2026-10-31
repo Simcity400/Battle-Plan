@@ -292,7 +292,10 @@ impl Emit {
             return Ok(number);
         }
         let choice = match &self.configured.flags {
-            Ok(folders) => folders.choose(chain)?,
+            Ok(folders) => {
+                let _cpu = ::replay_frame::cpu::scope("country_styles.emit.choose", None);
+                folders.choose(chain)?
+            }
             Err(refusal) => CountryFlagChoice {
                 keys: Default::default(),
                 reasons: [0; 3].map(|_| Some(refusal.clone())),
@@ -316,6 +319,7 @@ impl Emit {
 
     /// Keeps one projected hour.
     pub fn hour(&mut self, writer: &mut Writer<'_>, hour: facts::Hour) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope("country_styles.emit", None);
         let at = hour.hour;
         let adjacent = self.last.and_then(|last| last.checked_add(1)) == Some(at);
         if let Some(last) = self.last.filter(|_| !adjacent) {
