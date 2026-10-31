@@ -34,7 +34,7 @@ class FakeBoat:
         self.cargo_exit = 0
         self.renewed = threading.Event()
 
-    def boat(self, *args, check=True):
+    def boat(self, *args, check=True, idempotent=None, shielded=False):
         self.calls.append(args)
         command = args[0]
         if command == "list":
@@ -275,6 +275,25 @@ class Acquire(Harness):
         lease.end()
         lock.close()
         self.assertEqual((fake.remote_calls, installed), ([("a", "acquire", "t")], [True]))
+
+    def test_the_runner_assembles_exactly_its_parts_and_clears_them_either_way(self):
+        fake = self.use(FakeBoat([vm("a")]))
+        bt.install_runner(self.state, "a")
+        execs = [call for call in fake.calls if call[0] == "exec"]
+        uploaded = {call[-2].rsplit("/", 1)[1] for call in execs[:-1]}
+        script = execs[-1][-1]
+        for name, data in bt.runner_files().items():
+            text = len(bt.base64.b64encode(data))
+            parts = [f"runner-{name}.b64-{index:03d}" for index in range(-(-text // bt.CHUNK_CHARS))]
+            self.assertTrue(set(parts) <= uploaded)
+            # An interrupted longer upload's later parts are never read.
+            self.assertIn(f"cat {' '.join(parts)} | base64 -d > {name}.new", script)
+        self.assertNotIn("b64-* |", script)
+        # Every part goes after the install whatever its outcome, which the exec still reports.
+        install, cleanup = script.split("; status=$?; ")
+        self.assertTrue(install.startswith(f"cd {bt.REMOTE} || exit; {{ ") and install.endswith("; }"))
+        self.assertEqual(cleanup, "rm -f runner-*.b64-* remote.py.new run.sh.new; exit $status")
+        self.assertIsNotNone(self.state.entry("a").get("runner_hash"))
 
     def test_a_vm_holding_another_claim_is_quarantined_and_released(self):
         fake = self.use(FakeBoat([vm("a"), vm("b")]))

@@ -737,16 +737,18 @@ def runner_files():
 
 
 def upload(vmid, name, data):
-    """Writes base64 parts of data to REMOTE/<name>.b64-NNN, several commands at a time."""
+    """Writes base64 parts of data to REMOTE/<name>.b64-NNN, several commands at a time; returns the parts' names in order."""
     text = base64.b64encode(data).decode()
     chunks = [text[start:start + CHUNK_CHARS] for start in range(0, len(text), CHUNK_CHARS)] or [""]
+    parts = [f"{name}.b64-{index:03d}" for index in range(len(chunks))]
 
     def put(item):
-        index, chunk = item
-        boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", 'printf %s "$1" > "$0"', f"{REMOTE}/{name}.b64-{index:03d}", chunk, idempotent=True)
+        part, chunk = item
+        boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", 'printf %s "$1" > "$0"', f"{REMOTE}/{part}", chunk, idempotent=True)
 
     with ThreadPoolExecutor(max_workers=UPLOAD_WORKERS) as uploads:
-        list(uploads.map(put, enumerate(chunks)))
+        list(uploads.map(put, zip(parts, chunks)))
+    return parts
 
 
 def install_runner(state, vmid):
@@ -756,9 +758,12 @@ def install_runner(state, vmid):
         return
     steps = []
     for name, data in files.items():
-        upload(vmid, "runner-" + name, data)
-        steps.append(f'cat runner-{name}.b64-* | base64 -d > {name}.new && echo "{hashlib.sha256(data).hexdigest()}  {name}.new" | sha256sum -c --quiet && mv {name}.new {name} && rm runner-{name}.b64-*')
-    boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", f"cd {REMOTE} && " + " && ".join(steps), idempotent=True)
+        # Exactly this upload's parts: an interrupted earlier one may have left more of them.
+        parts = upload(vmid, "runner-" + name, data)
+        steps.append(f'cat {" ".join(parts)} | base64 -d > {name}.new && echo "{hashlib.sha256(data).hexdigest()}  {name}.new" | sha256sum -c --quiet && mv {name}.new {name}')
+    # The parts go whether or not the runner installed, so a failure leaves nothing for the next try.
+    script = f"cd {REMOTE} || exit; {{ {' && '.join(steps)}; }}; status=$?; rm -f runner-*.b64-* {' '.join(name + '.new' for name in files)}; exit $status"
+    boat("exec", vmid, "--timeout", "60", "--", "sh", "-c", script, idempotent=True)
     state.update(vmid, runner_hash=digest)
 
 

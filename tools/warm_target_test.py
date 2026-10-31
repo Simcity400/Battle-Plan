@@ -336,22 +336,74 @@ class Precalculated(unittest.TestCase):
 
 
 class UpdateLock(unittest.TestCase):
-    def test_a_killed_update_does_not_hold_the_seed(self):
+    HOLD = ("import sys, warm_target as wt\n"
+            "wt.take_update_lock(sys.argv[1])\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n")
+
+    def test_only_a_live_holder_keeps_the_seed_and_a_killed_one_leaves_nothing_to_take_over(self):
         with tempfile.TemporaryDirectory() as root:
             lock = wt.take_update_lock(root)
-            with self.assertRaises(wt.WarmError):  # this process is alive
+            with self.assertRaises(wt.SeedBusy):  # another claim, even from this process
                 wt.take_update_lock(root)
-            exited = subprocess.Popen([sys.executable, "-c", "pass"])
-            exited.wait()
-            write(os.path.join(lock, "pid"), str(exited.pid))
-            self.assertEqual(wt.take_update_lock(root), lock)
-            self.assertEqual(read(os.path.join(lock, "pid")).decode(), str(os.getpid()))
-            os.remove(os.path.join(lock, "pid"))  # killed before writing its pid
-            with self.assertRaises(wt.WarmError):
+            self.assertTrue(wt.update_running(root))
+            # Older tools see a live holder of their own lock.
+            self.assertEqual(read(os.path.join(root, wt.LEGACY_LOCK, "pid")).decode(), str(os.getpid()))
+            lock.release()
+            self.assertFalse(wt.update_running(root))
+            self.assertEqual(os.listdir(root), [wt.UPDATE_LOCK])
+            holder = subprocess.Popen([sys.executable, "-c", self.HOLD, root],
+                                      cwd=os.path.dirname(os.path.abspath(__file__)),
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(holder.stdout.readline().strip(), "held")
+                self.assertTrue(wt.update_running(root))
+                with self.assertRaises(wt.SeedBusy):
+                    wt.take_update_lock(root)
+            finally:
+                holder.kill()
+                holder.wait()
+                holder.stdin.close()
+                holder.stdout.close()
+            # Two updates that saw the killed holder: one claims the seed, the other is refused
+            # rather than deleting the first one's claim.
+            first = wt.take_update_lock(root)
+            with self.assertRaises(wt.SeedBusy):
+                wt.take_update_lock(root)
+            first.release()
+            self.assertEqual(os.listdir(root), [wt.UPDATE_LOCK])
+            self.assertFalse(wt.update_running(os.path.join(root, "missing")))
+
+    def test_an_older_tools_live_update_keeps_the_seed_and_a_killed_ones_does_not(self):
+        with tempfile.TemporaryDirectory() as root:
+            legacy = os.path.join(root, wt.LEGACY_LOCK)
+            write(os.path.join(legacy, "pid"), str(os.getpid()))  # a live older updater
+            self.assertTrue(wt.update_running(root))
+            with self.assertRaises(wt.SeedBusy):
+                wt.take_update_lock(root)
+            self.assertEqual(read(os.path.join(legacy, "pid")).decode(), str(os.getpid()))
+            write(os.path.join(legacy, "pid"), "")  # one writing its pid
+            self.assertTrue(wt.update_running(root))
+            with self.assertRaises(wt.SeedBusy):
+                wt.take_update_lock(root)
+            os.remove(os.path.join(legacy, "pid"))  # one that has not opened it yet
+            with self.assertRaises(wt.SeedBusy):
                 wt.take_update_lock(root)
             old = time.time() - 120
-            os.utime(lock, (old, old))
-            self.assertEqual(wt.take_update_lock(root), lock)
+            os.utime(legacy, (old, old))  # killed before writing it
+            self.assertFalse(wt.update_running(root))
+            # A claim a killed update left before renaming it into place is cleared too.
+            write(os.path.join(root, f"{wt.LEGACY_LOCK}.1", "pid"), "1")
+            wt.take_update_lock(root).release()
+            self.assertEqual(os.listdir(root), [wt.UPDATE_LOCK])
+            exited = subprocess.Popen([sys.executable, "-c", "pass"])
+            exited.wait()
+            write(os.path.join(legacy, "pid"), str(exited.pid))  # killed after writing it
+            self.assertFalse(wt.update_running(root))
+            lock = wt.take_update_lock(root)
+            self.assertEqual(read(os.path.join(legacy, "pid")).decode(), str(os.getpid()))
+            lock.release()
+            self.assertEqual(os.listdir(root), [wt.UPDATE_LOCK])
 
 
 class Staging(unittest.TestCase):
@@ -376,27 +428,35 @@ class Staging(unittest.TestCase):
 
 
 class External(unittest.TestCase):
-    def test_sweep_keeps_owned_young_and_filling_directories(self):
+    def test_sweep_removes_only_its_own_retired_directories(self):
         with tempfile.TemporaryDirectory() as base:
             root = os.path.join(base, "root")
-            names = {n: os.path.join(root, f"{n}{wt.EXTERNAL_SUFFIX}") for n in
-                     ("owned", "orphan", "young", "filling", "moved")}
+            exited = subprocess.Popen([sys.executable, "-c", "pass"])
+            exited.wait()
+
+            def made(name, pid):
+                return os.path.join(root, f"{name}-0123abcd-{pid}{wt.EXTERNAL_SUFFIX}")
+
+            names = {"owned": made("owned", exited.pid), "moved": made("moved", exited.pid),
+                     "gone": made("gone", exited.pid), "filling": made("filling", os.getpid()),
+                     "unmarked": made("unmarked", exited.pid),
+                     "foreign": os.path.join(root, f"build{wt.EXTERNAL_SUFFIX}")}
             for directory in names.values():
                 os.makedirs(os.path.join(directory, "debug"))
+                os.utime(directory, (0, 0))
             junction = os.path.join(base, "worktree", ".cargo-target", "debug")
             os.makedirs(os.path.dirname(junction))
             _winapi.CreateJunction(os.path.join(names["owned"], "debug"), junction)
-            write(os.path.join(names["owned"], wt.OWNER_FILE), junction)
-            write(os.path.join(names["moved"], wt.OWNER_FILE), junction)  # now points elsewhere
-            os.makedirs(os.path.join(names["filling"], f"{wt.STAGING_PREFIX}{os.getpid()}"))
-            for name in ("owned", "orphan", "filling", "moved"):
-                os.utime(names[name], (0, 0))
+            for name in ("owned", "moved", "filling"):  # moved: the junction points elsewhere
+                write(os.path.join(names[name], wt.OWNER_FILE), junction)
+            write(os.path.join(names["gone"], wt.OWNER_FILE), os.path.join(base, "removed", "debug"))
+            write(os.path.join(names["foreign"], wt.OWNER_FILE), os.path.join(base, "removed", "debug"))
             wt.sweep_external([root, os.path.join(base, "missing")])
+            kept = ("owned", "filling", "unmarked", "foreign")
             self.assertEqual(sorted(os.listdir(root)),
-                             sorted(f"{n}{wt.EXTERNAL_SUFFIX}" for n in ("owned", "young", "filling")))
+                             sorted(os.path.basename(names[name]) for name in kept))
             self.assertEqual(os.path.normcase(wt.junction_target(junction)),
                              os.path.normcase(os.path.join(names["owned"], "debug")))
-            self.assertIsNone(wt.junction_target(names["young"]))
 
     def test_profile_directories_are_named_per_worktree_path_and_warm(self):
         a = wt.external_profile_dir("G:\\dev", "C:\\one\\t3-1234")
@@ -411,6 +471,8 @@ class External(unittest.TestCase):
         ).stdout.strip()
         self.assertTrue(other.startswith("G:\\dev\\t3-1234-") and other.endswith(wt.EXTERNAL_SUFFIX))
         self.assertNotEqual(a, other)
+        for path in (a, b, other):
+            self.assertTrue(wt.EXTERNAL_NAME.match(os.path.basename(path)))
 
 
 class Slots(unittest.TestCase):
@@ -440,21 +502,28 @@ class Slots(unittest.TestCase):
             seed = {"slot": "a", "checkout": os.path.join(root, "checkout"), "index": index,
                     "target": os.path.join(root, "seed-target"), "stamp": {"bytes": 0},
                     "rebuilt_packages": [], "packages": {}}
-            held = []
+            held, steps = [], []
 
             def backdate(inputs, worktree, checkout, started):
                 held.append(wt.slot_readers(root, "a"))
+                steps.append("backdate")
                 return 0, 0
+
+            def install(*_):
+                steps.append("install")
+                return True
 
             with mock.patch.multiple(
                     wt, read_record=lambda _: seed, git_dirty=lambda _: False,
                     copy_seed=lambda *_: None, target_files=lambda _: ([], seed["stamp"]),
                     translate=lambda *_: {"invalidated units": 0}, precalculated_units=lambda *_: [],
                     invalidate=lambda *_: None, source_inputs=lambda *_: set(),
-                    checkout_files=lambda _: set(), install=lambda *_: True, backdate=backdate):
+                    checkout_files=lambda _: set(), install=install, backdate=backdate):
                 wt.warm_into(root, seed, os.path.join(root, "worktree"), target, None, "copy", 1)
             self.assertEqual(held, [[os.getpid()]])
             self.assertEqual(wt.slot_readers(root, "a"), [])
+            # A cargo starting the moment the copy is installed already sees which sources differ.
+            self.assertEqual(steps, ["backdate", "install"])
 
 
 class BackgroundRefresh(unittest.TestCase):
@@ -497,7 +566,7 @@ class BackgroundRefresh(unittest.TestCase):
                                                                "checkout": base}))
             lock = wt.take_update_lock(root)
             self.assertIsNone(wt.start_refresh(root, repo))  # another update runs
-            shutil.rmtree(lock)
+            lock.release()
             time.sleep(1)
             self.assertFalse(os.path.exists(f"{launcher}.parent.txt"))
 
@@ -694,7 +763,7 @@ class EndToEnd(unittest.TestCase):
             self.assertIn("skipped", self.tool("seed", "--root", self.root, "--no-fetch",
                                                "--commit", "HEAD~1", "--if-moved"))
         finally:
-            shutil.rmtree(lock)
+            lock.release()
         empty = os.path.join(self.tmp.name, "no-seed")
         self.assertIn("skipped", self.tool("seed", "--root", empty, "--if-moved", "--no-fetch"))
 

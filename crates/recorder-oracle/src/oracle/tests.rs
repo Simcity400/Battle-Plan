@@ -4552,13 +4552,14 @@ fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_row
     );
 }
 
-/// Each essential archetype's stock is the sum of the saved stockpile's
-/// variant amounts of that archetype, in whole units capped at its largest
-/// raid requirement; a country with a variant the recorded definitions lack
-/// is named, not derived, and a row of an archetype no raid type lists is a
-/// difference.
+/// At a load hour each essential archetype's stock is the total the load
+/// rebuilt from the saved stockpile's variant amounts of that archetype, in
+/// whole units capped at its largest raid requirement; away from a load only
+/// a value no history records is compared. A country with a variant the
+/// recorded definitions lack is named, not derived, and a row of an archetype
+/// no raid type lists is a difference.
 #[test]
-fn stockpile_archetypes_sum_the_saved_variant_amounts() {
+fn stockpile_archetypes_follow_the_totals_a_load_rebuilds() {
     let (mut frame, mut save, _, _) = relation_fixture();
     save.production = save::production::parse(
         &installed_content_core::parser::parse(
@@ -4597,28 +4598,36 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
         archetype,
         units,
     };
-    // Archetypes 7, 8 and 9 are essential, required up to 3, 1 and 5.
+    // Archetypes 7, 8 and 9 are essential, required up to 3, 1 and 5; a mod
+    // requires 11 up to minus a billion and 12 up to two billion.
     let tokens = BTreeMap::from([
         (7, b"bomber".as_slice()),
         (8, b"convoy".as_slice()),
         (9, b"tank".as_slice()),
         (10, b"rifle".as_slice()),
+        (11, b"mine".as_slice()),
+        (12, b"shell".as_slice()),
     ]);
     let caps: BTreeMap<Vec<u8>, i32> = [
         (b"bomber".to_vec(), 3),
         (b"convoy".to_vec(), 1),
         (b"tank".to_vec(), 5),
+        (b"mine".to_vec(), -1_000_000_000),
+        (b"shell".to_vec(), 2_000_000_000),
     ]
     .into();
-    let run = |frame: &mut DecodedFrame, known: &[(u64, u32)], rows| {
+    let run_at = |frame: &mut DecodedFrame, save: &Save, known: &[(u64, u32)], rows, load_hour| {
         *frame.tables[TableId::VariantDefinitions.index()] = definitions(known);
         *frame.tables[TableId::StockpileArchetypes.index()] =
             TableView::Complete(TableRows::StockpileArchetypes(rows));
         let context = country_context(frame).unwrap();
-        let mut report = Report::default();
+        let mut report = Report {
+            load_hour,
+            ..Default::default()
+        };
         visibility::compare_stockpile_archetypes(
             frame,
-            &save,
+            save,
             &context,
             &tokens,
             Ok(&caps),
@@ -4626,6 +4635,16 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
         )
         .unwrap();
         report
+    };
+    let run = |frame: &mut DecodedFrame, known: &[(u64, u32)], rows| {
+        run_at(frame, &save, known, rows, true)
+    };
+    let limited = |report: &Report, reason: &str| {
+        report
+            .limitations
+            .iter()
+            .find(|(text, _)| text.starts_with(reason))
+            .map_or_else(Vec::new, |(_, subjects)| subjects.clone())
     };
     let all = [(1, 7), (2, 7), (3, 8), (4, 7)];
     // D01 (slot 8): archetype 7 is 3 + 1.5, capped at 3; archetype 8 is 2,
@@ -4635,13 +4654,57 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
     let report = run(&mut frame, &all, exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["StockpileArchetypes"], 3);
-    // An uncapped total, a nonzero total without variants, a missing total.
-    let report = run(
-        &mut frame,
-        &all,
-        vec![row(8, 7, 4), row(8, 9, 1), row(9, 7, 1)],
-    );
+    // A total over its cap, a nonzero total without variants, a missing total.
+    let wrong = vec![row(8, 7, 4), row(8, 9, 1), row(9, 7, 1)];
+    let report = run(&mut frame, &all, wrong.clone());
     assert_eq!(report.differences.len(), 3, "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 3);
+    // Away from a load a total keeps its own clamped history, so neither a
+    // mismatch nor agreement is certified; no history records more than the
+    // cap, though, or loses a saved variant's archetype entry.
+    let report = run_at(&mut frame, &save, &all, wrong, false);
+    assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
+    assert_eq!(
+        limited(&report, "away from a load"),
+        ["StockpileArchetypes: 2 totals"]
+    );
+    let report = run_at(&mut frame, &save, &all, exact.clone(), false);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 0);
+    assert_eq!(
+        limited(&report, "away from a load"),
+        ["StockpileArchetypes: 4 totals"]
+    );
+    // Nor less than the bound allows.
+    let report = run_at(
+        &mut frame,
+        &save,
+        &all,
+        vec![row(8, 7, -922_337_203), row(8, 8, 1), row(9, 7, 1)],
+        false,
+    );
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    // The collector caps whole units whatever the cap's sign or size.
+    let capped = |extra| {
+        let mut rows = vec![row(8, 7, 3), row(8, 8, 1), row(9, 7, 1)];
+        rows.push(extra);
+        rows
+    };
+    for (extra, differences) in [
+        (row(8, 11, -1_000_000_000), 0),
+        (row(8, 11, 0), 1),
+        (row(8, 12, 922_337_202), 0),
+        (row(8, 12, 922_337_203), 1),
+    ] {
+        let report = run_at(&mut frame, &save, &all, capped(extra.clone()), false);
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{extra:?}: {:?}",
+            report.differences
+        );
+    }
     // Without variant 4's definition SOV is named and not compared.
     let report = run(&mut frame, &all[..3], exact.clone());
     assert!(report.differences.is_empty(), "{:?}", report.differences);
@@ -4652,11 +4715,98 @@ fn stockpile_archetypes_sum_the_saved_variant_amounts() {
             .keys()
             .any(|reason| reason.contains("no VariantDefinitions row"))
     );
+    // An unknown variant cannot make a value over the cap possible.
+    let report = run(
+        &mut frame,
+        &all[..3],
+        vec![row(8, 7, 3), row(8, 8, 1), row(8, 9, 0), row(9, 7, 4)],
+    );
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     // A non-essential archetype is not recorded.
     let mut extra = exact;
     extra.push(row(8, 10, 2));
     let report = run(&mut frame, &all, extra);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let stocked = |amounts: &str| {
+        let mut save = save.clone();
+        save.production = save::production::parse(
+            &installed_content_core::parser::parse(
+                format!(
+                    "countries={{GER={{production={{equipments={{allow_zero_entries=no}}}}}}
+                    D01={{production={{equipments={{{amounts} allow_zero_entries=no}}}}}}}}"
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        save
+    };
+    // Adding the bound to variant 1, the bound to variant 2 (the total stays
+    // at the bound) and withdrawing variant 2's bound leaves the total at
+    // zero while the saved variant holds the bound: away from a load neither
+    // a recorded 0 nor a recorded 3 is certified.
+    let bound = stocked("equipment={id={id=1 type=70} amount=922337202}");
+    let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 0)], false);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        limited(&report, "away from a load"),
+        ["StockpileArchetypes D01 archetype 7: replay 0, a load of the saved variants 3"]
+    );
+    let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 3)], false);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 0);
+    assert_eq!(
+        limited(&report, "away from a load"),
+        ["StockpileArchetypes: 1 totals"]
+    );
+    // A load inserting that one variant rebuilds the total at the bound.
+    let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 0)], true);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let report = run_at(&mut frame, &bound, &all, vec![row(8, 7, 3)], true);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
+    // Amounts of one sign reach the bound and stay there in any order.
+    let past = stocked(
+        "equipment={id={id=1 type=70} amount=922337202}
+        equipment={id={id=2 type=70} amount=1}",
+    );
+    let report = run_at(&mut frame, &past, &all, vec![row(8, 7, 3)], true);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StockpileArchetypes"], 1);
+    // A repeated variant's last amount replaces its first.
+    let repeated = stocked(
+        "equipment={id={id=1 type=70} amount=1}
+        equipment={id={id=1 type=70} amount=2}",
+    );
+    let report = run_at(&mut frame, &repeated, &all, vec![row(8, 7, 2)], true);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let report = run_at(&mut frame, &repeated, &all, vec![row(8, 7, 3)], true);
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    // Amounts a load could clamp in more than one way derive no total: the
+    // bound, one and minus one end at the bound less one, or at the bound
+    // when the withdrawal comes first; a repeated variant that falls back
+    // after the bound likewise.
+    for amounts in [
+        "equipment={id={id=1 type=70} amount=922337202}
+        equipment={id={id=2 type=70} amount=1}
+        equipment={id={id=4 type=70} amount=-1}",
+        "equipment={id={id=1 type=70} amount=922337202}
+        equipment={id={id=2 type=70} amount=1}
+        equipment={id={id=1 type=70} amount=0}",
+    ] {
+        let ordered = stocked(amounts);
+        let report = run_at(&mut frame, &ordered, &all, vec![row(8, 7, 0)], true);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["StockpileArchetypes"], 0);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("in more than one way"))
+        );
+    }
     // Without the caps nothing is compared.
     *frame.tables[TableId::VariantDefinitions.index()] = definitions(&all);
     let context = country_context(&frame).unwrap();
@@ -5441,7 +5591,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
 }
 
 #[test]
-fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_and_compares_differences() {
+fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_a_load_rebuilds() {
     let (mut frame, mut saved, _, _) = relation_fixture();
     saved.production = save::production::parse(
         &installed_content_core::parser::parse(
@@ -5457,7 +5607,7 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_and_compares_differenc
     .unwrap();
     *frame.tables[TableId::VariantDefinitions.index()] =
         TableView::Complete(TableRows::VariantDefinitions(
-            [(1, 7), (2, 7), (3, 8)]
+            [(1, 7), (2, 7), (3, 8), (4, 7)]
                 .into_iter()
                 .map(|(id, token)| replay_data::rows::VariantDefinitionRow {
                     id: (id << 32) | 70,
@@ -5466,7 +5616,7 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_and_compares_differenc
                 })
                 .collect(),
         ));
-    let run = |frame: &mut DecodedFrame, actual| {
+    let run_at = |frame: &mut DecodedFrame, saved: &Save, actual, load_hour| {
         *frame.tables[TableId::RaidCountryInputs.index()] =
             TableView::Complete(TableRows::RaidCountryInputs(vec![
                 replay_data::rows::RaidCountryInputRow {
@@ -5476,10 +5626,13 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_and_compares_differenc
                 },
             ]));
         let context = country_context(frame).unwrap();
-        let mut report = Report::default();
+        let mut report = Report {
+            load_hour,
+            ..Default::default()
+        };
         visibility::compare_volunteer_stockpile(
             frame,
-            &saved,
+            saved,
             &context,
             &|token| Ok(token == 7),
             &mut report,
@@ -5487,11 +5640,79 @@ fn volunteer_air_stockpile_uses_uncapped_whole_archetypes_and_compares_differenc
         .unwrap();
         report
     };
-    let exact = run(&mut frame, 5);
-    assert!(exact.differences.is_empty());
+    let compared =
+        |report: &Report| report.compared_tables["RaidCountryInputs.volunteer_stockpile_planes"];
+    let runtime = |report: &Report| {
+        report
+            .limitations
+            .iter()
+            .find(|(reason, _)| reason.starts_with("away from a load"))
+            .map_or_else(Vec::new, |(_, subjects)| subjects.clone())
+    };
+    // At a load hour the totals were just rebuilt from the saved variants:
+    // planes of archetype 7 are 3.6 + 1.6, whole.
+    let exact = run_at(&mut frame, &saved, 5, true);
+    assert!(exact.differences.is_empty(), "{:?}", exact.differences);
+    assert_eq!(compared(&exact), 1);
+    let load = run_at(&mut frame, &saved, 4, true);
+    assert_eq!((load.differences.len(), compared(&load)), (1, 1));
+    // Elsewhere each total keeps its own clamped history: nothing is certified.
+    let later = run_at(&mut frame, &saved, 4, false);
+    assert!(later.differences.is_empty(), "{:?}", later.differences);
+    assert_eq!(compared(&later), 0);
     assert_eq!(
-        exact.compared_tables["RaidCountryInputs.volunteer_stockpile_planes"],
-        1
+        runtime(&later),
+        [
+            "RaidCountryInputs D01 volunteer_stockpile_planes: replay 4, a load of the saved variants 5"
+        ]
     );
-    assert_eq!(run(&mut frame, 4).differences.len(), 1);
+    let agreeing = run_at(&mut frame, &saved, 5, false);
+    assert!(
+        agreeing.differences.is_empty(),
+        "{:?}",
+        agreeing.differences
+    );
+    assert_eq!(compared(&agreeing), 0);
+    assert_eq!(
+        runtime(&agreeing),
+        ["RaidCountryInputs.volunteer_stockpile_planes: 1 totals"]
+    );
+    let stocked = |amounts: &str| {
+        let mut saved = saved.clone();
+        saved.production = save::production::parse(
+            &installed_content_core::parser::parse(
+                format!(
+                    "countries={{D01={{production={{equipments={{{amounts} allow_zero_entries=no}}}}}}}}"
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+            .items,
+        )
+        .unwrap();
+        saved
+    };
+    // Plane amounts of one sign reach the bound and stay there in any order.
+    let bound = stocked(
+        "equipment={id={id=1 type=70} amount=922337202}
+        equipment={id={id=2 type=70} amount=1}",
+    );
+    let report = run_at(&mut frame, &bound, 922_337_202, true);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(compared(&report), 1);
+    // Plane amounts a load could clamp in more than one way derive none.
+    let ordered = stocked(
+        "equipment={id={id=1 type=70} amount=922337202}
+        equipment={id={id=2 type=70} amount=1}
+        equipment={id={id=4 type=70} amount=-1}",
+    );
+    let report = run_at(&mut frame, &ordered, 0, true);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(compared(&report), 0);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("in more than one way"))
+    );
 }

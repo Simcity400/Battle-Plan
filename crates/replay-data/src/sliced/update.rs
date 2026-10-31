@@ -297,7 +297,7 @@ impl SliceUpdate {
         previous: &TableRows,
         output: &mut Vec<u8>,
         deleted: &mut Vec<u8>,
-        mut changed: Option<&mut ChangedRows>,
+        changed: Option<&mut ChangedRows>,
     ) -> io::Result<bool> {
         if !self.ranges.is_empty() {
             return self

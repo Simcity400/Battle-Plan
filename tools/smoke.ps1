@@ -64,6 +64,8 @@ writes build-receipt.json in Out; existing smoke-result.json has the same fields
 .PARAMETER BinaryDirectory
 Directory of those binaries; defaults to this checkout's .cargo-target/release.
 All source and copied hashes and the clean current HEAD are verified before launch.
+The viewer's pinned shader compiler, shader-tools\dxc, is copied from beside them
+unless BATTLE_PLAN_SHADER_COMPILER names one; either is checked before launch.
 .PARAMETER Checkpoint
 Run workspace checks and build the release binaries before the live smoke.
 Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent smokes use the
@@ -257,6 +259,21 @@ function Write-LaunchSelection([string]$userPath, [string]$saveName) {
     $json = [ordered]@{ title=$saveName; desc=''; date=$date; filename=$saveName; is_remote=$false } | ConvertTo-Json -Compress
     $json = [regex]::Replace($json, '[^\x00-\x7F]', { param($match) '\u{0:x4}' -f [int][char]$match.Value })
     [IO.File]::WriteAllText((Join-Path $userPath 'continue_game.json'), $json, [Text.UTF8Encoding]::new($false))
+}
+
+# The viewer runs shader-tools\dxc\dxc.exe beside itself unless BATTLE_PLAN_SHADER_COMPILER names one,
+# so a viewer copied away from its build takes that folder along.
+function Copy-ShaderCompiler([string]$source, [string]$destination, [string]$override) {
+    if ($override) {
+        if (-not (Test-Path -LiteralPath $override -PathType Leaf)) { throw 'BATTLE_PLAN_SHADER_COMPILER names no file.' }
+        return $override
+    }
+    $tools = Join-Path $source 'shader-tools'
+    if (-not (Test-Path -LiteralPath (Join-Path $tools 'dxc\dxc.exe') -PathType Leaf)) {
+        throw "The viewer needs the pinned shader compiler: install it beside the smoke binaries (tools/install-shader-compiler.ps1 -Destination '$tools\dxc') or set BATTLE_PLAN_SHADER_COMPILER."
+    }
+    Copy-Item -LiteralPath $tools -Destination (Join-Path $destination 'shader-tools') -Recurse
+    Join-Path $destination 'shader-tools\dxc\dxc.exe'
 }
 
 function Set-ShimFlags($shim, [int]$flags) { $shim.View.Write($script:ShimFlagsOffset, [uint32]$flags) }
@@ -645,6 +662,12 @@ function Invoke-FullSmoke {
         $sourceBinaries=@(Read-Binaries $binarySource $expectedBinaries)
         foreach ($file in $sourceBinaries) { Copy-Item -LiteralPath (Join-Path $binarySource $file.name) -Destination (Join-Path $bin $file.name) }
         $report.binaries=@(Read-Binaries $bin $sourceBinaries)
+        # Checked now: a shader cache miss after the long recording would otherwise refuse the viewer's layers.
+        $compiler=Copy-ShaderCompiler $binarySource $bin $(if (Test-Path Env:BATTLE_PLAN_SHADER_COMPILER) { $env:BATTLE_PLAN_SHADER_COMPILER } else { $env:HOI4_SHADER_COMPILER })
+        $pinned=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\shader-pipeline\src\lib.rs')),'pub const DXC_VERSION: &str = "([^"]+)";').Groups[1].Value
+        if (-not $pinned) { throw 'DXC_VERSION not found in crates/shader-pipeline/src/lib.rs.' }
+        if (-not (Run-Tool $compiler @('--version') 'shader-compiler' 30).Contains($pinned)) { throw "The shader compiler is not the pinned DXC $pinned." }
+        $report.shader_compiler=@{path=$compiler;sha256=(Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash}
         if ($null -ne $selection) { [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection) }
         [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
         Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')

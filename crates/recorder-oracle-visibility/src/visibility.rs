@@ -442,14 +442,88 @@ pub fn compare_ace_inputs(
     Ok(())
 }
 
+/// The bound variant quantity insertion clamps every running sum to: a variant's amount and its
+/// archetype's total each saturate on their own.
+const AMOUNT_LIMIT: i128 = 0x53e2_d620_fb40;
+
+/// Why a recorded archetype total away from a load is not compared.
+const RUNTIME_TOTAL: &str = "away from a load an archetype total is its own running sum, clamped at the bound apart from its variants' amounts, and the save keeps only the variants: they do not certify a total that may have reached the bound since the load";
+
+/// Why saved variant amounts a load could clamp in more than one way derive no total.
+const ORDERED_TOTAL: &str = "a load inserting these saved variant amounts could clamp the archetype total at the bound in more than one way, depending on the order of insertion";
+
+/// One saved variant as a load inserts it: the amount it ends at and the range of amounts it
+/// takes on the way, zero included.
+#[derive(Clone, Copy)]
+struct LoadedAmount {
+    last: i64,
+    high: i64,
+    low: i64,
+}
+
+/// One archetype's saved variants as a load inserts them. Set-quantity moves the archetype total
+/// by each variant's change from its previous amount and clamps it, so a repeated variant's last
+/// amount stands.
+#[derive(Default)]
+struct LoadedVariants {
+    variants: BTreeMap<u64, LoadedAmount>,
+    repeated: bool,
+}
+
+impl LoadedVariants {
+    fn insert(&mut self, variant: u64, raw: i64) {
+        let (high, low) = match self.variants.get(&variant) {
+            Some(amount) => {
+                self.repeated = true;
+                (amount.high, amount.low)
+            }
+            None => (0, 0),
+        };
+        self.variants.insert(
+            variant,
+            LoadedAmount {
+                last: raw,
+                high: high.max(raw),
+                low: low.min(raw),
+            },
+        );
+    }
+
+    /// The archetype total the load leaves, or `None` when the order of insertion could change
+    /// how the bound clamps it.
+    fn total(&self) -> Option<i128> {
+        let (mut sum, mut high, mut low) = (0_i128, 0_i128, 0_i128);
+        for amount in self.variants.values() {
+            sum += i128::from(amount.last);
+            high += i128::from(amount.high);
+            low += i128::from(amount.low);
+        }
+        if high <= AMOUNT_LIMIT && low >= -AMOUNT_LIMIT {
+            // Every running total lies between `low` and `high`: nothing clamps.
+            Some(sum)
+        } else if self.repeated {
+            None
+        } else if low == 0 {
+            // Running totals only grow, and stay at the bound once they reach it.
+            Some(sum.min(AMOUNT_LIMIT))
+        } else if high == 0 {
+            Some(sum.max(-AMOUNT_LIMIT))
+        } else {
+            None
+        }
+    }
+}
+
 /// `StockpileArchetypes` against the saved stockpile. The table is the first array of each
 /// country's production status stockpile pool, kept for the archetypes a raid type lists as
 /// essential, in whole units capped at the largest amount any raid type requires (`essential_caps`,
 /// by archetype name); the save writes only the pool's variant rows (`equipments`, the variant
 /// quantity writer). Every quantity reaches both through variant quantity insertion, which adds it
-/// to the variant and to its archetype's total (the definition's archetype link), so each total is
-/// the sum of its variants' saved amounts. A variant's archetype is its
-/// `VariantDefinitions.archetype_token`. Every country is read each hour.
+/// to the variant and to its archetype's total (the definition's archetype link), each clamped at
+/// the bound on its own. So only at a load hour, when the game has just rebuilt each total from
+/// the saved variants ([`LoadedVariants`]), do they certify it; elsewhere a total is compared only
+/// with the whole units the collector can record at all ([`RUNTIME_TOTAL`]). A variant's
+/// archetype is its `VariantDefinitions.archetype_token`. Every country is read each hour.
 pub fn compare_stockpile_archetypes(
     frame: &DecodedFrame,
     save: &Save,
@@ -458,8 +532,6 @@ pub fn compare_stockpile_archetypes(
     essential_caps: Result<&BTreeMap<Vec<u8>, i32>, String>,
     report: &mut Report,
 ) -> io::Result<()> {
-    /// `variant addition` clamps each running sum to this bound.
-    const LIMIT: i128 = 0x53e2_d620_fb40;
     let rows = complete::<tables::StockpileArchetypes>(frame)?;
     let caps = match essential_caps {
         Ok(caps) => caps,
@@ -486,7 +558,7 @@ pub fn compare_stockpile_archetypes(
         .countries
         .as_ref()
         .ok_or_else(|| invalid("save lacks production country roster"))?;
-    let mut expected: BTreeMap<(&[u8], u32), i128> = BTreeMap::new();
+    let mut expected: BTreeMap<(&[u8], u32), LoadedVariants> = BTreeMap::new();
     let mut underived: BTreeMap<&[u8], u64> = BTreeMap::new();
     for (tag, country) in report.canonical_countries(saved) {
         let pool = country
@@ -503,8 +575,10 @@ pub fn compare_stockpile_archetypes(
             match archetype_of.get(&entry.variant) {
                 Some(archetype) if !cap_of.contains_key(archetype) => {}
                 Some(&archetype) => {
-                    *expected.entry((tag.as_slice(), archetype)).or_default() +=
-                        i128::from(entry.amount.raw);
+                    expected
+                        .entry((tag.as_slice(), archetype))
+                        .or_default()
+                        .insert(entry.variant, entry.amount.raw);
                 }
                 None => {
                     underived.entry(tag.as_slice()).or_insert(entry.variant);
@@ -517,8 +591,13 @@ pub fn compare_stockpile_archetypes(
         .iter()
         .map(|(&tag, country)| (country.canonical_slot, tag))
         .collect();
+    let certified = report.load_hour;
+    // The collector truncates a total within the bound to whole units and caps them, whatever
+    // the cap's sign.
+    let whole = (AMOUNT_LIMIT / 100_000) as i32;
     let mut compared = 0;
     let mut zero_only = 0;
+    let mut runtime = 0;
     let mut seen = BTreeSet::new();
     for row in rows {
         let Some(&cap) = cap_of.get(&row.archetype) else {
@@ -541,29 +620,53 @@ pub fn compare_stockpile_archetypes(
         if !seen.insert((tag, row.archetype)) {
             return Err(invalid("duplicate StockpileArchetypes country archetype"));
         }
-        if underived.contains_key(tag) {
-            continue;
-        }
         let label = format!(
             "StockpileArchetypes {} archetype {}",
             String::from_utf8_lossy(tag),
             row.archetype
         );
+        let loaded = expected.remove(&(tag, row.archetype));
+        // No history and no variant, known or not, records a value outside these.
+        let (low, high) = ((-whole).min(cap), whole.min(cap));
+        if row.units < low || row.units > high {
+            compared += 1;
+            report.difference(
+                label,
+                row.units,
+                format!("whole units from {low} to {high}"),
+            );
+            continue;
+        }
+        if underived.contains_key(tag) {
+            continue;
+        }
         if !saved.contains_key(tag) {
             report.difference(label, row.units, "no saved country");
             continue;
         }
         // Compare the signed integer obtained by truncating total / 100000.
-        let units = |sum: i128| ((sum / 100_000) as i64 as i32).min(cap);
-        match expected.remove(&(tag, row.archetype)) {
-            Some(sum) if sum.abs() > LIMIT => report.limitation(
-                "the saved variant amounts of this archetype sum past the bound variant addition clamps each running total to; the clamped total depends on the unsaved order of additions",
-                label,
-            ),
-            Some(sum) => {
+        let units = |total: i128| ((total / 100_000) as i32).min(cap);
+        let total = loaded.as_ref().map(LoadedVariants::total);
+        if !certified {
+            match total {
+                Some(Some(total)) if units(total) != row.units => report.limitation(
+                    RUNTIME_TOTAL,
+                    format!(
+                        "{label}: replay {}, a load of the saved variants {}",
+                        row.units,
+                        units(total)
+                    ),
+                ),
+                _ => runtime += 1,
+            }
+            continue;
+        }
+        match total {
+            Some(None) => report.limitation(ORDERED_TOTAL, label),
+            Some(Some(total)) => {
                 compared += 1;
-                if row.units != units(sum) {
-                    report.difference(label, row.units, units(sum));
+                if row.units != units(total) {
+                    report.difference(label, row.units, units(total));
                 }
             }
             None if row.units != 0 => {
@@ -573,7 +676,8 @@ pub fn compare_stockpile_archetypes(
             None => zero_only += 1,
         }
     }
-    for ((tag, archetype), sum) in expected {
+    // Every saved variant has an archetype entry, which the collector records whatever its total.
+    for ((tag, archetype), loaded) in expected {
         if !underived.contains_key(tag) && countries.by_tag.contains_key(tag) {
             report.difference(
                 format!(
@@ -581,9 +685,15 @@ pub fn compare_stockpile_archetypes(
                     String::from_utf8_lossy(tag)
                 ),
                 "absent",
-                sum,
+                format!("{} saved variants", loaded.variants.len()),
             );
         }
+    }
+    if runtime != 0 {
+        report.limitation(
+            RUNTIME_TOTAL,
+            format!("StockpileArchetypes: {runtime} totals"),
+        );
     }
     for (tag, variant) in underived {
         report.limitation(
@@ -646,7 +756,9 @@ fn compare_local_player(
 }
 
 /// Uncapped volunteer stockpile aircraft use all saved variants, independently of raid essentials.
-/// Group variant amounts by their captured archetype before native whole-plane conversion.
+/// Group variant amounts by their captured archetype before native whole-plane conversion. The
+/// game reads the archetype totals, which saved variants certify only as
+/// [`compare_stockpile_archetypes`] says.
 pub fn compare_volunteer_stockpile(
     frame: &DecodedFrame,
     save: &Save,
@@ -683,8 +795,9 @@ pub fn compare_volunteer_stockpile(
         .countries
         .as_ref()
         .ok_or_else(|| invalid("save lacks production countries"))?;
+    let certified = report.load_hour;
     let mut compared = 0;
-    const AMOUNT_LIMIT: i128 = 0x53e2_d620_fb40;
+    let mut runtime = 0;
     for row in rows {
         let Some(actual) = *row
             .volunteer_stockpile_planes
@@ -701,31 +814,50 @@ pub fn compare_volunteer_stockpile(
             .and_then(|country| country.production.as_ref())
             .and_then(|production| production.stockpile.as_ref())
             .ok_or_else(|| invalid("volunteer sender has no serialized stockpile"))?;
-        let mut archetypes = BTreeMap::<u32, i128>::new();
+        let mut archetypes = BTreeMap::<u32, LoadedVariants>::new();
         for entry in &stockpile.equipment {
             let token = *variants
                 .get(&entry.variant)
                 .ok_or_else(|| invalid("volunteer stockpile variant definition is missing"))?;
-            *archetypes.entry(token).or_default() += i128::from(entry.amount.raw);
+            archetypes
+                .entry(token)
+                .or_default()
+                .insert(entry.variant, entry.amount.raw);
         }
-        let mut expected = 0_i32;
-        for (token, amount) in archetypes {
+        let mut expected = Some(0_i32);
+        for (&token, loaded) in &archetypes {
             if is_plane(token)? {
-                let amount = amount.clamp(-AMOUNT_LIMIT, AMOUNT_LIMIT);
-                expected = expected.wrapping_add((amount / 100_000) as i32);
+                expected = expected
+                    .zip(loaded.total())
+                    .map(|(expected, total)| expected.wrapping_add((total / 100_000) as i32));
             }
         }
-        if actual != expected {
-            report.difference(
-                format!(
-                    "RaidCountryInputs {} volunteer_stockpile_planes",
-                    String::from_utf8_lossy(tag)
-                ),
-                actual,
-                expected,
-            );
+        let label = format!(
+            "RaidCountryInputs {} volunteer_stockpile_planes",
+            String::from_utf8_lossy(tag)
+        );
+        // The pool may hold plane archetype totals no saved variant shows, so away from a load
+        // no recorded value is impossible.
+        match expected {
+            Some(expected) if !certified && expected != actual => report.limitation(
+                RUNTIME_TOTAL,
+                format!("{label}: replay {actual}, a load of the saved variants {expected}"),
+            ),
+            _ if !certified => runtime += 1,
+            None => report.limitation(ORDERED_TOTAL, label),
+            Some(expected) => {
+                compared += 1;
+                if actual != expected {
+                    report.difference(label, actual, expected);
+                }
+            }
         }
-        compared += 1;
+    }
+    if runtime != 0 {
+        report.limitation(
+            RUNTIME_TOTAL,
+            format!("RaidCountryInputs.volunteer_stockpile_planes: {runtime} totals"),
+        );
     }
     report.compared("RaidCountryInputs.volunteer_stockpile_planes", compared);
     Ok(())

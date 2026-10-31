@@ -20,6 +20,7 @@ import filecmp
 import hashlib
 import json
 import mmap
+import msvcrt
 import os
 import re
 import shutil
@@ -42,7 +43,8 @@ CHECKOUT_FILE = "checkout.txt"  # slot a's checkout path
 SLOTS = ("a", "b")
 SLOTS_DIR = "slots"
 READERS_DIR = "reading"  # one file per running warm, naming the slot it copies
-UPDATE_LOCK = "updating"
+UPDATE_LOCK = "update.lock"  # its first byte is locked while an update runs
+LEGACY_LOCK = "updating"  # older tools' lock: a directory holding its holder's pid
 REFRESH_LOG = "refresh.log"  # what `warm --refresh-behind`'s background refreshes print
 REFRESH_COMMIT = "origin/main"
 GAME_PROCESS = "hoi4.exe"  # refreshes wait while it runs: benchmarks and oracle runs
@@ -53,6 +55,7 @@ STAGING_PREFIX = ".warming-"
 # `<root>\<worktree name>-<path hash>-<warm pid>-cargo-target\debug`, naming its junction in
 # OWNER_FILE.
 EXTERNAL_SUFFIX = "-cargo-target"
+EXTERNAL_NAME = re.compile(r"^.+-[0-9a-f]{8}-(\d{1,9})" + re.escape(EXTERNAL_SUFFIX) + "$")
 OWNER_FILE = "worktree.txt"
 SEED_FORMAT = 2
 
@@ -814,7 +817,7 @@ def backdate(inputs, worktree, checkout, started):
     the current time, so cargo's mtime comparison sees exactly the inputs that differ.
 
     Inputs written since the warm `started` keep their mtimes, which are newer than any of
-    the seed's builds: cargo may already have built them into the installed copy.
+    the seed's builds: they are being edited, and cargo rebuilds what they feed.
     """
     same = differ = 0
     now = time.time_ns()
@@ -901,34 +904,101 @@ def slot_readers(root, slot):
     return readers
 
 
-def update_running(lock):
-    """Whether a live process holds the update lock."""
+def lock_first_byte(path):
+    """`path` opened with its first byte locked, or None while another descriptor holds it.
+    Windows releases the lock when the descriptor closes or its process exits, however it exits."""
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT)
+    try:
+        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def legacy_held(root):
+    """Whether a live process holds LEGACY_LOCK: its pid is alive, or the directory is under a
+    minute old and holds no whole pid yet, as older tools write it after making the directory."""
+    lock = os.path.join(root, LEGACY_LOCK)
     try:
         with open(os.path.join(lock, "pid"), encoding="utf-8") as handle:
             return process_alive(int(handle.read()))
-    except FileNotFoundError:
-        # A holder writes its pid right after taking the lock.
-        return os.path.isdir(lock) and time.time() - os.stat(lock).st_mtime < 60
-    except ValueError:
+    except (FileNotFoundError, ValueError):
+        try:
+            return time.time() - os.stat(lock).st_mtime < 60
+        except FileNotFoundError:
+            return False
+    except OSError:
         return False
 
 
-def take_update_lock(root):
-    """Claims the seed for one update. A lock whose process has exited (an update that was
-    killed) is taken over: the slot it was building has no record, so nothing used it."""
-    lock = os.path.join(root, UPDATE_LOCK)
-    while True:
+class UpdateLock:
+    """One update's claim on a seed: UPDATE_LOCK's first byte, so no other update and no killed
+    one holds it, and LEGACY_LOCK with this process's pid, so older copies of this tool in the
+    seed's checkouts stay out. Only an UPDATE_LOCK holder touches LEGACY_LOCK, so updates never
+    race each other for it."""
+
+    def __init__(self, root):
+        self.root = root
+        path = os.path.join(root, UPDATE_LOCK)
+        self.descriptor = lock_first_byte(path)
+        if self.descriptor is None:
+            raise SeedBusy(f"another seed update holds {path}")
+        legacy = os.path.join(root, LEGACY_LOCK)
+        claim = f"{legacy}.{os.getpid()}"
         try:
-            os.mkdir(lock)
-            break
-        except FileExistsError:
-            if update_running(lock):
-                raise SeedBusy(f"another seed update holds {lock}") from None
-            print(f"taking over {lock}: the update that held it is no longer running")
-            shutil.rmtree(lock, ignore_errors=True)
-    with open(os.path.join(lock, "pid"), "w", encoding="utf-8") as handle:
-        handle.write(str(os.getpid()))
-    return lock
+            # Only UPDATE_LOCK holders make claims, so any other is a killed update's.
+            for name in os.listdir(root):
+                if name.startswith(LEGACY_LOCK + "."):
+                    shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            os.mkdir(claim)
+            with open(os.path.join(claim, "pid"), "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            # Renamed into place whole: an older tool never reads this claim without its pid.
+            for _ in range(2):
+                try:
+                    os.rename(claim, legacy)
+                    break
+                except (FileExistsError, PermissionError):
+                    if legacy_held(root):
+                        raise SeedBusy(f"an older tool's seed update holds {legacy}") from None
+                    # Left by an update that was killed, of this tool or an older one.
+                    shutil.rmtree(legacy, ignore_errors=True)
+            else:
+                raise SeedBusy(f"{legacy} was left by a killed update and could not be removed")
+        except BaseException:
+            shutil.rmtree(claim, ignore_errors=True)
+            os.close(self.descriptor)
+            raise
+
+    def release(self):
+        legacy = os.path.join(self.root, LEGACY_LOCK)
+        try:
+            with open(os.path.join(legacy, "pid"), encoding="utf-8") as handle:
+                mine = handle.read().strip() == str(os.getpid())
+        except OSError:
+            mine = False
+        if mine:
+            shutil.rmtree(legacy, ignore_errors=True)
+        os.close(self.descriptor)
+
+
+def take_update_lock(root):
+    """Claims the seed for one update (`UpdateLock`), or raises SeedBusy."""
+    return UpdateLock(root)
+
+
+def update_running(root):
+    """Whether a live process holds the update lock, of this tool or an older one."""
+    if not os.path.isdir(root):
+        return False
+    if legacy_held(root):
+        return True
+    descriptor = lock_first_byte(os.path.join(root, UPDATE_LOCK))
+    if descriptor is None:
+        return True
+    os.close(descriptor)
+    return False
 
 
 def command_seed(args):
@@ -944,7 +1014,7 @@ def command_seed(args):
     try:
         return update_seed(root, args)
     finally:
-        shutil.rmtree(lock)
+        lock.release()
 
 
 def update_seed(root, args):
@@ -1152,24 +1222,27 @@ def external_profile_dir(target_root, worktree):
 
 
 def sweep_external(target_roots):
-    """Deletes profile directories on the target roots whose worktree junction no longer
-    points at them (the worktree was removed or cleaned) and that no live warm is filling."""
+    """Deletes this tool's retired profile directories on the target roots: each named as
+    `external_profile_dir` names them and holding the OWNER_FILE its warm writes first, made by
+    a warm that has exited, and no longer behind the worktree junction it names (the worktree
+    was removed or cleaned). Anything else on a root is not this tool's and stays."""
     for target_root in target_roots:
         for name in os.listdir(target_root) if os.path.isdir(target_root) else []:
             directory = os.path.join(target_root, name)
-            if not name.endswith(EXTERNAL_SUFFIX) or not os.path.isdir(directory):
+            made = EXTERNAL_NAME.match(name)
+            if not made or not os.path.isdir(directory) or junction_target(directory):
                 continue
             try:
                 with open(os.path.join(directory, OWNER_FILE), encoding="utf-8") as handle:
                     junction = handle.read().strip()
             except FileNotFoundError:
-                junction = ""
+                continue
+            if process_alive(int(made.group(1))):
+                continue  # its warm may still be filling or installing it
             profile = os.path.join(directory, "debug")
-            owned = junction and os.path.normcase(junction_target(junction) or "") == os.path.normcase(profile)
-            filling = any(staging_owner(n) and process_alive(staging_owner(n)) for n in os.listdir(directory))
-            young = time.time() - os.stat(directory).st_mtime < 60  # a warm is just creating it
-            if not (owned or filling or young):
-                shutil.rmtree(directory, ignore_errors=True)
+            if junction and os.path.normcase(junction_target(junction) or "") == os.path.normcase(profile):
+                continue
+            shutil.rmtree(directory, ignore_errors=True)
 
 
 def game_running():
@@ -1190,7 +1263,7 @@ def start_refresh(root, worktree):
         main = None
     if seed and seed["commit"] == main:
         return None
-    if update_running(os.path.join(root, UPDATE_LOCK)):
+    if update_running(root):
         print("warm: a seed refresh is already running")
         return None
     if game_running():
@@ -1289,10 +1362,12 @@ def warm_into(root, seed, worktree, target, external, copy, threads):
         started = time.time_ns()
         staging = os.path.join(external or target, f"{STAGING_PREFIX}{os.getpid()}")
         record = register_staging(root, staging)
-        os.makedirs(staging)
         if external:
+            # The owner file first: a sweep deletes only directories that hold it.
+            os.makedirs(external, exist_ok=True)
             with open(os.path.join(external, OWNER_FILE), "w", encoding="utf-8") as handle:
                 handle.write(os.path.join(target, "debug"))
+        os.makedirs(staging)
         timings = {}
         installed = False
         try:
@@ -1318,6 +1393,12 @@ def warm_into(root, seed, worktree, target, external, copy, threads):
             # lists (build scripts without `rerun-if-changed` paths watch all of them).
             inputs = source_inputs(staging, seed["packages"]) | checkout_files(worktree)
 
+            # Before the copy is in place: a cargo that starts the moment it is must already
+            # see every source that differs from the seed's as newer than the seed's builds.
+            # Backdating reads the seed checkout, which this reader holds.
+            start = time.time()
+            same, differ = backdate(inputs, worktree, checkout, started)
+            timings["backdate"] = time.time() - start
             if read_record(slot_record) != seed or git_dirty(checkout):
                 raise WarmError("the seed changed while it was copied")
             installed = install(staging, target, external)
@@ -1328,10 +1409,6 @@ def warm_into(root, seed, worktree, target, external, copy, threads):
             os.remove(record)
             if external and not installed:
                 shutil.rmtree(external, ignore_errors=True)
-        # Backdating still reads the seed checkout: a refresh may replace it once this reader goes.
-        start = time.time()
-        same, differ = backdate(inputs, worktree, checkout, started)
-        timings["backdate"] = time.time() - start
     finally:
         os.remove(reader)
 

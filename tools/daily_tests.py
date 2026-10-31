@@ -340,16 +340,23 @@ def install(args):
     return 0
 
 
-def main():
+def parse(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR"))
+    game_dir = os.environ.get("BATTLE_PLAN_GAME_DIR", os.environ.get("HOI4_GAME_DIR")) or None
     for name in ("install", "run"):
         command = commands.add_parser(name)
-        command.add_argument("--game-dir", default=game_dir, required=game_dir is None)
+        # Made absolute where it is given: the task and every step run from the runner's worktree.
+        command.add_argument(
+            "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
+        )
         if name == "install":
             command.add_argument("--at", default="03:00", help="local start time, HH:MM")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse(sys.argv[1:])
     return install(args) if args.command == "install" else run(args)
 
 

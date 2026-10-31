@@ -16,7 +16,7 @@ $driverAst = [Management.Automation.Language.Parser]::ParseFile($Driver, [ref]$t
 if ($errors.Count) { throw $errors[0] }
 foreach ($definition in $driverAst.FindAll({param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -in @('Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection')
+    $node.Name -in @('Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection', 'Copy-ShaderCompiler')
 }, $false)) { . ([scriptblock]::Create($definition.Extent.Text)) }
 try { $ScratchRoot = Resolve-LaunchUserDirectory $ScratchRoot }
 catch { throw "ScratchRoot prerequisite failed: supply an existing physical, hyphen-free directory without junctions, symbolic links or subst drives. $($_.Exception.Message)" }
@@ -183,6 +183,25 @@ try {
     if ($LASTEXITCODE -ne 0) { $substDrive = $null; throw 'Subst test prerequisite: could not create the synthetic drive.' }
     Assert-Launch 'subst profile names the drive' "UserDirectory is on subst drive ${substDrive}." ($substDrive + '\physical profile')
     Assert-ScratchRefusal ($substDrive + '\')
+    # The staged viewer finds the compiler beside itself, or the override names it.
+    $built = Join-Path $root 'built'; $staged = Join-Path $root 'staged'
+    $null = New-Item -ItemType Directory -Path (Join-Path $built 'shader-tools\dxc') -Force
+    $null = New-Item -ItemType Directory -Path $staged
+    foreach ($name in @('dxc.exe', 'dxcompiler.dll', 'dxil.dll')) { [IO.File]::WriteAllText((Join-Path $built "shader-tools\dxc\$name"), $name) }
+    $refused = $null
+    try { $null = Copy-ShaderCompiler $staged $root '' } catch { $refused = $_.Exception.Message }
+    if ($refused -notlike '*needs the pinned shader compiler*') { throw "A build without the compiler was not refused: $refused" }
+    $refused = $null
+    try { $null = Copy-ShaderCompiler $built $staged (Join-Path $root 'absent.exe') } catch { $refused = $_.Exception.Message }
+    if ($refused -ne 'BATTLE_PLAN_SHADER_COMPILER names no file.' -or (Test-Path -LiteralPath (Join-Path $staged 'shader-tools'))) { throw "A missing override was not refused: $refused" }
+    $override = Join-Path $built 'shader-tools\dxc\dxc.exe'
+    if ((Copy-ShaderCompiler $built $staged $override) -cne $override -or (Test-Path -LiteralPath (Join-Path $staged 'shader-tools'))) { throw 'An override was not used as it is.' }
+    $compiler = Copy-ShaderCompiler $built $staged ''
+    if ($compiler -cne (Join-Path $staged 'shader-tools\dxc\dxc.exe')) { throw "Staged compiler path: $compiler" }
+    foreach ($name in @('dxc.exe', 'dxcompiler.dll', 'dxil.dll')) {
+        if ([IO.File]::ReadAllText((Join-Path $staged "shader-tools\dxc\$name")) -cne $name) { throw "The staged compiler lacks $name." }
+    }
+    $script:Passed++; Write-Host 'PASS the staged viewer takes the shader compiler along'
     Write-Host "$script:Passed offline checks passed."
 } finally {
     if ($substDrive) { & (Join-Path $env:SystemRoot 'System32\subst.exe') $substDrive /D }
