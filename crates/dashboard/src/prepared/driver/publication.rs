@@ -426,6 +426,8 @@ impl<'s> Publisher<'s> {
             writer: None,
             pending: None,
             steps: BTreeMap::new(),
+            writers: BTreeMap::new(),
+            queued: Vec::new(),
             ends: false,
         })
     }
@@ -788,14 +790,17 @@ pub(crate) struct Stage<'p, 's> {
     /// Its batch queued and not yet committed: the next forks once it is.
     pending: Option<u64>,
     steps: BTreeMap<u64, Step>,
+    /// Each branch's series writer after its last publication, and that publication's root: it
+    /// goes on from there as resuming the root would, without reading every key back.
+    writers: BTreeMap<u64, (u64, roots::Series)>,
+    /// The writers of the batch queued last: they go on only once it is committed.
+    queued: Vec<(u64, u64, roots::Series)>,
     ends: bool,
 }
 
 impl Stage<'_, '_> {
     fn writer(&mut self) -> io::Result<&mut store::Writer> {
-        if let Some(ticket) = self.pending.take() {
-            self.publisher.wait(ticket)?;
-        }
+        self.wait_committed()?;
         if self.writer.is_none() {
             self.writer = Some(self.publisher.fork(self.family.id)?);
         }
@@ -817,9 +822,7 @@ impl Stage<'_, '_> {
     /// The family's open batch on `branch`, following its committed publication there: the
     /// batch the lane queued before is committed first, so the step goes on from it.
     fn step(&mut self, branch: u64) -> io::Result<&mut Step> {
-        if let Some(ticket) = self.pending.take() {
-            self.publisher.wait(ticket)?;
-        }
+        self.wait_committed()?;
         let publisher = self.publisher;
         let family = self.family;
         Ok(self.steps.entry(branch).or_insert_with(|| {
@@ -856,16 +859,27 @@ impl Stage<'_, '_> {
     ) -> io::Result<&mut roots::Series> {
         if self.step(branch)?.series.is_none() {
             let previous = self.step(branch)?.previous.clone();
-            let identity = self.publisher.binding.identity(branch, self.family.stamp);
-            let name = self.family.id.name();
-            let series = roots::writer(
-                self.writer()?,
-                name,
-                branch,
-                identity,
-                previous.as_ref(),
-                first_hour,
-            )?;
+            // Only a writer whose publication is the one committed goes on.
+            let kept = self
+                .writers
+                .remove(&branch)
+                .filter(|(root, _)| previous.as_ref().is_some_and(|previous| previous.root == *root))
+                .map(|(_, series)| series);
+            let series = match kept {
+                Some(series) => series,
+                None => {
+                    let identity = self.publisher.binding.identity(branch, self.family.stamp);
+                    let name = self.family.id.name();
+                    roots::writer(
+                        self.writer()?,
+                        name,
+                        branch,
+                        identity,
+                        previous.as_ref(),
+                        first_hour,
+                    )?
+                }
+            };
             self.step(branch)?.series = Some(series);
         }
         self.step(branch)?
@@ -1039,9 +1053,7 @@ impl Stage<'_, '_> {
     /// root, and queues it for the next group commit. The lane's next batch forks once it is
     /// committed ([`Publisher::wait`]).
     pub(crate) fn queue(&mut self) -> io::Result<u64> {
-        if let Some(ticket) = self.pending.take() {
-            self.publisher.wait(ticket)?;
-        }
+        self.wait_committed()?;
         if self.steps.is_empty() {
             return Err(refused("A batch publishes no hours"));
         }
@@ -1051,11 +1063,14 @@ impl Stage<'_, '_> {
         let steps = std::mem::take(&mut self.steps);
         self.ends = false;
         let batch = match self.seal(&mut writer, steps) {
-            Ok(sealed) => writer.into_staged().map(|staged| Batch {
-                family: self.family.id,
-                staged,
-                sealed,
-            }),
+            Ok((sealed, writers)) => {
+                self.queued = writers;
+                writer.into_staged().map(|staged| Batch {
+                    family: self.family.id,
+                    staged,
+                    sealed,
+                })
+            }
             Err(error) => {
                 drop(writer);
                 Err(error)
@@ -1063,17 +1078,28 @@ impl Stage<'_, '_> {
         };
         let queued = batch.and_then(|batch| self.publisher.queue(batch));
         self.publisher.released();
-        let ticket = queued?;
+        let ticket = queued.inspect_err(|_| self.queued.clear())?;
         self.pending = Some(ticket);
         Ok(ticket)
     }
 
     /// Waits for the batch the lane queued last to be committed.
     pub(crate) fn settle(&mut self) -> io::Result<()> {
-        match self.pending.take() {
-            Some(ticket) => self.publisher.wait(ticket),
-            None => Ok(()),
+        self.wait_committed()
+    }
+
+    /// Waits for the batch the lane queued last: its writers go on once it is committed, and
+    /// none that one not committed left behind does.
+    fn wait_committed(&mut self) -> io::Result<()> {
+        let Some(ticket) = self.pending.take() else {
+            return Ok(());
+        };
+        let queued = std::mem::take(&mut self.queued);
+        self.publisher.wait(ticket)?;
+        for (branch, root, series) in queued {
+            self.writers.insert(branch, (root, series));
         }
+        Ok(())
     }
 
     /// Queues the open batch and waits for it to be committed.
@@ -1083,15 +1109,21 @@ impl Stage<'_, '_> {
         self.settle()
     }
 
-    fn seal(&self, writer: &mut store::Writer, steps: BTreeMap<u64, Step>) -> io::Result<Sealed> {
+    /// Seals each branch's step, with the series writer each goes on with and its root.
+    fn seal(
+        &self,
+        writer: &mut store::Writer,
+        steps: BTreeMap<u64, Step>,
+    ) -> io::Result<(Sealed, Vec<(u64, u64, roots::Series)>)> {
         let name = self.family.id.name();
         let mut sealed = Sealed::default();
+        let mut writers = Vec::new();
         for (branch, step) in steps {
             let Some(frontier) = step.frontier else {
                 continue;
             };
             let identity = self.publisher.binding.identity(branch, self.family.stamp);
-            let published = roots::publish(
+            let (published, series) = roots::publish(
                 writer,
                 name,
                 branch,
@@ -1108,9 +1140,12 @@ impl Stage<'_, '_> {
             pipeline::write_family_page(writer, name, branch, &published.frontier)?;
             sealed.segments += step.segments;
             sealed.prepared += step.prepared;
+            if published.frontier.end.is_none() {
+                writers.push((branch, published.root, series));
+            }
             sealed.published.push((branch, published));
         }
-        Ok(sealed)
+        Ok((sealed, writers))
     }
 }
 

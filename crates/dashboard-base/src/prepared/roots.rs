@@ -513,7 +513,8 @@ pub struct Step<'a> {
 }
 
 /// Publishes `step` of `family` on `branch` into `writer` after `previous`, the family's last
-/// publication there: its ledger pages, emit state and carry, then its root, last. The root's
+/// publication there: its ledger pages, emit state and carry, then its root, last; and the series
+/// writer, which goes on from that root as resuming it would. The root's
 /// publication sequence counts the family's publications on the branch; its hours and its
 /// cursor must advance, an open tail's within its segment. A step that repeats or reverses
 /// hours, or does not follow `previous`, is refused (`InvalidInput`).
@@ -524,7 +525,7 @@ pub fn publish(
     identity: series::Identity,
     previous: Option<&Published>,
     mut step: Step<'_>,
-) -> io::Result<Published> {
+) -> io::Result<(Published, Series)> {
     let frontier = &mut step.frontier;
     if let Some(previous) = previous {
         if previous.identity != identity {
@@ -628,12 +629,15 @@ pub fn publish(
     let pending = series.cut(publication, checkpoint)?;
     let sealed = pending.seal(&mut io)?;
     let root = series.publish(&mut io, cache(), sealed)?;
-    Ok(Published {
-        root,
-        identity,
-        publication,
-        frontier: step.frontier,
-    })
+    Ok((
+        Published {
+            root,
+            identity,
+            publication,
+            frontier: step.frontier,
+        },
+        series,
+    ))
 }
 
 fn span(first: i32, last: i32) -> u64 {
