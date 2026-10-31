@@ -70,9 +70,8 @@ macro_rules! keyed_pair {
         sliced_pair!(@list ($left, $right), $a, $b, $wrap, $body, $other;
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
-            RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
-            Ships, NavalCombats, NavalCombatParticipants, AirWings, WeatherProvinces,
-            DivisionTemplateIcons, AirBaseRegistrations, CharacterRoleTraits)
+            RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
+            AirBaseRegistrations, CharacterRoleTraits)
     };
 }
 
@@ -84,9 +83,8 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
     sliced_pair!(@arms (&empty, &empty), _old, _new, _wrap, true, false;
         Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
         DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
-        RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
-        Ships, NavalCombats, NavalCombatParticipants, AirWings, WeatherProvinces,
-        DivisionTemplateIcons, AirBaseRegistrations, CharacterRoleTraits)
+        RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
+        AirBaseRegistrations, CharacterRoleTraits)
 }
 
 /// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
@@ -662,7 +660,7 @@ mod tests {
             assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
             assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
         }
-        assert_eq!(keyed, 23);
+        assert_eq!(keyed, 15);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
