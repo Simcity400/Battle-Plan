@@ -8,7 +8,9 @@
 //!
 //! Inside a manifest unit each manifest is its byte length (varint), then its bytes.
 //! Inside a table unit each section starts at a multiple of 8 bytes from the unit's
-//! start, zero-padded, so its value arrays stay aligned; its length is the manifest's.
+//! start, zero-padded, so its value arrays stay aligned; its length is the manifest's. A
+//! table unit may end with the padding to a multiple of 8, as a unit piece cut to be
+//! continued does.
 
 use crate::leaf::{Reader, Writer};
 use std::io;
@@ -49,4 +51,9 @@ pub fn put_section(unit: &mut Writer, section: &[u8]) -> io::Result<()> {
 pub fn next_section<'a>(unit: &mut Reader<'a>, length: usize) -> io::Result<&'a [u8]> {
     unit.align(8)?;
     unit.raw(length)
+}
+
+/// Refuses a table unit's bytes after its last section but the padding it may end with.
+pub fn finish_sections(unit: &Reader) -> io::Result<()> {
+    unit.finish_padded(8)
 }

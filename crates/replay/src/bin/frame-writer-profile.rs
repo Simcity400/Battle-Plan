@@ -228,7 +228,7 @@ fn main() -> io::Result<()> {
         }
     }
     account(&file.finish_run()?, &mut totals, &mut manifests_stored);
-    let finished = file.finish()?;
+    let finished = file.finish(|_| Ok(()))?;
     let per_hour = |value: u64| value as f64 / hours.max(1) as f64;
     let mut tables: Vec<usize> = (0..TABLE_COUNT).collect();
     tables.sort_unstable_by_key(|&table| std::cmp::Reverse(finished_ns[table]));

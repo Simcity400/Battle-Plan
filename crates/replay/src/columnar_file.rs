@@ -11,7 +11,7 @@ use replay_columnar::{
     manifest::Status,
     state::{Bits, Column, Table},
 };
-use std::io::{self, Seek, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use zstd::zstd_safe::{CCtx, CParameter};
 
 #[cfg(test)]
@@ -19,6 +19,8 @@ mod tests;
 
 /// A campaign's finished columnar recording in its spool directory, written beside the rows.
 pub const CAMPAIGN_FILE: &str = "columnar.h4col";
+/// The same file while its collector writes it.
+pub const PARTIAL_FILE: &str = "columnar.h4col.partial";
 
 /// Compression and restart cadence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,6 +211,206 @@ impl Capture {
     }
 }
 
+/// A file whose writer stopped after publishing a revision, read back to that revision.
+pub struct Unfinished {
+    /// The file's length through the revision's footer.
+    length: u64,
+    root: envelope::Root,
+    /// The capture the revision's control records hold.
+    pub capture: Option<Capture>,
+    /// The branch and last hour of its last run that holds an hour.
+    pub last: Option<(u64, i32)>,
+}
+
+impl Unfinished {
+    /// The last published revision of `file`: its last footer whose root verifies, read a
+    /// block at a time from the end, then the root's control records and run directories.
+    pub fn read<F: Read + Seek>(file: &mut F) -> io::Result<Self> {
+        const BLOCK: usize = 1 << 20;
+        let length = file.seek(SeekFrom::End(0))?;
+        let (header, footer) = (envelope::HEADER_BYTES as u64, envelope::FOOTER_BYTES as u64);
+        let mut start = [0; envelope::HEADER_BYTES];
+        if length < header + footer
+            || read_at(file, 0, &mut start).is_err()
+            || &start[..8] != envelope::MAGIC
+            || start[8..] != envelope::VERSION.to_le_bytes()
+        {
+            return Err(invalid("Not a version 3 H4COLUMN recording"));
+        }
+        let magic = envelope::FOOTER_MAGIC.len();
+        let mut block = engine_allocation::filled(BLOCK, 0_u8)?;
+        let (mut work, mut stop) = (0_u64, length);
+        while stop > header {
+            let first = stop.saturating_sub(BLOCK as u64).max(header);
+            let count = (stop - first) as usize;
+            read_at(file, first, &mut block[..count])?;
+            for at in (0..(count + 1).saturating_sub(magic)).rev() {
+                if block[at..at + magic] != *envelope::FOOTER_MAGIC {
+                    continue;
+                }
+                let end = first + (at + magic) as u64;
+                if end < header + footer {
+                    continue;
+                }
+                let mut bytes = [0; envelope::FOOTER_BYTES];
+                read_at(file, end - footer, &mut bytes)?;
+                let root = Extent {
+                    kind: envelope::Kind::Root,
+                    run: 0,
+                    stream: 0,
+                    first: 0,
+                    hours: 0,
+                    offset: u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
+                    stored: u64::from_le_bytes(bytes[8..16].try_into().expect("eight bytes")),
+                    raw: 0,
+                    digest: bytes[16..32].try_into().expect("sixteen bytes"),
+                };
+                // A root sits right before its footer; candidates' roots together read at most
+                // twice the file's length.
+                if root.offset < header
+                    || root.offset.checked_add(root.stored) != Some(end - footer)
+                {
+                    continue;
+                }
+                work += root.stored;
+                if work > 2 * length {
+                    return Err(invalid("No root of the file verifies"));
+                }
+                if let Some(root) = extent_bytes(file, &root)
+                    .ok()
+                    .and_then(|raw| envelope::Root::read(&raw).ok())
+                {
+                    return Self::from_root(file, root, end);
+                }
+            }
+            if first == header {
+                break;
+            }
+            // A footer magic may straddle the block start.
+            stop = first + magic as u64 - 1;
+        }
+        Err(invalid("No root of the file verifies"))
+    }
+
+    fn from_root<F: Read + Seek>(file: &mut F, root: envelope::Root, length: u64) -> io::Result<Self> {
+        let capture = match root.controls.first() {
+            Some(controls) => Some(Capture::read(&extent_bytes(file, controls)?)?),
+            None => None,
+        };
+        let mut last = None;
+        for (index, run) in root.runs.iter().enumerate().rev() {
+            let index = u32::try_from(index).map_err(|_| invalid("Runs pass 2^32"))?;
+            let directory = RunDirectory::read(&extent_bytes(file, run)?, run, index)?;
+            if directory.ordinals > 0 {
+                let hours = i32::try_from(directory.ordinals - 1)
+                    .map_err(|_| invalid("A run's hours pass 2^31"))?;
+                let hour = directory
+                    .first_hour
+                    .checked_add(hours)
+                    .ok_or_else(|| invalid("A run's last hour passes 2^31"))?;
+                last = Some((directory.branch, hour));
+                break;
+            }
+        }
+        Ok(Self {
+            length,
+            root,
+            capture,
+            last,
+        })
+    }
+
+    /// Cuts `file` back to the revision and appends the next, whose control records hold
+    /// `capture`, which names a session for every run. `sync` makes what is written durable
+    /// before what names it.
+    pub fn finish<F: Write + Seek>(
+        self,
+        file: &mut F,
+        truncate: impl FnOnce(&mut F, u64) -> io::Result<()>,
+        mut sync: impl FnMut(&mut F) -> io::Result<()>,
+        capture: &Capture,
+        settings: Settings,
+    ) -> io::Result<()> {
+        if capture.run_sessions.len() != self.root.runs.len() {
+            return Err(invalid("A capture names a session for every run"));
+        }
+        truncate(file, self.length)?;
+        file.seek(SeekFrom::Start(self.length))?;
+        let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
+        compressor
+            .set_parameter(CParameter::CompressionLevel(settings.level))
+            .map_err(zstd_error)?;
+        let window_log = settings.window_log;
+        let controls = append_extent(
+            file,
+            &mut compressor,
+            envelope::Kind::Controls,
+            &capture.write()?,
+            window_log,
+        )?;
+        sync(file)?;
+        let mut all = Vec::new();
+        engine_allocation::reserve(&mut all, 1)?;
+        all.push(controls);
+        let root = envelope::Root {
+            identity: self.root.identity,
+            revision: self.root.revision + 1,
+            runs: self.root.runs,
+            controls: all,
+        }
+        .write()?;
+        let root = append_extent(file, &mut compressor, envelope::Kind::Root, &root, window_log)?;
+        sync(file)?;
+        file.write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
+        file.flush()?;
+        sync(file)
+    }
+}
+
+/// `extent`'s raw bytes in `file`, once its digest is checked.
+fn extent_bytes<F: Read + Seek>(file: &mut F, extent: &Extent) -> io::Result<Vec<u8>> {
+    let stored = usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?;
+    let mut bytes = engine_allocation::filled(stored, 0_u8)?;
+    read_at(file, extent.offset, &mut bytes)?;
+    if envelope::digest(&bytes) != extent.digest {
+        return Err(invalid("An extent's bytes do not match its digest"));
+    }
+    zstd::stream::decode_all(bytes.as_slice())
+}
+
+fn read_at<F: Read + Seek>(file: &mut F, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(bytes)
+}
+
+/// Compresses `raw` at the end of `file` as an extent of `kind`.
+fn append_extent<F: Write + Seek>(
+    file: &mut F,
+    compressor: &mut CCtx<'static>,
+    kind: envelope::Kind,
+    raw: &[u8],
+    window_log: u32,
+) -> io::Result<Extent> {
+    compressor
+        .set_parameter(CParameter::WindowLog(window_log))
+        .map_err(zstd_error)?;
+    let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
+    compressor.compress2(&mut stored, raw).map_err(zstd_error)?;
+    let offset = file.stream_position()?;
+    file.write_all(&stored)?;
+    Ok(Extent {
+        kind,
+        run: 0,
+        stream: 0,
+        first: 0,
+        hours: 0,
+        offset,
+        stored: stored.len() as u64,
+        raw: raw.len() as u64,
+        digest: envelope::digest(&stored),
+    })
+}
+
 /// What a closed position wrote.
 #[derive(Default)]
 pub struct Closed {
@@ -264,6 +466,12 @@ pub struct FileWriter<W: Write + Seek> {
     index_bytes: u64,
     /// A write failed partway: what the file holds no longer matches what was given.
     poisoned: bool,
+    /// The last root revision published; zero before the first.
+    revision: u64,
+    /// The open position's unit pieces earlier revisions published.
+    pieces: Vec<Extent>,
+    /// The ordinal the open position's unpublished bytes start at, once a revision cut them.
+    pending_from: Option<u32>,
 }
 
 impl<W: Write + Seek> FileWriter<W> {
@@ -301,6 +509,9 @@ impl<W: Write + Seek> FileWriter<W> {
             walker_memory: Vec::new(),
             index_bytes: 0,
             poisoned: false,
+            revision: 0,
+            pieces: Vec::new(),
+            pending_from: None,
         })
     }
 
@@ -326,6 +537,12 @@ impl<W: Write + Seek> FileWriter<W> {
     /// Whether a run is under way.
     pub fn running(&self) -> bool {
         self.run.is_some()
+    }
+
+    /// The runs a revision now publishes: every finished run, and the one under way once it
+    /// holds an hour.
+    pub fn published_runs(&self) -> usize {
+        self.runs.len() + usize::from(self.run.as_ref().is_some_and(|run| run.ordinal > 0))
     }
 
     /// Starts a run of `branch` at `first_hour`, finishing the run under way first. A run
@@ -515,23 +732,141 @@ impl<W: Write + Seek> FileWriter<W> {
         Ok(closed)
     }
 
-    /// Finishes the run under way, then appends the root and the footer naming it. The
-    /// caller makes the file durable.
-    pub fn finish(self) -> io::Result<Finished<W>> {
-        self.finish_with(None)
+    /// Finishes the run under way, then appends the root and the footer naming it. `sync`
+    /// makes what is written durable before what names it, as [`Self::revise`]'s does.
+    pub fn finish(
+        self,
+        mut sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<Finished<W>> {
+        self.finish_with(None, &mut sync)
     }
 
     /// [`Self::finish`], the root's control records holding `capture`, which names a session
     /// for every run.
-    pub fn finish_with_capture(self, capture: &Capture) -> io::Result<Finished<W>> {
-        self.finish_with(Some(capture))
+    pub fn finish_with_capture(
+        self,
+        capture: &Capture,
+        mut sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<Finished<W>> {
+        self.finish_with(Some(capture), &mut sync)
     }
 
-    fn finish_with(mut self, capture: Option<&Capture>) -> io::Result<Finished<W>> {
-        self.finish_run()?;
+    /// Publishes everything appended so far as the next root revision: the open position's
+    /// unpublished bytes as each stream's next unit piece, its page, the active run's directory
+    /// and a root whose control records hold `capture`. `sync` makes what is written durable
+    /// before what names it. A failure leaves the file at its last published revision.
+    pub fn revise(
+        &mut self,
+        capture: Option<&Capture>,
+        mut sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.usable()?;
+        let result = self.publish(capture, &mut sync);
+        self.poison(result)
+    }
+
+    fn publish(
+        &mut self,
+        capture: Option<&Capture>,
+        sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut runs = Vec::new();
+        engine_allocation::reserve(&mut runs, self.runs.len() + 1)?;
+        runs.extend_from_slice(&self.runs);
+        if let Some(run) = self.run.as_ref().filter(|run| run.ordinal > 0) {
+            let (index, ordinal, position) = (run.run, run.ordinal, run.position);
+            let mut pages = engine_allocation::copy_vec(&run.pages)?;
+            if let Some((first_hour, last_hour)) = position {
+                let first = (ordinal - 1) / envelope::UNIT_ORDINALS * envelope::UNIT_ORDINALS;
+                let from = self.pending_from.unwrap_or(first);
+                if ordinal > from {
+                    let written = self.write_pending(index, from, ordinal - from, true)?;
+                    engine_allocation::reserve(&mut self.pieces, written.len())?;
+                    self.pieces.extend(written);
+                    self.pieces.sort_unstable_by_key(|piece| (piece.stream, piece.first));
+                }
+                self.pending_from = Some(ordinal);
+                let run = self.run.as_ref().expect("a run under way");
+                let bits = |words: &[u64]| Bits::from_words(engine_allocation::copy_vec(words)?);
+                let page = IndexPage {
+                    run: index,
+                    first,
+                    hours: ordinal - first,
+                    first_hour,
+                    last_hour,
+                    units: engine_allocation::copy_vec(&self.pieces)?,
+                    restart: None,
+                    sectioned: bits(&run.sectioned)?,
+                    read: bits(&run.read)?,
+                    status_changed: bits(&run.status_changed)?,
+                    chain: run.chain,
+                }
+                .write()?;
+                self.index_bytes += page.len() as u64;
+                let page = self.extent(
+                    envelope::Kind::IndexPage,
+                    index,
+                    0,
+                    first,
+                    ordinal - first,
+                    &page,
+                    self.settings.window_log,
+                )?;
+                engine_allocation::reserve(&mut pages, 1)?;
+                pages.push(page);
+            }
+            let run = self.run.as_ref().expect("a run under way");
+            let directory = RunDirectory {
+                branch: run.branch,
+                epoch: run.epoch,
+                first_hour: run.first_hour,
+                ordinals: run.ordinal,
+                chain: run.chain,
+                pages,
+            }
+            .write(index)?;
+            self.index_bytes += directory.len() as u64;
+            let directory = self.extent(
+                envelope::Kind::RunDirectory,
+                index,
+                0,
+                0,
+                0,
+                &directory,
+                self.settings.window_log,
+            )?;
+            runs.push(directory);
+        }
+        let controls = self.controls(capture, runs.len())?;
+        sync(&mut self.file)?;
+        let identity = self
+            .identity
+            .take()
+            .ok_or_else(|| invalid("A finished file takes no revision"))?;
+        let root = envelope::Root {
+            identity,
+            revision: self.revision + 1,
+            runs,
+            controls,
+        };
+        let written = root.write();
+        self.identity = Some(root.identity);
+        let root = written?;
+        self.index_bytes += root.len() as u64;
+        let root = self.extent(envelope::Kind::Root, 0, 0, 0, 0, &root, self.settings.window_log)?;
+        sync(&mut self.file)?;
+        self.file
+            .write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
+        sync(&mut self.file)?;
+        self.revision += 1;
+        Ok(())
+    }
+
+    /// The root's control records: `capture`, which names a session for each of `runs` runs.
+    fn controls(&mut self, capture: Option<&Capture>, runs: usize) -> io::Result<Vec<Extent>> {
         let mut controls = Vec::new();
         if let Some(capture) = capture {
-            if capture.run_sessions.len() != self.runs.len() {
+            if capture.run_sessions.len() != runs {
                 return Err(invalid("A capture names a session for every run"));
             }
             let bytes = capture.write()?;
@@ -540,13 +875,24 @@ impl<W: Write + Seek> FileWriter<W> {
             engine_allocation::reserve(&mut controls, 1)?;
             controls.push(self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?);
         }
+        Ok(controls)
+    }
+
+    fn finish_with(
+        mut self,
+        capture: Option<&Capture>,
+        sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<Finished<W>> {
+        self.finish_run()?;
+        let controls = self.controls(capture, self.runs.len())?;
+        sync(&mut self.file)?;
         let identity = self
             .identity
             .take()
             .ok_or_else(|| invalid("A file has one root"))?;
         let root = envelope::Root {
             identity,
-            revision: 1,
+            revision: self.revision + 1,
             runs: std::mem::take(&mut self.runs),
             controls,
         }
@@ -561,9 +907,11 @@ impl<W: Write + Seek> FileWriter<W> {
             &root,
             self.settings.window_log,
         )?;
+        sync(&mut self.file)?;
         self.file
             .write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
         self.file.flush()?;
+        sync(&mut self.file)?;
         Ok(Finished {
             file: self.file,
             walker_memory: self.walker_memory,
@@ -635,22 +983,26 @@ impl<W: Write + Seek> FileWriter<W> {
         })
     }
 
-    /// Every nonempty stream's unit of the position: the manifests' first, then each
-    /// table's in stream order.
+    /// Every nonempty stream's unit of the position, ascending by stream: the pieces revisions
+    /// published, then the rest.
     fn units(&mut self, run: u32, first: u32, hours: u32) -> io::Result<Vec<Extent>> {
-        let mut written = Vec::new();
-        engine_allocation::reserve(&mut written, self.units.len() + 1)?;
-        let manifests = std::mem::take(&mut self.manifests).into_bytes();
-        if !manifests.is_empty() {
-            written.push((framing::MANIFESTS, manifests));
-        }
-        for (table, unit) in self.units.iter_mut().enumerate() {
-            let raw = std::mem::take(unit).into_bytes();
-            if !raw.is_empty() {
-                written.push((framing::table_stream(table), raw));
+        let from = self.pending_from.take().unwrap_or(first);
+        let mut units = std::mem::take(&mut self.pieces);
+        let rest = self.write_pending(run, from, first + hours - from, false)?;
+        engine_allocation::reserve(&mut units, rest.len())?;
+        units.extend(rest);
+        units.sort_unstable_by_key(|unit| (unit.stream, unit.first));
+        // A walker decodes each stream's whole unit, its pieces in turn.
+        let mut raws: Vec<usize> = Vec::new();
+        engine_allocation::reserve(&mut raws, units.len())?;
+        for (at, unit) in units.iter().enumerate() {
+            let raw = usize::try_from(unit.raw).map_err(|_| engine_allocation::oom())?;
+            if at > 0 && units[at - 1].stream == unit.stream {
+                *raws.last_mut().expect("the stream's first piece") += raw;
+            } else {
+                raws.push(raw);
             }
         }
-        let raws = engine_allocation::collect_vec(written.iter().map(|(_, raw)| raw.len()))?;
         let logs = unit_windows(&raws, self.settings.budget)?;
         engine_allocation::reserve(&mut self.walker_memory, 1)?;
         self.walker_memory.push(
@@ -659,12 +1011,42 @@ impl<W: Write + Seek> FileWriter<W> {
                 .map(|(&raw, &log)| raw.min(1 << log))
                 .sum(),
         );
-        let mut units = Vec::new();
-        engine_allocation::reserve(&mut units, written.len())?;
-        for ((stream, raw), log) in written.into_iter().zip(logs) {
-            units.push(self.extent(envelope::Kind::Unit, run, stream, first, hours, &raw, log)?);
-        }
         Ok(units)
+    }
+
+    /// Each nonempty stream's bytes not yet written, for `hours` ordinals from `from`, as a
+    /// unit piece, the manifests' first; `pad` aligns table pieces so a later piece continues
+    /// them.
+    fn write_pending(
+        &mut self,
+        run: u32,
+        from: u32,
+        hours: u32,
+        pad: bool,
+    ) -> io::Result<Vec<Extent>> {
+        let mut written = Vec::new();
+        engine_allocation::reserve(&mut written, self.units.len() + 1)?;
+        let manifests = std::mem::take(&mut self.manifests).into_bytes();
+        if !manifests.is_empty() {
+            written.push((framing::MANIFESTS, manifests));
+        }
+        for (table, unit) in self.units.iter_mut().enumerate() {
+            if pad {
+                unit.align(8)?;
+            }
+            let raw = std::mem::take(unit).into_bytes();
+            if !raw.is_empty() {
+                written.push((framing::table_stream(table), raw));
+            }
+        }
+        let raws = engine_allocation::collect_vec(written.iter().map(|(_, raw)| raw.len()))?;
+        let logs = unit_windows(&raws, self.settings.budget)?;
+        let mut pieces = Vec::new();
+        engine_allocation::reserve(&mut pieces, written.len())?;
+        for ((stream, raw), log) in written.into_iter().zip(logs) {
+            pieces.push(self.extent(envelope::Kind::Unit, run, stream, from, hours, &raw, log)?);
+        }
+        Ok(pieces)
     }
 
     /// The restart ending the position after its last ordinal.

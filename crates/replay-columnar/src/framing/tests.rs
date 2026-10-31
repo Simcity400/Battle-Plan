@@ -30,3 +30,21 @@ fn sections_start_aligned_and_read_back_by_their_lengths() {
     }
     reader.finish().unwrap();
 }
+
+#[test]
+fn a_table_unit_ends_with_at_most_the_padding_to_a_multiple_of_eight() {
+    let ended = |tail: &[u8]| {
+        let mut unit = Writer::new();
+        put_section(&mut unit, &[1, 2, 3]).unwrap();
+        let mut bytes = unit.into_bytes();
+        bytes.extend_from_slice(tail);
+        let mut reader = Reader::new(&bytes);
+        next_section(&mut reader, 3).unwrap();
+        finish_sections(&reader).is_ok()
+    };
+    assert!(ended(&[]));
+    assert!(ended(&[0; 5]));
+    assert!(!ended(&[0; 4]));
+    assert!(!ended(&[0, 0, 0, 0, 1]));
+    assert!(!ended(&[0; 13]));
+}

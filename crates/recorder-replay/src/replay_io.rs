@@ -215,6 +215,23 @@ enum Segment {
     Growing(PathBuf),
 }
 
+/// The file at `path` opened to read and write, shared with no one; none while another
+/// handle holds it, as its collector's does until it finishes the file.
+fn open_unwritten(path: &Path) -> std::io::Result<Option<fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+    match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(path)
+    {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// A segment opened so that no one else may write, truncate, replace or delete it while held.
 pub fn open_held(path: &Path) -> std::io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -3048,6 +3065,11 @@ fn finalize_campaign(
 fn publish_columnar(campaign_dir: &Path, recording: &Path) {
     let source = campaign_dir.join(replay::columnar_file::CAMPAIGN_FILE);
     if !source.is_file() {
+        if let Err(error) = finish_unfinished_columnar(campaign_dir, &source) {
+            eprintln!("Columnar recording not recovered: {error}");
+        }
+    }
+    if !source.is_file() {
         return;
     }
     let (Some(stem), Some(session)) = (
@@ -3081,6 +3103,41 @@ fn publish_columnar(campaign_dir: &Path, recording: &Path) {
             recording.display()
         ),
     }
+}
+
+/// Finishes the columnar recording an ended collector left partial, at the last revision it
+/// published, the capture recording that its hours stop there; none published leaves it, as
+/// does a collector still writing it.
+fn finish_unfinished_columnar(campaign_dir: &Path, finished: &Path) -> std::io::Result<()> {
+    use replay::columnar_file::{PARTIAL_FILE, Settings, Stop, Unfinished};
+    let partial = campaign_dir.join(PARTIAL_FILE);
+    if !partial.is_file() {
+        return Ok(());
+    }
+    let Some(mut file) = open_unwritten(&partial)? else {
+        return Ok(());
+    };
+    let unfinished = Unfinished::read(&mut file)?;
+    let (Some(mut capture), Some((branch, last_hour))) = (unfinished.capture.clone(), unfinished.last)
+    else {
+        return Err(std::io::Error::other("its last revision holds no capture or no hour"));
+    };
+    capture.stop = Some(Stop {
+        branch,
+        last_hour: Some(last_hour),
+        reason: "the collector ended before finishing this file".into(),
+    });
+    unfinished.finish(
+        &mut file,
+        |file, length| file.set_len(length),
+        |file| file.sync_data(),
+        &capture,
+        Settings::RECORDING,
+    )?;
+    drop(file);
+    fs::rename(&partial, finished)?;
+    println!("Columnar recording recovered through hour {last_hour}");
+    Ok(())
 }
 
 /// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.

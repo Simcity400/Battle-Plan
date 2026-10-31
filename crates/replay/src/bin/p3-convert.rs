@@ -693,7 +693,7 @@ fn main() -> io::Result<()> {
     if let Some(ended) = run.take() {
         finish_run(&mut file, &ended, &mut totals, &mut written, &mut fields)?;
     }
-    let Finished { file, walker_memory, index_bytes } = file.finish()?;
+    let Finished { file, walker_memory, index_bytes } = file.finish(|file| io::Write::flush(file))?;
     let file = file.into_inner().map_err(io::Error::from)?;
     // Durable before it is published under its name.
     file.sync_all()?;

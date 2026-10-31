@@ -1404,7 +1404,7 @@ impl<'r> Walker<'r> {
             for (table, cursor) in tables.iter().enumerate() {
                 if cursor
                     .as_ref()
-                    .is_some_and(|cursor| cursor.reader.finish().is_err())
+                    .is_some_and(|cursor| framing::finish_sections(&cursor.reader).is_err())
                 {
                     let error = invalid("does not hold exactly its hours");
                     if !isolate {

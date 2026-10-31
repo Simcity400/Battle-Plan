@@ -5,7 +5,7 @@
 
 use replay::{
     columnar_file::{
-        CAMPAIGN_FILE as FINISHED, Capture, Closed, FileWriter, Hour, Position, RestartState,
+        CAMPAIGN_FILE as FINISHED, Capture, PARTIAL_FILE as PARTIAL, Closed, FileWriter, Hour, Position, RestartState,
         Settings, Stop,
     },
     columnar_frames::schema,
@@ -32,7 +32,8 @@ mod tests;
 
 /// The file while it is written; finishing renames it to [`FINISHED`], which the recorder
 /// moves beside the row recording it finalizes.
-const PARTIAL: &str = "columnar.h4col.partial";
+/// Game hours between the file's published revisions: at most what a dead collector loses.
+const REVISION_HOURS: i32 = 168;
 
 /// Each finished campaign's counters, which the spool status keeps reporting after detach.
 /// Finishing only moves them here; the status thread formats them.
@@ -443,7 +444,7 @@ impl Live {
         })?;
         self.last = Some((pending.branch, pending.hour));
         let Position::Full { restart } = position else {
-            return Ok(());
+            return self.revise_at(pending.hour);
         };
         // Compressing a unit is the heaviest columnar work; it starts outside the game's tick.
         crate::tick_gate::wait();
@@ -457,7 +458,32 @@ impl Live {
         self.counters.close_ns += elapsed;
         self.counters.close_max_ns = self.counters.close_max_ns.max(elapsed);
         self.account(&closed);
-        Ok(())
+        self.revise_at(pending.hour)
+    }
+
+    /// Publishes the hours written so far every [`REVISION_HOURS`], so a collector that dies
+    /// leaves a file its recovery can finish.
+    fn revise_at(&mut self, hour: i32) -> io::Result<()> {
+        if hour % REVISION_HOURS != 0 {
+            return Ok(());
+        }
+        let (Some(file), Some(template)) = (self.file.as_mut(), &self.capture) else {
+            return Ok(());
+        };
+        crate::tick_gate::wait();
+        let mut sessions = engine_allocation::vec(template.sessions.len())?;
+        for session in &template.sessions {
+            sessions.push(engine_allocation::copy_vec(session)?);
+        }
+        let capture = Capture {
+            campaign_id: engine_allocation::copy_vec(&template.campaign_id)?,
+            content: engine_allocation::copy_vec(&template.content)?,
+            capture_mode: template.capture_mode,
+            sessions,
+            run_sessions: engine_allocation::filled(file.published_runs(), 0)?,
+            stop: None,
+        };
+        file.revise(Some(&capture), |file| file.sync_data())
     }
 
     fn interrupt(&mut self) {
@@ -499,9 +525,8 @@ impl Live {
                 }),
                 None => None,
             };
-            let finished = file.finish_with_capture(&capture)?;
+            let finished = file.finish_with_capture(&capture, |file| file.sync_data())?;
             self.counters.stored += finished.index_bytes;
-            finished.file.sync_all()?;
             drop(finished.file);
             fs::rename(&self.partial, &self.finished_path)
         })();

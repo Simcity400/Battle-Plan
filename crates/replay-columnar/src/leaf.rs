@@ -307,6 +307,19 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// Refuses bytes left over after the last value but the zero padding up to a multiple of
+    /// `width`.
+    pub fn finish_padded(&self, width: usize) -> io::Result<()> {
+        let rest = &self.bytes[self.at..];
+        if rest.is_empty()
+            || (self.bytes.len() == self.at.next_multiple_of(width)
+                && rest.iter().all(|&byte| byte == 0))
+        {
+            return Ok(());
+        }
+        self.finish()
+    }
+
     fn take(&mut self, count: usize) -> io::Result<&'a [u8]> {
         let end = self.at.checked_add(count).ok_or_else(short)?;
         let bytes = self.bytes.get(self.at..end).ok_or_else(short)?;
