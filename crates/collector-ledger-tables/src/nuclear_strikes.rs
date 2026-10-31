@@ -93,9 +93,13 @@ fn country(identity: CountryIdentity) -> replay_data::event_feed_rows::EventFeed
     }
 }
 
-/// One unit's damage, when its after read is the same unit as its before read.
+const UNPAIRED: &[u8] = b"nuclear strike unit after read missing";
+const DIFFERS: &[u8] = b"nuclear strike unit read before and after differ";
+
+/// One unit's damage from a before and an after read of its handle, when
+/// both read the same class.
 fn damage(before: &Unit, after: &Unit) -> Option<NuclearUnitDamage> {
-    (before.handle == after.handle && before.class == after.class).then_some(NuclearUnitDamage {
+    (before.class == after.class).then_some(NuclearUnitDamage {
         handle: before.handle,
         class: before.class,
         owner: before.owner,
@@ -108,15 +112,30 @@ fn damage(before: &Unit, after: &Unit) -> Option<NuclearUnitDamage> {
     })
 }
 
+/// A before read of the current damage call: its place among the call's
+/// before reads and whether an after read has paired it.
+struct Before {
+    unit: Unit,
+    position: usize,
+    paired: bool,
+}
+
 /// One strike being assembled from its entries.
 struct Assembly {
     row: NuclearStrikeRow,
-    /// The current damage call's before reads, and how many afters it paired.
-    before: Vec<Unit>,
-    paired: usize,
+    /// The current damage call's number and its before reads, in handle order
+    /// once `sorted`.
+    call: Option<u32>,
+    before: Vec<Before>,
+    sorted: bool,
 }
 impl Assembly {
-    fn refuse(&mut self, part: NuclearStrikePart, reason: &[u8]) -> Result<(), &'static str> {
+    fn refuse(
+        &mut self,
+        part: NuclearStrikePart,
+        reason: &[u8],
+        count: u32,
+    ) -> Result<(), &'static str> {
         match self
             .row
             .refusals
@@ -126,7 +145,7 @@ impl Assembly {
             Some(refusal) => {
                 refusal.count = refusal
                     .count
-                    .checked_add(1)
+                    .checked_add(count)
                     .ok_or("nuclear strike refusal count overflow")?;
             }
             None => push(
@@ -135,27 +154,71 @@ impl Assembly {
                     part,
                     reason: allocation::copy_vec(reason)
                         .map_err(|_| "collector allocation failed")?,
-                    count: 1,
+                    count,
                 },
             )?,
         }
         Ok(())
     }
-    /// Close the current damage call: a before read left without its after
-    /// read is a unit whose damage was not observed.
-    fn end_call(&mut self) -> Result<(), &'static str> {
-        if self.paired < self.before.len() {
-            self.refuse(
-                NuclearStrikePart::Units,
-                b"nuclear strike unit read before and after differ",
-            )?;
+    /// Make `call` the current damage call. Closing the one before it, each
+    /// before read left without its after read is a unit whose damage was not
+    /// observed.
+    fn enter(&mut self, call: Option<u32>) -> Result<(), &'static str> {
+        if self.call == call {
+            return Ok(());
+        }
+        let unpaired = self.before.iter().filter(|before| !before.paired).count();
+        if unpaired != 0 {
+            let unpaired =
+                u32::try_from(unpaired).map_err(|_| "nuclear strike refusal count overflow")?;
+            self.refuse(NuclearStrikePart::Units, UNPAIRED, unpaired)?;
         }
         self.before.clear();
-        self.paired = 0;
+        self.sorted = false;
+        self.call = call;
         Ok(())
     }
+    fn push_before(&mut self, call: u32, unit: Unit) -> Result<(), &'static str> {
+        self.enter(Some(call))?;
+        let position = self.before.len();
+        self.sorted = false;
+        push(
+            &mut self.before,
+            Before {
+                unit,
+                position,
+                paired: false,
+            },
+        )
+    }
+    /// Pair an after read with its own call's before read of the same unit.
+    /// One whose before read failed was refused by that read and is dropped.
+    fn pair_after(&mut self, call: u32, unit: Unit) -> Result<(), &'static str> {
+        self.enter(Some(call))?;
+        if !self.sorted {
+            self.before
+                .sort_unstable_by_key(|before| (before.unit.handle, before.position));
+            self.sorted = true;
+        }
+        let first = self
+            .before
+            .partition_point(|before| before.unit.handle < unit.handle);
+        let Some(before) = self.before[first..]
+            .iter_mut()
+            .take_while(|before| before.unit.handle == unit.handle)
+            .find(|before| !before.paired)
+        else {
+            return Ok(());
+        };
+        before.paired = true;
+        let damaged = damage(&before.unit, &unit);
+        match damaged {
+            Some(damaged) => push(&mut self.row.units, damaged),
+            None => self.refuse(NuclearStrikePart::Units, DIFFERS, 1),
+        }
+    }
     fn finish(mut self) -> Result<NuclearStrikeRow, &'static str> {
-        self.end_call()?;
+        self.enter(None)?;
         // One row per country, pool kind and variant, in key order.
         let equipment = &mut self.row.equipment;
         equipment.sort_unstable_by_key(|loss| (loss.country, loss.wing, loss.variant));
@@ -203,8 +266,9 @@ fn project(entries: &[Entry]) -> Result<Vec<NuclearStrikeRow>, &'static str> {
                     controller: strike.controller,
                     ..Default::default()
                 },
+                call: None,
                 before: Vec::new(),
-                paired: 0,
+                sorted: false,
             });
             continue;
         }
@@ -243,30 +307,14 @@ fn project(entries: &[Entry]) -> Result<Vec<NuclearStrikeRow>, &'static str> {
             )?,
             Item::Unit {
                 phase: Phase::Before,
+                call,
                 unit,
-            } => {
-                if strike.paired != 0 {
-                    strike.end_call()?;
-                }
-                push(&mut strike.before, unit)?;
-            }
+            } => strike.push_before(call, unit)?,
             Item::Unit {
                 phase: Phase::After,
+                call,
                 unit,
-            } => {
-                let paired = strike
-                    .before
-                    .get(strike.paired)
-                    .and_then(|before| damage(before, &unit));
-                strike.paired += 1;
-                match paired {
-                    Some(damage) => push(&mut strike.row.units, damage)?,
-                    None => strike.refuse(
-                        NuclearStrikePart::Units,
-                        b"nuclear strike unit read before and after differ",
-                    )?,
-                }
-            }
+            } => strike.pair_after(call, unit)?,
             Item::Equipment {
                 wing,
                 country,
@@ -293,7 +341,7 @@ fn project(entries: &[Entry]) -> Result<Vec<NuclearStrikeRow>, &'static str> {
                     manpower_after: after.into(),
                 },
             )?,
-            Item::Refused { part, reason } => strike.refuse(part, reason.as_bytes())?,
+            Item::Refused { part, reason } => strike.refuse(part, reason.as_bytes(), 1)?,
         }
     }
     if let Some(done) = current.take() {
@@ -348,6 +396,39 @@ mod tests {
         }
     }
 
+    fn before(id: u64, call: u32, unit: Unit) -> Entry {
+        entry(
+            id,
+            Item::Unit {
+                phase: Phase::Before,
+                call,
+                unit,
+            },
+        )
+    }
+    fn after(id: u64, call: u32, unit: Unit) -> Entry {
+        entry(
+            id,
+            Item::Unit {
+                phase: Phase::After,
+                call,
+                unit,
+            },
+        )
+    }
+    fn refusals(row: &NuclearStrikeRow) -> Vec<(&[u8], u32)> {
+        row.refusals
+            .iter()
+            .map(|refusal| (refusal.reason.as_slice(), refusal.count))
+            .collect()
+    }
+    fn paired(row: &NuclearStrikeRow) -> Vec<(u64, i64, i64)> {
+        row.units
+            .iter()
+            .map(|unit| (unit.handle, unit.strength_before, unit.strength_after))
+            .collect()
+    }
+
     #[test]
     fn strikes_keep_their_target_and_outcome_and_pair_each_unit_call() {
         let gun = Unit {
@@ -365,49 +446,13 @@ mod tests {
                     after: 0,
                 },
             ),
-            entry(
-                6,
-                Item::Unit {
-                    phase: Phase::Before,
-                    unit: unit(1, 900_000),
-                },
-            ),
-            entry(
-                7,
-                Item::Unit {
-                    phase: Phase::Before,
-                    unit: gun,
-                },
-            ),
-            entry(
-                8,
-                Item::Unit {
-                    phase: Phase::After,
-                    unit: unit(1, 300_000),
-                },
-            ),
-            entry(
-                9,
-                Item::Unit {
-                    phase: Phase::After,
-                    unit: Unit { strength: 0, ..gun },
-                },
-            ),
+            before(6, 0, unit(1, 900_000)),
+            before(7, 0, gun),
+            after(8, 0, unit(1, 300_000)),
+            after(9, 0, Unit { strength: 0, ..gun }),
             // The second province's call reaches the first unit again.
-            entry(
-                10,
-                Item::Unit {
-                    phase: Phase::Before,
-                    unit: unit(1, 300_000),
-                },
-            ),
-            entry(
-                11,
-                Item::Unit {
-                    phase: Phase::After,
-                    unit: unit(1, 100_000),
-                },
-            ),
+            before(10, 1, unit(1, 300_000)),
+            after(11, 1, unit(1, 100_000)),
             entry(
                 12,
                 Item::Building {
@@ -468,6 +513,67 @@ mod tests {
     }
 
     #[test]
+    fn a_call_whose_after_walk_failed_leaves_the_next_calls_units_paired() {
+        let entries = [
+            strike(1),
+            before(2, 0, unit(10, 900_000)),
+            entry(
+                3,
+                Item::Refused {
+                    part: NuclearStrikePart::Units,
+                    reason: "nuclear strike occupants unreadable",
+                },
+            ),
+            before(4, 1, unit(20, 800_000)),
+            after(5, 1, unit(20, 200_000)),
+        ];
+        let row = &project(&entries).unwrap()[0];
+        assert_eq!(paired(row), [(20, 800_000, 200_000)]);
+        assert_eq!(
+            refusals(row),
+            [
+                (&b"nuclear strike occupants unreadable"[..], 1),
+                (UNPAIRED, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn units_pair_by_handle_within_their_call_whichever_read_failed() {
+        // The first call's middle after read failed; the second call's
+        // before read of unit 4 failed, so its after read pairs nothing.
+        let entries = [
+            strike(1),
+            before(2, 0, unit(1, 900)),
+            before(3, 0, unit(2, 800)),
+            before(4, 0, unit(3, 700)),
+            after(5, 0, unit(1, 90)),
+            after(6, 0, unit(3, 70)),
+            before(7, 1, unit(5, 500)),
+            before(8, 1, unit(6, 400)),
+            after(9, 1, unit(4, 6)),
+            after(10, 1, unit(5, 50)),
+            after(11, 1, unit(6, 40)),
+            // A unit whose class changed between its reads is not one unit.
+            before(12, 2, unit(7, 300)),
+            after(
+                13,
+                2,
+                Unit {
+                    class: RAILWAY_GUN_CLASS,
+                    ..unit(7, 30)
+                },
+            ),
+        ];
+        let row = &project(&entries).unwrap()[0];
+        assert_eq!(
+            paired(row),
+            [(1, 900, 90), (3, 700, 70), (5, 500, 50), (6, 400, 40)]
+        );
+        assert_eq!(refusals(row), [(UNPAIRED, 1), (DIFFERS, 1)]);
+    }
+
+    #[test]
     fn equipment_sums_per_country_pool_and_variant_keeping_gains() {
         let loss = |country, wing, variant, amount_raw| Item::Equipment {
             wing,
@@ -518,42 +624,20 @@ mod tests {
                     reason: "nuclear strike unit class unsupported",
                 },
             ),
-            entry(
-                4,
-                Item::Unit {
-                    phase: Phase::Before,
-                    unit: unit(1, 5),
-                },
-            ),
-            entry(
-                5,
-                Item::Unit {
-                    phase: Phase::Before,
-                    unit: unit(2, 5),
-                },
-            ),
-            entry(
-                6,
-                Item::Unit {
-                    phase: Phase::After,
-                    unit: unit(2, 5),
-                },
-            ),
+            before(4, 0, unit(1, 5)),
+            before(5, 0, unit(2, 5)),
+            before(6, 0, unit(3, 5)),
+            after(7, 0, unit(2, 5)),
         ];
         let row = &project(&entries).unwrap()[0];
-        assert!(row.units.is_empty());
+        assert_eq!(paired(row), [(2, 5, 5)]);
         assert!(!row.complete(NuclearStrikePart::Units));
         assert!(row.complete(NuclearStrikePart::Buildings));
-        let counts: Vec<_> = row
-            .refusals
-            .iter()
-            .map(|refusal| (refusal.reason.as_slice(), refusal.count))
-            .collect();
         assert_eq!(
-            counts,
+            refusals(row),
             [
                 (&b"nuclear strike unit class unsupported"[..], 2),
-                (&b"nuclear strike unit read before and after differ"[..], 2),
+                (UNPAIRED, 2),
             ]
         );
     }

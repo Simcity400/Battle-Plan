@@ -17,6 +17,10 @@
 //! every month is settled or an unread hour leaves the rest unknown. A month
 //! written after its country's latest read, and one no read covered, are
 //! unknown too, never zero.
+//!
+//! An entry is told apart by its first write, not only its calendar month: a
+//! retention below one deletes the current month's entry each day, and a later
+//! loss that month writes a new one whose rows its predecessor's never stand for.
 use super::month_key;
 use dashboard_base::{
     prepared::{self, query::observations},
@@ -52,17 +56,17 @@ const NO_READ_YET: &str = "Combat Log equipment months of a country not read yet
 const AFTER_READ: &str = "Combat Log equipment months written after their country's latest read are unknown";
 const EARLIER_UNREAD: &str = "Combat Log equipment months whose later reads were not all recorded are unknown";
 const UNWITNESSED: &str = "Combat Log equipment months no read covered are unknown";
+const OTHER_ENTRY: &str = "Combat Log equipment rows of another entry of the same month do not witness this one";
 
 /// The tables a read's coverage is known from.
 const READ: [TableId; 3] = [TableId::CombatLogEquipment, TableId::CombatLogMonths, TableId::SliceReads];
 
 /// A month entry of one country's log: its group's reference id, its ledger
-/// and the month its rows key it by.
-pub type Entry = (u32, u8, u16);
+/// and its first write, before which no read can cover it.
+pub type Entry = (u32, u8, i32);
 
-/// One older month a reply asks about: its country's raw id, its entry and
-/// its first write, before which no read can cover it.
-pub type Wanted = (u32, Entry, i32);
+/// One older month a reply asks about: its country's raw id and its entry.
+pub type Wanted = (u32, Entry);
 
 /// What is known at the reached hour of one wanted month.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,17 +94,18 @@ fn sampled(frame: &DecodedFrame) -> Option<(&[CombatLogEquipmentRow], &[SliceRea
 }
 
 fn entry_of(month: &CombatLogMonthRow) -> Entry {
-    (month.group, month.kind, month_key(month.date))
+    (month.group, month.kind, month.date)
 }
 
-/// The rows of one month entry, in key order.
-fn rows_of<'a>(rows: &'a [CombatLogEquipmentRow], month: &CombatLogMonthRow) -> &'a [CombatLogEquipmentRow] {
-    let (group, kind, key) = entry_of(month);
-    let key = (month.country, group, kind, key);
+/// The rows of one month entry, in key order; none when its calendar month's
+/// rows are another entry's, by their first write.
+fn rows_of<'a>(rows: &'a [CombatLogEquipmentRow], month: &CombatLogMonthRow) -> Option<&'a [CombatLogEquipmentRow]> {
+    let key = (month.country, month.group, month.kind, month_key(month.date));
     let entry = |row: &CombatLogEquipmentRow| (row.country, row.group, row.kind, row.month);
     let start = rows.partition_point(|row| entry(row) < key);
     let end = start + rows[start..].partition_point(|row| entry(row) == key);
-    &rows[start..end]
+    let held = &rows[start..end];
+    held.iter().all(|row| row.date == month.date).then_some(held)
 }
 
 /// The rows of `rows`, sorted by country first, that belong to `country`.
@@ -157,12 +162,18 @@ pub fn witnesses(
             continue;
         };
         let held = rows_of(rows, month);
-        if !held.is_empty() {
+        if let Some(held) = held
+            && !held.is_empty()
+        {
             out.push(Witness::Rows(held.to_vec()));
             continue;
         }
         if month.date > read {
             out.push(Witness::Unknown(AFTER_READ));
+            continue;
+        }
+        if held.is_none() {
+            out.push(Witness::Unknown(OTHER_ENTRY));
             continue;
         }
         // Any read holds its arrays' last two entries: a month among them that
@@ -174,7 +185,7 @@ pub fn witnesses(
             .count();
         out.push(if newer <= 1 { Witness::Empty } else { Witness::Unknown(UNWITNESSED) });
         if newer > 1 {
-            older.push((index, (month.country, entry_of(month), month.date)));
+            older.push((index, (month.country, entry_of(month))));
         }
     }
     let wanted: Vec<Wanted> = older.iter().map(|&(_, wanted)| wanted).collect();
@@ -280,10 +291,12 @@ impl Builder {
             .collect();
         let from = recent_from(&months);
         let recent = |month: &CombatLogMonthRow| month.date >= from[&(month.group, month.kind)];
-        let full = full_hour || months.iter().any(|month| !recent(month) && !rows_of(rows, month).is_empty());
+        let full = full_hour
+            || months.iter().any(|month| !recent(month) && rows_of(rows, month).is_some_and(|held| !held.is_empty()));
         for month in months.iter().filter(|month| full || recent(month)) {
-            let held = rows_of(rows, month);
-            self.out.covered.insert((owner, entry_of(month)), (hour, (!held.is_empty()).then(|| held.to_vec())));
+            if let Some(held) = rows_of(rows, month) {
+                self.out.covered.insert((owner, entry_of(month)), (hour, (!held.is_empty()).then(|| held.to_vec())));
+            }
         }
     }
 
@@ -411,14 +424,14 @@ pub fn fold(
         }
         newer = Some(first);
         // Months first written after this block cannot be covered earlier.
-        for (slot, &(_, _, since)) in out.iter_mut().zip(wanted) {
+        for (slot, &(_, (_, _, since))) in out.iter_mut().zip(wanted) {
             if slot.is_none() && since > last {
                 *slot = Some(Lookup::Unwitnessed { complete: true });
                 left -= 1;
             }
         }
         let unread = provenance.unread.iter().map(|&(_, to)| to).max();
-        for (slot, &(owner, entry, _)) in out.iter_mut().zip(wanted) {
+        for (slot, &(owner, entry)) in out.iter_mut().zip(wanted) {
             if slot.is_some() {
                 continue;
             }
@@ -486,10 +499,10 @@ impl<'a> Recorded<'a> {
 
 impl History for Recorded<'_> {
     fn latest(&mut self, wanted: &[Wanted]) -> io::Result<Vec<Lookup>> {
-        let Some(since) = wanted.iter().map(|&(_, _, since)| since).min() else {
+        let Some(since) = wanted.iter().map(|&(_, (_, _, since))| since).min() else {
             return Ok(Vec::new());
         };
-        let owners: BTreeSet<u32> = wanted.iter().map(|&(owner, _, _)| owner).collect();
+        let owners: BTreeSet<u32> = wanted.iter().map(|&(owner, _)| owner).collect();
         let (source, until) = (self.source, self.until);
         let mut blocks: Vec<&BlockIndex> = source
             .replay_ref()

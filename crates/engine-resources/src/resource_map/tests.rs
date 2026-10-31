@@ -3,6 +3,8 @@ use crate::{ccountry_resources::test_support::Fixture, cresource_exchange as exc
 
 const GAME_STATE: usize = 0x1000;
 const THRESHOLD: i64 = 80_000;
+/// One run's dynamic type word; any other admits the same clients.
+const TYPE_WORD: u32 = 4713;
 
 struct PathMemory<'a> {
     source: &'a Fixture,
@@ -164,7 +166,7 @@ fn client(f: &mut Fixture, address: usize, vtable: usize, handle: u32, efficienc
     f.u64(address, vtable as u64);
     f.u32(address + CLIENT_CONVOYS, handle / 10);
     f.u32(address + CLIENT_CONVOYS + 4, handle / 10 + 1);
-    f.u32(address + CLIENT_HANDLE_TYPE, CLIENT_TYPE);
+    f.u32(address + CLIENT_HANDLE_TYPE, TYPE_WORD);
     f.u32(address + CLIENT_HANDLE_ID, handle);
     f.u64(address + CLIENT_EFFICIENCY_A, efficiency[0] as u64);
     f.u64(address + CLIENT_EFFICIENCY_B, efficiency[1] as u64);
@@ -238,7 +240,7 @@ fn world() -> Fixture {
     f.u64(0x40810, 0x40000);
     route(&mut f, 0x40000, 1, [0x30000, 0x31000], &[0x30000, 0x31000]);
     // Country 2's import from country 7 (the fixture's exchange).
-    f.u32(0xa000 + exchange::REFERENCE, CLIENT_TYPE);
+    f.u32(0xa000 + exchange::REFERENCE, TYPE_WORD);
     f.u32(0xa000 + exchange::REFERENCE + 4, 0x33);
     f.u32(0xa000 + exchange::CONVOYS_ASSIGNED, 0);
     f.u32(0xa000 + exchange::CONVOYS_REQUIRED, 1);
@@ -601,10 +603,8 @@ fn demanded_scalar_batches_preserve_serial_values_and_one_shot_fault_prefixes() 
 #[test]
 fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
     for handle in [false, true] {
-        let mut memory = Copies::new(None);
-        if handle {
-            memory.image.u32(0x52000 + CLIENT_HANDLE_TYPE, 0);
-        } else {
+        let mut memory = Copies::new(handle.then_some(0x52000 + CLIENT_HANDLE_ID));
+        if !handle {
             memory.image.u64(0x52000, ROUTE_VTABLE_RVA as u64);
         }
         let countries = ccountry::Reader::new(&memory, 0, GAME_STATE).unwrap();
@@ -666,6 +666,32 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
             .iter()
             .any(|&(at, _)| at == 0x20000 + CLIENT_EFFICIENCY_A || at == 0x20000 + CLIENT_CONVOYS)
     );
+}
+
+#[test]
+fn convoy_clients_admit_whatever_dynamic_type_word_their_handles_carry() {
+    let baseline = walk(&world());
+    assert_eq!(baseline.0.clients, Outcome::Rows { len: 3 });
+    for word in [0, 53, u32::MAX] {
+        let mut f = world();
+        for client in [0xa000, 0x52000, 0x61000 + CONTRACT_CLIENT] {
+            f.u32(client + CLIENT_HANDLE_TYPE, word);
+        }
+        assert_eq!(walk(&f), baseline, "type word {word}");
+    }
+    // Two clients whose references differ only by type word share the id the
+    // table is keyed by: the census refuses by name rather than merge them.
+    let mut f = world();
+    f.u32(0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_TYPE, TYPE_WORD + 1);
+    f.u32(0x61000 + CONTRACT_CLIENT + CLIENT_HANDLE_ID, 77);
+    let (outcomes, _) = walk(&f);
+    assert_eq!(
+        outcomes.clients,
+        Outcome::Unavailable {
+            reason: "duplicate convoy client handle in native order index"
+        }
+    );
+    assert_eq!(outcomes.origins, baseline.0.origins);
 }
 
 #[test]

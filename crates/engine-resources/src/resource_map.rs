@@ -56,16 +56,15 @@ fn effective(
 pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x33e_3598;
 
 /// A convoy client's handle (u32 type, u32 id) and its two efficiency factors.
-pub const CLIENT_HANDLE_TYPE: usize = 0x08;
+/// The type word is minted from the live dynamic-type counter, not a class tag.
 #[cfg(test)]
+pub const CLIENT_HANDLE_TYPE: usize = 0x08;
 pub const CLIENT_HANDLE_ID: usize = 0x0c;
 /// Its assigned and required convoy counts, i32.
 pub const CLIENT_CONVOYS: usize = 0x28;
 pub const CLIENT_EFFICIENCY_A: usize = 0x48;
 #[cfg(test)]
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
-/// Every convoy client's handle type.
-pub const CLIENT_TYPE: u32 = 4713;
 
 /// Resource-origin client: the embedded route.
 pub const ORIGIN_VTABLE_RVA: usize = 0x29d_8d90;
@@ -439,14 +438,9 @@ fn origin_factors(memory: &impl Memory, origin: usize) -> Result<(i64, i64), &'s
     }
 }
 
-/// The client's handle id, authenticating its type.
+/// The client's handle id. Its vtable and list membership authenticate it.
 fn client_handle(memory: &impl Memory, client: usize) -> Result<u32, &'static str> {
-    let handle = pair_u32(memory, at(client, CLIENT_HANDLE_TYPE)?)
-        .ok_or("convoy client handle unreadable")?;
-    if handle[0] != CLIENT_TYPE {
-        return Err("convoy client handle type mismatch");
-    }
-    Ok(handle[1])
+    read(memory, at(client, CLIENT_HANDLE_ID)?).ok_or("convoy client handle unreadable")
 }
 
 /// A delivery route: the exporter's route for the importer's canonical slot.

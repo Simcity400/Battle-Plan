@@ -322,16 +322,20 @@ fn first_naval_combat(
         .filter(|&pointer| pointer != 0)
         .ok_or(unreadable)?;
     let mut bytes = [0_u8; 20];
-    gather(
-        memory,
-        &[combat],
+    // A land combat is skipped on its vtable; only a naval one needs its province.
+    let fields = memory.copy_records(
+        RecordSources::Pointers(&[combat]),
         &COMBAT_LAYOUT,
-        2,
         &mut bytes[..16],
-        unreadable,
-    )?;
+    );
+    if fields == 0 {
+        return Err(unreadable);
+    }
     if qword(&bytes, 0) != naval {
         return Ok(None);
+    }
+    if fields != COMBAT_FIELDS.len() {
+        return Err(unreadable);
     }
     let province = address(&bytes, 8)?;
     gather(
@@ -975,6 +979,25 @@ mod tests {
             ]
         );
         assert!(calls <= 3 + 2 * 2 + 3 * 4, "{calls} calls");
+    }
+
+    #[test]
+    fn a_land_combat_is_skipped_where_a_naval_combats_province_would_be_unreadable() {
+        let mut image = fleets(1, 2, |_, t| Some((t == 1, 11, 7)));
+        // The first combat ends the image: nothing past its vtable is readable.
+        let land = image.0.len() - 8;
+        image.q(land, (BASE + crate::cland_combat::VTABLE_RVA) as u64);
+        image.q(TASK + 0x1c0, land as u64);
+        assert_eq!(
+            walk(&image).0,
+            Ok(vec![TaskForceCombat {
+                province: 11,
+                region: 7
+            }])
+        );
+        // A naval combat there still needs its province.
+        image.q(land, (BASE + cnaval_combat::VTABLE_RVA) as u64);
+        assert_eq!(walk(&image).0, Err("naval-patrol combat unreadable"));
     }
 
     #[test]

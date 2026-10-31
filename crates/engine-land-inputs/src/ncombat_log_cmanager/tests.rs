@@ -324,7 +324,7 @@ fn row(group: u32, kind: u8, date: i32, variant: u32, amount_raw: i64) -> Row {
 }
 
 #[test]
-fn reads_every_group_month_and_variant_in_native_order() {
+fn reads_every_group_and_month_in_native_order() {
     let (f, _) = standard();
     let mut rows = [Row::default(); 16];
     assert_eq!(
@@ -351,6 +351,41 @@ fn reads_every_group_month_and_variant_in_native_order() {
     );
     assert_eq!(rows[0].month, 1943 * 12 + 9);
     assert_eq!(rows[2].month, 1943 * 12 + 10);
+}
+
+#[test]
+fn each_pool_reads_in_variant_order_and_a_repeat_anywhere_in_it_is_refused() {
+    let pool = |pool| {
+        Fixture::new(&[(
+            12793,
+            [
+                &[Entry {
+                    reason: 0,
+                    date: OCTOBER,
+                    pool,
+                }],
+                NONE,
+                NONE,
+                NONE,
+                NONE,
+            ],
+        )])
+        .0
+    };
+    let f = pool(&[(30, 3), (10, 1), (40, 4), (20, 2)]);
+    for mut memo in [VariantMemo::try_new().unwrap(), VariantMemo::vacant()] {
+        let mut rows = [Row::default(); 4];
+        assert_eq!(
+            walk(&f, BASE, GAME, |_| Some(Months::All), &mut rows, &mut memo),
+            Outcome::Rows { len: 4 }
+        );
+        assert_eq!(
+            rows.map(|row| (row.variant, row.amount_raw)),
+            [(10, 1), (20, 2), (30, 3), (40, 4)]
+        );
+    }
+    let f = pool(&[(1, 1), (2, 2), (3, 3), (1, 4)]);
+    assert_eq!(unavailable(&f), "combat log pool names a variant twice");
 }
 
 #[test]

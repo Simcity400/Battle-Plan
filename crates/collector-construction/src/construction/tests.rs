@@ -1009,3 +1009,104 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
         }
     }
 }
+
+fn put_u32(bytes: &mut [u8], address: usize, value: u32) {
+    let at = address - construction_rest_test_kit::BASE;
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+#[test]
+fn an_occupied_raw_alias_the_census_never_reads_resolves_as_the_live_walk_resolves_it() {
+    use construction_rest_test_kit as kit;
+    // Raw three names the country at slot one, past the country table or at
+    // a null slot of it; only the links reach it.
+    for countries in [3, 4] {
+        let mut bytes = kit::fixture();
+        for (offset, count) in [
+            (cgame_state::COUNTRIES, countries),
+            (cgame_state::COUNTRY_LINKS, 4),
+        ] {
+            put_u32(&mut bytes, kit::BASE + offset + 8, count);
+            put_u32(&mut bytes, kit::BASE + offset + 12, count);
+        }
+        put_u32(&mut bytes, 0x2100 + 3 * 4, 1);
+        put_u32(
+            &mut bytes,
+            kit::OCC_DATA + ccountry_occupation_data::OCCUPIED_COUNTRY,
+            3,
+        );
+        let memory = engine_native::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        let direct = kit::direct(&memory, &kit::capacities());
+        let (split, _, _) = kit::split(&memory, &kit::capacities());
+        kit::assert_matches_direct(&split, &direct);
+        for outcome in [
+            split.laws.outcome,
+            split.group_laws.outcome,
+            split.garrisons.outcome,
+            split.assigned_manpower.outcome,
+        ] {
+            assert!(
+                matches!(outcome, Outcome::Rows { len: 1.. }),
+                "countries={countries} {outcome:?}"
+            );
+        }
+        assert_eq!(split.group_laws.rows[0].occupied, 3);
+    }
+}
+
+#[test]
+fn a_failed_state_or_country_root_refuses_only_the_families_that_read_it() {
+    use construction_rest_test_kit as kit;
+    const STATE_ROOT: u8 = 0;
+    const COUNTRY_ROOT: u8 = 1;
+    const COUNTRY_SLOT: u8 = 2;
+    for failure in [STATE_ROOT, COUNTRY_ROOT, COUNTRY_SLOT] {
+        let mut bytes = kit::fixture();
+        match failure {
+            // A capacity below the count is an invalid header.
+            STATE_ROOT => put_u32(&mut bytes, kit::BASE + cgame_state::STATES + 8, 1),
+            COUNTRY_ROOT => put_u32(&mut bytes, kit::BASE + cgame_state::COUNTRIES + 8, 1),
+            // A slot holding no country object ends the reader's census there.
+            _ => {
+                let at = 0x2000 + 2 * 8 - kit::BASE;
+                bytes[at..at + 8].copy_from_slice(&0x11000_u64.to_le_bytes());
+            }
+        }
+        let memory = engine_native::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        };
+        let direct = kit::direct(&memory, &kit::capacities());
+        let (split, _, _) = kit::split(&memory, &kit::capacities());
+        kit::assert_matches_direct(&split, &direct);
+        let resources = split.base_resources.outcome;
+        let countries = [
+            split.settings.outcome,
+            split.laws.outcome,
+            split.group_laws.outcome,
+            split.reserve_manpower.outcome,
+            split.collaboration.outcome,
+        ];
+        if failure == STATE_ROOT {
+            assert!(matches!(resources, Outcome::Unavailable { .. }));
+            assert!(matches!(split.garrisons.outcome, Outcome::Unavailable { .. }));
+            assert!(
+                countries
+                    .iter()
+                    .all(|outcome| !matches!(outcome, Outcome::Unavailable { .. })),
+                "{countries:?}"
+            );
+        } else {
+            assert_eq!(resources, Outcome::Rows { len: 1 }, "failure={failure}");
+            assert!(
+                countries
+                    .iter()
+                    .all(|outcome| matches!(outcome, Outcome::Unavailable { .. })),
+                "{countries:?}"
+            );
+        }
+    }
+}

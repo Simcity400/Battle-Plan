@@ -282,8 +282,8 @@ impl VariantMemo {
 
 /// Reads every country's Combat Log equipment months: for each manager in
 /// slot order, each group log in array order, the four reason arrays then the
-/// recovered array, each month entry in array order and each pool entry in
-/// pool order, one row per variant. Only the country's own losses and
+/// recovered array, each month entry in array order and each pool's entries in
+/// variant order, one row per variant. Only the country's own losses and
 /// recoveries are read; enemy losses, manpower, template statistics and
 /// combat references are not.
 ///
@@ -853,15 +853,16 @@ fn read_pool(
         }
         first += count as u32;
     }
-    // Pool addition merges by variant, so each variant occurs once per pool.
-    let written = &output.rows[start..output.len];
-    for (index, row) in written.iter().enumerate() {
-        if written[..index]
-            .iter()
-            .any(|earlier| earlier.variant == row.variant)
-        {
-            return Err("combat log pool names a variant twice");
-        }
+    // Pool addition merges by variant, so each variant occurs once per pool
+    // and the pool's array order means nothing: sorting finds a repeat
+    // without scratch storage, which the prune detour may not allocate.
+    let written = &mut output.rows[start..output.len];
+    written.sort_unstable_by_key(|row| row.variant);
+    if written
+        .windows(2)
+        .any(|pair| pair[0].variant == pair[1].variant)
+    {
+        return Err("combat log pool names a variant twice");
     }
     Ok(())
 }

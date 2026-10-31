@@ -172,6 +172,11 @@ fn fixed(raw: i64) -> String {
     raw.to_string()
 }
 
+const UNLINKED_DIVISION: &str =
+    "A template's fielded count is unknown: a division of it has a country with no recorded link";
+const UNLINKED_TEMPLATE: &str = "A template's country has no recorded link; it is left out";
+const MODEL_UNREADABLE: &str = "Template composition could not be read at capture";
+
 /// The roster from one reached frame. `icon` draws a template's artwork.
 pub fn build(
     frame: &DecodedFrame,
@@ -199,21 +204,41 @@ pub fn build(
     let countries = army_content::Countries::read(frame)?;
     let roster = frame.complete::<tables::DivisionTemplates>()?;
     let icons = frame.complete::<tables::DivisionTemplateIcons>().ok();
-    let mut fielded = BTreeMap::<u64, u32>::new();
+    // None for a raw country with no link, which may be this one; raw zero is
+    // the reserved country, never a tagged one.
+    let ours = |raw: u32| match countries.slot(raw) {
+        Some(owner) => Some(owner == slot),
+        None => (raw == 0).then_some(false),
+    };
+    // A division that may count for the country leaves its template's count
+    // unknown, never a lower number.
+    let mut fielded = BTreeMap::<u64, Option<u32>>::new();
     match frame.complete::<tables::Divisions>() {
         Ok(divisions) => {
             for division in divisions.iter().filter(|row| row.reveal_skip == 0) {
-                if countries.slot(attributed(division, count_for)) == Some(slot) {
-                    *fielded.entry(division.template).or_default() += 1;
+                match ours(attributed(division, count_for)) {
+                    Some(true) => {
+                        if let Some(count) = fielded.entry(division.template).or_insert(Some(0)) {
+                            *count += 1;
+                        }
+                    }
+                    Some(false) => {}
+                    None => {
+                        fielded.insert(division.template, None);
+                    }
                 }
             }
         }
         Err(why) => reply.fielded_missing = Some(format!("Divisions were not read at this hour: {why}")),
     }
-    let mut owned: Vec<_> = roster
-        .iter()
-        .filter(|row| countries.slot(row.owner) == Some(slot))
-        .collect();
+    let mut owned = Vec::new();
+    for row in roster.iter() {
+        match ours(row.owner) {
+            Some(true) => owned.push(row),
+            Some(false) => {}
+            None => refusals.note(UNLINKED_TEMPLATE),
+        }
+    }
     let settings_of = |handle: u64| {
         icons
             .and_then(|rows| rows.binary_search_by_key(&handle, |row| row.template).ok().map(|at| &rows[at]))
@@ -237,7 +262,15 @@ pub fn build(
             icon,
             icon_missing,
             roster_ordinal: None,
-            fielded: reply.fielded_missing.is_none().then(|| fielded.get(&handle).copied().unwrap_or(0)),
+            fielded: match fielded.get(&handle) {
+                _ if reply.fielded_missing.is_some() => None,
+                Some(None) => {
+                    refusals.note(UNLINKED_DIVISION);
+                    None
+                }
+                Some(&count) => count,
+                None => Some(0),
+            },
             units: Vec::new(),
             units_missing: None,
             base_width_raw: None,
@@ -269,7 +302,12 @@ pub fn build(
             .copied()
             .flatten()
             .map(fixed);
+        // A failed model read keeps empty grids beside its flag.
         match composition.grids.require("template grids") {
+            Ok(_) if composition.model_unreadable != 0 => {
+                refusals.note(MODEL_UNREADABLE);
+                entry.units_missing = Some(MODEL_UNREADABLE.into());
+            }
             Ok(grids) => {
                 let mut add = |cells: &[TemplateSubunit], support: bool| {
                     for unit in cells.iter().filter(|unit| unit.token != 0) {

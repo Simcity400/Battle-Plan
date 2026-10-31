@@ -76,7 +76,7 @@ impl ledgers::History for Earlier {
         self.asked.extend_from_slice(wanted);
         Ok(wanted
             .iter()
-            .map(|&(owner, entry, _)| match self.held.get(&(owner, entry)) {
+            .map(|&(owner, entry)| match self.held.get(&(owner, entry)) {
                 Some(rows) => ledgers::Lookup::Found(ledgers::Witness::Rows(rows.clone())),
                 None => ledgers::Lookup::Unwitnessed { complete: self.complete },
             })
@@ -178,11 +178,11 @@ fn the_product_reads_the_frame_from_a_recording() {
 
 #[test]
 fn an_older_month_that_left_a_windowed_read_keeps_its_latest_witnessed_amounts() {
-    let oldest = (7, COMBAT_LEDGER, month_key(MONTHS[0]));
+    let oldest = (7, COMBAT_LEDGER, MONTHS[0]);
     let mut history = Earlier::default();
     history.held.insert((11, oldest), vec![own(MONTHS[0], 111)]);
     let r = reply_with(&windowed(), "GER", &mut history);
-    assert_eq!(history.asked, [(11, oldest, MONTHS[0])], "only the month the latest read could not hold is looked up");
+    assert_eq!(history.asked, [(11, oldest)], "only the month the latest read could not hold is looked up");
     assert_eq!(combat(&r), [(MONTHS[0], "111"), (MONTHS[1], "222"), (MONTHS[2], "333")]);
     assert!(r.unknown_months.is_empty() && r.empty_months.iter().all(|month| month.ledger != COMBAT_LEDGER));
 }
@@ -262,10 +262,10 @@ fn an_older_month_the_full_first_read_covered_without_rows_stays_known_empty() {
 }
 
 fn january() -> ledgers::Entry {
-    (7, COMBAT_LEDGER, month_key(MONTHS[0]))
+    (7, COMBAT_LEDGER, MONTHS[0])
 }
-fn wanted(entry: ledgers::Entry, since: i32) -> [ledgers::Wanted; 1] {
-    [(11, entry, since)]
+fn wanted(entry: ledgers::Entry) -> [ledgers::Wanted; 1] {
+    [(11, entry)]
 }
 fn amounts(witness: ledgers::Witness) -> Vec<i64> {
     match witness {
@@ -276,7 +276,7 @@ fn amounts(witness: ledgers::Witness) -> Vec<i64> {
 
 #[test]
 fn a_blocks_index_keeps_the_latest_covering_read_and_its_unread_hours() {
-    let entry = |month| (7, COMBAT_LEDGER, month_key(month));
+    let entry = |month| (7, COMBAT_LEDGER, month);
     let whole = ledgers::Provenance::read(&recording_start(), 60_000_001, 60_000_005, true);
     assert!(whole.unread_hours().is_empty());
     let found = |provenance: &ledgers::Provenance, month| provenance.covering(11, entry(month)).map(|(hour, witness)| (hour, amounts(witness)));
@@ -289,6 +289,7 @@ fn a_blocks_index_keeps_the_latest_covering_read_and_its_unread_hours() {
         "a full read covering a month without rows is an explicit empty witness");
     let windowed_only = ledgers::Provenance::read(&recording_start_with(vec![own(MONTHS[1], 200)]), 60_000_001, 60_000_005, false);
     assert_eq!(windowed_only.covering(11, entry(MONTHS[0])), None, "a windowed read never covers an older month");
+    assert_eq!(whole.covering(11, entry(MONTHS[0] + 1)), None, "a later entry of the same month is another entry");
     let mut unread = recording_start();
     *unread[1].tables[TableId::SliceReads.index()] = TableView::Unavailable { reason: "not read".into() };
     assert_eq!(ledgers::Provenance::read(&unread, 60_000_001, 60_000_005, true).unread_hours(), [(60_000_002, 60_000_002)]);
@@ -304,13 +305,13 @@ fn block(frames: &[DecodedFrame], first: i32, last: i32, full_start: bool) -> io
 #[test]
 fn an_older_witness_needs_every_later_hour_read_in_its_block() {
     let frames = recording_start();
-    let found = ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january(), MONTHS[0])).unwrap();
+    let found = ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january())).unwrap();
     assert_eq!(found, [ledgers::Lookup::Found(ledgers::Witness::Rows(vec![own(MONTHS[0], 111)]))]);
     let mut unread = recording_start();
     *unread[2].tables[TableId::CombatLogEquipment.index()] = TableView::Unavailable { reason: "slice gap".into() };
-    assert_eq!(ledgers::fold([block(&unread, 60_000_001, 60_000_005, true)], &wanted(january(), MONTHS[0])).unwrap(),
+    assert_eq!(ledgers::fold([block(&unread, 60_000_001, 60_000_005, true)], &wanted(january())).unwrap(),
         [ledgers::Lookup::Unwitnessed { complete: false }], "an unread hour after the witness hides any later read");
-    assert_eq!(ledgers::fold([block(&unread, 60_000_001, 60_000_002, true)], &wanted(january(), MONTHS[0])).unwrap(), found,
+    assert_eq!(ledgers::fold([block(&unread, 60_000_001, 60_000_002, true)], &wanted(january())).unwrap(), found,
         "an unread hour after the reached hour does not matter");
 }
 
@@ -332,11 +333,11 @@ fn reread(full: Vec<CombatLogEquipmentRow>, gap: bool) -> Vec<DecodedFrame> {
 fn an_identical_reread_after_an_unread_hour_witnesses_a_month_again() {
     // A full read holding January's rows is full: its identical rows count again.
     let frames = reread(vec![own(MONTHS[0], 111), own(MONTHS[1], 200), own(MONTHS[2], 300)], false);
-    assert_eq!(ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january(), MONTHS[0])).unwrap(),
+    assert_eq!(ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january())).unwrap(),
         [ledgers::Lookup::Found(ledgers::Witness::Rows(vec![own(MONTHS[0], 111)]))]);
     // The hour after a gap is a full hour: January read empty again stays known empty.
     let frames = reread(vec![own(MONTHS[1], 200), own(MONTHS[2], 300)], true);
-    assert_eq!(ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january(), MONTHS[0])).unwrap(),
+    assert_eq!(ledgers::fold([block(&frames, 60_000_001, 60_000_005, true)], &wanted(january())).unwrap(),
         [ledgers::Lookup::Found(ledgers::Witness::Empty)]);
 }
 
@@ -344,20 +345,20 @@ fn an_identical_reread_after_an_unread_hour_witnesses_a_month_again() {
 fn an_older_witness_needs_every_newer_block_read_and_no_hour_between_blocks_missing() {
     let frames = recording_start();
     let older = || block(&frames[..3], 60_000_001, 60_000_003, true);
-    let found = ledgers::fold([block(&frames[3..], 60_000_004, 60_000_005, false), older()], &wanted(january(), MONTHS[0])).unwrap();
+    let found = ledgers::fold([block(&frames[3..], 60_000_004, 60_000_005, false), older()], &wanted(january())).unwrap();
     assert_eq!(found, [ledgers::Lookup::Found(ledgers::Witness::Rows(vec![own(MONTHS[0], 111)]))]);
     let mut newer = frames[3..].to_vec();
     *newer[1].tables[TableId::SliceReads.index()] = TableView::Unavailable { reason: "not read".into() };
-    assert_eq!(ledgers::fold([block(&newer, 60_000_004, 60_000_005, false), older()], &wanted(january(), MONTHS[0])).unwrap(),
+    assert_eq!(ledgers::fold([block(&newer, 60_000_004, 60_000_005, false), older()], &wanted(january())).unwrap(),
         [ledgers::Lookup::Unwitnessed { complete: false }], "an unread hour in a newer block");
-    assert_eq!(ledgers::fold([block(&frames[4..], 60_000_005, 60_000_005, false), older()], &wanted(january(), MONTHS[0])).unwrap(),
+    assert_eq!(ledgers::fold([block(&frames[4..], 60_000_005, 60_000_005, false), older()], &wanted(january())).unwrap(),
         [ledgers::Lookup::Unwitnessed { complete: false }], "an hour missing between the blocks");
 }
 
 #[test]
 fn one_backward_walk_settles_every_month_and_stops_once_they_are() {
     let frames = recording_start();
-    let both = [(11, january(), MONTHS[0]), (11, (7, COMBAT_LEDGER, month_key(MONTHS[1])), MONTHS[1])];
+    let both = [(11, january()), (11, (7, COMBAT_LEDGER, MONTHS[1]))];
     let mut pulled = 0;
     let blocks = (0..2).map(|index| {
         pulled += 1;
@@ -375,7 +376,7 @@ fn one_backward_walk_settles_every_month_and_stops_once_they_are() {
     });
     assert!(ledgers::fold(blocks, &[]).unwrap().is_empty());
     assert_eq!(pulled, 0, "nothing asked reads nothing");
-    let none = ledgers::fold([block(&frames[3..], 60_000_004, 60_000_005, false)], &[(11, january(), 60_000_004)]).unwrap();
+    let none = ledgers::fold([block(&frames[3..], 60_000_004, 60_000_005, false)], &[(11, (7, COMBAT_LEDGER, 60_000_004))]).unwrap();
     assert_eq!(none, [ledgers::Lookup::Unwitnessed { complete: true }], "no read covered it since its first write");
 }
 
@@ -405,4 +406,29 @@ fn own_rows_of_a_month_the_game_no_longer_keeps_are_left_out() {
     let r = reply(&f, "GER");
     assert_eq!(combat(&r), [(60_000_000, "-150000")], "a pruned month's lingering rows never return");
     assert!(r.warnings.iter().any(|w| w.contains("no longer keeps are left out (1)")), "{:?}", r.warnings);
+}
+
+#[test]
+fn an_entry_written_again_in_the_same_month_never_takes_its_deleted_predecessors_rows() {
+    // A retention below one deleted the entry read at the country's latest
+    // read; a later loss that month wrote a new one.
+    let recreated = |read_hour| {
+        let mut f = frame();
+        let TableView::Complete(TableRows::CombatLogMonths(months)) = &mut *f.tables[TableId::CombatLogMonths.index()] else {
+            unreachable!()
+        };
+        months[0].date = 60_000_002;
+        assert_eq!(month_key(60_000_002), month_key(60_000_000), "the same calendar month");
+        *f.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(vec![read(11, read_hour)]));
+        reply(&f, "GER")
+    };
+    let r = recreated(60_000_001);
+    assert!(combat(&r).is_empty(), "{:?}", r.equipment);
+    assert!(r.unknown_months.iter().any(|month| month.ledger == COMBAT_LEDGER && month.date == 60_000_002));
+    assert!(r.warnings.iter().any(|w| w.contains("written after their country's latest read")), "{:?}", r.warnings);
+    assert!(r.warnings.iter().any(|w| w.contains("no longer keeps are left out (1)")), "{:?}", r.warnings);
+    // Rows dated otherwise than a read after the entry's first write witness nothing.
+    let r = recreated(60_000_002);
+    assert!(combat(&r).is_empty() && !r.empty_months.iter().any(|month| month.ledger == COMBAT_LEDGER));
+    assert!(r.warnings.iter().any(|w| w.contains("another entry of the same month")), "{:?}", r.warnings);
 }

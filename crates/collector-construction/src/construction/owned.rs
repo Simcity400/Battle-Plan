@@ -431,64 +431,51 @@ pub(super) fn copy_construction_string(
     let _ = cspan(log, memory, source.checked_add(len), 1, mask);
 }
 
-/// Shared states-array header plus country census and its link-array bounds.
-fn copy_construction_roots(
+fn copy_header(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    game_state: usize,
+    offset: usize,
+    stride: usize,
+) -> Option<Array> {
+    let start = cspan(log, memory, game_state.checked_add(offset), 16, M_C_ALL)?;
+    Array::from_header(log.bytes[start..start + 16].try_into().unwrap(), stride)
+}
+
+/// The country census as `ccountry::Reader::at` admits it, each country once
+/// at its canonical slot, and the slots references resolve through. A census
+/// the reader fails keeps the countries before the failing slot, where the
+/// walks fail too.
+fn copy_country_roots(
     log: &mut RawLog<10>,
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     census: &mut Vec<ConstructionRestCountry>,
-    country_links: &mut Option<Array>,
-) -> Option<Array> {
-    let states_start = cspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::STATES),
-        16,
-        M_C_ALL,
-    )?;
-    let mut raw = [0u8; 16];
-    raw.copy_from_slice(&log.bytes[states_start..states_start + 16]);
-    let states = Array::from_header(raw, 8)?;
-    let countries_start = cspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        M_C_ALL,
-    )?;
-    let links_start = cspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        M_C_ALL,
-    )?;
-    raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let countries = Array::from_header(raw, 8)?;
-    raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let links = Array::from_header(raw, 4)?;
-    *country_links = Some(links);
-    if countries.count < 2 || links.count == 0 {
+) -> Option<CountrySlots> {
+    let countries = copy_header(log, memory, game_state, cgame_state::COUNTRIES, 8)?;
+    let links = copy_header(log, memory, game_state, cgame_state::COUNTRY_LINKS, 4)?;
+    let mut slots = CountrySlots::new(countries, links, base)?;
+    if log.worker_growth_enabled()
+        && engine_allocation::reserve_exact(census, slots.count() as usize - 1).is_err()
+    {
+        log.overflowed = true;
         return None;
     }
-    if log.worker_growth_enabled() {
-        engine_allocation::reserve_exact(census, countries.count.saturating_sub(1) as usize)
-            .ok()?;
-    }
-    let mut slots = CountrySlots::new(countries, links, base)?;
-    // Each country once, at its canonical slot, as `ccountry::Reader::at` admits it.
     for slot in 1..slots.count() {
-        let Some(pointer) = slots.take(log, memory, slot, M_C_ALL)? else {
-            continue;
-        };
-        if census.len() == census.capacity() {
-            log.overflowed = true;
-            return None;
+        match slots.take(log, memory, slot, M_C_ALL) {
+            Some(Some(pointer)) if census.len() < census.capacity() => {
+                census.push(ConstructionRestCountry { pointer });
+            }
+            Some(Some(_)) => {
+                log.overflowed = true;
+                return None;
+            }
+            Some(None) => {}
+            None => break,
         }
-        census.push(ConstructionRestCountry { pointer });
     }
-    Some(states)
+    Some(slots)
 }
 
 /// Mirror of `state_resource_entry::walk` over one
@@ -896,6 +883,7 @@ fn copy_occupation_walk(
     memory: &impl Memory,
     base: usize,
     census: &[ConstructionRestCountry],
+    slots: Option<&CountrySlots>,
     groups_required: &mut usize,
     required: &mut usize,
     demand_overflowed: &mut bool,
@@ -1010,18 +998,17 @@ fn copy_occupation_walk(
         // 17-byte header plus per-bucket 24-byte spans); each live entry's
         // identity, law table and garrison table are mirrored below so the
         // replay derives identical rows and reasons.
-        if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE) {
-            copy_occupation_entries(
-                log,
-                memory,
-                base,
-                table,
-                groups_required,
-                required,
-                demand_overflowed,
-                equipment_required,
-            );
-        }
+        copy_occupation_entries(
+            log,
+            memory,
+            base,
+            status,
+            slots,
+            groups_required,
+            required,
+            demand_overflowed,
+            equipment_required,
+        );
         // Appended-field faults belong to its optional value, not the existing
         // occupation tables. These spans therefore carry no table failure bit.
         if let Some(header) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_ROWS)
@@ -1121,13 +1108,17 @@ fn copy_occupation_entries(
     log: &mut RawLog<10>,
     memory: &impl Memory,
     base: usize,
-    table: usize,
+    status: usize,
+    slots: Option<&CountrySlots>,
     groups_required: &mut usize,
     required: &mut usize,
     demand_overflowed: &mut bool,
     equipment_required: &mut usize,
 ) {
-    let Some(entries) = copy_pdx_visit(log, memory, table, M_C_OCC) else {
+    let Some(entries) = status
+        .checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE)
+        .and_then(|table| copy_pdx_visit(log, memory, table, M_C_OCC))
+    else {
         return;
     };
     if let Some(total) = groups_required.checked_add(entries.len()) {
@@ -1136,7 +1127,7 @@ fn copy_occupation_entries(
         log.overflowed = true;
         return;
     }
-    for (key, value) in entries {
+    for (_, value) in entries {
         if let Some(at) = cspan(
             log,
             memory,
@@ -1163,26 +1154,27 @@ fn copy_occupation_entries(
                 copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
             }
         }
-        // Identity: exact 20-byte span (vtable, parent, occupied). The
-        // occupied link resolution reads the country link table; record it
-        // explicitly so novel occupied indices are covered beyond the shared
-        // census spans.
+        // Identity: exact 20-byte span (vtable, parent, occupied), then what
+        // resolving the occupied country reads once both match. That id can be
+        // a raw alias the census never read.
         let Some(id_start) = cspan(log, memory, Some(value), 20, M_C_OCC) else {
             continue;
         };
+        let identity: [u8; 20] = log.bytes[id_start..id_start + 20].try_into().unwrap();
+        let word = |at: usize| u64::from_le_bytes(identity[at..at + 8].try_into().unwrap());
+        if let Some(slots) = slots
+            && base
+                .checked_add(ccountry_occupation_data::VTABLE_RVA)
+                .map(|vtable| vtable as u64)
+                == Some(word(0))
+            && word(ccountry_occupation_data::PARENT_STATUS) == status as u64
         {
-            let mut identity = [0u8; 20];
-            identity.copy_from_slice(&log.bytes[id_start..id_start + 20]);
-            let occupied = u32::from_le_bytes(identity[16..20].try_into().unwrap());
-            // Link-table read mirroring `countries.resolve(occupied)`.
-            // Bounds-checked locally; the replay validates membership itself.
-            if occupied != 0 {
-                // Links header is already recorded; record the entry span.
-                // (Address derived from the shared census links array; parse
-                // it from the log when available, else skip — the replay
-                // fails identically from the same spans.)
-                let _ = (key, occupied);
-            }
+            let occupied = u32::from_le_bytes(
+                identity[ccountry_occupation_data::OCCUPIED_COUNTRY..]
+                    .try_into()
+                    .unwrap(),
+            );
+            let _ = slots.resolve(log, memory, occupied, M_C_OCC);
         }
         // Law table nested visit plus per-law literals.
         if let Some(law_table) = value.checked_add(ccountry_occupation_data::LAW_TABLE)
@@ -1577,15 +1569,10 @@ fn copy_construction_rest_pass(
     job: &mut ConstructionRestJob,
 ) {
     let _reads = read_accounting::table(TABLES[2]);
-    let mut links = None;
-    let states = copy_construction_roots(
-        &mut job.log,
-        memory,
-        base,
-        game_state,
-        &mut job.census,
-        &mut links,
-    );
+    // Independent roots: the walks fail only the families that read the one
+    // that failed, as the live walks do.
+    let states = copy_header(&mut job.log, memory, game_state, cgame_state::STATES, 8);
+    let slots = copy_country_roots(&mut job.log, memory, base, game_state, &mut job.census);
     // Vec length is already representable and bounded by the owned census.
     // Retain its prefix even if a later country authentication fails.
     job.settings_required = job.census.len();
@@ -1607,6 +1594,7 @@ fn copy_construction_rest_pass(
         memory,
         base,
         &job.census,
+        slots.as_ref(),
         &mut job.group_laws_required,
         &mut job.law_bytes_required,
         &mut job.law_demand_overflowed,
@@ -1615,5 +1603,11 @@ fn copy_construction_rest_pass(
     if job.log.overflowed {
         return;
     }
-    copy_collaboration_walk(&mut job.log, memory, base, &job.census, links);
+    copy_collaboration_walk(
+        &mut job.log,
+        memory,
+        base,
+        &job.census,
+        slots.as_ref().map(CountrySlots::links),
+    );
 }

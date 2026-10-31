@@ -36,6 +36,36 @@ impl CountrySlots {
         self.countries.count
     }
 
+    /// The link table every raw reference resolves through.
+    pub fn links(&self) -> Array {
+        self.links
+    }
+
+    /// What `ccountry::Reader::resolve` reads for `raw`, stopping where it fails:
+    /// a raw alias's own link and the slot it names, which the census may not hold.
+    pub fn resolve<const N: usize>(
+        &self,
+        log: &mut RawLog<N>,
+        memory: &impl Memory,
+        raw: u32,
+        mask: u32,
+    ) -> Option<()> {
+        let slot = self.canonical(log, memory, raw, mask)?;
+        let pointer = self.pointer(log, memory, slot, mask)?;
+        if pointer == 0 || u64_at(log, memory, Some(pointer), mask)? != self.vtable {
+            return None;
+        }
+        let id = u32_at(log, memory, pointer.checked_add(ccountry::ID), mask)?;
+        let canonical = self.canonical(log, memory, id, mask)?;
+        if self.canonical(log, memory, slot, mask)? != canonical
+            || self.canonical(log, memory, canonical, mask)? != canonical
+        {
+            return None;
+        }
+        self.pointer(log, memory, canonical, mask)?;
+        Some(())
+    }
+
     /// Slot `slot` (one or more): `Some(Some(pointer))` for the country it is
     /// canonical for, `Some(None)` for a null slot or an authenticated alias,
     /// and `None` where the reader fails, which ends the census.
@@ -222,6 +252,35 @@ mod tests {
         assert_eq!(reader(&memory), Ok(expected.clone()));
         // The reader replayed over the recorded spans alone admits the same countries.
         assert_eq!(reader(&Recorded::build(&log)), Ok(expected));
+    }
+
+    #[test]
+    fn a_raw_alias_without_a_physical_slot_resolves_once_its_reads_are_recorded() {
+        let mut bytes = world();
+        // Raw two names the country at slot four; its own slot is null.
+        bytes[LINKS + 2 * 4..][..4].copy_from_slice(&4_u32.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let live = ccountry::Reader::new(&memory, BASE, STATE).unwrap();
+        assert_eq!(live.resolve(2).unwrap().pointer, object(2));
+        let replayed = |log: &RawLog<1>| {
+            ccountry::Reader::new(&Recorded::build(log), BASE, STATE)
+                .unwrap()
+                .resolve(2)
+        };
+        let (mut log, admitted) = census(&memory);
+        assert!(admitted.is_some());
+        assert!(replayed(&log).is_err(), "the census never reads its link");
+        let countries = Array::read(&memory, STATE + cgame_state::COUNTRIES, 8).unwrap();
+        let links = Array::read(&memory, STATE + cgame_state::COUNTRY_LINKS, 4).unwrap();
+        let slots = CountrySlots::new(countries, links, BASE).unwrap();
+        assert_eq!(slots.resolve(&mut log, &memory, 2, 1), Some(()));
+        assert_eq!(replayed(&log), live.resolve(2));
+        // An unlinked reference fails both readers alike.
+        assert_eq!(slots.resolve(&mut log, &memory, 3, 1), None);
+        assert!(live.resolve(3).is_err());
     }
 
     #[test]

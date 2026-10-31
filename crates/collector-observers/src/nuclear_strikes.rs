@@ -6,7 +6,8 @@
 //! the native writers apply it:
 //!
 //! - the unit damage entry (this family's own site) reads each unit it
-//!   reaches before and after the call;
+//!   reaches before and after the call, both under the call's number, so a
+//!   failed read leaves only its own call's units unpaired;
 //! - the families owning the other writers forward them on the open strike's
 //!   thread: war support from [`crate::country_input_changes`] (add war
 //!   support), building damage from [`crate::building_changes`] (destroy
@@ -64,6 +65,8 @@ pub enum Item {
     },
     Unit {
         phase: Phase,
+        /// The open strike's unit damage call, counted from zero.
+        call: u32,
         unit: native::Unit,
     },
     Equipment {
@@ -120,6 +123,8 @@ static OPEN: AtomicU32 = AtomicU32::new(0);
 static GAME: AtomicUsize = AtomicUsize::new(0);
 static HOUR: AtomicI32 = AtomicI32::new(0);
 static KEY: AtomicUsize = AtomicUsize::new(0);
+/// The open strike's unit damage calls so far.
+static CALLS: AtomicU32 = AtomicU32::new(0);
 /// The forwarded equipment call: idle, running or observed.
 static EQUIPMENT: AtomicU8 = AtomicU8::new(IDLE);
 const IDLE: u8 = 0;
@@ -263,6 +268,7 @@ fn open(nuke: usize, province: usize) {
     GAME.store(game, Ordering::Relaxed);
     HOUR.store(hour, Ordering::Relaxed);
     KEY.store(nuke, Ordering::Relaxed);
+    CALLS.store(0, Ordering::Relaxed);
     STRIKES.fetch_add(1, Ordering::Relaxed);
     record(Item::Strike { hour, strike });
     for (part, reason) in [
@@ -487,14 +493,14 @@ pub fn equipment_observed() {
     }
 }
 
-fn units(province: usize, phase: Phase) {
+fn units(province: usize, phase: Phase, call: u32) {
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let walked = native::units(
         &memory,
         BASE.load(Ordering::Relaxed),
         province,
         |unit| match unit {
-            Ok(unit) => record(Item::Unit { phase, unit }),
+            Ok(unit) => record(Item::Unit { phase, call, unit }),
             // The after read meets the same unit again; count it once.
             Err(reason) if phase == Phase::Before => refuse(Part::Units, reason),
             Err(_) => {}
@@ -564,13 +570,13 @@ unsafe extern "system-unwind" fn unit_damage(
     r8: usize,
     r9: usize,
 ) -> usize {
-    let open = current();
-    if open {
-        units(province, Phase::Before);
+    let call = current().then(|| CALLS.fetch_add(1, Ordering::Relaxed));
+    if let Some(call) = call {
+        units(province, Phase::Before, call);
     }
     let result = run(2, nuke, province, r8, r9);
-    if open {
-        units(province, Phase::After);
+    if let Some(call) = call {
+        units(province, Phase::After, call);
     }
     result
 }

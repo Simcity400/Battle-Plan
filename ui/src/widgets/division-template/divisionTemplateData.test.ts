@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DivisionTemplatesReply, TemplateEntry } from '../../generated/dashboard';
-import { battalionSummary, priorityLabel, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData.ts';
+import { sortRows } from '../../charts/table/logic.ts';
+import { battalionCount, battalionSummary, priorityLabel, templateRows, templateTooltip, validateDivisionTemplates } from './divisionTemplateData.ts';
 
 const entry = (template: string, extra: Partial<TemplateEntry> = {}): TemplateEntry => ({ template, name: `Template ${template}`, nameMissing: null, icon: null,
   iconMissing: 'no artwork', rosterOrdinal: Number(template), fielded: 0, units: [], unitsMissing: null, baseWidthRaw: '1800000', priority: 2, priorityName: null, priorityMissing: 'no proved name', locked: false,
@@ -25,6 +26,16 @@ test('battalions list their counts, support companies follow, and unknown layout
   assert.equal(battalionSummary(entry('1', { units })), 'Infantry ×9, Unit name unavailable ×2 · Engineers');
   assert.equal(battalionSummary(entry('1', { units: [], unitsMissing: 'not read' })), null);
   assert.equal(battalionSummary(entry('1')), 'Empty');
+});
+
+test('an unrecorded composition has no battalion count and sorts after recorded ones either way', () => {
+  const line = (count: number) => [{ key: 'line', name: 'Infantry', nameMissing: null, count, support: false, local: false }];
+  const entries = [entry('1', { units: line(9) }), entry('2', { units: [], unitsMissing: 'not read' }), entry('3'), entry('4', { units: line(2) })];
+  assert.equal(battalionCount(entries[1]), null);
+  assert.equal(battalionCount(entries[2]), 0, 'a recorded empty template has none');
+  for (const direction of ['ascending', 'descending'] as const)
+    assert.equal(sortRows(entries, battalionCount, direction, item => item.template).at(-1)?.template, '2', direction);
+  assert.deepEqual(sortRows(entries, battalionCount, 'ascending', item => item.template).map(item => item.template), ['3', '4', '1', '2']);
 });
 
 test('a stored priority shows only as the game’s name for it, never as its number', () => {

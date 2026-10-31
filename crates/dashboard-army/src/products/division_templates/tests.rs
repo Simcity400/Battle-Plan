@@ -15,9 +15,14 @@ fn settings(ordinal: u32, obsolete: bool) -> Recorded<Option<Arc<TemplateSetting
     })))
 }
 
-/// GER (raw 11) owns templates 3 (unused), 5 and 9; another country owns 4.
+/// GER (raw 11) owns templates 3 (unused), 5 and 9; another country (raw 77) owns 4.
 pub fn frame() -> DecodedFrame {
     let mut f = dashboard_base::test_fixtures::source(1, 60_000_001, None);
+    *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(vec![
+        CountryLinkRow { id: 11, canonical_slot: 7 },
+        CountryLinkRow { id: 77, canonical_slot: 8 },
+        CountryLinkRow { id: 9001, canonical_slot: 7 },
+    ]));
     *f.tables[TableId::DivisionTemplates.index()] = TableView::Complete(TableRows::DivisionTemplates(vec![
         DivisionTemplateRow { template: 3, owner: 11, ..Default::default() },
         DivisionTemplateRow { template: 4, owner: 77, ..Default::default() },
@@ -101,3 +106,46 @@ fn an_unread_census_leaves_fielded_counts_unknown_and_an_absent_country_is_named
     assert!(build(&absent, "GER", ArmyAttribution::Owner, None, &|_| Err(String::new()), &mut refusals, &AtomicBool::new(false)).unwrap().absent);
 }
 
+
+#[test]
+fn a_composition_whose_model_read_failed_is_unknown_never_empty() {
+    let mut f = frame();
+    let TableView::Complete(TableRows::DivisionTemplateIcons(icons)) = &mut *f.tables[TableId::DivisionTemplateIcons.index()] else {
+        panic!()
+    };
+    // As capture keeps a failed model read: empty grids, no width, the flag set.
+    icons[0].model_unreadable = 1;
+    icons[0].grids = Recorded::Value(TemplateGrids::default());
+    icons[0].base_width = Recorded::Value(None);
+    let r = reply(&f, ArmyAttribution::Owner);
+    let unread = &r.templates[1];
+    assert_eq!(unread.template, "3");
+    assert!(unread.units.is_empty());
+    assert_eq!(unread.units_missing.as_deref(), Some(MODEL_UNREADABLE));
+    assert_eq!(unread.base_width_raw, None);
+    assert_eq!((unread.priority, unread.locked), (Some(2), Some(true)), "settings read apart stand");
+    assert!(r.warnings.iter().any(|w| w.contains(MODEL_UNREADABLE)));
+}
+
+#[test]
+fn an_unlinked_country_leaves_its_divisions_templates_unknown_and_its_templates_out() {
+    let mut f = frame();
+    let TableView::Complete(TableRows::Divisions(divisions)) = &mut *f.tables[TableId::Divisions.index()] else {
+        panic!()
+    };
+    divisions.push(DivisionRow { id: 4, roster_owner: 11, expeditionary_owner: 555, template: 5, ..Default::default() });
+    let TableView::Complete(TableRows::DivisionTemplates(templates)) = &mut *f.tables[TableId::DivisionTemplates.index()] else {
+        panic!()
+    };
+    templates.insert(3, DivisionTemplateRow { template: 6, owner: 555, ..Default::default() });
+    let r = reply(&f, ArmyAttribution::Owner);
+    assert_eq!(r.templates.iter().map(|t| t.template.as_str()).collect::<Vec<_>>(), ["5", "3", "9"]);
+    assert_eq!(r.templates[0].fielded, None, "the division may count for GER");
+    assert_eq!(r.templates[1].fielded, Some(0), "no such division is of template 3");
+    assert!(r.fielded_missing.is_none());
+    assert!(r.warnings.iter().any(|w| w.contains(UNLINKED_DIVISION)));
+    assert!(r.warnings.iter().any(|w| w.contains(UNLINKED_TEMPLATE)));
+    let host = reply(&f, ArmyAttribution::Host);
+    assert_eq!(host.templates[0].fielded, Some(3), "its roster is linked");
+    assert!(!host.warnings.iter().any(|w| w.contains(UNLINKED_DIVISION)));
+}

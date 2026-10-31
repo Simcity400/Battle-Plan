@@ -422,19 +422,20 @@ pub fn build(
             amount_raw: amount.to_string(),
         }
     };
-    // Own ledgers: rows join the months the game keeps now; a pruned month's
-    // rows that linger until its country's next read are left out.
+    // Own ledgers: rows join the month entries the game keeps now, by first
+    // write; a pruned entry's rows that linger until its country's next read
+    // are left out.
     if reply.availability.months.is_none()
         && let Ok(rows) = frame.complete::<tables::CombatLogEquipment>()
     {
         let kept: BTreeSet<_> = months
             .iter()
-            .map(|header| (header.country, header.group, header.kind, month_key(header.date)))
+            .map(|header| (header.country, header.group, header.kind, month_key(header.date), header.date))
             .collect();
         for row in rows {
             if ours(row.country, &mut refused)
                 && army_of(row.country, row.group, &mut refused).is_some()
-                && !kept.contains(&(row.country, row.group, row.kind, row.month))
+                && !kept.contains(&(row.country, row.group, row.kind, row.month, row.date))
             {
                 refuse(&mut refused, "Combat Log equipment rows of a month the game no longer keeps are left out");
             }

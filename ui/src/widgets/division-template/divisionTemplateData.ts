@@ -30,17 +30,21 @@ export function templateRows(reply: DivisionTemplatesReply): TemplateRow[] {
 export const templateName = (entry: TemplateEntry) => entry.name ?? 'Template name unavailable';
 export const unitName = (unit: TemplateUnit) => unit.name ?? 'Unit name unavailable';
 
+/** Whether the template's composition was recorded. */
+const compositionKnown = (entry: TemplateEntry) => entry.unitsMissing === null || entry.units.length > 0;
+
 /** Battalions with their counts, then the support companies. */
 export function battalionSummary(entry: TemplateEntry): string | null {
-  if (entry.unitsMissing !== null && !entry.units.length) return null;
+  if (!compositionKnown(entry)) return null;
   const line = entry.units.filter(unit => !unit.support).map(unit => `${unitName(unit)} ×${unit.count}`);
   const support = entry.units.filter(unit => unit.support).map(unit => unit.count === 1 ? unitName(unit) : `${unitName(unit)} ×${unit.count}`);
   if (!line.length && !support.length) return 'Empty';
   return [line.join(', '), support.join(', ')].filter(Boolean).join(' · ');
 }
 
-/** How many battalions (not support companies) the template has. */
-export const battalionCount = (entry: TemplateEntry) => entry.units.reduce((sum, unit) => unit.support ? sum : sum + unit.count, 0);
+/** How many battalions (not support companies) the template has; unknown when its composition was not recorded. */
+export const battalionCount = (entry: TemplateEntry): number | null =>
+  compositionKnown(entry) ? entry.units.reduce((sum, unit) => unit.support ? sum : sum + unit.count, 0) : null;
 
 /** The game's name for the template's stored priority, resolved by the product
  * through the content stack; never the stored number itself. */
@@ -58,7 +62,7 @@ export function templateTooltip(entry: TemplateEntry, hour: number, canOpen: boo
     { label: 'Base combat width', value: baseWidth(entry) ?? 'Not recorded' },
   ];
   const line = entry.units.filter(unit => !unit.support), support = entry.units.filter(unit => unit.support);
-  if (entry.unitsMissing !== null && !entry.units.length) rows.push({ label: 'Battalions', value: 'Not recorded' });
+  if (!compositionKnown(entry)) rows.push({ label: 'Battalions', value: 'Not recorded' });
   if (line.length) rows.push({ label: 'Battalions', strong: true, divider: true });
   for (const unit of line) rows.push({ label: unitName(unit), lookupKey: unit.key ?? undefined, value: `×${unit.count}`, indent: true });
   if (support.length) rows.push({ label: 'Support companies', strong: true });
