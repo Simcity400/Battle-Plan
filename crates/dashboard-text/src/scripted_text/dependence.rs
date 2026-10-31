@@ -12,7 +12,7 @@
 
 use replay_data::rows::TableId;
 
-use super::{EventObject, PRONOUNS, TextQuery, named, recorded_names};
+use super::{DATES, EventObject, PRONOUNS, TextQuery, named, recorded_names};
 use crate::triggers::inputs::TableRead;
 
 /// A raw country reference's canonical slot (`RecordedScopes::slot`): the
@@ -151,9 +151,6 @@ fn primary(province: u32) -> Vec<TableRead> {
     ]
     .concat()
 }
-
-/// The date properties of an event scope, read from the hour.
-const DATES: [&str; 4] = ["GetDateText", "GetDate", "GetYear", "GetMonth"];
 
 impl TextQuery {
     /// What this read's value is a function of besides the content; None

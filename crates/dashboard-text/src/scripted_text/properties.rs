@@ -423,53 +423,73 @@ impl ScriptedText<'_> {
     }
 
     pub(crate) fn date_property_unrecorded(&self, name: &str) -> Result<Option<String>, String> {
-        let date = date_parts(self.frame.hour());
-        Ok(Some(if named(name, "GetDateText") {
-            self.date_text(self.frame.hour())?
-        } else if named(name, "GetDate") {
-            format!("{}.{}.{}.{}", date.0, date.1 + 1, date.2 + 1, date.3 + 1)
-        } else if named(name, "GetYear") {
-            date.0.to_string()
-        } else if named(name, "GetMonth") {
-            self.month(date.1)?
-        } else {
-            return Ok(None);
-        }))
+        date_property_at(self.frame.hour(), name, |key| self.localise(key))
     }
 
-    // Month localisation keys.
-    fn month(&self, month: usize) -> Result<String, String> {
-        const MONTHS: [&str; 12] = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ];
-        MONTHS
-            .get(month)
-            .map_or_else(|| Ok(String::new()), |key| self.localise(key))
-    }
-
-    /// Preserves the leading space and uses hours 1..24, including
-    /// for GetLastElection. This is not a UI date formatter.
     pub(super) fn date_text(&self, hour: i32) -> Result<String, String> {
-        let (year, month, day, hour) = date_parts(hour);
-        Ok(format!(
-            " {}:00, {} {}, {}",
-            hour + 1,
-            day + 1,
-            self.month(month)?,
-            year
-        ))
+        date_text_at(hour, |key| self.localise(key))
     }
+}
+
+/// The event scope's date property `name` at `hour`, its months localised by `localise`; None
+/// for a name that is no date property.
+pub(super) fn date_property_at(
+    hour: i32,
+    name: &str,
+    localise: impl Fn(&str) -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    let date = date_parts(hour);
+    Ok(Some(if named(name, "GetDateText") {
+        date_text_at(hour, localise)?
+    } else if named(name, "GetDate") {
+        format!("{}.{}.{}.{}", date.0, date.1 + 1, date.2 + 1, date.3 + 1)
+    } else if named(name, "GetYear") {
+        date.0.to_string()
+    } else if named(name, "GetMonth") {
+        month(date.1, localise)?
+    } else {
+        return Ok(None);
+    }))
+}
+
+// Month localisation keys.
+fn month(
+    month: usize,
+    localise: impl Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    MONTHS
+        .get(month)
+        .map_or_else(|| Ok(String::new()), |&key| localise(key))
+}
+
+/// Preserves the leading space and uses hours 1..24, including
+/// for GetLastElection. This is not a UI date formatter.
+fn date_text_at(
+    hour: i32,
+    localise: impl Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let (year, month_index, day, hour) = date_parts(hour);
+    Ok(format!(
+        " {}:00, {} {}, {}",
+        hour + 1,
+        day + 1,
+        month(month_index, localise)?,
+        year
+    ))
 }
 
 // Uses the fixed 365-day calendar with signed arithmetic.

@@ -38,6 +38,7 @@ mod balance;
 mod dependence;
 mod entries;
 mod numeric;
+pub mod operands;
 pub use entries::{
     Environment, StateContent, StateNameUsage, StateNames, live_state_warnings, read_state_content,
     state_display_name,
@@ -50,6 +51,12 @@ mod state_properties;
 // Nesting backstop: each scripted entry restarts text processing at
 // depth zero, independently of the content recursion limit.
 const MAX_SCRIPTED_NESTING: usize = 10_000;
+
+/// Why the conditional form `[(...)]` is refused, when `inner` is one.
+fn conditional(inner: &str) -> Option<String> {
+    (inner.len() >= 2 && inner.starts_with('(') && inner.ends_with(')'))
+        .then(|| format!("the conditional scripted text [{inner}] is not evaluated"))
+}
 
 fn nesting_refusal(name: &str) -> String {
     format!(
@@ -272,6 +279,9 @@ pub(crate) struct ExpansionScopes<'e, 'a> {
     on_large_stack: bool,
     pub(crate) world: Option<&'e crate::triggers::World<'a>>,
     pub(crate) combat: Option<&'e dyn crate::triggers::Combat>,
+    /// What the expansion records of each command it evaluates, when it records
+    /// ([`operands`]); its copies on a larger stack record into the same.
+    recording: Option<std::sync::Arc<std::sync::Mutex<operands::Recording>>>,
 }
 
 impl<'e, 'a> ExpansionScopes<'e, 'a> {
@@ -315,6 +325,7 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             on_large_stack: false,
             world: None,
             combat: None,
+            recording: None,
         }
     }
 
@@ -1245,13 +1256,16 @@ impl<'a> ScriptedText<'a> {
             };
             let inner = &rest[open + 1..open + 1 + length];
             out.push_str(&rest[..open]);
-            if inner.len() >= 2 && inner.starts_with('(') && inner.ends_with(')') {
-                return Err(format!(
-                    "the conditional scripted text [{inner}] is not evaluated"
-                ));
+            if let Some(refusal) = conditional(inner) {
+                return Err(refusal);
             }
             if let Some(variable) = inner.strip_prefix('?') {
-                out.push_str(&self.numeric_variable(variable, scopes, start)?);
+                let value = self.numeric_value(variable, scopes, start);
+                scopes.note(inner, || match &value {
+                    Ok(value) => operands::Value::Number(*value),
+                    Err(reason) => operands::Value::Refused(reason.clone()),
+                });
+                out.push_str(&numeric::format_variable(variable, value?));
                 rest = &rest[open + 1 + length + 1..];
                 continue;
             }
@@ -1278,10 +1292,46 @@ impl<'a> ScriptedText<'a> {
         for segment in promotions {
             object = self
                 .promote(object, segment, scopes, &mut active, &mut event_active)
-                .map_err(|reason| format!("[{inner}]: {reason}"))?;
+                .map_err(|reason| scopes.refuse(inner, format!("[{inner}]: {reason}")))?;
         }
-        self.property(object, property, scopes, active, event_active)
-            .map_err(|reason| format!("[{inner}]: {reason}"))
+        let within = |reason: String| format!("[{inner}]: {reason}");
+        // What a reader reads again in its own language: a refusal here may not be one there.
+        let reread = scopes
+            .recording()
+            .then(|| self.rereads(object, property, scopes))
+            .flatten();
+        let (property_of, stateful) = scopes.muted(|| self.property_of(object, property, scopes));
+        match property_of {
+            Err(reason) => {
+                let reason = within(reason);
+                scopes.note(inner, || {
+                    reread.unwrap_or_else(|| operands::Value::Refused(reason.clone()))
+                });
+                Err(reason)
+            }
+            Ok(Some(text)) => {
+                scopes.note(inner, || {
+                    reread.unwrap_or_else(|| {
+                        operands::Value::of_property(object, property, &text, stateful)
+                    })
+                });
+                Ok(text)
+            }
+            // A miss: a scripted localisation of that name, else empty text.
+            Ok(None) => {
+                let outer = scopes.begin_entry();
+                let value = self
+                    .entry(object, property, scopes, active, event_active)
+                    .map_err(within);
+                let selected = scopes.end_entry(outer);
+                scopes.note(inner, || match (selected, &value) {
+                    (Some(selected), _) => operands::Value::Entry(Some(selected)),
+                    (None, Ok(_)) => operands::Value::Entry(None),
+                    (None, Err(reason)) => operands::Value::Refused(reason.clone()),
+                });
+                value
+            }
+        }
     }
 
     /// Promote one segment; `active` is the context's event-scope index.
@@ -1526,25 +1576,22 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    /// Property text in the promoted context.
-    fn property(
+    /// The text of `object`'s property `name` in the promoted context; None for a name it
+    /// lacks, which reads the scripted localisation of that name.
+    fn property_of(
         &self,
         object: Object,
         name: &str,
         scopes: &ExpansionScopes<'_, 'a>,
-        active: usize,
-        event_active: bool,
-    ) -> Result<String, String> {
-        let property = match object {
+    ) -> Result<Option<String>, String> {
+        Ok(match object {
             // Faction contexts have no scripted-entry fallback.
-            Object::FactionEnvironment(_) => return Ok(String::new()),
-            Object::Faction(faction) => {
-                return if named(name, "GetName") {
-                    faction.map_or_else(|| Ok("NULL".into()), |id| self.faction_name_by_id(id))
-                } else {
-                    Ok(String::new())
-                };
-            }
+            Object::FactionEnvironment(_) => Some(String::new()),
+            Object::Faction(faction) => Some(if named(name, "GetName") {
+                faction.map_or_else(|| Ok("NULL".into()), |id| self.faction_name_by_id(id))?
+            } else {
+                String::new()
+            }),
             Object::Event => self.date_property(name)?,
             Object::Country(slot) => self.country_property(slot, name, scopes)?,
             Object::State(state) => {
@@ -1571,13 +1618,7 @@ impl<'a> ScriptedText<'a> {
                 }
             }
             Object::Character(id) => self.character_property(id, name)?,
-        };
-        let Some(text) = property else {
-            // A miss: a scripted localisation of that name, else
-            // empty text.
-            return self.entry(object, name, scopes, active, event_active);
-        };
-        Ok(text)
+        })
     }
 
     fn localise(&self, key: &str) -> Result<String, String> {
@@ -1605,61 +1646,23 @@ impl<'a> ScriptedText<'a> {
         scopes: &ExpansionScopes<'_, 'a>,
     ) -> Result<Option<String>, String> {
         let tag = self.country_tag(slot)?.to_owned();
-        let names = |suffix: &str| self.names.name_with(slot, suffix);
-        // Non-ideology properties probe the current tag without ideology.
-        let non_ideology = |suffix: &str| -> Result<String, String> {
-            let key = format!("{tag}{suffix}");
-            if self.localisation.get(&key).is_some() {
-                self.localise(&key)
-            } else {
-                names(suffix)
-            }
-        };
+        if let Some(text) = operands::country_text(
+            name,
+            &tag,
+            self.localisation,
+            |suffix| self.names.name_with(slot, suffix),
+            || Ok(self.names.ruling_group(slot)?.map(str::to_owned)),
+        )? {
+            return Ok(Some(text));
+        }
         let is = |entry: &str| named(name, entry);
         // The first byte's toupper in the "C" locale ([`crt_case_text`]).
         let upper_first = |text: String| crt_case_text(&text, true, true);
-        Ok(Some(if is("GetName") {
-            names("")?
-        } else if is("GetNameDef") {
-            names("_DEF")?
-        } else if is("GetNameDefCap") {
-            upper_first(names("_DEF")?)
-        } else if is("GetAdjective") {
-            self.country_adjective(slot)?
-        } else if is("GetAdjectiveCap") {
-            upper_first(self.country_adjective(slot)?)
-        } else if is("GetTag") {
-            tag
-        } else if is("GetFlag") {
-            format!("\u{12}{tag}")
-        } else if is("GetNameWithFlag") {
-            self.country_marked_name(slot)?
+        Ok(Some(if is("GetRulingParty") || is("GetRulingPartyLong") {
+            self.ruling_party(slot, &tag, is("GetRulingPartyLong"))?
         } else if let Some(&(entry, suffix, cap)) = OLD_NAMES.iter().find(|(entry, ..)| is(entry)) {
             let text = self.old_name(slot, entry, suffix)?;
             if cap { upper_first(text) } else { text }
-        } else if is("GetNonIdeologyName") {
-            non_ideology("")?
-        } else if is("GetNonIdeologyNameDef") {
-            non_ideology("_DEF")?
-        } else if is("GetNonIdeologyNameDefCap") {
-            upper_first(non_ideology("_DEF")?)
-        } else if is("GetNonIdeologyAdjective") {
-            non_ideology("_ADJ")?
-        } else if is("GetNonIdeologyAdjectiveCap") {
-            upper_first(non_ideology("_ADJ")?)
-        } else if is("GetRulingIdeology") || is("GetRulingIdeologyNoun") {
-            let Some(group) = self.names.ruling_group(slot)? else {
-                return Err(format!("{name}: {tag} has no ruling party"));
-            };
-            let key = if is("GetRulingIdeologyNoun") {
-                format!("{group}_noun")
-            } else {
-                group.to_owned()
-            };
-            // Lowercase with the "C" locale's tolower.
-            crt_case_text(&self.localise(&key)?, false, false)
-        } else if is("GetRulingParty") || is("GetRulingPartyLong") {
-            self.ruling_party(slot, &tag, is("GetRulingPartyLong"))?
         } else if is("GetLeader") {
             self.party_leader(slot, None)?
         } else if let Some(group) = properties::leader_group(name) {
@@ -2309,6 +2312,8 @@ impl<'a> ScriptedText<'a> {
 const NO_FACTION: &str = "NO_FACTION";
 
 const SCOPE_LINKS: [&str; 4] = ["THIS", "Root", "From", "Prev"];
+/// The date properties of an event scope, read from the hour.
+const DATES: [&str; 4] = ["GetDateText", "GetDate", "GetYear", "GetMonth"];
 const COUNTRY_NAMES: [&str; 8] = [
     "GetName",
     "GetNameDef",

@@ -14,6 +14,8 @@ pub enum Query {
     Name(u32),
     NameWith(u32, String),
     RulingGroup(u32),
+    /// Which of slot zero's names its reserved row had built.
+    ReservedBuilt,
 }
 
 impl RecordedNames<'_> {
@@ -42,6 +44,13 @@ impl RecordedNames<'_> {
         )
     }
 
+    pub(crate) fn reserved_built(&self) -> Option<u8> {
+        query(
+            || Key::Names(Query::ReservedBuilt),
+            || self.0.reserved_built(),
+        )
+    }
+
     /// The digest `query` reads in this hour's names.
     pub fn reread(&self, query: &Query) -> u64 {
         match query {
@@ -49,6 +58,7 @@ impl RecordedNames<'_> {
             Query::Name(slot) => digest(&self.0.name(*slot)),
             Query::NameWith(slot, suffix) => digest(&self.0.name_with(*slot, suffix)),
             Query::RulingGroup(slot) => digest(&self.0.ruling_group(*slot)),
+            Query::ReservedBuilt => digest(&self.0.reserved_built()),
         }
     }
 }

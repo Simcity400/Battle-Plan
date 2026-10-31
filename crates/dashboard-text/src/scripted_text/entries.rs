@@ -582,10 +582,17 @@ impl<'a> ScriptedText<'a> {
                     key
                 }
             };
-            let text = self.localisation.localise(key).map_err(|e| e.to_string())?;
-            // A new text context in the evaluation scope starts at depth
-            // zero; the text processor's own depth rule still applies.
-            return self.process(&text, 0, scopes, at, Object::Event);
+            // The key's commands are recorded under it, apart from those of the text selecting it.
+            let outer = scopes.select(key);
+            let expanded = self
+                .localisation
+                .localise(key)
+                .map_err(|e| e.to_string())
+                // A new text context in the evaluation scope starts at depth
+                // zero; the text processor's own depth rule still applies.
+                .and_then(|text| self.process(&text, 0, scopes, at, Object::Event));
+            scopes.leave(outer);
+            return expanded;
         }
         // No alternative selected: return empty localisation.
         Ok(String::new())

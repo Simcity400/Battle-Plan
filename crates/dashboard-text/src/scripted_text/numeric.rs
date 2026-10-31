@@ -4,18 +4,27 @@ use super::*;
 
 mod admission;
 
+/// `value` as `[?expression]` shows it: in the format after its `|`, if any.
+pub(super) fn format_variable(expression: &str, value: i64) -> String {
+    let format = expression
+        .split_once('|')
+        .map(|(_, format)| format.as_bytes());
+    // Numeric output is appended directly, without another scripted-text
+    // recursion step. Colour controls and surrounding newlines survive.
+    installed_content_localisation::localisation::format_scripted_variable(value, format)
+}
+
 impl<'a> ScriptedText<'a> {
-    pub(super) fn numeric_variable(
+    /// The value `[?expression]` reads, or why it reads none.
+    pub(super) fn numeric_value(
         &self,
         expression: &str,
         scopes: &ExpansionScopes<'_, 'a>,
         start: usize,
-    ) -> Result<String, String> {
-        let (operand, format) = expression
+    ) -> Result<i64, String> {
+        let operand = expression
             .split_once('|')
-            .map_or((expression, None), |(operand, format)| {
-                (operand, Some(format.as_bytes()))
-            });
+            .map_or(expression, |(operand, _)| operand);
         // Localisation stores authored `@` as its flag control; evaluation
         // replaces the first such byte before the scoped-variable reader.
         let normalized;
@@ -42,10 +51,7 @@ impl<'a> ScriptedText<'a> {
             entries::entry_scopes(scopes, start, false),
         );
         scopes.session.replace(Some(evaluator.variable_session()));
-        let value = value.map_err(|why| within(why.to_string()))?;
-        // Numeric output is appended directly, without another scripted-text
-        // recursion step. Colour controls and surrounding newlines survive.
-        Ok(installed_content_localisation::localisation::format_scripted_variable(value, format))
+        value.map_err(|why| within(why.to_string()))
     }
 }
 

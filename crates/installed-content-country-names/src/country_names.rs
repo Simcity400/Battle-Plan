@@ -331,6 +331,12 @@ impl<'a> CountryNames<'a> {
         self.operands.get(&slot)
     }
 
+    /// Which of slot zero's names its reserved row has built, when slot zero was read: what
+    /// [`Self::recorded`] takes back with the operands.
+    pub fn reserved_built(&self) -> Option<u8> {
+        self.reserved_built
+    }
+
     /// The display name of a canonical slot, or why it cannot be resolved.
     /// Callers show the tag with that reason. The bare tag is the ladder's
     /// last localisation candidate; when even that key is absent, `name_key`

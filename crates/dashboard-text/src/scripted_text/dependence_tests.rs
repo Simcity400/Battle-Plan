@@ -283,6 +283,7 @@ fn declared_keys() -> Vec<Key> {
         recorded_names::Query::Name(1),
         recorded_names::Query::NameWith(2, "_DEF".into()),
         recorded_names::Query::RulingGroup(1),
+        recorded_names::Query::ReservedBuilt,
     ]
     .map(Key::Names);
     texts.into_iter().chain(names).collect()
