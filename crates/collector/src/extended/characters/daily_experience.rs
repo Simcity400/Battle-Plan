@@ -12,7 +12,11 @@ pub(super) struct Store {
     scope: (usize, usize),
     daily: bool,
     pub(super) generation: u64,
-    entries: Vec<(Key, i64, bool)>,
+    /// Each role's value, whether this capture saw it, and its position when it was put.
+    entries: Vec<(Key, i64, bool, u32)>,
+    /// Entries before this are sorted by key; the rest were put since, in put order, so a
+    /// refresh that puts every role costs one sort rather than an insertion each.
+    sorted: usize,
     charge: Option<crate::raw_memory::Charge>,
 }
 
@@ -21,6 +25,7 @@ pub(super) static STORE: Mutex<Store> = Mutex::new(Store {
     daily: false,
     generation: 0,
     entries: Vec::new(),
+    sorted: 0,
     charge: None,
 });
 
@@ -32,6 +37,7 @@ impl Store {
         self.daily = false;
         self.generation = 0;
         self.entries.clear();
+        self.sorted = 0;
     }
 
     pub(super) fn begin(&mut self, scope: (usize, usize), full: bool, daily: bool) {
@@ -40,6 +46,7 @@ impl Store {
         // an off-slot row may contain held XP under a current certificate.
         if full || self.scope != scope || self.generation == 0 || daily && !self.daily {
             self.entries.clear();
+            self.sorted = 0;
             self.generation = GENERATION.fetch_add(1, Ordering::Relaxed);
             self.scope = scope;
         }
@@ -53,31 +60,55 @@ impl Store {
         if self.daily {
             return None;
         }
-        let at = self
-            .entries
-            .binary_search_by_key(&key, |entry| entry.0)
-            .ok()?;
+        let at = match self.entries[..self.sorted].binary_search_by_key(&key, |entry| entry.0) {
+            Ok(at) => at,
+            Err(_) => self.sorted + self.entries[self.sorted..].iter().rposition(|entry| entry.0 == key)?,
+        };
         self.entries[at].2 = true;
         Some(self.entries[at].1)
     }
 
     pub(super) fn put(&mut self, key: Key, value: i64) {
-        match self.entries.binary_search_by_key(&key, |entry| entry.0) {
-            Ok(at) => self.entries[at] = (key, value, true),
-            Err(at) => {
-                // Cache storage is advisory: losing it never discards an
-                // already acquired value. An uncached role reads fresh.
-                if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.entries, 1))
-                    .is_err()
-                {
-                    return;
-                }
-                self.entries.insert(at, (key, value, true));
+        if let Ok(at) = self.entries[..self.sorted].binary_search_by_key(&key, |entry| entry.0) {
+            (self.entries[at].1, self.entries[at].2) = (value, true);
+            return;
+        }
+        // Cache storage is advisory: losing it never discards an
+        // already acquired value. An uncached role reads fresh.
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.entries, 1)).is_err() {
+            // A copy put earlier this capture still takes the new value.
+            if let Some(entry) = self.entries[self.sorted..].iter_mut().rfind(|entry| entry.0 == key) {
+                entry.1 = value;
             }
+            return;
+        }
+        let in_order = self.sorted == self.entries.len()
+            && self.entries.last().is_none_or(|last| last.0 < key);
+        let position = self.entries.len() as u32;
+        self.entries.push((key, value, true, position));
+        if in_order {
+            self.sorted += 1;
         }
     }
 
+    /// Sorts the entries put since, in place, keeping the last value put for a key.
+    fn settle(&mut self) {
+        if self.sorted == self.entries.len() {
+            return;
+        }
+        self.entries.sort_unstable_by_key(|entry| (entry.0, entry.3));
+        self.entries.dedup_by(|later, earlier| {
+            let same = later.0 == earlier.0;
+            if same {
+                *earlier = *later;
+            }
+            same
+        });
+        self.sorted = self.entries.len();
+    }
+
     pub(super) fn observe_prepared(&mut self, log: &crate::raw::RawLog<{ super::N }>) {
+        self.settle();
         // A completed fresh program has the same authenticated identities and
         // field geometry as the pass that prepared it. Keep its supplying XP
         // bytes too, even though it did not enter copy_unit again.
@@ -105,6 +136,7 @@ impl Store {
     }
 
     pub(super) fn touch(&mut self, pointer: usize, character: u32) {
+        self.settle();
         let at = self.entries.partition_point(|entry| entry.0.0 < pointer);
         for entry in self.entries[at..]
             .iter_mut()
@@ -117,7 +149,13 @@ impl Store {
     }
 
     pub(super) fn finish(&mut self, complete: bool) {
-        self.entries.retain(|entry| complete && entry.2);
+        if complete {
+            self.settle();
+            self.entries.retain(|entry| entry.2);
+        } else {
+            self.entries.clear();
+        }
+        self.sorted = self.entries.len();
         if !complete {
             self.generation = GENERATION.fetch_add(1, Ordering::Relaxed);
         }
@@ -288,6 +326,27 @@ mod tests {
             let recovered = acquire(&world, &mut job, false, false);
             assert_eq!(xp(&recovered, 2_000_005), value);
         }
+    }
+
+    #[test]
+    fn puts_out_of_key_order_are_found_and_settle_to_the_last_value_put() {
+        let mut store = Store::default();
+        store.begin((1, 2), true, false);
+        for (key, value) in [((30, 1, 1), 3), ((10, 1, 1), 1), ((20, 1, 1), 2), ((10, 1, 1), 11)] {
+            store.put(key, value);
+        }
+        assert_eq!(store.get((10, 1, 1)), Some(11));
+        assert_eq!(store.get((20, 1, 1)), Some(2));
+        assert_eq!(store.get((40, 1, 1)), None);
+        store.finish(true);
+        let held: Vec<_> = store.entries.iter().map(|entry| (entry.0, entry.1)).collect();
+        assert_eq!(held, [((10, 1, 1), 11), ((20, 1, 1), 2), ((30, 1, 1), 3)]);
+        store.begin((1, 2), false, false);
+        assert_eq!(store.get((30, 1, 1)), Some(3));
+        store.put((5, 1, 1), 5);
+        store.touch(5, 1);
+        store.finish(true);
+        assert_eq!(store.entries.len(), 2, "untouched held entries leave");
     }
 
     #[test]
