@@ -2380,6 +2380,8 @@ pub(crate) mod directory_tests;
 
 struct Cached {
     runs: Vec<Run>,
+    /// Whether `runs` start in hour order, so every hour before the next run's is outside them.
+    sorted: bool,
     events: Vec<(i32, Vec<u8>)>,
     /// The summary levels as stored, from `summaries_at`; only a summary read decodes them
     /// ([`Reader::buckets`]).
@@ -2431,6 +2433,7 @@ fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Ca
     let mut bytes = &raw[..];
     let mut cached = Cached {
         runs: Vec::new(),
+        sorted: true,
         events: Vec::new(),
         summaries: Vec::new(),
         summaries_at: 0,
@@ -2447,6 +2450,7 @@ fn decode(raw: Vec<u8>, dir: Directory, cancelled: &AtomicBool) -> io::Result<Ca
         if flags > 1 {
             return Err(invalid("invalid run flags"));
         }
+        cached.sorted &= cached.runs.last().is_none_or(|run| run.first_hour <= first);
         cached.runs.push(Run::new(first, last, value, flags != 0));
     }
     hour = 0;
@@ -2694,7 +2698,7 @@ pub struct Reader<'a> {
     cancelled: &'a AtomicBool,
     session: Option<store::Session>,
     files: HashMap<u64, store::Range>,
-    hours: HashMap<u64, (i32, i32)>,
+    hours: Vec<Option<(i32, i32)>>,
     directories: HashMap<(u64, u64), Directory>,
     cached: Decoded,
     buckets: HashMap<(u64, u64), Arc<Summaries>>,
@@ -2740,7 +2744,7 @@ impl<'a> Reader<'a> {
             cancelled,
             session: None,
             files: first.map(|file| (0, file)).into_iter().collect(),
-            hours: HashMap::new(),
+            hours: Vec::new(),
             directories: HashMap::new(),
             cached: Decoded::default(),
             buckets: HashMap::new(),
@@ -2773,7 +2777,7 @@ impl<'a> Reader<'a> {
             cancelled,
             session,
             files: HashMap::new(),
-            hours: HashMap::new(),
+            hours: Vec::new(),
             directories: HashMap::new(),
             cached: Decoded::default(),
             buckets: HashMap::new(),
@@ -2811,12 +2815,16 @@ impl<'a> Reader<'a> {
     }
     /// A batch's first and last hour, read from its header once.
     fn hours(&mut self, batch: u64) -> io::Result<(i32, i32)> {
-        if let Some(&hours) = self.hours.get(&batch) {
+        let at = batch as usize;
+        if let Some(&Some(hours)) = self.hours.get(at) {
             return Ok(hours);
         }
         let header = read::<16>(self.file(batch)?, 0)?;
         let hours = (i32_at(&header, 0), i32_at(&header, 4));
-        self.hours.insert(batch, hours);
+        if self.hours.len() <= at {
+            self.hours.resize(at + 1, None);
+        }
+        self.hours[at] = Some(hours);
         Ok(hours)
     }
     fn info(&mut self, batch: u64, key: u64) -> io::Result<Directory> {
@@ -3668,22 +3676,8 @@ impl<'a> Reader<'a> {
                 value
             } else {
                 let end = i64::from(to).min((hour.div_euclid(LEVELS[0]) + 1) * LEVELS[0] - 1);
-                let mut value = None;
-                let mut has_value = false;
-                while hour <= end {
-                    let next = self.value_at(key, hour as i32)?;
-                    let bucket = next.map(|run| {
-                        run_bucket(run, hour as i32, run.last_hour.min(end as i32), decimals)
-                    });
-                    value = if has_value {
-                        merge(value, bucket)
-                    } else {
-                        bucket
-                    };
-                    has_value = true;
-                    hour =
-                        next.map_or(hour + 1, |run| i64::from(run.last_hour.min(end as i32)) + 1);
-                }
+                let value = self.stored_bucket(key, hour as i32, end as i32, decimals)?;
+                hour = end + 1;
                 value
             };
             result = if initialized {
@@ -3695,6 +3689,78 @@ impl<'a> Reader<'a> {
         }
         coverage_break(&mut result, (from, to));
         Ok(result)
+    }
+    /// The bucket folding [`Self::value_at`]'s run at each of `key`'s hours `from..=to`
+    /// gives. A run is folded from its batch, unless it is the batch's last and ends
+    /// before `to`: only then can its canonical bounds fold differently.
+    fn stored_bucket(
+        &mut self,
+        key: u64,
+        from: i32,
+        to: i32,
+        decimals: u8,
+    ) -> io::Result<Option<ChartBucket>> {
+        let mut value = None;
+        let mut has_value = false;
+        let mut hour = from;
+        loop {
+            let mut step = None;
+            if let Some(batch) = self.batches(hour, hour)?.next() {
+                let last = self.hours(batch)?.1;
+                let blob = self.data(batch, key)?;
+                let runs = &blob.runs;
+                let index = runs.partition_point(|run| run.first_hour <= hour);
+                let mut gap = None;
+                step = match index
+                    .checked_sub(1)
+                    .map(|at| runs[at])
+                    .filter(|run| run.last_hour >= hour)
+                {
+                    Some(run) if index < runs.len() || run.last_hour >= to => {
+                        let through = run.last_hour.min(to);
+                        Some((Some(run_bucket(run, hour, through, decimals)), through))
+                    }
+                    Some(_) => None,
+                    None if blob.sorted => {
+                        gap = Some(runs.get(index).map_or(to, |run| run.first_hour - 1));
+                        None
+                    }
+                    None => None,
+                };
+                if let Some(next) = gap {
+                    // Batch bounds need not be ordered: the gap ends where another batch owns an hour.
+                    let end = next.min(last).min(to);
+                    let mut through = hour;
+                    while through < end
+                        && self.batches(through + 1, through + 1)?.next() == Some(batch)
+                    {
+                        through += 1;
+                    }
+                    step = Some((None, through));
+                }
+            }
+            let (bucket, through) = match step {
+                Some(step) => step,
+                None => {
+                    let next = self.value_at(key, hour)?;
+                    let through = next.map_or(hour, |run| run.last_hour.min(to));
+                    (
+                        next.map(|run| run_bucket(run, hour, through, decimals)),
+                        through,
+                    )
+                }
+            };
+            value = if has_value {
+                merge(value, bucket)
+            } else {
+                bucket
+            };
+            has_value = true;
+            if through >= to {
+                return Ok(value);
+            }
+            hour = through + 1;
+        }
     }
     pub fn event_count_through(&mut self, key: u64, hour: i32) -> io::Result<u64> {
         #[cfg(test)]

@@ -1201,6 +1201,106 @@ fn summaries_preserve_extrema_unknown_spans_and_boundary_segments() {
 }
 
 #[test]
+fn every_range_folds_runs_crossing_batches_as_their_hours_do_without_rebuilding_earlier_runs() {
+    let fixture = Fixture::new();
+    let mut states = BTreeMap::from([(0, KeyState::default())]);
+    // (first, last, value, break, a supplying boundary), by batch: runs continue
+    // across batch ends, one batch's last run ends before the batch does.
+    let batches: [((i32, i32), &[(i32, i32, i128, bool, bool)]); 3] = [
+        (
+            (0, 40),
+            &[
+                (0, 9, 3, true, false),
+                (10, 25, 3, false, true),
+                (26, 40, 5, false, false),
+            ],
+        ),
+        (
+            (41, 90),
+            &[
+                (41, 47, 5, false, false),
+                (53, 70, -2, true, false),
+                (71, 90, 4, false, false),
+            ],
+        ),
+        (
+            (91, 150),
+            &[
+                (91, 95, 4, false, false),
+                (96, 112, 9, true, false),
+                (113, 129, -6, false, false),
+                (130, 140, 1, false, false),
+            ],
+        ),
+    ];
+    let mut hours = BTreeMap::new();
+    for ((first, last), runs) in batches {
+        let mut batch = Batch::default();
+        batch.through(first);
+        batch.through(last);
+        for &(from, to, value, starts, boundary) in runs {
+            let state = states.get_mut(&0).unwrap();
+            batch.push_boundary(0, state, Run::new(from, to, value, starts), boundary);
+            for hour in from..=to {
+                hours.insert(hour, (value, starts && hour == from));
+            }
+        }
+        fixture.publish(batch, &mut states);
+    }
+    let flag = AtomicBool::new(false);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let before = RUN_BOUNDS.get();
+    reader.range_bucket(0, 1, 30, 0).unwrap();
+    assert_eq!(RUN_BOUNDS.get(), before, "no run before a batch's last is rebuilt");
+    for from in 0..=150 {
+        for to in from..=150 {
+            // Independent hourly fold: an unknown hour is a missing child.
+            let mut wanted = None;
+            for hour in from..=to {
+                let next = hours
+                    .get(&hour)
+                    .map(|&(value, starts)| ChartBucket::hour(hour, value as f64, starts));
+                wanted = if hour == from {
+                    next
+                } else {
+                    merge(wanted, next)
+                };
+            }
+            coverage_break(&mut wanted, (from, to));
+            assert_eq!(
+                reader.range_bucket(0, from, to, 0).unwrap(),
+                wanted,
+                "{from}..={to}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_gap_ends_where_another_batch_owns_the_hour_however_batch_bounds_overlap() {
+    let fixture = Fixture::new();
+    let mut states = BTreeMap::from([(0, KeyState::default())]);
+    // The second batch lies inside the first: from hour 6 the third owns the hours.
+    for (first, last, run) in [(0, 10, None), (1, 5, None), (6, 20, Some((6, 20, 7)))] {
+        let mut batch = Batch::default();
+        batch.through(first);
+        batch.through(last);
+        if let Some((from, to, value)) = run {
+            let state = states.get_mut(&0).unwrap();
+            batch.push(0, state, Run::new(from, to, value, true));
+        }
+        fixture.publish(batch, &mut states);
+    }
+    let flag = AtomicBool::new(false);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let mut wanted = ChartBucket::hour(6, 7.0, true);
+    wanted.absolute_total = 35;
+    wanted.last_hour = 10;
+    wanted.has_break = true;
+    assert_eq!(reader.range_bucket(0, 1, 10, 0).unwrap(), Some(wanted));
+}
+
+#[test]
 fn derived_tail_matches_published_runs_with_continuations_gaps_breaks_and_membership() {
     use crate::products::country_groups::HourSpan;
     let flag = AtomicBool::new(false);
