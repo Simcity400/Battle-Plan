@@ -526,7 +526,7 @@ impl Settings {
         let threads = threads.max(1);
         // Room for every thread to walk while emits lag: a war segment of a long campaign
         // projects over half a GiB, so a smaller budget walks one or two segments at a time.
-        let output_bytes = 4 << 30;
+        let output_bytes = 8 << 30;
         Self {
             threads,
             window: threads.saturating_mul(4),
@@ -536,7 +536,7 @@ impl Settings {
             slots: threads.saturating_mul(4),
             carry_bytes: 512 << 20,
             chunk_bytes: 8 << 20,
-            walker_bytes: 4 << 30,
+            walker_bytes: 8 << 30,
         }
     }
 
