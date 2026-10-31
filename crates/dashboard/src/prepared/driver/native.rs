@@ -704,12 +704,14 @@ pub(crate) struct Walks {
     pub ahead: Option<(segments::Stats, u64, Lap)>,
 }
 
-/// Makes `recording`'s walks decode the tables `members` with something to do read.
+/// Makes `recording`'s walks decode the tables `members` with something to do read, and the
+/// campaign row every world frame holds.
 fn select(recording: &mut Recording, shape: &Shape, members: &[Box<dyn Member + '_>]) {
     let mut tables: Vec<TableId> = members
         .iter()
         .filter(|member| !member.idle(shape))
         .flat_map(|member| member.tables().iter().copied())
+        .chain([TableId::Campaign])
         .collect();
     tables.sort_unstable_by_key(|table| table.index());
     tables.dedup();
