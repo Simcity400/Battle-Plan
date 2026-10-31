@@ -476,6 +476,17 @@ impl Prepared {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// Published tails read on this thread.
+    static TAIL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+/// Published tails read on this thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn tail_reads() -> usize {
+    TAIL_READS.with(std::cell::Cell::get)
+}
+
 /// What a query reads of a published walk.
 pub(super) struct Published {
     /// The walk after every published input, its closed wars still places.
@@ -487,18 +498,27 @@ pub(super) struct Published {
 }
 
 impl Published {
-    /// The walk published through the store's last committed input, if any.
+    /// The identity of the tail `session` holds: every flush rewrites it, closed wars and all.
+    pub(super) fn page(session: &store::Session, branch: u64) -> io::Result<Option<[u64; 3]>> {
+        Ok(session
+            .read(&tail_section(branch), 0)?
+            .filter(|range| !range.is_empty())
+            .map(|range| range.id().cache_key()))
+    }
+
+    /// The walk `session` holds published through its last committed input, if any.
     pub(super) fn read(
-        store: &store::Store,
-        key: &store::SourceKey,
+        session: &store::Session,
         branch: u64,
         cat: Option<&Catalogue>,
     ) -> io::Result<Option<Self>> {
+        #[cfg(any(test, feature = "test-support"))]
+        TAIL_READS.with(|count| count.set(count.get() + 1));
         let section = tail_section(branch);
-        let Some(tail) = parse::<Tail>(read_bytes(store.read(key, &section, 0)?)?)? else {
+        let Some(tail) = parse::<Tail>(read_bytes(session.read(&section, 0)?)?)? else {
             return Ok(None);
         };
-        let decoded = read_bytes(store.read(key, &section, 1)?)?
+        let decoded = read_bytes(session.read(&section, 1)?)?
             .as_deref()
             .map(decode_frame)
             .transpose()?;
@@ -511,16 +531,11 @@ impl Published {
         }))
     }
 
-    /// Put every closed war back in its place.
-    pub(super) fn close(
-        &mut self,
-        store: &store::Store,
-        key: &store::SourceKey,
-        branch: u64,
-    ) -> io::Result<()> {
+    /// Put every closed war `session` holds back in its place.
+    pub(super) fn close(&mut self, session: &store::Session, branch: u64) -> io::Result<()> {
         let section = closed_section(branch);
         for range in 0..self.closed {
-            let closed: Vec<Closed> = parse(read_bytes(store.read(key, &section, range)?)?)?
+            let closed: Vec<Closed> = parse(read_bytes(session.read(&section, range)?)?)?
                 .ok_or_else(|| invalid("Published closed wars are missing"))?;
             for Closed {
                 id,

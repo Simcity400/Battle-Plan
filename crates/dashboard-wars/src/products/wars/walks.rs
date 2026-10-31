@@ -79,6 +79,35 @@ impl Key {
 #[derive(Default)]
 struct Walks(Vec<(Key, Arc<Mutex<Option<Entry>>>)>);
 
+/// Replies finished from a published tail, by what they were finished from, the most recently
+/// used first: a later read of the same publication reads, restores and finishes none of it again.
+#[derive(Default)]
+struct Finished(Vec<FinishedReply>);
+struct FinishedReply {
+    key: Key,
+    bounds: (i32, i32),
+    from: Publication,
+    reply: Option<Arc<WarsReply>>,
+    bytes: usize,
+}
+/// What a finished reply depends on: the tail's identity, the change inputs published, and the
+/// last one's coverage, which preparation can advance without rewriting the tail.
+type Publication = ([u64; 3], u64, Option<i32>);
+/// Bytes the replies one source keeps finished may hold together, about.
+const FINISHED_BYTES: usize = 128 << 20;
+
+/// The memory `reply` holds, about: its text twice over, and the memberships it never writes.
+fn reply_bytes(reply: &WarsReply) -> usize {
+    let memberships: usize = reply
+        .wars
+        .iter()
+        .map(|war| war.relations.capacity() * size_of::<WarRelationMembership>())
+        .sum();
+    // A reply past the budget is never kept.
+    dashboard_core::transport::json_len(reply, FINISHED_BYTES).map_or(usize::MAX / 2, |len| 2 * len)
+        + memberships
+}
+
 #[derive(Clone)]
 struct Resume {
     /// The ordinal of the next change input; every earlier one is observed.
@@ -605,12 +634,13 @@ pub(super) fn walk(
     // The recorded viewpoint's walk is published while preparing.
     if selected.is_none()
         && let Some(reply) = published(
+            source,
             store,
             key,
             branch,
             (first, last),
             params.viewpoint_tag.as_deref(),
-            cat.map(|cat| &**cat),
+            cat,
             cancelled,
         )?
     {
@@ -711,18 +741,115 @@ pub(super) fn walk(
 /// as its recorded viewpoint. None when no walk is published through the store's last input
 /// (prepared hour by hour, or the branch's first hour moved) or it is not
 /// `view`'s, so the query walks.
+/// The reply is kept by what it was finished from ([`Finished`]): a later read of the same
+/// publication copies it.
 #[allow(clippy::too_many_arguments)]
 fn published(
+    source: &Source,
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
+    bounds: (i32, i32),
+    view: Option<&str>,
+    cat: Option<&Arc<Catalogue>>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<WarsReply>> {
+    let Some(session) = store.session(key)? else {
+        return Ok(None);
+    };
+    let Some(page) = super::published::Published::page(&session, branch)? else {
+        return Ok(None);
+    };
+    let (first, last) = bounds;
+    let mut topology = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
+    let base = if first == i32::MIN {
+        0
+    } else {
+        topology.event_count_through(0, first - 1)?
+    };
+    let end = topology.event_count_through(0, last)?;
+    let covered = match end.checked_sub(1) {
+        Some(input) => {
+            let hour = topology.event_date(0, input)?;
+            topology.value_at(0, hour)?.map(|run| run.last_hour)
+        }
+        None => None,
+    };
+    let from = (page, end, covered);
+    let wanted = Key {
+        store: key.clone(),
+        branch,
+        view: view.map(str::to_owned),
+        selected: None,
+        catalogue: cat.cloned(),
+    };
+    let state = source.state::<Finished>();
+    let held = {
+        let mut finished = state.lock().unwrap_or_else(|error| error.into_inner());
+        let at = finished
+            .0
+            .iter()
+            .position(|held| held.key.same(&wanted) && held.bounds == bounds && held.from == from);
+        at.map(|at| {
+            finished.0[..=at].rotate_right(1);
+            finished.0[0].reply.clone()
+        })
+    };
+    if let Some(reply) = held {
+        return Ok(reply.map(|reply| (*reply).clone()));
+    }
+    let cat = cat.map(|cat| &**cat);
+    let reply = finish_published(
+        &session,
+        &mut topology,
+        branch,
+        bounds,
+        (base, end),
+        view,
+        cat,
+        cancelled,
+    )?;
+    let bytes = reply.as_ref().map_or(0, reply_bytes);
+    let reply = reply.map(Arc::new);
+    if bytes <= FINISHED_BYTES {
+        let mut finished = state.lock().unwrap_or_else(|error| error.into_inner());
+        finished
+            .0
+            .retain(|held| !(held.key.same(&wanted) && held.bounds == bounds));
+        finished.0.insert(
+            0,
+            FinishedReply {
+                key: wanted,
+                bounds,
+                from,
+                reply: reply.clone(),
+                bytes,
+            },
+        );
+        finished.0.truncate(CACHED_WALKS);
+        let mut total = 0;
+        finished.0.retain(|held| {
+            total += held.bytes;
+            total <= FINISHED_BYTES
+        });
+    }
+    Ok(reply.map(|reply| (*reply).clone()))
+}
+
+/// [`published`] read from `session`, with the `(base, end)` change inputs `topology` publishes.
+#[allow(clippy::too_many_arguments)]
+fn finish_published(
+    session: &store::Session,
+    topology: &mut Reader<'_>,
+    branch: u64,
     (first, last): (i32, i32),
+    (base, end): (u64, u64),
     view: Option<&str>,
     cat: Option<&Catalogue>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<WarsReply>> {
     use super::published::Published;
-    let Some(mut tail) = Published::read(store, key, branch, cat)? else {
+    let Some(mut tail) = Published::read(session, branch, cat)? else {
         return Ok(None);
     };
     // An hour refused, or recorded from another viewpoint, may read differently from `view`.
@@ -732,21 +859,14 @@ fn published(
     {
         return Ok(None);
     }
-    let mut topology = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
-    let base = if first == i32::MIN {
-        0
-    } else {
-        topology.event_count_through(0, first - 1)?
-    };
-    let end = topology.event_count_through(0, last)?;
     if tail.first != first || base != 0 || tail.next != end {
         return Ok(None);
     }
-    tail.close(store, key, branch)?;
+    tail.close(session, branch)?;
     let mut walk = tail.walk;
     if let Some(hour) = tail.hour {
         let mut walker = Walker {
-            topology: &mut topology,
+            topology,
             base,
             view: None,
             selected: None,

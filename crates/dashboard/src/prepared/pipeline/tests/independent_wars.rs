@@ -675,7 +675,16 @@ fn the_recorded_viewpoints_walk_published_while_preparing_answers_every_hour_fro
                 );
             }
         }
+        // One source reads its publication's tail once, whichever hours follow.
         let source = fixture.source("wars-walk");
+        let before = crate::products::wars::published_tail_reads();
+        for (hours, expected) in sets.iter().zip(&expected[0]) {
+            assert_eq!(
+                &query(&source, "wars", request(None, hours)).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(crate::products::wars::published_tail_reads() - before, 1);
         clear(source);
     });
 }

@@ -9,6 +9,7 @@ pub use participation::{WarContributionCountry, WarContributionGroup};
 pub mod prepared;
 mod published;
 #[cfg(any(test, feature = "test-support"))]
+pub use published::tail_reads as published_tail_reads;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 #[cfg(any(test, feature = "test-support"))]
@@ -1626,8 +1627,9 @@ impl Walk {
                     }
                 }
             }
-            war.open_participants.clear();
-            war.open_relations.clear();
+            // A finished reply keeps no open index, nor its allocation.
+            war.open_participants = HashMap::new();
+            war.open_relations = HashMap::new();
             war.participants
                 .sort_by(|a, b| a.first_hour.cmp(&b.first_hour).then(a.tag.cmp(&b.tag)));
             war.capitulations.sort_by_key(|c| c.hour);
