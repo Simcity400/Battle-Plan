@@ -755,8 +755,9 @@ pub(crate) fn projection(
     let mut casualties = if hours.is_empty() {
         HashMap::new()
     } else {
+        let relations = relation_indices(store, key, branch, indices)?;
         let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
-        casualties_at(&mut reader, indices, state, &reply.wars, hours)?
+        casualties_at(&mut reader, &relations, state, &reply.wars, hours)?
     };
     let _cpu = replay_frame::cpu::scope_phase("wars:query_finish");
     for (index, war) in reply.wars.iter_mut().enumerate() {
@@ -821,12 +822,42 @@ fn accumulate(
 /// first country is on the war's first side, and its two countries' slots.
 type Counted = (u64, bool, [u32; 2]);
 
+/// The catalogue's counter indices by relation, built once for its pages and kept with the query
+/// ([`series::reuse_value`]): the catalogue names each relation's lifetime by its key's text.
+fn relation_indices(
+    store: &store::Store,
+    key: &store::SourceKey,
+    branch: u64,
+    indices: &BTreeMap<String, u64>,
+) -> io::Result<Arc<HashMap<WarRelationKey, u64>>> {
+    let pages = series::catalogue_pages(store, key, "wars", branch)?;
+    series::reuse_value(
+        pages,
+        &("wars-relations", branch),
+        |relations: &HashMap<WarRelationKey, u64>| {
+            // Its buckets, a power of two past capacity at a 7/8 load, each with a control byte.
+            let buckets = (relations.capacity() * 8 / 7 + 1).next_power_of_two();
+            size_of::<HashMap<WarRelationKey, u64>>()
+                + buckets * (size_of::<(WarRelationKey, u64)>() + 1)
+                + 16
+        },
+        || {
+            Ok(indices
+                .iter()
+                .filter_map(|(text, &index)| {
+                    serde_json::from_str(text).ok().map(|relation| (relation, index))
+                })
+                .collect())
+        },
+    )
+}
+
 /// Each war's casualties at `hours`, keyed by its place in `wars`: those of the wars observed at
 /// an hour, summed over the relations they held then ([`super::WarRelationMembership`]). The
 /// change input covering an hour holds its groups through its coverage, which bounds the runs.
 fn casualties_at(
     reader: &mut Reader<'_>,
-    indices: &BTreeMap<String, u64>,
+    relations: &HashMap<WarRelationKey, u64>,
     state: &QueryCounters,
     wars: &[WarTimeline],
     hours: &BTreeSet<i32>,
@@ -858,8 +889,8 @@ fn casualties_at(
                 .iter()
                 .filter(|run| run.first_hour <= hour && hour <= run.last_hour)
                 .map(|run| {
-                    let index = indices
-                        .get(&serde_json::to_string(&run.key)?)
+                    let index = relations
+                        .get(&run.key)
                         .copied()
                         .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
                     Ok((index, run.oriented, [run.key.first.0, run.key.second.0]))
