@@ -9,7 +9,6 @@ pub use participation::{WarContributionCountry, WarContributionGroup};
 pub mod prepared;
 mod published;
 #[cfg(any(test, feature = "test-support"))]
-pub use published::POINT_INPUTS;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
 #[cfg(any(test, feature = "test-support"))]
@@ -140,7 +139,7 @@ pub struct WarTimeline {
     open_participants: HashMap<(String, WarSide), usize>,
     #[serde(skip)]
     #[ts(skip)]
-    open_relations: HashMap<WarRelationKey, usize>,
+    open_relations: HashMap<(WarRelationKey, bool), usize>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct WarRelationKey {
@@ -161,6 +160,9 @@ impl WarRelationKey {
 #[derive(Clone, Debug)]
 pub(crate) struct WarRelationMembership {
     pub key: WarRelationKey,
+    /// Whether the key's first country is on the war's first side, so its casualty counters
+    /// count for that side.
+    pub oriented: bool,
     pub first_hour: i32,
     pub last_hour: i32,
 }
@@ -324,6 +326,8 @@ struct RelationRun {
     second: String,
     start: i32,
     identity: WarRelationKey,
+    /// Whether `identity.first` is on the group's first side.
+    oriented: bool,
 }
 #[derive(Clone)]
 struct Observed {
@@ -740,21 +744,24 @@ impl Hour {
                 } else {
                     Default::default()
                 };
-                let relations = inside
-                    .into_iter()
-                    .map(|p| {
+                let relations = loss_pairs
+                    .iter()
+                    .map(|&(p, first_side)| {
                         let r = &self.world.relations[&p];
                         let (a, b) = (&self.tags[&p.0], &self.tags[&p.1]);
                         let (first, second) = if a < b { (a, b) } else { (b, a) };
+                        let identity = WarRelationKey::new(
+                            self.identities[&p.0],
+                            self.identities[&p.1],
+                            r.start_hour,
+                        );
+                        let canonical = self.identities[&r.first_country] == identity.first;
                         RelationRun {
                             first: first.clone(),
                             second: second.clone(),
                             start: r.start_hour,
-                            identity: WarRelationKey::new(
-                                self.identities[&p.0],
-                                self.identities[&p.1],
-                                r.start_hour,
-                            ),
+                            oriented: first_side == canonical,
+                            identity,
                         }
                     })
                     .collect();
@@ -908,67 +915,20 @@ fn append_relations(war: &mut WarTimeline, hour: i32, relations: &[RelationRun])
     // Grouping and representative selection decide membership.
     // One indexed tail per lifetime keeps long, wide wars linear in their edges.
     for relation in relations {
-        if let Some(&index) = war.open_relations.get(&relation.identity)
+        let open = (relation.identity.clone(), relation.oriented);
+        if let Some(&index) = war.open_relations.get(&open)
             && war.relations[index].last_hour.checked_add(1) == Some(hour)
         {
             war.relations[index].last_hour = hour;
         } else {
-            war.open_relations
-                .insert(relation.identity.clone(), war.relations.len());
+            war.open_relations.insert(open, war.relations.len());
             war.relations.push(WarRelationMembership {
                 key: relation.identity.clone(),
+                oriented: relation.oriented,
                 first_hour: hour,
                 last_hour: hour,
             });
         }
-    }
-}
-/// An open war as a resumable walk keeps it: what continuing the walk reads
-/// or extends (its last observation and loss run, and its open participant
-/// and relation runs, renumbered in their order) without its settled
-/// history. Continuing reads only the last observation and loss run, and the
-/// participant and relation runs its open maps point at, and appends new
-/// ones after them.
-fn resumable_war(war: &WarTimeline) -> WarTimeline {
-    let mut participants: Vec<_> = war
-        .open_participants
-        .iter()
-        .map(|(key, &index)| (index, key.clone()))
-        .collect();
-    participants.sort_unstable_by_key(|(index, _)| *index);
-    let mut relations: Vec<_> = war
-        .open_relations
-        .iter()
-        .map(|(key, &index)| (index, key.clone()))
-        .collect();
-    relations.sort_unstable_by_key(|(index, _)| *index);
-    WarTimeline {
-        id: war.id.clone(),
-        first_hour: war.first_hour,
-        last_hour: war.last_hour,
-        started_by: war.started_by,
-        ended_by: war.ended_by,
-        observations: war.observations.last().cloned().into_iter().collect(),
-        casualties: war.casualties.last().cloned().into_iter().collect(),
-        participants: participants
-            .iter()
-            .map(|(index, _)| war.participants[*index].clone())
-            .collect(),
-        capitulations: Vec::new(),
-        relations: relations
-            .iter()
-            .map(|(index, _)| war.relations[*index].clone())
-            .collect(),
-        open_participants: participants
-            .into_iter()
-            .enumerate()
-            .map(|(at, (_, key))| (key, at))
-            .collect(),
-        open_relations: relations
-            .into_iter()
-            .enumerate()
-            .map(|(at, (_, key))| (key, at))
-            .collect(),
     }
 }
 /// One war's native groups at an hour as one observation: the first group's
@@ -1301,8 +1261,8 @@ struct Walk {
     last_frame: Option<i32>,
     held: Option<HeldHour>,
     country_labels: labels::CountryLabels,
-    /// Whether historical country names are measured: a resumable copy only
-    /// continues the walk for exact casualty reads and never finishes a reply.
+    /// Whether historical country names are measured: one hour's walk ([`at_hour`]) names
+    /// only that hour's countries.
     labels: bool,
     compared: Vec<TableId>,
     /// Whether an hour read again that observes the very groups held before still continues
@@ -1592,7 +1552,7 @@ impl Walk {
             if let Some(viewpoint) = self.reply.viewpoints.last_mut() {
                 viewpoint.last_hour = last;
             }
-            for OpenWar { id, .. } in &self.open {
+            for OpenWar { id, relations, .. } in &self.open {
                 let war = &mut self.reply.wars[*id];
                 war.last_hour = last;
                 if let Some(observation) = war.observations.last_mut() {
@@ -1601,8 +1561,12 @@ impl Walk {
                 if let Some(losses) = war.casualties.last_mut() {
                     losses.1 = last;
                 }
-                for &index in war.open_relations.values() {
-                    war.relations[index].last_hour = last;
+                // Only the relations the war holds now: one that left it keeps its last hour.
+                for relation in relations {
+                    let open = (relation.identity.clone(), relation.oriented);
+                    if let Some(&index) = war.open_relations.get(&open) {
+                        war.relations[index].last_hour = last;
+                    }
                 }
             }
             if self
@@ -1619,83 +1583,6 @@ impl Walk {
             span(&mut self.reply.capitulations_unobserved, first + 1, last);
         }
         self.last_frame = Some(last);
-    }
-    /// A copy that only continues this walk's groups for exact casualty reads.
-    /// Later hours change only open wars, the last dated run of each kind and
-    /// the held inputs: an open war keeps only what continuing it reads or
-    /// extends ([`resumable_war`]), wars no longer open keep their place and
-    /// app ID without their history, and no names, capitulations or warnings
-    /// are collected for a reply. Its size follows the open wars, not the
-    /// hours they lasted.
-    fn resumable(&self) -> Self {
-        Self {
-            held: self.held.clone(),
-            ..self.unheld()
-        }
-    }
-    /// [`Self::resumable`] without the held hour, which a resume point reads again.
-    fn unheld(&self) -> Self {
-        let open: HashSet<usize> = self.open.iter().map(|war| war.id).collect();
-        let wars = self
-            .reply
-            .wars
-            .iter()
-            .enumerate()
-            .map(|(id, war)| {
-                if open.contains(&id) {
-                    resumable_war(war)
-                } else {
-                    WarTimeline {
-                        id: war.id.clone(),
-                        first_hour: war.first_hour,
-                        last_hour: war.last_hour,
-                        started_by: war.started_by,
-                        ended_by: war.ended_by,
-                        observations: Vec::new(),
-                        casualties: Vec::new(),
-                        participants: Vec::new(),
-                        capitulations: Vec::new(),
-                        relations: Vec::new(),
-                        open_participants: HashMap::new(),
-                        open_relations: HashMap::new(),
-                    }
-                }
-            })
-            .collect();
-        Self {
-            reply: WarsReply {
-                branch_id: self.reply.branch_id.clone(),
-                available: self.reply.available,
-                viewpoints: self.reply.viewpoints.last().cloned().into_iter().collect(),
-                country_names: Vec::new(),
-                wars,
-                unobserved: self.reply.unobserved.last().cloned().into_iter().collect(),
-                capitulations_unobserved: self
-                    .reply
-                    .capitulations_unobserved
-                    .last()
-                    .cloned()
-                    .into_iter()
-                    .collect(),
-                warnings: Vec::new(),
-            },
-            previous: self.previous,
-            previous_view: self.previous_view,
-            open: self.open.clone(),
-            seen_caps: HashSet::new(),
-            dated_caps: HashMap::new(),
-            identity_since: Default::default(),
-            warnings: BTreeSet::new(),
-            last_frame: self.last_frame,
-            held: None,
-            country_labels: Default::default(),
-            labels: false,
-            compared: self.compared.clone(),
-            regroup_unchanged: self.regroup_unchanged,
-            losses: self.losses,
-            identified: None,
-            assigned: self.assigned.clone(),
-        }
     }
     fn finish(mut self, last: i32, cat: Option<&Catalogue>) -> io::Result<WarsReply> {
         if let Some(before) = self.last_frame {

@@ -935,6 +935,7 @@ fn observation(hour: i32, relations: &[(u32, u32, i32)]) -> Observed {
                 second: b.to_string(),
                 start: *start,
                 identity: WarRelationKey::new((*a, *a), (*b, *b), *start),
+                oriented: true,
             })
             .collect(),
         loss_pairs: Vec::new(),
@@ -1894,6 +1895,42 @@ fn prepared_wars_preserve_viewpoints_future_capitulations_truncation_gaps_and_na
     );
 }
 
+/// Casualties read at every hour match the full scan where four overlapping groups hold the same
+/// relations, one relation leaves its wars and returns under the same lifetime, and the read is
+/// from either side.
+#[test]
+fn prepared_wars_read_overlapping_groups_and_a_relation_leaving_and_rejoining() {
+    use replay_data::rows::TableRows;
+    let mut frames: Vec<_> = overlapping_frames(12, false).collect();
+    for frame in &mut frames[4..8] {
+        // C1 and C2 are at peace for four hours, then the same lifetime holds again.
+        let lapsed = |first: u32, second: u32| (first, second) == (1, 2);
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            rows.retain(|row| !lapsed(row.first_country, row.second_country));
+        }
+        if let TableView::Complete(TableRows::WarOwnedRelations(rows)) =
+            &mut *frame.tables[TableId::WarOwnedRelations.index()]
+        {
+            rows.retain(|row| !lapsed(row.first_country, row.second_country));
+            // Each owner's relations stay numbered from zero.
+            let mut next = std::collections::HashMap::<u32, u32>::new();
+            for row in rows {
+                let ordinal = next.entry(row.owner).or_default();
+                row.ordinal = *ordinal;
+                *ordinal += 1;
+            }
+        }
+    }
+    let replay = Replay::from_records(
+        dashboard_base::test_fixtures::CAMPAIGN.into(),
+        &[dashboard_base::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    assert_prepared_parity(&replay, None, &[None, Some("C1"), Some("C2"), Some("C6")]);
+}
+
 #[test]
 fn prepared_wars_counter_only_hours_publish_one_global_input_change_and_reached_values() {
     use dashboard_base::prepared::series::{self, Reader};
@@ -2587,7 +2624,7 @@ fn walked_source(replay: &Arc<Replay>) -> Source {
     .unwrap()
 }
 
-type Memberships = Vec<Vec<(WarRelationKey, i32, i32)>>;
+type Memberships = Vec<Vec<(WarRelationKey, bool, i32, i32)>>;
 
 fn memberships(reply: &WarsReply) -> Memberships {
     reply
@@ -2596,7 +2633,7 @@ fn memberships(reply: &WarsReply) -> Memberships {
         .map(|war| {
             war.relations
                 .iter()
-                .map(|run| (run.key.clone(), run.first_hour, run.last_hour))
+                .map(|run| (run.key.clone(), run.oriented, run.first_hour, run.last_hour))
                 .collect()
         })
         .collect()
@@ -2635,10 +2672,10 @@ fn decoded_inputs() -> usize {
 }
 
 /// Kept walks answer every requested hour set exactly as the walk from the
-/// branch start, and a later query decodes at most one resume interval of
-/// change inputs however many blocks precede it.
+/// branch start, and a later query reads its casualties without decoding a
+/// change input however many blocks precede them.
 #[test]
-fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
+fn prepared_wars_kept_walks_match_the_whole_walk_and_read_casualties_without_inputs() {
     let selected = HashSet::from([(1, 1)]);
     for end in [300, 420] {
         let frames = walked_frames(100..end, end);
@@ -2678,18 +2715,6 @@ fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
             assert_eq!(held.len(), 1);
             assert_eq!(held[0].inputs, inputs);
             assert!(inputs > 190, "one change input per recorded hour: {inputs}");
-            assert!(held[0].points <= walks::WALK_POINTS, "{:?}", held[0]);
-            assert!(
-                held[0].point_bytes <= walks::WALK_POINT_BYTES,
-                "{:?}",
-                held[0]
-            );
-            assert!(
-                held[0].interval > 1 && held[0].interval * 32 <= held[0].inputs,
-                "{:?}",
-                held[0]
-            );
-            let interval = held[0].interval as usize;
             for hours in &sets {
                 let before = decoded_inputs();
                 let warm = walked(&fixture, &kept, view, selection, hours, None);
@@ -2703,16 +2728,10 @@ fn prepared_wars_resume_points_match_the_whole_walk_and_bound_decoded_inputs() {
                     None,
                 );
                 assert_eq!(warm, cold, "{view:?} {selection:?} {hours:?}");
-                if hours.is_empty() || hours.len() == 1 && hours.contains(&last) {
-                    assert_eq!(decoded, 0, "the kept walk already holds the last input");
-                } else if hours.len() == 1 {
-                    assert!(decoded < interval, "{hours:?}: {decoded} of {interval}");
-                } else if hours.len() <= 4 {
-                    assert!(
-                        decoded <= 4 * interval,
-                        "{hours:?}: {decoded} of {interval}"
-                    );
-                }
+                assert_eq!(
+                    decoded, 0,
+                    "{hours:?}: casualties need no input once walked"
+                );
             }
             // The whole walk from the branch start is the oracle.
             let (expected, hours) = match selection {
@@ -2829,8 +2848,8 @@ fn prepared_wars_kept_walks_continue_across_appends_as_fresh_ones() {
     );
 }
 
-/// The source keeps a few walks, most recently used first, each within its
-/// resume point bounds; a different content catalogue walks again.
+/// The source keeps a few walks, most recently used first; a different
+/// content catalogue walks again.
 #[test]
 fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
     let frames = walked_frames(100..300, 300);
@@ -2861,8 +2880,6 @@ fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
     assert_eq!(held.len(), walks::CACHED_WALKS);
     for walk in &held {
         assert_eq!(walk.inputs as usize, inputs);
-        assert!(walk.points <= walks::WALK_POINTS, "{walk:?}");
-        assert!(walk.point_bytes <= walks::WALK_POINT_BYTES, "{walk:?}");
         assert!(walk.tail_bytes > 0, "{walk:?}");
     }
     // The least recently used walk (LocalPlayer) was dropped and walks again;
@@ -2896,100 +2913,5 @@ fn prepared_wars_keep_bounded_walks_per_viewpoint_and_catalogue() {
     assert_eq!(a, again);
     assert_eq!(a, b);
     assert_eq!(walks::held(&named).len(), 2);
-
-    // A smaller point budget doubles the interval until the points fit.
-    let mid = BTreeSet::from([230]);
-    let plain = walked_source(&replay);
-    let expected = walked(&fixture, &plain, None, None, &mid, None);
-    let reference = walks::held(&plain).remove(0);
-    let budget = reference.point_bytes / 4;
-    walks::POINT_BYTES.with(|bytes| bytes.set(Some(budget)));
-    let thin = walked_source(&replay);
-    walked(&fixture, &thin, None, None, &structure, None);
-    let thinned = walks::held(&thin);
-    walks::POINT_BYTES.with(|bytes| bytes.set(None));
-    assert!(
-        thinned[0].point_bytes <= budget || thinned[0].points == 1,
-        "{:?}",
-        thinned[0]
-    );
-    assert!(thinned[0].interval > reference.interval, "{:?}", thinned[0]);
-    let before = decoded_inputs();
-    assert_eq!(walked(&fixture, &thin, None, None, &mid, None), expected);
-    assert!(decoded_inputs() - before < thinned[0].interval as usize);
 }
 
-#[test]
-fn resumable_walks_keep_each_open_wars_continuation_and_not_its_history() {
-    use replay_data::rows::TableRows;
-    use replay_frame::frame::TableView;
-    // Losses move every hour, so every hour adds a loss run to each war.
-    let losses = |hour: i32| {
-        let mut frame = recorded(hour);
-        if let TableView::Complete(TableRows::WarRelations(rows)) =
-            &mut *frame.tables[TableId::WarRelations.index()]
-        {
-            for row in rows {
-                row.second_casualties = i64::from(hour);
-            }
-        }
-        frame
-    };
-    let mut walk = Walk::new(1, 100);
-    for hour in 100..140 {
-        walk.observe(&losses(hour), None, None, None, None);
-    }
-    let ids = |walk: &Walk| walk.open.iter().map(|war| war.id).collect::<Vec<_>>();
-    let open = ids(&walk);
-    assert!(!open.is_empty(), "the fixture's wars are open");
-    let mut copy = walk.resumable();
-    for &id in &open {
-        assert!(
-            walk.reply.wars[id].casualties.len() >= 40,
-            "war {id}: a loss run every hour"
-        );
-        let kept = &copy.reply.wars[id];
-        assert_eq!(kept.casualties.len(), 1, "war {id}: its last loss run");
-        assert_eq!(kept.observations.len(), 1, "war {id}: its last observation");
-        assert_eq!(kept.participants.len(), kept.open_participants.len());
-        assert_eq!(kept.relations.len(), kept.open_relations.len());
-    }
-    // Continued alike, the copy holds what the walk holds of each open war.
-    for hour in 140..150 {
-        let frame = losses(hour);
-        walk.observe(&frame, None, None, None, None);
-        copy.observe(&frame, None, None, None, None);
-    }
-    assert_eq!(ids(&copy), ids(&walk));
-    fn json(value: impl Serialize) -> serde_json::Value {
-        serde_json::to_value(value).unwrap()
-    }
-    for OpenWar { id, .. } in &walk.open {
-        let (full, kept) = (&walk.reply.wars[*id], &copy.reply.wars[*id]);
-        assert_eq!(json(full.casualties.last()), json(kept.casualties.last()));
-        assert_eq!(
-            json(full.observations.last()),
-            json(kept.observations.last())
-        );
-        assert_eq!(
-            (full.first_hour, full.last_hour),
-            (kept.first_hour, kept.last_hour)
-        );
-        for (key, &index) in &full.open_participants {
-            assert_eq!(
-                json(&full.participants[index]),
-                json(&kept.participants[kept.open_participants[key]])
-            );
-        }
-        for (key, &index) in &full.open_relations {
-            let (a, b) = (
-                &full.relations[index],
-                &kept.relations[kept.open_relations[key]],
-            );
-            assert_eq!(
-                (&a.key, a.first_hour, a.last_hour),
-                (&b.key, b.first_hour, b.last_hour)
-            );
-        }
-    }
-}

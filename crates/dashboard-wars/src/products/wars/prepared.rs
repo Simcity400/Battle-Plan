@@ -704,8 +704,8 @@ fn read_query_counters(
 /// the original native-holder selection; an empty set never falls back.
 /// `hours` controls exact casualty hydration only; an empty set returns structure.
 /// The viewpoint's walk is kept on the source ([`super::walks`]): a later query
-/// walks only inputs published since, and the inputs from the nearest resume
-/// point to each requested hour.
+/// walks only inputs published since, and reads each requested hour's casualties
+/// from the relations its wars held then ([`casualties_at`]).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn projection(
     store: &store::Store,
@@ -729,67 +729,17 @@ pub(crate) fn projection(
         .find(|b| b.id == branch)
         .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
     let bounds = branch_bounds(source.replay_ref(), branch_info);
-    let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
-    let mut casualties: HashMap<usize, Vec<WarCasualtyRun>> = HashMap::new();
     let cpu = replay_frame::cpu::scope_phase("wars:query_walk");
     let mut reply = super::walks::walk(
-        source,
-        store,
-        key,
-        branch,
-        bounds,
-        params,
-        selected,
-        cat,
-        hours,
-        cancelled,
-        |walk, span| {
-            if hours
-                .range(span.first_hour..=span.last_hour)
-                .next()
-                .is_none()
-            {
-                return Ok(());
-            }
-            let Some((inputs, _)) = walk
-                .held
-                .as_ref()
-                .and_then(|held| held.observed.as_ref().ok())
-            else {
-                return Ok(());
-            };
-            let counters: HashMap<_, _> = inputs
-                .world
-                .relations
-                .iter()
-                .map(|(&pair, row)| {
-                    let identity = WarRelationKey::new(
-                        inputs.identities[&row.first_country],
-                        inputs.identities[&row.second_country],
-                        row.start_hour,
-                    );
-                    let index = indices
-                        .get(&serde_json::to_string(&identity)?)
-                        .copied()
-                        .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
-                    Ok((
-                        pair,
-                        (
-                            index,
-                            inputs.identities[&row.first_country] == identity.first,
-                            [identity.first.0, identity.second.0],
-                        ),
-                    ))
-                })
-                .collect::<io::Result<_>>()?;
-            let losses = hydrate_losses(&mut reader, &state, &counters, &walk.open, span, hours)?;
-            for (war, runs) in walk.open.iter().zip(losses) {
-                casualties.entry(war.id).or_default().extend(runs);
-            }
-            Ok(())
-        },
+        source, store, key, branch, bounds, params, selected, cat, cancelled,
     )?;
     drop(cpu);
+    let mut casualties = if hours.is_empty() {
+        HashMap::new()
+    } else {
+        let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
+        casualties_at(&mut reader, &indices, &state, &reply.wars, hours)?
+    };
     let _cpu = replay_frame::cpu::scope_phase("wars:query_finish");
     for (index, war) in reply.wars.iter_mut().enumerate() {
         war.casualties.clear();
@@ -849,26 +799,79 @@ fn accumulate(
     *last = (*last).min(run.last_hour);
 }
 
+/// A relation's counters as a war counts them at an hour: their index, whether the relation's
+/// first country is on the war's first side, and its two countries' slots.
+type Counted = (u64, bool, [u32; 2]);
+
+/// Each war's casualties at `hours`, keyed by its place in `wars`: those of the wars observed at
+/// an hour, summed over the relations they held then ([`super::WarRelationMembership`]). The
+/// change input covering an hour holds its groups through its coverage, which bounds the runs.
+fn casualties_at(
+    reader: &mut Reader<'_>,
+    indices: &BTreeMap<String, u64>,
+    state: &QueryCounters,
+    wars: &[WarTimeline],
+    hours: &BTreeSet<i32>,
+) -> io::Result<HashMap<usize, Vec<WarCasualtyRun>>> {
+    let _cpu = replay_frame::cpu::scope_phase("wars:query_losses");
+    let mut casualties: HashMap<usize, Vec<WarCasualtyRun>> = HashMap::new();
+    let mut asked = hours.iter().copied().peekable();
+    while let Some(hour) = asked.next() {
+        let Some(span) = reader.value_at(0, hour)? else {
+            continue;
+        };
+        let mut covered = vec![hour];
+        while let Some(next) = asked.next_if(|next| *next <= span.last_hour) {
+            covered.push(next);
+        }
+        let mut ids = Vec::new();
+        let mut open = Vec::new();
+        for (id, war) in wars.iter().enumerate() {
+            let at = war.observations.partition_point(|run| run.last_hour < hour);
+            if war
+                .observations
+                .get(at)
+                .is_none_or(|run| run.first_hour > hour)
+            {
+                continue;
+            }
+            let held = war
+                .relations
+                .iter()
+                .filter(|run| run.first_hour <= hour && hour <= run.last_hour)
+                .map(|run| {
+                    let index = indices
+                        .get(&serde_json::to_string(&run.key)?)
+                        .copied()
+                        .ok_or_else(|| invalid("Missing prepared war relation lifetime"))?;
+                    Ok((index, run.oriented, [run.key.first.0, run.key.second.0]))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            ids.push(id);
+            open.push(held);
+        }
+        let losses = hydrate_losses(reader, state, &open, span, &covered)?;
+        for (id, runs) in ids.into_iter().zip(losses) {
+            casualties.entry(id).or_default().extend(runs);
+        }
+    }
+    Ok(casualties)
+}
+
 /// Open runs are already in state. Proven closed bounds need only amounts from
 /// one supplying-batch lookup per reached hour, across all groups. Other counter
 /// histories read contiguous requested windows once per key, retaining only sums.
 fn hydrate_losses(
     reader: &mut Reader<'_>,
     state: &QueryCounters,
-    counters: &HashMap<Pair, (u64, bool, [u32; 2])>,
-    open: &[OpenWar],
+    open: &[Vec<Counted>],
     span: series::Run,
-    hours: &BTreeSet<i32>,
+    hours: &[i32],
 ) -> io::Result<Vec<Vec<WarCasualtyRun>>> {
-    let _cpu = replay_frame::cpu::scope_phase("wars:query_losses");
-    let hours: Vec<_> = hours
-        .range(span.first_hour..=span.last_hour)
-        .copied()
-        .collect();
     let mut sums =
         vec![vec![(span.first_hour, span.last_hour, [0_i128; 4]); hours.len()]; open.len()];
     let mut windows: Vec<(i32, i32)> = Vec::new();
-    for &hour in &hours {
+    for &hour in hours {
         match windows.last_mut() {
             Some((_, last)) if last.checked_add(1) == Some(hour) => *last = hour,
             _ => windows.push((hour, hour)),
@@ -877,13 +880,8 @@ fn hydrate_losses(
     let mut unknown = BTreeMap::new();
     let mut targets = BTreeMap::new();
     for (group, war) in open.iter().enumerate() {
-        for &(pair, first) in &war.loss_pairs {
-            let (index, canonical, countries) = counters[&pair];
-            let order = if first == canonical {
-                [0, 1, 2, 3]
-            } else {
-                [2, 3, 0, 1]
-            };
+        for &(index, oriented, countries) in war {
+            let order = if oriented { [0, 1, 2, 3] } else { [2, 3, 0, 1] };
             for (output, field) in order.into_iter().enumerate() {
                 let key = 1 + index * 4 + field as u64;
                 // Counters follow the relation's identity order, two per endpoint.

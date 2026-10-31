@@ -613,7 +613,7 @@ fn wars_and_casualties_prepared_on_their_own_commit_resume_reload_and_append_as_
 }
 
 #[test]
-fn the_recorded_viewpoints_walk_published_while_preparing_answers_from_its_points() {
+fn the_recorded_viewpoints_walk_published_while_preparing_answers_every_hour_from_its_tail() {
     use crate::products::wars::walks_decoded_inputs as decoded;
     let replay = scenario(6, true);
     let mut fixture = Fixture::new(&replay);
@@ -668,13 +668,9 @@ fn the_recorded_viewpoints_walk_published_while_preparing_answers_from_its_point
                     assert!(walked > 0, "{view:?}, hours {hours:?}");
                     continue;
                 }
-                // The last hour reads the published tail alone; any other hour
-                // walks fewer inputs than a point's interval from its point.
-                if hours.len() == 1 && hours[0] == 125 {
-                    assert_eq!(walked, 0, "{view:?}: the last hour walks no input");
-                }
-                assert!(
-                    walked < hours.len() * crate::products::wars::POINT_INPUTS as usize,
+                // The published tail answers every hour's casualties: no input is walked.
+                assert_eq!(
+                    walked, 0,
                     "{view:?}, hours {hours:?}: {walked} inputs walked"
                 );
             }

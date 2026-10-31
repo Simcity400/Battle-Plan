@@ -168,6 +168,7 @@ impl CountryLabels {
     }
 
     /// Held operands, names and views, counted for a walk cache's byte estimate.
+    #[cfg(test)]
     pub fn entries(&self) -> usize {
         self.seen.len()
             + self.read.len()

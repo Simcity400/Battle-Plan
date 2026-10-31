@@ -632,6 +632,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         sections: &["wars"],
         walk: true,
         content: Content::Bound,
+        // 2: memberships carry their orientation, and no resume points are published.
+        version: 2,
         ..family("wars")
     },
     Descriptor {

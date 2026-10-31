@@ -5,17 +5,11 @@
 //! catalogue) over each change input as they publish it, in input order. A
 //! war that leaves the walk's open groups no longer changes before the
 //! reply is finished, so it is published once, in the next flush's range of
-//! closed wars. Every [`POINT_INPUTS`] inputs a resumable copy of the walk
-//! and the decoded inputs are published as a point: the copy holds only what
-//! continuing the walk reads (each open war's last observation and loss run
-//! and its open participant and relation runs, the last dated runs, the held
-//! inputs) and the number of wars, not the wars no longer open or the
-//! history of open ones, so a point's size follows the wars open at it.
-//! Points count toward the batch's bytes. Each flush rewrites the tail: the whole walk
-//! but its closed wars, which keep only their place and app ID, with the
-//! decoded inputs and the coverage needed to continue it. A default query
-//! finishes the tail with the closed wars and hydrates each requested hour
-//! from the nearest point, walking fewer than [`POINT_INPUTS`] inputs.
+//! closed wars. Each flush rewrites the tail: the whole walk but its closed
+//! wars, which keep only their place and app ID, with the decoded inputs and
+//! the coverage needed to continue it. A default query finishes the tail with
+//! the closed wars; each war's relation memberships answer its casualties at
+//! any hour, so no earlier walk is published.
 
 use super::walks::decode_input;
 use super::*;
@@ -23,21 +17,9 @@ use dashboard_base::prepared::series;
 use replay_data::codec::Decoder;
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Inputs between published points.
-#[cfg(not(any(test, feature = "test-support")))]
-pub const POINT_INPUTS: u64 = 128;
-#[cfg(any(test, feature = "test-support"))]
-pub const POINT_INPUTS: u64 = 4;
-
 /// The tail (range 0) and its decoded inputs (range 1).
 fn tail_section(branch: u64) -> String {
     format!("wars-walk-{branch}")
-}
-
-/// Point `p` (after input `p * POINT_INPUTS - 1`) at range `2 * (p - 1)`, its
-/// decoded inputs at the range after.
-fn points_section(branch: u64) -> String {
-    format!("wars-walk-points-{branch}")
 }
 
 /// Each flush's closed wars, one range per flush that closed any.
@@ -48,10 +30,10 @@ fn closed_section(branch: u64) -> String {
 /// What a war holds beside its reply fields.
 #[derive(Serialize, Deserialize)]
 struct SavedWar {
-    relations: Vec<(WarRelationKey, i32, i32)>,
+    relations: Vec<(WarRelationKey, bool, i32, i32)>,
     /// In participant order, so equal walks save equal bytes.
     open_participants: Vec<(String, WarSide, usize)>,
-    open_relations: Vec<(WarRelationKey, usize)>,
+    open_relations: Vec<((WarRelationKey, bool), usize)>,
 }
 
 /// A walk without its held inputs, which are rebuilt from the decoded
@@ -128,21 +110,26 @@ fn save(walk: &Walk) -> SavedWalk {
     }
 }
 
-fn memberships(war: &WarTimeline) -> Vec<(WarRelationKey, i32, i32)> {
+fn memberships(war: &WarTimeline) -> Vec<(WarRelationKey, bool, i32, i32)> {
     war.relations
         .iter()
-        .map(|run| (run.key.clone(), run.first_hour, run.last_hour))
+        .map(|run| (run.key.clone(), run.oriented, run.first_hour, run.last_hour))
         .collect()
 }
 
-fn restored_memberships(relations: Vec<(WarRelationKey, i32, i32)>) -> Vec<WarRelationMembership> {
+fn restored_memberships(
+    relations: Vec<(WarRelationKey, bool, i32, i32)>,
+) -> Vec<WarRelationMembership> {
     relations
         .into_iter()
-        .map(|(key, first_hour, last_hour)| WarRelationMembership {
-            key,
-            first_hour,
-            last_hour,
-        })
+        .map(
+            |(key, oriented, first_hour, last_hour)| WarRelationMembership {
+                key,
+                oriented,
+                first_hour,
+                last_hour,
+            },
+        )
         .collect()
 }
 
@@ -243,85 +230,12 @@ struct Tail {
     walk: SavedWalk,
 }
 
-/// A resumable copy of the walk after input `next - 1`, published at `hour`.
-/// With `wars`, the walk holds only its open wars (ids `open`, in id order)
-/// of that many: a war no longer open is never read again by a walk resumed
-/// here, so it is only a place.
-#[derive(Serialize, Deserialize)]
-struct Point {
-    next: u64,
-    hour: Option<i32>,
-    walk: SavedWalk,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    wars: Option<usize>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    open: Vec<usize>,
-}
-
-/// `saved` holding only the wars `open` names, and the number of wars it held.
-fn elide(mut saved: SavedWalk, open: &[usize]) -> (SavedWalk, usize) {
-    let count = saved.reply.wars.len();
-    let wars = std::mem::take(&mut saved.reply.wars);
-    let records = std::mem::take(&mut saved.wars);
-    for (id, (war, record)) in wars.into_iter().zip(records).enumerate() {
-        if open.binary_search(&id).is_ok() {
-            saved.reply.wars.push(war);
-            saved.wars.push(record);
-        }
-    }
-    (saved, count)
-}
-
-/// `saved` (holding the wars `open` names) with each of its `count` wars in
-/// its place: a war it does not hold is a place with its app ID only.
-fn expand(mut saved: SavedWalk, count: usize, open: &[usize]) -> io::Result<SavedWalk> {
-    if saved.reply.wars.len() != open.len() || saved.wars.len() != open.len() {
-        return Err(invalid("Published wars point is malformed"));
-    }
-    let mut held: Vec<Option<(WarTimeline, SavedWar)>> = (0..count).map(|_| None).collect();
-    let wars = std::mem::take(&mut saved.reply.wars);
-    let records = std::mem::take(&mut saved.wars);
-    for (&id, war) in open.iter().zip(wars.into_iter().zip(records)) {
-        *held
-            .get_mut(id)
-            .ok_or_else(|| invalid("Published wars point holds a war out of place"))? = Some(war);
-    }
-    for (id, war) in held.into_iter().enumerate() {
-        let (war, record) = war.unwrap_or_else(|| {
-            (
-                WarTimeline {
-                    id: id.to_string(),
-                    first_hour: 0,
-                    last_hour: 0,
-                    started_by: false,
-                    ended_by: false,
-                    observations: Vec::new(),
-                    casualties: Vec::new(),
-                    participants: Vec::new(),
-                    capitulations: Vec::new(),
-                    relations: Vec::new(),
-                    open_participants: HashMap::new(),
-                    open_relations: HashMap::new(),
-                },
-                SavedWar {
-                    relations: Vec::new(),
-                    open_participants: Vec::new(),
-                    open_relations: Vec::new(),
-                },
-            )
-        });
-        saved.reply.wars.push(war);
-        saved.wars.push(record);
-    }
-    Ok(saved)
-}
-
 /// A war no longer open, as the reply finishes it but for capitulations.
 #[derive(Serialize, Deserialize)]
 struct Closed {
     id: usize,
     war: WarTimeline,
-    relations: Vec<(WarRelationKey, i32, i32)>,
+    relations: Vec<(WarRelationKey, bool, i32, i32)>,
 }
 
 fn read_bytes(file: Option<impl io::Read>) -> io::Result<Option<Vec<u8>>> {
@@ -354,9 +268,6 @@ pub(super) struct Prepared {
     observed: Option<i32>,
     closed: u64,
     pending_closed: Vec<Closed>,
-    /// Each new point's number, the point as published and its decoded
-    /// inputs.
-    pending_points: Vec<(u64, Vec<u8>, Vec<u8>)>,
     /// Whether the decoded inputs changed since the tail last published them.
     walked: bool,
 }
@@ -409,7 +320,6 @@ impl Prepared {
             observed: None,
             closed: 0,
             pending_closed: Vec::new(),
-            pending_points: Vec::new(),
             walked: false,
         }
     }
@@ -435,7 +345,6 @@ impl Prepared {
             observed: tail.observed,
             closed: tail.closed,
             pending_closed: Vec::new(),
-            pending_points: Vec::new(),
             walked: false,
         })
     }
@@ -488,31 +397,6 @@ impl Prepared {
         }
         self.next += 1;
         self.hour = Some(hour);
-        if self.next.is_multiple_of(POINT_INPUTS) {
-            let decoded = self
-                .decoded
-                .as_ref()
-                .map(encode_frame)
-                .transpose()?
-                .unwrap_or_default();
-            // Its open wars' continuation only, without the wars no longer
-            // open, published as `series::write_reply` writes a reply.
-            let resumable = self.walk.resumable();
-            let mut open: Vec<usize> = resumable.open.iter().map(|war| war.id).collect();
-            open.sort_unstable();
-            open.dedup();
-            let (walk, wars) = elide(save(&resumable), &open);
-            let point = Point {
-                next: self.next,
-                hour: self.hour,
-                walk,
-                wars: Some(wars),
-                open,
-            };
-            let point = series::compress(serde_json::to_vec(&point)?.as_slice(), 3)?;
-            self.pending_points
-                .push((self.next / POINT_INPUTS, point, decoded));
-        }
         Ok(())
     }
 
@@ -553,14 +437,10 @@ impl Prepared {
 
     /// Bytes held for the next flush.
     pub(super) fn bytes(&self) -> usize {
-        self.pending_points
-            .iter()
-            .map(|(_, point, decoded)| point.len() + decoded.len())
-            .sum::<usize>()
-            + self.pending_closed.len() * 1024
+        self.pending_closed.len() * 1024
     }
 
-    /// Publish the closed wars and points since the last flush, and the tail.
+    /// Publish the closed wars since the last flush, and the tail.
     pub(super) fn flush(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
         if !self.pending_closed.is_empty() {
             series::write_reply(
@@ -571,11 +451,6 @@ impl Prepared {
             )?;
             self.closed += 1;
             self.pending_closed.clear();
-        }
-        for (point, saved, decoded) in self.pending_points.drain(..) {
-            let range = 2 * (point - 1);
-            writer.write_at(&points_section(branch), range, saved.as_slice())?;
-            writer.write_at(&points_section(branch), range + 1, decoded.as_slice())?;
         }
         series::write_reply(
             writer,
@@ -665,29 +540,4 @@ impl Published {
         }
         Ok(())
     }
-}
-
-/// Point `point` of a published walk: inputs walked, the hour of the last,
-/// the walk and its decoded inputs.
-pub(super) fn point(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-    point: u64,
-    cat: Option<&Catalogue>,
-    first: i32,
-) -> io::Result<(u64, Option<i32>, Walk, DecodedFrame)> {
-    let section = points_section(branch);
-    let range = 2 * (point - 1);
-    let saved: Point = parse(read_bytes(store.read(key, &section, range)?)?)?
-        .ok_or_else(|| invalid("Published wars point is missing"))?;
-    let decoded = read_bytes(store.read(key, &section, range + 1)?)?
-        .ok_or_else(|| invalid("Published wars point inputs are missing"))?;
-    let decoded = decode_frame(&decoded)?;
-    let held = match saved.wars {
-        Some(count) => expand(saved.walk, count, &saved.open)?,
-        None => saved.walk,
-    };
-    let walk = restore(held, Some(&decoded), cat, branch, first)?;
-    Ok((saved.next, saved.hour, walk, decoded))
 }
