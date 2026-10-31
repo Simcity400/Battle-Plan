@@ -52,7 +52,7 @@ export default function WarContributionWidget({ widget, runtime, active, headerS
   // The requested-hour groups, read from that hour's frame alone as Wars reads them.
   // The last read hour's groups stay shown while playback's newest is read; both halves use its hour.
   const exact = useFollowedProduct(runtime.client, track && readHour != null ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
-    params: { branchId: track.branch.id, viewpointTag, reads: [{ hour: readHour }] } } : null, ['reads'], active, validateWarsReply, track?.source);
+    params: { branchId: track.branch.id, viewpointTag, current: [{ hour: readHour }] } } : null, ['current'], active, validateWarsReply, track?.source);
   const shownHour = readHour == null ? null : exact.moment ? (JSON.parse(exact.moment) as [{ hour: number }[]])[0][0]?.hour ?? readHour : readHour;
   // The war each read hour was asked for: a reply still shown presents its own war.
   const asked = useRef(new Map<number, NonNullable<typeof war>>());

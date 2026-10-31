@@ -2191,9 +2191,9 @@ fn query_data(
             // App continuity numbers groups across consecutive observed hours,
             // so the lanes are the walk of the prepared prefix's change inputs;
             // the walk's hours after its last input are pending, not
-            // unobserved. Requested reads also list native groups and
-            // contributions from each hour's frame alone (`current`),
-            // independently of the prefix's progress.
+            // unobserved. Requested `current` hours list native groups and
+            // contributions from each hour's frame alone, independently of
+            // the prefix's progress.
             let prefix = super::prefix::read_or_empty(
                 source,
                 content,

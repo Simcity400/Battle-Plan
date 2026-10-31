@@ -2582,7 +2582,7 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_growth() {
                 source_id: source.key().source_id.clone(),
                 revision: source.key().revision.clone(),
                 product: "wars".into(),
-                params: serde_json::json!({"branchId":"1","viewpointTag":viewpoint_tag,"reads":([100,101,102,103,104,105,106].map(|hour|serde_json::json!({"hour":hour})))}),
+                params: serde_json::json!({"branchId":"1","viewpointTag":viewpoint_tag,"reads":([100,101,102,103,104,105,106].map(|hour|serde_json::json!({"hour":hour}))),"current":([100,101,102,103,104,105,106].map(|hour|serde_json::json!({"hour":hour})))}),
             };
             let actual: serde_json::Value = serde_json::from_str(
                 &crate::prepared::query::query(source, &request, None, &flag).unwrap(),

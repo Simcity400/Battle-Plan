@@ -562,8 +562,12 @@ struct Reached {
 }
 #[derive(Deserialize)]
 struct Requested {
+    /// Hours whose casualties the walk hydrates.
     #[serde(default)]
     reads: Vec<Reached>,
+    /// Hours whose own frame's groups and contributions are read ([`current`]).
+    #[serde(default)]
+    current: Vec<Reached>,
 }
 
 pub fn query(
@@ -608,7 +612,7 @@ pub fn query(
     Ok(serde_json::to_value(reply)?)
 }
 
-/// The groups and contributions at each requested read hour, independently
+/// The groups and contributions at each requested `current` hour, independently
 /// of preparation's progress, each from its hour's frame alone
 /// ([`super::at_hour`]); an hour outside the branch or in a recorded gap is
 /// unavailable.
@@ -631,7 +635,7 @@ pub fn current(
         .ok_or_else(|| invalid("Wars branch is not in this recording"))?;
     let (first, last) = branch_bounds(source.replay_ref(), start);
     let requested: Requested = serde_json::from_value(value.clone())?;
-    let hours: BTreeSet<i32> = requested.reads.iter().map(|read| read.hour).collect();
+    let hours: BTreeSet<i32> = requested.current.iter().map(|read| read.hour).collect();
     if hours.is_empty() {
         return Ok(Vec::new());
     }

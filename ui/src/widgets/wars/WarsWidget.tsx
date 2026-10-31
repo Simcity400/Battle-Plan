@@ -72,16 +72,19 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const [hoverHour,setHoverHour]=useState<number|null>(null);
   const product = useProduct(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'wars',
     params: { branchId: track.branch.id, viewpointTag } } : null, active, validateWarsReply, track?.source);
-  // The structural reply stays mounted while independent exact counter reads load.
-  const exact=useFollowedProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
-    params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour}))}} : null,
-    ['reads'],active,validateWarsReply,track?.source);
   const data = product.data;
   // Before preparation covers the branch, the lanes are the prepared prefix's
   // and the hours after it are still being prepared; a read past it lists the
   // groups at that hour from its frame alone.
   const prefix = useMemo(() => preparedPrefix(data), [data]);
   const preparedThrough = prefix?.pending.length ? prefix.coverage.lastHour : null;
+  // The structural reply stays mounted while independent exact counter reads load. An hour's own
+  // frame is read only where it shows: the tooltip's hour, and the playhead past the prefix.
+  const framed = [...new Set([...(hoverHour === null ? [] : [hoverHour]), ...(preparedThrough != null && at > preparedThrough ? [at] : [])])];
+  const exact=useFollowedProduct(runtime.client,track ? {sourceId:track.source.id,revision:track.source.revision,product:'wars',
+    params:{branchId:track.branch.id,viewpointTag,reads:[...new Set([at,...(hoverHour===null ? [] : [hoverHour])])].map(hour=>({hour})),
+      current:framed.map(hour=>({hour}))}} : null,
+    ['reads','current'],active,validateWarsReply,track?.source);
   const current = preparedThrough != null && at > preparedThrough ? currentWarsAt(exact.data, at) : null;
   const exactWars=useMemo(()=>new Map(exact.data?.wars.map(war=>[war.id,war]) ?? []),[exact.data]);
   // The hours the shown exact reply answers; another hour's losses are still loading.

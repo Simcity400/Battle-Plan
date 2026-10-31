@@ -297,7 +297,7 @@
       "kind": "wars",
       "requests": [
         {"product": "wars", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "viewpointTag": "$tag"}},
-        {"product": "wars", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "viewpointTag": "$tag", "reads": [{"hour": "$first"}]}}
+        {"product": "wars", "route": "prepared", "firstView": "a", "params": {"branchId": "$branch", "viewpointTag": "$tag", "reads": [{"hour": "$first"}], "current": [{"hour": "$first"}]}}
       ]
     },
     {

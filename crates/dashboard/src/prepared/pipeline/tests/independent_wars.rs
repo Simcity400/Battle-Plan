@@ -727,7 +727,8 @@ fn a_wars_read_of_an_hours_frame_is_refused_on_the_prepared_lane_before_it_walks
     use crate::products::wars::walks_decoded_inputs as decoded;
     let replay = scenario(6, true);
     let mut fixture = Fixture::new(&replay);
-    let request = json!({"branchId": "1", "viewpointTag": "TWO", "reads": [{"hour": 110}]});
+    let request = json!({"branchId": "1", "viewpointTag": "TWO", "reads": [{"hour": 110}],
+        "current": [{"hour": 110}]});
     own(|| {
         let source = fixture.source("wars-read-first");
         run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
@@ -742,6 +743,30 @@ fn a_wars_read_of_an_hours_frame_is_refused_on_the_prepared_lane_before_it_walks
         assert_eq!(decoded(), before, "refused before walking");
         query(&source, "wars", request.clone()).unwrap();
         assert!(decoded() > before, "the sampled read walks");
+        clear(source);
+    });
+}
+
+/// Casualties at an hour come from prepared counters alone: only the hours
+/// asked for as `current` read their own frame.
+#[test]
+fn a_wars_read_of_casualties_alone_answers_on_the_prepared_lane() {
+    let replay = scenario(6, true);
+    let mut fixture = Fixture::new(&replay);
+    let request = json!({"branchId": "1", "viewpointTag": "TWO", "reads": [{"hour": 110}]});
+    own(|| {
+        let source = fixture.source("wars-casualties-alone");
+        run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
+        drop(source);
+        // A source of its own holds no frame, so any frame read would be refused.
+        let source = fixture.source("wars-casualties-alone");
+        let (answer, refused) = dashboard_base::prepared::query::progressive::without_block_decodes(
+            || query(&source, "wars", request.clone()),
+        );
+        assert!(!refused, "no recorded frame is read");
+        let answer = answer.unwrap();
+        assert!(answer.get("current").is_none());
+        assert!(answer["wars"].is_array());
         clear(source);
     });
 }
@@ -1048,8 +1073,8 @@ fn wars_answer_their_prepared_prefix_with_the_groups_at_a_later_hour() {
         let source = fixture.source("wars-prefix");
         let flag = AtomicBool::new(false);
         let params = |reads: &[i32]| {
-            json!({"branchId": "1", "viewpointTag": null,
-                "reads": reads.iter().map(|hour| json!({"hour": hour})).collect::<Vec<_>>()})
+            let reads: Vec<_> = reads.iter().map(|hour| json!({"hour": hour})).collect();
+            json!({"branchId": "1", "viewpointTag": null, "reads": reads, "current": reads})
         };
         let cold = query(&source, "wars", params(&[])).unwrap();
         assert!(cold["wars"].as_array().unwrap().is_empty());

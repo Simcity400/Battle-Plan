@@ -80,8 +80,8 @@ const observation = { ...span, viewpointTag: 'SSS', viewpointSide: ['SSS'], oppo
 const war = { id: '1', ...span, startedBy: false, endedBy: false, observations: [observation], casualties: [], participants: [], capitulations: [] };
 const score = (tag: string, side: string, value: string) => ({ tag, side, equipmentDamage: value, occupation: '0', airDamage: '0', strategicBombing: '0', shipDamage: '0',
   convoyDamage: '0', casualties: '0', unknownCasualties: '0', lendLeaseSent: '0', lendLeaseReceived: '0', score: '0', participation: value });
-const wars = (reads: { hour: number }[] | undefined) => ({ branchId: '1', available: true, viewpoints: [{ tag: 'SSS', ...span }], warnings: [], unobserved: [],
-  capitulationsUnobserved: [], countryNames: [], wars: [war], ...(reads ? { current: reads.map(read => ({ hour: read.hour, available: true, wars: [war], warnings: [],
+const wars = (current: { hour: number }[] | undefined) => ({ branchId: '1', available: true, viewpoints: [{ tag: 'SSS', ...span }], warnings: [], unobserved: [],
+  capitulationsUnobserved: [], countryNames: [], wars: [war], ...(current ? { current: current.map(read => ({ hour: read.hour, available: true, wars: [war], warnings: [],
     contributions: [{ viewpointSide: ['SSS'], opposingSide: ['RRR'], reason: null, participants: [score('SSS', 'viewpoint', '100000'), score('RRR', 'opponent', '100000')] }] })) } : {}) });
 const aidLink = (key: string, sender: string, senderSlot: number, firstHour: number, lastHour: number) => ({ key, sender, senderSlot, senderCountryId: senderSlot * 10,
   host: 'SSS', hostSlot: 7, hostCountryId: 70, runs: [{ firstHour, lastHour, divisions: 3, startsSegment: false }] });
@@ -104,13 +104,13 @@ const client: DashboardClient = { available: true,
   async product<T>(request: ProductRequest, signal: AbortSignal): Promise<ProductReply<T>> {
     requests.push(request);
     await later();
-    const params = request.params as { hour: number; tags: string[]; size?: string; faction?: string; view?: string; reads?: { hour: number }[]; flags?: unknown[] };
+    const params = request.params as { hour: number; tags: string[]; size?: string; faction?: string; view?: string; current?: { hour: number }[]; flags?: unknown[] };
     if (request.product === 'country-groups') return reply(request, groupsByRevision[request.revision] as T);
     if (request.product === 'faction-details') return reply(request, details(params.hour, params.faction!) as T);
     if (request.product === 'diplomacy-state') return reply(request, (params.view === 'pair'
       ? { forward: opinion(50), reverse: opinion(-30), unobserved: [], first: null, second: null, coverage: COVERED, pending: [], warnings: [] }
       : { hour: params.hour, owners: [], unresolved: 0, snapshot: false, coverage: COVERED, pending: [], warnings: [] }) as T);
-    if (request.product === 'wars') return reply(request, wars(params.reads) as T);
+    if (request.product === 'wars') return reply(request, wars(params.current) as T);
     if (request.product === 'volunteers-expeditionaries') return reply(request, { tallies: [], unobserved: [], warnings: [],
       links: [aidLink('old', 'RRR', 5, 0, 23), aidLink('renamed', 'QQQ', 5, 24, 200), aidLink('new', 'RRR', 6, 24, 200)] } as T);
     if (request.product === 'country-flags') return reply(request, { size: params.size, flags: [],
