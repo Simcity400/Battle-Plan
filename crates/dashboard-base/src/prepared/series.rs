@@ -2423,6 +2423,7 @@ pub fn decoded_event_rows() -> u64 {
 thread_local! {
     static BLOB_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static RUN_BOUNDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static BLOB_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EVENT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EVENT_PARSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -2713,6 +2714,14 @@ pub struct Reader<'a> {
     event_walk: Option<EventWalk>,
     run_bounds: HashMap<u64, (u64, Run)>,
     event_orders: HashMap<u64, Option<order::Position>>,
+    held: Held,
+}
+/// The blob and summary levels a fold last read, by batch and key: a fold of ranges in hour
+/// order reads each batch's once, not once per range.
+#[derive(Default)]
+struct Held {
+    runs: Option<(u64, u64, Arc<Cached>)>,
+    levels: Option<(u64, u64, Arc<Summaries>)>,
 }
 // A merged event cursor belongs to this reader's immutable manifest and one
 // exact selection. Keeping the merge frontier avoids seeking every key again
@@ -2755,6 +2764,7 @@ impl<'a> Reader<'a> {
             event_walk: None,
             run_bounds: HashMap::new(),
             event_orders: HashMap::new(),
+            held: Held::default(),
         }
     }
 
@@ -2788,6 +2798,7 @@ impl<'a> Reader<'a> {
             event_walk: None,
             run_bounds: HashMap::new(),
             event_orders: HashMap::new(),
+            held: Held::default(),
         })
     }
     fn file(&mut self, batch: u64) -> io::Result<&mut store::Range> {
@@ -2885,6 +2896,8 @@ impl<'a> Reader<'a> {
         Ok(self.tables[&batch].as_ref().as_ref())
     }
     fn data(&mut self, batch: u64, key: u64) -> io::Result<&Cached> {
+        #[cfg(test)]
+        BLOB_LOOKUPS.set(BLOB_LOOKUPS.get() + 1);
         if !self.cached.touch((batch, key)) {
             let id = self.file(batch)?.id().cache_key();
             let decoded = query::blob((id, key), || {
@@ -2930,6 +2943,30 @@ impl<'a> Reader<'a> {
             self.buckets.insert((batch, key), decoded);
         }
         Ok(&self.buckets[&(batch, key)])
+    }
+    /// [`Self::data`] of `key` in `batch`, the last one read held ([`Held`]).
+    fn held_runs(&mut self, batch: u64, key: u64) -> io::Result<Arc<Cached>> {
+        if let Some((at, of, blob)) = &self.held.runs
+            && (*at, *of) == (batch, key)
+        {
+            return Ok(Arc::clone(blob));
+        }
+        self.data(batch, key)?;
+        let blob = Arc::clone(self.cached.held((batch, key)));
+        self.held.runs = Some((batch, key, Arc::clone(&blob)));
+        Ok(blob)
+    }
+    /// [`Self::buckets`] of `key` in `batch`, the last one read held ([`Held`]).
+    fn held_levels(&mut self, batch: u64, key: u64) -> io::Result<Arc<Summaries>> {
+        if let Some((at, of, levels)) = &self.held.levels
+            && (*at, *of) == (batch, key)
+        {
+            return Ok(Arc::clone(levels));
+        }
+        self.buckets(batch, key)?;
+        let levels = Arc::clone(&self.buckets[&(batch, key)]);
+        self.held.levels = Some((batch, key, Arc::clone(&levels)));
+        Ok(levels)
     }
     /// Read only the batches committed by `hour` (those ending by then): the
     /// section as a preparation that had accepted no later hour published it,
@@ -3664,7 +3701,8 @@ impl<'a> Reader<'a> {
                 let batch = lower(self.count, |batch| Ok(self.hours(batch)?.1 < end))?;
                 let mut value = None;
                 if batch < self.count {
-                    let values = &self.buckets(batch, key)?[level];
+                    let levels = self.held_levels(batch, key)?;
+                    let values = &levels[level];
                     let index = values.partition_point(|(aligned, _)| *aligned < hour);
                     if let Some((_, bucket)) =
                         values.get(index).filter(|(aligned, _)| *aligned == hour)
@@ -3707,7 +3745,7 @@ impl<'a> Reader<'a> {
             let mut step = None;
             if let Some(batch) = self.batches(hour, hour)?.next() {
                 let last = self.hours(batch)?.1;
-                let blob = self.data(batch, key)?;
+                let blob = self.held_runs(batch, key)?;
                 let runs = &blob.runs;
                 let index = runs.partition_point(|run| run.first_hour <= hour);
                 let mut gap = None;

@@ -1301,6 +1301,27 @@ fn a_gap_ends_where_another_batch_owns_the_hour_however_batch_bounds_overlap() {
 }
 
 #[test]
+fn a_fold_of_many_bins_looks_up_its_batch_once() {
+    let fixture = Fixture::new();
+    let mut states = BTreeMap::from([(0, KeyState::default())]);
+    let mut batch = Batch::default();
+    batch.through(0);
+    batch.through(255);
+    for (from, to, value) in [(0, 9, 1), (10, 99, 2), (100, 255, 3)] {
+        let state = states.get_mut(&0).unwrap();
+        batch.push(0, state, Run::new(from, to, value, false));
+    }
+    fixture.publish(batch, &mut states);
+    let flag = AtomicBool::new(false);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let before = BLOB_LOOKUPS.get();
+    // Eight-hour bins: no stored level covers one, so each folds from the batch's runs.
+    let summary = reader.summary(0, (0, 255), (0.0, 255.0, 32), 0).unwrap();
+    assert_eq!(summary.buckets.len(), 32);
+    assert_eq!(BLOB_LOOKUPS.get() - before, 1, "one lookup for 32 bins");
+}
+
+#[test]
 fn derived_tail_matches_published_runs_with_continuations_gaps_breaks_and_membership() {
     use crate::products::country_groups::HourSpan;
     let flag = AtomicBool::new(false);
