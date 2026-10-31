@@ -1,7 +1,7 @@
 //! The Provinces rows carried between hours ([`engine_native::cprovince::carry`]):
 //! the Provinces job reads only the provinces a native writer may have
 //! changed, the provinces in a border conflict and the `fort_bunker` operand
-//! of every fortified province.
+//! of every fortified province whose state's modifiers a writer rebuilt.
 //!
 //! The job first drains the territory family's province marks
 //! ([`crate::territory_changes`]) once for the hour: the marked province ids
@@ -13,6 +13,8 @@
 //! row carry expands a state mark through the provinces its held rows link
 //! to the state, the membership before a reset emptied the state's list,
 //! and the [area family](crate::area_changes) takes the same province marks.
+//! It then drains the state ids whose modifier accumulator the raid family's
+//! forwarded writers rebuilt, for the row carry's `fort_bunker` terms.
 use crate::territory_changes::Changes;
 use engine_native::{cprovince::Capture, cprovince::carry::Counts, walk::Outcome};
 use std::{
@@ -89,6 +91,17 @@ pub fn take(changes: &dyn Changes, capture: &mut Capture) -> Option<[u64; 2]> {
             Err(_) => overflow.set(true),
         },
     );
+    if let Some(store) = province_store.as_deref_mut() {
+        let (marks, modifiers) = store.modifier_marks_mut();
+        marks.clear();
+        let refused = Cell::new(false);
+        let mut marks = Some(marks);
+        let epoch = changes.take_modifier_states(&mut |id| match u32::try_from(id) {
+            Ok(id) => push(&mut marks, id, &refused),
+            Err(_) => refused.set(true),
+        });
+        *modifiers = epoch.filter(|_| !refused.get());
+    }
     if overflow.get() { None } else { take }
 }
 
@@ -134,7 +147,7 @@ pub fn status() -> impl serde::Serialize {
         "carried_rows": rows[0],
         "read_rows": rows[1],
         "refreshed_fort_bunkers": rows[2],
-        "scope": "cumulative since attach; the Provinces job carries a province's row when the hour's take of the territory family's province marks returned the epochs of the held complete walk, the province table header and the province's slot pointer are the held ones, neither the province nor its held state is marked and its held row is in no border conflict; carried rows read only fort_bunker again (positive fort sum and controller), every other province is read as a full walk reads it"
+        "scope": "cumulative since attach; the Provinces job carries a province's row when the hour's take of the territory family's province marks returned the epochs of the held complete walk, the province table header and the province's slot pointer are the held ones, neither the province nor its held state is marked and its held row is in no border conflict; carried rows read only fort_bunker again (positive fort sum and controller) when the modifier take refused or moved, the country links and roster differ from those it was read under or a forwarded modifier writer marked its state, every other province is read as a full walk reads it"
     })
 }
 

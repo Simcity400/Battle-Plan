@@ -2187,6 +2187,67 @@ fn a_quiet_hour_reads_no_carried_province_and_equals_a_full_read() {
     assert_full_read(&capture, &memory, 67);
 }
 
+fn modifier_take(capture: &mut Capture, take: Option<u64>) {
+    *capture.province_store.as_mut().unwrap().modifier_marks_mut().1 = take;
+}
+
+/// An hour whose modifier take returns the epoch the held bunker terms were
+/// read under, with the same country links and roster, keeps the fortified
+/// province's term and reads only the table and both country headers; a moved
+/// or refused take reads it again.
+#[test]
+fn a_certified_bunker_term_is_kept_until_its_modifier_take_moves() {
+    let bytes = carry_fixture();
+    let memory = traced(&bytes);
+    let mut capture = carrying();
+    modifier_take(&mut capture, Some(1));
+    carry_hour(&mut capture, &memory, TAKE);
+    modifier_take(&mut capture, Some(1));
+    memory.reads.borrow_mut().clear();
+    let (outcome, counts) = carry_hour(&mut capture, &memory, TAKE);
+    assert_eq!(outcome, Outcome::Rows { len: 67 });
+    assert_eq!((counts.carried, counts.refreshed), (67, 0));
+    assert_eq!(capture.rows[2].fort_bunker, Some(0));
+    let header = 0x1000 + cgame_state::PROVINCES;
+    let table = 0x1300..0x1300 + 68 * 8;
+    let countries = [cgame_state::COUNTRY_LINKS, cgame_state::COUNTRIES].map(|at| 0x1000 + at);
+    for &(address, len) in memory.reads.borrow().iter() {
+        assert!(
+            (address >= header && address + len <= header + 16)
+                || (table.contains(&address) && address + len <= table.end)
+                || (countries.contains(&address) && len == 16),
+            "{address:#x}+{len}"
+        );
+    }
+    assert_full_read(&capture, &memory, 67);
+    for take in [Some(2), None] {
+        modifier_take(&mut capture, take);
+        let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
+        assert_eq!((counts.carried, counts.refreshed), (67, 1));
+    }
+    // A refused take certifies nothing: the next hour reads the term again.
+    modifier_take(&mut capture, Some(2));
+    assert_eq!(carry_hour(&mut capture, &memory, TAKE).1.refreshed, 1);
+    modifier_take(&mut capture, Some(2));
+    assert_eq!(carry_hour(&mut capture, &memory, TAKE).1.refreshed, 0);
+    assert_full_read(&capture, &memory, 67);
+    // A walk that fails before reading a province consumed the hour's marks:
+    // it holds nothing, and the next hour reads every province and term.
+    let mut headless = bytes.clone();
+    put(&mut headless, cgame_state::PROVINCES, &[0; 16]);
+    mark(&mut capture, &[], &[90]);
+    modifier_take(&mut capture, Some(2));
+    assert!(matches!(
+        carry_hour(&mut capture, &slice(&headless), TAKE).0,
+        Outcome::Unavailable { .. }
+    ));
+    assert!(!capture.province_store.as_ref().unwrap().holds());
+    modifier_take(&mut capture, Some(2));
+    let (_, counts) = carry_hour(&mut capture, &memory, TAKE);
+    assert!(counts.full && counts.read == 67);
+    assert_full_read(&capture, &memory, 67);
+}
+
 /// Marked provinces are read: directly, through the state their held row
 /// links (an owner change), through a reset state whose list no longer
 /// names them, and a province whose slot moved; the rest is carried.

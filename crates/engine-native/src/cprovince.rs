@@ -2087,33 +2087,33 @@ fn walk_rows(
     conflict: &mut ConflictState,
     carry: Option<&mut carry::Hour<'_>>,
 ) -> Outcome {
-    let Some(array) = game_state
-        .checked_add(cgame_state::PROVINCES)
-        .and_then(|p| Array::read(memory, p, 8))
-    else {
-        return Outcome::Unavailable {
-            reason: "province array unreadable or invalid",
-        };
-    };
-    if array.count < 2 {
-        return Outcome::Unavailable {
-            reason: "province table has no province slots",
-        };
-    }
-    // Province initialization sizes the live ID-indexed roster.
-    let required = array.count.saturating_sub(1) as usize;
-    if let Err(reason) = output
-        .ensure(required)
-        .and_then(|_| conflicts.rows.ensure(required))
-        .and_then(|_| areas.ensure(required))
-    {
-        return Outcome::Unavailable { reason };
-    }
-    // Each admitted province can select at most one state dependency. Keep
-    // original successful state observations for the whole quiescent walk.
-    let mut states = match StateCache::new(required.min(output.len())) {
-        Ok(states) => states,
-        Err(reason) => return Outcome::Unavailable { reason },
+    let prepared = (|| {
+        let array = game_state
+            .checked_add(cgame_state::PROVINCES)
+            .and_then(|p| Array::read(memory, p, 8))
+            .ok_or("province array unreadable or invalid")?;
+        if array.count < 2 {
+            return Err("province table has no province slots");
+        }
+        // Province initialization sizes the live ID-indexed roster.
+        let required = array.count.saturating_sub(1) as usize;
+        output
+            .ensure(required)
+            .and_then(|_| conflicts.rows.ensure(required))
+            .and_then(|_| areas.ensure(required))?;
+        // Each admitted province can select at most one state dependency. Keep
+        // original successful state observations for the whole quiescent walk.
+        Ok((array, StateCache::new(required.min(output.len()))?))
+    })();
+    let (array, mut states) = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            // The hour's marks are already drained: an incomplete walk holds nothing.
+            if let Some(hour) = carry {
+                hour.store.forget();
+            }
+            return Outcome::Unavailable { reason };
+        }
     };
     match carry {
         None => read_rows(

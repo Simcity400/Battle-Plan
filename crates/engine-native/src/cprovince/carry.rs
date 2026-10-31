@@ -31,11 +31,17 @@
 //!
 //! - `port_sea` and the province definition: content and construction.
 //!
-//! `fort_bunker` follows the state's modifier hashes, whose resource-gate
-//! rebuild names no province, so every carried row with a positive fort sum and
-//! controller reads it again every hour. A province whose held row is in a
-//! border conflict is read every hour with its groups, which follow combats no
-//! membership mark certifies.
+//! - `fort_bunker`: the state's country hash or base accumulator, rebuilt
+//!   only by the resource-gate refresh and dropped by state destruction, which
+//!   the raid family forwards by state ([`RowStore::modifier_marks_mut`]);
+//!   modifier metadata is content. The controller's country and the hash's
+//!   canonical ids resolve through the country links and roster, which no hook
+//!   observes: each hour copies both once, and a carried row keeps its term
+//!   only while the copy equals the one its term was read under and its state
+//!   is unmarked. Otherwise it reads the term again.
+//!
+//! A province whose held row is in a border conflict is read every hour with
+//! its groups, which follow combats no membership mark certifies.
 //!
 //! A province is carried only when the hour's take returned the epochs of the
 //! held complete walk, the table header and province slot pointer are the held
@@ -82,6 +88,16 @@ pub struct RowStore {
     /// The hour's marked province ids and state ids.
     marks: Vec<u32>,
     state_marks: Vec<u32>,
+    /// The hour's state ids whose modifiers a writer rebuilt, and that take's
+    /// epoch; None when it refused.
+    modifier_marks: Vec<u32>,
+    modifier_take: Option<u64>,
+    /// The modifier epoch and the country links and roster ([`read_countries`])
+    /// every held `fort_bunker` was read under; None certifies none.
+    bunkers: Option<u64>,
+    countries: Vec<u8>,
+    /// The hour's copy of them.
+    fresh_countries: Vec<u8>,
     /// The row indices whose area pointers this walk took from `held`.
     carried: Vec<u32>,
     counts: Counts,
@@ -102,11 +118,20 @@ impl RowStore {
         (&mut self.marks, &mut self.state_marks)
     }
 
+    /// The hour's state ids whose modifier writers ran, and that take's epoch
+    /// or None when it refused; the next walk consumes them.
+    pub fn modifier_marks_mut(&mut self) -> (&mut Vec<u32>, &mut Option<u64>) {
+        (&mut self.modifier_marks, &mut self.modifier_take)
+    }
+
     /// A failed job or an incomplete walk: nothing is held.
     pub fn forget(&mut self) {
         self.epochs = None;
+        self.bunkers = None;
         self.marks.clear();
         self.state_marks.clear();
+        self.modifier_marks.clear();
+        self.modifier_take = None;
         self.carried.clear();
     }
 
@@ -127,8 +152,13 @@ impl RowStore {
 
     fn measure(&self) -> usize {
         self.held.capacity() * size_of::<Held>()
-            + (self.marks.capacity() + self.state_marks.capacity() + self.carried.capacity())
+            + (self.marks.capacity()
+                + self.state_marks.capacity()
+                + self.modifier_marks.capacity()
+                + self.carried.capacity())
                 * size_of::<u32>()
+            + self.countries.capacity()
+            + self.fresh_countries.capacity()
     }
 
     /// Reads again the definition and area pointers of the carried rows
@@ -219,6 +249,43 @@ const AREA_BYTES: usize = 24;
 const AREA_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&AREA_FIELDS, AREA_BYTES).expect("valid record layout");
 
+/// The country links and roster (`cgame_state::COUNTRY_LINKS` and
+/// `COUNTRIES`), headers and slots, into `out`: what a bunker term resolves
+/// its controller and the hash's ids through. False when any part does not
+/// read.
+fn read_countries(memory: &impl Memory, game_state: usize, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let [Some(links), Some(roster)] = [
+        (crate::cgame_state::COUNTRY_LINKS, 4),
+        (crate::cgame_state::COUNTRIES, 8),
+    ]
+    .map(|(offset, stride)| {
+        game_state
+            .checked_add(offset)
+            .and_then(|address| Array::read(memory, address, stride))
+            .map(|array| (array, stride))
+    }) else {
+        return false;
+    };
+    let len = [links, roster]
+        .iter()
+        .map(|(array, stride)| 12 + array.count as usize * stride)
+        .sum();
+    if crate::allocation::advisory(|| crate::allocation::reserve(out, len)).is_err() {
+        return false;
+    }
+    for (array, stride) in [links, roster] {
+        out.extend_from_slice(&(array.data as u64).to_le_bytes());
+        out.extend_from_slice(&array.count.to_le_bytes());
+        let at = out.len();
+        out.resize(at + array.count as usize * stride, 0);
+        if at != out.len() && !memory.copy(array.data, &mut out[at..]) {
+            return false;
+        }
+    }
+    true
+}
+
 /// One walk's view of the store.
 pub(super) struct Hour<'a> {
     pub store: &'a mut RowStore,
@@ -246,10 +313,18 @@ pub(super) fn walk(
     let required = array.count as usize - 1;
     store.counts = Counts::default();
     store.carried.clear();
-    for marks in [&mut store.marks, &mut store.state_marks] {
+    for marks in [
+        &mut store.marks,
+        &mut store.state_marks,
+        &mut store.modifier_marks,
+    ] {
         marks.sort_unstable();
         marks.dedup();
     }
+    let modifiers = store.modifier_take.take();
+    let witnessed =
+        modifiers.is_some() && read_countries(memory, game_state, &mut store.fresh_countries);
+    let bunkers = witnessed && store.bunkers == modifiers && store.countries == store.fresh_countries;
     let force_full = std::mem::take(&mut store.force_full);
     let eligible = !force_full
         && take.is_some()
@@ -263,6 +338,7 @@ pub(super) fn walk(
     let outcome = if eligible {
         carry(
             store, memory, base, game_state, array, output, areas, conflicts, conflict, states,
+            bunkers,
         )
     } else {
         let outcome = read_rows(
@@ -285,11 +361,16 @@ pub(super) fn walk(
     if held {
         store.epochs = take;
         store.header = array;
+        store.bunkers = modifiers.filter(|_| witnessed);
+        if witnessed {
+            std::mem::swap(&mut store.countries, &mut store.fresh_countries);
+        }
     } else {
         store.forget();
     }
     store.marks.clear();
     store.state_marks.clear();
+    store.modifier_marks.clear();
     store.bytes = store.measure();
     outcome
 }
@@ -331,9 +412,10 @@ enum Kind {
 }
 
 /// [`read_rows`] for an hour the store certifies: the batch's carried rows
-/// read nothing but the slot pointers and, when fortified, `fort_bunker`;
-/// the others read their bodies in one dense gather and finish as a full
-/// walk finishes them. The output holds every slot (`walk` checked).
+/// read nothing but the slot pointers and, when fortified and not `bunkers`
+/// certified with an unmarked state, `fort_bunker`; the others read their
+/// bodies in one dense gather and finish as a full walk finishes them. The
+/// output holds every slot (`walk` checked).
 #[allow(clippy::too_many_arguments)]
 fn carry(
     store: &mut RowStore,
@@ -346,6 +428,7 @@ fn carry(
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
     states: &mut StateCache,
+    bunkers: bool,
 ) -> Outcome {
     store.counts.quiet = store.marks.is_empty() && store.state_marks.is_empty();
     let mut batch = ProvinceBatch::new();
@@ -424,7 +507,11 @@ fn carry(
             let held = &mut store.held[provinces[index] as usize];
             match kinds[index] {
                 Kind::Carried => {
-                    if row.fort_positive != 0 && (row.controller as i32) > 0 {
+                    let kept = bunkers
+                        && row.fort_bunker.is_some()
+                        && (row.state == 0
+                            || store.modifier_marks.binary_search(&row.state).is_err());
+                    if row.fort_positive != 0 && (row.controller as i32) > 0 && !kept {
                         row.fort_bunker = fort_bunker(
                             memory,
                             base,

@@ -700,6 +700,7 @@ impl Hooks {
                 false,
             );
             crate::division_panel_changes::state_forwarder(false);
+            crate::territory_changes::modifier_forwarder(false);
             AIR_CLEARS.fetch_add(1, Ordering::SeqCst);
             WATCHES.hooks.store(false, Ordering::SeqCst);
             WATCHES.apply();
@@ -746,6 +747,8 @@ impl Hooks {
             crate::occupation_changes::Forwarder::States,
             enabled && !self.hooks.is_empty(),
         );
+        // The provinces' bunker terms observe the modifier writers here.
+        crate::territory_changes::modifier_forwarder(enabled && !self.hooks.is_empty());
         Ok(true)
     }
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
@@ -787,6 +790,14 @@ macro_rules! callback {
             let target = target(MUTATIONS[$site].1, first, second, third);
             let _panel = match target {
                 Target::State(id) => Some(crate::division_panel_changes::state_notify(id)),
+                _ => None,
+            };
+            // The gate refresh rebuilds, and state destruction drops, the
+            // accumulator and country hash a province's bunker term reads.
+            let _modifiers = match target {
+                Target::State(id) if matches!($site, 0 | 5) => {
+                    Some(crate::territory_changes::modifier_state(id))
+                }
                 _ => None,
             };
             let _mark = WATCHES.notify($site, target);

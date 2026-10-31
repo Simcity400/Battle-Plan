@@ -15,7 +15,13 @@
 //!   border-conflict sites, whose writes reach the provinces linked to the
 //!   state.
 //!
-//! [`Changes::take_provinces`] is the take of the last two sets; the
+//! - `MODIFIER_STATES` (state ids): the resource-gate refresh and state
+//!   destruction, forwarded by the raid family that owns their patches
+//!   ([`modifier_forwarder`]); they rebuild or drop a state's modifier
+//!   accumulator and country hash, which a province's bunker term reads.
+//!   It observes only while both families' hooks are enabled.
+//!
+//! [`Changes::take_provinces`] is the take of `PROVINCES` and `PROVINCE_STATES`; the
 //! Provinces job drains it once an hour ([`crate::province_changes::take`])
 //! for its row carry and the [area family](crate::area_changes), and sizes
 //! the province set ([`walked_provinces`]). A receiver whose id does not
@@ -31,7 +37,7 @@ use engine_mutations::{territory_mutations::MUTATIONS, territory_mutations::Rece
 use engine_native::Memory;
 use std::{
     ops::Range,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 const SITES: usize = MUTATIONS.len();
@@ -56,6 +62,7 @@ pub struct Domain {
     provinces: DirtySet,
     states: DirtySet,
     province_states: DirtySet,
+    modifier_states: DirtySet,
     calls: [AtomicU64; SITES],
     /// Receivers whose id did not read.
     unnamed: AtomicU64,
@@ -79,14 +86,26 @@ impl Domain {
             provinces: DirtySet::new(),
             states: DirtySet::new(),
             province_states: DirtySet::new(),
+            modifier_states: DirtySet::new(),
             calls: [const { AtomicU64::new(0) }; SITES],
             unnamed: AtomicU64::new(0),
             buildings: [const { AtomicU64::new(0) }; 2],
         }
     }
 
-    fn sets(&self) -> [&DirtySet; 3] {
-        [&self.provinces, &self.states, &self.province_states]
+    fn sets(&self) -> [&DirtySet; 4] {
+        [
+            &self.provinces,
+            &self.states,
+            &self.province_states,
+            &self.modifier_states,
+        ]
+    }
+
+    /// Hook path, allocation-free: a forwarded writer of state `id`'s
+    /// modifier accumulator and country hash is about to run.
+    pub fn modifier_state(&self, id: Option<usize>) -> Dirty<'_> {
+        self.mark(&self.modifier_states, id)
     }
 
     fn mark<'a>(&'a self, set: &'a DirtySet, id: Option<usize>) -> Dirty<'a> {
@@ -153,6 +172,7 @@ impl Domain {
         domain.provinces.offer(provinces);
         domain.states.offer(states);
         domain.province_states.offer(states);
+        domain.modifier_states.offer(states);
         for set in domain.sets() {
             set.boundary(false);
             set.set_enabled(true);
@@ -185,6 +205,8 @@ pub trait Changes: Sync {
         provinces: &mut dyn FnMut(usize),
         states: &mut dyn FnMut(usize),
     ) -> Option<[u64; 2]>;
+    /// The take of the state ids whose modifiers a forwarded writer rebuilt.
+    fn take_modifier_states(&self, visit: &mut dyn FnMut(usize)) -> Option<u64>;
 }
 
 impl Changes for Domain {
@@ -201,6 +223,9 @@ impl Changes for Domain {
         let states = self.province_states.take(states);
         Some([provinces?, states?])
     }
+    fn take_modifier_states(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        self.modifier_states.take(visit)
+    }
 }
 
 /// The hooks' domain.
@@ -215,6 +240,9 @@ impl Changes for Observer {
         states: &mut dyn FnMut(usize),
     ) -> Option<[u64; 2]> {
         DOMAIN.take_provinces(provinces, states)
+    }
+    fn take_modifier_states(&self, visit: &mut dyn FnMut(usize)) -> Option<u64> {
+        DOMAIN.take_modifier_states(visit)
     }
 }
 
@@ -305,6 +333,28 @@ pub fn building_unnamed() -> Marks<'static> {
     DOMAIN.building_unnamed()
 }
 
+/// Hook path, allocation-free: a writer of state `id`'s modifier accumulator
+/// and country hash, forwarded by its patch owner ([`crate::raid_changes`]).
+/// Hold the result over the native call.
+pub fn modifier_state(id: Option<usize>) -> Dirty<'static> {
+    DOMAIN.modifier_state(id)
+}
+
+static HOOKS_ENABLED: AtomicBool = AtomicBool::new(false);
+static MODIFIER_FORWARDER: AtomicBool = AtomicBool::new(false);
+
+/// The raid family's forwarder of the modifier writers enabled or disabled.
+pub fn modifier_forwarder(enabled: bool) {
+    MODIFIER_FORWARDER.store(enabled, Ordering::SeqCst);
+    observe_modifiers();
+}
+
+fn observe_modifiers() {
+    DOMAIN.modifier_states.set_enabled(
+        HOOKS_ENABLED.load(Ordering::SeqCst) && MODIFIER_FORWARDER.load(Ordering::SeqCst),
+    );
+}
+
 /// Off the game thread: size the sets for the ids the latest captures
 /// walked. Nothing is offered before a capture walked them: a later larger
 /// bitmap waits for an invalidating hour, while the first installs at once.
@@ -313,6 +363,7 @@ pub fn presize() {
     if states != 0 {
         DOMAIN.states.offer(states);
         DOMAIN.province_states.offer(states);
+        DOMAIN.modifier_states.offer(states);
     }
     if provinces != 0 {
         DOMAIN.provinces.offer(provinces);
@@ -394,6 +445,7 @@ pub fn status() -> impl serde::Serialize {
         "province_set": DOMAIN.provinces.status(),
         "state_set": DOMAIN.states.status(),
         "province_state_set": DOMAIN.province_states.status(),
+        "modifier_state_set": DOMAIN.modifier_states.status(),
         "scope": "cumulative since attach; a States row is carried when no hooked writer marked its state since the held complete capture in the same epoch and the state array header, slot pointers and shared infrastructure and continent operands are unchanged; every state's identity and manpower and StateFlags are read every hour; Provinces rows are carried by province_changes, whose status counts them"
     })
 }
@@ -456,6 +508,7 @@ impl Hooks {
                 crate::occupation_changes::Forwarder::Territory,
                 false,
             );
+            HOOKS_ENABLED.store(false, Ordering::SeqCst);
             for set in DOMAIN.sets() {
                 set.set_enabled(false);
             }
@@ -477,9 +530,12 @@ impl Hooks {
         {
             return Ok(false);
         }
-        for set in DOMAIN.sets() {
+        let [provinces, states, province_states, _] = DOMAIN.sets();
+        for set in [provinces, states, province_states] {
             set.set_enabled(enabled && !self.hooks.is_empty());
         }
+        HOOKS_ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
+        observe_modifiers();
         // The country counter inputs observe the state owner, controller
         // and reset sites here ([`crate::country_input_changes`]).
         crate::country_input_changes::forwarder(
@@ -782,6 +838,28 @@ mod tests {
         assert!(after[0] != provinces[0] && after[1] != provinces[1]);
     }
 
+    /// A forwarded modifier writer marks its state in the modifier set only;
+    /// one whose state does not read moves that set's epoch.
+    #[test]
+    fn forwarded_modifier_writers_mark_only_the_modifier_set() {
+        let domain = Domain::enabled(64, 1024);
+        let take = |domain: &Domain| {
+            let mut ids = Vec::new();
+            let epoch = domain.take_modifier_states(&mut |id| ids.push(id));
+            (epoch, ids)
+        };
+        let states = take_states(&domain).0.unwrap();
+        let provinces = take_provinces(&domain).0.unwrap();
+        let modifiers = take(&domain).0.unwrap();
+        drop(domain.modifier_state(Some(12)));
+        assert_eq!(take(&domain), (Some(modifiers), vec![12]));
+        assert_eq!(take_states(&domain), (Some(states), vec![]));
+        assert_eq!(take_provinces(&domain), (Some(provinces), vec![], vec![]));
+        drop(domain.modifier_state(None));
+        assert_ne!(take(&domain).0, Some(modifiers));
+        assert_eq!(take_states(&domain).0, Some(states));
+    }
+
     #[test]
     fn poisoning_refuses_every_set() {
         let domain = Domain::enabled(64, 1024);
@@ -789,5 +867,6 @@ mod tests {
         assert!(domain.poisoned());
         assert_eq!(take_states(&domain).0, None);
         assert_eq!(take_provinces(&domain).0, None);
+        assert_eq!(domain.take_modifier_states(&mut |_| ()), None);
     }
 }
