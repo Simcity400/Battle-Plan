@@ -1,18 +1,26 @@
-//! Dated production headers joined to shared changed-leaf events.
+//! Production's preparation: one observer of every country's production
+//! output, whose dated endpoints are published as integer facts ([`facts`])
+//! and read through indexes decoded once per publication ([`read`]).
+
+pub(crate) mod facts;
+pub(crate) mod read;
+pub(crate) mod select;
+
+pub use facts::FACTS;
+pub use select::{SelectedCountry, SelectedValue, SelectionPage, empty_selection, select_at};
 
 use crate::metadata::{TaggedCountry, slot_read};
 use crate::products::equipment::production::{
     CostTotal, Entry, Identity, Named, ProductionSpendingUnknown, Purpose, RocketProduced,
-    TagHistory, Total, variant_types_for,
+    TagHistory, Total,
 };
 use crate::products::equipment::{
-    self, Domain, StockVariantName, Texts, VariantCatalogue, VariantHour, VariantReads,
-    VariantVersion,
+    self, RawVariant, Texts, VariantCatalogue, VariantHour, VariantReads, VariantVersion,
 };
 use crate::products::equipment_produced::{
-    ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams, ProducedType,
-    ScannedProduced, month_before,
+    ProducedMeasure, RecordingCounts, month_before, recording_warnings_of,
 };
+use facts::{Endpoint, Holder, Leaf, NameCode, Out, Preamble};
 use replay_data::{format::FormatVersion, rows::Recorded, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
@@ -117,6 +125,9 @@ impl Current {
     }
 }
 
+/// Prepared state's layout; another is refused rather than read.
+pub const SCHEMA: u32 = 2;
+
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
     pub schema: u32,
@@ -140,23 +151,34 @@ pub struct ProductionAccumulator {
     spending_recorded: bool,
     last_frame: Option<i32>,
     classifications: BTreeMap<u64, Classification>,
-    pending: Option<EndpointPage>,
+    pending: Option<Pending>,
+    /// The latest complete variant read: names it dates take its hour.
+    names_hour: Option<i32>,
     segments: BTreeMap<String, u64>,
     rocket_segments: BTreeMap<String, u64>,
-    warnings: Vec<String>,
+    /// What the latest endpoint's warnings were rendered from, and its
+    /// unnamed country-hours when last sealed.
+    final_counts: PageCounts,
+    final_unnamed: usize,
     joins: RocketJoins,
+    /// Endpoints completed in this branch.
     pages_written: u64,
     spent: crate::prepared::series::Accumulator,
-    spent_keys: BTreeMap<String, u64>,
+    /// Each (holder, Rocket, refits, design)'s spent series key.
+    #[serde(with = "map_pairs")]
+    spent_keys: BTreeMap<SpentKey, u64>,
     /// Keys of each equipment entry's cumulative input from production ticks
-    /// whose purpose was not recorded, by (tag, variant, purpose); only
+    /// whose purpose was not recorded, by (holder, variant, purpose); only
     /// entries that ever had such input.
-    unproven_keys: BTreeMap<String, u64>,
+    #[serde(with = "map_pairs")]
+    unproven_keys: BTreeMap<PurposeKey, u64>,
     /// Keys of each equipment design's cumulative input of each
-    /// [`SERIES_PURPOSES`] purpose, by (tag, variant, purpose); only designs
-    /// that ever had input of that purpose. The key also holds that amount's
-    /// endpoint events.
-    purpose_keys: BTreeMap<String, u64>,
+    /// [`SERIES_PURPOSES`] purpose, by (holder, variant, purpose); only designs
+    /// that ever had input of that purpose.
+    #[serde(with = "map_pairs")]
+    purpose_keys: BTreeMap<PurposeKey, u64>,
+    /// Keys below it were published.
+    keys_written: u64,
     spent_active: BTreeSet<u64>,
     #[serde(skip)]
     spent_holders: [BTreeMap<String, SpentHolder>; 2],
@@ -165,10 +187,6 @@ pub struct ProductionAccumulator {
     #[cfg(test)]
     #[serde(skip)]
     spent_visits: usize,
-    classification_keys: BTreeMap<u64, u64>,
-    /// Last published payload fingerprints, never a second copy of quantities.
-    endpoint_hashes: BTreeMap<u64, [u8; 32]>,
-    endpoint_active: BTreeSet<u64>,
     #[serde(skip)]
     country_reads: Option<crate::products::territory::CountryReads>,
     #[serde(skip)]
@@ -184,10 +202,234 @@ pub struct ProductionAccumulator {
     equipment_restart: Option<i32>,
     rocket_origin: Option<i32>,
     rocket_restart: Option<i32>,
-    variant_refusals: crate::catalogue::Refusals,
+    /// Variants whose recorded operands were refused, by reason.
+    variant_refusals: BTreeMap<String, BTreeSet<u64>>,
     /// Every equipment observation's counting start, as history lists them;
     /// `result` keeps only the latest between batches.
     observation_starts: Vec<i32>,
+    tables: Tables,
+    /// Holders present at the last completed endpoint.
+    present_holders: BTreeSet<u32>,
+    #[serde(skip)]
+    batch: Batch,
+    /// Every endpoint completed, with its names hour, for tests' oracles.
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) completed: Vec<(EndpointPage, Option<i32>)>,
+    /// Every Rocket join withdrawn, for tests' oracles.
+    #[cfg(test)]
+    #[serde(skip)]
+    revoked: Vec<CoverageCorrection>,
+}
+
+/// A spent series' (holder, Rocket, refits, design).
+type SpentKey = (u32, bool, bool, u64);
+/// A purpose series' (holder, design, purpose).
+type PurposeKey = (u32, u64, Purpose);
+
+/// The ids facts name holders, designs, tokens and raw operands by, each
+/// assigned once in the order met; those past the written counts are
+/// published at the next flush.
+#[derive(Default, Deserialize, Serialize)]
+struct Tables {
+    holders: Vec<String>,
+    holder_ids: BTreeMap<String, u32>,
+    variants: Vec<u64>,
+    variant_ids: BTreeMap<u64, u32>,
+    /// Token 0 is no token.
+    tokens: Vec<String>,
+    token_ids: BTreeMap<String, u32>,
+    raws: Vec<RawVariant>,
+    #[serde(skip)]
+    raw_ids: HashMap<RawVariant, u32>,
+    written: [usize; 4],
+}
+
+impl Tables {
+    fn holder(&mut self, tag: &str) -> u32 {
+        if let Some(&id) = self.holder_ids.get(tag) {
+            return id;
+        }
+        let id = self.holders.len() as u32;
+        self.holders.push(tag.to_owned());
+        self.holder_ids.insert(tag.to_owned(), id);
+        id
+    }
+
+    fn variant(&mut self, handle: u64) -> u32 {
+        if let Some(&id) = self.variant_ids.get(&handle) {
+            return id;
+        }
+        let id = self.variants.len() as u32;
+        self.variants.push(handle);
+        self.variant_ids.insert(handle, id);
+        id
+    }
+
+    fn token(&mut self, token: &str) -> u32 {
+        if self.tokens.is_empty() {
+            self.tokens.push(String::new());
+            self.token_ids.insert(String::new(), 0);
+        }
+        if let Some(&id) = self.token_ids.get(token) {
+            return id;
+        }
+        let id = self.tokens.len() as u32;
+        self.tokens.push(token.to_owned());
+        self.token_ids.insert(token.to_owned(), id);
+        id
+    }
+
+    /// A read's operands, one id however many reads held them.
+    fn raw(&mut self, raw: &RawVariant) -> u32 {
+        if self.raw_ids.len() != self.raws.len() {
+            self.raw_ids = self
+                .raws
+                .iter()
+                .enumerate()
+                .map(|(id, raw)| (raw.clone(), id as u32))
+                .collect();
+        }
+        let key = RawVariant {
+            first_hour: 0,
+            ..raw.clone()
+        };
+        if let Some(&id) = self.raw_ids.get(&key) {
+            return id;
+        }
+        let id = self.raws.len() as u32;
+        self.raws.push(key.clone());
+        self.raw_ids.insert(key, id);
+        id
+    }
+
+    /// The entries assigned since the last flush, which it publishes.
+    fn write_new(&mut self, out: &mut Out) -> io::Result<()> {
+        self.token("");
+        let [holders, variants, tokens, raws] = self.written;
+        out.count(holders)?;
+        out.count(self.holders.len() - holders)?;
+        for tag in &self.holders[holders..] {
+            out.str(tag)?;
+        }
+        out.count(variants)?;
+        out.count(self.variants.len() - variants)?;
+        for handle in &self.variants[variants..] {
+            out.u64(*handle);
+        }
+        out.count(tokens)?;
+        out.count(self.tokens.len() - tokens)?;
+        for token in &self.tokens[tokens..] {
+            out.str(token)?;
+        }
+        out.count(raws)?;
+        out.count(self.raws.len() - raws)?;
+        for raw in &self.raws[raws..] {
+            read::write_raw(raw, out)?;
+        }
+        self.written = [
+            self.holders.len(),
+            self.variants.len(),
+            self.tokens.len(),
+            self.raws.len(),
+        ];
+        Ok(())
+    }
+}
+
+/// The open endpoint: what it publishes, with what is kept beside it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Pending {
+    page: EndpointPage,
+    /// The latest complete variant read when it began.
+    names_hour: Option<i32>,
+    /// What its warnings were rendered from.
+    counts: PageCounts,
+}
+
+/// What an endpoint's warnings are rendered from: counted recording
+/// limitations, refused variant operands and observation restarts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct PageCounts {
+    pub recording: SavedCounts,
+    pub refusals: BTreeMap<String, BTreeSet<u64>>,
+    pub restarts: u32,
+}
+
+/// [`RecordingCounts`] as kept: without unnamed holders, which an endpoint
+/// counts by hour.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct SavedCounts {
+    pub reads: bool,
+    pub unread: usize,
+    pub unread_reason: Option<String>,
+    pub tainted_from: Option<i32>,
+    pub missed: usize,
+    pub inexact: usize,
+    pub lost: usize,
+    pub unattributed: usize,
+    pub unlisted: usize,
+    pub observations: usize,
+    pub rocket_reads: bool,
+    pub rocket_unread: usize,
+    pub rocket_unattributed: usize,
+    pub rocket_inconsistent: usize,
+}
+
+/// One line per refusal reason, naming every variant it refused.
+pub(crate) fn refusal_lines(refusals: &BTreeMap<String, BTreeSet<u64>>) -> Vec<String> {
+    let mut lines = crate::catalogue::Refusals::default();
+    for (reason, variants) in refusals {
+        for variant in variants {
+            lines.note(reason.as_str(), variant.to_string());
+        }
+    }
+    lines.diagnostic_lines("equipment variants with unknown text/design operands")
+}
+
+impl PageCounts {
+    /// Its warnings, and where the unnamed holders' warning goes.
+    pub(crate) fn warnings(&self) -> (Vec<String>, usize) {
+        let counts = &self.recording;
+        let (mut warnings, unnamed) = recording_warnings_of(
+            Vec::new(),
+            &RecordingCounts {
+                reads: counts.reads,
+                unread: counts.unread,
+                unread_reason: counts.unread_reason.clone(),
+                tainted_from: counts.tainted_from,
+                missed: counts.missed,
+                inexact: counts.inexact,
+                lost: counts.lost,
+                unattributed: counts.unattributed,
+                unlisted: counts.unlisted,
+                observations: counts.observations,
+                unnamed: 0,
+                rocket_reads: counts.rocket_reads,
+                rocket_unread: counts.rocket_unread,
+                rocket_unattributed: counts.rocket_unattributed,
+                rocket_inconsistent: counts.rocket_inconsistent,
+            },
+        );
+        let refusals = refusal_lines(&self.refusals);
+        let unnamed = unnamed + refusals.len();
+        warnings.splice(..0, refusals);
+        if self.restarts > 0 {
+            warnings.push(format!("The production output observation restarted {} times in this branch; running totals start again at each.", self.restarts));
+        }
+        (warnings, unnamed)
+    }
+
+    /// Its warnings with `unnamed` country-hours counted.
+    pub(crate) fn warnings_with(&self, unnamed: usize) -> Vec<String> {
+        let (mut warnings, index) = self.warnings();
+        if let Some(warning) =
+            crate::products::equipment_produced::unnamed_recording_warning(unnamed)
+        {
+            warnings.insert(index, warning);
+        }
+        warnings
+    }
 }
 
 /// A holder's numeric spending projection. Track versions change whenever
@@ -289,10 +531,10 @@ impl ProductionVariants {
         }
     }
 
-    fn read(&mut self, frame: &DecodedFrame, refusals: &mut crate::catalogue::Refusals) {
+    fn read(&mut self, frame: &DecodedFrame, refusals: &mut BTreeMap<String, BTreeSet<u64>>) {
         for (id, raw) in self.reads.build(frame, false) {
             for (_, reason) in &raw.refusals {
-                refusals.note(reason, id.to_string());
+                refusals.entry(reason.clone()).or_default().insert(id);
             }
             self.classified.remove(&id);
             self.catalogue.versions.insert(
@@ -340,17 +582,25 @@ fn change_members(
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// A variant's classification as preparation knows it, without content: the
+/// token it was last classified with, its names as each read recorded them,
+/// and which inventories saw it. Readers resolve its type and names.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Classification {
-    pub key: String,
-    pub ordinal: Option<usize>,
-    pub domain: Option<Domain>,
-    pub name: Option<String>,
-    pub names: Vec<StockVariantName>,
+    /// Empty when no read spelled it.
+    pub token: String,
+    pub names: Vec<VariantName>,
     /// Units, then IC, inventory, independently for each purpose: the flag
     /// at the measure's first index plus [`Purpose::index`].
     pub seen: [bool; SEEN],
-    pub reason: Option<String>,
+}
+
+/// A variant's names from one read: dated by it, with the raw operands read
+/// then (none from an hour its names stopped being known).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VariantName {
+    pub first_hour: i32,
+    pub raw: Option<u32>,
 }
 
 /// [`Classification::seen`]'s length and each measure's first index.
@@ -358,14 +608,18 @@ pub const SEEN: usize = 2 * Purpose::ALL.len();
 pub const UNITS_SEEN: usize = 0;
 pub const IC_SEEN: usize = Purpose::ALL.len();
 
-impl Classification {
-    /// Whether the measure starting at `inventory` saw the design, ship
-    /// refits counted only with `refits`.
-    fn seen_in(&self, inventory: usize, refits: bool) -> bool {
-        Purpose::ALL.into_iter().any(|purpose| {
-            (refits || purpose != Purpose::Refit) && self.seen[inventory + purpose.index()]
-        })
-    }
+pub(crate) fn seen_mask(seen: &[bool; SEEN]) -> u8 {
+    seen.iter()
+        .enumerate()
+        .fold(0, |mask, (index, seen)| mask | u8::from(*seen) << index)
+}
+
+/// Whether the measure starting at `inventory` saw the design, ship refits
+/// counted only with `refits`.
+pub(crate) fn seen_in(mask: u8, inventory: usize, refits: bool) -> bool {
+    Purpose::ALL.into_iter().any(|purpose| {
+        (refits || purpose != Purpose::Refit) && mask & 1 << (inventory + purpose.index()) != 0
+    })
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -403,7 +657,7 @@ impl From<&SourceEndpoint> for RocketBinding {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CoverageCorrection {
     tag: String,
     slot: u32,
@@ -436,44 +690,55 @@ impl ProductionAccumulator {
         work
     }
 
-    fn spending_scan(&self) -> ScannedProduced {
-        let mut rocket = RocketProduced::default();
-        rocket.reads = self.result.rocket.reads.clone();
-        rocket.observations = [
-            self.rocket_origin,
-            self.rocket_restart,
-            self.result.rocket.observations.last().copied(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-        rocket.unread = self.result.rocket.unread;
-        rocket.unattributed = self.result.rocket.unattributed;
-        rocket.inconsistent = self.result.rocket.inconsistent;
-        ScannedProduced {
+    /// What spending readers count of the branch's reads, by holder id.
+    fn spending_facts(&mut self) -> read::SpendingFacts {
+        let observations = |origin: Option<i32>, restart: Option<i32>, last: Option<i32>| {
+            [origin, restart, last]
+                .into_iter()
+                .flatten()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        read::SpendingFacts {
             reads: self.result.reads.clone(),
-            observations: [
+            observations: observations(
                 self.equipment_origin,
                 self.equipment_restart,
                 self.result.observations.last().copied(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
+            ),
             unlisted: self.unlisted.len(),
             unread_reason: self.result.unread_reason.clone(),
-            spending_tainted: self.result.spending_tainted.clone(),
-            rocket,
-            ..Default::default()
+            tainted: self
+                .result
+                .spending_tainted
+                .iter()
+                .map(|(&observation, &(hour, reason))| (observation, hour, reason))
+                .collect(),
+            rocket_reads: self.result.rocket.reads.clone(),
+            rocket_observations: observations(
+                self.rocket_origin,
+                self.rocket_restart,
+                self.result.rocket.observations.last().copied(),
+            ),
+            rocket_unread: self.result.rocket.unread,
+            rocket_unattributed: self.result.rocket.unattributed,
+            rocket_inconsistent: self.result.rocket.inconsistent,
+            equipment_holders: self
+                .first_equipment_holders
+                .keys()
+                .map(|tag| self.tables.holder(tag))
+                .collect(),
+            rocket_holders: self
+                .first_rocket_holders
+                .keys()
+                .map(|tag| self.tables.holder(tag))
+                .collect(),
         }
     }
 
     pub fn buffered_bytes(&self) -> usize {
-        self.spent.bytes()
+        self.spent.bytes() + self.batch.bytes
     }
 
     /// Carry only proofs current at the old frontier across certified unchanged
@@ -569,6 +834,7 @@ impl ProductionAccumulator {
                             .unwrap_or_default(),
                     );
                 }
+                let holder = self.tables.holder(tag);
                 for (variant, amounts) in variants {
                     for refits in if rocket {
                         &[true][..]
@@ -584,14 +850,12 @@ impl ProductionAccumulator {
                         {
                             continue;
                         }
-                        let token = serde_json::to_string(&(tag, rocket, refits, variant))?;
-                        let next = next_key(
-                            &self.spent_keys,
-                            &self.classification_keys,
-                            &self.unproven_keys,
-                            &self.purpose_keys,
-                        );
-                        let key = *self.spent_keys.entry(token).or_insert(next);
+                        let next =
+                            next_key(&self.spent_keys, &self.unproven_keys, &self.purpose_keys);
+                        let key = *self
+                            .spent_keys
+                            .entry((holder, rocket, *refits, variant))
+                            .or_insert(next);
                         let counted = Purpose::ALL
                             .into_iter()
                             .filter(|purpose| *refits || *purpose != Purpose::Refit)
@@ -619,14 +883,12 @@ impl ProductionAccumulator {
                         let Some(total) = &amounts[purpose.index()] else {
                             continue;
                         };
-                        let token = serde_json::to_string(&(tag, variant, purpose))?;
-                        let next = next_key(
-                            &self.spent_keys,
-                            &self.classification_keys,
-                            &self.unproven_keys,
-                            &self.purpose_keys,
-                        );
-                        let key = *self.purpose_keys.entry(token).or_insert(next);
+                        let next =
+                            next_key(&self.spent_keys, &self.unproven_keys, &self.purpose_keys);
+                        let key = *self
+                            .purpose_keys
+                            .entry((holder, variant, purpose))
+                            .or_insert(next);
                         let value = known_sum(scope_reason, [total])?;
                         if observe_known(
                             &mut self.spent,
@@ -646,16 +908,12 @@ impl ProductionAccumulator {
                     for (purpose, total) in Purpose::ALL.into_iter().filter_map(|purpose| {
                         amounts[purpose.index()].map(|total| (purpose, total))
                     }) {
-                        let token = serde_json::to_string(&(tag, variant, purpose))?;
+                        let token = (holder, variant, purpose);
                         if total.unproven_raw == 0 && !self.unproven_keys.contains_key(&token) {
                             continue;
                         }
-                        let next = next_key(
-                            &self.spent_keys,
-                            &self.classification_keys,
-                            &self.unproven_keys,
-                            &self.purpose_keys,
-                        );
+                        let next =
+                            next_key(&self.spent_keys, &self.unproven_keys, &self.purpose_keys);
                         let key = *self.unproven_keys.entry(token).or_insert(next);
                         let value = scope_reason
                             .or(total.reason)
@@ -724,10 +982,9 @@ impl ProductionAccumulator {
         self.spent_active.extend(opened);
         Ok(())
     }
-
     pub fn new(format_version: u16, branch: u64, first_hour: i32) -> Self {
         Self {
-            schema: 1,
+            schema: SCHEMA,
             branch,
             spending_recorded: TableId::ProductionLineOutput
                 .last_change()
@@ -769,14 +1026,12 @@ impl ProductionAccumulator {
     fn forget_names(&mut self, hour: i32) {
         self.variants.classified.clear();
         for kind in self.classifications.values_mut() {
-            if kind.names.last().is_some_and(|name| !name.known) {
+            if kind.names.last().is_some_and(|name| name.raw.is_none()) {
                 continue;
             }
-            kind.names = vec![StockVariantName {
+            kind.names = vec![VariantName {
                 first_hour: hour,
-                name: None,
-                known: false,
-                design: None,
+                raw: None,
             }];
         }
     }
@@ -829,7 +1084,9 @@ impl ProductionAccumulator {
         *last_frame = Some(hour);
 
         if !equipment_changed {
-            result.unnamed += pending.as_ref().map_or(0, |page| page.unnamed_per_hour);
+            result.unnamed += pending
+                .as_ref()
+                .map_or(0, |pending| pending.page.unnamed_per_hour);
             for tag in &result.active {
                 let track = result.tags.get_mut(tag).expect("active equipment holder");
                 if let Some((_, at)) = &mut track.last {
@@ -1150,15 +1407,13 @@ impl ProductionAccumulator {
 /// the series without refits less theirs.
 pub(crate) const SERIES_PURPOSES: [Purpose; 2] = [Purpose::Converted, Purpose::Unknown];
 
-/// The next series key: spent, classification, unproven and purpose keys
-/// share one numbering.
+/// The next series key: spent, unproven and purpose keys share one numbering.
 fn next_key(
-    spent: &BTreeMap<String, u64>,
-    classifications: &BTreeMap<u64, u64>,
-    unproven: &BTreeMap<String, u64>,
-    purposes: &BTreeMap<String, u64>,
+    spent: &BTreeMap<SpentKey, u64>,
+    unproven: &BTreeMap<PurposeKey, u64>,
+    purposes: &BTreeMap<PurposeKey, u64>,
 ) -> u64 {
-    (spent.len() + classifications.len() + unproven.len() + purposes.len()) as u64
+    (spent.len() + unproven.len() + purposes.len()) as u64
 }
 
 /// The exact sum of `totals`, unknown when the scope or any of them has a
@@ -1283,18 +1538,19 @@ mod versioned_pairs {
     }
 }
 
+/// One design's cumulative amounts of one purpose in a source.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Amount {
-    pub variant: String,
+    pub variant: u64,
     pub purpose: Purpose,
-    /// Exact signed cumulative accounting quantity, with no frontend ceiling.
-    pub units: String,
+    /// Exact signed cumulative accounting quantity.
+    pub units: i128,
     pub units_exact: bool,
-    pub spent: String,
+    pub spent: i128,
     pub spending_reason: Option<ProductionSpendingUnknown>,
     /// The magnitudes of the input of production ticks whose purpose was not
     /// recorded, summed: dated evidence that grows and never cancels.
-    pub unproven: String,
+    pub unproven: i128,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1323,10 +1579,10 @@ pub struct CountryEndpoint {
     pub rocket_joined: bool,
 }
 
+/// One endpoint as preparation holds it: another begins wherever any of it
+/// would differ.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct EndpointPage {
-    pub schema: u32,
-    pub branch_id: String,
     pub first_hour: i32,
     pub last_hour: i32,
     pub equipment_read: Option<i32>,
@@ -1350,22 +1606,6 @@ impl EndpointPage {
         let hours = (i64::from(hour.min(self.last_hour)) - i64::from(self.first_hour) + 1).max(0);
         self.unnamed_before
             + usize::try_from(hours).expect("accepted production span") * self.unnamed_per_hour
-    }
-
-    fn warnings_at(&self, hour: i32) -> Vec<String> {
-        let mut warnings = self.warnings.clone();
-        if let Some(warning) =
-            crate::products::equipment_produced::unnamed_recording_warning(self.unnamed_at(hour))
-        {
-            warnings.insert(self.unnamed_warning_index, warning);
-        }
-        warnings
-    }
-
-    fn render_warnings(&mut self, hour: i32) {
-        self.warnings = self.warnings_at(hour);
-        self.unnamed_before = 0;
-        self.unnamed_per_hour = 0;
     }
 }
 
@@ -1423,7 +1663,6 @@ fn spending_reason(
             .map(|_| ProductionSpendingUnknown::CountryChanged)
     })
 }
-
 fn snapshot(
     track: &TagHistory,
     hour: i32,
@@ -1458,13 +1697,13 @@ fn snapshot(
             let units = track.current.get(&entry).copied().unwrap_or_default();
             let spending = track.cost_current.get(&entry).copied().unwrap_or_default();
             Amount {
-                variant: entry.0.to_string(),
+                variant: entry.0,
                 purpose: entry.1,
-                units: units.units.to_string(),
+                units: units.units,
                 units_exact: units.inexact == 0,
-                spent: spending.raw.to_string(),
+                spent: spending.raw,
                 spending_reason: spending.reason,
-                unproven: spending.unproven_raw.to_string(),
+                unproven: spending.unproven_raw,
             }
         })
         .collect();
@@ -1481,16 +1720,15 @@ fn snapshot(
         amounts,
     }))
 }
-
 impl ProductionAccumulator {
+    /// Ingests one frame; an endpoint it completes joins the batch's facts.
     pub fn ingest_changed(
         &mut self,
         format: FormatVersion,
         frame: &DecodedFrame,
-        named: Named<'_>,
         cancelled: &AtomicBool,
         changes: &crate::prepared::frame_changes::FrameChanges,
-    ) -> io::Result<Option<EndpointPage>> {
+    ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("production:observe_apply");
         check_cancel(cancelled)?;
         self.spent.advance(frame.hour)?;
@@ -1535,7 +1773,7 @@ impl ProductionAccumulator {
         } else {
             false
         };
-        let changed = self.schema != 1
+        let changed = self.schema != SCHEMA
             || !consecutive
             || countries_changed
             || TABLES
@@ -1555,10 +1793,10 @@ impl ProductionAccumulator {
             .iter()
             .any(|table| changes.slot_read[table.index()]);
         if !changed && let Some(pending) = &mut self.pending {
-            pending.last_hour = frame.hour;
+            pending.page.last_hour = frame.hour;
             self.advance_spent_holders(frame.hour);
             self.last_frame = Some(frame.hour);
-            return Ok(None);
+            return Ok(());
         }
         let equipment_changed = !consecutive
             || countries_changed
@@ -1572,7 +1810,6 @@ impl ProductionAccumulator {
         self.ingest_frame(
             format,
             frame,
-            named,
             cancelled,
             equipment_changed,
             rocket_changed,
@@ -1585,7 +1822,7 @@ impl ProductionAccumulator {
     /// proofs without visiting inventories. False without an open page, whose
     /// hours only ingestion opens.
     pub fn advance_quiet(&mut self, first: i32, last: i32) -> io::Result<bool> {
-        if self.schema != 1
+        if self.schema != SCHEMA
             || self.pending.is_none()
             || self.last_frame.and_then(|hour| hour.checked_add(1)) != Some(first)
         {
@@ -1593,7 +1830,7 @@ impl ProductionAccumulator {
         }
         self.spent.advance_span(first, last)?;
         if let Some(pending) = &mut self.pending {
-            pending.last_hour = last;
+            pending.page.last_hour = last;
         }
         self.advance_spent_holders(last);
         self.last_frame = Some(last);
@@ -1603,11 +1840,11 @@ impl ProductionAccumulator {
         let Some(hour) = self.last_frame else {
             return;
         };
-        let Some(page) = &self.pending else {
+        let Some(Pending { page, .. }) = &self.pending else {
             return;
         };
         self.result.unnamed = page.unnamed_at(hour);
-        self.warnings = page.warnings_at(hour);
+        self.final_unnamed = self.result.unnamed;
         for row in &page.countries {
             for (source, tracks) in [
                 (row.equipment.as_ref(), &mut self.result.tags),
@@ -1635,30 +1872,28 @@ impl ProductionAccumulator {
         &mut self,
         format: FormatVersion,
         frame: &DecodedFrame,
-        named: Named<'_>,
         cancelled: &AtomicBool,
-    ) -> io::Result<Option<EndpointPage>> {
+    ) -> io::Result<()> {
         let changes = crate::prepared::frame_changes::FrameChanges {
             rows_changed: [true; replay_data::rows::TABLE_COUNT],
             table_read: [true; replay_data::rows::TABLE_COUNT],
             slot_read: [true; replay_data::rows::TABLE_COUNT],
             updates: None,
         };
-        self.ingest_changed(format, frame, named, cancelled, &changes)
+        self.ingest_changed(format, frame, cancelled, &changes)
     }
 
     fn ingest_frame(
         &mut self,
         format: FormatVersion,
         frame: &DecodedFrame,
-        named: Named<'_>,
         cancelled: &AtomicBool,
         equipment_changed: bool,
         rocket_changed: bool,
-    ) -> io::Result<Option<EndpointPage>> {
+    ) -> io::Result<()> {
         let cpu = ::replay_frame::cpu::scope_phase("production:settle_reconcile");
         check_cancel(cancelled)?;
-        if self.schema != 1 {
+        if self.schema != SCHEMA {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "Prepared production state schema mismatch",
@@ -1731,13 +1966,13 @@ impl ProductionAccumulator {
             && !numeric_read
             && !names_read
             && diagnostics_before == self.diagnostic_counts()
-            && self.pending.as_ref().is_some_and(|page| {
-                page.unnamed_per_hour == 0 && self.same_holders(page, frame.hour)
+            && self.pending.as_ref().is_some_and(|pending| {
+                pending.page.unnamed_per_hour == 0 && self.same_holders(&pending.page, frame.hour)
             })
         {
-            self.pending.as_mut().expect("unchanged endpoint").last_hour = frame.hour;
+            self.pending.as_mut().expect("unchanged endpoint").page.last_hour = frame.hour;
             check_cancel(cancelled)?;
-            return Ok(None);
+            return Ok(());
         }
         let cpu = ::replay_frame::cpu::scope_phase("production:presentation");
         // A fresh hourly catalogue is empty outside a complete variant read.
@@ -1745,6 +1980,7 @@ impl ProductionAccumulator {
         let complete_names = VariantCatalogue::hour_of(format, frame) == VariantHour::Read;
         if complete_names {
             self.variants.read(frame, &mut self.variant_refusals);
+            self.names_hour = Some(frame.hour);
         }
         self.variants.inventory(
             self.country_reads.as_ref(),
@@ -1776,27 +2012,25 @@ impl ProductionAccumulator {
             {
                 self.variants.classifications += 1;
             }
-            let (mut types, reasons, _) = variant_types_for(catalogue, [variant], named);
-            let kind = types
-                .remove(&variant)
-                .expect("classified production variant");
-            let mut names = catalogue.names(variant, named.texts);
-            for name in &mut names {
-                name.first_hour = frame.hour;
+            let mut names: Vec<VariantName> = Vec::new();
+            for version in catalogue.versions.get(&variant).into_iter().flatten() {
+                let name = VariantName {
+                    first_hour: frame.hour,
+                    raw: version.raw.as_ref().map(|raw| self.tables.raw(raw)),
+                };
+                if names.last().is_none_or(|last| last.raw != name.raw) {
+                    names.push(name);
+                }
             }
             self.classifications.insert(
                 variant,
                 Classification {
-                    reason: reasons.first().cloned(),
-                    name: named.type_name(&kind.key),
+                    token: token.to_owned(),
                     names,
                     seen: self
                         .classifications
                         .get(&variant)
                         .map_or([false; SEEN], |kind| kind.seen),
-                    key: kind.key,
-                    ordinal: kind.ordinal,
-                    domain: kind.domain,
                 },
             );
             if !token.is_empty() {
@@ -1813,11 +2047,9 @@ impl ProductionAccumulator {
         if names_read {
             for (&variant, kind) in &mut self.classifications {
                 if !catalogue.versions.contains_key(&variant) {
-                    kind.names = vec![StockVariantName {
+                    kind.names = vec![VariantName {
                         first_hour: frame.hour,
-                        name: None,
-                        known: false,
-                        design: None,
+                        raw: None,
                     }];
                 }
             }
@@ -1908,7 +2140,7 @@ impl ProductionAccumulator {
                     equipment_source,
                     rocket.as_ref(),
                     frame.hour,
-                    &mut self.pending,
+                    self.pending.as_mut().map(|pending| &mut pending.page),
                 )
             } else {
                 false
@@ -1926,40 +2158,28 @@ impl ProductionAccumulator {
         self.joins
             .bounds
             .retain(|tag, _| present.contains(tag.as_str()));
-        let mut rocket_diagnostics = RocketProduced::default();
-        rocket_diagnostics.reads = self.result.rocket.reads.clone();
-        rocket_diagnostics.unread = self.result.rocket.unread;
-        rocket_diagnostics.unread_reason = self.result.rocket.unread_reason.clone();
-        rocket_diagnostics.unattributed = self.result.rocket.unattributed;
-        rocket_diagnostics.inconsistent = self.result.rocket.inconsistent;
-        let diagnostics = ScannedProduced {
-            reads: self.result.reads.clone(),
-            observations: self.result.observations.clone(),
-            unattributed: self.result.unattributed,
-            inexact: self.result.inexact,
-            lost: self.result.lost,
-            unlisted: self.unlisted.len(),
-            unread: self.result.unread,
-            unread_reason: self.result.unread_reason.clone(),
-            unnamed: 0,
-            missed: self.result.missed,
-            tainted: self.result.tainted.clone(),
-            rocket: rocket_diagnostics,
-            ..Default::default()
+        let counts = PageCounts {
+            recording: SavedCounts {
+                reads: !self.result.reads.is_empty(),
+                unread: self.result.unread,
+                unread_reason: self.result.unread_reason.clone(),
+                tainted_from: self.result.tainted.iter().next().map(|(_, from)| *from),
+                missed: self.result.missed,
+                inexact: self.result.inexact,
+                lost: self.result.lost,
+                unattributed: self.result.unattributed,
+                unlisted: self.unlisted.len(),
+                observations: self.result.observations.len(),
+                rocket_reads: !self.result.rocket.reads.is_empty(),
+                rocket_unread: self.result.rocket.unread,
+                rocket_unattributed: self.result.rocket.unattributed,
+                rocket_inconsistent: self.result.rocket.inconsistent,
+            },
+            refusals: self.variant_refusals.clone(),
+            restarts: self.observation,
         };
-        let (mut warnings, unnamed_warning_index) =
-            crate::products::equipment_produced::recording_warnings_with_unnamed(&diagnostics);
-        let variant_refusals = self
-            .variant_refusals
-            .diagnostic_lines("equipment variants with unknown text/design operands");
-        let unnamed_warning_index = unnamed_warning_index + variant_refusals.len();
-        warnings.splice(..0, variant_refusals);
-        if self.observation > 0 {
-            warnings.push(format!("The production output observation restarted {} times in this branch; running totals start again at each.", self.observation));
-        }
+        let (warnings, unnamed_warning_index) = counts.warnings();
         let mut page = EndpointPage {
-            schema: 1,
-            branch_id: self.branch.to_string(),
             first_hour: frame.hour,
             last_hour: frame.hour,
             equipment_read: self.result.reads.last().copied(),
@@ -1977,27 +2197,38 @@ impl ProductionAccumulator {
         };
         let completed = match self.pending.take() {
             Some(mut previous) => {
-                page.first_hour = previous.first_hour;
-                let last = previous.last_hour;
-                if page.unnamed_per_hour == previous.unnamed_per_hour
-                    && page.unnamed_before == previous.unnamed_at(last)
+                page.first_hour = previous.page.first_hour;
+                let last = previous.page.last_hour;
+                if page.unnamed_per_hour == previous.page.unnamed_per_hour
+                    && page.unnamed_before == previous.page.unnamed_at(last)
                 {
-                    page.unnamed_before = previous.unnamed_before;
+                    page.unnamed_before = previous.page.unnamed_before;
                 }
-                previous.last_hour = frame.hour;
-                if last.checked_add(1) == Some(frame.hour) && previous == page {
-                    self.pending = Some(page);
+                previous.page.last_hour = frame.hour;
+                if last.checked_add(1) == Some(frame.hour) && previous.page == page {
+                    // The page holds: what it began with stays.
+                    self.pending = Some(Pending { page, ..previous });
                     None
                 } else {
-                    previous.last_hour = last;
+                    previous.page.last_hour = last;
                     page.first_hour = frame.hour;
                     page.unnamed_before = diagnostics_before[4];
-                    self.pending = Some(page);
+                    self.final_counts = counts.clone();
+                    self.pending = Some(Pending {
+                        page,
+                        names_hour: self.names_hour,
+                        counts,
+                    });
                     Some(previous)
                 }
             }
             None => {
-                self.pending = Some(page);
+                self.final_counts = counts.clone();
+                self.pending = Some(Pending {
+                    page,
+                    names_hour: self.names_hour,
+                    counts,
+                });
                 None
             }
         };
@@ -2026,13 +2257,11 @@ impl ProductionAccumulator {
         retain_last(&mut self.result.observations);
         retain_last(&mut self.result.rocket.observations);
         self.seal_holders();
+        if let Some(completed) = completed {
+            self.complete(completed)?;
+        }
         check_cancel(cancelled)?;
-        Ok(completed)
-    }
-    /// Publish the accepted prefix before saving this accumulator. Appends begin a new page.
-    pub fn flush(&mut self) -> Option<EndpointPage> {
-        self.seal_holders();
-        self.pending.take()
+        Ok(())
     }
 
     fn diagnostic_counts(&self) -> [usize; 9] {
@@ -2070,7 +2299,6 @@ impl ProductionAccumulator {
             })
     }
 }
-
 impl RocketJoins {
     fn bind_rocket(
         &mut self,
@@ -2078,7 +2306,7 @@ impl RocketJoins {
         equipment: &SourceEndpoint,
         observed: Option<&SourceEndpoint>,
         hour: i32,
-        pending: &mut Option<EndpointPage>,
+        pending: Option<&mut EndpointPage>,
     ) -> bool {
         let observed = observed.map(RocketBinding::from);
         let bound = self
@@ -2150,7 +2378,6 @@ impl RocketJoins {
         bound.rocket.is_some()
     }
 }
-
 fn source_holds(source: Option<&SourceEndpoint>, track: Option<&TagHistory>, hour: i32) -> bool {
     let live = track.and_then(|track| {
         track
@@ -2196,950 +2423,471 @@ pub fn predecessor(hour: i32, measure: ProducedMeasure) -> Option<i32> {
     }
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "PreparedProductionValue")]
-pub struct SelectedValue {
-    pub key: String,
-    pub amount: Option<String>,
-    pub equipment_amount: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "PreparedProductionCountry")]
-pub struct SelectedCountry {
-    pub tag: String,
-    pub slot: u32,
-    pub country_id: u32,
-    pub segment: String,
-    pub total: Option<String>,
-    pub equipment_total: Option<String>,
-    pub read_hour: i32,
-    pub observation: Option<i32>,
-    pub values: Vec<SelectedValue>,
-}
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, ts_rs::TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(rename = "PreparedProductionSelection")]
-pub struct SelectionPage {
-    pub schema: u32,
-    pub branch_id: String,
-    pub first_hour: i32,
-    pub last_hour: i32,
-    pub known: bool,
-    pub keys: Vec<ProducedKey>,
-    pub types: Vec<ProducedType>,
-    pub total_countries: usize,
-    /// Logical first rank in this page; quantities remain exact until geometry.
-    pub offset: String,
-    pub value_min: String,
-    pub value_max: String,
-    pub countries: Vec<SelectedCountry>,
-    /// Totals by type before paging, for the automatic units choice. Only a
-    /// total-by-type units selection supplies them; unknown amounts add nothing.
-    pub type_totals: Option<Vec<(String, String)>>,
-    /// The hour every running total at this page began counting, whichever countries are selected.
-    pub observation: Option<i32>,
-    /// Whether the branch prepared so far has read production output at all.
-    pub recorded: bool,
-    pub warnings: Vec<String>,
-}
-
-fn country<'a>(page: Option<&'a EndpointPage>, tag: &str) -> Option<&'a CountryEndpoint> {
-    let page = page?;
-    page.countries
-        .binary_search_by(|country| country.tag.as_str().cmp(tag))
-        .ok()
-        .map(|index| &page.countries[index])
-}
-fn compatible(
-    now: &SourceEndpoint,
-    before: Option<&SourceEndpoint>,
-    measure: ProducedMeasure,
-) -> bool {
-    if measure == ProducedMeasure::Total {
-        return true;
-    }
-    let Some(target) = predecessor(now.read_hour, measure) else {
-        return false;
-    };
-    before.is_some_and(|before| {
-        before.read_hour == target
-            && (now.slot, now.country_id, now.observation, now.segment)
-                == (
-                    before.slot,
-                    before.country_id,
-                    before.observation,
-                    before.segment,
-                )
-    })
-}
-fn parse(value: &str) -> io::Result<i128> {
-    value.parse().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid exact production amount",
-        )
-    })
-}
-
-fn aggregate(
-    source: Option<&SourceEndpoint>,
-    before: Option<&SourceEndpoint>,
-    params: &ProducedParams,
-    counted: impl Fn(u64, Purpose) -> bool,
-) -> io::Result<Option<i128>> {
-    let Some(source) = source else {
-        return Ok(None);
-    };
-    if !compatible(source, before, params.measure)
-        || match params.count {
-            ProducedCount::Units => !source.units_known,
-            ProducedCount::Ic => !source.spending_known,
-        }
-    {
-        return Ok(None);
-    }
-    let sum = |endpoint: &SourceEndpoint, check_exact: bool| -> io::Result<Option<i128>> {
-        let mut sum = 0i128;
-        for amount in &endpoint.amounts {
-            let variant = amount.variant.parse::<u64>().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid recorded variant identity",
-                )
-            })?;
-            if !counted(variant, amount.purpose) {
-                continue;
-            }
-            if check_exact
-                && match params.count {
-                    ProducedCount::Units => !amount.units_exact,
-                    ProducedCount::Ic => amount.spending_reason.is_some(),
-                }
-            {
-                return Ok(None);
-            }
-            let raw = parse(match params.count {
-                ProducedCount::Units => &amount.units,
-                ProducedCount::Ic => &amount.spent,
-            })?;
-            sum = sum.checked_add(raw).ok_or_else(|| {
-                io::Error::other("Produced equipment group exceeds its exact integer range")
-            })?;
-        }
-        Ok(Some(sum))
-    };
-    let Some(current) = sum(source, true)? else {
-        return Ok(None);
-    };
-    if params.measure == ProducedMeasure::Total {
-        return Ok(Some(current));
-    }
-    let previous =
-        sum(before.expect("compatible predecessor"), false)?.expect("unchecked exactness");
-    Ok(Some(current.checked_sub(previous).ok_or_else(|| {
-        io::Error::other("Produced equipment range exceeds its exact integer range")
-    })?))
-}
-
-fn combined(left: Option<i128>, right: Option<i128>) -> io::Result<Option<i128>> {
-    match (left, right) {
-        (Some(left), Some(right)) => left.checked_add(right).map(Some).ok_or_else(|| {
-            io::Error::other("Combined delivered amount exceeds its exact integer range")
-        }),
-        _ => Ok(None),
-    }
-}
-
-/// Rank an arbitrary included subset at this endpoint, then page in complete order.
-/// Work depends on the endpoint's countries/designs, independent of campaign length.
-pub fn select(
-    current: &EndpointPage,
-    equipment_before: Option<&EndpointPage>,
-    rocket_before: Option<&EndpointPage>,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    cancelled: &AtomicBool,
-) -> io::Result<SelectionPage> {
-    select_ordered(
-        current,
-        equipment_before,
-        rocket_before,
-        params,
-        offset,
-        limit,
-        false,
-        cancelled,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn select_ordered(
-    current: &EndpointPage,
-    equipment_before: Option<&EndpointPage>,
-    rocket_before: Option<&EndpointPage>,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    ranked: bool,
-    cancelled: &AtomicBool,
-) -> io::Result<SelectionPage> {
-    check_cancel(cancelled)?;
-    if params.top.is_some() && !params.tags.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Choose countries or a top count, never both",
-        ));
-    }
-    if current.schema != 1
-        || current.branch_id.parse::<u64>().ok() != params.branch_id.parse::<u64>().ok()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Prepared production schema or branch mismatch",
-        ));
-    }
-    <crate::products::equipment_produced::EquipmentProduced as crate::products::Product>::validate(
-        params,
-    )
-    .map_err(|reason| io::Error::new(io::ErrorKind::InvalidInput, reason))?;
-    let included: BTreeSet<&str> = params.included.iter().map(String::as_str).collect();
-    let classes = &current.classifications;
-    let includes_resolved = classes
-        .values()
-        .any(|kind| kind.ordinal.is_some() && included.contains(kind.key.as_str()));
-    let counted = |variant: u64, purpose: Purpose| {
-        (params.refits || purpose != Purpose::Refit)
-            && classes
-                .get(&variant)
-                .is_some_and(|kind| included.is_empty() || included.contains(kind.key.as_str()))
-    };
-    let unresolved = |variant: u64| {
-        classes
-            .get(&variant)
-            .is_none_or(|kind| kind.ordinal.is_none())
-    };
-    let outside = |variant: u64, purpose: Purpose| {
-        includes_resolved
-            && unresolved(variant)
-            && (params.refits || purpose != Purpose::Refit)
-            && !counted(variant, purpose)
-    };
-    type GroupOrder = (usize, String, u64);
-    type GroupMembers = (String, bool, BTreeSet<u64>);
-    let mut groups: BTreeMap<GroupOrder, GroupMembers> = BTreeMap::new();
-    let inventory = match params.count {
-        ProducedCount::Units => UNITS_SEEN,
-        ProducedCount::Ic => IC_SEEN,
-    };
-    for (&variant, kind) in classes {
-        if !kind.seen_in(inventory, params.refits) {
-            continue;
-        }
-        if !counted(variant, Purpose::New) {
-            continue;
-        }
-        let (order, key, ambiguous) = match params.grouping {
-            ProducedGrouping::Type => (
-                (kind.ordinal.unwrap_or(usize::MAX), kind.key.clone(), 0),
-                kind.key.clone(),
-                kind.ordinal.is_some(),
-            ),
-            ProducedGrouping::Variant => (
-                (
-                    kind.ordinal.unwrap_or(usize::MAX),
-                    kind.key.clone(),
-                    variant,
-                ),
-                variant.to_string(),
-                false,
-            ),
-            ProducedGrouping::Domain => {
-                let (rank, key) = match kind.domain {
-                    Some(Domain::Land) => (0, "land"),
-                    Some(Domain::Air) => (1, "air"),
-                    Some(Domain::Naval) => (2, "naval"),
-                    None => (3, equipment::UNRESOLVED_ARM),
-                };
-                (
-                    (rank, String::new(), 0),
-                    key.to_owned(),
-                    kind.domain.is_some(),
-                )
-            }
-        };
-        groups
-            .entry(order)
-            .or_insert_with(|| (key, ambiguous, BTreeSet::new()))
-            .2
-            .insert(variant);
-    }
-    let mut rows = Vec::new();
-    let mut has_known = false;
-    let mut has_unknown = false;
-    let mut seen = HashSet::new();
-    let selected: Vec<&CountryEndpoint> = if params.top.is_some() {
-        current.countries.iter().collect()
-    } else {
-        params
-            .tags
-            .iter()
-            .filter(|tag| seen.insert(tag.as_str()))
-            .filter_map(|tag| country(Some(current), tag))
-            .collect()
-    };
-    let evaluate = |row: &CountryEndpoint,
-                    hydrate: bool|
-     -> io::Result<(Option<i128>, SelectedCountry, bool)> {
-        check_cancel(cancelled)?;
-        let equipment = row.equipment.as_ref().expect("covered equipment endpoint");
-        let e_before = country(equipment_before, &row.tag).and_then(|row| row.equipment.as_ref());
-        let r_before = country(rocket_before, &row.tag).and_then(|row| row.rocket.as_ref());
-        let rocket = row.rocket.as_ref().filter(|rocket| {
-            row.rocket_joined
-                && (rocket.slot, rocket.country_id) == (equipment.slot, equipment.country_id)
-                && match (equipment.observation, rocket.observation) {
-                    (Some(left), Some(right)) => left == right,
-                    _ => true,
-                }
-        });
-        let e = |filter: &dyn Fn(u64, Purpose) -> bool| {
-            aggregate(Some(equipment), e_before, params, filter)
-        };
-        let r = |filter: &dyn Fn(u64, Purpose) -> bool| aggregate(rocket, r_before, params, filter);
-        let scope_known = r(&|variant, _| variant == 0)?.is_some();
-        let rocket_value = |value| if scope_known { value } else { None };
-        let e_outside = e(&outside)?;
-        let e_total = e(&counted)?.filter(|_| e_outside == Some(0));
-        let r_outside = r(&outside)?;
-        let r_total = rocket_value(r(&counted)?.filter(|_| r_outside == Some(0)));
-        let total = combined(e_total, r_total)?;
-        let covers = compatible(equipment, e_before, params.measure)
-            && match params.count {
-                ProducedCount::Units => equipment.units_known,
-                ProducedCount::Ic => equipment.spending_known,
-            };
-        let mut values = Vec::new();
-        for (key, ambiguous, variants) in groups.values().filter(|_| hydrate) {
-            let group = |variant: u64, purpose: Purpose| {
-                (params.refits || purpose != Purpose::Refit) && variants.contains(&variant)
-            };
-            let unsure = |variant: u64, purpose: Purpose| {
-                unresolved(variant)
-                    && (params.refits || purpose != Purpose::Refit)
-                    && match params.grouping {
-                        ProducedGrouping::Type => true,
-                        ProducedGrouping::Domain => counted(variant, purpose),
-                        ProducedGrouping::Variant => false,
-                    }
-            };
-            let e_unsure = e(&unsure)?;
-            let e_amount = e(&group)?.filter(|_| !ambiguous || e_unsure == Some(0));
-            let r_unsure = r(&unsure)?;
-            let r_amount = rocket_value(r(&group)?.filter(|_| !ambiguous || r_unsure == Some(0)));
-            values.push(SelectedValue {
-                key: key.clone(),
-                amount: combined(e_amount, r_amount)?.map(|value| value.to_string()),
-                equipment_amount: e_amount.map(|value| value.to_string()),
-            });
-        }
-        Ok((
-            total,
-            SelectedCountry {
-                tag: row.tag.clone(),
-                slot: equipment.slot,
-                country_id: equipment.country_id,
-                segment: equipment.segment.to_string(),
-                total: total.map(|value| value.to_string()),
-                equipment_total: e_total.map(|value| value.to_string()),
-                read_hour: equipment.read_hour,
-                observation: equipment.observation,
-                values,
-            },
-            covers,
-        ))
-    };
-    for row in selected {
-        if row.equipment.is_none() {
-            continue;
-        }
-        let (total, country, covers) = evaluate(row, false)?;
-        if covers {
-            has_known |= total.is_some();
-            has_unknown |= total.is_none();
-        }
-        rows.push((total, country));
-    }
-    if ranked || params.top.is_some() {
-        rows.retain(|(value, _)| value.is_some_and(|value| params.top.is_none() || value != 0));
-        rows.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then_with(|| left.1.tag.cmp(&right.1.tag))
-        });
-        if let Some(top) = params.top {
-            rows.truncate(top as usize);
-        }
-    }
-    let total_countries = rows.len();
-    let type_totals = if params.count == ProducedCount::Units
-        && params.measure == ProducedMeasure::Total
-        && params.grouping == ProducedGrouping::Type
-        && params.included.is_empty()
-    {
-        let mut sums: BTreeMap<String, i128> = BTreeMap::new();
-        for (_, row) in &rows {
-            let (_, country, _) = evaluate(
-                country(Some(current), &row.tag).expect("selected endpoint"),
-                true,
-            )?;
-            for value in country.values {
-                if let Some(amount) = value.amount {
-                    let total = sums.entry(value.key).or_default();
-                    *total = total.checked_add(parse(&amount)?).ok_or_else(|| {
-                        io::Error::other("Produced type total exceeds its exact integer range")
-                    })?;
-                }
-            }
-        }
-        Some(
-            groups
-                .values()
-                .filter_map(|(key, _, _)| sums.get(key).map(|sum| (key.clone(), sum.to_string())))
-                .collect(),
-        )
-    } else {
-        None
-    };
-    let value_min = rows
-        .iter()
-        .filter_map(|(value, _)| *value)
-        .min()
-        .unwrap_or(0)
-        .min(0);
-    let value_max = rows
-        .iter()
-        .filter_map(|(value, _)| *value)
-        .max()
-        .unwrap_or(0)
-        .max(0);
-    let countries = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|(_, row)| {
-            evaluate(
-                country(Some(current), &row.tag).expect("selected endpoint"),
-                true,
-            )
-            .map(|(_, row, _)| row)
-        })
-        .collect::<io::Result<_>>()?;
-    Ok(SelectionPage {
-        type_totals,
-        observation: None,
-        recorded: false,
-        schema: 1,
-        branch_id: params.branch_id.clone(),
-        first_hour: current.first_hour,
-        last_hour: current.last_hour,
-        known: has_known && !has_unknown,
-        keys: groups
-            .values()
-            .map(|(key, _, variants)| {
-                let variant = *variants.first().expect("nonempty produced group");
-                let kind = &classes[&variant];
-                ProducedKey {
-                    key: key.clone(),
-                    name: if params.grouping == ProducedGrouping::Type {
-                        kind.name.clone()
-                    } else {
-                        None
-                    },
-                    type_key: (params.grouping == ProducedGrouping::Variant)
-                        .then(|| kind.key.clone()),
-                    domain: if params.grouping == ProducedGrouping::Domain {
-                        match key.as_str() {
-                            "land" => Some(Domain::Land),
-                            "air" => Some(Domain::Air),
-                            "naval" => Some(Domain::Naval),
-                            _ => None,
-                        }
-                    } else {
-                        kind.domain
-                    },
-                    names: if params.grouping == ProducedGrouping::Variant {
-                        kind.names.clone()
-                    } else {
-                        Vec::new()
-                    },
-                }
-            })
-            .collect(),
-        types: {
-            let mut types = BTreeMap::new();
-            for kind in classes
-                .values()
-                .filter(|kind| kind.seen_in(inventory, true))
-            {
-                types
-                    .entry((kind.ordinal.unwrap_or(usize::MAX), kind.key.clone()))
-                    .or_insert_with(|| ProducedType {
-                        key: kind.key.clone(),
-                        name: kind.name.clone(),
-                        domain: kind.domain,
-                    });
-            }
-            types.into_values().collect()
-        },
-        total_countries,
-        offset: offset.to_string(),
-        value_min: value_min.to_string(),
-        value_max: value_max.to_string(),
-        countries,
-        warnings: current.warnings_at(current.last_hour),
-    })
-}
-
-fn section(name: &str, branch: u64) -> String {
+pub(crate) fn section(name: &str, branch: u64) -> String {
     format!("{name}/{branch}")
 }
 
-/// The sections production's pages are kept in, each a branch's `{name}/{branch}`.
-pub const ENDPOINTS: &str = "production-endpoints-v1";
-pub const TIMES: &str = "production-times-v1";
-pub const STATE: &str = "production-state-v1";
-pub const CATALOGUE: &str = "production-catalogue-v1";
-#[derive(Deserialize, Serialize)]
-pub(crate) struct ProductionCatalogue {
-    schema: u32,
-    branch: u64,
-    pub(crate) classifications: BTreeMap<u64, Classification>,
-    pub(crate) warnings: Vec<String>,
-    pub(crate) spent_keys: BTreeMap<String, u64>,
-    classification_keys: BTreeMap<u64, u64>,
-    pub(crate) unproven_keys: BTreeMap<String, u64>,
-    pub(crate) purpose_keys: BTreeMap<String, u64>,
-    pub(crate) spending: SpendingDiagnostics,
-    pub(crate) variant_warnings: Vec<String>,
-    /// Every equipment observation's counting start, ascending.
-    pub(crate) observations: Vec<i32>,
+/// A branch's spent series (P4), by integer key.
+pub(crate) fn spent_section(branch: u64) -> String {
+    format!("production-spent-{branch}")
 }
 
-impl ProductionCatalogue {
-    /// Where running totals at `hour` began counting, as history's latest observation then.
-    fn observation_at(&self, hour: i32) -> Option<i32> {
-        let reached = self.observations.partition_point(|since| *since <= hour);
-        reached.checked_sub(1).map(|index| self.observations[index])
-    }
-}
+/// The section a test's saved accumulator is kept in, as `{STATE}/{branch}`.
+pub const STATE: &str = "production-state-v2";
 
-/// Only refusal/read provenance; no production quantities or retained rows.
-#[derive(Deserialize, Serialize)]
-pub(crate) struct SpendingDiagnostics {
-    equipment_tags: BTreeSet<String>,
-    rocket_tags: BTreeSet<String>,
-    reads: Vec<i32>,
-    observations: Vec<i32>,
-    unlisted: usize,
-    unread_reason: Option<String>,
-    tainted: BTreeMap<u32, (i32, ProductionSpendingUnknown)>,
-    rocket_reads: Vec<i32>,
-    rocket_observations: Vec<i32>,
-    rocket_unread: usize,
-    rocket_unattributed: usize,
-    rocket_inconsistent: usize,
-}
-impl From<ScannedProduced> for SpendingDiagnostics {
-    fn from(scanned: ScannedProduced) -> Self {
-        Self {
-            equipment_tags: BTreeSet::new(),
-            rocket_tags: BTreeSet::new(),
-            reads: scanned.reads,
-            observations: scanned.observations,
-            unlisted: scanned.unlisted,
-            unread_reason: scanned.unread_reason,
-            tainted: scanned.spending_tainted,
-            rocket_reads: scanned.rocket.reads,
-            rocket_observations: scanned.rocket.observations,
-            rocket_unread: scanned.rocket.unread,
-            rocket_unattributed: scanned.rocket.unattributed,
-            rocket_inconsistent: scanned.rocket.inconsistent,
-        }
-    }
-}
-impl SpendingDiagnostics {
-    pub fn scanned(&self, tag: &str) -> ScannedProduced {
-        let mut rocket = RocketProduced::default();
-        rocket.reads = self.rocket_reads.clone();
-        rocket.observations = self.rocket_observations.clone();
-        rocket.unread = self.rocket_unread;
-        rocket.unattributed = self.rocket_unattributed;
-        rocket.inconsistent = self.rocket_inconsistent;
-        if self.rocket_tags.contains(tag) {
-            rocket.tags.insert(tag.to_owned(), TagHistory::default());
-        }
-        ScannedProduced {
-            tags: if self.equipment_tags.contains(tag) {
-                BTreeMap::from([(tag.to_owned(), TagHistory::default())])
-            } else {
-                BTreeMap::new()
-            },
-            reads: self.reads.clone(),
-            observations: self.observations.clone(),
-            unlisted: self.unlisted,
-            unread_reason: self.unread_reason.clone(),
-            spending_tainted: self.tainted.clone(),
-            rocket,
-            ..Default::default()
-        }
-    }
-}
-#[derive(Deserialize, Serialize)]
-struct TimeEntry {
-    first: i32,
-    last: i32,
-    endpoint: u64,
-}
-
-#[derive(Deserialize, Serialize)]
-struct LeafEndpoint {
-    holder: (u32, u32, Option<i32>, u64),
-    amount: Amount,
-}
-
-impl SourceEndpoint {
-    fn holder(&self) -> (u32, u32, Option<i32>, u64) {
-        (self.slot, self.country_id, self.observation, self.segment)
-    }
-}
-
-impl ProductionAccumulator {
-    fn endpoint_event(&mut self, key: u64, hour: i32, value: &impl Serialize) -> io::Result<()> {
-        let bytes = serde_json::to_vec(value)?;
-        let hash = *blake3::hash(&bytes).as_bytes();
-        if self.endpoint_hashes.get(&key) != Some(&hash) {
-            self.spent.event_raw(key, hour, bytes)?;
-            self.endpoint_hashes.insert(key, hash);
-        }
-        Ok(())
-    }
-}
-
-/// Where endpoint pages are written: the store writer, or [`HeldPages`].
-pub trait PageWrites {
-    /// Write `bytes` as range `ordinal` of `section`.
-    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()>;
-    /// Append `bytes` to `section`, whose next range is `next`; the range written.
-    fn append(&mut self, section: &str, next: u64, bytes: Vec<u8>) -> io::Result<u64>;
-}
-
-impl PageWrites for store::Writer {
-    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()> {
-        self.write_at(section, ordinal, bytes.as_slice())?;
-        #[cfg(any(test, feature = "test-support"))]
-        crate::prepared::pages::framing::note_compressed(&bytes);
-        Ok(())
-    }
-
-    fn append(&mut self, section: &str, _next: u64, bytes: Vec<u8>) -> io::Result<u64> {
-        self.write(section, bytes.as_slice())
-    }
-}
-
-/// One held write: a range at its ordinal, or an append expected at its range.
-enum HeldWrite {
-    Range(u64),
-    Append(u64),
-}
-
-/// Endpoint pages published while production is prepared on its own, whose
-/// folds have no writer: each page's writes are held in publication order and
-/// written by its next flush, before the flush's own, so the store holds what
-/// publishing each page at its frame writes. Only endpoint publication
-/// appends to the time pages, so an append's range is the accumulator's page
-/// count when it was published.
+/// One holder's leaf events in a batch (P3), in groups that each begin with
+/// its whole state.
 #[derive(Default)]
-pub struct HeldPages {
-    writes: Vec<(String, HeldWrite, Vec<u8>)>,
+struct HolderStream {
+    groups: Vec<HolderGroup>,
+    open: Out,
+    first: u64,
+    last: u64,
+    events: u32,
+}
+
+struct HolderGroup {
+    first: u64,
+    last: u64,
+    events: u32,
+    bytes: Vec<u8>,
+}
+
+impl HolderStream {
+    /// One event: the holder's state at `endpoint`, where `before` was its
+    /// state at the endpoint before. Returns the bytes it added.
+    fn push(
+        &mut self,
+        holder: u32,
+        endpoint: u64,
+        before: Option<&Holder>,
+        now: Option<&Holder>,
+    ) -> io::Result<usize> {
+        let mut added = 0;
+        if self.events as usize == facts::HOLDER_GROUP {
+            added += self.close()?;
+        }
+        if self.events == 0 {
+            self.first = endpoint;
+        }
+        let start = self.open.0.len();
+        self.open.u64(endpoint);
+        let before = if self.events == 0 { None } else { before };
+        if !facts::write_patch(holder, before, now, &mut self.open)? {
+            // A group's first event is whole, an absent holder's too.
+            self.open.u32(holder);
+            self.open.u8(0);
+        }
+        self.last = endpoint;
+        self.events += 1;
+        Ok(added + self.open.0.len() - start)
+    }
+
+    fn close(&mut self) -> io::Result<usize> {
+        if self.events == 0 {
+            return Ok(0);
+        }
+        let bytes = crate::prepared::series::compress(&std::mem::take(&mut self.open.0), 3)?;
+        let added = bytes.len();
+        self.groups.push(HolderGroup {
+            first: self.first,
+            last: self.last,
+            events: self.events,
+            bytes,
+        });
+        self.events = 0;
+        Ok(added)
+    }
+}
+
+/// The facts of the endpoints completed since the last flush.
+#[derive(Default)]
+struct Batch {
+    first_endpoint: Option<u64>,
+    endpoints: Out,
+    endpoint_count: u32,
+    ranking: Vec<u8>,
+    /// Every holder at the batch's last endpoint, by id.
+    previous: Option<BTreeMap<u32, Holder>>,
+    streams: BTreeMap<u32, HolderStream>,
+    naming: Out,
+    naming_count: u32,
+    /// Each variant's names as last published in this batch.
+    named: HashMap<u64, Vec<NameCode>>,
     bytes: usize,
 }
 
-impl HeldPages {
-    /// Bytes held for the next flush.
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    /// Write every held page, in order, through `writer`.
-    pub fn write(&mut self, writer: &mut store::Writer) -> io::Result<()> {
-        for (section, write, bytes) in std::mem::take(&mut self.writes) {
-            match write {
-                HeldWrite::Range(ordinal) => {
-                    writer.write_at(&section, ordinal, bytes.as_slice())?;
-                    #[cfg(any(test, feature = "test-support"))]
-                    crate::prepared::pages::framing::note_compressed(&bytes);
-                }
-                HeldWrite::Append(expected) => {
-                    if writer.write(&section, bytes.as_slice())? != expected {
-                        return Err(io::Error::other(
-                            "Held production pages were appended out of their order",
-                        ));
-                    }
-                }
+impl ProductionAccumulator {
+    /// A completed endpoint's facts, joined to the batch's.
+    fn complete(&mut self, completed: Pending) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("production:facts");
+        let Pending {
+            page, names_hour, ..
+        } = completed;
+        #[cfg(test)]
+        self.completed.push((page.clone(), names_hour));
+        let endpoint = self.pages_written;
+        self.pages_written = endpoint
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Production page count exceeds its integer range"))?;
+        let mut now = BTreeMap::new();
+        for row in &page.countries {
+            let holder = self.tables.holder(&row.tag);
+            let equipment = row
+                .equipment
+                .as_ref()
+                .map(|source| self.facts_source(source, page.equipment_read))
+                .transpose()?;
+            let rocket = row
+                .rocket
+                .as_ref()
+                .map(|source| self.facts_source(source, page.rocket_read))
+                .transpose()?;
+            now.insert(
+                holder,
+                Holder {
+                    equipment,
+                    rocket,
+                    rocket_joined: row.rocket_joined,
+                },
+            );
+        }
+        let mut named = Vec::new();
+        for (&variant, kind) in &page.classifications {
+            let code: Vec<NameCode> = kind
+                .names
+                .iter()
+                .map(|name| NameCode {
+                    hour: (Some(name.first_hour) != names_hour).then_some(name.first_hour),
+                    raw: name.raw,
+                })
+                .collect();
+            if self.batch.named.get(&variant) != Some(&code) {
+                named.push((self.tables.variant(variant), variant, code));
             }
         }
-        self.bytes = 0;
-        Ok(())
-    }
-}
-
-impl PageWrites for HeldPages {
-    fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()> {
-        self.bytes += bytes.len();
-        self.writes
-            .push((section.to_owned(), HeldWrite::Range(ordinal), bytes));
-        Ok(())
-    }
-
-    fn append(&mut self, section: &str, next: u64, bytes: Vec<u8>) -> io::Result<u64> {
-        self.bytes += bytes.len();
-        self.writes
-            .push((section.to_owned(), HeldWrite::Append(next), bytes));
-        Ok(next)
-    }
-}
-
-pub fn publish_endpoint(
-    writer: &mut store::Writer,
-    state: &mut ProductionAccumulator,
-    page: &EndpointPage,
-) -> io::Result<u64> {
-    publish_endpoint_to(writer, state, page)
-}
-
-/// [`publish_endpoint`] into `writes`.
-pub fn publish_endpoint_to(
-    writes: &mut impl PageWrites,
-    state: &mut ProductionAccumulator,
-    page: &EndpointPage,
-) -> io::Result<u64> {
-    if page.schema != 1 || page.branch_id.parse::<u64>().ok() != Some(state.branch) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Prepared production schema or branch mismatch",
-        ));
-    }
-    let _cpu = ::replay_frame::cpu::scope_phase("production:series_flush");
-    let mut header = page.clone();
-    let mut active = BTreeSet::new();
-    for row in &mut header.countries {
-        for (rocket, source) in [(false, &mut row.equipment), (true, &mut row.rocket)] {
-            let Some(source) = source else { continue };
-            let holder = source.holder();
-            for amount in std::mem::take(&mut source.amounts) {
-                let variant: u64 = amount
-                    .variant
-                    .parse()
-                    .map_err(|_| io::Error::other("Invalid production variant"))?;
-                // The combined-refit S key holds the native refit endpoint event
-                // and a purpose key its purpose's; their numeric runs remain
-                // the already-computed combined and purpose amounts.
-                let next = next_key(
-                    &state.spent_keys,
-                    &state.classification_keys,
-                    &state.unproven_keys,
-                    &state.purpose_keys,
-                );
-                let key = if !rocket && SERIES_PURPOSES.contains(&amount.purpose) {
-                    let token = serde_json::to_string(&(&row.tag, variant, amount.purpose))?;
-                    *state.purpose_keys.entry(token).or_insert(next)
-                } else {
-                    let refits = rocket || amount.purpose == Purpose::Refit;
-                    let token = serde_json::to_string(&(&row.tag, rocket, refits, variant))?;
-                    *state.spent_keys.entry(token).or_insert(next)
-                };
-                active.insert(key);
-                state.endpoint_event(key, page.first_hour, &LeafEndpoint { holder, amount })?;
+        let batch = &mut self.batch;
+        let start = batch.previous.is_none();
+        if start {
+            batch.first_endpoint = Some(endpoint);
+        }
+        let previous = batch.previous.take().unwrap_or_default();
+        let holders: BTreeSet<u32> = previous
+            .keys()
+            .chain(now.keys())
+            .chain(self.present_holders.iter().filter(|_| start))
+            .copied()
+            .collect();
+        // Ranking (P2): every holder at a keyframe, else what changed.
+        let keyframe = batch.endpoint_count as usize % facts::RANKING_KEYFRAME == 0;
+        let mut block = Out::default();
+        for &holder in &holders {
+            let before = if keyframe { None } else { previous.get(&holder) };
+            facts::write_patch(holder, before, now.get(&holder), &mut block)?;
+        }
+        let block = crate::prepared::series::compress(&block.0, 3)?;
+        let ranking_offset = batch.ranking.len() as u64;
+        let ranking_len = u32::try_from(block.len())
+            .map_err(|_| io::Error::other("A production ranking block exceeds 4 GiB"))?;
+        batch.ranking.extend_from_slice(&block);
+        let before = batch.endpoints.0.len();
+        Endpoint {
+            first_hour: page.first_hour,
+            last_hour: page.last_hour,
+            equipment_read: page.equipment_read,
+            rocket_read: page.rocket_read,
+            equipment_origin: page.equipment_origin,
+            equipment_restart: page.equipment_restart,
+            rocket_origin: page.rocket_origin,
+            rocket_restart: page.rocket_restart,
+            names_hour,
+            ranking_offset,
+            ranking_len,
+            keyframe,
+        }
+        .write(&mut batch.endpoints);
+        batch.endpoint_count += 1;
+        let mut added = block.len() + batch.endpoints.0.len() - before;
+        // Each holder's leaves (P3), wherever they changed; a batch's first
+        // endpoint states every holder present then or at the batch before.
+        for holder in holders {
+            let before = previous.get(&holder);
+            let state = now.get(&holder);
+            let changed = if start {
+                state.is_some() || self.present_holders.contains(&holder)
+            } else {
+                before != state
+            };
+            if changed {
+                added += batch
+                    .streams
+                    .entry(holder)
+                    .or_default()
+                    .push(holder, endpoint, before, state)?;
             }
         }
+        // Names (P5), wherever a variant's changed.
+        let before = batch.naming.0.len();
+        for (index, variant, code) in named {
+            batch.naming.u64(endpoint);
+            batch.naming.u32(index);
+            batch.naming.count(code.len())?;
+            for name in &code {
+                name.write(&mut batch.naming);
+            }
+            batch.naming_count += 1;
+            batch.named.insert(variant, code);
+        }
+        added += batch.naming.0.len() - before;
+        batch.bytes += added;
+        self.present_holders = now.keys().copied().collect();
+        batch.previous = Some(now);
+        Ok(())
     }
-    let removed: Vec<_> = state.endpoint_active.difference(&active).copied().collect();
-    for key in removed {
-        state
-            .spent
-            .event(key, page.first_hour, &Option::<LeafEndpoint>::None)?;
-        state.endpoint_hashes.remove(&key);
+
+    fn facts_source(
+        &mut self,
+        source: &SourceEndpoint,
+        read: Option<i32>,
+    ) -> io::Result<facts::Source> {
+        let mut leaves = source
+            .amounts
+            .iter()
+            .map(|amount| {
+                Ok(Leaf {
+                    variant: self.tables.variant(amount.variant),
+                    purpose: amount.purpose,
+                    units: facts::at_rest(amount.units)?,
+                    units_exact: amount.units_exact,
+                    spent: facts::at_rest(amount.spent)?,
+                    reason: amount.spending_reason,
+                    unproven: facts::at_rest(amount.unproven)?,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        leaves.sort_unstable_by_key(Leaf::key);
+        Ok(facts::Source {
+            head: facts::Head {
+                slot: source.slot,
+                country_id: source.country_id,
+                observation: source.observation,
+                segment: source.segment,
+                read_hour: (Some(source.read_hour) != read).then_some(source.read_hour),
+                units_known: source.units_known,
+                spending_known: source.spending_known,
+                present: source.present,
+                campaign_reason: source.campaign_spending_reason,
+            },
+            leaves,
+        })
     }
-    state.endpoint_active = active;
-    for (variant, classification) in std::mem::take(&mut header.classifications) {
-        let next = next_key(
-            &state.spent_keys,
-            &state.classification_keys,
-            &state.unproven_keys,
-            &state.purpose_keys,
-        );
-        let key = *state.classification_keys.entry(variant).or_insert(next);
-        state.endpoint_event(key, page.first_hour, &classification)?;
+
+    /// Completes the open endpoint and appends the batch's facts and spent
+    /// series. Appends begin a new endpoint.
+    pub fn flush(&mut self, writer: &mut store::Writer, cancelled: &AtomicBool) -> io::Result<()> {
+        let _cpu = ::replay_frame::cpu::scope_phase("production:series_flush");
+        self.seal_holders();
+        if let Some(pending) = self.pending.take() {
+            self.complete(pending)?;
+        }
+        self.spent
+            .flush(writer, &spent_section(self.branch), 0, cancelled)?;
+        let range = self.facts_range()?;
+        writer.write(&section(FACTS, self.branch), range.as_slice())?;
+        Ok(())
     }
-    // The completed page can precede the frame whose new numeric read closed it.
-    // Appending its events must not shorten the shared numeric batch frontier.
-    state.spent.through(
-        state
-            .last_frame
-            .unwrap_or(page.last_hour)
-            .max(page.last_hour),
-    );
-    let endpoint = state.pages_written;
-    // As `series::write_reply` writes a reply.
-    let header = crate::prepared::series::compress(serde_json::to_vec(&header)?.as_slice(), 3)?;
-    writes.write_range(&section(ENDPOINTS, state.branch), endpoint, header)?;
-    let bytes = serde_json::to_vec(&TimeEntry {
-        first: page.first_hour,
-        last: page.last_hour,
-        endpoint,
-    })?;
-    let ordinal = writes.append(&section(TIMES, state.branch), state.pages_written, bytes)?;
-    state.pages_written = ordinal
-        .checked_add(1)
-        .ok_or_else(|| io::Error::other("Production page count exceeds its integer range"))?;
-    Ok(ordinal)
+
+    /// The batch's range: its preamble, head, ranking blocks and holder groups.
+    fn facts_range(&mut self) -> io::Result<Vec<u8>> {
+        let mut batch = std::mem::take(&mut self.batch);
+        let first_endpoint = batch.first_endpoint.unwrap_or(self.pages_written);
+        let mut directory = Out::default();
+        let mut groups = Vec::new();
+        directory.count(batch.streams.len())?;
+        for (holder, mut stream) in std::mem::take(&mut batch.streams) {
+            stream.close()?;
+            directory.u32(holder);
+            directory.count(stream.groups.len())?;
+            for group in stream.groups {
+                directory.u64(group.first);
+                directory.u64(group.last);
+                directory.u64(groups.len() as u64);
+                directory.count(group.bytes.len())?;
+                directory.count(group.events as usize)?;
+                groups.extend_from_slice(&group.bytes);
+            }
+        }
+        // Spent series keys (P4) made since the last flush.
+        let mut keys = Vec::new();
+        for (&(holder, rocket, refits, variant), &key) in &self.spent_keys {
+            keys.push((key, 0u8, holder, variant, rocket, refits, Purpose::New));
+        }
+        for (kind, map) in [(1u8, &self.purpose_keys), (2u8, &self.unproven_keys)] {
+            for (&(holder, variant, purpose), &key) in map {
+                keys.push((key, kind, holder, variant, false, false, purpose));
+            }
+        }
+        keys.retain(|key| key.0 >= self.keys_written);
+        keys.sort_unstable_by_key(|key| key.0);
+        let mut key_out = Out::default();
+        key_out.count(keys.len())?;
+        for (key, kind, holder, variant, rocket, refits, purpose) in keys {
+            key_out.u8(kind);
+            key_out.u32(holder);
+            key_out.u64(variant);
+            key_out.bool(rocket);
+            key_out.bool(refits);
+            key_out.u8(purpose.index() as u8);
+            key_out.u64(key);
+        }
+        self.keys_written = next_key(&self.spent_keys, &self.unproven_keys, &self.purpose_keys);
+        // Every variant's classification as of the flush (P5).
+        let mut finals = Out::default();
+        finals.count(self.classifications.len())?;
+        for (&variant, kind) in &self.classifications {
+            finals.u32(self.tables.variant(variant));
+            finals.u32(self.tables.token(&kind.token));
+            finals.u8(seen_mask(&kind.seen));
+            finals.count(kind.names.len())?;
+            for name in &kind.names {
+                NameCode {
+                    hour: Some(name.first_hour),
+                    raw: name.raw,
+                }
+                .write(&mut finals);
+            }
+        }
+        // Rocket joins withdrawn since the last flush (P6).
+        let mut revocations = Out::default();
+        let corrections = std::mem::take(&mut self.joins.corrections);
+        #[cfg(test)]
+        self.revoked.extend(corrections.iter().cloned());
+        revocations.count(corrections.len())?;
+        for correction in corrections {
+            revocations.u32(self.tables.holder(&correction.tag));
+            revocations.u32(correction.slot);
+            revocations.u32(correction.country_id);
+            revocations.opt_i32(correction.observation);
+            revocations.i32(correction.read_hour);
+            revocations.i32(correction.last_hour);
+        }
+        // Diagnostics as of the flush (P7).
+        let spending = self.spending_facts();
+        let mut diagnostics = Out::default();
+        read::write_diagnostics(
+            &mut diagnostics,
+            &read::Diagnostics {
+                counts: self.final_counts.clone(),
+                unnamed: self.final_unnamed,
+                spending,
+                variant_refusals: self.variant_refusals.clone(),
+                observation_starts: self.observation_starts(),
+            },
+        )?;
+        // Tables last, as everything above can add to them.
+        let mut tables = Out::default();
+        self.tables.write_new(&mut tables)?;
+        let mut head = Out::default();
+        head.region(&tables.0);
+        head.u32(batch.endpoint_count);
+        head.region(&batch.endpoints.0);
+        head.u32(batch.naming_count);
+        head.region(&batch.naming.0);
+        head.region(&key_out.0);
+        head.region(&finals.0);
+        head.region(&revocations.0);
+        head.region(&diagnostics.0);
+        head.region(&directory.0);
+        let head = crate::prepared::series::compress(&head.0, 3)?;
+        let mut out = Out::default();
+        Preamble {
+            first_endpoint,
+            head_len: head.len() as u64,
+            ranking_len: batch.ranking.len() as u64,
+            holders_len: groups.len() as u64,
+        }
+        .write(&mut out);
+        out.0.extend_from_slice(&head);
+        out.0.extend_from_slice(&batch.ranking);
+        out.0.extend_from_slice(&groups);
+        Ok(out.0)
+    }
 }
+
+#[cfg(test)]
+impl ProductionAccumulator {
+    /// Completes `page`, with its classifications, as an endpoint: for tests
+    /// that build pages by hand.
+    pub(crate) fn publish_page(
+        &mut self,
+        page: EndpointPage,
+        names_hour: Option<i32>,
+    ) -> io::Result<()> {
+        for (&variant, kind) in &page.classifications {
+            self.classifications.insert(variant, kind.clone());
+        }
+        self.complete(Pending {
+            page,
+            names_hour,
+            counts: PageCounts::default(),
+        })
+    }
+
+    /// The raw operands a name refers to.
+    pub(crate) fn raw(&self, id: u32) -> &RawVariant {
+        &self.tables.raws[id as usize]
+    }
+
+    /// Every withdrawal of a Rocket join flushed so far: (tag, slot,
+    /// country, observation, supplying read, last hour).
+    pub(crate) fn revocations(&self) -> Vec<(String, u32, u32, Option<i32>, i32, i32)> {
+        self.revoked
+            .iter()
+            .map(|correction| {
+                (
+                    correction.tag.clone(),
+                    correction.slot,
+                    correction.country_id,
+                    correction.observation,
+                    correction.read_hour,
+                    correction.last_hour,
+                )
+            })
+            .collect()
+    }
+
+    /// The spent series keys as (tag, Rocket, refits, design) → key.
+    pub(crate) fn spent_keys(&self) -> BTreeMap<(String, bool, bool, u64), u64> {
+        self.spent_keys
+            .iter()
+            .map(|(&(holder, rocket, refits, variant), &key)| {
+                (
+                    (
+                        self.tables.holders[holder as usize].clone(),
+                        rocket,
+                        refits,
+                        variant,
+                    ),
+                    key,
+                )
+            })
+            .collect()
+    }
+}
+
+/// Flushes and saves `state` as a resumed preparation would find it.
+#[cfg(any(test, feature = "test-support"))]
 pub fn write_state(
     writer: &mut store::Writer,
     state: &mut ProductionAccumulator,
 ) -> io::Result<u64> {
-    write_catalogue(writer, state, &AtomicBool::new(false))?;
+    state.flush(writer, &AtomicBool::new(false))?;
     let bytes = serde_json::to_vec(state)?;
     writer.write_at(&section(STATE, state.branch), 0, bytes.as_slice())?;
     Ok(0)
 }
 
-/// The common runner persists its combined accumulator once; this small catalogue
-/// supplies reference-wide static type facts and diagnostics to older endpoint pages.
-pub fn write_catalogue(
-    writer: &mut store::Writer,
-    state: &mut ProductionAccumulator,
-    cancelled: &AtomicBool,
-) -> io::Result<()> {
-    state.seal_holders();
-    state.spent.flush(
-        writer,
-        &format!("production-spent-{}", state.branch),
-        0,
-        cancelled,
-    )?;
-    apply_corrections(writer, state)?;
-    let bytes = serde_json::to_vec(&ProductionCatalogue {
-        schema: state.schema,
-        branch: state.branch,
-        classifications: state.classifications.clone(),
-        warnings: state.warnings.clone(),
-        spent_keys: state.spent_keys.clone(),
-        classification_keys: state.classification_keys.clone(),
-        unproven_keys: state.unproven_keys.clone(),
-        purpose_keys: state.purpose_keys.clone(),
-        spending: {
-            let mut diagnostics: SpendingDiagnostics = state.spending_scan().into();
-            diagnostics.equipment_tags = state.first_equipment_holders.keys().cloned().collect();
-            diagnostics.rocket_tags = state.first_rocket_holders.keys().cloned().collect();
-            diagnostics
-        },
-        variant_warnings: state
-            .variant_refusals
-            .diagnostic_lines("equipment variants with unknown text/design operands"),
-        observations: state.observation_starts(),
-    })?;
-    writer.write_at(&section(CATALOGUE, state.branch), 0, bytes.as_slice())
-}
-
-fn apply_corrections(
-    writer: &mut store::Writer,
-    state: &mut ProductionAccumulator,
-) -> io::Result<()> {
-    type Holder = (String, u32, u32, Option<i32>, i32);
-    let mut intervals: BTreeMap<i32, (i32, HashSet<Holder>)> = BTreeMap::new();
-    for correction in std::mem::take(&mut state.joins.corrections) {
-        let interval = intervals
-            .entry(correction.first_hour)
-            .or_insert_with(|| (correction.last_hour, HashSet::new()));
-        interval.0 = interval.0.max(correction.last_hour);
-        interval.1.insert((
-            correction.tag,
-            correction.slot,
-            correction.country_id,
-            correction.observation,
-            correction.read_hour,
-        ));
-    }
-    for (first, (last, holders)) in intervals {
-        // Seek only the affected native supplying interval, never earlier history.
-        let (mut low, mut high) = (0, state.pages_written);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let file = writer
-                .read_at(&section(TIMES, state.branch), mid)?
-                .ok_or_else(|| {
-                    io::Error::other("Missing production time page for coverage repair")
-                })?;
-            let entry: TimeEntry = serde_json::from_reader(io::BufReader::new(file))?;
-            if entry.last < first {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        for ordinal in low..state.pages_written {
-            let file = writer
-                .read_at(&section(TIMES, state.branch), ordinal)?
-                .ok_or_else(|| {
-                    io::Error::other("Missing production time page for coverage repair")
-                })?;
-            let entry: TimeEntry = serde_json::from_reader(io::BufReader::new(file))?;
-            if entry.first > last {
-                break;
-            }
-            let file = writer
-                .read_at(&section(ENDPOINTS, state.branch), entry.endpoint)?
-                .ok_or_else(|| {
-                    io::Error::other("Missing production endpoint for coverage repair")
-                })?;
-            let mut compressed = Vec::new();
-            io::Read::read_to_end(&mut io::BufReader::new(file), &mut compressed)?;
-            let mut page: EndpointPage =
-                serde_json::from_slice(&crate::prepared::series::decompress(&compressed)?)?;
-            let mut changed = false;
-            for row in &mut page.countries {
-                if row.rocket_joined
-                    && row.equipment.as_ref().is_some_and(|source| {
-                        holders.contains(&(
-                            row.tag.clone(),
-                            source.slot,
-                            source.country_id,
-                            source.observation,
-                            source.read_hour,
-                        ))
-                    })
-                {
-                    row.rocket_joined = false;
-                    changed = true;
-                }
-            }
-            if changed {
-                crate::prepared::series::write_reply(
-                    writer,
-                    &section(ENDPOINTS, state.branch),
-                    entry.endpoint,
-                    &page,
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
+#[cfg(any(test, feature = "test-support"))]
 pub fn read_state(
     store: &store::Store,
     key: &store::SourceKey,
@@ -3150,7 +2898,7 @@ pub fn read_state(
         return Ok(None);
     };
     let state: ProductionAccumulator = serde_json::from_reader(io::BufReader::new(file))?;
-    if state.schema != 1 || state.branch != branch {
+    if state.schema != SCHEMA || state.branch != branch {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Prepared production state schema or branch mismatch",
@@ -3158,244 +2906,8 @@ pub fn read_state(
     }
     Ok(Some(state))
 }
-/// Binary search tiny time entries on disk; retain only the endpoint being returned.
-pub fn read_at(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-    count: u64,
-    hour: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<EndpointPage>> {
-    Endpoints::new(store, key, branch, count, cancelled).page(hour, Leaves::All)
-}
 
-/// Which leaves an endpoint read restores onto its page.
-#[derive(Clone, Copy)]
-pub(crate) enum Leaves<'a> {
-    /// Every country's equipment and Rocket amounts, and the hour's classifications.
-    All,
-    /// One country's equipment and Rocket amounts, and the hour's classifications.
-    Country(&'a str),
-    /// These countries' Rocket amounts only. Other amounts stay empty and the
-    /// page's classifications are not read.
-    Rockets(&'a BTreeSet<String>),
-    /// No amounts or classifications: only the page's sources and coverage.
-    Sources,
-}
-
-/// One query's reads of a branch's endpoint pages. The catalogue, its parsed
-/// leaf tokens and the leaf reader (with the directories and blobs it has read)
-/// are shared by every hour the query reads, and each read looks up only the
-/// leaves it restores, all at once.
-pub(crate) struct Endpoints<'a> {
-    store: &'a store::Store,
-    key: &'a store::SourceKey,
-    branch: u64,
-    count: u64,
-    cancelled: &'a AtomicBool,
-    /// None until read; then the branch's catalogue, if it has one.
-    catalogue: Option<Option<ProductionCatalogue>>,
-    /// The catalogue's leaf tokens in catalogue order: tag, Rocket, variant, leaf key.
-    tokens: Vec<(String, bool, u64, u64)>,
-    reader: Option<crate::prepared::series::Reader<'a>>,
-}
-
-impl<'a> Endpoints<'a> {
-    pub(crate) fn new(
-        store: &'a store::Store,
-        key: &'a store::SourceKey,
-        branch: u64,
-        count: u64,
-        cancelled: &'a AtomicBool,
-    ) -> Self {
-        Self {
-            store,
-            key,
-            branch,
-            count,
-            cancelled,
-            catalogue: None,
-            tokens: Vec::new(),
-            reader: None,
-        }
-    }
-
-    pub(crate) fn catalogue(&mut self) -> io::Result<Option<&ProductionCatalogue>> {
-        if self.catalogue.is_none() {
-            let catalogue = read_catalogue(self.store, self.key, self.branch)?;
-            if let Some(catalogue) = &catalogue {
-                let spent = catalogue.spent_keys.iter().map(|(token, &leaf)| {
-                    let (tag, rocket, _, variant): (String, bool, bool, u64) =
-                        serde_json::from_str(token)?;
-                    Ok((tag, rocket, variant, leaf))
-                });
-                let purposes = catalogue.purpose_keys.iter().map(|(token, &leaf)| {
-                    let (tag, variant, _): (String, u64, Purpose) = serde_json::from_str(token)?;
-                    Ok((tag, false, variant, leaf))
-                });
-                self.tokens = spent.chain(purposes).collect::<io::Result<_>>()?;
-            }
-            self.catalogue = Some(catalogue);
-        }
-        Ok(self.catalogue.as_ref().and_then(Option::as_ref))
-    }
-
-    /// The branch's leaf reader, opened once.
-    pub(crate) fn reader(&mut self) -> io::Result<&mut crate::prepared::series::Reader<'a>> {
-        if self.reader.is_none() {
-            self.reader = Some(crate::prepared::series::Reader::new(
-                self.store,
-                self.key,
-                format!("production-spent-{}", self.branch),
-                self.cancelled,
-            )?);
-        }
-        Ok(self.reader.as_mut().expect("leaf reader opened above"))
-    }
-
-    /// The page holding `hour`, with the requested leaves restored at `hour`.
-    pub(crate) fn page(
-        &mut self,
-        hour: i32,
-        leaves: Leaves<'_>,
-    ) -> io::Result<Option<EndpointPage>> {
-        let (store, key, branch) = (self.store, self.key, self.branch);
-        let (mut low, mut high) = (0, self.count);
-        while low < high {
-            check_cancel(self.cancelled)?;
-            let mid = low + (high - low) / 2;
-            let Some(file) = store.read(key, &section(TIMES, branch), mid)? else {
-                return Ok(None);
-            };
-            let entry: TimeEntry = serde_json::from_reader(io::BufReader::new(file))?;
-            if hour < entry.first {
-                high = mid;
-            } else if hour > entry.last {
-                low = mid + 1;
-            } else {
-                let Some(mut page) = crate::prepared::series::read_reply::<EndpointPage>(
-                    store,
-                    key,
-                    &section(ENDPOINTS, branch),
-                    entry.endpoint,
-                )?
-                else {
-                    return Ok(None);
-                };
-                if page.schema != 1 || page.branch_id != branch.to_string() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Prepared production schema or branch mismatch",
-                    ));
-                }
-                if self.catalogue()?.is_none() {
-                    return Ok(None);
-                }
-                self.restore(&mut page, hour, leaves)?;
-                page.render_warnings(hour);
-                return Ok(Some(page));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Each requested leaf's latest event at `hour`, kept when it is the
-    /// page's current holder's; then the hour's classifications.
-    fn restore(
-        &mut self,
-        page: &mut EndpointPage,
-        hour: i32,
-        leaves: Leaves<'_>,
-    ) -> io::Result<()> {
-        let mut selected = Vec::new();
-        for (tag, rocket, variant, leaf) in &self.tokens {
-            let wanted = match leaves {
-                Leaves::All => true,
-                Leaves::Country(only) => tag == only,
-                Leaves::Rockets(tags) => *rocket && tags.contains(tag),
-                Leaves::Sources => false,
-            };
-            if !wanted {
-                continue;
-            }
-            let Ok(index) = page.countries.binary_search_by(|row| row.tag.cmp(tag)) else {
-                continue;
-            };
-            let row = &page.countries[index];
-            if (if *rocket { &row.rocket } else { &row.equipment }).is_none() {
-                continue;
-            }
-            selected.push((index, *rocket, *variant, *leaf));
-        }
-        let keys: Vec<u64> = selected.iter().map(|&(.., leaf)| leaf).collect();
-        let rows = self.reader()?.latest_event_rows(&keys, hour)?;
-        let mut amounts: BTreeMap<(usize, bool), BTreeMap<Entry, Amount>> = BTreeMap::new();
-        for ((index, rocket, variant, _), row) in selected.into_iter().zip(rows) {
-            let Some((_, bytes)) = row else {
-                continue;
-            };
-            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-            let Some(leaf) = serde_json::from_value::<Option<LeafEndpoint>>(value)? else {
-                continue;
-            };
-            let row = &page.countries[index];
-            let source = if rocket { &row.rocket } else { &row.equipment };
-            if source
-                .as_ref()
-                .is_some_and(|source| leaf.holder == source.holder())
-            {
-                amounts
-                    .entry((index, rocket))
-                    .or_default()
-                    .insert((variant, leaf.amount.purpose), leaf.amount);
-            }
-        }
-        for ((index, rocket), values) in amounts {
-            let row = &mut page.countries[index];
-            let source = if rocket {
-                &mut row.rocket
-            } else {
-                &mut row.equipment
-            };
-            source.as_mut().expect("selected production source").amounts =
-                values.into_values().collect();
-        }
-        if matches!(leaves, Leaves::Rockets(_) | Leaves::Sources) {
-            return Ok(());
-        }
-        let (variants, keys): (Vec<u64>, Vec<u64>) = self
-            .catalogue
-            .as_ref()
-            .and_then(Option::as_ref)
-            .expect("catalogue read before restoring leaves")
-            .classification_keys
-            .iter()
-            .map(|(&variant, &key)| (variant, key))
-            .unzip();
-        let rows = self.reader()?.latest_event_rows(&keys, hour)?;
-        for (variant, row) in variants.into_iter().zip(rows) {
-            if let Some((_, bytes)) = row {
-                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-                page.classifications
-                    .insert(variant, serde_json::from_value(value)?);
-            }
-        }
-        Ok(())
-    }
-}
-
-pub fn endpoint_count(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-) -> io::Result<u64> {
-    Ok(store
-        .range_count(key, &section(TIMES, branch))?
-        .unwrap_or(0))
-}
-
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn latest_state(
     store: &store::Store,
     key: &store::SourceKey,
@@ -3410,212 +2922,9 @@ pub fn latest_state(
     }
 }
 
-pub fn select_at(
-    store: &store::Store,
-    key: &store::SourceKey,
-    hour: i32,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<SelectionPage>> {
-    select_at_ordered(store, key, hour, params, offset, limit, false, cancelled)
-}
 
-pub(crate) fn read_catalogue(
-    store: &store::Store,
-    key: &store::SourceKey,
-    branch: u64,
-) -> io::Result<Option<ProductionCatalogue>> {
-    let Some(file) = store.read(key, &section(CATALOGUE, branch), 0)? else {
-        return Ok(None);
-    };
-    let catalogue: ProductionCatalogue = serde_json::from_reader(io::BufReader::new(file))?;
-    if catalogue.schema != 1 || catalogue.branch != branch {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Prepared production catalogue schema or branch mismatch",
-        ));
-    }
-    Ok(Some(catalogue))
-}
-
-/// Amounts remain independent on disk; equipment-produced projects its Rocket
-/// source to the equipment supplying read using the original dated join.
-/// Each supplying read hour is read once, restoring only the Rocket amounts of
-/// the countries joined at it.
-fn bind_equipment_rockets(
-    endpoints: &mut Endpoints<'_>,
-    page: &mut EndpointPage,
-) -> io::Result<()> {
-    let mut joined: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
-    for row in &mut page.countries {
-        let Some(equipment) = row.equipment.as_ref().filter(|_| row.rocket_joined) else {
-            row.rocket = None;
-            continue;
-        };
-        joined
-            .entry(equipment.read_hour)
-            .or_default()
-            .insert(row.tag.clone());
-    }
-    let mut reads = BTreeMap::new();
-    for (&hour, tags) in &joined {
-        reads.insert(hour, endpoints.page(hour, Leaves::Rockets(tags))?);
-    }
-    for row in &mut page.countries {
-        let Some(equipment) = row.equipment.as_ref().filter(|_| row.rocket_joined) else {
-            continue;
-        };
-        let hour = equipment.read_hour;
-        row.rocket = country(reads[&hour].as_ref(), &row.tag).and_then(|row| row.rocket.clone());
-    }
-    Ok(())
-}
-
-/// An unobserved endpoint supplies no country amounts, ranks or classifications.
-pub fn empty_selection(
-    hour: i32,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    ranked: bool,
-    cancelled: &AtomicBool,
-) -> io::Result<SelectionPage> {
-    let current = EndpointPage {
-        schema: 1,
-        branch_id: params.branch_id.clone(),
-        first_hour: hour,
-        last_hour: hour,
-        equipment_read: None,
-        rocket_read: None,
-        equipment_origin: None,
-        equipment_restart: None,
-        rocket_origin: None,
-        rocket_restart: None,
-        countries: Vec::new(),
-        classifications: BTreeMap::new(),
-        warnings: Vec::new(),
-        unnamed_before: 0,
-        unnamed_per_hour: 0,
-        unnamed_warning_index: 0,
-    };
-    select_ordered(
-        &current, None, None, params, offset, limit, ranked, cancelled,
-    )
-}
-
-pub fn select_ranked_at(
-    store: &store::Store,
-    key: &store::SourceKey,
-    hour: i32,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<SelectionPage>> {
-    select_at_ordered(store, key, hour, params, offset, limit, true, cancelled)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn select_at_ordered(
-    store: &store::Store,
-    key: &store::SourceKey,
-    hour: i32,
-    params: &ProducedParams,
-    offset: usize,
-    limit: usize,
-    ranked: bool,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<SelectionPage>> {
-    let branch = params
-        .branch_id
-        .parse::<u64>()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
-    check_cancel(cancelled)?;
-    if params.tags.is_empty() && params.top.is_none() {
-        let Some(catalogue) = read_catalogue(store, key, branch)? else {
-            return Ok(None);
-        };
-        let observation = catalogue.observation_at(hour);
-        let recorded = !catalogue.spending.reads.is_empty();
-        let current = EndpointPage {
-            schema: 1,
-            branch_id: branch.to_string(),
-            first_hour: hour,
-            last_hour: hour,
-            equipment_read: None,
-            rocket_read: None,
-            equipment_origin: None,
-            equipment_restart: None,
-            rocket_origin: None,
-            rocket_restart: None,
-            countries: Vec::new(),
-            classifications: catalogue.classifications,
-            warnings: catalogue.warnings,
-            unnamed_before: 0,
-            unnamed_per_hour: 0,
-            unnamed_warning_index: 0,
-        };
-        let mut selection = select_ordered(
-            &current, None, None, params, offset, limit, ranked, cancelled,
-        )?;
-        selection.keys.clear();
-        selection.observation = observation;
-        selection.recorded = recorded;
-        return Ok(Some(selection));
-    }
-    let count = endpoint_count(store, key, branch)?;
-    let mut endpoints = Endpoints::new(store, key, branch, count, cancelled);
-    let Some(mut current) = endpoints.page(hour, Leaves::All)? else {
-        return Ok(None);
-    };
-    bind_equipment_rockets(&mut endpoints, &mut current)?;
-    let mut observation = None;
-    let mut recorded = false;
-    if let Some(catalogue) = endpoints.catalogue()? {
-        observation = catalogue.observation_at(hour);
-        recorded = !catalogue.spending.reads.is_empty();
-        for (&variant, kind) in &catalogue.classifications {
-            let mut kind = kind.clone();
-            // Type identity is stable; recorded naming stays at this endpoint's read.
-            if let Some(at_hour) = current.classifications.get(&variant) {
-                kind.names = at_hour.names.clone();
-            }
-            current.classifications.insert(variant, kind);
-        }
-        current.warnings = catalogue.warnings.clone();
-    }
-    let equipment_before = current
-        .equipment_read
-        .and_then(|hour| predecessor(hour, params.measure))
-        .map(|hour| endpoints.page(hour, Leaves::All))
-        .transpose()?
-        .flatten();
-    let mut rocket_before = current
-        .rocket_read
-        .and_then(|hour| predecessor(hour, params.measure))
-        .map(|hour| endpoints.page(hour, Leaves::All))
-        .transpose()?
-        .flatten();
-    if let Some(page) = &mut rocket_before {
-        bind_equipment_rockets(&mut endpoints, page)?;
-    }
-    let mut selection = select_ordered(
-        &current,
-        equipment_before.as_ref(),
-        rocket_before.as_ref(),
-        params,
-        offset,
-        limit,
-        ranked,
-        cancelled,
-    )?;
-    selection.observation = observation;
-    selection.recorded = recorded;
-    Ok(Some(selection))
-}
-
+#[cfg(test)]
+mod parity;
 #[cfg(test)]
 #[path = "prepared_production/tests.rs"]
 mod tests;

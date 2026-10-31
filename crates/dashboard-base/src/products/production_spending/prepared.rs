@@ -1,7 +1,8 @@
-//! Spending reads share production endpoints, classifications and exact S values.
+//! Spending reads production's prepared facts: one country's holder at its
+//! dates, its spent series' peaks and the classes content gives its designs.
 use super::*;
 use crate::prepared::{prefix::Prefix, series::Reader};
-use crate::prepared_production::{self as pages, EndpointPage, SourceEndpoint};
+use crate::prepared_production::{self as pages, facts, read};
 use serde_json::{Value, json};
 
 /// A prepared spending request: one country's amounts at its dates.
@@ -96,10 +97,20 @@ pub(crate) fn query_with(
         input.from = None;
     }
     let (store, key) = crate::prepared::files(source, content)?;
-    let mut data = match read_pages(
-        &store, &key, branch, bounds, &input, hour, end, purposes, cancel,
-    )? {
-        Some(data) => data,
+    let mut data = match pages::read::index(source, content, &store, &key, branch, cancel)? {
+        Some((index, classes)) => read_pages(
+            Some(source),
+            &index,
+            &classes,
+            &store,
+            &key,
+            bounds,
+            &input,
+            hour,
+            end,
+            purposes,
+            cancel,
+        )?,
         None => serde_json::to_value(ProductionSpendingReply {
             branch_id: input.branch_id.clone(),
             tag: input.tag.clone(),
@@ -204,30 +215,50 @@ fn pend(data: &mut Value, prefix: &Prefix) -> io::Result<()> {
     pending(&mut data["rocketTotal"])
 }
 
-fn country<'a>(page: &'a EndpointPage, tag: &str) -> Option<&'a pages::CountryEndpoint> {
-    page.countries
-        .binary_search_by(|row| row.tag.as_str().cmp(tag))
-        .ok()
-        .map(|index| &page.countries[index])
+/// A holder's source at an endpoint, its reads resolved there.
+struct SourceAt<'a> {
+    head: &'a facts::Head,
+    read_hour: i32,
+    source: &'a facts::Source,
 }
 
-fn source_at<'a>(
-    page: Option<&'a EndpointPage>,
-    tag: &str,
+/// A country's source at an endpoint read for its reply.
+fn source_of<'a>(
+    index: &read::Index,
+    unique: &'a BTreeMap<u64, Option<facts::Holder>>,
+    ordinal: u64,
     rocket: bool,
-) -> Option<&'a SourceEndpoint> {
-    let row = country(page?, tag)?;
-    if rocket {
-        row.rocket.as_ref()
+) -> io::Result<Option<SourceAt<'a>>> {
+    let Some(Some(state)) = unique.get(&ordinal) else {
+        return Ok(None);
+    };
+    let Some(source) = (if rocket {
+        &state.rocket
     } else {
-        row.equipment.as_ref()
-    }
+        &state.equipment
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some(SourceAt {
+        head: &source.head,
+        read_hour: index.endpoint(ordinal).read_of(&source.head, rocket)?,
+        source,
+    }))
 }
 
-fn continuous(a: Option<&SourceEndpoint>, b: Option<&SourceEndpoint>) -> bool {
+fn continuous(a: Option<&SourceAt<'_>>, b: Option<&SourceAt<'_>>) -> bool {
     a.zip(b).is_some_and(|(a, b)| {
-        (a.slot, a.country_id, a.observation, a.segment)
-            == (b.slot, b.country_id, b.observation, b.segment)
+        (
+            a.head.slot,
+            a.head.country_id,
+            a.head.observation,
+            a.head.segment,
+        ) == (
+            b.head.slot,
+            b.head.country_id,
+            b.head.observation,
+            b.head.segment,
+        )
     })
 }
 
@@ -264,44 +295,71 @@ fn maximum(reader: &mut Reader<'_>, key: u64, first: i32, last: i32) -> io::Resu
     Ok(maximum)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn read_pages(
+/// Each selected design's peak over `first..=last`, keyed as the reply sends it.
+pub(crate) fn peaks_of(
     store: &store::Store,
     key: &store::SourceKey,
     branch: u64,
+    selected: &[(bool, u64, u64)],
+    (first, last): (i32, i32),
+    cancel: &AtomicBool,
+) -> io::Result<BTreeMap<String, String>> {
+    let mut peaks = BTreeMap::new();
+    if first > last || selected.is_empty() {
+        return Ok(peaks);
+    }
+    let mut reader = Reader::new(store, key, pages::spent_section(branch), cancel)?;
+    for &(rocket, variant, id) in selected {
+        if let Some(value) = maximum(&mut reader, id, first, last)? {
+            peaks.insert(
+                serde_json::to_string(&(variant.to_string(), rocket))?,
+                value.to_string(),
+            );
+        }
+    }
+    Ok(peaks)
+}
+
+/// One country's reply at its dates, from the branch's index. With a source,
+/// its peaks are kept for the publication and window.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_pages(
+    source: Option<&Source>,
+    index: &read::Index,
+    classes: &read::Classes,
+    store: &store::Store,
+    key: &store::SourceKey,
     bounds: (i32, i32),
     input: &Params,
     hour: i32,
     end: i32,
     purposes: Purposes,
     cancel: &AtomicBool,
-) -> io::Result<Option<Value>> {
-    // One reader serves the endpoint reads and the peaks; each endpoint read
-    // restores only the requested country's leaves.
-    let count = pages::endpoint_count(store, key, branch)?;
-    let mut reads = pages::Endpoints::new(store, key, branch, count, cancel);
-    let Some(catalogue) = reads.catalogue()? else {
-        return Ok(None);
-    };
+) -> io::Result<Value> {
+    let holder = index.tags.get(&input.tag).copied();
+    let series = holder.map_or(&[][..], |holder| &index.keys[holder as usize][..]);
     let mut inventory: BTreeMap<bool, BTreeSet<u64>> = BTreeMap::new();
     let mut selected = Vec::new();
     // A design with converted or unrecorded-purpose input has no peak of its
     // new leaf alone in a split reply: its series without refits holds them.
     let mut separate = BTreeSet::new();
     if purposes == Purposes::Split {
-        for token in catalogue.purpose_keys.keys() {
-            let (tag, variant, _): (String, u64, Purpose) = serde_json::from_str(token)?;
-            if tag == input.tag {
-                separate.insert(variant);
+        for row in series {
+            if let read::SeriesKey::Purpose { variant, .. } = row {
+                separate.insert(*variant);
             }
         }
     }
-    for (token, &id) in &catalogue.spent_keys {
-        let (tag, rocket, refits, variant): (String, bool, bool, u64) =
-            serde_json::from_str(token)?;
-        if tag != input.tag {
+    for row in series {
+        let &read::SeriesKey::Spent {
+            rocket,
+            refits,
+            variant,
+            key: id,
+        } = row
+        else {
             continue;
-        }
+        };
         // The combined key lists every design; the key without refits lists
         // those with new or converted input.
         if refits == (rocket || purposes != Purposes::WithoutRefits) {
@@ -315,9 +373,7 @@ fn read_pages(
             selected.push((rocket, variant, id));
         }
     }
-    let mut scanned = catalogue.spending.scanned(&input.tag);
-    let mut classes = catalogue.classifications.clone();
-    let variant_warnings = catalogue.variant_warnings.clone();
+    let mut scanned = index.diagnostics.spending.scanned(holder, &input.tag);
     let dates: BTreeSet<_> = [
         Some(hour),
         Some(end),
@@ -326,9 +382,19 @@ fn read_pages(
     .into_iter()
     .flatten()
     .collect();
-    let mut endpoints = BTreeMap::new();
-    for &date in &dates {
-        endpoints.insert(date, reads.page(date, pages::Leaves::Country(&input.tag))?);
+    let endpoints: BTreeMap<i32, Option<u64>> = dates
+        .iter()
+        .map(|&date| (date, index.endpoint_at(date)))
+        .collect();
+    // Each endpoint read once, with the country's holder there.
+    let mut unique: BTreeMap<u64, Option<facts::Holder>> = BTreeMap::new();
+    for &ordinal in endpoints.values().flatten() {
+        if let std::collections::btree_map::Entry::Vacant(entry) = unique.entry(ordinal) {
+            entry.insert(match holder {
+                Some(holder) => index.holder_at(store, key, holder, ordinal)?,
+                None => None,
+            });
+        }
     }
     for (&rocket, variants) in &inventory {
         let tags = if rocket {
@@ -341,18 +407,11 @@ fn read_pages(
             track.cost_changes.entry((variant, Purpose::New)).or_default();
         }
     }
-    for kind in classes.values_mut() {
-        kind.names.clear();
-    }
     let mut eq_scope = BTreeMap::new();
     let mut ro_scope = BTreeMap::new();
-    let unique: BTreeMap<_, _> = endpoints
-        .values()
-        .flatten()
-        .map(|page| ((page.first_hour, page.last_hour), page))
-        .collect();
-    for page in unique.values() {
+    for &ordinal in unique.keys() {
         cancelled(cancel)?;
+        let page = index.endpoint(ordinal);
         scanned.observations.extend(
             [page.equipment_origin, page.equipment_restart]
                 .into_iter()
@@ -363,24 +422,11 @@ fn read_pages(
                 .into_iter()
                 .flatten(),
         );
-        for (variant, kind) in &page.classifications {
-            if let Some(class) = classes.get_mut(variant) {
-                for name in &kind.names {
-                    if class
-                        .names
-                        .last()
-                        .is_none_or(|last| last.first_hour < name.first_hour)
-                    {
-                        class.names.push(name.clone());
-                    }
-                }
-            }
-        }
         for rocket in [false, true] {
-            let Some(source) = source_at(Some(page), &input.tag, rocket) else {
+            let Some(at) = source_of(index, &unique, ordinal, rocket)? else {
                 continue;
             };
-            if let Some(origin) = source.observation {
+            if let Some(origin) = at.head.observation {
                 if rocket {
                     scanned.rocket.observations.push(origin);
                 } else {
@@ -396,34 +442,24 @@ fn read_pages(
             } else {
                 (&mut scanned.tags, &mut scanned.reads, &mut eq_scope)
             };
-            reads.push(source.read_hour);
+            reads.push(at.read_hour);
             let track = tags.entry(input.tag.clone()).or_default();
             let sample = u32::try_from(track.hours.len())
                 .map_err(|_| crate::invalid("Too many requested production samples"))?;
             track.hours.push(page.first_hour);
             track.last_hours.push(page.last_hour);
             track.starts.push(true);
-            track.identities.push((source.slot, source.country_id, 0));
-            track.presence.push(source.present);
-            scope.insert(page.first_hour, source.campaign_spending_reason);
+            track.identities.push((at.head.slot, at.head.country_id, 0));
+            track.presence.push(at.head.present);
+            scope.insert(page.first_hour, at.head.campaign_reason);
             let mut entries = BTreeMap::new();
-            for amount in &source.amounts {
-                let variant = amount
-                    .variant
-                    .parse::<u64>()
-                    .map_err(|_| crate::invalid("Invalid production variant"))?;
+            for leaf in &at.source.leaves {
                 entries.insert(
-                    (variant, amount.purpose),
+                    (index.variants[leaf.variant as usize], leaf.purpose),
                     CostTotal {
-                        raw: amount
-                            .spent
-                            .parse()
-                            .map_err(|_| crate::invalid("Invalid production spending"))?,
-                        reason: amount.spending_reason,
-                        unproven_raw: amount
-                            .unproven
-                            .parse()
-                            .map_err(|_| crate::invalid("Invalid unproven production spending"))?,
+                        raw: i128::from(leaf.spent),
+                        reason: leaf.reason,
+                        unproven_raw: i128::from(leaf.unproven),
                     },
                 );
             }
@@ -449,6 +485,46 @@ fn read_pages(
         observations.sort_unstable();
         observations.dedup();
     }
+    // The publication's types of the designs the reply reads, named as the
+    // dates' endpoints recorded them.
+    let designs: BTreeSet<u64> = scanned
+        .tags
+        .values()
+        .chain(scanned.rocket.tags.values())
+        .flat_map(|track| track.changes.keys().chain(track.cost_changes.keys()))
+        .map(|(variant, _)| *variant)
+        .collect();
+    let mut kinds = BTreeMap::new();
+    for variant in designs {
+        let Some(id) = index.variant_id(variant) else {
+            continue;
+        };
+        let Some(class) = classes.of.get(id as usize).and_then(Option::as_ref) else {
+            continue;
+        };
+        let mut names: Vec<StockVariantName> = Vec::new();
+        for &ordinal in unique.keys() {
+            for name in index.names_at(classes, id, ordinal)?.into_iter().flatten() {
+                if names
+                    .last()
+                    .is_none_or(|last| last.first_hour < name.first_hour)
+                {
+                    names.push(name);
+                }
+            }
+        }
+        kinds.insert(
+            variant,
+            read::Kind {
+                key: class.key.clone(),
+                ordinal: class.ordinal,
+                domain: class.domain,
+                name: class.name.clone(),
+                reason: class.reason.clone(),
+                names,
+            },
+        );
+    }
     let params = ProductionSpendingParams {
         branch_id: input.branch_id.clone(),
         tag: input.tag.clone(),
@@ -457,18 +533,21 @@ fn read_pages(
     let mut reply = reply_prepared(
         &scanned,
         &params,
-        (&classes, &eq_scope, &ro_scope),
-        variant_warnings,
+        (&kinds, &eq_scope, &ro_scope),
+        index.variant_warnings(),
         cancel,
         purposes,
     )?;
     for run in &mut reply.production {
         if run.present == Some(false) {
-            run.empty_census_hour = unique
-                .values()
-                .find(|page| page.first_hour <= run.first_hour && run.first_hour <= page.last_hour)
-                .and_then(|page| source_at(Some(page), &input.tag, false))
-                .map(|source| source.read_hour);
+            let ordinal = unique.keys().copied().find(|&ordinal| {
+                let page = index.endpoint(ordinal);
+                page.first_hour <= run.first_hour && run.first_hour <= page.last_hour
+            });
+            run.empty_census_hour = match ordinal {
+                Some(ordinal) => source_of(index, &unique, ordinal, false)?.map(|at| at.read_hour),
+                None => None,
+            };
         }
     }
     let mut continuity = BTreeMap::new();
@@ -478,40 +557,46 @@ fn read_pages(
         .and_then(|hour| endpoints.get(&hour))
     {
         for date in [hour, end] {
-            continuity.insert(
-                date,
-                [false, true].map(|rocket| {
-                    continuous(
-                        source_at(before.as_ref(), &input.tag, rocket),
-                        source_at(
-                            endpoints.get(&date).and_then(Option::as_ref),
-                            &input.tag,
-                            rocket,
-                        ),
-                    )
-                }),
-            );
-        }
-    }
-    let reader = reads.reader()?;
-    let first = input.from.unwrap_or(bounds.0).max(bounds.0);
-    let last = end.min(bounds.1);
-    let mut peaks = BTreeMap::new();
-    if first <= last {
-        for (rocket, variant, id) in selected {
-            if let Some(value) = maximum(reader, id, first, last)? {
-                peaks.insert(
-                    serde_json::to_string(&(variant.to_string(), rocket))?,
-                    value.to_string(),
-                );
+            let mut joined = [false; 2];
+            for (slot, rocket) in joined.iter_mut().zip([false, true]) {
+                let earlier = match before {
+                    Some(ordinal) => source_of(index, &unique, *ordinal, rocket)?,
+                    None => None,
+                };
+                let later = match endpoints.get(&date).copied().flatten() {
+                    Some(ordinal) => source_of(index, &unique, ordinal, rocket)?,
+                    None => None,
+                };
+                *slot = continuous(earlier.as_ref(), later.as_ref());
             }
+            continuity.insert(date, joined);
         }
     }
+    let window = (input.from.unwrap_or(bounds.0).max(bounds.0), end.min(bounds.1));
+    let peaks = match source {
+        // Peaks hold for the publication and window, whatever the hour.
+        Some(source) => crate::prepared::query::observations::scope(
+            source,
+            "production:peaks",
+            Some(key),
+        )
+        .get_entry(
+            index.branch,
+            &(&input.tag, purposes == Purposes::Split, purposes == Purposes::Combined, window),
+            &index.publication(),
+            cancel,
+            crate::prepared::query::observations::serde_bytes,
+            || peaks_of(store, key, index.branch, &selected, window, cancel),
+        )?
+        .as_ref()
+        .clone(),
+        None => peaks_of(store, key, index.branch, &selected, window, cancel)?,
+    };
     let mut data = serde_json::to_value(reply)?;
     data["continuity"] = json!(continuity);
     data["peaks"] = json!(peaks);
     data["exactHours"] = json!(dates);
-    Ok(Some(data))
+    Ok(data)
 }
 
 #[cfg(test)]

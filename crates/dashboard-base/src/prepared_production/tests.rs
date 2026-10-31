@@ -1,4 +1,7 @@
 use super::*;
+use crate::prepared::series::tests::Fixture;
+use crate::products::equipment::{Domain, StockVariantName};
+use crate::products::equipment_produced::{ProducedCount, ProducedGrouping, ProducedParams};
 use replay_data::rows::OutputPurpose;
 
 fn observer_frame(countries: u32, invalid_tag: bool) -> DecodedFrame {
@@ -144,13 +147,7 @@ fn equal_variant_reads_build_and_classify_once_but_keep_each_reads_name_date() {
             frame.metrics.table_ns.fill(0);
         }
         state
-            .ingest_changed(
-                format,
-                &frame,
-                Named::default(),
-                &flag,
-                &tracker.observe(&frame, format),
-            )
+            .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
             .unwrap();
         if offset % 24 == 0 {
             assert_eq!(state.classifications[&1].names[0].first_hour, frame.hour);
@@ -200,13 +197,7 @@ fn equal_variant_reads_build_and_classify_once_but_keep_each_reads_name_date() {
             _ => unreachable!(),
         }
         state
-            .ingest_changed(
-                format,
-                &frame,
-                Named::default(),
-                &flag,
-                &tracker.observe(&frame, format),
-            )
+            .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
             .unwrap();
         assert_eq!(
             equipment::VARIANT_BUILDS.with(std::cell::Cell::get),
@@ -228,13 +219,7 @@ fn variant_mutation_between_daily_slots_updates_ordinary_and_prepared_names() {
     let mut tracker = FrameChangeTracker::new();
     ordinary.observe(format, &frame);
     state
-        .ingest_changed(
-            format,
-            &frame,
-            Named::default(),
-            &flag,
-            &tracker.observe(&frame, format),
-        )
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
         .unwrap();
     frame.hour += 1;
     frame.metrics.table_ns.fill(0);
@@ -253,13 +238,7 @@ fn variant_mutation_between_daily_slots_updates_ordinary_and_prepared_names() {
         }]));
     ordinary.observe(format, &frame);
     state
-        .ingest_changed(
-            format,
-            &frame,
-            Named::default(),
-            &flag,
-            &tracker.observe(&frame, format),
-        )
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
         .unwrap();
     let ordinary = ordinary.versions[&1].last().unwrap();
     let prepared = state.variants.catalogue.versions[&1].last().unwrap();
@@ -269,38 +248,24 @@ fn variant_mutation_between_daily_slots_updates_ordinary_and_prepared_names() {
         ordinary.raw.as_ref().unwrap().display_name,
         "between samples"
     );
-}
-
-#[test]
-fn endpoint_events_serialize_once_for_hashing_and_publication() {
-    struct Payload(std::cell::Cell<usize>);
-    impl Serialize for Payload {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            self.0.set(self.0.get() + 1);
-            serializer.serialize_str("mod payload")
-        }
-    }
-    let mut state = ProductionAccumulator::new(FormatVersion::CURRENT.version(), 1, 8);
-    let payload = Payload(std::cell::Cell::new(0));
-    state.endpoint_event(0, 8, &payload).unwrap();
-    state.endpoint_event(0, 9, &payload).unwrap();
-    assert_eq!(payload.0.get(), 2);
-    assert_eq!(state.spent.state(0).unwrap().events, 1);
+    // The classification names that read, as its raw operands, dated by it.
+    let name = state.classifications[&1].names[0];
+    assert_eq!(name.first_hour, frame.hour);
+    assert_eq!(
+        state.raw(name.raw.unwrap()).display_name,
+        "between samples"
+    );
 }
 
 #[test]
 fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_resume() {
-    use crate::prepared::{
-        frame_changes::FrameChangeTracker,
-        series::tests::{Fixture, assert_payloads_equal},
-    };
+    use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal};
     use replay_data::{rows::TableRows, rows::VariantModuleRow, rows::VariantUpgradeRow};
     let flag = AtomicBool::new(false);
     let mut frame = naming_frame();
     let first = frame.hour;
     let format = observer_format(&frame);
     let fixtures = [Fixture::new(), Fixture::new()];
-    let mut held = [HeldPages::default(), HeldPages::default()];
     let mut states = [
         ProductionAccumulator::new(format.version(), 1, first),
         ProductionAccumulator::new(format.version(), 1, first),
@@ -380,37 +345,25 @@ fn cached_variant_operands_keep_fresh_frame_pages_state_and_publication_across_r
             _ => {}
         }
         let changes = tracker.observe(&frame, format);
-        let mut pages = Vec::new();
         for (index, state) in states.iter_mut().enumerate() {
             if index == 1 {
                 state.variants = ProductionVariants::default();
             }
-            pages.push(
-                state
-                    .ingest_changed(format, &frame, Named::default(), &flag, &changes)
-                    .unwrap(),
-            );
+            state
+                .ingest_changed(format, &frame, &flag, &changes)
+                .unwrap();
         }
         assert_eq!(
-            serde_json::to_vec(&pages[0]).unwrap(),
-            serde_json::to_vec(&pages[1]).unwrap(),
-            "completed page at {offset}"
+            states[0].completed, states[1].completed,
+            "completed pages at {offset}"
         );
-        for (index, ((state, fixture), page)) in
-            states.iter_mut().zip(&fixtures).zip(pages).enumerate()
-        {
-            if let Some(page) = page {
-                publish_endpoint_to(&mut held[index], state, &page).unwrap();
-            }
-            if [36, 72, 120].contains(&offset) {
+        if [36, 72, 120].contains(&offset) {
+            for (state, fixture) in states.iter_mut().zip(&fixtures) {
                 let mut writer = fixture.writer();
-                held[index].write(&mut writer).unwrap();
-                if let Some(page) = state.flush() {
-                    publish_endpoint(&mut writer, state, &page).unwrap();
-                }
                 write_state(&mut writer, state).unwrap();
                 writer.commit().unwrap();
             }
+            assert_eq!(states[0].completed, states[1].completed);
         }
         assert_eq!(
             serde_json::to_vec(&states[0]).unwrap(),
@@ -446,20 +399,14 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
         observer_tests::scaled_work(1, |hours| {
             let mut state = ProductionAccumulator::new(format.version(), 1, first.hour);
             let mut tracker = FrameChangeTracker::new();
-            state.ingest_changed(
-                format,
-                &first,
-                Named::default(),
-                &flag,
-                &tracker.observe(&first, format),
-            )?;
+            state.ingest_changed(format, &first, &flag, &tracker.observe(&first, format))?;
             observer_tests::unchanged_frames(
                 state.work(),
                 &first,
                 hours as i32,
                 format,
                 |frame, changes| {
-                    state.ingest_changed(format, frame, Named::default(), &flag, changes)?;
+                    state.ingest_changed(format, frame, &flag, changes)?;
                     Ok(state.work())
                 },
             )
@@ -479,13 +426,7 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
                 {
                     rows[0].tag = format!("retired production holder {alias}").into_bytes();
                 }
-                state.ingest_changed(
-                    format,
-                    &frame,
-                    Named::default(),
-                    &flag,
-                    &tracker.observe(&frame, format),
-                )?;
+                state.ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))?;
             }
             let before = state.work();
             frame.hour += 1;
@@ -495,13 +436,7 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
                 rows[0].units = 2;
                 rows[0].spent_raw = Recorded::Value(Some(9));
             }
-            state.ingest_changed(
-                format,
-                &frame,
-                Named::default(),
-                &flag,
-                &tracker.observe(&frame, format),
-            )?;
+            state.ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))?;
             let after = state.work();
             Ok(Work {
                 row_visits: after.row_visits - before.row_visits,
@@ -514,10 +449,20 @@ fn production_observer_work_is_flat_over_carried_hours_and_retired_holders() {
     );
 }
 
+/// `page`'s warnings at `hour`, its unnamed country-hours counted then.
+fn warnings_at(page: &EndpointPage, hour: i32) -> Vec<String> {
+    let mut warnings = page.warnings.clone();
+    if let Some(warning) =
+        crate::products::equipment_produced::unnamed_recording_warning(page.unnamed_at(hour))
+    {
+        warnings.insert(page.unnamed_warning_index, warning);
+    }
+    warnings
+}
+
 #[test]
 fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commits_resume_append_and_gaps()
  {
-    use crate::prepared::series::tests::Fixture;
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay_data::rows::TableRows;
     let flag = AtomicBool::new(false);
@@ -549,29 +494,19 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
     let mut state = ProductionAccumulator::new(format.version(), 1, initial.hour);
     let mut tracker = FrameChangeTracker::new();
     let mut accepted = Vec::new();
+    let mut pages: Vec<EndpointPage> = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        if let Some(page) = state
-            .ingest_changed(
-                format,
-                frame,
-                Named::default(),
-                &flag,
-                &tracker.observe(frame, format),
-            )
-            .unwrap()
-        {
-            publish_endpoint(&mut writer, &mut state, &page).unwrap();
-        }
+        state
+            .ingest_changed(format, frame, &flag, &tracker.observe(frame, format))
+            .unwrap();
+        pages.extend(state.completed.drain(..).map(|(page, _)| page));
         accepted.push(frame.clone());
         if [11, 28, frames.len() - 1].contains(&index) {
-            if let Some(page) = state.flush() {
-                publish_endpoint(&mut writer, &mut state, &page).unwrap();
-            }
             write_state(&mut writer, &mut state).unwrap();
+            pages.extend(state.completed.drain(..).map(|(page, _)| page));
             writer.commit().unwrap();
-            let count = endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
             assert!(
-                count < accepted.len() as u64 / 2,
+                pages.len() < accepted.len() / 2,
                 "warning clock emitted hourly pages"
             );
             for (end, at) in accepted.iter().enumerate() {
@@ -581,27 +516,31 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
                 )
                 .unwrap();
                 let oracle = equipment::production::scan(&replay, 1, &flag).unwrap();
-                let actual = read_at(&fixture.store, &fixture.key, 1, count, at.hour, &flag)
-                    .unwrap()
-                    .unwrap();
+                let page = pages
+                    .iter()
+                    .find(|page| page.first_hour <= at.hour && at.hour <= page.last_hour)
+                    .expect("an endpoint at every accepted hour");
                 observer_tests::assert_reply_parity(
-                    &actual.warnings,
+                    &warnings_at(page, at.hour),
                     &crate::products::equipment_produced::recording_warnings(&oracle),
                 )
                 .unwrap();
             }
+            let gap = initial.hour + 17;
             assert!(
-                read_at(
-                    &fixture.store,
-                    &fixture.key,
-                    1,
-                    count,
-                    initial.hour + 17,
-                    &flag
-                )
-                .unwrap()
-                .is_none()
+                pages
+                    .iter()
+                    .all(|page| !(page.first_hour..=page.last_hour).contains(&gap))
             );
+            // The publication's warnings are its last endpoint's at its last hour.
+            let published = read::read_index(&fixture.store, &fixture.key, 1)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                published.warnings(),
+                warnings_at(pages.last().unwrap(), accepted.last().unwrap().hour)
+            );
+            assert_eq!(published.endpoints.len(), pages.len());
             if index == frames.len() - 1 {
                 break;
             }
@@ -620,14 +559,12 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
 
 #[test]
 fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
-    use crate::prepared::series::{Reader, tests::Fixture};
+    use crate::prepared::series::Reader;
     let frame = observer_frame(1, false);
     let format = observer_format(&frame);
     let flag = AtomicBool::new(false);
     let mut state = ProductionAccumulator::new(format.version(), 1, frame.hour);
-    state
-        .ingest(format, &frame, Named::default(), &flag)
-        .unwrap();
+    state.ingest(format, &frame, &flag).unwrap();
     for (hour, reason) in [
         (9, Some(ProductionSpendingUnknown::SpendingUnavailable)),
         (10, None),
@@ -646,8 +583,7 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
         .flush(&mut writer, "production-spent-1", 0, &flag)
         .unwrap();
     writer.commit().unwrap();
-    let key =
-        state.spent_keys[&serde_json::to_string(&("mod country 1", false, false, 1u64)).unwrap()];
+    let key = state.spent_keys()[&("mod country 1".to_owned(), false, false, 1u64)];
     let mut reader = Reader::new(
         &fixture.store,
         &fixture.key,
@@ -680,13 +616,13 @@ fn params() -> ProducedParams {
 }
 fn amount(variant: u64, units: i128, exact: bool, purpose: Purpose) -> Amount {
     Amount {
-        variant: variant.to_string(),
+        variant,
         purpose,
-        units: units.to_string(),
+        units,
         units_exact: exact,
-        spent: units.to_string(),
+        spent: units,
         spending_reason: None,
-        unproven: "0".into(),
+        unproven: 0,
     }
 }
 fn source(read: i32, amounts: Vec<Amount>) -> SourceEndpoint {
@@ -703,10 +639,15 @@ fn source(read: i32, amounts: Vec<Amount>) -> SourceEndpoint {
         amounts,
     }
 }
+fn classified(token: &str) -> Classification {
+    Classification {
+        token: token.into(),
+        names: Vec::new(),
+        seen: [true; SEEN],
+    }
+}
 fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
     EndpointPage {
-        schema: 1,
-        branch_id: "1".into(),
         first_hour: read,
         last_hour: read + 23,
         equipment_read: Some(read),
@@ -722,42 +663,9 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
             rocket_joined: true,
         }],
         classifications: BTreeMap::from([
-            (
-                1,
-                Classification {
-                    reason: None,
-                    key: "mod_one".into(),
-                    ordinal: Some(0),
-                    domain: Some(Domain::Land),
-                    name: Some("".into()),
-                    names: Vec::new(),
-                    seen: [true; SEEN],
-                },
-            ),
-            (
-                2,
-                Classification {
-                    reason: None,
-                    key: "mod_two".into(),
-                    ordinal: Some(1),
-                    domain: Some(Domain::Air),
-                    name: None,
-                    names: Vec::new(),
-                    seen: [true; SEEN],
-                },
-            ),
-            (
-                3,
-                Classification {
-                    reason: None,
-                    key: ":unresolved".into(),
-                    ordinal: None,
-                    domain: None,
-                    name: None,
-                    names: Vec::new(),
-                    seen: [true; SEEN],
-                },
-            ),
+            (1, classified("mod_one")),
+            (2, classified("mod_two")),
+            (3, classified("")),
         ]),
         warnings: Vec::new(),
         unnamed_before: 0,
@@ -766,9 +674,87 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
     }
 }
 
+fn kind(key: &str, ordinal: Option<usize>, domain: Option<Domain>, name: Option<&str>) -> read::Class {
+    read::Class {
+        key: key.into(),
+        ordinal,
+        domain,
+        name: name.map(str::to_owned),
+        reason: None,
+    }
+}
+
+/// The types content gives [`page`]'s variants, by handle.
+fn kinds() -> BTreeMap<u64, read::Class> {
+    BTreeMap::from([
+        (1, kind("mod_one", Some(0), Some(Domain::Land), Some(""))),
+        (2, kind("mod_two", Some(1), Some(Domain::Air), None)),
+        (3, kind(":unresolved", None, None, None)),
+    ])
+}
+
+/// `kinds` as an index's classes.
+fn classes(index: &read::Index, kinds: &BTreeMap<u64, read::Class>) -> read::Classes {
+    read::Classes {
+        of: index
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(variant, handle)| {
+                index.finals[variant]
+                    .as_ref()
+                    .and_then(|_| kinds.get(handle).cloned())
+            })
+            .collect(),
+        raw_names: vec![None; index.raws.len()],
+        sorted: read::Classes::sorted(index),
+    }
+}
+
+/// `pages` completed as endpoints of branch 1 and flushed in one range.
+fn published(pages: &[EndpointPage]) -> (Fixture, read::Index) {
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
+    for page in pages {
+        state.publish_page(page.clone(), None).unwrap();
+    }
+    state.flush(&mut writer, &AtomicBool::new(false)).unwrap();
+    writer.commit().unwrap();
+    let index = read::read_index(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    (fixture, index)
+}
+
+/// The selection at `hour` of `pages` published, typed by [`kinds`].
+fn choose(
+    pages: &[EndpointPage],
+    hour: i32,
+    params: &ProducedParams,
+    (offset, limit, ranked): (usize, usize, bool),
+    cancelled: &AtomicBool,
+) -> io::Result<select::SelectionPage> {
+    let (fixture, index) = published(pages);
+    select::select_with(
+        &index,
+        &classes(&index, &kinds()),
+        &fixture.store,
+        &fixture.key,
+        hour,
+        params,
+        offset,
+        limit,
+        ranked,
+        cancelled,
+    )
+    .map(|page| page.expect("an endpoint holds the hour"))
+}
+
 #[test]
 fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
     // regression: bdcf8aba90 Prepare resumable time-major production subset endpoints
+    let flag = AtomicBool::new(false);
     let mut page = page(0, Vec::new());
     page.countries = (0..3u32)
         .map(|index| {
@@ -793,11 +779,12 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
             }
         })
         .collect();
+    let pages = [page];
     let mut params = params();
     params.tags.clear();
     params.top = Some(3);
     params.included = vec!["mod_one".into(), "mod_one".into()];
-    let result = select(&page, None, None, &params, 1, 20, &AtomicBool::new(false)).unwrap();
+    let result = choose(&pages, 0, &params, (1, 20, false), &flag).unwrap();
     assert_eq!(result.total_countries, 3);
     assert_eq!(
         result
@@ -813,7 +800,7 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
     );
     params.included.push("mod_two".into());
     params.refits = true;
-    let result = select(&page, None, None, &params, 0, 1, &AtomicBool::new(false)).unwrap();
+    let result = choose(&pages, 0, &params, (0, 1, false), &flag).unwrap();
     assert_eq!(result.countries[0].tag, "M0000");
     assert_eq!(
         result.countries[0].total.as_deref(),
@@ -821,7 +808,7 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
     );
     params.top = None;
     params.tags = vec!["M0002".into(), "M0000".into(), "M0002".into()];
-    let result = select(&page, None, None, &params, 0, 10, &AtomicBool::new(false)).unwrap();
+    let result = choose(&pages, 0, &params, (0, 10, false), &flag).unwrap();
     assert_eq!(
         result
             .countries
@@ -834,21 +821,22 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
 
 #[test]
 fn unresolved_subsets_and_rocket_absence_preserve_independent_equipment_values() {
+    let flag = AtomicBool::new(false);
     let mut page = page(
         0,
         vec![amount(1, 10, true, Purpose::New), amount(3, -3, true, Purpose::New)],
     );
     let mut params = params();
-    let result = select(&page, None, None, &params, 0, 10, &AtomicBool::new(false)).unwrap();
+    let result = choose(&[page.clone()], 0, &params, (0, 10, false), &flag).unwrap();
     assert_eq!(result.countries[0].total.as_deref(), Some("7"));
     assert_eq!(result.countries[0].values[0].amount, None);
     params.included = vec!["mod_one".into()];
-    let result = select(&page, None, None, &params, 0, 10, &AtomicBool::new(false)).unwrap();
+    let result = choose(&[page.clone()], 0, &params, (0, 10, false), &flag).unwrap();
     assert!(!result.known);
     assert_eq!(result.countries[0].total, None);
     params.included = vec![":unresolved".into()];
     page.countries[0].rocket = None;
-    let result = select(&page, None, None, &params, 0, 10, &AtomicBool::new(false)).unwrap();
+    let result = choose(&[page], 0, &params, (0, 10, false), &flag).unwrap();
     assert_eq!(result.countries[0].total, None);
     assert_eq!(result.countries[0].equipment_total.as_deref(), Some("-3"));
     assert_eq!(
@@ -859,35 +847,33 @@ fn unresolved_subsets_and_rocket_absence_preserve_independent_equipment_values()
 
 #[test]
 fn periods_use_exact_read_predecessors_and_never_bridge_holder_or_coverage_breaks() {
+    let flag = AtomicBool::new(false);
     let before = page(0, vec![amount(1, -4, true, Purpose::New)]);
     let mut current = page(24, vec![amount(1, 7, true, Purpose::New)]);
     let mut params = params();
     params.measure = ProducedMeasure::Day;
-    let result = select(
-        &current,
-        Some(&before),
-        Some(&before),
-        &params,
-        0,
-        10,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(result.countries[0].total.as_deref(), Some("11"));
+    // The reader finds the day before at the current read less 24 hours.
     assert_eq!(
         predecessor(current.equipment_read.unwrap(), params.measure),
         Some(0)
     );
+    let result = choose(
+        &[before.clone(), current.clone()],
+        30,
+        &params,
+        (0, 10, false),
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(result.countries[0].total.as_deref(), Some("11"));
     current.countries[0].equipment.as_mut().unwrap().segment += 1;
     assert!(
-        !select(
-            &current,
-            Some(&before),
-            Some(&before),
+        !choose(
+            &[before.clone(), current.clone()],
+            30,
             &params,
-            0,
-            10,
-            &AtomicBool::new(false)
+            (0, 10, false),
+            &flag
         )
         .unwrap()
         .known
@@ -895,17 +881,9 @@ fn periods_use_exact_read_predecessors_and_never_bridge_holder_or_coverage_break
     current.countries[0].equipment.as_mut().unwrap().segment -= 1;
     current.countries[0].equipment.as_mut().unwrap().country_id += 1;
     assert_eq!(
-        select(
-            &current,
-            Some(&before),
-            Some(&before),
-            &params,
-            0,
-            10,
-            &AtomicBool::new(false)
-        )
-        .unwrap()
-        .countries[0]
+        choose(&[before, current], 30, &params, (0, 10, false), &flag)
+            .unwrap()
+            .countries[0]
             .total,
         None
     );
@@ -913,6 +891,7 @@ fn periods_use_exact_read_predecessors_and_never_bridge_holder_or_coverage_break
 
 #[test]
 fn manual_rank_pages_sort_wide_scores_before_paging_and_keep_the_default_request_order() {
+    let flag = AtomicBool::new(false);
     let mut page = page(0, vec![amount(1, 9_007_199_254_740_992, true, Purpose::New)]);
     let mut second = page.countries[0].clone();
     second.tag = "B".into();
@@ -920,42 +899,37 @@ fn manual_rank_pages_sort_wide_scores_before_paging_and_keep_the_default_request
     second.equipment.as_mut().unwrap().country_id = 3;
     second.rocket.as_mut().unwrap().slot = 2;
     second.rocket.as_mut().unwrap().country_id = 3;
-    second.equipment.as_mut().unwrap().amounts[0].units = "9007199254740993".into();
+    second.equipment.as_mut().unwrap().amounts[0].units = 9_007_199_254_740_993;
     page.countries.push(second);
+    let pages = [page];
     let mut params = params();
     params.tags.push("B".into());
-    let cancelled = AtomicBool::new(false);
     assert_eq!(
-        select(&page, None, None, &params, 0, 1, &cancelled)
+        choose(&pages, 0, &params, (0, 1, false), &flag)
             .unwrap()
             .countries[0]
             .tag,
         "A"
     );
     assert_eq!(
-        select_ordered(&page, None, None, &params, 0, 1, true, &cancelled)
+        choose(&pages, 0, &params, (0, 1, true), &flag)
             .unwrap()
             .countries[0]
             .tag,
         "B"
     );
-    assert!(!compatible(
-        &source(i32::MIN, Vec::new()),
-        Some(&source(i32::MIN, Vec::new())),
-        ProducedMeasure::Day
-    ));
+    // No read a day before the calendar's first: no period is compatible there.
+    assert_eq!(predecessor(i32::MIN, ProducedMeasure::Day), None);
 }
 
 #[test]
 fn cancelled_queries_refuse_before_returning_partial_selection() {
     assert_eq!(
-        select(
-            &page(0, Vec::new()),
-            None,
-            None,
-            &params(),
+        choose(
+            &[page(0, Vec::new())],
             0,
-            1,
+            &params(),
+            (0, 1, false),
             &AtomicBool::new(true)
         )
         .unwrap_err()
@@ -977,7 +951,7 @@ fn automatic_type_totals_include_off_page_countries_and_keep_type_order() {
     current.countries.push(second);
     let mut input = params();
     input.tags.push("B".into());
-    let selected = select(&current, None, None, &input, 0, 0, &AtomicBool::new(false)).unwrap();
+    let selected = choose(&[current], 0, &input, (0, 0, false), &AtomicBool::new(false)).unwrap();
     assert!(selected.countries.is_empty());
     assert_eq!(
         selected.type_totals,
@@ -1011,25 +985,47 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
     let mut state = ProductionAccumulator::new(1, 1, 0);
     let mut early = page(0, vec![amount(1, 4, true, Purpose::New)]);
     early.last_hour = 7;
+    // One type, so it is the first key.
+    early.classifications.retain(|variant, _| *variant == 1);
     let mut open = page(8, vec![amount(1, 5, true, Purpose::New)]);
     open.last_hour = 8;
-    state.classifications = open.classifications.clone();
-    let eq = open.countries[0].equipment.as_ref().unwrap();
+    open.classifications.retain(|variant, _| *variant == 1);
+    let eq = open.countries[0].equipment.clone().unwrap();
     assert!(
         state
             .joins
-            .bind_rocket("A", eq, open.countries[0].rocket.as_ref(), 8, &mut None)
+            .bind_rocket("A", &eq, open.countries[0].rocket.as_ref(), 8, None)
     );
     let mut writer = store.replace(key.clone()).unwrap();
-    publish_endpoint(&mut writer, &mut state, &early).unwrap();
-    publish_endpoint(&mut writer, &mut state, &open).unwrap();
-    write_catalogue(&mut writer, &mut state, &flag).unwrap();
+    state.publish_page(early, None).unwrap();
+    state.publish_page(open, None).unwrap();
+    state.flush(&mut writer, &flag).unwrap();
     writer.commit().unwrap();
-    let before = select_at(&store, &key, 8, &params(), 0, 1, &flag)
+    // Without content, a type is its recorded token under the unresolved mark.
+    let at = |hour: i32| {
+        let index = read::read_index(&store, &key, 1).unwrap().unwrap();
+        let classes = read::Classes::new(&index, Named::default());
+        select::select_with(
+            &index,
+            &classes,
+            &store,
+            &key,
+            hour,
+            &params(),
+            0,
+            1,
+            false,
+            &flag,
+        )
         .unwrap()
-        .unwrap();
+        .unwrap()
+    };
+    let before = at(8);
     assert_eq!(before.countries[0].total.as_deref(), Some("5"));
-    assert_eq!(before.keys[0].key, "mod_one");
+    assert_eq!(
+        before.keys[0].key,
+        format!("{}mod_one", equipment::UNRESOLVED_MARK)
+    );
     let prefix = Prefix::new(
         &recording,
         1,
@@ -1050,25 +1046,28 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
         provisional["approximate"],
         serde_json::json!([{"firstHour": 0, "lastHour": 8}])
     );
-    assert!(!state.joins.bind_rocket("A", eq, None, 9, &mut None));
-    state.classifications.get_mut(&1).unwrap().key = "mod_reclassified".into();
+    // The Rocket read supplying the join ends: the join is withdrawn.
+    assert!(!state.joins.bind_rocket("A", &eq, None, 9, None));
+    state.classifications.get_mut(&1).unwrap().token = "mod_reclassified".into();
     let mut writer = store.extend(&key).unwrap();
-    write_catalogue(&mut writer, &mut state, &flag).unwrap();
+    state.flush(&mut writer, &flag).unwrap();
     writer.commit().unwrap();
-    let after = select_at(&store, &key, 8, &params(), 0, 1, &flag)
-        .unwrap()
-        .unwrap();
+    let after = at(8);
     assert_eq!(
         after.countries[0].total, None,
-        "the next commit repairs the open supplying interval"
+        "the next commit withdraws the open supplying interval's join"
     );
     assert_eq!(
-        after.keys[0].key, "mod_reclassified",
+        after.countries[0].equipment_total.as_deref(),
+        Some("5"),
+        "the equipment source stays known"
+    );
+    assert_eq!(
+        after.keys[0].key,
+        format!("{}mod_reclassified", equipment::UNRESOLVED_MARK),
         "later classification revises the same earlier hour"
     );
-    let unaffected = select_at(&store, &key, 0, &params(), 0, 1, &flag)
-        .unwrap()
-        .unwrap();
+    let unaffected = at(0);
     assert_eq!(unaffected.countries[0].total.as_deref(), Some("4"));
     drop(recording);
     let _ = std::fs::remove_dir_all(root);
@@ -1076,42 +1075,54 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
 
 #[test]
 fn pages_before_the_first_supply_count_from_the_observation_history_lists() {
-    let campaign = uuid::Uuid::new_v4();
-    let scratch = std::env::temp_dir().join(format!("prepared-production-{campaign}"));
-    std::fs::create_dir_all(&scratch).unwrap();
-    let recording = scratch.join("synthetic-recording");
-    std::fs::write(&recording, b"synthetic source metadata").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(campaign).unwrap();
-    let mut writer = store.replace(key.clone()).unwrap();
+    let flag = AtomicBool::new(false);
     // The first publications carry no output; the first supply, read later,
     // dates its counting from the branch start.
     let mut early = page(0, Vec::new());
     early.countries.clear();
     early.equipment_origin = None;
     let later = page(24, vec![amount(1, 7, true, Purpose::New)]);
+    let at = |fixture: &Fixture, hour: i32, selection: &ProducedParams| {
+        let index = read::read_index(&fixture.store, &fixture.key, 1)
+            .unwrap()
+            .unwrap();
+        select::select_with(
+            &index,
+            &classes(&index, &kinds()),
+            &fixture.store,
+            &fixture.key,
+            hour,
+            selection,
+            0,
+            5,
+            false,
+            &flag,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
     let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
-    publish_endpoint(&mut writer, &mut state, &early).unwrap();
-    publish_endpoint(&mut writer, &mut state, &later).unwrap();
+    state.publish_page(early.clone(), None).unwrap();
+    state.publish_page(later.clone(), None).unwrap();
     state.result.observations = vec![0];
     write_state(&mut writer, &mut state).unwrap();
     writer.commit().unwrap();
-    let flag = AtomicBool::new(false);
     let mut top = params();
     top.tags.clear();
     top.top = Some(5);
     for (hour, selection) in [(12, params()), (12, top.clone()), (30, params()), (30, top)] {
-        let page = select_at(&store, &key, hour, &selection, 0, 5, &flag)
-            .unwrap()
-            .unwrap();
+        let page = at(&fixture, hour, &selection);
         assert_eq!(page.observation, Some(0), "hour {hour}, top {:?}", selection.top);
         assert!(!page.recorded, "no production read yet, hour {hour}");
     }
     // A restart is dated from its own counting start onwards.
-    let mut writer = store.replace(key.clone()).unwrap();
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
     let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
-    publish_endpoint(&mut writer, &mut state, &early).unwrap();
-    publish_endpoint(&mut writer, &mut state, &later).unwrap();
+    state.publish_page(early, None).unwrap();
+    state.publish_page(later, None).unwrap();
     state.result.observations = vec![0];
     state.observation_starts = state.observation_starts();
     state.result.observations = vec![0, 20];
@@ -1121,109 +1132,158 @@ fn pages_before_the_first_supply_count_from_the_observation_history_lists() {
     let mut types = params();
     types.tags.clear();
     for (hour, since, selection) in [(12, 0, params()), (30, 20, params()), (12, 0, types)] {
-        let page = select_at(&store, &key, hour, &selection, 0, 5, &flag)
-            .unwrap()
-            .unwrap();
+        let page = at(&fixture, hour, &selection);
         assert_eq!(page.observation, Some(since), "hour {hour}");
         // Even before its first read, a page says the branch has production.
         assert!(page.recorded, "hour {hour}, tags {:?}", selection.tags);
     }
-    let _ = std::fs::remove_dir_all(scratch);
 }
 
 #[test]
 fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
-    let campaign = uuid::Uuid::new_v4();
-    let scratch = std::env::temp_dir().join(format!("prepared-production-{campaign}"));
-    std::fs::create_dir_all(&scratch).unwrap();
-    let recording = scratch.join("synthetic-recording");
-    std::fs::write(&recording, b"synthetic source metadata").unwrap();
-    let key = store::SourceKey::capture(&recording, &[]).unwrap();
-    let store = store::Store::local(campaign).unwrap();
-    let mut writer = store.replace(key.clone()).unwrap();
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
     let first = page(0, vec![amount(1, 7, true, Purpose::New)]);
-    let mut second = page(0, vec![amount(1, 9, true, Purpose::New)]);
-    second.branch_id = "2".into();
+    let second = page(0, vec![amount(1, 9, true, Purpose::New)]);
     let mut resumed = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let mut other_branch = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 2, 0);
-    assert_eq!(
-        publish_endpoint(&mut writer, &mut resumed, &first).unwrap(),
-        0
-    );
-    assert_eq!(
-        publish_endpoint(&mut writer, &mut other_branch, &second).unwrap(),
-        0
-    );
+    resumed.publish_page(first.clone(), None).unwrap();
+    other_branch.publish_page(second, None).unwrap();
     write_state(&mut writer, &mut resumed).unwrap();
-    let mut definition = first.classifications[&1].clone();
-    definition.key = "mod_final".into();
-    definition.names = vec![StockVariantName {
-        first_hour: 20,
-        name: Some("Later".into()),
-        known: true,
-        design: None,
-    }];
-    resumed.classifications.insert(1, definition);
+    // A later flush reclassifies the variant: the publication's last wins.
+    resumed.classifications.get_mut(&1).unwrap().token = "mod_final".into();
     write_state(&mut writer, &mut resumed).unwrap();
     write_state(&mut writer, &mut other_branch).unwrap();
     writer.commit().unwrap();
     let cancelled = AtomicBool::new(false);
+    let at = |branch: u64, hour: i32, params: &ProducedParams| {
+        let index = read::read_index(&fixture.store, &fixture.key, branch)
+            .unwrap()
+            .unwrap();
+        let classes = read::Classes::new(&index, Named::default());
+        select::select_with(
+            &index,
+            &classes,
+            &fixture.store,
+            &fixture.key,
+            hour,
+            params,
+            0,
+            10,
+            false,
+            &cancelled,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let reclassified = format!("{}mod_final", equipment::UNRESOLVED_MARK);
     let mut params = params();
-    params.included = vec!["mod_final".into()];
+    params.included = vec![reclassified.clone()];
     assert_eq!(
-        select_at(&store, &key, 12, &params, 0, 10, &cancelled)
-            .unwrap()
-            .unwrap()
-            .countries[0]
-            .total
-            .as_deref(),
+        at(1, 12, &params).countries[0].total.as_deref(),
         Some("7")
     );
     let mut types_only = params.clone();
     types_only.tags.clear();
-    let types = select_at(&store, &key, 999, &types_only, 0, 0, &cancelled)
-        .unwrap()
-        .unwrap();
+    let types = at(1, 999, &types_only);
     assert!(types.countries.is_empty());
     assert!(types.keys.is_empty());
-    assert!(types.types.iter().any(|kind| kind.key == "mod_final"));
+    assert!(types.types.iter().any(|kind| kind.key == reclassified));
     params.branch_id = "2".into();
     params.included.clear();
     assert_eq!(
-        select_at(&store, &key, 12, &params, 0, 10, &cancelled)
-            .unwrap()
-            .unwrap()
-            .countries[0]
-            .total
-            .as_deref(),
+        at(2, 12, &params).countries[0].total.as_deref(),
         Some("9")
     );
-    assert_eq!(latest_state(&store, &key, 1).unwrap().unwrap().branch, 1);
-    assert_eq!(latest_state(&store, &key, 2).unwrap().unwrap().branch, 2);
     assert_eq!(
-        store.range_count(&key, &section(STATE, 1)).unwrap(),
+        latest_state(&fixture.store, &fixture.key, 1)
+            .unwrap()
+            .unwrap()
+            .branch,
+        1
+    );
+    assert_eq!(
+        latest_state(&fixture.store, &fixture.key, 2)
+            .unwrap()
+            .unwrap()
+            .branch,
+        2
+    );
+    assert_eq!(
+        fixture
+            .store
+            .range_count(&fixture.key, &section(STATE, 1))
+            .unwrap(),
         Some(1)
     );
     assert!(
-        read_at(&store, &key, 3, 1, 12, &cancelled)
+        read::read_index(&fixture.store, &fixture.key, 3)
             .unwrap()
             .is_none()
     );
-    let mut incompatible = first;
-    incompatible.schema = 2;
-    assert!(select(&incompatible, None, None, &params, 0, 10, &cancelled).is_err());
-    store.clear().unwrap();
-    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+/// What `page` publishes for each of its holders, by the index's ids.
+fn expected_holders(index: &read::Index, page: &EndpointPage) -> BTreeMap<u32, facts::Holder> {
+    let source = |source: &SourceEndpoint, read: Option<i32>| facts::Source {
+        head: facts::Head {
+            slot: source.slot,
+            country_id: source.country_id,
+            observation: source.observation,
+            segment: source.segment,
+            read_hour: (Some(source.read_hour) != read).then_some(source.read_hour),
+            units_known: source.units_known,
+            spending_known: source.spending_known,
+            present: source.present,
+            campaign_reason: source.campaign_spending_reason,
+        },
+        leaves: {
+            let mut leaves: Vec<facts::Leaf> = source
+                .amounts
+                .iter()
+                .map(|amount| facts::Leaf {
+                    variant: index.variant_id(amount.variant).unwrap(),
+                    purpose: amount.purpose,
+                    units: i64::try_from(amount.units).unwrap(),
+                    units_exact: amount.units_exact,
+                    spent: i64::try_from(amount.spent).unwrap(),
+                    reason: amount.spending_reason,
+                    unproven: i64::try_from(amount.unproven).unwrap(),
+                })
+                .collect();
+            leaves.sort_by_key(facts::Leaf::key);
+            leaves
+        },
+    };
+    page.countries
+        .iter()
+        .map(|row| {
+            (
+                index.tags[&row.tag],
+                facts::Holder {
+                    equipment: row
+                        .equipment
+                        .as_ref()
+                        .map(|equipment| source(equipment, page.equipment_read)),
+                    rocket: row
+                        .rocket
+                        .as_ref()
+                        .map(|rocket| source(rocket, page.rocket_read)),
+                    rocket_joined: row.rocket_joined,
+                },
+            )
+        })
+        .collect()
 }
 
 #[test]
-fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_and_retirement() {
-    use crate::prepared::series::{Reader, tests::Fixture};
+fn published_endpoints_decode_identically_after_two_commits_resume_append_and_retirement() {
     let flag = AtomicBool::new(false);
     let mut fixture = Fixture::new();
     let mut writer = fixture.writer();
     let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
-    let wide = (1i128 << 100) + 17;
+    // The widest amount kept at rest exactly.
+    let wide = i128::from(i64::MAX) - 17;
     let mut expected = Vec::new();
     for block in 0..5 {
         let read = block * 24;
@@ -1231,16 +1291,13 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
             read,
             vec![amount(1, wide, true, Purpose::New), amount(2, -31, false, Purpose::Refit)],
         );
-        current.unnamed_before = block as usize * 24;
-        current.unnamed_per_hour = 1;
         current.countries[0].rocket.as_mut().unwrap().amounts =
             vec![amount(0, -wide + i128::from(block), true, Purpose::New)];
         if block >= 1 {
-            current.classifications.get_mut(&1).unwrap().names = vec![StockVariantName {
+            // Dated by the read at hour 24, which is the names hour only there.
+            current.classifications.get_mut(&1).unwrap().names = vec![VariantName {
                 first_hour: 24,
-                name: Some("late mod name".into()),
-                known: true,
-                design: None,
+                raw: None,
             }];
             current.countries[0].equipment.as_mut().unwrap().amounts[1].spending_reason =
                 Some(ProductionSpendingUnknown::LostOutput);
@@ -1266,23 +1323,55 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
                 .amounts
                 .pop();
         }
-        state.classifications = current.classifications.clone();
-        publish_endpoint(&mut writer, &mut state, &current).unwrap();
+        state.publish_page(current.clone(), Some(read)).unwrap();
         expected.push(current);
         if [1, 3, 4].contains(&block) {
             write_state(&mut writer, &mut state).unwrap();
             writer.commit().unwrap();
-            let count = endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
-            for original in &expected {
+            let index = read::read_index(&fixture.store, &fixture.key, 1)
+                .unwrap()
+                .unwrap();
+            let classes = read::Classes::new(&index, Named::default());
+            assert_eq!(index.endpoints.len(), expected.len());
+            for (ordinal, original) in expected.iter().enumerate() {
+                let ordinal = ordinal as u64;
                 for hour in [original.first_hour, original.last_hour] {
-                    let mut wanted = original.clone();
-                    wanted.render_warnings(hour);
+                    assert_eq!(index.endpoint_at(hour), Some(ordinal));
+                }
+                let wanted = expected_holders(&index, original);
+                let decoded: BTreeMap<u32, facts::Holder> = index
+                    .state(&fixture.store, &fixture.key, ordinal, &flag)
+                    .unwrap()
+                    .holders
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(id, holder)| holder.clone().map(|holder| (id as u32, holder)))
+                    .collect();
+                assert_eq!(decoded, wanted, "ranking state at {ordinal} after block {block}");
+                for (&holder, state) in &wanted {
                     assert_eq!(
-                        read_at(&fixture.store, &fixture.key, 1, count, hour, &flag)
+                        index
+                            .holder_at(&fixture.store, &fixture.key, holder, ordinal)
                             .unwrap()
-                            .unwrap(),
-                        wanted,
-                        "restored page at {hour} after block {block}",
+                            .as_ref(),
+                        Some(state),
+                        "holder leaves at {ordinal} after block {block}"
+                    );
+                }
+                let variant = index.variant_id(1).unwrap();
+                let names = index.names_at(&classes, variant, ordinal).unwrap().unwrap();
+                if ordinal == 0 {
+                    assert!(names.is_empty());
+                } else {
+                    assert_eq!(
+                        names,
+                        [StockVariantName {
+                            first_hour: 24,
+                            name: None,
+                            known: false,
+                            design: None,
+                        }],
+                        "names at {ordinal} after block {block}"
                     );
                 }
             }
@@ -1299,189 +1388,79 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
             };
         }
     }
-    let mut reader = Reader::new(
-        &fixture.store,
-        &fixture.key,
-        "production-spent-1".into(),
-        &flag,
-    )
-    .unwrap();
-    let token = serde_json::to_string(&("A", false, false, 1u64)).unwrap();
-    // One initial value, its absence, and its new holder. Later reads carry it.
-    assert_eq!(
-        reader
-            .event_count_through(state.spent_keys[&token], i32::MAX)
-            .unwrap(),
-        3
-    );
 }
 
 #[test]
-fn endpoint_written_bytes_are_flat_at_n_and_ten_n_blocks_and_retired_leaves_are_not_republished() {
-    use crate::prepared::series::{Reader, tests::Fixture};
-    let flag = AtomicBool::new(false);
-    let mut fixture = Fixture::new();
+fn amounts_outside_the_exact_range_at_rest_are_refused_never_truncated() {
     let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
-    let mut current = page(
-        0,
-        (1..=128)
-            .map(|variant| amount(variant, i128::from(variant), true, Purpose::New))
-            .collect(),
-    );
-    let mut writer = fixture.writer();
-    publish_endpoint(&mut writer, &mut state, &current).unwrap();
-    write_state(&mut writer, &mut state).unwrap();
-    writer.commit().unwrap();
-    let mut measured = Vec::new();
-    for block in 1..=40 {
-        state = latest_state(&fixture.store, &fixture.key, 1)
-            .unwrap()
-            .unwrap();
-        let mut writer = if block == 21 {
-            fixture.append_writer()
-        } else {
-            fixture.writer()
-        };
-        current.first_hour = block * 720;
-        current.last_hour = current.first_hour + 719;
-        current.equipment_read = Some(current.first_hour);
-        current.countries[0].equipment.as_mut().unwrap().read_hour = current.first_hour;
-        current.countries[0].equipment.as_mut().unwrap().amounts[0].units =
-            (10_000 + block).to_string();
-        current.countries[0].equipment.as_mut().unwrap().amounts[0].spent =
-            (20_000 + block).to_string();
-        publish_endpoint(&mut writer, &mut state, &current).unwrap();
-        write_catalogue(&mut writer, &mut state, &flag).unwrap();
-        let bytes = writer.bytes_written();
-        write_state(&mut writer, &mut state).unwrap();
-        writer.commit().unwrap();
-        if [4, 40].contains(&block) {
-            measured.push(bytes);
-            let mut reader = Reader::new(
-                &fixture.store,
-                &fixture.key,
-                "production-spent-1".into(),
-                &flag,
-            )
-            .unwrap();
-            for variant in 2..=128u64 {
-                let token = serde_json::to_string(&("A", false, false, variant)).unwrap();
-                assert_eq!(
-                    reader
-                        .event_count_through(state.spent_keys[&token], i32::MAX)
-                        .unwrap(),
-                    1,
-                    "retired leaf {variant} was republished"
-                );
-            }
-            let header: EndpointPage = crate::prepared::series::read_reply(
-                &fixture.store,
-                &fixture.key,
-                &section(ENDPOINTS, 1),
-                block as u64,
-            )
-            .unwrap()
-            .unwrap();
-            assert!(header.classifications.is_empty());
-            assert!(header.countries.iter().all(|row| {
-                [&row.equipment, &row.rocket]
-                    .into_iter()
-                    .flatten()
-                    .all(|source| source.amounts.is_empty())
-            }));
-        }
-    }
-    // Identical activity and inventory: only integer encodings/date compression vary.
-    assert!(
-        measured[1].abs_diff(measured[0]) <= measured[0] / 100,
-        "N/10N publication bytes grew: {measured:?}"
-    );
-    eprintln!(
-        "production endpoint constant activity: N/10N block bytes {measured:?}; {} shared directory bytes per block",
-        64 * (state.spent_keys.len() + state.classification_keys.len())
-    );
+    let wide = page(0, vec![amount(1, 1i128 << 100, true, Purpose::New)]);
+    assert!(state.publish_page(wide, None).is_err());
 }
 
 #[test]
-fn endpoint_changed_payload_stays_flat_when_retired_leaf_history_grows_tenfold() {
-    use crate::prepared::series::{Reader, tests::Fixture};
+fn a_changed_leaf_publishes_the_same_ranking_bytes_however_many_leaves_retired_before() {
     let flag = AtomicBool::new(false);
-    let fixture = Fixture::new();
-    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let mut current = page(0, Vec::new());
     current.classifications.clear();
-    let mut measured = Vec::new();
-    // Each block introduces one native variant, then retains its unchanged total.
-    // The shared format still writes its directory and empty per-key blob; those
-    // are index overhead, not another copy of a retired amount or classification.
-    let empty_blob_bytes = crate::prepared::series::compress(&[0; 8], 3).unwrap().len() as u64;
-    for block in 1..=40u64 {
+    let mut pages = Vec::new();
+    // Each endpoint introduces one variant and keeps every earlier total unchanged.
+    for block in 1..=41u64 {
         current.first_hour = block as i32 * 720;
         current.last_hour = current.first_hour + 719;
         current.equipment_read = Some(current.first_hour);
         let equipment = current.countries[0].equipment.as_mut().unwrap();
         equipment.read_hour = current.first_hour;
         equipment.amounts.push(amount(block, 17, true, Purpose::New));
-        let mut kind = page(0, Vec::new()).classifications.remove(&1).unwrap();
-        kind.key = format!("mod variant {block:04}");
-        current.classifications.insert(block, kind);
-        let mut writer = fixture.writer();
-        publish_endpoint(&mut writer, &mut state, &current).unwrap();
-        state
-            .spent
-            .flush(&mut writer, "production-spent-1", 0, &flag)
-            .unwrap();
-        let written = writer.bytes_written();
-        let keys = (state.spent_keys.len() + state.classification_keys.len()) as u64;
-        let payload = written - keys * (64 + empty_blob_bytes);
-        writer.commit().unwrap();
-        if [4, 40].contains(&block) {
-            measured.push(payload);
-            let mut reader = Reader::new(
-                &fixture.store,
-                &fixture.key,
-                "production-spent-1".into(),
-                &flag,
-            )
-            .unwrap();
-            for variant in 1..=block {
-                let token = serde_json::to_string(&("A", false, false, variant)).unwrap();
-                assert_eq!(
-                    reader
-                        .event_count_through(state.spent_keys[&token], i32::MAX)
-                        .unwrap(),
-                    1
-                );
-                assert_eq!(
-                    reader
-                        .event_count_through(state.classification_keys[&variant], i32::MAX)
-                        .unwrap(),
-                    1
-                );
-            }
-        }
+        current
+            .classifications
+            .insert(block, classified(&format!("mod variant {block:04}")));
+        pages.push(current.clone());
     }
+    let (fixture, index) = published(&pages);
+    assert!(index.endpoint(16).keyframe && index.endpoint(32).keyframe);
+    let sizes = [3u64, 39].map(|ordinal| {
+        let endpoint = index.endpoint(ordinal);
+        assert!(!endpoint.keyframe);
+        endpoint.ranking_len
+    });
     assert!(
-        measured[1].abs_diff(measured[0]) <= 64,
-        "changed endpoint payload grew with retired history: {measured:?}"
+        sizes[1].abs_diff(sizes[0]) <= 8,
+        "a changed endpoint's block grew with retired history: {sizes:?}"
     );
-    eprintln!(
-        "production endpoints with N/10N retired leaves: {measured:?} changed-payload bytes per 720 h, plus 64 directory bytes and {empty_blob_bytes} empty-blob bytes per known key"
-    );
+    let state = index.state(&fixture.store, &fixture.key, 39, &flag).unwrap();
+    let holder = state.holder(index.tags["A"]).unwrap();
+    assert_eq!(holder.equipment.as_ref().unwrap().leaves.len(), 40);
 }
 
 #[test]
 fn null_equipment_design_keeps_units_and_unresolved_attribution() {
+    let flag = AtomicBool::new(false);
     let mut current = page(0, vec![amount(0, 7, true, Purpose::New)]);
-    let unresolved = current.classifications[&3].clone();
-    current.classifications.insert(0, unresolved);
-    let cancelled = AtomicBool::new(false);
+    current.classifications.insert(0, classified(""));
+    let (fixture, index) = published(&[current]);
+    let mut types = kinds();
+    types.insert(0, kind(":unresolved", None, None, None));
+    let classes = classes(&index, &types);
+    let at = |request: &ProducedParams| {
+        select::select_with(
+            &index,
+            &classes,
+            &fixture.store,
+            &fixture.key,
+            0,
+            request,
+            0,
+            1,
+            false,
+            &flag,
+        )
+        .unwrap()
+        .unwrap()
+    };
     let mut request = params();
-    let selected = select(&current, None, None, &request, 0, 1, &cancelled).unwrap();
-    assert_eq!(selected.countries[0].total.as_deref(), Some("7"));
+    assert_eq!(at(&request).countries[0].total.as_deref(), Some("7"));
     request.included = vec!["mod_one".into()];
-    let selected = select(&current, None, None, &request, 0, 1, &cancelled).unwrap();
-    assert_eq!(selected.countries[0].total, None);
+    assert_eq!(at(&request).countries[0].total, None);
 }
 
 #[test]
@@ -1490,13 +1469,11 @@ fn branch_aliases_compare_numerically_and_echo_the_request() {
     for alias in ["01", "+1"] {
         let mut request = params();
         request.branch_id = alias.into();
-        let selected = select(
-            &current,
-            None,
-            None,
-            &request,
+        let selected = choose(
+            &[current.clone()],
             0,
-            1,
+            &request,
+            (0, 1, false),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -1514,16 +1491,7 @@ fn global_value_extent_includes_off_page_signed_rows_exactly() {
     current.countries.push(negative);
     let mut request = params();
     request.tags.push("B".into());
-    let selected = select(
-        &current,
-        None,
-        None,
-        &request,
-        1,
-        1,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    let selected = choose(&[current], 0, &request, (1, 1, false), &AtomicBool::new(false)).unwrap();
     assert_eq!(selected.offset, "1");
     assert_eq!(selected.value_min, "-7");
     assert_eq!(selected.value_max, "9007199254740993");
@@ -1532,94 +1500,8 @@ fn global_value_extent_includes_off_page_signed_rows_exactly() {
 }
 
 #[test]
-fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_leaves() {
-    use crate::prepared::series::{directory_tests::SMALL_READS, tests::Fixture};
-    let flag = AtomicBool::new(false);
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
-    let tags: Vec<String> = (0..1000).map(|index| format!("T{index:04}")).collect();
-    let mut published = Vec::new();
-    // Three batches; every leaf changes in each, the classifications never do.
-    for block in 0..3 {
-        let read = block * 720;
-        let mut current = page(read, Vec::new());
-        current.last_hour = read + 719;
-        current.countries = tags
-            .iter()
-            .enumerate()
-            .map(|(index, tag)| {
-                let units = i128::from(block) * 1000 + index as i128;
-                CountryEndpoint {
-                    tag: tag.clone(),
-                    equipment: Some(source(
-                        read,
-                        vec![
-                            amount(1, units, true, Purpose::New),
-                            amount(2, -units, true, Purpose::New),
-                        ],
-                    )),
-                    rocket: Some(source(read, vec![amount(3, units, true, Purpose::New)])),
-                    rocket_joined: true,
-                }
-            })
-            .collect();
-        state.classifications = current.classifications.clone();
-        publish_endpoint(&mut writer, &mut state, &current).unwrap();
-        write_state(&mut writer, &mut state).unwrap();
-        published.push(current);
-    }
-    writer.commit().unwrap();
-    let count = endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
-    for (block, original) in published.iter().enumerate() {
-        let hour = original.first_hour + 5;
-        let mut wanted = original.clone();
-        wanted.render_warnings(hour);
-        let before = SMALL_READS.get();
-        let restored = read_at(&fixture.store, &fixture.key, 1, count, hour, &flag)
-            .unwrap()
-            .unwrap();
-        let reads = SMALL_READS.get() - before;
-        assert_eq!(restored, wanted, "block {block}");
-        // Searching each of the 3,003 leaves' directory entries on its own
-        // takes about 14 small reads per leaf (42,000).
-        assert!(reads <= 1_500, "{reads} small reads restoring every leaf");
-
-        let mut endpoints = Endpoints::new(&fixture.store, &fixture.key, 1, count, &flag);
-        let tag = tags[517].as_str();
-        let before = SMALL_READS.get();
-        let one = endpoints.page(hour, Leaves::Country(tag)).unwrap().unwrap();
-        let reads = SMALL_READS.get() - before;
-        assert!(reads <= 400, "{reads} small reads restoring one country");
-        assert_eq!(one.classifications, restored.classifications);
-        for (row, full) in one.countries.iter().zip(&restored.countries) {
-            if row.tag == tag {
-                assert_eq!(row, full);
-            } else {
-                assert!(row.equipment.as_ref().unwrap().amounts.is_empty());
-                assert!(row.rocket.as_ref().unwrap().amounts.is_empty());
-            }
-        }
-        let joined = BTreeSet::from([tags[3].clone(), tags[999].clone()]);
-        let rockets = endpoints
-            .page(hour, Leaves::Rockets(&joined))
-            .unwrap()
-            .unwrap();
-        assert!(rockets.classifications.is_empty());
-        for (row, full) in rockets.countries.iter().zip(&restored.countries) {
-            assert!(row.equipment.as_ref().unwrap().amounts.is_empty());
-            if joined.contains(&row.tag) {
-                assert_eq!(row.rocket, full.rocket);
-            } else {
-                assert!(row.rocket.as_ref().unwrap().amounts.is_empty());
-            }
-        }
-    }
-}
-
-#[test]
 fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restore() {
-    use crate::prepared::series::tests::{Fixture, assert_payloads_equal};
+    use crate::prepared::series::tests::assert_payloads_equal;
     use replay_data::{rows::ProductionLineOutputRow, rows::TableRows};
     let flag = AtomicBool::new(false);
     let mut frame = observer_frame(1, false);
@@ -1677,9 +1559,7 @@ fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restor
                 state.spent_holders_ready = false;
             }
             let before = state.spent_visits;
-            state
-                .ingest(format, &frame, Named::default(), &flag)
-                .unwrap();
+            state.ingest(format, &frame, &flag).unwrap();
             if offset == 1 || offset == 2 {
                 assert_eq!(
                     state.spent_visits - before,
@@ -1716,10 +1596,7 @@ fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restor
 
 #[test]
 fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourly_carries() {
-    use crate::prepared::{
-        frame_changes::FrameChanges,
-        series::tests::{Fixture, assert_payloads_equal},
-    };
+    use crate::prepared::{frame_changes::FrameChanges, series::tests::assert_payloads_equal};
     use replay_data::{rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableRows};
     const VARIANTS: u32 = 32;
     let flag = AtomicBool::new(false);
@@ -1777,17 +1654,14 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                     for carried in first..hour {
                         frame.hour = carried;
                         for state in &mut states {
-                            assert!(
-                                state
-                                    .ingest_changed(
-                                        format,
-                                        &frame,
-                                        Named::default(),
-                                        &flag,
-                                        &changes
-                                    )
-                                    .unwrap()
-                                    .is_none()
+                            let completed = state.completed.len();
+                            state
+                                .ingest_changed(format, &frame, &flag, &changes)
+                                .unwrap();
+                            assert_eq!(
+                                state.completed.len(),
+                                completed,
+                                "a carried hour completes no endpoint"
                             );
                         }
                     }
@@ -1818,7 +1692,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                 }
                 let before = state.spent_visits;
                 state
-                    .ingest_changed(format, &frame, Named::default(), &flag, &changes)
+                    .ingest_changed(format, &frame, &flag, &changes)
                     .unwrap();
                 let owners = if index == 1 || day == 0 {
                     2
@@ -1892,13 +1766,7 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
     let mut tracker = FrameChangeTracker::new();
     frame.metrics.table_ns[TableId::ProductionLineOutput.index()] = 1;
     state
-        .ingest_changed(
-            format,
-            &frame,
-            Named::default(),
-            &flag,
-            &tracker.observe(&frame, format),
-        )
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
         .unwrap();
     assert_eq!(state.variants.inventory_visits, 2 * count as usize);
     for offset in 1..=4 {
@@ -1908,13 +1776,7 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
         frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
         let before = state.variants.inventory_visits;
         state
-            .ingest_changed(
-                format,
-                &frame,
-                Named::default(),
-                &flag,
-                &tracker.observe(&frame, format),
-            )
+            .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
             .unwrap();
         assert_eq!(
             state.variants.inventory_visits - before,
@@ -1931,13 +1793,7 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
     }
     let before = state.variants.inventory_visits;
     state
-        .ingest_changed(
-            format,
-            &frame,
-            Named::default(),
-            &flag,
-            &tracker.observe(&frame, format),
-        )
+        .ingest_changed(format, &frame, &flag, &tracker.observe(&frame, format))
         .unwrap();
     assert_eq!(
         state.variants.inventory_visits - before,
@@ -1950,4 +1806,3 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
 fn presentation_inventory_carries_keys_and_replaces_only_the_changed_holder() {
     presentation_inventory_work_follows_changed_holders(8);
 }
-

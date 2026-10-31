@@ -115,7 +115,7 @@ fn every_section_has_one_exact_owner() {
             "faction-state-continuation-2",
             Some(family("faction_state")),
         ),
-        ("production-catalogue-v1", Some(family("production"))),
+        ("production-facts-v2/7", Some(family("production"))),
         (
             "production_catalogue-values-3",
             Some(family("production_catalogue")),
@@ -322,7 +322,7 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
         (catalogue_section(&goals, 1), family("faction_state")),
         // Pages kept by name and branch.
         (
-            format!("{}/1", crate::prepared_production::ENDPOINTS),
+            format!("{}/1", crate::prepared_production::FACTS),
             family("production"),
         ),
         (

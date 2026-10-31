@@ -908,7 +908,7 @@ fn economy_ledgers_read_by_their_changes_build_no_frame_at_quiet_hours() {
 /// waited for complete coverage.
 #[test]
 fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending() {
-    use crate::prepared_production::{self as production, ProductionAccumulator, ProductionNaming};
+    use crate::prepared_production::ProductionAccumulator;
     independent::with_test_hourly(|| {
         let replay = scenario(5, false);
         let mut fixture = Fixture::new(&replay);
@@ -916,8 +916,6 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
         let flag = AtomicBool::new(false);
         let (store, key) = super::super::super::files(&source, None).unwrap();
         let format = source.replay_ref().format;
-        let naming =
-            ProductionNaming::load(&source, &crate::products::LoadContext { content: None });
         let mut state = ProductionAccumulator::new(format.version(), 1, BASE);
         // Commits through the second block, then through the branch's end.
         let mut commit = |writer: &mut store::Writer, offsets: &[i32], last: i32, complete| {
@@ -929,14 +927,9 @@ fn production_selections_answer_the_prepared_prefix_with_the_hours_still_pending
                 if offset == 8 {
                     frame.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
                 }
-                if let Some(page) = state.ingest(format, &frame, naming.named(), &flag).unwrap() {
-                    production::publish_endpoint(writer, &mut state, &page).unwrap();
-                }
+                state.ingest(format, &frame, &flag).unwrap();
             }
-            if let Some(page) = state.flush() {
-                production::publish_endpoint(writer, &mut state, &page).unwrap();
-            }
-            production::write_catalogue(writer, &mut state, &flag).unwrap();
+            state.flush(writer, &flag).unwrap();
             json(
                 writer,
                 &coverage_section(1),

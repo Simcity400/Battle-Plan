@@ -6,7 +6,7 @@ use super::prepass::{self, Folded, Outcome, PrePass};
 use super::{Section, State};
 use crate::prepared_focus::{FocusAccumulator, FocusEvaluator, FocusIndex};
 use crate::prepared_measure::MeasureAccumulator;
-use crate::prepared_production::{ProductionAccumulator, ProductionNaming};
+use crate::prepared_production::ProductionAccumulator;
 use crate::{
     Source,
     metadata::check_cancel,
@@ -1696,7 +1696,9 @@ fn load_branch(
     if restores(refused, "parts") {
         state.parts.restore(replay, branch)?;
     }
-    if independent::hourly("production") && state.production.schema != 1 {
+    if independent::hourly("production")
+        && state.production.schema != crate::prepared_production::SCHEMA
+    {
         return Err(invalid("Unsupported prepared production state schema"));
     }
     // Left out while prepared on their own: new, as the walk never runs them.
@@ -2695,12 +2697,6 @@ fn run_planned(
         observe,
         crate::products::war_casualties::prepared::prepared_content(source, &context)
     )?;
-    let naming = time_family!(
-        family_timings,
-        "content.production",
-        observe,
-        ProductionNaming::load(source, &context)
-    );
     let stockpile_content = time_family!(
         family_timings,
         "content.stockpile",
@@ -3924,7 +3920,7 @@ fn run_planned(
                                 )
                             );
                             coordinator_order = 1;
-                            if let Some(mut page) = family!(
+                            family!(
                                 refused,
                                 "production",
                                 frame.hour,
@@ -3935,30 +3931,11 @@ fn run_planned(
                                     production.ingest_changed(
                                         replay.format,
                                         frame,
-                                        naming.named(),
                                         cancelled,
                                         changes
                                     )
                                 )
-                            ) {
-                                page.warnings.extend(naming.warnings.iter().cloned());
-                                coordinator_order = 2;
-                                family!(
-                                    refused,
-                                    "production",
-                                    frame.hour,
-                                    time_family!(
-                                        family_timings,
-                                        "production",
-                                        flush,
-                                        crate::prepared_production::publish_endpoint(
-                                            &mut writer,
-                                            production,
-                                            &page,
-                                        )
-                                    )
-                                );
-                            }
+                            );
                             coordinator_order = 3;
                             time_family!(
                                 family_timings,
@@ -4566,7 +4543,7 @@ fn run_planned(
                         ..
                     } = &mut *branch;
                     let branch = frame.branch;
-                    let (context, naming) = (&context, &naming);
+                    let context = &context;
                     let (leader_content, leader_content_errors) =
                         (&leader_content, &leader_content_errors);
                     // While the groups are prepared on their own, this is air
@@ -4592,35 +4569,13 @@ fn run_planned(
                             )))
                         }),
                         flush::Task::new(
-                            &[(1, "production"), (5, "production")],
-                            move |step, writer, mut family_timings| {
-                                if step == 1 {
-                                    return Ok(Some(time_family!(
-                                        family_timings,
-                                        "production",
-                                        flush,
-                                        crate::prepared_production::write_catalogue(
-                                            writer, production, cancelled,
-                                        )
-                                    )));
-                                }
-                                let Some(mut page) = time_family!(
-                                    family_timings,
-                                    "production",
-                                    flush,
-                                    production.flush()
-                                ) else {
-                                    return Ok(None);
-                                };
-                                page.warnings.extend(naming.warnings.iter().cloned());
+                            &[(1, "production")],
+                            move |_, writer, mut family_timings| {
                                 Ok(Some(time_family!(
                                     family_timings,
                                     "production",
                                     flush,
-                                    crate::prepared_production::publish_endpoint(
-                                        writer, production, &page,
-                                    )
-                                    .map(|_| ())
+                                    production.flush(writer, cancelled)
                                 )))
                             },
                         ),

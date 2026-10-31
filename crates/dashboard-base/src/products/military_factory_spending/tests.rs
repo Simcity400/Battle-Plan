@@ -2,10 +2,10 @@ use super::*;
 use crate::products::equipment::production::{Named, ProductionSpendingUnknown, Purpose};
 use crate::products::production_spending::{
     prepared::Answered,
-    prepared::tests::{prepared, with},
+    prepared::tests::{indexed, prepared, with},
     tests::{applied, day, hour, line, units},
 };
-use crate::products::purpose_split::{PurposeMonth, month_of, purpose_months};
+use crate::products::purpose_split::{PurposeMonth, month_of, months_of};
 use replay_data::rows::{OutputPurpose, ProductionLineOutputRow, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::sync::atomic::AtomicBool;
@@ -42,7 +42,8 @@ fn months(frames: &[DecodedFrame], domain: Domain, last: i32) -> Vec<PurposeMont
         units: Some(&units),
         texts: None,
     };
-    let (_, fixture) = prepared(frames, named, &flag);
+    let (_, fixture) = prepared(frames, &flag);
+    let (index, classes) = indexed(&fixture, named);
     let answered = Answered {
         branch: 1,
         bounds: (hour(0), hour(last) + 23),
@@ -50,10 +51,13 @@ fn months(frames: &[DecodedFrame], domain: Domain, last: i32) -> Vec<PurposeMont
         hour: hour(last) + 23,
         end: hour(last) + 23,
     };
-    purpose_months(
+    months_of(
+        &index,
+        &classes,
         &fixture.store,
         &fixture.key,
         "opaque|tag",
+        (hour(0), hour(last) + 23),
         &answered,
         domain,
         &flag,

@@ -6,12 +6,106 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
+/// `page`, a completed endpoint, as the published facts give it back: its
+/// hours and reads, and every holder's sources, absent ones absent.
+pub(crate) fn assert_published(
+    index: &crate::prepared_production::read::Index,
+    store: &store::Store,
+    key: &store::SourceKey,
+    page: &crate::prepared_production::EndpointPage,
+) {
+    use crate::prepared_production::{Amount, SourceEndpoint, facts};
+    let ordinal = index
+        .endpoint_at(page.first_hour)
+        .expect("a published endpoint");
+    assert_eq!(index.endpoint_at(page.last_hour), Some(ordinal));
+    let endpoint = index.endpoint(ordinal);
+    assert_eq!(
+        (
+            endpoint.first_hour,
+            endpoint.last_hour,
+            endpoint.equipment_read,
+            endpoint.rocket_read,
+            endpoint.equipment_origin,
+            endpoint.equipment_restart,
+            endpoint.rocket_origin,
+            endpoint.rocket_restart,
+        ),
+        (
+            page.first_hour,
+            page.last_hour,
+            page.equipment_read,
+            page.rocket_read,
+            page.equipment_origin,
+            page.equipment_restart,
+            page.rocket_origin,
+            page.rocket_restart,
+        ),
+        "endpoint at {}",
+        page.first_hour
+    );
+    let restored = |source: &facts::Source, rocket: bool| {
+        let head = &source.head;
+        let mut amounts: Vec<Amount> = source
+            .leaves
+            .iter()
+            .map(|leaf| Amount {
+                variant: index.variants[leaf.variant as usize],
+                purpose: leaf.purpose,
+                units: i128::from(leaf.units),
+                units_exact: leaf.units_exact,
+                spent: i128::from(leaf.spent),
+                spending_reason: leaf.reason,
+                unproven: i128::from(leaf.unproven),
+            })
+            .collect();
+        amounts.sort_by_key(|amount| (amount.variant, amount.purpose));
+        SourceEndpoint {
+            slot: head.slot,
+            country_id: head.country_id,
+            observation: head.observation,
+            segment: head.segment,
+            read_hour: endpoint.read_of(head, rocket).unwrap(),
+            units_known: head.units_known,
+            spending_known: head.spending_known,
+            present: head.present,
+            campaign_spending_reason: head.campaign_reason,
+            amounts,
+        }
+    };
+    for (tag, &holder) in &index.tags {
+        let row = page.countries.iter().find(|row| &row.tag == tag);
+        let held = index.holder_at(store, key, holder, ordinal).unwrap();
+        assert_eq!(
+            held.is_some(),
+            row.is_some(),
+            "{tag} at {}",
+            page.first_hour
+        );
+        let (Some(row), Some(held)) = (row, held) else {
+            continue;
+        };
+        assert_eq!(held.rocket_joined, row.rocket_joined, "{tag} join");
+        assert_eq!(
+            held.equipment.as_ref().map(|source| restored(source, false)),
+            row.equipment,
+            "{tag} equipment at {}",
+            page.first_hour
+        );
+        assert_eq!(
+            held.rocket.as_ref().map(|source| restored(source, true)),
+            row.rocket,
+            "{tag} Rocket at {}",
+            page.first_hour
+        );
+    }
+}
+
 #[test]
 fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
     use crate::prepared::series::tests::Fixture;
     use crate::prepared_production::{
-        ProductionAccumulator, endpoint_count, latest_state, publish_endpoint, read_at, select_at,
-        write_state,
+        ProductionAccumulator, latest_state, read, select::select_with, write_state,
     };
     let since = produced_hour(0);
     let lines = [(1, 11, 0, 10)];
@@ -39,25 +133,17 @@ fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
     let mut writer = fixture.writer();
     let mut pages = Vec::new();
     for (index, frame) in frames.iter().enumerate() {
-        if let Some(page) = accumulator
+        accumulator
             .ingest_changed(
                 source.replay().format,
                 frame,
-                Named::default(),
                 &cancelled,
                 &tracker.observe(frame, source.replay().format),
             )
-            .unwrap()
-        {
-            publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
-            pages.push(page);
-        }
+            .unwrap();
         if [29, 47].contains(&index) {
-            if let Some(page) = accumulator.flush() {
-                publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
-                pages.push(page);
-            }
             write_state(&mut writer, &mut accumulator).unwrap();
+            pages.extend(accumulator.completed.drain(..).map(|(page, _)| page));
             writer.commit().unwrap();
             accumulator = latest_state(&fixture.store, &fixture.key, 1)
                 .unwrap()
@@ -70,27 +156,16 @@ fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
             };
         }
     }
-    if let Some(page) = accumulator.flush() {
-        publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
-        pages.push(page);
-    }
     write_state(&mut writer, &mut accumulator).unwrap();
+    pages.extend(accumulator.completed.drain(..).map(|(page, _)| page));
     writer.commit().unwrap();
-    let count = endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
+    let index = read::read_index(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    let classes = read::Classes::new(&index, Named::default());
+    assert_eq!(index.endpoints.len(), pages.len());
     for page in &pages {
-        assert_eq!(
-            read_at(
-                &fixture.store,
-                &fixture.key,
-                1,
-                count,
-                page.first_hour,
-                &cancelled
-            )
-            .unwrap()
-            .as_ref(),
-            Some(page),
-        );
+        assert_published(&index, &fixture.store, &fixture.key, page);
     }
     for measure in [
         ProducedMeasure::Total,
@@ -101,13 +176,16 @@ fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
         let params = produced_params(&["GER"], None, measure, ProducedGrouping::Variant);
         let oracle = reply(&scanned, &params, Named::default(), Vec::new(), &cancelled).unwrap();
         for page in &pages {
-            let prepared = select_at(
+            let prepared = select_with(
+                &index,
+                &classes,
                 &fixture.store,
                 &fixture.key,
                 page.first_hour,
                 &params,
                 0,
                 10,
+                false,
                 &cancelled,
             )
             .unwrap()
@@ -131,7 +209,7 @@ fn prepared_endpoints_resume_and_match_the_reference_production_observer() {
 #[test]
 fn prepared_endpoints_repair_rocket_coverage_across_persisted_resume() {
     use crate::prepared_production::{
-        ProductionAccumulator, latest_state, publish_endpoint, select_at, write_state,
+        ProductionAccumulator, latest_state, read, select::select_with, write_state,
     };
     let since = produced_hour(0);
     let mut frames = produced_day(0, 9001, since, &[], Some(&[(1, 0, 11, 10, 7, true, true)]));
@@ -166,47 +244,39 @@ fn prepared_endpoints_repair_rocket_coverage_across_persisted_resume() {
     let mut writer = store.replace(key.clone()).unwrap();
     let mut accumulator = ProductionAccumulator::new(source.replay().format.version(), 1, since);
     for frame in &frames[..4] {
-        if let Some(page) = accumulator
+        accumulator
             .ingest_changed(
                 source.replay().format,
                 frame,
-                Named::default(),
                 &cancelled,
                 &tracker.observe(frame, source.replay().format),
             )
-            .unwrap()
-        {
-            publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
-        }
+            .unwrap();
     }
-    let page = accumulator.flush().unwrap();
-    publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
     write_state(&mut writer, &mut accumulator).unwrap();
     writer.commit().unwrap();
     let mut accumulator = latest_state(&store, &key, 1).unwrap().unwrap();
     tracker.invalidate();
     let mut writer = store.extend(&key).unwrap();
     for frame in &frames[4..] {
-        if let Some(page) = accumulator
+        accumulator
             .ingest_changed(
                 source.replay().format,
                 frame,
-                Named::default(),
                 &cancelled,
                 &tracker.observe(frame, source.replay().format),
             )
-            .unwrap()
-        {
-            publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
-        }
+            .unwrap();
     }
-    let page = accumulator.flush().unwrap();
-    publish_endpoint(&mut writer, &mut accumulator, &page).unwrap();
     write_state(&mut writer, &mut accumulator).unwrap();
     writer.commit().unwrap();
-    let selected = select_at(&store, &key, since, &params, 0, 1, &cancelled)
-        .unwrap()
-        .unwrap();
+    let index = read::read_index(&store, &key, 1).unwrap().unwrap();
+    let classes = read::Classes::new(&index, Named::default());
+    let selected = select_with(
+        &index, &classes, &store, &key, since, &params, 0, 1, false, &cancelled,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(selected.countries[0].total, None);
     assert_eq!(selected.countries[0].equipment_total.as_deref(), Some("7"));
     store.clear().unwrap();
@@ -215,7 +285,8 @@ fn prepared_endpoints_repair_rocket_coverage_across_persisted_resume() {
 
 #[test]
 fn prepared_endpoints_stop_variant_names_at_unavailable_reads_without_losing_units() {
-    use crate::prepared_production::ProductionAccumulator;
+    use crate::prepared::series::tests::Fixture;
+    use crate::prepared_production::{ProductionAccumulator, read, select::select_with};
     let since = produced_hour(0);
     let mut frames = produced_day(0, 9001, since, &[], Some(&[(1, 0, 11, 10, 7, true, true)]));
     let mut missing = produced_day(1, 9001, since, &[], Some(&[]));
@@ -234,22 +305,54 @@ fn prepared_endpoints_stop_variant_names_at_unavailable_reads_without_losing_uni
             .ingest_changed(
                 source.replay().format,
                 frame,
-                Named::default(),
                 &cancelled,
                 &tracker.observe(frame, source.replay().format),
             )
             .unwrap();
     }
-    let page = accumulator.flush().unwrap();
-    assert!(!page.classifications[&10].names.last().unwrap().known);
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    accumulator.flush(&mut writer, &cancelled).unwrap();
+    writer.commit().unwrap();
+    let (page, _) = accumulator.completed.last().unwrap().clone();
+    assert!(
+        page.classifications[&10]
+            .names
+            .last()
+            .unwrap()
+            .raw
+            .is_none()
+    );
+    let index = read::read_index(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    let classes = read::Classes::new(&index, Named::default());
+    let ordinal = index.endpoint_at(page.first_hour).unwrap();
+    let names = index
+        .names_at(&classes, index.variant_id(10).unwrap(), ordinal)
+        .unwrap()
+        .unwrap();
+    assert!(!names.last().unwrap().known);
     let params = produced_params(
         &["GER"],
         None,
         ProducedMeasure::Total,
         ProducedGrouping::Variant,
     );
-    let value =
-        crate::prepared_production::select(&page, None, None, &params, 0, 1, &cancelled).unwrap();
+    let value = select_with(
+        &index,
+        &classes,
+        &fixture.store,
+        &fixture.key,
+        page.first_hour,
+        &params,
+        0,
+        1,
+        false,
+        &cancelled,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(value.countries[0].total.as_deref(), Some("7"));
 }
 

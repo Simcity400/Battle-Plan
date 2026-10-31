@@ -58,6 +58,8 @@ pub fn query(
         DockyardView::Months => {
             let (store, key) = crate::prepared::files(source, content)?;
             let months = purpose_months(
+                source,
+                content,
                 &store,
                 &key,
                 &input.tag,

@@ -102,8 +102,16 @@ pub fn query(
             data["months"] = json!([]);
         }
         DockyardView::Months => {
-            let (months, other) =
-                month_columns(&store, &key, &input.tag, &answered, &mut repairs, cancel)?;
+            let (months, other) = month_columns(
+                source,
+                content,
+                &store,
+                &key,
+                &input.tag,
+                &answered,
+                &mut repairs,
+                cancel,
+            )?;
             if other > 0 {
                 warn(&mut data, other, "months")?;
             }
@@ -219,7 +227,10 @@ fn warn(data: &mut Value, count: usize, unit: &str) -> io::Result<()> {
 /// with exact new, refit, repair, unrecorded-purpose and other-purpose
 /// amounts or the reason one is unknown, and how many had naval input of
 /// another purpose.
+#[allow(clippy::too_many_arguments)]
 fn month_columns(
+    source: &Source,
+    content: Option<&super::super::ContentOptions>,
     store: &store::Store,
     key: &store::SourceKey,
     tag: &str,
@@ -227,7 +238,16 @@ fn month_columns(
     repairs: &mut RepairReads<'_>,
     cancel: &AtomicBool,
 ) -> io::Result<(Vec<DockyardMonth>, usize)> {
-    let months = purpose_months(store, key, tag, answered, Domain::Naval, cancel)?;
+    let months = purpose_months(
+        source,
+        content,
+        store,
+        key,
+        tag,
+        answered,
+        Domain::Naval,
+        cancel,
+    )?;
     let spans: Vec<(i32, i32)> = months
         .iter()
         .map(|month| (month.first_hour, month.last_hour))

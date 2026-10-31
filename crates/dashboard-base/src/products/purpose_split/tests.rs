@@ -114,16 +114,10 @@ fn converted_input_is_split_from_new_production_against_the_same_baseline() {
     assert_eq!(design_change(&plane, 0, 50), Ok(amounts(10, 0, 0)));
 }
 
-/// The endpoint page holding a month's last hour: the source's latest read
-/// and restart then, and the country's own refusal, when it is listed.
-fn page(
-    read: Option<i32>,
-    restart: Option<i32>,
-    country: Option<Option<ProductionSpendingUnknown>>,
-) -> pages::EndpointPage {
-    pages::EndpointPage {
-        schema: 1,
-        branch_id: "1".into(),
+/// The endpoint holding a month's last hour: the source's latest read and
+/// restart then.
+fn endpoint(read: Option<i32>, restart: Option<i32>) -> facts::Endpoint {
+    facts::Endpoint {
         first_hour: 0,
         last_hour: 0,
         equipment_read: read,
@@ -132,31 +126,10 @@ fn page(
         equipment_restart: restart,
         rocket_origin: None,
         rocket_restart: None,
-        countries: country
-            .map(|reason| pages::CountryEndpoint {
-                tag: "opaque|tag".into(),
-                equipment: Some(pages::SourceEndpoint {
-                    slot: 1,
-                    country_id: 1,
-                    observation: Some(100),
-                    segment: 0,
-                    read_hour: read.unwrap_or_default(),
-                    units_known: true,
-                    spending_known: reason.is_none(),
-                    present: Some(true),
-                    campaign_spending_reason: reason,
-                    amounts: Vec::new(),
-                }),
-                rocket: None,
-                rocket_joined: false,
-            })
-            .into_iter()
-            .collect(),
-        classifications: BTreeMap::new(),
-        warnings: Vec::new(),
-        unnamed_before: 0,
-        unnamed_per_hour: 0,
-        unnamed_warning_index: 0,
+        names_hour: None,
+        ranking_offset: 0,
+        ranking_len: 0,
+        keyframe: true,
     }
 }
 
@@ -165,27 +138,43 @@ fn a_month_is_known_only_where_the_equipment_source_was_read_and_untainted() {
     use ProductionSpendingUnknown::{
         CountryChanged, NotRecorded, ObservationRestarted, RecordingGap,
     };
-    let tag = "opaque|tag";
-    let month = |page: Option<pages::EndpointPage>, tainted, last| {
-        SourceCoverage::at(page.as_ref(), tag, tainted).month(last)
+    // `country` is the country's own refusal; None where it refuses nothing
+    // or the endpoint does not list it.
+    let month = |endpoint: Option<facts::Endpoint>, country, tainted, last| {
+        SourceCoverage::at(endpoint.as_ref(), country, tainted).month(last)
     };
     // Before any read nothing is known, not zero: no series is no proof.
-    assert_eq!(month(None, None, 99), Err(NotRecorded));
-    assert_eq!(month(Some(page(None, None, None)), None, 99), Err(NotRecorded));
-    // The month the recording starts in counts from its first read.
-    assert_eq!(month(Some(page(Some(100), None, Some(None))), None, 100), Ok(()));
-    // A country the page does not list refuses nothing of its own.
-    assert_eq!(month(Some(page(Some(148), None, None)), None, 10_000), Ok(()));
-    let gap = Some((500, RecordingGap));
-    assert_eq!(month(Some(page(Some(148), None, None)), gap, 499), Ok(()));
-    assert_eq!(month(Some(page(Some(148), None, None)), gap, 500), Err(RecordingGap));
+    assert_eq!(month(None, None, None, 99), Err(NotRecorded));
     assert_eq!(
-        month(Some(page(Some(948), Some(900), None)), None, 950),
+        month(Some(endpoint(None, None)), None, None, 99),
+        Err(NotRecorded)
+    );
+    // The month the recording starts in counts from its first read.
+    assert_eq!(
+        month(Some(endpoint(Some(100), None)), None, None, 100),
+        Ok(())
+    );
+    // A country the endpoint does not list refuses nothing of its own.
+    assert_eq!(
+        month(Some(endpoint(Some(148), None)), None, None, 10_000),
+        Ok(())
+    );
+    let gap = Some((500, RecordingGap));
+    assert_eq!(
+        month(Some(endpoint(Some(148), None)), None, gap, 499),
+        Ok(())
+    );
+    assert_eq!(
+        month(Some(endpoint(Some(148), None)), None, gap, 500),
+        Err(RecordingGap)
+    );
+    assert_eq!(
+        month(Some(endpoint(Some(948), Some(900))), None, None, 950),
         Err(ObservationRestarted)
     );
     // Its holder changed: the country's own refusal, as production spending's.
     assert_eq!(
-        month(Some(page(Some(148), None, Some(Some(CountryChanged)))), None, 150),
+        month(Some(endpoint(Some(148), None)), Some(CountryChanged), None, 150),
         Err(CountryChanged)
     );
 }

@@ -397,73 +397,121 @@ pub fn recording_warnings(scanned: &ScannedProduced) -> Vec<String> {
 
 /// The insertion point lets endpoint pages retain hourly evidence instead of text.
 pub(crate) fn recording_warnings_with_unnamed(scanned: &ScannedProduced) -> (Vec<String>, usize) {
-    let mut warnings = scanned.variants.warnings();
-    if scanned.reads.is_empty() {
-        warnings.push(match &scanned.unread_reason {
+    recording_warnings_of(
+        scanned.variants.warnings(),
+        &RecordingCounts {
+            reads: !scanned.reads.is_empty(),
+            unread: scanned.unread,
+            unread_reason: scanned.unread_reason.clone(),
+            tainted_from: scanned.tainted.iter().next().map(|(_, from)| *from),
+            missed: scanned.missed,
+            inexact: scanned.inexact,
+            lost: scanned.lost,
+            unattributed: scanned.unattributed,
+            unlisted: scanned.unlisted,
+            observations: scanned.observations.len(),
+            unnamed: scanned.unnamed,
+            rocket_reads: !scanned.rocket.reads.is_empty(),
+            rocket_unread: scanned.rocket.unread,
+            rocket_unattributed: scanned.rocket.unattributed,
+            rocket_inconsistent: scanned.rocket.inconsistent,
+        },
+    )
+}
+
+/// What [`recording_warnings_of`] reports of a recording's production reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RecordingCounts {
+    pub reads: bool,
+    pub unread: usize,
+    pub unread_reason: Option<String>,
+    /// The hour totals of the first tainted observation are unknown from.
+    pub tainted_from: Option<i32>,
+    pub missed: usize,
+    pub inexact: usize,
+    pub lost: usize,
+    pub unattributed: usize,
+    pub unlisted: usize,
+    pub observations: usize,
+    pub unnamed: usize,
+    pub rocket_reads: bool,
+    pub rocket_unread: usize,
+    pub rocket_unattributed: usize,
+    pub rocket_inconsistent: usize,
+}
+
+/// `warnings`, then the counted recording limitations, and where the unnamed
+/// holders' warning goes.
+pub(crate) fn recording_warnings_of(
+    mut warnings: Vec<String>,
+    counts: &RecordingCounts,
+) -> (Vec<String>, usize) {
+    if !counts.reads {
+        warnings.push(match &counts.unread_reason {
             Some(reason) => format!(
                 "Equipment produced is not in this recording: the production output was not recorded ({reason})."
             ),
             None => "Equipment produced is not in this recording: it has no production output (ProductionLineOutput).".to_owned(),
         });
-    } else if scanned.unread > 0 {
+    } else if counts.unread > 0 {
         warnings.push(format!(
             "{} reads of the production lines have no readable output{}; every total is unknown from the first of them on (an ended line's final count is published only once).",
-            scanned.unread,
-            scanned
+            counts.unread,
+            counts
                 .unread_reason
                 .as_ref()
                 .map(|reason| format!(" ({reason})"))
                 .unwrap_or_default()
         ));
     }
-    if let Some((_, from)) = scanned.tainted.iter().next() {
+    if let Some(from) = counts.tainted_from {
         warnings.push(format!(
             "{} recorded frames, reads or output rows could not be ingested (a frame unreadable, a read without complete countries, links or output, or units of a producer the links cannot tell); what an output publication held is published only once, so every total is unknown from hour {from} on, until the collector's observation restarts.",
-            scanned.missed,
+            counts.missed,
         ));
     }
-    if scanned.inexact > 0 {
+    if counts.inexact > 0 {
         warnings.push(format!(
             "{} production output rows left out a tick the collector could not count; their country's total of that variant is unknown from then on.",
-            scanned.inexact
+            counts.inexact
         ));
     }
-    if scanned.lost > 0 {
+    if counts.lost > 0 {
         warnings.push(format!(
             "{} production output rows disappeared without their final count; their country's total of that variant is unknown from then on.",
-            scanned.lost
+            counts.lost
         ));
     }
-    if scanned.unattributed > 0 {
+    if counts.unattributed > 0 {
         warnings.push(format!(
             "{} production output rows name a producer the links do not resolve to a tagged country; they are left out.",
-            scanned.unattributed
+            counts.unattributed
         ));
     }
-    if scanned.unlisted > 0 {
+    if counts.unlisted > 0 {
         warnings.push(format!(
             "{} lines produced in ticks whose purpose was not recorded; what they delivered counts as new production.",
-            scanned.unlisted
+            counts.unlisted
         ));
     }
-    if scanned.observations.len() > 1 {
+    if counts.observations > 1 {
         warnings.push(format!(
             "The production output observation restarted {} times in this branch; running totals start again at each.",
-            scanned.observations.len() - 1
+            counts.observations - 1
         ));
     }
     let unnamed_index = warnings.len();
-    warnings.extend(unnamed_recording_warning(scanned.unnamed));
-    if scanned.rocket.reads.is_empty() {
+    warnings.extend(unnamed_recording_warning(counts.unnamed));
+    if !counts.rocket_reads {
         warnings.push("Rocket delivery coverage is not recorded or readable; combined production totals are not known. Independently known equipment-line subtotals remain available.".into());
-    } else if scanned.rocket.unread > 0 {
-        warnings.push(format!("{} Rocket publications lack delivery coverage; combined quantities at those reads are not known.", scanned.rocket.unread));
+    } else if counts.rocket_unread > 0 {
+        warnings.push(format!("{} Rocket publications lack delivery coverage; combined quantities at those reads are not known.", counts.rocket_unread));
     }
-    if scanned.rocket.unattributed > 0 {
-        warnings.push(format!("{} retained Rocket rows have no identified producing country; their delivery amounts are not reassigned.", scanned.rocket.unattributed));
+    if counts.rocket_unattributed > 0 {
+        warnings.push(format!("{} retained Rocket rows have no identified producing country; their delivery amounts are not reassigned.", counts.rocket_unattributed));
     }
-    if scanned.rocket.inconsistent > 0 {
-        warnings.push(format!("{} retained Rocket rows regressed counters or changed amounts without new events; the affected scope's measure stays unknown.", scanned.rocket.inconsistent));
+    if counts.rocket_inconsistent > 0 {
+        warnings.push(format!("{} retained Rocket rows regressed counters or changed amounts without new events; the affected scope's measure stays unknown.", counts.rocket_inconsistent));
     }
     (warnings, unnamed_index)
 }

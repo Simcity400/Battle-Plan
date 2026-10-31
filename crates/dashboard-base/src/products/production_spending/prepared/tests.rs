@@ -18,13 +18,9 @@ pub(crate) fn with(
     row
 }
 
-/// Prepares `frames` as the production family does, typing designs through
-/// `named`: every page published, then the state and catalogue written.
-pub(crate) fn prepared(
-    frames: &[DecodedFrame],
-    named: Named<'_>,
-    flag: &AtomicBool,
-) -> (Replay, Fixture) {
+/// Prepares `frames` as the production family does: every endpoint and the
+/// state flushed in one commit.
+pub(crate) fn prepared(frames: &[DecodedFrame], flag: &AtomicBool) -> (Replay, Fixture) {
     let replay = Replay::from_records(
         crate::test_fixtures::CAMPAIGN.into(),
         &[crate::test_fixtures::records(1, frames.to_vec())],
@@ -34,18 +30,20 @@ pub(crate) fn prepared(
     let mut writer = fixture.writer();
     let mut state = pages::ProductionAccumulator::new(replay.format.version(), 1, hour(0));
     for frame in frames {
-        if let Some(page) = state
-            .ingest(replay.format, frame, named, flag)
-            .unwrap()
-        {
-            pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
-        }
+        state.ingest(replay.format, frame, flag).unwrap();
     }
-    let page = state.flush().unwrap();
-    pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
     pages::write_state(&mut writer, &mut state).unwrap();
     writer.commit().unwrap();
     (replay, fixture)
+}
+
+/// The branch's published index, with designs typed through `named`.
+pub(crate) fn indexed(fixture: &Fixture, named: Named<'_>) -> (read::Index, read::Classes) {
+    let index = read::read_index(&fixture.store, &fixture.key, 1)
+        .unwrap()
+        .unwrap();
+    let classes = read::Classes::new(&index, named);
+    (index, classes)
 }
 
 fn at(runs: &Value, hour: i32) -> Option<(Value, Value)> {
@@ -131,25 +129,17 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
     let mut writer = fixture.writer();
     let mut endpoint_oracle = Vec::new();
     for frame in &frames {
-        if let Some(page) = state
+        state
             .ingest_changed(
                 replay.format,
                 frame,
-                Named::default(),
                 &flag,
                 &tracker.observe(frame, replay.format),
             )
-            .unwrap()
-        {
-            pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
-            endpoint_oracle.push(page);
-        }
+            .unwrap();
         if [hour(0) + 23, hour(1) + 23, hour(3) + 23].contains(&frame.hour) {
-            if let Some(page) = state.flush() {
-                pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
-                endpoint_oracle.push(page);
-            }
             pages::write_state(&mut writer, &mut state).unwrap();
+            endpoint_oracle.extend(state.completed.drain(..).map(|(page, _)| page));
             writer.commit().unwrap();
             state = pages::latest_state(&fixture.store, &fixture.key, 1)
                 .unwrap()
@@ -165,39 +155,54 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             };
         }
     }
-    let count = pages::endpoint_count(&fixture.store, &fixture.key, 1).unwrap();
-    for expected_page in endpoint_oracle {
-        for date in [expected_page.first_hour, expected_page.last_hour] {
-            let restored = pages::read_at(&fixture.store, &fixture.key, 1, count, date, &flag)
+    let (index, classes) = indexed(&fixture, Named::default());
+    assert_eq!(index.endpoints.len(), endpoint_oracle.len());
+    for expected_page in &endpoint_oracle {
+        crate::products::equipment_produced::tests::assert_published(
+            &index,
+            &fixture.store,
+            &fixture.key,
+            expected_page,
+        );
+        let ordinal = index.endpoint_at(expected_page.first_hour).unwrap();
+        for (&variant, kind) in &expected_page.classifications {
+            let names = index
+                .names_at(&classes, index.variant_id(variant).unwrap(), ordinal)
                 .unwrap()
-                .unwrap();
-            assert_eq!(restored.classifications, expected_page.classifications);
-            // Later coverage repairs can invalidate an earlier equipment/Rocket
-            // join; the independent native source endpoints stay identical.
-            for (actual, expected) in restored.countries.iter().zip(&expected_page.countries) {
-                assert_eq!(actual.tag, expected.tag);
-                assert_eq!(
-                    actual.equipment, expected.equipment,
-                    "equipment operands at {date}"
-                );
-                assert_eq!(actual.rocket, expected.rocket, "Rocket operands at {date}");
-            }
-            assert_eq!(restored.countries.len(), expected_page.countries.len());
+                .expect("a classified variant's names");
+            assert_eq!(
+                names
+                    .iter()
+                    .map(|name| (name.first_hour, name.known))
+                    .collect::<Vec<_>>(),
+                kind.names
+                    .iter()
+                    .map(|name| (name.first_hour, name.raw.is_some()))
+                    .collect::<Vec<_>>(),
+                "names of {variant} at {}",
+                expected_page.first_hour
+            );
         }
     }
-    let empty = pages::read_at(&fixture.store, &fixture.key, 1, count, hour(0) + 23, &flag)
-        .unwrap()
-        .unwrap();
-    let row = country(&empty, &params.tag).unwrap();
-    assert_eq!(row.equipment.as_ref().unwrap().present, Some(false));
-    assert_eq!(row.rocket.as_ref().unwrap().present, Some(false));
-    let rocket_only = pages::read_at(&fixture.store, &fixture.key, 1, count, hour(1) + 9, &flag)
-        .unwrap()
-        .unwrap();
-    let row = country(&rocket_only, &params.tag).unwrap();
-    assert!(row.equipment.is_none());
+    let holder = index.tags[&params.tag];
+    let holder_at = |hour: i32| {
+        index
+            .holder_at(
+                &fixture.store,
+                &fixture.key,
+                holder,
+                index.endpoint_at(hour).unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let empty = holder_at(hour(0) + 23);
+    assert_eq!(empty.equipment.as_ref().unwrap().head.present, Some(false));
+    assert_eq!(empty.rocket.as_ref().unwrap().head.present, Some(false));
+    let rocket_only = holder_at(hour(1) + 9);
+    assert!(rocket_only.equipment.is_none());
     assert!(
-        row.rocket.is_some(),
+        rocket_only.rocket.is_some(),
         "equipment refusal cannot discard independent Rocket coverage"
     );
     for date in [
@@ -208,13 +213,16 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
         missing,
         hour(3) + 23,
     ] {
-        let produced = pages::select_at(
+        let produced = pages::select::select_with(
+            &index,
+            &classes,
             &fixture.store,
             &fixture.key,
             date,
             &produced_params,
             0,
             1,
+            false,
             &flag,
         )
         .unwrap();
@@ -250,9 +258,11 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             end: Some(hour(3) + 23),
         };
         let actual = read_pages(
+            None,
+            &index,
+            &classes,
             &fixture.store,
             &fixture.key,
-            1,
             (hour(0), hour(3) + 23),
             &input,
             date,
@@ -260,7 +270,6 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             Purposes::WithoutRefits,
             &flag,
         )
-        .unwrap()
         .unwrap();
         assert_eq!(
             actual["warnings"], expected["warnings"],
@@ -324,17 +333,9 @@ fn production_spending_answers_the_prepared_prefix_with_the_hours_still_pending(
     // the first day, then through the branch's end.
     let mut commit = |writer: &mut store::Writer, frames: &[DecodedFrame]| {
         for frame in frames {
-            if let Some(page) = state
-                .ingest(format, frame, Named::default(), &flag)
-                .unwrap()
-            {
-                pages::publish_endpoint(writer, &mut state, &page).unwrap();
-            }
+            state.ingest(format, frame, &flag).unwrap();
         }
-        if let Some(page) = state.flush() {
-            pages::publish_endpoint(writer, &mut state, &page).unwrap();
-        }
-        pages::write_catalogue(writer, &mut state, &flag).unwrap();
+        state.flush(writer, &flag).unwrap();
         let through = frames.last().unwrap().hour;
         crate::prepared::coverage::publish_coverage(writer, 1, hour(0), through, through == last)
             .unwrap();
@@ -485,7 +486,8 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             });
         }
     }
-    let (replay, fixture) = prepared(&frames, Named::default(), &flag);
+    let (replay, fixture) = prepared(&frames, &flag);
+    let (index, classes) = indexed(&fixture, Named::default());
     let oracle = production::scan(&replay, 1, &flag).unwrap();
     for refits in [false, true] {
         let params = ProductionSpendingParams {
@@ -506,9 +508,11 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             end: Some(hour(1) + 23),
         };
         let actual = read_pages(
+            None,
+            &index,
+            &classes,
             &fixture.store,
             &fixture.key,
-            1,
             (hour(0), hour(1) + 23),
             &input,
             hour(1) + 23,
@@ -516,7 +520,6 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             Purposes::counting(refits),
             &flag,
         )
-        .unwrap()
         .unwrap();
         assert_eq!(
             at(&actual["total"], hour(1) + 23),
@@ -557,7 +560,8 @@ fn production_spending_split_restores_converted_endpoints_and_leaves_their_peak_
             applied(9, 2, 2, 7_000),
         ]),
     ));
-    let (replay, fixture) = prepared(&frames, Named::default(), &flag);
+    let (replay, fixture) = prepared(&frames, &flag);
+    let (index, classes) = indexed(&fixture, Named::default());
     let oracle = production::scan(&replay, 1, &flag).unwrap();
     let params = ProductionSpendingParams {
         branch_id: "1".into(),
@@ -587,9 +591,11 @@ fn production_spending_split_restores_converted_endpoints_and_leaves_their_peak_
         end: Some(last),
     };
     let actual = read_pages(
+        None,
+        &index,
+        &classes,
         &fixture.store,
         &fixture.key,
-        1,
         (hour(0), last),
         &input,
         last,
@@ -597,7 +603,6 @@ fn production_spending_split_restores_converted_endpoints_and_leaves_their_peak_
         Purposes::Split,
         &flag,
     )
-    .unwrap()
     .unwrap();
     let leaves = |reply: &Value| {
         reply["leaves"]

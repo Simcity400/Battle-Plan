@@ -590,7 +590,7 @@ impl Write for Counter<'_> {
 }
 
 type PreparedOperands<'a> = (
-    &'a BTreeMap<u64, crate::prepared_production::Classification>,
+    &'a BTreeMap<u64, crate::prepared_production::read::Kind>,
     &'a BTreeMap<i32, Option<ProductionSpendingUnknown>>,
     &'a BTreeMap<i32, Option<ProductionSpendingUnknown>>,
 );
@@ -614,7 +614,7 @@ pub(crate) fn reply(
     )
 }
 
-pub fn reply_prepared(
+pub(crate) fn reply_prepared(
     scanned: &ScannedProduced,
     params: &ProductionSpendingParams,
     operands: PreparedOperands<'_>,

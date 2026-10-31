@@ -718,42 +718,54 @@ pub(crate) fn variant_types_for(
     let mut untyped = BTreeSet::new();
     let mut unresolved_count = 0;
     for variant in variants {
-        let token = catalogue.token(variant);
-        let resolved = match (named.units, token.is_empty()) {
-            (_, true) => Err(format!(
-                "variant {variant} has no recorded definition in this branch"
-            )),
-            (None, false) => Err(format!("{token}: content is unavailable")),
-            (Some(units), false) => equipment::archetype_of(units, token),
-        };
-        // Kept apart under the shared mark (as the stockpile keys them): its token, or
-        // its handle without one.
-        let unresolved = if token.is_empty() {
-            format!("{}{variant}", equipment::UNRESOLVED_MARK)
-        } else {
-            format!("{}{token}", equipment::UNRESOLVED_MARK)
-        };
-        types.insert(
-            variant,
-            match resolved {
-                Ok((key, ordinal, domain)) => VariantType {
-                    key,
-                    ordinal: Some(ordinal),
-                    domain: Some(domain),
-                },
-                Err(reason) => {
-                    untyped.insert(reason);
-                    unresolved_count += 1;
-                    VariantType {
-                        key: unresolved,
-                        ordinal: None,
-                        domain: None,
-                    }
-                }
-            },
-        );
+        let (kind, reason) = variant_type(catalogue.token(variant), variant, named);
+        if let Some(reason) = reason {
+            untyped.insert(reason);
+            unresolved_count += 1;
+        }
+        types.insert(variant, kind);
     }
     (types, untyped, unresolved_count)
+}
+
+/// A variant's type from its recorded equipment token (empty without one),
+/// and why content could not resolve it.
+pub(crate) fn variant_type(
+    token: &str,
+    variant: u64,
+    named: Named,
+) -> (VariantType, Option<String>) {
+    let resolved = match (named.units, token.is_empty()) {
+        (_, true) => Err(format!(
+            "variant {variant} has no recorded definition in this branch"
+        )),
+        (None, false) => Err(format!("{token}: content is unavailable")),
+        (Some(units), false) => equipment::archetype_of(units, token),
+    };
+    match resolved {
+        Ok((key, ordinal, domain)) => (
+            VariantType {
+                key,
+                ordinal: Some(ordinal),
+                domain: Some(domain),
+            },
+            None,
+        ),
+        // Kept apart under the shared mark (as the stockpile keys them): its
+        // token, or its handle without one.
+        Err(reason) => (
+            VariantType {
+                key: if token.is_empty() {
+                    format!("{}{variant}", equipment::UNRESOLVED_MARK)
+                } else {
+                    format!("{}{token}", equipment::UNRESOLVED_MARK)
+                },
+                ordinal: None,
+                domain: None,
+            },
+            Some(reason),
+        ),
+    }
 }
 
 /// How often a request waiting for another's scan of its branch checks whether it was cancelled.

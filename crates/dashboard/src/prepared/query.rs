@@ -2928,27 +2928,18 @@ fn query_data(
                 .offset
                 .parse::<usize>()
                 .map_err(|_| crate::invalid("Invalid production page offset"))?;
-            let value = if params.ranked {
-                crate::prepared_production::select_ranked_at(
-                    &store,
-                    &key,
-                    hour,
-                    &params.selection,
-                    offset,
-                    params.limit,
-                    cancelled,
-                )?
-            } else {
-                crate::prepared_production::select_at(
-                    &store,
-                    &key,
-                    hour,
-                    &params.selection,
-                    offset,
-                    params.limit,
-                    cancelled,
-                )?
-            };
+            let value = crate::prepared_production::select_at(
+                source,
+                content,
+                &store,
+                &key,
+                hour,
+                &params.selection,
+                offset,
+                params.limit,
+                params.ranked,
+                cancelled,
+            )?;
             let value = match value {
                 Some(value) => value,
                 None => crate::prepared_production::empty_selection(

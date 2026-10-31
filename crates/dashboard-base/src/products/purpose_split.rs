@@ -12,8 +12,9 @@
 //! and unrecorded-purpose input are their own series' change: every amount is
 //! measured against the same baseline.
 
+use crate::Source;
 use crate::prepared::series::Run;
-use crate::prepared_production::{self as pages, Classification, SERIES_PURPOSES};
+use crate::prepared_production::{self as pages, SERIES_PURPOSES, facts, read};
 use crate::products::equipment::{Domain, UNRESOLVED_MARK};
 use crate::products::equipment::production::{ProductionSpendingUnknown, Purpose};
 use crate::products::production_spending::prepared::Answered;
@@ -216,9 +217,8 @@ pub(crate) fn unproven_in(
 /// Whether one country's equipment spending is known through a month's last
 /// hour: from the source's first read until the first taint of its
 /// observation, its restart or a change of the country's holder, as
-/// production spending's coverage. The prepared catalogue keeps only the
-/// latest read and observation, so each month reads them from the endpoint
-/// page holding its last hour.
+/// production spending's coverage. Each month reads them from the endpoint
+/// holding its last hour.
 pub(crate) struct SourceCoverage {
     /// The equipment source was read by then.
     read: bool,
@@ -231,26 +231,18 @@ pub(crate) struct SourceCoverage {
 }
 
 impl SourceCoverage {
-    /// The coverage `page` gives `tag`: the endpoint page holding the month's
-    /// last hour, None when no page holds it.
+    /// The coverage at `endpoint`, the one holding the month's last hour
+    /// (None when none holds it), where the country's equipment source has
+    /// `country` refusing its campaign spending.
     pub(crate) fn at(
-        page: Option<&pages::EndpointPage>,
-        tag: &str,
+        endpoint: Option<&facts::Endpoint>,
+        country: Option<ProductionSpendingUnknown>,
         tainted: Option<(i32, ProductionSpendingUnknown)>,
     ) -> Self {
-        let country = page
-            .and_then(|page| {
-                let index = page
-                    .countries
-                    .binary_search_by(|row| row.tag.as_str().cmp(tag))
-                    .ok()?;
-                page.countries[index].equipment.as_ref()
-            })
-            .and_then(|source| source.campaign_spending_reason);
         Self {
-            read: page.is_some_and(|page| page.equipment_read.is_some()),
+            read: endpoint.is_some_and(|endpoint| endpoint.equipment_read.is_some()),
             tainted,
-            restarted: page.is_some_and(|page| page.equipment_restart.is_some()),
+            restarted: endpoint.is_some_and(|endpoint| endpoint.equipment_restart.is_some()),
             country,
         }
     }
@@ -328,7 +320,10 @@ fn cancelled(cancel: &AtomicBool) -> io::Result<()> {
 /// with the exact input of `domain`'s designs per purpose or the reason it is
 /// unknown. Designs content cannot type mark a month with input of any
 /// purpose: a domain counts every purpose of its own designs.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn purpose_months(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
     store: &store::Store,
     key: &store::SourceKey,
     tag: &str,
@@ -344,19 +339,36 @@ pub(crate) fn purpose_months(
     if first > last {
         return Ok(Vec::new());
     }
-    let count = pages::endpoint_count(store, key, answered.branch)?;
-    let mut reads = pages::Endpoints::new(store, key, answered.branch, count, cancel);
-    let Some(catalogue) = reads.catalogue()? else {
+    let Some((index, classes)) =
+        pages::read::index(source, content, store, key, answered.branch, cancel)?
+    else {
         return Ok(Vec::new());
     };
-    let tainted = catalogue
+    months_of(&index, &classes, store, key, tag, (first, last), answered, domain, cancel)
+}
+
+/// [`purpose_months`] over `first..=last`, from an index and its classes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn months_of(
+    index: &read::Index,
+    classes: &read::Classes,
+    store: &store::Store,
+    key: &store::SourceKey,
+    tag: &str,
+    (first, last): (i32, i32),
+    answered: &Answered,
+    domain: Domain,
+    cancel: &AtomicBool,
+) -> io::Result<Vec<PurposeMonth>> {
+    let holder = index.tags.get(tag).copied();
+    let tainted = index
+        .diagnostics
         .spending
-        .scanned(tag)
+        .scanned(holder, tag)
         .spending_tainted
         .values()
         .min_by_key(|(at, _)| *at)
         .copied();
-    let classes: BTreeMap<u64, Classification> = catalogue.classifications.clone();
     /// A design's series keys: without refits, combined, each separate
     /// purpose's, and its unproven input.
     #[derive(Default)]
@@ -366,33 +378,48 @@ pub(crate) fn purpose_months(
         unproven: Option<u64>,
     }
     let mut keys: BTreeMap<u64, Keys> = BTreeMap::new();
-    for (token, &id) in &catalogue.spent_keys {
-        let (owner, rocket, refits, variant): (String, bool, bool, u64) =
-            serde_json::from_str(token)?;
-        if owner == tag && !rocket {
-            keys.entry(variant).or_default().spent[usize::from(refits)] = Some(id);
+    for row in holder.map_or(&[][..], |holder| &index.keys[holder as usize][..]) {
+        match *row {
+            read::SeriesKey::Spent {
+                rocket: false,
+                refits,
+                variant,
+                key,
+            } => keys.entry(variant).or_default().spent[usize::from(refits)] = Some(key),
+            read::SeriesKey::Spent { rocket: true, .. } => {}
+            read::SeriesKey::Purpose {
+                variant,
+                purpose,
+                key,
+            } => {
+                let Some(at) = SERIES_PURPOSES.iter().position(|&known| known == purpose) else {
+                    return Err(crate::invalid("Prepared purpose series has another purpose"));
+                };
+                keys.entry(variant).or_default().separate[at] = Some(key);
+            }
+            read::SeriesKey::Unproven {
+                variant,
+                purpose,
+                key,
+            } => {
+                if purpose == Purpose::Unknown {
+                    keys.entry(variant).or_default().unproven = Some(key);
+                }
+            }
         }
     }
-    for (token, &id) in &catalogue.purpose_keys {
-        let (owner, variant, purpose): (String, u64, Purpose) = serde_json::from_str(token)?;
-        let Some(index) = SERIES_PURPOSES.iter().position(|&known| known == purpose) else {
-            return Err(crate::invalid("Prepared purpose series has another purpose"));
-        };
-        if owner == tag {
-            keys.entry(variant).or_default().separate[index] = Some(id);
-        }
-    }
-    for (token, &id) in &catalogue.unproven_keys {
-        let (owner, variant, purpose): (String, u64, Purpose) = serde_json::from_str(token)?;
-        if owner == tag && purpose == Purpose::Unknown {
-            keys.entry(variant).or_default().unproven = Some(id);
-        }
-    }
-    let reader = reads.reader()?;
+    let mut reader = crate::prepared::series::Reader::new(
+        store,
+        key,
+        pages::spent_section(index.branch),
+        cancel,
+    )?;
     let mut designs = Vec::new();
     for (variant, keys) in keys {
         cancelled(cancel)?;
-        let class = classes.get(&variant);
+        let class = index
+            .variant_id(variant)
+            .and_then(|id| classes.of.get(id as usize)?.as_ref());
         let unresolved = class.is_none_or(|class| class.ordinal.is_none());
         if !unresolved && class.and_then(|class| class.domain) != Some(domain) {
             continue;
@@ -413,13 +440,27 @@ pub(crate) fn purpose_months(
             unproven: read(keys.unproven)?,
         });
     }
+    let coverage = holder
+        .map(|holder| index.coverage(store, key, holder))
+        .transpose()?;
     let mut result = Vec::new();
     for (month_first, month_last) in months(first, last) {
         cancelled(cancel)?;
         // A month no read covers, or after a taint, restart or holder change,
         // is not known, whatever its designs' series hold.
-        let page = reads.page(month_last, pages::Leaves::Sources)?;
-        let coverage = SourceCoverage::at(page.as_ref(), tag, tainted);
+        let endpoint = index.endpoint_at(month_last);
+        let country = endpoint
+            .zip(coverage.as_deref())
+            .and_then(|(endpoint, runs)| {
+                let at = runs.partition_point(|(from, _)| *from <= endpoint);
+                at.checked_sub(1).and_then(|at| runs[at].1)
+            })
+            .flatten();
+        let coverage = SourceCoverage::at(
+            endpoint.map(|endpoint| index.endpoint(endpoint)),
+            country,
+            tainted,
+        );
         let mut amounts = coverage.month(month_last).map(|()| [0_i128; Purpose::ALL.len()]);
         let mut unresolved = false;
         let mut purpose_unproven = false;

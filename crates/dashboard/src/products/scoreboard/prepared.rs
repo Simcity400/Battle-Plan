@@ -242,6 +242,8 @@ fn amounts(
 
 #[allow(clippy::too_many_arguments)]
 fn cells(
+    source: &Source,
+    content: Option<&crate::products::ContentOptions>,
     store: &store::Store,
     source_key: &store::SourceKey,
     branch: u64,
@@ -272,12 +274,15 @@ fn cells(
             refits: false,
         };
         let mut page = crate::prepared_production::select_at(
+            source,
+            content,
             store,
             source_key,
             hour,
             &selection,
             0,
             rows.len(),
+            false,
             cancelled,
         )?;
         if page.is_none() {
@@ -288,7 +293,16 @@ fn cells(
                 ..selection
             };
             page = crate::prepared_production::select_at(
-                store, source_key, hour, &metadata, 0, 0, cancelled,
+                source,
+                content,
+                store,
+                source_key,
+                hour,
+                &metadata,
+                0,
+                0,
+                false,
+                cancelled,
             )?;
         }
         let found: BTreeMap<_, _> = page
@@ -788,6 +802,8 @@ pub(crate) fn query(
                     cancelled,
                 ),
                 _ => cells(
+                    source,
+                    context.content.as_ref(),
                     store,
                     source_key,
                     branch,

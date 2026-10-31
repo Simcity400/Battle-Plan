@@ -306,13 +306,11 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         sections: &[
             "production-spent",
-            crate::prepared_production::ENDPOINTS,
-            crate::prepared_production::TIMES,
+            crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
-            crate::prepared_production::CATALOGUE,
         ],
         walk: true,
-        content: Content::Bound,
+        version: 2,
         ..family("production")
     },
     Descriptor {

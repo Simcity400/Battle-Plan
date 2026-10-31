@@ -30,7 +30,7 @@ use crate::{
         frame_changes::{FrameChangeTracker, FrameChanges},
         prepass::{self, Extract, Folded},
     },
-    prepared_production::{self, HeldPages, ProductionAccumulator, ProductionNaming},
+    prepared_production::{self, ProductionAccumulator},
     prepared_stability::ExperienceAccumulator,
     products::{
         construction_log::{self, NameSource},
@@ -887,7 +887,7 @@ impl Own for Production {
                     ))
                 }
             };
-        if accumulator.schema != 1 {
+        if accumulator.schema != prepared_production::SCHEMA {
             return Err(super::super::invalid(
                 "Unsupported prepared production state schema",
             ));
@@ -895,60 +895,28 @@ impl Own for Production {
         Ok(Box::new(ProductionBranch {
             accumulator,
             format: load.replay.format,
-            naming: None,
-            held: HeldPages::default(),
         }))
     }
 }
 
-/// One branch's production accumulator and the endpoint pages it published
-/// since its last flush.
+/// One branch's production accumulator, which holds the facts of the
+/// endpoints it completed since its last flush.
 struct ProductionBranch {
     accumulator: Box<ProductionAccumulator>,
     format: FormatVersion,
-    /// The recorded content's production naming, from the first block
-    /// observed, as hourly preparation loads it once.
-    naming: Option<ProductionNaming>,
-    held: HeldPages,
-}
-
-impl ProductionBranch {
-    fn naming(&self) -> io::Result<&ProductionNaming> {
-        self.naming
-            .as_ref()
-            .ok_or_else(|| io::Error::other("Production observed before its naming was loaded"))
-    }
 }
 
 impl Ledger for ProductionBranch {
-    fn prepare(&mut self, block: &Block<'_>) -> io::Result<()> {
-        let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        if self.naming.is_none() {
-            self.naming = Some(ProductionNaming::load(block.source, block.context));
-        }
+    fn prepare(&mut self, _: &Block<'_>) -> io::Result<()> {
         Ok(())
     }
 
-    /// Ingested as hourly preparation ingests it on the coordinator; a
-    /// completed page is published as there, its writes held for the flush.
+    /// Ingested as hourly preparation ingests it on the coordinator.
     fn observe(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
-        let naming = self
-            .naming
-            .as_ref()
-            .ok_or_else(|| io::Error::other("Production observed before its naming was loaded"))?;
         // Cancellation is checked between hours.
         let cancelled = AtomicBool::new(false);
-        if let Some(mut page) = self.accumulator.ingest_changed(
-            self.format,
-            frame,
-            naming.named(),
-            &cancelled,
-            changes,
-        )? {
-            page.warnings.extend(naming.warnings.iter().cloned());
-            prepared_production::publish_endpoint_to(&mut self.held, &mut self.accumulator, &page)?;
-        }
-        Ok(())
+        self.accumulator
+            .ingest_changed(self.format, frame, &cancelled, changes)
     }
 
     fn quiet(&mut self, first: i32, last: i32, _: &DecodedFrame) -> io::Result<bool> {
@@ -977,22 +945,12 @@ impl Branch for ProductionBranch {
     }
 
     fn pending(&self) -> usize {
-        self.accumulator.buffered_bytes() + self.held.bytes()
+        self.accumulator.buffered_bytes()
     }
 
-    /// The pages published since the last commit, which hourly preparation
-    /// writes as it publishes them: also those before a refusal later in the
-    /// batch.
-    fn publish(&mut self, writer: &mut store::Writer, _: u64, _: &AtomicBool) -> io::Result<()> {
-        self.held.write(writer)?;
-        Ok(())
-    }
-
-    /// Hourly preparation's two flush steps in their order: the open page's
-    /// endpoint, then the catalogue, which flushes the spent series with the
-    /// events and frontier that endpoint added ([`Self::publish`] wrote the
-    /// pages before them). So nothing of the batch is left in memory that a
-    /// reloaded continuation would lack.
+    /// The open endpoint, the batch's facts and the spent series, as hourly
+    /// preparation flushes them: nothing of the batch is left in memory that
+    /// a reloaded continuation would lack.
     fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -1000,12 +958,7 @@ impl Branch for ProductionBranch {
         _: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        if let Some(mut page) = self.accumulator.flush() {
-            page.warnings
-                .extend(self.naming()?.warnings.iter().cloned());
-            prepared_production::publish_endpoint(writer, &mut self.accumulator, &page)?;
-        }
-        prepared_production::write_catalogue(writer, &mut self.accumulator, cancelled)
+        self.accumulator.flush(writer, cancelled)
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
