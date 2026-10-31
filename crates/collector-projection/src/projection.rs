@@ -240,6 +240,7 @@ impl<'a> Projection<'a> {
                 | TableInput::SharedComplete(_)
                 | TableInput::ComparedEqual(_)
                 | TableInput::ComparedChanges { .. }
+                | TableInput::SliceUpdate { .. }
         );
         let mut order = self.scratch.table(table);
         order.held_converted = order.held_converted.saturating_add(1);

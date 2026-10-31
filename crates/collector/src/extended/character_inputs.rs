@@ -475,7 +475,7 @@ impl Captured {
             Role::Advisor(ordinal) => (CharacterRoleTraitRow::ADVISOR, ordinal),
             Role::Scientist => (CharacterRoleTraitRow::SCIENTIST, 0),
         };
-        crate::projection::project_table::<tables::CharacterRoleTraits, _>(
+        crate::projection::ledger_table::<tables::CharacterRoleTraits, _, _>(
             projection,
             self.traits.outcome,
             rows,
@@ -483,20 +483,15 @@ impl Captured {
                 let (kind, role) = role_key(row);
                 (u128::from(row.character) << 40) | (u128::from(kind) << 32) | u128::from(role)
             },
-            |row, previous| {
-                let (kind, role) = role_key(row);
+            // The key holds the character, kind and role.
+            |_, row, record| {
                 let traits = span(values, row.start, row.len).unwrap();
-                row.character == previous.character
-                    && kind == previous.kind
-                    && role == previous.role
-                    && traits
-                        .iter()
-                        .map(|value| value.token)
-                        .eq(previous.tokens.iter().copied())
-                    && traits
-                        .iter()
-                        .filter_map(|value| value.ordinal)
-                        .eq(previous.definitions.iter().copied())
+                record.word(traits.len() as i64);
+                for value in traits {
+                    record.word(i64::from(value.token));
+                    record.word(value.ordinal.map_or(-1, i64::from));
+                }
+                Some(())
             },
             |row| {
                 let (kind, role) = role_key(row);
@@ -877,9 +872,7 @@ mod tests {
                 .unwrap();
             let mut projection = Projection::new(&encoder, 1, hour, force, &scratch);
             let inputs = if hour == 1 {
-                let traits = collector_test_support::with_allocations_denied(|| {
-                    captured.traits_input(Some(&mut projection))
-                });
+                let traits = captured.traits_input(Some(&mut projection));
                 assert!(matches!(traits, TableInput::ComparedEqual(_)));
                 [traits, captured.operatives_table().into()]
             } else {

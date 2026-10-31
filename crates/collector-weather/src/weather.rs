@@ -273,12 +273,33 @@ impl Captured {
     ) -> [replay_frame::frame::TableInput; N] {
         [
             self.region_table().into(),
-            collector_projection::projection::project_table::<tables::WeatherProvinces, _>(
+            collector_projection::projection::ledger_table::<tables::WeatherProvinces, _, _>(
                 projection,
                 self.provinces.outcome,
                 &self.provinces.rows,
                 |row| u128::from(row.id),
-                |row, previous| self.province_equal(row, previous),
+                |_, row, record| {
+                    // Slot 0 also carries the pass's daylight, display and temperature pass.
+                    if row.id == 0 {
+                        return None;
+                    }
+                    match self.province_modifiers.get(row.id as usize) {
+                        Some(entries) => {
+                            record.word(entries.len() as i64);
+                            for &(key, value) in entries {
+                                record.word(i64::from(key));
+                                record.word(value);
+                            }
+                        }
+                        None => record.word(-1),
+                    }
+                    Some((
+                        [row.snow, row.permanent_snow],
+                        [row.display_snow, row.display_mud, row.raw_mud],
+                        self.province_temperature(row),
+                        self.province_clock(row),
+                    ))
+                },
                 |row| self.province_row(row),
             ),
         ]
@@ -416,6 +437,7 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     fn province_equal(
         &self,
         row: &sweather_per_province::Row,

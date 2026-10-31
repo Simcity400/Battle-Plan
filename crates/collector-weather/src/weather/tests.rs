@@ -2021,7 +2021,10 @@ fn province_projection_matches_complete_frames_across_changes_and_keyframes() {
         let mut projection = Projection::new(&projected, 1, hour, force, &scratch);
         let inputs = captured.table_inputs(Some(&mut projection));
         if hour == 1 {
-            assert!(matches!(inputs[1], TableInput::ComparedEqual(_)));
+            // Slot 0, which carries the pass's daylight, display and temperature pass, always
+            // converts; no other province changed.
+            assert!(matches!(&inputs[1], TableInput::SliceUpdate { update, .. }
+                if update.keys.as_slice() == [0]));
         }
         assert_eq!(
             projected.encode_input(frame(inputs), force).unwrap(),

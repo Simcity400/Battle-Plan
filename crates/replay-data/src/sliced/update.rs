@@ -71,7 +71,8 @@ macro_rules! keyed_pair {
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
             RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
-            Ships, NavalCombats, NavalCombatParticipants, AirWings)
+            Ships, NavalCombats, NavalCombatParticipants, AirWings, WeatherProvinces,
+            DivisionTemplateIcons, AirBaseRegistrations, CharacterRoleTraits)
     };
 }
 
@@ -84,7 +85,8 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
         Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
         DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
         RiverRelations, DivisionTransportSpeeds, LandCombats, ArmyOrders, Fleets, TaskForces,
-        Ships, NavalCombats, NavalCombatParticipants, AirWings)
+        Ships, NavalCombats, NavalCombatParticipants, AirWings, WeatherProvinces,
+        DivisionTemplateIcons, AirBaseRegistrations, CharacterRoleTraits)
 }
 
 /// `rows.partition_point(holds)`, probing outward from the front so short prefixes stay local.
@@ -660,7 +662,7 @@ mod tests {
             assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
             assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
         }
-        assert_eq!(keyed, 19);
+        assert_eq!(keyed, 23);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {
