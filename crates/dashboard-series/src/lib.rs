@@ -6,6 +6,7 @@ pub mod carry;
 pub mod codec;
 mod events;
 pub mod family;
+pub mod hash;
 mod format;
 mod hierarchy;
 mod layout;

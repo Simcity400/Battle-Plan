@@ -11,6 +11,7 @@ use super::engine::{Change, Engine, Field, MEASURES, Operand, Output, PARTS, Val
 use super::facts::{Hour, Projected};
 use super::{KeptReason, NamingOperands};
 use crate::products::army_content::TemplateArtwork;
+use dashboard_series::hash::FastMap;
 use dashboard_series::{
     Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
     carry::Carry,
@@ -134,14 +135,12 @@ pub struct Emit {
     namings: BTreeMap<Result<TemplateNaming, KeptReason>, u64>,
     artworks: BTreeMap<Result<TemplateArtwork, KeptReason>, u64>,
     designs: HashMap<NamingOperands, u64>,
-    pairs: HashMap<(u64, u64), u64>,
+    pairs: FastMap<(u64, u64), u64>,
     /// The engine the segment before handed on, for the hours this one cannot answer, and
     /// its numbering; the numbering of the segment's own engine.
     handed: Option<(Box<Engine>, Numbers)>,
     current: Numbers,
-    /// Every value key set and not ended, and the generation of the whole hour that last set
-    /// it.
-    open: HashMap<KeyHandle, u64>,
+    open: Open,
     generation: u64,
     last: Option<i32>,
     /// Whether the last hour was known.
@@ -163,10 +162,10 @@ impl Emit {
             namings: BTreeMap::new(),
             artworks: BTreeMap::new(),
             designs: HashMap::new(),
-            pairs: HashMap::new(),
+            pairs: FastMap::default(),
             handed: None,
             current: Numbers::default(),
-            open: HashMap::new(),
+            open: Open::default(),
             generation: 0,
             last: None,
             known: false,
@@ -417,25 +416,13 @@ impl Emit {
             };
             self.carry.value(writer, key, at, value, starts)?;
             match value {
-                Some(_) => {
-                    self.open.insert(key, self.generation);
-                }
-                None => {
-                    self.open.remove(&key);
-                }
+                Some(_) => self.open.insert(key, self.generation)?,
+                None => self.open.remove(key),
             }
         }
         if output.whole {
-            let generation = self.generation;
-            let stale: Vec<KeyHandle> = self
-                .open
-                .iter()
-                .filter(|&(_, &set)| set != generation)
-                .map(|(&key, _)| key)
-                .collect();
-            for key in stale {
+            for key in self.open.stale(self.generation) {
                 self.carry.value(writer, key, at, None, false)?;
-                self.open.remove(&key);
             }
         }
         self.known = true;
@@ -468,7 +455,7 @@ impl Emit {
             last: self.last,
             known: self.known,
             generation: self.generation,
-            open: self.open.iter().map(|(&key, &set)| (key, set)).collect(),
+            open: self.open.saved(),
             operands: self.current.operands.clone(),
             actors: self.current.actors.clone(),
         };
@@ -564,7 +551,9 @@ impl Emit {
         emit.last = saved.last;
         emit.known = saved.known;
         emit.generation = saved.generation;
-        emit.open = saved.open.into_iter().collect();
+        for (key, generation) in saved.open {
+            emit.open.insert(key, generation)?;
+        }
         emit.current = Numbers {
             operands: saved.operands,
             actors: saved.actors,
@@ -583,6 +572,84 @@ impl Emit {
         emit.carry = dashboard_series::carry::Carry::load(&bytes[at..])?;
         Ok(emit)
     }
+}
+
+/// Every value key set and not ended, with the generation of the whole hour that last set it:
+/// by key handle, and listed once each since the last whole hour.
+#[derive(Default)]
+struct Open {
+    /// Each key's generation and one, or 0 when it is not open.
+    set: Vec<u64>,
+    listed: Vec<bool>,
+    keys: Vec<KeyHandle>,
+}
+
+impl Open {
+    fn insert(&mut self, key: KeyHandle, generation: u64) -> io::Result<()> {
+        let at = slot(key)?;
+        if at >= self.set.len() {
+            engine_allocation::resize(&mut self.set, at + 1, 0)?;
+            engine_allocation::resize(&mut self.listed, at + 1, false)?;
+        }
+        if !self.listed[at] {
+            engine_allocation::reserve(&mut self.keys, 1)?;
+            self.keys.push(key);
+            self.listed[at] = true;
+        }
+        self.set[at] = generation + 1;
+        Ok(())
+    }
+
+    fn remove(&mut self, key: KeyHandle) {
+        if let Some(set) = usize::try_from(key).ok().and_then(|at| self.set.get_mut(at)) {
+            *set = 0;
+        }
+    }
+
+    fn clear(&mut self) {
+        for key in self.keys.drain(..) {
+            let at = key as usize;
+            self.set[at] = 0;
+            self.listed[at] = false;
+        }
+    }
+
+    /// The keys open but not set at `generation`, no longer open.
+    fn stale(&mut self, generation: u64) -> Vec<KeyHandle> {
+        let mut stale = Vec::new();
+        let Self { set, listed, keys } = self;
+        keys.retain(|&key| {
+            let at = key as usize;
+            if set[at] == generation + 1 {
+                return true;
+            }
+            if set[at] != 0 {
+                stale.push(key);
+                set[at] = 0;
+            }
+            listed[at] = false;
+            false
+        });
+        stale
+    }
+
+    /// The open keys with their generations, in key order.
+    fn saved(&self) -> Vec<(KeyHandle, u64)> {
+        let mut saved: Vec<(KeyHandle, u64)> = self
+            .keys
+            .iter()
+            .filter_map(|&key| {
+                let set = self.set[key as usize];
+                (set != 0).then(|| (key, set - 1))
+            })
+            .collect();
+        saved.sort_unstable();
+        saved
+    }
+}
+
+fn slot(key: KeyHandle) -> io::Result<usize> {
+    usize::try_from(key).map_err(|_| invalid("A division equipment key is outside its open set"))
 }
 
 #[derive(Serialize, Deserialize)]

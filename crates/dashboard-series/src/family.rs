@@ -5,6 +5,7 @@
 
 use crate::{
     codec::Binary,
+    hash::FastMap,
     invalid,
     pages::PageRead,
     query::Snapshot,
@@ -31,8 +32,8 @@ pub struct Place {
 #[derive(Debug, Default)]
 pub struct Actors {
     schema: u64,
-    names: HashMap<Box<[u8]>, u64>,
-    keys: HashMap<Place, KeyHandle>,
+    names: FastMap<Box<[u8]>, u64>,
+    keys: FastMap<Place, KeyHandle>,
     count: u64,
 }
 
