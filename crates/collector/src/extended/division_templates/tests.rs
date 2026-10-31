@@ -593,11 +593,12 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
             assert!(!store.changed);
         });
     }
+    // A writer that leaves the country's rows as they were changes nothing.
     drop(watches.notify(0x8400, 34));
     store.begin();
     store.read(&source, 0, 0x1000, country, &watches).unwrap();
     store.finish();
-    assert!(store.changed);
+    assert!(!store.changed);
     drop(watches.notify(0x8000, 36));
     store.begin();
     crate::test_support::with_allocations_denied(|| {
@@ -608,6 +609,7 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
         ));
     });
     store.finish();
+    assert!(!store.changed);
     source.bytes
         [0x8000 + occupation::GARRISON_PRIORITY..0x8000 + occupation::GARRISON_PRIORITY + 4]
         .copy_from_slice(&(-3_i32).to_le_bytes());
@@ -620,6 +622,7 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
         reprioritized.garrisons.as_ref().unwrap()
     ));
     store.finish();
+    assert!(store.changed);
     // A removal changes membership, and restoring a previously cached country
     // also changes it even when no native writer touched that country's state.
     store.begin();
@@ -1807,4 +1810,42 @@ fn certified_template_core_scale_bench() {
             elapsed[elapsed.len() / 2].as_micros()
         );
     }
+}
+
+#[test]
+fn pooled_frames_carry_and_witness_the_previous_hours_templates_from_their_shared_home() {
+    const A: usize = 0x5000;
+    let changes = CoreChanges::new();
+    let source = gridded_fixture();
+    let mut frames = [
+        Captured::with_capacities(&capacity()),
+        Captured::with_capacities(&capacity()),
+    ];
+    let home = frames[0].home().unwrap();
+    frames[1].share_home(&home);
+    let mut witnesses = Vec::new();
+    let mut tables = Vec::new();
+    for hour in 0..4 {
+        let frame = &mut frames[hour as usize % 2];
+        let recording = Recording::new(&source);
+        frame.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        assert_eq!(recording.template(A) > 0, hour == 0, "hour {hour}");
+        witnesses.push(frame.witness);
+        tables.push(frame.tables());
+    }
+    assert!(witnesses[1].is_some());
+    assert_eq!(witnesses[1], witnesses[2]);
+    assert_eq!(witnesses[2], witnesses[3]);
+    assert_eq!(tables[1], tables[2]);
+    assert_eq!(tables[2], tables[3]);
+    // A capture while the stores are out (a settlement still pending) reads afresh.
+    let bytes = super::home_allocated_bytes(&home);
+    assert!(bytes > 0);
+    drop(home.lock().unwrap().stores.take());
+    assert_eq!(super::home_allocated_bytes(&home), bytes);
+    let recording = Recording::new(&source);
+    frames[0].capture_original(&recording, 0, 0x1000, 4, false, &changes);
+    assert!(recording.template(A) > 0);
+    assert_ne!(frames[0].witness, witnesses[3]);
+    assert_eq!(frames[0].tables(), tables[3]);
 }

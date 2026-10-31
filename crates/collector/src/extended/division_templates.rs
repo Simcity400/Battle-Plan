@@ -165,13 +165,47 @@ struct Preacquired {
     force: bool,
     ticks: Option<[u64; N]>,
 }
-#[derive(Default, Clone)]
+#[derive(Default, Clone, PartialEq)]
 struct CountryRow {
     garrison_priority: Option<i32>,
     state: engine_deployment::cdeployment_status::TemplateState,
     garrisons: Option<std::sync::Arc<Vec<GarrisonTemplateSelection>>>,
     garrison_failure: Option<&'static str>,
 }
+/// The template stores of the latest settled hour, which the pool's next capture takes.
+#[derive(Default)]
+pub(crate) struct Stores {
+    held: held::Store,
+    core: core::Store,
+    countries: countries::Store,
+    snapshot: Option<std::sync::Arc<replay_data::rows::TableRows>>,
+    generation: u64,
+}
+
+/// One pool's [`Stores`]: every frame's capture takes them and its settlement returns them.
+#[derive(Default)]
+pub(crate) struct Shelf {
+    stores: Option<Stores>,
+    /// The largest the stores were when returned, also while a capture has them out.
+    bytes: usize,
+}
+
+pub(crate) type Home = std::sync::Arc<std::sync::Mutex<Shelf>>;
+
+/// The high-water bytes of the pool's template stores.
+pub(crate) fn home_allocated_bytes(home: &Home) -> usize {
+    home.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .bytes
+}
+
+/// A walked row's layout and settings, kept for conversion once the stores have gone home.
+struct Payload {
+    key: (u64, usize, u32),
+    layout: Option<std::sync::Arc<TemplateLayout>>,
+    settings: Option<std::sync::Arc<TemplateSettings>>,
+}
+
 pub struct Captured {
     preacquired: Option<Preacquired>,
     pending_owned: bool,
@@ -188,6 +222,10 @@ pub struct Captured {
     sample_hour: Option<i32>,
     held: held::Store,
     core: core::Store,
+    /// None only in a placeholder.
+    home: Option<Home>,
+    /// This hour's rows' payloads, by row key.
+    payloads: Vec<Payload>,
     model_failures: ModelFailures,
     database: Arena<usize>,
     globals: Arena<native::GlobalSlot>,
@@ -224,7 +262,7 @@ impl Captured {
 
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
+        Self::without_home(&Capacities {
             rows: 0,
             bytes: 0,
             counts: 0,
@@ -239,6 +277,13 @@ impl Captured {
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
+        Self {
+            home: Some(Home::default()),
+            ..Self::without_home(capacity)
+        }
+    }
+
+    fn without_home(capacity: &Capacities) -> Self {
         Self {
             preacquired: None,
             pending_owned: false,
@@ -255,6 +300,8 @@ impl Captured {
             sample_hour: None,
             held: held::Store::default(),
             core: core::Store::default(),
+            home: None,
+            payloads: Vec::new(),
             model_failures: ModelFailures::default(),
             database: Arena::new(capacity.database),
             globals: Arena::new(capacity.database),
@@ -296,6 +343,7 @@ impl Captured {
             self.pending_owned = false;
         }
     }
+    /// This frame's own storage; the stores it borrows from its home are the pool's.
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.bytes.allocated_bytes()
@@ -303,17 +351,24 @@ impl Captured {
             + self.variants.allocated_bytes()
             + self.icon_rows.allocated_bytes()
             + self.country_rows.allocated_bytes()
-            + self.country_cache.allocated_bytes()
             + self.icon_bytes.allocated_bytes()
             + self.name_bytes.allocated_bytes()
-            + self.held.allocated_bytes()
-            + self.core.allocated_bytes()
+            + self.payloads.capacity() * size_of::<Payload>()
             + self.database.allocated_bytes()
             + self.globals.allocated_bytes()
             + self.locals.allocated_bytes()
             + self.speed_keys.capacity() * size_of::<u32>()
             + self.speed_spans.capacity() * size_of::<(u64, Option<(usize, usize)>)>()
     }
+    pub(crate) fn home(&self) -> Option<Home> {
+        self.home.clone()
+    }
+
+    /// Take and return the stores of `home`, shared with the pool's other frames.
+    pub(crate) fn share_home(&mut self, home: &Home) {
+        self.home = Some(std::sync::Arc::clone(home));
+    }
+
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
         self.bytes.grow(&mut capacity.bytes);
@@ -466,6 +521,23 @@ impl Captured {
         changes: &dyn crate::template_changes::Changes,
     ) -> [u64; N] {
         self.reset();
+        // Without the pool's settled stores (the last settlement is still pending, or
+        // failed), this walk reads every template.
+        let stores = self
+            .home
+            .as_ref()
+            .and_then(|home| {
+                home.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .stores
+                    .take()
+            })
+            .unwrap_or_default();
+        self.held = stores.held;
+        self.core = stores.core;
+        self.country_cache = stores.countries;
+        self.country_snapshot = stores.snapshot;
+        self.generation = stores.generation;
         if force {
             self.held.forget();
             self.core.forget();
@@ -664,6 +736,19 @@ impl Captured {
             self.held.prune(rows);
             self.core.prune(rows);
         }
+        self.payloads.clear();
+        let payloads = engine_allocation::reserve(&mut self.payloads, rows.len()).is_ok();
+        if payloads {
+            for row in rows {
+                let (layout, settings) = self.held.value_refs(row);
+                self.payloads.push(Payload {
+                    key: (row.template, row.pointer, row.owner),
+                    layout: layout.cloned(),
+                    settings: settings.cloned(),
+                });
+            }
+            self.payloads.sort_unstable_by_key(|payload| payload.key);
+        }
         self.speed_spans.sort_unstable_by_key(|entry| entry.0);
         if matches!(self.country_rows.outcome, Outcome::Rows { .. }) {
             self.country_cache.prune();
@@ -680,9 +765,13 @@ impl Captured {
         {
             self.country_snapshot = Some(std::sync::Arc::new(rows));
         }
-        let failed = crate::allocation::failed();
+        let failed = crate::allocation::failed() || !payloads;
         if failed {
             self.discard_owned();
+            if !payloads {
+                let hour = self.sample_hour.unwrap_or_default();
+                self.fail_capture(hour, false, "template payload allocation failed");
+            }
         } else {
             self.pending_owned = false;
         }
@@ -694,6 +783,36 @@ impl Captured {
         self.witness = clean.map(|[base, state, icons, countries, roster]| {
             Witness::new([self.generation, base, state, icons, countries, roster])
         });
+        if !failed && let Some(home) = &self.home {
+            let bytes = self.held.allocated_bytes()
+                + self.core.allocated_bytes()
+                + self.country_cache.allocated_bytes();
+            let mut shelf = home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            shelf.bytes = shelf.bytes.max(bytes);
+            shelf.stores = Some(Stores {
+                held: std::mem::take(&mut self.held),
+                core: std::mem::take(&mut self.core),
+                countries: std::mem::take(&mut self.country_cache),
+                snapshot: self.country_snapshot.clone(),
+                generation: self.generation,
+            });
+        }
+    }
+
+    /// The row's layout and settings as its settlement held them.
+    fn payload(
+        &self,
+        row: &native::IconRow,
+    ) -> (
+        Option<&std::sync::Arc<TemplateLayout>>,
+        Option<&std::sync::Arc<TemplateSettings>>,
+    ) {
+        self.payloads
+            .binary_search_by_key(&(row.template, row.pointer, row.owner), |payload| payload.key)
+            .map_or((None, None), |at| {
+                let payload = &self.payloads[at];
+                (payload.layout.as_ref(), payload.settings.as_ref())
+            })
     }
     /// DivisionTemplateIcons.speed_keys of every walked template, read from
     /// its template object after the walk; returns the refused templates.
@@ -1007,9 +1126,12 @@ impl Captured {
                     }
                     && Recorded::Value(r.manpower_exile) == previous.manpower_exile
                     && Recorded::Value(base_width(r)) == previous.base_width
-                    && self
-                        .held
-                        .matches_values(r, &previous.layout, &previous.settings)
+                    && match (&previous.layout, &previous.settings) {
+                        (Recorded::Value(layout), Recorded::Value(settings)) => {
+                            self.payload(r) == (layout.as_ref(), settings.as_ref())
+                        }
+                        _ => false,
+                    }
                     && match &previous.speed_keys {
                         Recorded::Value(keys) => {
                             self.speed_key_slice(r.template) == keys.as_deref()
@@ -1019,7 +1141,11 @@ impl Captured {
             },
             |r| {
                 let [regiments, support, regimental_support] = r.grids;
-                let (layout, settings) = self.held.values(r);
+                let (layout, settings) = self.payload(r);
+                let (layout, settings) = (
+                    Recorded::Value(layout.cloned()),
+                    Recorded::Value(settings.cloned()),
+                );
                 DivisionTemplateIconRow {
                     manpower_exile: Recorded::Value(r.manpower_exile),
                     template: r.template,

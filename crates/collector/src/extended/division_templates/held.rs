@@ -729,7 +729,7 @@ impl Store {
             })
     }
 
-    fn value_refs(
+    pub(super) fn value_refs(
         &self,
         row: &native::IconRow,
     ) -> (Option<&Arc<TemplateLayout>>, Option<&Arc<TemplateSettings>>) {
@@ -747,20 +747,7 @@ impl Store {
         }
     }
 
-    pub fn matches_values(
-        &self,
-        row: &native::IconRow,
-        layout: &Recorded<Option<Arc<TemplateLayout>>>,
-        settings: &Recorded<Option<Arc<TemplateSettings>>>,
-    ) -> bool {
-        let (Recorded::Value(layout), Recorded::Value(settings)) = (layout, settings) else {
-            return false;
-        };
-        let (current_layout, current_settings) = self.value_refs(row);
-        current_layout == layout.as_ref() && current_settings == settings.as_ref()
-    }
-
-    // Preserve the independent recorded layout/settings availability in the borrowed view.
+    #[cfg(test)]
     #[allow(clippy::type_complexity)]
     pub fn values(
         &self,

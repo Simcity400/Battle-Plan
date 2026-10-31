@@ -1175,6 +1175,15 @@ impl Captured {
         self.intel.country_intel_home().cloned()
     }
 
+    pub(crate) fn template_home(&self) -> Option<division_templates::Home> {
+        self.division_templates.home()
+    }
+
+    /// Take the division template stores from the pool's home instead of this frame's own.
+    pub(crate) fn share_template_home(&mut self, home: &division_templates::Home) {
+        self.division_templates.share_home(home);
+    }
+
     /// Use the pool's CountryIntel buffer instead of this frame's own.
     pub(crate) fn share_country_intel(&mut self, home: &daily_intel::Home) {
         self.intel.share_country_intel(home);

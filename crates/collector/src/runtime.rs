@@ -5239,6 +5239,7 @@ struct SizingShared {
     capacities: Mutex<BufferCapacities>,
     idle_growth_requested: AtomicBool,
     country_intel_accounted: AtomicUsize,
+    template_home_accounted: AtomicUsize,
     /// An explicit spool pass requests live preparation. Retiring encoded
     /// rows wakes the worker to free them, not to repeat that preparation.
     pass_requested: AtomicBool,
@@ -5269,6 +5270,7 @@ impl SizingShared {
             capacities: Mutex::new(capacities),
             idle_growth_requested: AtomicBool::new(false),
             country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
+            template_home_accounted: AtomicUsize::new(0),
             pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
             #[cfg(test)]
@@ -5344,15 +5346,23 @@ impl SizingShared {
                 .pool_bytes
                 .fetch_sub((before - after) as u64, Ordering::Relaxed);
         }
-        let shared_bytes = shared.country_intel.allocated_bytes();
-        // Home only grows; a stale byte observation must never lower the charged high-water mark.
-        let accounted = self
-            .country_intel_accounted
-            .fetch_max(shared_bytes, Ordering::Relaxed);
-        shared.pool_bytes.fetch_add(
-            shared_bytes.saturating_sub(accounted) as u64,
-            Ordering::Relaxed,
-        );
+        // Homes are charged at their high-water marks; a stale or empty observation
+        // never lowers one.
+        for (bytes, accounted) in [
+            (
+                shared.country_intel.allocated_bytes(),
+                &self.country_intel_accounted,
+            ),
+            (
+                crate::extended::division_templates::home_allocated_bytes(&shared.template_home),
+                &self.template_home_accounted,
+            ),
+        ] {
+            let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
+            shared
+                .pool_bytes
+                .fetch_add(bytes.saturating_sub(previous) as u64, Ordering::Relaxed);
+        }
     }
 
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.

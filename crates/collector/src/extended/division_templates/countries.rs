@@ -167,7 +167,6 @@ impl Store {
         let read_config = fresh || !entry.config_attempted || current != entry.config;
         let mut occupation_changed = false;
         if read_config {
-            self.changed = true;
             entry.config_attempted = true;
             entry.config_valid = false;
             entry.config = current;
@@ -215,7 +214,6 @@ impl Store {
                 || occupation_changed
                 || garrison != entry.garrison));
         if read_garrison {
-            self.changed = true;
             let read = (|| {
                 if garrison.is_none() && !fresh {
                     return Err("garrison template writer certificate unavailable");
@@ -277,14 +275,13 @@ impl Store {
                 None
             };
         } else if garrison.is_none() {
-            self.changed |= row.garrisons.is_some()
-                || row.garrison_priority.is_some()
-                || row.garrison_failure != Some("garrison template writer certificate unavailable");
             row.garrison_priority = None;
             entry.garrison = None;
             row.garrisons = None;
             row.garrison_failure = Some("garrison template writer certificate unavailable");
         }
+        // A re-read under moved stamps that found the held row changes nothing.
+        self.changed |= entry.row.as_ref() != Some(&row);
         entry.row = Some(row.clone());
         self.payload_bytes = self.payload_bytes - previous_bytes + entry.allocated_bytes();
         Ok(row)

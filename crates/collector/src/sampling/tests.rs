@@ -1454,7 +1454,7 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     bytes += shared.country_intel.allocated_bytes();
     bytes += unsafe { (&*shared.raid_air_scores.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.fixed_layout_buffer.get() }.capacity();
-    // The frame-priority pipeline and the free queue are each one Arc allocation.
+    // The frame-priority pipeline is one Arc allocation.
     let arc = |data: std::alloc::Layout| {
         std::alloc::Layout::new::<[usize; 2]>()
             .extend(data)
@@ -1470,6 +1470,10 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
         let frame = unsafe { &*frame };
         let home = frame.extended.country_intel_home().unwrap();
         assert!(home.shares(&shared.country_intel));
+        assert!(Arc::ptr_eq(
+            &frame.extended.template_home().unwrap(),
+            &shared.template_home
+        ));
         bytes += frame.allocated_bytes();
     }
     assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), bytes as u64);
