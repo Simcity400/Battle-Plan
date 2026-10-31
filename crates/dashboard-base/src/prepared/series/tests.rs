@@ -4288,3 +4288,47 @@ fn top_spans_keep_only_ranked_hours_and_break_at_each_crossing() {
     assert_eq!((crossing.min_value, crossing.max_value), (1.0, 1.0));
     assert!(summary.buckets[3..6].iter().all(Option::is_none));
 }
+
+#[test]
+fn a_summary_within_keeps_buckets_that_fill_a_bin_inside_one_span_as_clipping_folds_them() {
+    use crate::products::country_groups::HourSpan;
+    let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut values = Accumulator::default();
+    for hour in 0..400 {
+        // Hourly values with a lapse, so some bins hold hours only in part.
+        if (150..160).contains(&hour) {
+            continue;
+        }
+        values.through(hour);
+        values.observe(1, hour, Some(i128::from(hour % 37)), hour == 160);
+    }
+    let mut writer = fixture.writer();
+    values.flush(&mut writer, "test", 0, &flag).unwrap();
+    writer.commit().unwrap();
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let spans =
+        [(0, 99), (103, 230), (231, 260), (300, 399)].map(|(first_hour, last_hour)| HourSpan {
+            first_hour,
+            last_hour,
+        });
+    for view in [
+        (0.0, 399.0, 7),
+        (0.0, 399.0, 25),
+        (40.0, 360.0, 100),
+        (0.0, 399.0, 400),
+    ] {
+        let actual = reader
+            .summary_within(1, (0, 399), view, 0, Some(&spans))
+            .unwrap();
+        // Every bucket clipped to the spans, as before buckets filling a bin were kept.
+        let mut expected = reader.summary(1, (0, 399), view, 0).unwrap();
+        if let Some(runs) = &mut expected.runs {
+            *runs = runs_within(runs, &spans);
+        }
+        for bucket in &mut expected.buckets {
+            *bucket = reader.bucket_within(1, *bucket, 0, &spans).unwrap();
+        }
+        assert_eq!(actual, expected, "{view:?}");
+    }
+}

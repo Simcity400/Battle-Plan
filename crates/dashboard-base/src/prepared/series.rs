@@ -3544,8 +3544,18 @@ impl<'a> Reader<'a> {
             if let Some(runs) = &mut summary.runs {
                 *runs = runs_within(runs, spans);
             }
-            for bucket in &mut summary.buckets {
-                *bucket = self.bucket_within(key, *bucket, decimals, spans)?;
+            let (_, bins) = summary_bins(bounds, view)?;
+            for (bucket, &(first, last)) in summary.buckets.iter_mut().zip(&bins) {
+                // A bucket whose hours fill its bin, inside one span, is already its own clip.
+                let span = spans.partition_point(|span| span.last_hour < first);
+                let whole = bucket
+                    .is_some_and(|held| held.first_hour == first && held.last_hour == last)
+                    && spans
+                        .get(span)
+                        .is_some_and(|span| span.first_hour <= first && last <= span.last_hour);
+                if !whole {
+                    *bucket = self.bucket_within(key, *bucket, decimals, spans)?;
+                }
             }
         }
         Ok(summary)
