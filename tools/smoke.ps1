@@ -1520,12 +1520,26 @@ try {
     { $_ -eq 'Text' -or $_ -eq 'Console' } {
         if (-not $Text -or $Text -match '[\r\n\x00-\x1F]') { throw 'Text and Console require one nonempty line without control characters.' }
         if ($Foreground) {
-            if ($Action -eq 'Console') { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey); Start-Sleep -Milliseconds 200 }
-            [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, $Text)
+            # Another window can take the foreground between steps; the driver then sends
+            # nothing, so only the refused step (one key or character) is sent again once focus is back.
+            $step = {
+                param([scriptblock]$send)
+                for ($attempt = 1; ; $attempt++) {
+                    try { & $send; return }
+                    catch {
+                        if ($attempt -ge 5 -or $_.Exception.Message -notmatch 'focus was lost') { throw }
+                        Start-Sleep -Milliseconds 400
+                        $null = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)
+                        Start-Sleep -Milliseconds 150
+                    }
+                }
+            }
+            if ($Action -eq 'Console') { & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey) }; Start-Sleep -Milliseconds 200 }
+            foreach ($character in $Text.ToCharArray()) { & $step { [Hoi4ProbeInput]::TypeText($window, [uint32]$game.Id, [string]$character) } }
             if ($Action -eq 'Console') {
-                [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, 0x0D)
+                & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, 0x0D) }
                 Start-Sleep -Milliseconds 200
-                [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey)
+                & $step { [Hoi4ProbeInput]::KeyPress($window, [uint32]$game.Id, [uint16]$ConsoleKey) }
             }
         } else {
             if ($Action -eq 'Console') { [Hoi4ProbeInput]::PostKey($window, [uint16]$ConsoleKey); Start-Sleep -Milliseconds 200 }
