@@ -1,7 +1,10 @@
 //! The collector's allocator: one private heap and no process-heap fallback.
 //! Each hour reallocates much the same small blocks, so they recycle through
 //! per-processor size-class lists: the hot path takes an uncontended lock
-//! instead of the heap's shared one. Detach destroys the heap and the lists.
+//! instead of the heap's shared one. Acquisition workers allocate what the
+//! frame pipeline frees on other processors, so a shard passes whole batches
+//! to a shared depot that refills the others. Detach destroys the heap, the
+//! lists and the depot.
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
@@ -38,8 +41,11 @@ const SMALL_LIMIT: usize = 32 * 1024;
 const CLASSES: usize = FINE_CLASSES + 5;
 /// Processors share a list set only modulo this power of two.
 const SHARDS: usize = 64;
-/// Free bytes one shard keeps per class; beyond it blocks go back to the heap.
+/// Free bytes one shard keeps per class: its list and one spare batch.
 const SHARD_CLASS_BYTES: usize = 64 * 1024;
+/// Free bytes the depot keeps over every class; beyond it blocks go back to the heap.
+const DEPOT_BYTES: usize = 32 * 1024 * 1024;
+const _: () = assert!(SMALL_LIMIT <= SHARD_CLASS_BYTES / 2);
 
 /// The class of a block of `size` bytes, or `None` for a large block.
 fn class(size: usize) -> Option<usize> {
@@ -61,11 +67,30 @@ const fn class_size(class: usize) -> usize {
     }
 }
 
-/// One class's free blocks, linked through each block's first word.
+/// The blocks of `class` a shard passes to or takes from the depot at once:
+/// half the shard's bound.
+const fn batch(class: usize) -> u32 {
+    (SHARD_CLASS_BYTES / 2 / class_size(class)) as u32
+}
+
+/// The next block of a list or batch: each free block's first word.
+fn next(block: *mut u8) -> *mut *mut u8 {
+    block.cast()
+}
+
+/// The next batch on the depot's stack: a batch's first block's second word,
+/// which every class's 16 bytes hold.
+fn next_batch(block: *mut u8) -> *mut *mut u8 {
+    block.cast::<*mut u8>().wrapping_add(1)
+}
+
+/// One class's free blocks in a shard: up to a batch of them linked from
+/// `head`, and a full batch aside in `spare`.
 #[derive(Clone, Copy)]
 struct List {
     head: *mut u8,
     count: u32,
+    spare: *mut u8,
     hits: u64,
     misses: u64,
     kept: u64,
@@ -76,11 +101,107 @@ impl List {
     const EMPTY: Self = Self {
         head: ptr::null_mut(),
         count: 0,
+        spare: ptr::null_mut(),
         hits: 0,
         misses: 0,
         kept: 0,
         returned: 0,
     };
+}
+
+/// One class's full batches that shards passed on.
+struct Stack {
+    top: *mut u8,
+    batches: u32,
+}
+
+#[repr(align(64))]
+struct Depot {
+    lock: UnsafeCell<SRWLOCK>,
+    stack: UnsafeCell<Stack>,
+}
+
+// SAFETY: `stack` is only touched under the exclusive SRW lock.
+unsafe impl Sync for Depot {}
+
+impl Depot {
+    const fn new() -> Self {
+        Self {
+            lock: UnsafeCell::new(SRWLOCK_INIT),
+            stack: UnsafeCell::new(Stack {
+                top: ptr::null_mut(),
+                batches: 0,
+            }),
+        }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&mut Stack) -> R) -> R {
+        unsafe { AcquireSRWLockExclusive(self.lock.get()) };
+        let result = f(unsafe { &mut *self.stack.get() });
+        unsafe { ReleaseSRWLockExclusive(self.lock.get()) };
+        result
+    }
+}
+
+/// Every class's depot and the bytes they hold together.
+struct Depots {
+    classes: [Depot; CLASSES],
+    bytes: AtomicUsize,
+}
+
+impl Depots {
+    const fn new() -> Self {
+        Self {
+            classes: [const { Depot::new() }; CLASSES],
+            bytes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Stack a full batch of `class`; false when the depot holds its bound.
+    fn keep(&self, class: usize, batch_head: *mut u8) -> bool {
+        let bytes = batch(class) as usize * class_size(class);
+        let reserved = self
+            .bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                (held + bytes <= DEPOT_BYTES).then_some(held + bytes)
+            });
+        if reserved.is_err() {
+            return false;
+        }
+        self.classes[class].with(|stack| {
+            unsafe { next_batch(batch_head).write(stack.top) };
+            stack.top = batch_head;
+            stack.batches += 1;
+        });
+        true
+    }
+
+    /// A full batch of `class`, or null when none is stacked.
+    fn take(&self, class: usize) -> *mut u8 {
+        let top = self.classes[class].with(|stack| {
+            let top = stack.top;
+            if !top.is_null() {
+                stack.top = unsafe { next_batch(top).read() };
+                stack.batches -= 1;
+            }
+            top
+        });
+        if !top.is_null() {
+            let bytes = batch(class) as usize * class_size(class);
+            self.bytes.fetch_sub(bytes, Ordering::Relaxed);
+        }
+        top
+    }
+
+    fn clear(&self) {
+        for depot in &self.classes {
+            depot.with(|stack| {
+                stack.top = ptr::null_mut();
+                stack.batches = 0;
+            });
+        }
+        self.bytes.store(0, Ordering::Relaxed);
+    }
 }
 
 /// The small-block lists of the processors that map to one shard.
@@ -108,31 +229,47 @@ impl Shard {
         result
     }
 
-    /// A free block of `class`, or null when none is kept.
-    fn take(&self, class: usize) -> *mut u8 {
+    /// A free block of `class`, or null when neither the shard nor the depot
+    /// keeps one.
+    fn take(&self, class: usize, depots: &Depots) -> *mut u8 {
         self.with(|lists| {
             let list = &mut lists[class];
-            let head = list.head;
-            if head.is_null() {
-                list.misses += 1;
-            } else {
-                list.head = unsafe { head.cast::<*mut u8>().read() };
-                list.count -= 1;
-                list.hits += 1;
+            if list.count == 0 {
+                let refill = if list.spare.is_null() {
+                    depots.take(class)
+                } else {
+                    std::mem::replace(&mut list.spare, ptr::null_mut())
+                };
+                if refill.is_null() {
+                    list.misses += 1;
+                    return ptr::null_mut();
+                }
+                list.head = refill;
+                list.count = batch(class);
             }
+            let head = list.head;
+            list.head = unsafe { next(head).read() };
+            list.count -= 1;
+            list.hits += 1;
             head
         })
     }
 
-    /// Keep a freed block of `class`; false when the class is full.
-    fn keep(&self, class: usize, block: *mut u8) -> bool {
+    /// Keep a freed block of `class`; false when the shard and the depot are full.
+    fn keep(&self, class: usize, block: *mut u8, depots: &Depots) -> bool {
         self.with(|lists| {
             let list = &mut lists[class];
-            if (list.count as usize + 1) * class_size(class) > SHARD_CLASS_BYTES {
-                list.returned += 1;
-                return false;
+            if list.count == batch(class) {
+                // The full list becomes the spare, passing the old spare on.
+                if !list.spare.is_null() && !depots.keep(class, list.spare) {
+                    list.returned += 1;
+                    return false;
+                }
+                list.spare = list.head;
+                list.head = ptr::null_mut();
+                list.count = 0;
             }
-            unsafe { block.cast::<*mut u8>().write(list.head) };
+            unsafe { next(block).write(list.head) };
             list.head = block;
             list.count += 1;
             list.kept += 1;
@@ -146,6 +283,7 @@ pub(super) struct PrivateHeap {
     // cached too; zero after detach is terminal, never a new allocation domain.
     heap: OnceLock<AtomicUsize>,
     shards: [Shard; SHARDS],
+    depots: Depots,
     #[cfg(test)]
     failures: AtomicUsize,
 }
@@ -155,6 +293,7 @@ impl PrivateHeap {
         Self {
             heap: OnceLock::new(),
             shards: [const { Shard::new() }; SHARDS],
+            depots: Depots::new(),
             #[cfg(test)]
             failures: AtomicUsize::new(0),
         }
@@ -201,7 +340,7 @@ impl PrivateHeap {
         if align <= HEAP_ALIGNMENT
             && let Some(class) = class(bytes)
         {
-            let kept = self.shard().take(class);
+            let kept = self.shard().take(class, &self.depots);
             if kept.is_null() {
                 return unsafe { HeapAlloc(heap, flags, class_size(class)) }.cast();
             }
@@ -245,6 +384,7 @@ impl PrivateHeap {
         for shard in &self.shards {
             shard.with(|lists| lists.iter_mut().for_each(|list| *list = List::EMPTY));
         }
+        self.depots.clear();
         !heap.is_null() && unsafe { HeapDestroy(heap) } != 0
     }
 
@@ -269,7 +409,7 @@ unsafe impl GlobalAlloc for PrivateHeap {
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         let raw = if layout.align() <= HEAP_ALIGNMENT {
             if let Some(class) = class(layout.size())
-                && self.shard().keep(class, pointer)
+                && self.shard().keep(class, pointer, &self.depots)
             {
                 return;
             }
@@ -331,11 +471,12 @@ impl PrivateHeap {
 
     /// The small-block counters summed over shards, copied without allocating.
     pub(super) fn status(&self) -> Snapshot {
-        let mut totals = [List::EMPTY; CLASSES];
+        let mut totals = [Totals::default(); CLASSES];
         for shard in &self.shards {
             shard.with(|lists| {
-                for (total, list) in totals.iter_mut().zip(lists.iter()) {
-                    total.count += list.count;
+                for (class, (total, list)) in totals.iter_mut().zip(lists.iter()).enumerate() {
+                    let spare = if list.spare.is_null() { 0 } else { batch(class) };
+                    total.cached += u64::from(list.count + spare);
                     total.hits += list.hits;
                     total.misses += list.misses;
                     total.kept += list.kept;
@@ -343,31 +484,46 @@ impl PrivateHeap {
                 }
             });
         }
+        for (class, (total, depot)) in totals.iter_mut().zip(&self.depots.classes).enumerate() {
+            total.depot = depot.with(|stack| u64::from(stack.batches) * u64::from(batch(class)));
+            total.cached += total.depot;
+        }
         Snapshot(totals)
     }
 }
 
-/// Per class: allocations served from a list or by the heap, frees kept on a
-/// list or returned to the heap, and blocks on the lists now.
-pub(super) struct Snapshot([List; CLASSES]);
+#[derive(Clone, Copy, Default)]
+struct Totals {
+    hits: u64,
+    misses: u64,
+    kept: u64,
+    returned: u64,
+    cached: u64,
+    depot: u64,
+}
+
+/// Per class: allocations served from a list or by the heap, frees kept or
+/// returned to the heap, and blocks kept now, in the depot among them.
+pub(super) struct Snapshot([Totals; CLASSES]);
 
 impl serde::Serialize for Snapshot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let classes = (self.0.iter().enumerate())
-            .filter(|(_, list)| list.hits + list.misses + list.kept + list.returned != 0)
-            .map(|(class, list)| {
+            .filter(|(_, total)| total.hits + total.misses + total.kept + total.returned != 0)
+            .map(|(class, total)| {
                 crate::status::status!({
                     "bytes": class_size(class),
-                    "hits": list.hits,
-                    "misses": list.misses,
-                    "kept": list.kept,
-                    "returned": list.returned,
-                    "cached": list.count,
+                    "hits": total.hits,
+                    "misses": total.misses,
+                    "kept": total.kept,
+                    "returned": total.returned,
+                    "cached": total.cached,
+                    "depot": total.depot,
                 })
             });
         crate::status::status!({
             "classes": crate::status::sequence(classes),
-            "scope": "cumulative since attach, per small-block class summed over processor shards: allocations served from a shard's free list (hits) or by the heap (misses), frees kept on a list (kept) or returned to the heap because the class held its bound (returned), and blocks on the lists now (cached)",
+            "scope": "cumulative since attach, per small-block class summed over processor shards: allocations served from a shard's lists or the depot (hits) or by the heap (misses), frees kept (kept) or returned to the heap because the shard and the depot held their bounds (returned), and blocks kept now (cached), those in the depot among them (depot)",
         })
         .serialize(serializer)
     }

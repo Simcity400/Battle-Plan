@@ -334,24 +334,76 @@ fn reallocation_stays_within_a_class_and_moves_across_classes() {
     assert!(!crate::allocation::failed());
 }
 
+/// `count` blocks of `class` straight from the heap, as the lists would hold them.
+fn heap_blocks(heap: &PrivateHeap, class: usize, count: usize) -> Vec<*mut u8> {
+    let blocks: Vec<*mut u8> = (0..count)
+        .map(|_| unsafe { HeapAlloc(heap.heap(), 0, class_size(class)) }.cast())
+        .collect();
+    assert!(blocks.iter().all(|block| !block.is_null()));
+    blocks
+}
+
 #[test]
-fn a_full_class_returns_further_frees_to_the_heap() {
+fn a_full_shard_passes_a_batch_through_the_depot_to_another_shard() {
     let heap = Heap::new();
-    let layout = Layout::from_size_align(SMALL_LIMIT, 16).unwrap();
     let class = super::class(SMALL_LIMIT).unwrap();
-    on_one_processor(|| {
-        let blocks = [(); 3].map(|()| unsafe { heap.0.alloc(layout) });
-        assert!(blocks.iter().all(|block| !block.is_null()));
-        for block in blocks {
-            unsafe { heap.0.dealloc(block, layout) };
-        }
-        heap.0.shard().with(|lists| {
-            let list = lists[class];
-            assert_eq!(list.count as usize, SHARD_CLASS_BYTES / SMALL_LIMIT);
-            assert_eq!(list.kept as usize, SHARD_CLASS_BYTES / SMALL_LIMIT);
-            assert_eq!(list.returned as usize, 3 - SHARD_CLASS_BYTES / SMALL_LIMIT);
-        });
+    assert_eq!(batch(class), 1);
+    let blocks = heap_blocks(&heap.0, class, 3);
+    let (freeing, allocating) = (&heap.0.shards[0], &heap.0.shards[1]);
+    for &block in &blocks {
+        assert!(freeing.keep(class, block, &heap.0.depots));
+    }
+    // The list and its spare hold a batch each; the oldest batch went on.
+    freeing.with(|lists| {
+        let list = lists[class];
+        assert_eq!((list.head, list.count, list.spare), (blocks[2], 1, blocks[1]));
+        assert_eq!((list.kept, list.returned), (3, 0));
     });
+    assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), SMALL_LIMIT);
+    assert_eq!(allocating.take(class, &heap.0.depots), blocks[0]);
+    assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), 0);
+    assert!(allocating.take(class, &heap.0.depots).is_null());
+    allocating.with(|lists| assert_eq!((lists[class].hits, lists[class].misses), (1, 1)));
+    // A shard drains its list, then its spare, before the depot.
+    assert_eq!(freeing.take(class, &heap.0.depots), blocks[2]);
+    assert_eq!(freeing.take(class, &heap.0.depots), blocks[1]);
+    for block in blocks {
+        assert_ne!(unsafe { HeapFree(heap.0.heap(), 0, block.cast()) }, 0);
+    }
+}
+
+#[test]
+fn a_small_class_batch_keeps_every_block_in_order() {
+    let heap = Heap::new();
+    let class = super::class(16).unwrap();
+    let batch = batch(class) as usize;
+    let blocks = heap_blocks(&heap.0, class, 3 * batch);
+    for &block in &blocks {
+        assert!(heap.0.shards[0].keep(class, block, &heap.0.depots));
+    }
+    // The first batch reached the depot whole; another shard takes it in reverse free order.
+    let taken: Vec<*mut u8> = (0..batch)
+        .map(|_| heap.0.shards[1].take(class, &heap.0.depots))
+        .collect();
+    assert!(taken.iter().copied().eq(blocks[..batch].iter().rev().copied()));
+    assert!(heap.0.shards[1].take(class, &heap.0.depots).is_null());
+    for block in blocks {
+        assert_ne!(unsafe { HeapFree(heap.0.heap(), 0, block.cast()) }, 0);
+    }
+}
+
+#[test]
+fn frees_beyond_the_depot_bound_return_to_the_heap() {
+    let heap = Heap::new();
+    let class = super::class(SMALL_LIMIT).unwrap();
+    let held = DEPOT_BYTES / SMALL_LIMIT;
+    // The list and the spare, the batches the depot holds, then one more.
+    let blocks = heap_blocks(&heap.0, class, held + 3);
+    for (index, &block) in blocks.iter().enumerate() {
+        let kept = heap.0.shards[0].keep(class, block, &heap.0.depots);
+        assert_eq!(kept, index < held + 2);
+    }
+    assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), DEPOT_BYTES);
     // The status itself never allocates; only this test's JSON value does.
     let snapshot = heap.0.status();
     crate::test_support::with_allocations_denied(|| {
@@ -363,7 +415,44 @@ fn a_full_class_returns_further_frees_to_the_heap() {
         .iter()
         .find(|row| row["bytes"] == SMALL_LIMIT)
         .unwrap();
-    assert_eq!(row["misses"], 3);
+    assert_eq!(row["kept"], held + 2);
+    assert_eq!(row["returned"], 1);
+    assert_eq!(row["cached"], held + 2);
+    assert_eq!(row["depot"], held);
+    // A batch taken out makes room for the next one passed on.
+    assert!(!heap.0.shards[1].take(class, &heap.0.depots).is_null());
+    assert!(heap.0.shards[0].keep(class, blocks[held + 2], &heap.0.depots));
+    assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), DEPOT_BYTES);
+}
+
+#[test]
+fn blocks_freed_on_other_threads_come_back_intact() {
+    let heap = Heap::new();
+    let layouts = [16, 112, 2048].map(|size| Layout::from_size_align(size, 16).unwrap());
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::channel::<(usize, usize, u8)>();
+        let heap = &heap.0;
+        for producer in 1..=4_u8 {
+            let sender = sender.clone();
+            scope.spawn(move || {
+                for round in 0..10_000 {
+                    let index = round % layouts.len();
+                    let block = unsafe { heap.alloc(layouts[index]) };
+                    assert!(!block.is_null());
+                    unsafe { block.write_bytes(producer, layouts[index].size()) };
+                    sender.send((block as usize, index, producer)).unwrap();
+                }
+            });
+        }
+        drop(sender);
+        for (address, index, fill) in receiver {
+            let block = address as *mut u8;
+            let bytes = unsafe { std::slice::from_raw_parts(block, layouts[index].size()) };
+            assert!(bytes.iter().all(|&byte| byte == fill));
+            unsafe { heap.dealloc(block, layouts[index]) };
+        }
+    });
+    assert!(!crate::allocation::failed());
 }
 
 #[test]
@@ -373,11 +462,21 @@ fn detach_forgets_cached_small_blocks() {
     let pointer = unsafe { heap.0.alloc(layout) };
     assert!(!pointer.is_null());
     unsafe { heap.0.dealloc(pointer, layout) };
+    let class = super::class(SMALL_LIMIT).unwrap();
+    for block in heap_blocks(&heap.0, class, 3) {
+        assert!(heap.0.shards[0].keep(class, block, &heap.0.depots));
+    }
     let handle = heap.0.heap();
     assert!(unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
     assert!(!process_heaps().contains(&handle));
     for shard in &heap.0.shards {
-        shard.with(|lists| assert!(lists.iter().all(|list| list.head.is_null())));
+        shard.with(|lists| {
+            assert!(lists.iter().all(|list| list.head.is_null() && list.spare.is_null()))
+        });
     }
+    for depot in &heap.0.depots.classes {
+        depot.with(|stack| assert!(stack.top.is_null() && stack.batches == 0));
+    }
+    assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), 0);
     assert!(unsafe { heap.0.alloc(layout) }.is_null());
 }
