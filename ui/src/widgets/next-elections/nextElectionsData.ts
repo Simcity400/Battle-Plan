@@ -3,14 +3,13 @@ import type { TooltipContent } from '../../charts/tooltip';
 import type { SortValue } from '../../charts/table/logic';
 import { dayLabel } from '../../charts/draw.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
-import { runIndexAt } from '../../charts/series.ts';
 import { holderKey, integerAt, integerText, isHolderTags, isPoliticsRuns, tagAt, validatePoliticsHistory, valueAt } from '../../dashboard/politicsHistory.ts';
 
 /** The `elections` history: every holder's eligibility, interval, next date and term start. */
 export function validateElectionsReply(value: unknown): PoliticsHistoryReply {
   return validatePoliticsHistory(value, 'elections', reply => Array.isArray(reply.elections) && reply.elections.every(entry =>
     !!entry && typeof entry === 'object' && isHolderTags(entry.tags) && isPoliticsRuns(entry.held, held => held === '0' || held === '1')
-    && isPoliticsRuns(entry.interval, integerText) && isPoliticsRuns(entry.next, integerText) && isPoliticsRuns(entry.last, integerText)));
+    && isPoliticsRuns(entry.refused, refused => refused === '1') && isPoliticsRuns(entry.interval, integerText) && isPoliticsRuns(entry.next, integerText) && isPoliticsRuns(entry.last, integerText)));
 }
 
 /** One country holding elections at the shown hour. Null operands were not recorded. */
@@ -28,7 +27,7 @@ export interface ElectionRow {
 }
 export interface ElectionsView {
   rows: ElectionRow[];
-  /** Countries read at this hour whose eligibility was not. */
+  /** Countries whose schedule was read at this hour but whose eligibility was not. */
   unknown: number;
 }
 
@@ -43,9 +42,8 @@ export function electionsAt(reply: Pick<PoliticsHistoryReply, 'elections'>, hour
     if (tag === null || !matches(tag, hour)) continue;
     const held = valueAt(entry.held, hour);
     if (held === null) {
-      // Read before and after, or read for its schedule: its eligibility is unknown here.
-      const within = entry.held.length > 0 && entry.held[0].firstHour <= hour && hour <= entry.held[entry.held.length - 1].lastHour;
-      if (within || runIndexAt(entry.interval, hour) >= 0 || runIndexAt(entry.next, hour) >= 0) unknown++;
+      // The reply dates every refused eligibility; a country with no schedule read holds none.
+      if (valueAt(entry.refused, hour) !== null) unknown++;
       continue;
     }
     if (held !== '1') continue;

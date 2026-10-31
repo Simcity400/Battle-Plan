@@ -96,6 +96,41 @@ fn licences_keep_licensor_known_zero_and_every_variant_in_order() {
 }
 
 #[test]
+fn a_licence_without_its_licensor_stands_and_one_without_its_licensee_leaves_the_roster_unknown() {
+    let mut state = Prepared::default();
+    // From 6 no link resolves the licensor; at 7 a licence of an unresolved licensee is read too.
+    for (hour, giver, unkeyed) in [(5, 2, false), (6, 9, false), (7, 9, true)] {
+        let mut at = base(hour);
+        let mut rows = vec![licence(1, 0, giver, 1, vec![0xc1])];
+        if unkeyed {
+            rows.push(licence(9, 0, 2, 4, vec![0xc2]));
+        }
+        set(&mut at, TableRows::ProductionLicenseRecords(rows));
+        state.step(&at);
+    }
+    let fixture = fixture();
+    let flag = AtomicBool::new(false);
+    let mut writer = fixture.writer();
+    state.flush(&mut writer, 1, &flag).unwrap();
+    writer.commit().unwrap();
+    let reply = read(&fixture, CatalogueView::Licences, &[], 7);
+    // Whole until a licence no licensee holds by identity is read.
+    assert_eq!(reply.known, vec![EconomyRun(5, 6, "1".into())]);
+    assert_eq!(reply.licences.len(), 1);
+    let licence = &reply.licences[0];
+    assert_eq!(licence.licensor, vec![EconomyRun(5, 5, "20".into())]);
+    assert_eq!(licence.lent, vec![EconomyRun(5, 7, "1".into())]);
+    assert_eq!(licence.start, vec![EconomyRun(5, 7, "900".into())]);
+    assert!(reply.warnings.iter().any(|line| line.contains("a licence's licensor has no identity")));
+    assert!(reply.warnings.iter().any(|line| line.contains("a licence's licensee has no identity")));
+    // OTH neither holds nor is known to grant it, but may be its unidentified licensor from 6.
+    let chosen = read(&fixture, CatalogueView::Licences, &["OTH"], 7);
+    assert_eq!(chosen.licences.len(), 1);
+    assert_eq!(chosen.licences[0].start, vec![EconomyRun(6, 7, "900".into())]);
+    assert!(chosen.licences[0].licensor.is_empty());
+}
+
+#[test]
 fn organisations_keep_unknown_state_apart_and_a_failed_detail_read_spares_licences() {
     let mut state = Prepared::default();
     let mut at = base(5);

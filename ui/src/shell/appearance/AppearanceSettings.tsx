@@ -181,7 +181,7 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
   const full = settings.custom.length >= MAX_CUSTOM_THEMES;
   const limit = `You can keep up to ${MAX_CUSTOM_THEMES} custom themes. Delete one first.`;
   const edit = (theme: ThemeDefinition, copy: boolean) => copy && full ? say(limit, 'warning') : onEdit({
-    id: copy ? null : theme.id, name: copy ? uniqueThemeName(`${theme.name} copy`, themes.map(item => item.name)) : theme.name,
+    id: copy ? null : theme.id, name: copy ? uniqueThemeName(theme.name, themes.map(item => item.name), ' copy') : theme.name,
     variants: structuredClone(theme.variants), mode: theme.variants[resolved.mode] ? resolved.mode : theme.variants.dark ? 'dark' : 'light',
   });
   const importTheme = (text: string): string | null => {

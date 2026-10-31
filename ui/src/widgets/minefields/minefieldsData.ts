@@ -106,18 +106,45 @@ export interface RegionMines { region: string; name: string; owners: { owner: st
 
 /** Sea regions holding mines at `hour`, each with its owners' amounts (largest first) and how
  * many owners' amounts are unknown there (refused owners included, named or not), and how many
- * owners' vectors were refused; null when not recorded then. */
-export function minesAt(reply: MinefieldsReply, owners: ReadonlyMap<string, OwnerSeries>, hour: number): { regions: RegionMines[]; readHour: number | undefined; refused: number } | null {
+ * owners' vectors were refused; null when not recorded then. With `chosen` regions, only those,
+ * each listed while any owner's amount there is unknown even with none known; without, every
+ * mined region, and `unlisted` counts the others whose mines are unknown: no row is no proof of
+ * none there. */
+export function minesAt(reply: MinefieldsReply, owners: ReadonlyMap<string, OwnerSeries>, hour: number, chosen: readonly string[] = []):
+  { regions: RegionMines[]; readHour: number | undefined; refused: number; unlisted: number } | null {
   if (!keyedKnown(reply.window, hour)) return null;
   const refused = refusedOwnersAt(reply.window, owners, hour);
   const unnamed = refused - [...owners.values()].filter(series => runAtHour(series.refused, hour)).length;
   const names = new Map(reply.regions.map(region => [region.id, region.name]));
   const mined = new Set<string>();
-  for (const series of owners.values()) for (const [region, runs] of series.regions) { const run = runAtHour(runs, hour); if (run && run[2] !== '0') mined.add(region); }
+  // Each region's owners with an amount read at `hour`, zero or not.
+  const read = new Map<string, OwnerSeries[]>();
+  for (const series of owners.values()) for (const [region, runs] of series.regions) {
+    const run = runAtHour(runs, hour);
+    if (!run) continue;
+    if (run[2] !== '0') mined.add(region);
+    const held = read.get(region);
+    if (held) held.push(series); else read.set(region, [series]);
+  }
   // An owner with no vector, amount or refusal at `hour` holds no minefields then: the read removed it.
   const present = [...owners.values()].filter(series => runAtHour(series.extent, hour) || runAtHour(series.refused, hour)
     || [...series.regions.values()].some(runs => runAtHour(runs, hour)));
-  const regions = [...mined].map(region => {
+  // An owner's amount is unknown in a region it read none for at or beyond its witnessed extent,
+  // or anywhere without one: counted by extent once, not owner by region.
+  const extentOf = (series: OwnerSeries) => { const run = runAtHour(series.extent, hour); return run ? Number(run[2]) : null; };
+  const extents = present.map(extentOf);
+  const witnessed = extents.filter((extent): extent is number => extent !== null).sort((a, b) => a - b);
+  const unwitnessed = extents.length - witnessed.length;
+  const unknownAt = (region: string) => {
+    const id = Number(region);
+    let low = 0, high = witnessed.length;
+    while (low < high) { const middle = (low + high) >> 1; if (witnessed[middle] <= id) low = middle + 1; else high = middle; }
+    const unread = (read.get(region) ?? []).filter(series => { const extent = extentOf(series); return extent === null || extent <= id; }).length;
+    return unnamed + unwitnessed + low - unread;
+  };
+  const wanted = chosen.length ? new Set(chosen) : null;
+  const unknownOnly = (wanted ? [...wanted] : reply.regions.map(region => region.id)).filter(region => !mined.has(region) && unknownAt(region) > 0);
+  const regions = [...mined].filter(region => !wanted || wanted.has(region)).map(region => {
     const list: RegionMines['owners'] = [];
     let unknownOwners = unnamed;
     for (const series of present) {
@@ -128,8 +155,14 @@ export function minesAt(reply: MinefieldsReply, owners: ReadonlyMap<string, Owne
     list.sort((a, b) => a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : a.owner.localeCompare(b.owner));
     return { region, name: names.get(region) ?? 'Region name unavailable', owners: list, total: list.reduce((sum, item) => sum + (item.amount > 0n ? item.amount : 0n), 0n), unknownOwners };
   });
-  return { regions, readHour: keyedRead(reply.window, hour), refused };
+  if (wanted) for (const region of unknownOnly)
+    regions.push({ region, name: names.get(region) ?? 'Region name unavailable', owners: [], total: 0n, unknownOwners: unknownAt(region) });
+  return { regions, readHour: keyedRead(reply.window, hour), refused, unlisted: wanted ? 0 : unknownOnly.length };
 }
+
+/** A region's mines on the reply's scale, or a dash where no owner's amount there is known. */
+export const regionTotalText = (region: RegionMines, scale: number) =>
+  region.owners.length || !region.unknownOwners ? minesText(region.total, scale) : '\u2014';
 
 export function orderRegions(regions: readonly RegionMines[], order: 'mines' | 'name'): RegionMines[] {
   return [...regions].sort((a, b) => order === 'name' ? a.name.localeCompare(b.name) || a.region.localeCompare(b.region)

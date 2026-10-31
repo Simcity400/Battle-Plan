@@ -36,7 +36,8 @@ pub(super) fn attach(
     reply: &mut FactionDetailReply,
 ) {
     let cat = texts.map(presentations::Texts::cat);
-    let result = (|| -> Result<Vec<FactionAccountDetail>, String> {
+    type Accounts = (Vec<FactionAccountDetail>, Vec<FactionAccountDetail>);
+    let result = (|| -> Result<Accounts, String> {
         let rows = frame
             .complete::<tables::FactionAccounts>()
             .map_err(|why| why.to_string())?;
@@ -49,7 +50,7 @@ pub(super) fn attach(
         let members = frame
             .complete::<tables::FactionMembers>()
             .map_err(|why| why.to_string())?;
-        let mut result = Vec::new();
+        let (mut result, mut unassociated) = (Vec::new(), Vec::new());
         for row in rows.iter().filter(|row| row.kind == 0) {
             let influence = replay_data::rows::FactionAccountRow::statistics(rows, row.account, 1)
                 .collect::<Vec<_>>();
@@ -62,7 +63,9 @@ pub(super) fn attach(
                     })
                 })
                 .map(|member| member.faction);
-            if owner.is_some_and(|owner| owner != faction) {
+            // Outside every faction, the account's own supplying faction names its association.
+            let associated = owner.or((row.influence_faction != 0).then_some(row.influence_faction));
+            if associated.is_some_and(|associated| associated != faction) {
                 continue;
             }
             // Retained accounts without current membership stay visible. Empty
@@ -99,7 +102,8 @@ pub(super) fn attach(
                 upgrades.push(value);
             }
             upgrades.sort_unstable_by_key(|value| value.group);
-            result.push(FactionAccountDetail {
+            let list = if associated.is_some() { &mut result } else { &mut unassociated };
+            list.push(FactionAccountDetail {
                 ordinal: row.account,
                 country: row.country,
                 tag,
@@ -132,10 +136,13 @@ pub(super) fn attach(
                     .collect(),
             });
         }
-        Ok(result)
+        Ok((result, unassociated))
     })();
     match result {
-        Ok(values) => reply.accounts = Some(values),
+        Ok((values, unassociated)) => {
+            reply.accounts = Some(values);
+            reply.unassociated_accounts = Some(unassociated);
+        }
         Err(why) => reply
             .warnings
             .push(format!("Faction member accounting: {why}")),
@@ -172,9 +179,43 @@ mod tests {
             faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
         let mut reply = FactionDetailReply::default();
         attach(&frame, 7, None, None, &lexical, &mut reply);
-        let rows = reply.accounts.unwrap();
+        // No membership and no supplying faction: kept, but tied to no faction.
+        assert_eq!(reply.accounts.unwrap().len(), 0);
+        let rows = reply.unassociated_accounts.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].projection, [i64::MIN.to_string()]);
         assert!(!rows[0].current_member);
+    }
+
+    #[test]
+    fn a_retained_account_joins_only_the_faction_it_names_as_supplying() {
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::FactionMembers.index()] =
+            TableView::Complete(TableRows::FactionMembers(vec![]));
+        // Its country left faction 7 and keeps a nonzero contribution there.
+        *frame.tables[TableId::FactionAccounts.index()] =
+            TableView::Complete(TableRows::FactionAccounts(vec![FactionAccountRow {
+                account: 4,
+                country: u32::MAX,
+                contribution_raw: 1,
+                influence_faction: 7,
+                ..Default::default()
+            }]));
+        let lexical =
+            faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+        let reply = |faction: u64| {
+            let mut reply = FactionDetailReply::default();
+            attach(&frame, faction, None, None, &lexical, &mut reply);
+            reply
+        };
+        let supplied = reply(7);
+        let rows = supplied.accounts.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].contribution_raw, "1");
+        assert!(!rows[0].current_member);
+        assert_eq!(supplied.unassociated_accounts.unwrap().len(), 0);
+        let other = reply(8);
+        assert_eq!(other.accounts.unwrap().len(), 0);
+        assert_eq!(other.unassociated_accounts.unwrap().len(), 0);
     }
 }

@@ -294,6 +294,47 @@ fn a_row_whose_owner_has_no_identity_leaves_its_table_unknown_not_empty() {
 }
 
 #[test]
+fn a_row_whose_buyer_or_receiver_has_no_identity_stands_and_may_be_any_chosen_countrys() {
+    let mut state = Prepared::default();
+    // From 6 no link resolves the buyer or the receiver.
+    for (hour, other) in [(5, 2), (6, 9), (7, 9)] {
+        let mut at = base(hour);
+        set(&mut at, TableRows::MarketContractTerms(vec![terms(1, other, 9, 1)]));
+        set(
+            &mut at,
+            TableRows::LendLeaseAgreements(vec![LendLeaseAgreementRow {
+                country: 1,
+                id: 4,
+                receiver: other,
+                ..Default::default()
+            }]),
+        );
+        state.step(&at);
+    }
+    let published = publish(&mut state);
+    let contracts = published.history(MarketView::Contracts, &[], 7);
+    // The roster stays known whole: the contract stands with its buyer unknown.
+    assert_eq!(contracts.known, vec![EconomyRun(5, 7, "1".into())]);
+    assert_eq!(contracts.contracts[0].buyer, vec![EconomyRun(5, 5, "20".into())]);
+    assert_eq!(contracts.contracts[0].speed, vec![EconomyRun(5, 7, "3".into())]);
+    let agreements = published.history(MarketView::Agreements, &[], 7);
+    assert_eq!(agreements.known, vec![EconomyRun(5, 7, "1".into())]);
+    assert_eq!(agreements.agreements[0].receiver, vec![EconomyRun(5, 5, "20".into())]);
+    assert_eq!(agreements.agreements[0].revision, vec![EconomyRun(5, 7, "0".into())]);
+    // OTH neither sells nor is known to buy, but may be the unidentified party from 6.
+    let chosen = published.history(MarketView::Contracts, &["OTH"], 7);
+    assert_eq!(chosen.contracts.len(), 1);
+    assert_eq!(chosen.contracts[0].speed, vec![EconomyRun(6, 7, "3".into())]);
+    assert!(chosen.contracts[0].buyer.is_empty());
+    let chosen = published.history(MarketView::Agreements, &["OTH"], 7);
+    assert_eq!(chosen.agreements[0].revision, vec![EconomyRun(6, 7, "0".into())]);
+    assert!(chosen.agreements[0].receiver.is_empty());
+    // The known buyer answers for its own hours and the unidentified ones.
+    let bought = published.history(MarketView::Contracts, &["BUY"], 7);
+    assert_eq!(bought.contracts[0].speed, vec![EconomyRun(5, 7, "3".into())]);
+}
+
+#[test]
 fn the_ledger_keeps_each_occurrence_once_newest_first_with_named_refusals() {
     let mut state = Prepared::default();
     for hour in 5..=7 {

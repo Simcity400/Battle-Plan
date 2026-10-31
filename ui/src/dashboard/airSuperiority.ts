@@ -2,7 +2,7 @@ import type { AirCell, AirReply as WireAirReply, AirSide, AirSpan } from '../gen
 import type { HeatPeriod, HeatRow } from '../charts/heat/layout';
 import type { TooltipContent } from '../charts/tooltip';
 import type { CountryLabel } from './countryFlagsAt';
-import { formatAmount } from '../charts/valueAxis.ts';
+import { formatAmount, rescale } from '../charts/valueAxis.ts';
 import { int, object } from './validation.ts';
 import type { PreparedCoverage } from '../shell/preparation/contract';
 import { preparedPending } from './preparedPrefix.ts';
@@ -34,6 +34,8 @@ export function airTooltipTags(view: AirView): string[] {
 }
 
 export function airPercent(score: bigint, total: bigint): string { return total > 0n ? `${(score * 100n + total / 2n) / total}%` : '—'; }
+/** A raw score in units of `scale` (the reply's denominator), as the game shows it. */
+export const airScore = (score: bigint, scale: number): string => formatAmount(rescale(score, scale, 2), 2);
 
 /** Dictionary order is first appearance; factions use numeric ids, never decimal-string ordering. */
 export function sideOrder(sides: readonly AirSide[]): Map<string, number> {
@@ -306,7 +308,7 @@ export function airTooltip(region: { name: string }, view: AirView, viewpoint: b
   const viewpointNote = `${overflows ? 'Game status differs from the displayed shares. ' : ''}${thresholds}`;
   return { title: region.name, rows: [
     ...parts.map(part => ({ label: part.id === 'enemy' ? `Enemies of ${viewpointName}` : part.side ? `${sideLabel(part.side)}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.tag ? `${country(part.tag).name}${part.id === 'friendly' ? ' (friendly)' : ''}` : part.label,
-      countryFlag: part.tag ? country(part.tag) : undefined, swatch: part.color, value: `${view.state === 'unknown' ? 'Share unknown' : airPercent(part.score, view.total)} · ${formatAmount(part.score, view.scale)} score` })),
+      countryFlag: part.tag ? country(part.tag) : undefined, swatch: part.color, value: `${view.state === 'unknown' ? 'Share unknown' : airPercent(part.score, view.total)} · ${airScore(part.score, view.scale)} score` })),
     ...parts.flatMap(part => part.side && part.side.coBelligerents ? [{ label: `${sideLabel(part.side)} with ${part.side.coBelligerents} co-belligerents`, value: part.tag ? `Viewpoint: ${country(part.tag).name}` : 'Leader not recorded', indent: true }] : []),
     ...(view.unknown.length ? [{ label: 'Unknown sides', value: String(view.unknown.length) }] : []),
     ...view.unknown.map(side => ({ label: sideLabel(side), value: 'Score unknown' })),

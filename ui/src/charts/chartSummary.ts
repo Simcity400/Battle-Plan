@@ -529,8 +529,12 @@ export function summaryStack(parts: readonly ChartSummary[], total?: ChartSummar
   for (let column=0;column<(summaries[0]?.buckets.length ?? 0);column++) {
     const buckets=summaries.map(summary=>summary.buckets[column]);
     if (buckets.some(bucket=>!bucket)) continue;
+    // Only the hours every part was recorded: a part never stands in for hours it lacks.
+    let firstHour=-Infinity,lastHour=Infinity;
+    for (const bucket of buckets) {firstHour=Math.max(firstHour,bucket!.firstHour);lastHour=Math.min(lastHour,bucket!.lastHour);}
+    if (firstHour>lastHour) continue;
     const count=sampled.reduce((count,columns)=>Math.max(count,columns[column]!.length),1);
-    const range=buckets.at(-1)!;
+    const range={firstHour,lastHour};
     const broken=buckets.some(bucket=>bucket!.hasBreak);
     const firstBreak=buckets.some(bucket=>bucket!.firstBreak);
     const hours=Array.from({length:count},(_,index)=>count===1 ? range.firstHour

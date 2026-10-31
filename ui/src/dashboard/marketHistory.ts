@@ -3,7 +3,7 @@
 import type { AgreementHistory, ContractHistory, CountryIdentityHistory, HolderTag, HourSpan, MarketHistoryReply, MarketPoolItem, MarketView, OfferHistory } from '../generated/dashboard';
 import type { PreparedPrefixFields } from './preparedPrefix';
 import { object } from './validation.ts';
-import { isEconomyRuns, isHolderMap, isVariantNames, lastRunBy, runAt, tagAt, validateEconomyReply, variantNameAt } from './economyHistory.ts';
+import { isEconomyRuns, isHolderMap, isVariantNames, lastRunBy, preparedAt, runAt, tagAt, validateEconomyReply, variantNameAt } from './economyHistory.ts';
 import type { EconomyRun } from '../generated/dashboard';
 
 export const MARKET_HISTORY = 'market-history';
@@ -36,6 +36,11 @@ export const variantAt = (reply: Pick<MarketHistoryReply, 'variants'>, variant: 
 
 /** Whether the view's tables were recorded complete at `hour`. */
 export const knownAt = (reply: MarketHistoryReply, hour: number) => runAt(reply.known, hour) !== null;
+
+/** A header's count of the rows shown at `hour`: none unless the view's roster is known whole
+ * and prepared then, and a lower bound ("3+") while rows it cannot attribute may also match. */
+export const rosterCount = (reply: MarketHistoryReply, hour: number, count: number, unattributed: number): string | null =>
+  knownAt(reply, hour) && preparedAt(reply, hour) ? `${count.toLocaleString()}${unattributed ? '+' : ''}` : null;
 
 /** The pool entries holding an amount at `hour`, in native order. */
 export function poolAt(entries: readonly MarketPoolItem[], pool: number, hour: number): { variant: string; amount: bigint }[] {

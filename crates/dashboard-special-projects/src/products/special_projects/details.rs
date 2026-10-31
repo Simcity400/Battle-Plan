@@ -371,6 +371,20 @@ pub fn details_at_hour(
             .push("Country identity is unavailable".into());
         return Ok(result);
     };
+    // A daily read supplies the hour only if every recorded hour since it has the same holder.
+    let held_since = |read: i32| {
+        let mut expected = hour;
+        for sample in frames.iter().rev() {
+            if sample.hour != expected || identity(sample) != Some((country, slot)) {
+                return false;
+            }
+            if sample.hour == read {
+                return true;
+            }
+            expected = expected.saturating_sub(1);
+        }
+        false
+    };
     let content = match context
         .content()
         .and_then(|options| politics_content(source, options))
@@ -550,10 +564,7 @@ pub fn details_at_hour(
         ],
         cancelled,
     )?;
-    match breakthroughs
-        .as_ref()
-        .filter(|sample| identity(sample) == Some((country, slot)))
-    {
+    match breakthroughs.as_ref().filter(|sample| held_since(sample.hour)) {
         Some(sample) => match sample.complete::<tables::ProjectBreakthroughs>() {
             Ok(progress) => {
                 let sample_links = sample
@@ -601,7 +612,7 @@ pub fn details_at_hour(
     )?;
     if let Some(program_frame) = programs
         .as_ref()
-        .filter(|program_frame| identity(program_frame) == Some((country, slot)))
+        .filter(|program_frame| held_since(program_frame.hour))
     {
         match program_frame.complete::<tables::ProjectPrograms>() {
             Err(why) => result
@@ -1169,6 +1180,79 @@ mod tests {
         assert_eq!(scientists[0].visible, None);
         assert_eq!(scientists[0].visibility_hour, None);
         assert!(!scientists[0].state_refusals.is_empty());
+        drop(source);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_daily_read_supplies_no_hour_past_an_unrecorded_holder() {
+        let mut daily = source(1, 24, None);
+        for table in [TableId::ProjectPrograms, TableId::ProjectBreakthroughs] {
+            daily.metrics.table_ns[table.index()] = 1;
+        }
+        *daily.tables[TableId::ProjectPrograms.index()] =
+            TableView::Complete(TableRows::ProjectPrograms(Vec::new()));
+        *daily.tables[TableId::ProjectBreakthroughs.index()] =
+            TableView::Complete(TableRows::ProjectBreakthroughs(vec![
+                ProjectBreakthroughRow {
+                    owner: 11,
+                    specialization: 41,
+                    points: 777,
+                },
+            ]));
+        *daily.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 41,
+                literal: b"mod_skill".to_vec(),
+            }]));
+        // The daily tables carry through 26, but the holder is not recorded at 25.
+        let carried = |hour: i32| {
+            let mut frame = daily.clone();
+            frame.hour = hour;
+            for table in [TableId::ProjectPrograms, TableId::ProjectBreakthroughs] {
+                frame.metrics.table_ns[table.index()] = 0;
+            }
+            frame
+        };
+        let mut gap = carried(25);
+        *gap.tables[TableId::Countries.index()] = TableView::Unavailable {
+            reason: "Synthetic identity refusal".into(),
+        };
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![daily.clone(), gap, carried(26)])],
+        )
+        .unwrap();
+        let (source, root) = file_source(replay);
+        let params = SpecialProjectsParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            selection_tags: Vec::new(),
+            hour: Some(26),
+        };
+        let at = |hour: i32| {
+            details_at_hour(
+                &source,
+                &LoadContext { content: None },
+                &params,
+                hour,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        };
+        let read = at(24);
+        assert_eq!(read.breakthroughs.as_ref().unwrap()[0].points, 777);
+        assert_eq!(read.programs.as_ref().map(Vec::len), Some(0));
+        let after = at(26);
+        assert!(after.breakthroughs.is_none());
+        assert!(after.programs.is_none());
+        for why in ["Specialization progress", "Program assignments"] {
+            assert!(
+                after.unavailable.iter().any(|line| line.starts_with(why)
+                    && line.contains("no continuous supplying daily read")),
+                "{:?}",
+                after.unavailable
+            );
+        }
         drop(source);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -254,6 +254,18 @@ test('a stack without a total retains named percentages and signed extrema witho
   assert.deepEqual(unknown.model.hours,[]);
 });
 
+test('a dense stack draws a column only over the hours every part was recorded', () => {
+  const part = (firstHour: number, lastHour: number, value: number) => stackSummary({ firstHour, lastHour, firstValue: value, lastValue: value,
+    lastValueHour: lastHour, minHour: firstHour, minValue: value, maxHour: firstHour, maxValue: value, firstBreak: false, hasBreak: false });
+  // A recorded only at 0–9 and B only at 20–29: no hour of the column holds both.
+  assert.deepEqual(summaryStack([part(0, 9, 10), part(20, 29, 5)]).model.hours, []);
+  const overlap = summaryStack([part(0, 19, 10), part(10, 29, 5)]);
+  const drawn = overlap.model.hours.filter((_, index) => overlap.model.bounds[index]);
+  assert.ok(drawn.length > 0);
+  assert.ok(drawn.every(hour => hour >= 10 && hour <= 19), `${drawn}`);
+  for (const bound of overlap.model.bounds) if (bound) assert.deepEqual(bound, [0, 15]);
+});
+
 test('stack summaries carry the union of part and total approximate spans without changing geometry', () => {
   const a = stackSummary(stackBucket), b = stackSummary({ ...stackBucket, firstValue: 3, lastValue: 3, minValue: 3, maxValue: 3 });
   const exact = summaryStack([a,b],stackTotal);

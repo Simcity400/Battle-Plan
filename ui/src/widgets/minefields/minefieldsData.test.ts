@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, regionHolders, regionRuns, validateMinefields, validateReports } from './minefieldsData.ts';
+import { minesAt, minesText, orderRegions, ownerAmount, ownerSeries, refusedOwnersAt, regionHolders, regionRuns, regionTotalText, validateMinefields, validateReports } from './minefieldsData.ts';
 
 const reply = validateMinefields({
   window: { firstHour: 0, lastHour: 20, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
@@ -32,6 +32,27 @@ test('regions sum positive owners on one scale, keep negatives exact and count u
   assert.equal(minesAt(reply, owners, 15), null);
   assert.equal(minesText(150000n, 100000), '1.5');
   assert.equal(minesText(-100000n, 100000), '−1');
+});
+
+test('a sea beyond a present owner’s witnessed extent is unknown, never proof of no minefields', () => {
+  const seas = validateMinefields({
+    window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
+      { name: 'GER@7|5', runs: [[0, 10, '300000', true]] },
+      { name: 'GER@7|extent', runs: [[0, 10, '40', true]] },
+    ] },
+    regions: [{ id: '5', name: 'North Sea' }, { id: '30', name: 'Baltic Sea' }, { id: '50', name: 'Far Sea' }], scale: 100000, warnings: [],
+  });
+  const owners = ownerSeries(seas.window);
+  // Every sea: the mined one listed, the far one counted as unknown, the Baltic a proven zero.
+  const all = minesAt(seas, owners, 3)!;
+  assert.deepEqual([all.regions.map(region => region.region), all.refused, all.unlisted], [['5'], 0, 1]);
+  // A chosen far sea stays, its mines unknown rather than zero.
+  const far = minesAt(seas, owners, 3, ['50'])!;
+  assert.deepEqual([far.regions.map(region => [region.region, region.owners.length, region.unknownOwners]), far.unlisted], [[['50', 0, 1]], 0]);
+  assert.equal(regionTotalText(far.regions[0], seas.scale), '—');
+  // A chosen sea below the extent with no amount holds no mines.
+  assert.deepEqual(minesAt(seas, owners, 3, ['30']), { regions: [], readHour: 0, refused: 0, unlisted: 0 });
+  assert.deepEqual(minesAt(seas, owners, 3, ['5', '30'])!.regions.map(region => regionTotalText(region, seas.scale)), ['3']);
 });
 
 test('reports keep their order and carry no strike date', () => {

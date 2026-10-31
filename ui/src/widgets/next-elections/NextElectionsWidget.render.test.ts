@@ -33,7 +33,8 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     assert.match(render(), /No country holds elections at this date\./);
     // A member whose schedule was read but whose eligibility was not may hold elections.
     state.groups = pendingGroups({ final: true, humans: [{ tag: 'GER', firstHour: 0, lastHour: BRANCH.lastHour }] });
-    state.elections = [{ tags: [{ hour: 0, tag: 'GER' }], held: [], interval: [{ firstHour: 0, lastHour: 200, value: '48' }], next: [], last: [] }];
+    state.elections = [{ tags: [{ hour: 0, tag: 'GER' }], held: [], refused: [{ firstHour: 0, lastHour: 200, value: '1' }],
+      interval: [{ firstHour: 0, lastHour: 200, value: '48' }], next: [], last: [] }];
     const unknown = render();
     assert.match(unknown, /Election eligibility was not recorded at this date\./);
     assert.doesNotMatch(unknown, /No country holds elections/);

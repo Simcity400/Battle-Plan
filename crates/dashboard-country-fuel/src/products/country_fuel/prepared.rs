@@ -3,6 +3,7 @@ use super::*;
 use dashboard_base::prepared::query::progressive;
 use dashboard_base::prepared::series::{self, Accumulator, Reader, Run};
 use dashboard_base::prepared_chart::ChartSummary;
+use dashboard_base::products::country_groups::HourSpan;
 use serde_json::Value;
 
 const UNSETTLED_HOURS: i32 = DAY_HOURS - 1;
@@ -1777,38 +1778,55 @@ pub fn query(
                         .map(|key| (*key, tag.clone()))
                 })
                 .collect();
+            // A tag's events count only inside its requested `within`, as its summary and
+            // navigation do: stored and continuation rows alike, before any is paged.
+            let windows: BTreeMap<&String, Vec<HourSpan>> = keys
+                .values()
+                .map(|tag| {
+                    let spans = params.within.get(tag).cloned().unwrap_or_else(|| {
+                        vec![HourSpan {
+                            first_hour: first,
+                            last_hour: last,
+                        }]
+                    });
+                    (tag, dashboard_base::ranking::joined_spans(spans, first, last))
+                })
+                .collect();
+            let spans: Vec<(u64, i32, i32)> = keys
+                .iter()
+                .flat_map(|(&key, tag)| {
+                    windows[tag]
+                        .iter()
+                        .map(move |span| (key, span.first_hour, span.last_hour))
+                })
+                .collect();
             // Tail rows are a bounded continuation of the same event page.
             let page = (if consumption {
                 &mut reads.current
             } else {
                 &mut reads.days
             })
-            .events(
-                &keys.keys().copied().collect::<Vec<_>>(),
-                first,
-                last,
-                cursor,
-                page_size,
-            )?;
+            .events_within(&spans, cursor, page_size)?;
             let mut rows: Vec<_> = page.rows.into_iter().map(|row| serde_json::json!({"tag":keys[&row.key],"hour":row.hour,"ordinal":row.ordinal.to_string(),"row":row.row})).collect();
             let mut total = page.total;
             if !consumption {
                 let mut tail = Vec::new();
-                for tag in &params.tags {
-                    if let Some(country) = reads.metadata.countries.get(tag) {
+                for (tag, held) in &windows {
+                    if let Some(country) = reads.metadata.countries.get(*tag) {
                         tail.extend(
                             country
                                 .tail
                                 .iter()
                                 .filter(|read| {
-                                    read.first_hour >= first
-                                        && read.first_hour <= last
-                                        && reads
-                                            .metadata
-                                            .settled_until
-                                            .is_none_or(|hour| read.first_hour > hour)
+                                    held.iter().any(|span| {
+                                        span.first_hour <= read.first_hour
+                                            && read.first_hour <= span.last_hour
+                                    }) && reads
+                                        .metadata
+                                        .settled_until
+                                        .is_none_or(|hour| read.first_hour > hour)
                                 })
-                                .map(|read| (read.first_hour, tag.clone(), read.clone())),
+                                .map(|read| (read.first_hour, (*tag).clone(), read.clone())),
                         );
                     }
                 }

@@ -16,7 +16,8 @@ use std::{
     io,
 };
 
-const LICENCE_PARTY: &str = "a licence names a country with no identity";
+const LICENSEE_UNIDENTIFIED: &str = "a licence's licensee has no identity";
+const LICENSOR_UNIDENTIFIED: &str = "a licence's licensor has no identity";
 const ORGANISATION_COUNTRY: &str = "an organisation's country has no identity";
 const POLICY_UNSPELLED: &str = "a selected policy's token is not spelled";
 const DESIGN_CREATOR: &str = "a design's creator has no identity";
@@ -429,7 +430,6 @@ impl Prepared {
                 (None, BTreeSet::new()),
             ),
         };
-        self.known(0, hour, &mut seen);
         let (records, positions) = records;
         let mut fields: BTreeMap<(u32, u32), LicenceFields> = positions
             .iter()
@@ -454,19 +454,27 @@ impl Prepared {
                     domain.refusals(key, Vec::new());
                     return;
                 };
-                let (Some(owner), Some(giver)) =
-                    (identity.slot(row.owner), identity.slot(row.giver))
-                else {
-                    domain.refusals(key, vec![LICENCE_PARTY]);
+                let Some(owner) = identity.slot(row.owner) else {
+                    domain.refusals(key, vec![LICENSEE_UNIDENTIFIED]);
                     return;
                 };
-                domain.refusals(key, Vec::new());
+                let giver = identity.slot(row.giver);
+                domain.refusals(
+                    key,
+                    giver.map_or_else(|| vec![LICENSOR_UNIDENTIFIED], |_| Vec::new()),
+                );
                 state.keyed.tag_text(owner, identity.tag(owner), hour);
-                state.keyed.tag_text(giver, identity.tag(giver), hour);
                 let at = row.ordinal;
+                let licensor = match giver {
+                    Some(giver) => {
+                        state.keyed.tag_text(giver, identity.tag(giver), hour);
+                        (Field::LicenceGiver(owner, at), i128::from(giver))
+                    }
+                    None => (Field::LicenceUnidentified(owner, at), 1),
+                };
                 let position = fields.entry((owner, at)).or_default();
                 for (field, value) in [
-                    (Field::LicenceGiver(owner, at), i128::from(giver)),
+                    licensor,
                     (Field::LicenceLent(owner, at), i128::from(row.lended_cic)),
                     (
                         Field::LicenceRequired(owner, at),
@@ -504,6 +512,7 @@ impl Prepared {
                 // The fields the position held and no longer shows end.
                 let mut held: Vec<Field> = [
                     Field::LicenceGiver(owner, at),
+                    Field::LicenceUnidentified(owner, at),
                     Field::LicenceLent(owner, at),
                     Field::LicenceRequired(owner, at),
                     Field::LicenceStart(owner, at),
@@ -527,6 +536,13 @@ impl Prepared {
             for (field, value) in now {
                 self.put(field, Some(value), hour, &mut seen);
             }
+        }
+        // A licence whose licensee has no identity is left out: the roster is not known whole.
+        if domain.standing.contains_key(LICENSEE_UNIDENTIFIED) {
+            self.open.ended[0] = false;
+            self.put(Field::Known(0), None, hour, &mut seen);
+        } else {
+            self.known(0, hour, &mut seen);
         }
         self.close(0, frame, domain, seen);
     }

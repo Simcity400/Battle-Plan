@@ -31,7 +31,7 @@ import { loadTransientProduct } from '../../dashboard/products';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import * as requests from '../../dashboard/batch5Requests';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { minesAt, minesText, orderRegions, ownerSeries, regionHolders, regionRuns, validateReports } from './minefieldsData';
+import { minesAt, minesText, orderRegions, ownerSeries, regionHolders, regionRuns, regionTotalText, validateReports } from './minefieldsData';
 import type { MineReport, RegionMines, ReportsReply } from './minefieldsData';
 import { useMinefields } from './useMinefields';
 import '../air-superiority-region/airSuperiorityRegion.css';
@@ -55,10 +55,9 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   // Playback in this campaign's hours, not the comparison clock's, within its branch.
   const clockHour = track ? Math.max(track.branch.firstHour, Math.min(Math.floor(playback) + track.axisOffset, track.branch.lastHour)) : null;
   const owners = useMemo(() => data ? ownerSeries(data.window) : new Map(), [data]);
-  const at = useMemo(() => data ? minesAt(data, owners, hour) : null, [data, owners, hour]);
   const chosen = contentSet(options.regions).map(contentKey);
-  const regions = useMemo(() => at ? orderRegions(at.regions.filter(region => !chosen.length || chosen.includes(region.region)), options.order === 'name' ? 'name' : 'mines') : [],
-    [at, JSON.stringify(chosen), options.order]); // eslint-disable-line react-hooks/exhaustive-deps
+  const at = useMemo(() => data ? minesAt(data, owners, hour, chosen) : null, [data, owners, hour, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps
+  const regions = useMemo(() => at ? orderRegions(at.regions, options.order === 'name' ? 'name' : 'mines') : [], [at, options.order]);
   const readHour = at?.readHour ?? hour;
   const tags = useMemo(() => [...new Set([...owners.values()].map(series => series.tag))], [owners]);
   const looks = useCountryLooks(runtime.client, track, tags, readHour, active);
@@ -86,7 +85,10 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const drillHolders = useMemo(() => picked ? regionHolders(owners, picked.region) : [], [picked, owners]);
   const holders = useHolderLooks(runtime.client, track, drillHolders, active && picked !== null, tokens);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...reports.data?.warnings ?? []] : null);
-  const pill = headerSlot && at && createPortal(<span className="pill">{regions.length} {regions.length === 1 ? 'region' : 'regions'} mined</span>, headerSlot);
+  // A region listed, or left out, only because its mines are unknown is not counted, but may be mined.
+  const mined = regions.filter(region => region.owners.length).length;
+  const more = !!at && (at.unlisted > 0 || regions.some(region => !region.owners.length));
+  const pill = headerSlot && at && createPortal(<span className="pill">{mined}{more ? '+' : ''} {mined === 1 && !more ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
@@ -98,7 +100,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
     ? [{ id: series.owner, label: holders.name(series.owner), color: holders.colour(series.owner), runs: chartRuns(regionRuns(series, picked.region), data.scale) }] : []) : [];
   const main = <div className="air-regions minefields-rows">
     <WindowedRows items={regions.map(region => ({ key: region.region, item: region }))} rowHeight={38} fit minRowHeight={16} className="air-region-scroll" label="Minefields by sea region"
-      empty={at.refused ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />
+      empty={at.refused || at.unlisted ? <WidgetState kind="unavailable" message="Some countries' minefields were not recorded at this date." />
         : <WidgetState kind="empty" message="No minefields at this date." />}>
       {({ item: region }) => <div className="air-region-row" {...tips.rowProps(region.region)}
         onClick={() => { setPicked(region); dispatch({ type: 'open', breakdown: 'region', hour, playing: widget.time.mode === 'follow',
@@ -110,7 +112,7 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
             style={{ width: `${highest > 0n ? Number(owner.amount * 10000n / highest) / 100 : 0}%`, background: colour(owner.tag, readHour) }} />)}
           {region.unknownOwners > 0 && <span className="air-region-segment minefields-unknown" style={{ ...hatchStyle(tokens), flex: '1 1 0' }} aria-label="Some owners not recorded" />}
         </div>
-        <span className="air-region-wings minefields-total">{minesText(region.total, data.scale)}</span>
+        <span className="air-region-wings minefields-total">{regionTotalText(region, data.scale)}</span>
       </div>}
     </WindowedRows>
     <Legend label="Mine owners" items={legend} always windowed />
@@ -139,7 +141,7 @@ function regionTooltip(region: RegionMines, name: (tag: string) => string, colou
   return {
     title: region.name, scrollable: true, scrollId: region.region,
     rows: [
-      { label: 'Mines', value: minesText(region.total, scale) },
+      { label: 'Mines', value: regionTotalText(region, scale) },
       ...region.owners.map(owner => ({ label: name(owner.tag), swatch: colour(owner.tag), value: minesText(owner.amount, scale), indent: true })),
       ...region.unknownOwners ? [{ label: 'Not recorded', value: `${region.unknownOwners} ${region.unknownOwners === 1 ? 'country' : 'countries'}` }] : [],
       { label: 'As of', value: read },

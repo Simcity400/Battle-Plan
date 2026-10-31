@@ -19,10 +19,12 @@ export const rosterKnown = (reply: Pick<ProductionCatalogueReply, 'known'>, hour
 export interface LicenceAt {
   key: string;
   licence: LicenceHistory;
-  licensor: string;
-  licensee: string;
-  /** The licensor's and licensee's holders: their identity whatever tags they hold. */
-  licensorHolder: string;
+  /** Each party's tag; null where it has no identity or no tag at the hour. */
+  licensor: string | null;
+  licensee: string | null;
+  /** The licensor's and licensee's holders: their identity whatever tags they hold; the
+   * licensor's null while it has none. */
+  licensorHolder: string | null;
   licenseeHolder: string;
   /** Civilian factories lent and required; null where not recorded. */
   lent: bigint | null;
@@ -32,22 +34,33 @@ export interface LicenceAt {
   designs: { variant: string; name: string | null }[];
 }
 
-/** Every licence standing at `hour` whose licensor or licensee the matcher keeps. */
-export function licencesAt(reply: ProductionCatalogueReply, hour: number, matches: (tag: string, hour: number) => boolean): LicenceAt[] {
+/** Every licence standing at `hour` whose licensor or licensee the matcher keeps, and how many
+ * others it cannot rule out: a party with no tag then may be a country it keeps. */
+export function licencesAt(reply: ProductionCatalogueReply, hour: number, matches: (tag: string, hour: number) => boolean): { rows: LicenceAt[]; unattributed: number } {
   const rows: LicenceAt[] = [];
+  let unattributed = 0;
   for (const licence of reply.licences) {
+    // Its start date is read every hour it stands; its licensor only while that has an identity.
+    if (!runAt(licence.start, hour)) continue;
     const giver = valueAt(licence.licensor, hour);
-    if (giver === null) continue;
-    const licensor = tagAt(reply.holders[giver], hour), licensee = tagAt(reply.holders[licence.licensee], hour);
-    if (licensor === null || licensee === null || !(matches(licensor, hour) || matches(licensee, hour))) continue;
-    rows.push({ key: `${licence.licensee}:${licence.ordinal}`, licence, licensor, licensee, licensorHolder: giver, licenseeHolder: licence.licensee,
-      lent: bigAt(licence.lent, hour), required: bigAt(licence.required, hour),
-      since: numberAt(licence.start, hour), designs: licence.variants.flatMap(runs => {
-        const run = runAt(runs, hour);
-        return run ? [{ variant: run[2], name: variantNameAt(reply.variants[run[2]], hour) }] : [];
-      }) });
+    const licensor = giver === null ? null : tagAt(reply.holders[giver], hour), licensee = tagAt(reply.holders[licence.licensee], hour);
+    if (!(licensor !== null && matches(licensor, hour) || licensee !== null && matches(licensee, hour))) {
+      if (licensor === null || licensee === null) unattributed++;
+      continue;
+    }
+    rows.push(licenceAt(reply, licence, hour, giver, licensor, licensee));
   }
-  return rows;
+  return { rows, unattributed };
+}
+
+function licenceAt(reply: ProductionCatalogueReply, licence: LicenceHistory, hour: number, giver: string | null, licensor: string | null,
+  licensee: string | null): LicenceAt {
+  return { key: `${licence.licensee}:${licence.ordinal}`, licence, licensor, licensee, licensorHolder: giver, licenseeHolder: licence.licensee,
+    lent: bigAt(licence.lent, hour), required: bigAt(licence.required, hour),
+    since: numberAt(licence.start, hour), designs: licence.variants.flatMap(runs => {
+      const run = runAt(runs, hour);
+      return run ? [{ variant: run[2], name: variantNameAt(reply.variants[run[2]], hour) }] : [];
+    }) };
 }
 
 /** The holders that held `tag` at `hour`: the countries a node of that tag then stands for. */
@@ -55,14 +68,25 @@ export function holdersAt(reply: Pick<ProductionCatalogueReply, 'holders'>, tag:
   return Object.keys(reply.holders).filter(holder => tagAt(reply.holders[holder], hour) === tag);
 }
 
-/** Every licence standing at `hour` that one of `holders` grants or holds, by whatever tags they hold then. */
-export function holderLicencesAt(reply: ProductionCatalogueReply, holders: readonly string[], hour: number): LicenceAt[] {
+/** Every licence standing at `hour` that one of `holders` grants or holds, by whatever tags they hold then,
+ * and how many others one of them may grant: their licensor has no identity then. */
+export function holderLicencesAt(reply: ProductionCatalogueReply, holders: readonly string[], hour: number): { rows: LicenceAt[]; unattributed: number } {
   const own = new Set(holders);
-  return licencesAt(reply, hour, () => true).filter(row => own.has(row.licensorHolder) || own.has(row.licenseeHolder));
+  const rows: LicenceAt[] = [];
+  let unattributed = 0;
+  for (const licence of reply.licences) {
+    if (!runAt(licence.start, hour)) continue;
+    const giver = valueAt(licence.licensor, hour);
+    if (own.has(licence.licensee) || giver !== null && own.has(giver))
+      rows.push(licenceAt(reply, licence, hour, giver, giver === null ? null : tagAt(reply.holders[giver], hour), tagAt(reply.holders[licence.licensee], hour)));
+    else if (giver === null) unattributed++;
+  }
+  return { rows, unattributed };
 }
 
-/** A licensor → licensee pair: its licences and the ribbon's width in the measure. */
-export interface LicencePair { licensor: string; licensee: string; licences: LicenceAt[]; width: number }
+/** A licensor → licensee pair: its licences and the ribbon's width in the measure. A party
+ * is null for the licences that name it with no identity or no tag. */
+export interface LicencePair { licensor: string | null; licensee: string | null; licences: LicenceAt[]; width: number }
 
 export function licencePairs(rows: readonly LicenceAt[], width: LicenceWidth): LicencePair[] {
   const pairs = new Map<string, LicencePair>();

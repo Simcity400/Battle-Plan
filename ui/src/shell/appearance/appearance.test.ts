@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contrast, normalizeColor, oklchToRgb, parseColor, parseColorAlpha, rgbToOklch, toHex } from './color.ts';
 import { BUILT_IN_THEMES, contrastColors, contrastWarnings, cssVariable, deriveColors, themeRoles } from './themes.ts';
-import { parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
+import { MAX_THEME_NAME, parseJsonc, parseThemeText, serializeTheme, uniqueThemeName } from './themeFile.ts';
 import { ICON_IMAGE_SIZE, fitIconImage, latestIconImage } from './iconImage.ts';
 import { iconStyleOf, withIconStyle } from './iconStyle.ts';
-import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, resolveAppearance, saveAppearance } from './settings.ts';
+import { APPEARANCE_KEY, DEFAULT_APPEARANCE, LIMITS, loadAppearance, migrateLegacy, parseAppearance, parseCustomTheme, resolveAppearance, saveAppearance } from './settings.ts';
 
 const hex = /^#[0-9a-f]{6}$/;
 function memoryStorage(entries: Record<string, string> = {}) {
@@ -124,6 +124,17 @@ test('VS Code themes with comments and trailing commas convert to one variant', 
 test('unique theme names count upwards without clashing', () => {
   assert.equal(uniqueThemeName('Signal', ['Brass']), 'Signal');
   assert.equal(uniqueThemeName('Signal', ['signal', 'Signal 2']), 'Signal 3');
+  // A generated name fits the saved limit, keeps its suffix whole and survives a reload.
+  const longest = 'L'.repeat(MAX_THEME_NAME);
+  const copy = uniqueThemeName(longest, [longest], ' copy');
+  assert.equal(copy, `${'L'.repeat(MAX_THEME_NAME - 5)} copy`);
+  assert.equal(uniqueThemeName(longest, [longest, copy], ' copy'), `${'L'.repeat(MAX_THEME_NAME - 7)} copy 2`);
+  assert.equal(uniqueThemeName('N'.repeat(45), [], ' copy'), `${'N'.repeat(MAX_THEME_NAME - 5)} copy`);
+  assert.equal(uniqueThemeName('Signal', ['Signal'], ' copy'), 'Signal copy');
+  assert.equal(uniqueThemeName(`${'S'.repeat(MAX_THEME_NAME)}x`, []), 'S'.repeat(MAX_THEME_NAME));
+  assert.equal(uniqueThemeName('  Signal  ', ['Signal']), 'Signal 2');
+  const saved = parseCustomTheme({ id: 'custom-copy', name: copy, variants: { dark: Object.fromEntries(themeRoles.map(role => [role, '#123456'])) } });
+  assert.equal(saved?.name, copy);
 });
 
 test('appearance settings clamp, default and drop unknown themes', () => {

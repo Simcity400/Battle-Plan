@@ -1119,6 +1119,41 @@ fn detail_products_use_summaries_after_two_commits_resume_and_file_append_withou
         Some(f64::from(first + 5)),
         "fuel navigation keeps the clipped membership edge"
     );
+    // The event page counts and pages only the events inside the same `within`.
+    let page = |within: serde_json::Value| {
+        query(
+            &source,
+            None,
+            "events-page",
+            serde_json::json!({
+                "branchId": "1", "family": { "kind": "country-fuel" }, "tags": ["X"],
+                "from": first, "to": first + 700, "pageSize": 1000, "within": within
+            }),
+            &store,
+            &previous_key,
+            &flag,
+        )
+        .unwrap()
+    };
+    let hours = |reply: &serde_json::Value| -> Vec<i32> {
+        reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["hour"].as_i64().unwrap() as i32)
+            .collect()
+    };
+    let all = hours(&page(serde_json::json!({})));
+    assert!(all.contains(&first), "{all:?}");
+    for span in [first + 5..=first + 9, first..=first + 3] {
+        let within = page(serde_json::json!({
+            "X": [{ "firstHour": *span.start(), "lastHour": *span.end() }]
+        }));
+        let inside: Vec<i32> = all.iter().copied().filter(|hour| span.contains(hour)).collect();
+        assert_eq!(hours(&within), inside, "{span:?}");
+        assert_eq!(within["total"], inside.len().to_string(), "{span:?}");
+        assert_eq!(within["firstOrdinal"], "0");
+    }
     assert!(source.state::<Cache>().lock().unwrap().branches.is_empty());
     drop(source);
     let appended = prefix

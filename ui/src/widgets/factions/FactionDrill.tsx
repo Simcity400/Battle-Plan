@@ -37,10 +37,11 @@ export default function FactionDrill({ runtime, track, view, names, at, active, 
   const product = useProduct<FactionDetailReply>(runtime.client, exists ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'faction-details', params: { branchId: track.branch.id, hour: at, faction: view.id } } : null, active);
   // The last reply stays shown while the next hour's loads, so playback never flickers;
-  // never one from a later hour (after a rewind), nor once the current read has failed.
+  // never one from a later hour (after a rewind), once the current read has failed, or
+  // outside the faction's proven existence (dissolved, or not recorded since).
   const held = useRef<FactionDetailReply | null>(null);
   if (product.data?.faction === view.id) held.current = product.data;
-  const data = !product.error && held.current?.faction === view.id && held.current.hour <= at ? held.current : null;
+  const data = exists && !product.error && held.current?.faction === view.id && held.current.hour <= at ? held.current : null;
 
   const founded = life[0]?.firstHour ?? null;
   const from = founded == null ? at : Math.min(at, Math.max(track.branch.firstHour, founded));

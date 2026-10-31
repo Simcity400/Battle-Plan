@@ -104,17 +104,27 @@ impl Reference {
             }
         };
         let keyed = self.keyed();
-        observed.insert(keyed.key(Field::Known(0)), 1);
+        let mut whole = true;
         for row in rows {
-            let (Some(owner), Some(giver)) = (tags.slot(row.owner), tags.slot(row.giver)) else {
-                keyed.refuse("a licence names a country with no identity");
+            let Some(owner) = tags.slot(row.owner) else {
+                keyed.refuse("a licence's licensee has no identity");
+                whole = false;
                 continue;
             };
             keyed.tag(tags, owner, hour);
-            keyed.tag(tags, giver, hour);
             let at = row.ordinal;
+            let licensor = match tags.slot(row.giver) {
+                Some(giver) => {
+                    keyed.tag(tags, giver, hour);
+                    (Field::LicenceGiver(owner, at), i128::from(giver))
+                }
+                None => {
+                    keyed.refuse("a licence's licensor has no identity");
+                    (Field::LicenceUnidentified(owner, at), 1)
+                }
+            };
             for (field, value) in [
-                (Field::LicenceGiver(owner, at), i128::from(giver)),
+                licensor,
                 (Field::LicenceLent(owner, at), i128::from(row.lended_cic)),
                 (
                     Field::LicenceRequired(owner, at),
@@ -130,6 +140,9 @@ impl Reference {
                     i128::from(variant),
                 );
             }
+        }
+        if whole {
+            observed.insert(keyed.key(Field::Known(0)), 1);
         }
     }
 
@@ -542,7 +555,7 @@ fn churn(hour: i32) -> DecodedFrame {
         unavailable(&mut at, TableId::Countries);
     }
 
-    // Licences: granted, revoked, aliased licensees, an unknown licensor.
+    // Licences: granted, revoked, aliased licensees, an unknown licensor and licensee.
     let mut licences = vec![ProductionLicenseRecordRow {
         owner: 1,
         ordinal: 0,
@@ -572,6 +585,15 @@ fn churn(hour: i32) -> DecodedFrame {
             giver: 1,
             lended_cic: 1,
             equipment: vec![0xd1, 0xd2, 0xd3],
+            ..Default::default()
+        });
+    }
+    if (36..44).contains(&hour) {
+        licences.push(ProductionLicenseRecordRow {
+            owner: 8,
+            ordinal: 2,
+            giver: 2,
+            lended_cic: 1,
             ..Default::default()
         });
     }

@@ -310,18 +310,20 @@ export function breakdownRows(balance: Balance, trades: Deals | null, decimals: 
       ...(more.length ? [{ label: `${more.length} more ${more.length === 1 ? 'deal' : 'deals'}`, value: amount(total(more)), tone: 'muted' as const, indent: true }] : []),
       ...(shown(rest) ? [{ label: 'Not from a listed deal', value: formatSigned(rest, decimals), tone: 'muted' as const, indent: true }] : [])];
   };
+  // Each operand as its signed contribution to the net, whatever sign a mod gives it.
+  const added = (raw: bigint) => formatSigned(raw, decimals), taken = (raw: bigint) => formatSigned(-raw, decimals);
   const rows: TooltipRow[] = [{ label: 'Produced', value: amount(balance.produced) }];
-  if (balance.fromSubjects) rows.push({ label: 'From subjects', value: `+${amount(balance.fromSubjects)}` });
-  rows.push({ label: 'Imported', value: balance.imported ? `+${amount(balance.imported)}` : '0' });
+  if (balance.fromSubjects) rows.push({ label: 'From subjects', value: added(balance.fromSubjects) });
+  rows.push({ label: 'Imported', value: added(balance.imported) });
   rows.push(...deals(balance.imported, trades?.imports));
-  if (balance.toOverlord) rows.push({ label: 'To the overlord', value: `−${amount(balance.toOverlord)}` });
-  rows.push({ label: 'Exported (trade law)', value: balance.exportReserve ? `−${amount(balance.exportReserve)}` : '0' });
+  if (balance.toOverlord) rows.push({ label: 'To the overlord', value: taken(balance.toOverlord) });
+  rows.push({ label: 'Exported (trade law)', value: taken(balance.exportReserve) });
   rows.push(...deals(balance.exported, trades?.exports));
   const unsold = balance.exportReserve - balance.exported;
   if (shown(unsold)) rows.push({ label: unsold > 0n ? 'Set aside, not bought' : 'Bought beyond the reserve', value: amount(unsold < 0n ? -unsold : unsold), tone: 'muted', indent: true });
   rows.push({ label: 'Available', value: amount(balance.available), strong: true, divider: true });
-  if (balance.projects) rows.push({ label: 'Needed by special projects', value: `−${amount(balance.projects)}` });
-  rows.push({ label: 'Needed by production lines', value: balance.production ? `−${amount(balance.production)}` : '0' });
+  if (balance.projects) rows.push({ label: 'Needed by special projects', value: taken(balance.projects) });
+  rows.push({ label: 'Needed by production lines', value: taken(balance.production) });
   rows.push({ label: balance.net < 0n ? 'Deficit' : 'Surplus', value: formatSigned(balance.net, decimals), strong: true, divider: true,
     tone: balance.net < 0n ? 'negative' : balance.net > 0n ? 'positive' : undefined });
   return rows;

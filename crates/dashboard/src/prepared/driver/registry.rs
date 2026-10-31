@@ -677,6 +677,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::products::market::LEDGER,
         ],
         sections: &[products::market::FAMILY],
+        // 2: a row whose buyer or receiver has no identity stands, those hours dated.
+        version: 2,
         ..family("market")
     },
     Descriptor {
@@ -691,6 +693,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["production-catalogue"],
         gates: &[crate::products::production_catalogue::QUERY],
         sections: &[products::production_catalogue::FAMILY],
+        // 2: a licence whose licensor has no identity stands; one with no licensee's leaves
+        // the roster unknown.
+        version: 2,
         ..family("production_catalogue")
     },
     Descriptor {
@@ -706,6 +711,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         gates: &[crate::products::politics_state::history::QUERY],
         // Its values, and its catalogue by the family's name.
         sections: &["politics-state", products::politics_state::history::FAMILY],
+        // 2: refused election eligibility dated per holder.
+        version: 2,
         ..family("politics_state")
     },
     Descriptor {
@@ -831,6 +838,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["research"],
         gates: &["research"],
         sections: &["research"],
+        // 2: a read of no slots is a known empty slot set.
+        version: 2,
         walk: true,
         ..family("research")
     },

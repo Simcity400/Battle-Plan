@@ -80,6 +80,9 @@ pub enum Field {
     LicenceStart(u32, u32),
     /// The record's licensed variant at position `2`.
     LicenceVariant(u32, u32, u32),
+    /// 1 while the record's licensor has no identity: the licence stands, and
+    /// any chosen country may be its licensor.
+    LicenceUnidentified(u32, u32),
     /// An organisation's holding country's holder.
     MioHolder(u64),
     MioSize(u64),
@@ -107,6 +110,7 @@ impl Field {
     fn domain(self) -> u8 {
         match self {
             Self::LicenceGiver(..)
+            | Self::LicenceUnidentified(..)
             | Self::LicenceLent(..)
             | Self::LicenceRequired(..)
             | Self::LicenceStart(..)
@@ -290,12 +294,13 @@ pub struct LicenceHistory {
     pub licensee: String,
     /// The record's roster position: not a persistent identity.
     pub ordinal: u32,
-    /// The licensor's holder.
+    /// The licensor's holder; no run while it had no identity.
     pub licensor: Vec<EconomyRun>,
     /// Civilian factories lent and required.
     pub lent: Vec<EconomyRun>,
     pub required: Vec<EconomyRun>,
-    /// The native start date's hour.
+    /// The native start date's hour, read every hour the licence stands: its
+    /// runs are the licence's lifetime.
     pub start: Vec<EconomyRun>,
     /// Each licensed variant, in recorded order, as a hexadecimal handle.
     pub variants: Vec<Vec<EconomyRun>>,
@@ -468,6 +473,7 @@ pub fn query(
             }
             (
                 Field::LicenceGiver(owner, at)
+                | Field::LicenceUnidentified(owner, at)
                 | Field::LicenceLent(owner, at)
                 | Field::LicenceRequired(owner, at)
                 | Field::LicenceStart(owner, at)
@@ -507,6 +513,8 @@ pub fn query(
         CatalogueView::Organisations => |field| matches!(field, Field::MioHolder(_)),
         CatalogueView::Designs => |field| matches!(field, Field::DesignCreator(_)),
     };
+    // The keys a row shows the values of: neither its party nor its licensor's absence.
+    let valued = |field: &Field| !is_party(field) && !matches!(field, Field::LicenceUnidentified(..));
     let rows: Vec<((u64, u32), Vec<(u64, Field)>)> = grouped.into_iter().collect();
     // Every row's party key is read first, all together, so a row no chosen country is party
     // to is skipped before its other keys are read; those are then read together too. The rows
@@ -532,15 +540,40 @@ pub fn query(
             None => Ok(Vec::new()),
         })
         .collect();
+    // With a selection, the hours each licence's licensor had no identity: any chosen
+    // country may be it.
+    let unidentified_keys: Vec<Option<u64>> = rows
+        .iter()
+        .map(|(_, fields)| {
+            fields
+                .iter()
+                .find(|(_, field)| chosen.is_some() && matches!(field, Field::LicenceUnidentified(..)))
+                .map(|&(id, _)| id)
+        })
+        .collect();
+    let read = published.runs_each(&unidentified_keys.iter().flatten().copied().collect::<Vec<_>>())?;
+    let mut read = read.into_iter();
+    let unidentified: Vec<io::Result<Vec<EconomyRun>>> = unidentified_keys
+        .iter()
+        .map(|key| match key {
+            Some(_) => read
+                .next()
+                .expect("a read for every unidentified key")
+                .map(|runs| published.clipped_text(runs, &all)),
+            None => Ok(Vec::new()),
+        })
+        .collect();
     // Each row's spans, none for a skipped row, up to the first party that could not be read.
     let mut spans: Vec<Option<Vec<(i32, i32)>>> = Vec::new();
-    for (((owner, _), _), party) in rows.iter().zip(&parties) {
-        let Ok(party) = party else {
+    for ((((owner, _), _), party), unidentified) in rows.iter().zip(&parties).zip(&unidentified) {
+        let (Ok(party), Ok(unidentified)) = (party, unidentified) else {
             break;
         };
         let selected = match params.view {
-            CatalogueView::Licences => selected_spans(chosen.as_ref(), &[*owner as u32], party),
-            _ => selected_spans(chosen.as_ref(), &[], party),
+            CatalogueView::Licences => {
+                selected_spans(chosen.as_ref(), &[*owner as u32], party, unidentified)
+            }
+            _ => selected_spans(chosen.as_ref(), &[], party, &[]),
         };
         let skipped =
             selected.is_empty() || (params.view == CatalogueView::Designs && party.is_empty());
@@ -553,7 +586,7 @@ pub fn query(
         .map(|(index, (_, fields))| match spans.get(index) {
             Some(Some(_)) => fields
                 .iter()
-                .filter(|(_, field)| !is_party(field))
+                .filter(|(_, field)| valued(field))
                 .map(|&(id, _)| id)
                 .collect(),
             _ => Vec::new(),
@@ -563,10 +596,12 @@ pub fn query(
     // The first row whose other keys are not yet read.
     let mut unread = 0;
     let mut parties = parties.into_iter();
+    let mut unidentified = unidentified.into_iter();
     let mut spans = spans.into_iter();
     for (index, ((owner, at), fields)) in rows.into_iter().enumerate() {
         published.check()?;
         let party = parties.next().expect("a party read for every row")?;
+        unidentified.next().expect("an unidentified read for every row")?;
         let Some(spans) = spans.next().expect("spans for every party read") else {
             continue;
         };
@@ -605,7 +640,7 @@ pub fn query(
                 };
                 let mut variants = BTreeMap::new();
                 for (_, field) in fields {
-                    if is_party(&field) {
+                    if !valued(&field) {
                         continue;
                     }
                     let runs = text()?;
@@ -650,7 +685,7 @@ pub fn query(
                     names: Vec::new(),
                 };
                 for (_, field) in fields {
-                    if is_party(&field) {
+                    if !valued(&field) {
                         continue;
                     }
                     let runs = text()?;
@@ -709,7 +744,7 @@ pub fn query(
                     names: Vec::new(),
                 };
                 for (_, field) in fields {
-                    if is_party(&field) {
+                    if !valued(&field) {
                         continue;
                     }
                     let runs = text()?;

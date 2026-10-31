@@ -21,7 +21,7 @@ import { groupReasonAt, preparedAt, valueAt } from '../../dashboard/economyHisto
 import { EquipmentCell, useVariantArt } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
-import { knownAt, MARKET_HISTORY, partiesOf, partyTagsAt, validateMarketHistory } from '../../dashboard/marketHistory';
+import { knownAt, MARKET_HISTORY, partiesOf, partyTagsAt, rosterCount, validateMarketHistory } from '../../dashboard/marketHistory';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -36,6 +36,7 @@ import '../equipment-stockpile/equipmentStockpile.css';
 import './lendLeaseAgreements.css';
 
 const NO_ROWS: readonly AgreementRow[] = [];
+const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributed: 0 };
 const NO_WARNINGS: readonly string[] = [];
 const rowKey = (row: AgreementRow) => row.key;
 const validate = validateMarketHistory('agreements');
@@ -69,10 +70,15 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: MARKET_HISTORY,
     params: { branchId: track.branch.id, view: 'agreements', tags: [...tags].sort() } } : null;
   const { data, error, retry } = useProduct<MarketHistoryReply>(runtime.client, request, active, validate, track?.source);
-  useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const showEnded = options.ended !== 'hidden';
-  const rows = useMemo(() => data && match.ready && !match.reason ? agreementRows(data, direction, match.matches, hour, showEnded) : NO_ROWS,
+  const listed = useMemo(() => data && match.ready && !match.reason ? agreementRows(data, direction, match.matches, hour, showEnded) : NO_AGREEMENTS,
     [data, match, direction, hour, showEnded]);
+  const rows = listed.rows;
+  // An agreement whose side in this direction has no tag may be a chosen country's: counted, never listed.
+  const warnings = useMemo(() => listed.unattributed
+    ? [...data?.warnings ?? [], `${listed.unattributed} agreements whose ${direction === 'sent' ? 'givers' : 'receivers'} were not recorded at this date may also match`]
+    : data?.warnings ?? NO_WARNINGS, [listed.unattributed, data, direction]);
+  useDiagnostics(onDiagnostics, warnings);
   const several = widget.countries.kind !== 'selected' && !(widget.countries.kind === 'tags' && widget.countries.tags.length === 1);
   const [visible, setVisible] = useState<readonly AgreementRow[]>(NO_ROWS);
   const onVisibleRows = useCallback((shown: readonly AgreementRow[]) => setVisible(shown), []);
@@ -143,6 +149,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const drillTags = picked && data ? partyTagsAt(partiesOf(data.holders, [picked.agreement.giver, valueAt(picked.agreement.receiver, picked.at)]), data.holders, drillAt) : null;
   // An agreement's fuel terms are a row of their own, not another agreement.
   const active_ = new Set(rows.filter(row => !row.ended).map(row => `${row.agreement.giver}:${row.agreement.id}`)).size;
+  const activeCount = data ? rosterCount(data, hour, active_, listed.unattributed) : null;
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -159,7 +166,8 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
   const subject = fallback.length === 1 ? name(fallback[0], hour) : 'These countries';
   const body = !knownAt(data, hour) ? <WidgetState kind="unavailable" message="Lend-lease terms were not recorded." />
-    : !rows.length ? <WidgetState kind="empty" icon="link" message={`${subject} ${fallback.length === 1 ? 'has' : 'have'} no ${direction === 'sent' ? 'outgoing' : 'incoming'} lend-lease at this date.`} />
+    : !rows.length ? listed.unattributed ? <WidgetState kind="unavailable" message={`Some agreements' ${direction === 'sent' ? 'givers' : 'receivers'} were not recorded at this date.`} />
+      : <WidgetState kind="empty" icon="link" message={`${subject} ${fallback.length === 1 ? 'has' : 'have'} no ${direction === 'sent' ? 'outgoing' : 'incoming'} lend-lease at this date.`} />
       : <Table key={`${track.source.id}:${track.branch.id}`} label="Lend-lease agreements" rows={rows} columns={columns} rowKey={rowKey}
         sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
         rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)} narrow={narrowTableOf(options)} muted={row => row.ended}
@@ -172,7 +180,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;
   return <div ref={anchor} className="lend-lease-agreements-host">{groupFailure}
-    {headerSlot && createPortal(<span className="pill">{active_.toLocaleString()} active</span>, headerSlot)}
+    {headerSlot && activeCount !== null && createPortal(<span className="pill">{activeCount} active</span>, headerSlot)}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
       title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={dayLabel(drillShown ?? at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}

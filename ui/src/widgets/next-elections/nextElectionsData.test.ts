@@ -6,8 +6,9 @@ import { daysLeft, daysText, ELECTION_VALUES, electionsAt, electionTooltip, elec
 import type { ElectionRow } from './nextElectionsData.ts';
 
 const run = (firstHour: number, lastHour: number, value: string) => ({ firstHour, lastHour, value });
-const holder = (tag: string, fields: { held?: ReturnType<typeof run>[]; interval?: ReturnType<typeof run>[]; next?: ReturnType<typeof run>[]; last?: ReturnType<typeof run>[] }, tags = [{ hour: 0, tag }]) =>
-  ({ tags, held: fields.held ?? [], interval: fields.interval ?? [], next: fields.next ?? [], last: fields.last ?? [] });
+const holder = (tag: string, fields: { held?: ReturnType<typeof run>[]; refused?: ReturnType<typeof run>[]; interval?: ReturnType<typeof run>[];
+  next?: ReturnType<typeof run>[]; last?: ReturnType<typeof run>[] }, tags = [{ hour: 0, tag }]) =>
+  ({ tags, held: fields.held ?? [], refused: fields.refused ?? [], interval: fields.interval ?? [], next: fields.next ?? [], last: fields.last ?? [] });
 const reply = (elections: ReturnType<typeof holder>[], lastHour: number | null = 10_000) => ({ branchId: '1', mode: 'elections', lastHour, tag: null, hour: null,
   known: [{ firstHour: 0, lastHour: 10_000 }], elections, names: {}, exileHistory: [], holders: {}, holderBalances: [], warnings: [] as string[] });
 const all = () => true;
@@ -73,19 +74,26 @@ test('countries that do not hold elections are hidden, and unknown eligibility i
   const data = validateElectionsReply(reply([
     holder('YES', { held: [run(0, 100, '1')], next: [run(0, 100, '500')] }),
     holder('NOT', { held: [run(0, 100, '0')], interval: [run(0, 100, '48')], next: [run(0, 100, '500')] }),
-    // Read before and after hour 50, but not at it.
+    // Absent from the complete read at hour 50: it held no schedule then.
     holder('GAP', { held: [run(0, 40, '1'), run(60, 100, '1')] }),
     // Its schedule was read, its eligibility not.
-    holder('SCH', { interval: [run(0, 100, '48')] }),
+    holder('SCH', { refused: [run(0, 100, '1')], interval: [run(0, 100, '48')] }),
+    // Refused before its first decided read, after its last, and throughout.
+    holder('LED', { refused: [run(0, 60, '1')], held: [run(61, 100, '1')] }),
+    holder('TRL', { held: [run(0, 40, '1')], refused: [run(41, 100, '1')] }),
+    holder('ALL', { refused: [run(0, 100, '1')], last: [run(0, 100, '0')] }),
     // Not yet read: neither listed nor counted.
     holder('NEW', { held: [run(80, 100, '1')] }),
   ]));
   const view = electionsAt(data, 50, all);
   assert.deepEqual(view.rows.map(row => row.tag), ['YES']);
-  assert.equal(view.unknown, 2);
-  assert.deepEqual(electionWarnings(data, view), ['2 refused election eligibility: not recorded at this hour']);
-  // Once read again only the unread schedule's country stays unknown.
-  assert.equal(electionsAt(data, 90, all).unknown, 1);
+  assert.equal(view.unknown, 4);
+  assert.deepEqual(electionWarnings(data, view), ['4 refused election eligibility: not recorded at this hour']);
+  // Once decided, a country is listed; the others stay unknown.
+  const later = electionsAt(data, 90, all);
+  assert.deepEqual(later.rows.map(row => row.tag), ['YES', 'GAP', 'LED', 'NEW']);
+  assert.equal(later.unknown, 3);
+  assert.equal(electionsAt(data, 50, tag => tag === 'ALL').unknown, 1);
   assert.deepEqual(electionWarnings(data, electionsAt(data, 101, all)), []);
 });
 
@@ -114,6 +122,8 @@ test('malformed histories are refused rather than read as no elections', () => {
   const good = () => reply([holder('MOD', { held: [run(0, 10, '1')], next: [run(0, 10, '20')], last: [run(0, 10, '0')] })]);
   for (const change of [
     (value: ReturnType<typeof good>) => { value.elections[0].held[0].value = '2'; },
+    (value: ReturnType<typeof good>) => { value.elections[0].refused = [run(11, 12, '0')]; },
+    (value: ReturnType<typeof good>) => { delete (value.elections[0] as Record<string, unknown>).refused; },
     (value: ReturnType<typeof good>) => { value.elections[0].next = [run(5, 10, '1'), run(0, 4, '2')]; },
     (value: ReturnType<typeof good>) => { value.elections[0].last[0].value = '1.5'; },
     (value: ReturnType<typeof good>) => { delete (value.elections[0] as Record<string, unknown>).last; },

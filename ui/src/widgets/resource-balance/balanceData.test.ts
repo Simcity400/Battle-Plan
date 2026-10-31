@@ -121,6 +121,16 @@ test('the breakdown lists each partner, the unattributed rest and the game’s t
   assert.equal(rubber.at(-1)!.tone, 'negative');
 });
 
+test('signed operands show their contribution to the net once, never a second sign', () => {
+  // A mod's reversed operands: a negative import, export reserve and demands.
+  const balance = balanceOf(pools(0, 0, { producedRaw: 10, importedRaw: -1, toExportRaw: -2, availableRaw: 13, afterProjectsRaw: 14, productionRaw: 3 }));
+  const shown = new Map(breakdownRows(balance, { imports: [], exports: [] }, 5, tag => ({ name: tag })).map(row => [row.label, row.value]));
+  assert.equal(shown.get('Imported'), '−1');
+  assert.equal(shown.get('Exported (trade law)'), '+2');
+  assert.equal(shown.get('Needed by special projects'), '+1');
+  assert.equal(shown.get('Needed by production lines'), '+3');
+});
+
 test('resource partners retain their pending and refused flag status without changing delivered amounts', () => {
   const pending = { name: 'SPR name', flagPending: true };
   const refused = { name: 'SAU name', flagPending: false, flagReason: 'Recorded flag unavailable' };

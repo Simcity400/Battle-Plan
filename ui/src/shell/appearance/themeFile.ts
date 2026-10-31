@@ -137,12 +137,15 @@ export function parseThemeText(text: string): ImportedTheme {
   return parseOwnTheme(input);
 }
 
-/** A unique, readable name among existing themes: "Name", "Name 2", … */
-export function uniqueThemeName(name: string, taken: readonly string[]): string {
-  const lower = new Set(taken.map(item => item.toLowerCase()));
-  if (!lower.has(name.toLowerCase())) return name;
-  for (let index = 2; ; index++) {
-    const candidate = `${name.slice(0, MAX_THEME_NAME - String(index).length - 1)} ${index}`;
+/** A unique, readable name among existing themes, as saved and read back: trimmed, at most
+ * MAX_THEME_NAME characters, "Name", "Name 2", …; `suffix` (" copy") is kept whole, the name
+ * shortened for it and the number. */
+export function uniqueThemeName(name: string, taken: readonly string[], suffix = ''): string {
+  const lower = new Set(taken.map(item => item.trim().toLowerCase()));
+  const base = name.trim();
+  for (let index = 1; ; index++) {
+    const tail = index === 1 ? suffix : `${suffix} ${index}`;
+    const candidate = `${base.slice(0, MAX_THEME_NAME - tail.length).trimEnd()}${tail}`;
     if (!lower.has(candidate.toLowerCase())) return candidate;
   }
 }

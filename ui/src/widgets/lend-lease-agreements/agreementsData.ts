@@ -39,18 +39,26 @@ function schedules(agreement: AgreementHistory, at: number) {
 }
 
 /** Every agreement the chosen countries send (or receive) at `hour`, with ended ones when
- * `ended` holds; fuel terms get their own row. Matching follows each side's tag at the read. */
+ * `ended` holds; fuel terms get their own row. Matching follows each side's tag at the read.
+ * An agreement whose side in that direction has no tag then may be a chosen country's: it is
+ * counted as unattributed, never listed. */
 export function agreementRows(reply: MarketHistoryReply, direction: Direction, matches: (tag: string, hour: number) => boolean, hour: number,
-  showEnded: boolean): AgreementRow[] {
+  showEnded: boolean): { rows: AgreementRow[]; unattributed: number } {
   const rows: AgreementRow[] = [];
+  let unattributed = 0;
   for (const agreement of reply.agreements) {
-    const read = readHourOf(agreement.receiver, hour);
+    // Its revision is read every hour it stands; its receiver only while the receiver has an identity.
+    const read = readHourOf(agreement.revision, hour);
     if (!read || read.ended && !showEnded) continue;
     const { at, ended } = read;
     const giver = holderTagAt(reply, agreement.giver, at);
     const receiver = holderTagAt(reply, valueAt(agreement.receiver, at), at);
     const own = direction === 'sent' ? giver : receiver;
-    if (own === null || !matches(own, at)) continue;
+    if (own === null) {
+      unattributed++;
+      continue;
+    }
+    if (!matches(own, at)) continue;
     const base = { agreement, at, ended, from: own, partner: direction === 'sent' ? receiver : giver, giver, receiver,
       since: numberAt(agreement.since, at), last: numberAt(agreement.last, at) };
     const scheduled = schedules(agreement, at);
@@ -65,7 +73,7 @@ export function agreementRows(reply: MarketHistoryReply, direction: Direction, m
       items: [{ variant: null, name: 'Fuel', schedule: [daily ? `Daily ${fuel(daily)}` : '', percentage ? `Production share ${share(percentage)}` : ''].filter(Boolean).join(' · '),
         delivered: sent, lost: sunk }] });
   }
-  return rows;
+  return { rows, unattributed };
 }
 
 /** Fuel quantities are /32768, equipment fixed5. */

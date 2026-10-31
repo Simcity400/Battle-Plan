@@ -427,8 +427,8 @@ impl Country {
         let mut technologies = BTreeMap::new();
         // Inventory is sorted by (country, template index). Only former/current
         // assignments need completion evidence; never rescan the full catalogue
-        // once per country per hour.
-        if let (Some(inventory), Some(owner)) = (inventory, inputs.first().map(|r| r.country)) {
+        // once per country per hour. A read of no slots still completes them.
+        if let Some(inventory) = inventory {
             for occurrence in self
                 .active
                 .values()
@@ -439,7 +439,7 @@ impl Country {
                         .map(|&(_, _, occurrence, _, _)| occurrence),
                 )
             {
-                if let Some(row) = inventory.find(owner, occurrence) {
+                if let Some(row) = inventory.find(occurrence) {
                     technologies.insert(occurrence, row.clone());
                 }
             }
@@ -1229,32 +1229,30 @@ pub(crate) struct FreshRead<'a> {
     inventory: Option<Inventory<'a>>,
 }
 
-/// The technology inventory a read joins its assignments to.
+/// The technology inventory a read joins its assignments to: its owner's rows.
 pub(crate) enum Inventory<'a> {
-    /// Rows sorted by country and template index: the whole table, or one
+    /// Rows sorted by country and template index: the whole table, or the
     /// owner's part of it.
-    Table(&'a [ResearchTechnologyRow]),
-    /// One owner's rows of the template indexes `covered` names, those it
-    /// holds: a lookup of an index it does not name is not made.
-    Rows {
+    Table {
         owner: u32,
-        rows: &'a BTreeMap<u32, ResearchTechnologyRow>,
+        rows: &'a [ResearchTechnologyRow],
     },
+    /// The owner's rows of the template indexes `covered` names, those it
+    /// holds: a lookup of an index it does not name is not made.
+    Rows(&'a BTreeMap<u32, ResearchTechnologyRow>),
 }
 
 impl Inventory<'_> {
     /// The owner's row of a template index.
-    fn find(&self, owner: u32, occurrence: u32) -> Option<&ResearchTechnologyRow> {
+    fn find(&self, occurrence: u32) -> Option<&ResearchTechnologyRow> {
         match self {
-            Self::Table(rows) => rows
-                .binary_search_by_key(&(owner, occurrence), |t| {
+            Self::Table { owner, rows } => rows
+                .binary_search_by_key(&(*owner, occurrence), |t| {
                     (t.country, t.database_index as u32)
                 })
                 .ok()
                 .map(|index| &rows[index]),
-            Self::Rows { owner: held, rows } => {
-                (*held == owner).then(|| rows.get(&occurrence)).flatten()
-            }
+            Self::Rows(rows) => rows.get(&occurrence),
         }
     }
 }
@@ -1300,15 +1298,18 @@ impl<'a> FrameReads<'a> {
             .into_iter()
             .flatten()
             .collect();
-        let read = inputs
+        // SliceReads proves a read of no slots as well as one of many: the read is
+        // this hour's when an owner was read now and every owner with rows was too.
+        // Its inventory is that of its first owner holding slots, else of its first
+        // owner read now.
+        let fresh = |owner: u32| self.read_hour_of(TableId::ResearchInputs, owner) == Some(self.hour);
+        let owner = inputs
             .first()
-            .and_then(|input| self.read_hour_of(TableId::ResearchInputs, input.country))
-            .filter(|&read| {
-                read == self.hour
-                    && inputs.iter().all(|input| {
-                        self.read_hour_of(TableId::ResearchInputs, input.country) == Some(read)
-                    })
-            });
+            .map(|input| input.country)
+            .or_else(|| owners.iter().copied().find(|&owner| fresh(owner)));
+        let read = owner
+            .filter(|&owner| fresh(owner) && inputs.iter().all(|input| fresh(input.country)))
+            .map(|_| self.hour);
         // Bonuses and modifiers join only when they come from the same
         // read; every row of one owner has that owner's read hour.
         let (bonuses, modifiers) = match read {
@@ -1339,7 +1340,10 @@ impl<'a> FrameReads<'a> {
             read,
             bonuses,
             modifiers,
-            inventory: self.inventory.map(Inventory::Table),
+            inventory: self
+                .inventory
+                .zip(owner)
+                .map(|(rows, owner)| Inventory::Table { owner, rows }),
         }
     }
 }

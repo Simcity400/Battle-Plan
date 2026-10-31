@@ -38,7 +38,12 @@ import '../trade-flows/tradeFlows.css';
 import './productionLicences.css';
 
 const NO_WARNINGS: readonly string[] = [];
+const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
 const OTHER = '\u0000other';
+// The node of every licence party with no identity or no tag at the hour.
+const UNNAMED = '\u0000unnamed';
+const UNNAMED_COUNTRY = 'Country name unavailable';
+const nodeTag = (tag: string | null) => tag ?? UNNAMED;
 const PARAMS_VIEW = 'licences';
 
 /** Who builds whose designs under licence at the moment shown: licensors left,
@@ -70,29 +75,36 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: PRODUCTION_CATALOGUE,
     params: { branchId: track.branch.id, view: PARAMS_VIEW, tags: [] } } : null;
   const { data, error, retry } = useProduct<ProductionCatalogueReply>(runtime.client, request, active, validateLicences, track?.source);
-  useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
-  const rows = useMemo(() => data && match.ready && !match.reason ? licencesAt(data, hour, match.matches) : [], [data, match, hour]);
+  const listed = useMemo(() => data && match.ready && !match.reason ? licencesAt(data, hour, match.matches) : NO_LICENCES, [data, match, hour]);
+  const rows = listed.rows;
+  // A licence whose party has no tag at this hour may be one the widget keeps: counted, never drawn.
+  const warnings = useMemo(() => listed.unattributed
+    ? [...data?.warnings ?? [], `${listed.unattributed} licences whose countries were not recorded at this date may also match`]
+    : data?.warnings ?? NO_WARNINGS, [listed.unattributed, data]);
+  useDiagnostics(onDiagnostics, warnings);
   const pairs = useMemo(() => licencePairs(rows, width).filter(pair => pair.width > 0), [rows, width]);
-  const tags = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]))], [rows]);
+  const tags = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((tag): tag is string => tag !== null))], [rows]);
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colour = useCountryColours(tags, looks.color, tokens, looks);
+  const partyName = useCallback((tag: string | null) => tag === null ? UNNAMED_COUNTRY : looks.name(tag, hour), [looks, hour]);
   const { nodes, links } = useMemo(() => {
     const perSide = Math.max(1, capacity);
     const totals = (side: 'licensor' | 'licensee') => {
       const sums = new Map<string, number>();
-      for (const pair of pairs) sums.set(pair[side], (sums.get(pair[side]) ?? 0) + pair.width);
+      for (const pair of pairs) sums.set(nodeTag(pair[side]), (sums.get(nodeTag(pair[side])) ?? 0) + pair.width);
       const ranked = [...sums].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
       const kept = new Set(ranked.length > perSide ? ranked.slice(0, perSide - 1).map(([tag]) => tag) : ranked.map(([tag]) => tag));
       return { kept, folded: ranked.length > kept.size };
     };
     const left = totals('licensor'), right = totals('licensee');
     const node = (tag: string, side: 'source' | 'target'): FlowNode => tag === OTHER ? { id: `${side}:${OTHER}`, side, label: 'Other', color: tokens.muted, order: '~', last: true }
+      : tag === UNNAMED ? { id: `${side}:${UNNAMED}`, side, label: UNNAMED_COUNTRY, color: tokens.muted, order: '~~', last: true }
       : { id: `${side}:${tag}`, side, label: looks.name(tag, hour), color: colour(tag, hour), flag: looks.flag(tag, hour), order: tag,
         countryFlag: { flag: looks.flag(tag, hour), flagReason: looks.flagReason?.(tag, hour), flagPending: looks.flagPending?.(tag, hour) } };
     const nodeMap = new Map<string, FlowNode>();
     const linkMap = new Map<string, FlowLink>();
     for (const pair of pairs) {
-      const source = left.kept.has(pair.licensor) ? pair.licensor : OTHER, target = right.kept.has(pair.licensee) ? pair.licensee : OTHER;
+      const source = left.kept.has(nodeTag(pair.licensor)) ? nodeTag(pair.licensor) : OTHER, target = right.kept.has(nodeTag(pair.licensee)) ? nodeTag(pair.licensee) : OTHER;
       const from = node(source, 'source'), to = node(target, 'target');
       nodeMap.set(from.id, from); nodeMap.set(to.id, to);
       const id = `${from.id}>${to.id}`;
@@ -104,19 +116,19 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const tooltip = useCallback((hit: FlowHit): TooltipContent | null => {
     const inside = (row: LicenceAt, id: string, side: 'licensor' | 'licensee') => {
       const tag = id.slice(id.indexOf(':') + 1);
-      return tag === OTHER ? !nodes.some(node => node.id === `${side === 'licensor' ? 'source' : 'target'}:${row[side]}`) : row[side] === tag;
+      return tag === OTHER ? !nodes.some(node => node.id === `${side === 'licensor' ? 'source' : 'target'}:${nodeTag(row[side])}`) : nodeTag(row[side]) === tag;
     };
     const chosen = hit.kind === 'node' ? rows.filter(row => inside(row, hit.node.id, hit.node.side === 'source' ? 'licensor' : 'licensee'))
       : rows.filter(row => inside(row, hit.link.source, 'licensor') && inside(row, hit.link.target, 'licensee'));
     const title = hit.kind === 'node' ? hit.node.label : `${nodes.find(node => node.id === hit.link.source)?.label} → ${nodes.find(node => node.id === hit.link.target)?.label}`;
     return fitTooltip([{ title, subtitle: dayLabel(hour), rows: chosen.flatMap(row => [{ label: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED, strong: true },
-      { label: `${looks.name(row.licensor, hour)} → ${looks.name(row.licensee, hour)}`, tone: 'muted' as const },
+      { label: `${partyName(row.licensor)} → ${partyName(row.licensee)}`, tone: 'muted' as const },
       { label: 'Civilian factories', value: row.lent === null ? '—' : row.lent.toString() },
       ...row.since !== null ? [{ label: 'Since', value: dayLabel(row.since) }] : []]) }], viewport);
-  }, [rows, nodes, looks, hour, viewport]);
+  }, [rows, nodes, partyName, hour, viewport]);
   const openCountry = (node: FlowNode) => {
     const tag = node.id.slice(node.id.indexOf(':') + 1);
-    if (tag === OTHER || !data) return;
+    if (tag === OTHER || tag === UNNAMED || !data) return;
     setChoice({ scope, tag, hour, holders: holdersAt(data, tag, hour) });
     dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
@@ -136,11 +148,12 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
   if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
   if (!rosterKnown(data, hour)) return <>{groupFailure}<WidgetState kind="unavailable" message="Licences were not recorded at this date." /></>;
-  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} licences</span>, headerSlot);
+  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
   const main = <div className="production-licences">
     <FlowDiagram label="Production licences: licensors to licensees" nodes={nodes} links={links} stretch={width} slots={capacity + 1} hour={hour}
       hoursPerSecond={hoursPerSecond} active={active && !(drill.breakdown && options.drill !== 'popout')} tooltip={tooltip} onCapacity={setCapacity}
-      message={rows.length && !pairs.length ? 'No licence lends civilian factories at this date.' : rows.length ? null : 'No production licences at this date.'}
+      message={rows.length && !pairs.length ? 'No licence lends civilian factories at this date.' : rows.length ? null
+        : listed.unattributed ? "Some licences' countries were not recorded at this date." : 'No production licences at this date.'}
       onLabelPick={openCountry} onPick={hit => { if (hit.kind === 'node') openCountry(hit.node); }}
       onContextMenu={(hit, x, y) => { if (hit?.kind === 'node') menu.open(x, y, [{ label: 'Show licences', run: () => openCountry(hit.node) }]); }} />
     {menu.menu}
@@ -164,12 +177,16 @@ function CountryLicences({ data, holders, tag, hour, runtime, track, active, nar
   active: boolean; narrow: ReturnType<typeof narrowTableOf>;
 }) {
   const viewport = useViewportHeight();
-  const rows = useMemo(() => holderLicencesAt(data, holders, hour), [data, holders, hour]);
-  const wanted = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]))].map(country => ({ hour, tag: country })), [rows, hour]);
+  const held = useMemo(() => holderLicencesAt(data, holders, hour), [data, holders, hour]);
+  const rows = held.rows;
+  const wanted = useMemo(() => [...new Set(rows.flatMap(row => [row.licensor, row.licensee]).filter((tag): tag is string => tag !== null))]
+    .map(country => ({ hour, tag: country })), [rows, hour]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const columns = useMemo<readonly TableColumn<LicenceAt>[]>(() => [
-    { key: 'licensor', header: 'Licensor', label: 'Licensor', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensor, render: row => <CountryCell {...labelAt(hour)(row.licensor)} /> },
-    { key: 'licensee', header: 'Licensee', label: 'Licensee', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensee, render: row => <CountryCell {...labelAt(hour)(row.licensee)} /> },
+    { key: 'licensor', header: 'Licensor', label: 'Licensor', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensor, renderMissing: true,
+      render: row => row.licensor === null ? UNNAMED_COUNTRY : <CountryCell {...labelAt(hour)(row.licensor)} /> },
+    { key: 'licensee', header: 'Licensee', label: 'Licensee', width: 'minmax(var(--table-name-min), 1fr)', value: row => row.licensee, renderMissing: true,
+      render: row => row.licensee === null ? UNNAMED_COUNTRY : <CountryCell {...labelAt(hour)(row.licensee)} /> },
     { key: 'design', header: 'Design', label: 'Design', width: 'minmax(var(--table-name-min), 1.4fr)', value: row => row.designs[0]?.name ?? null, renderMissing: true,
       text: row => row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', '), render: row => row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED },
     { key: 'factories', header: 'Factories', label: 'Civilian factories', numeric: true, width: 'max-content', priority: 2, renderMissing: true,
@@ -178,7 +195,8 @@ function CountryLicences({ data, holders, tag, hour, runtime, track, active, nar
       text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
   ], [labelAt, hour]);
   if (tag === null) return <p className="drill-empty">This country was not recorded at this date.</p>;
-  if (!rows.length) return <p className="drill-empty">No licences at this date.</p>;
+  if (!rosterKnown(data, hour)) return <p className="drill-empty">Licences were not recorded at this date.</p>;
+  if (!rows.length) return <p className="drill-empty">{held.unattributed ? "Some licences' licensors were not recorded at this date." : 'No licences at this date.'}</p>;
   return <div className="production-licences-table"><Table label={`Licences of ${tag}`} rows={rows} columns={columns} rowKey={row => row.key}
     sort={{ column: 'since', direction: 'descending' }} narrow={narrow}
     tooltip={row => fitTooltip([{ title: row.designs.map(design => design.name ?? EQUIPMENT_UNNAMED).join(', ') || EQUIPMENT_UNNAMED,

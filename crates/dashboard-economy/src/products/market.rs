@@ -7,8 +7,10 @@
 //! State tables are written hourly by the game's market writers; an hour is
 //! observed when one of them changed or it follows a gap, and each table's
 //! completeness is kept as its own run (`Known`), so a table that was not
-//! recorded reads as unknown, never as an empty market. A request and an
-//! accepted contract stay apart (native kind 0 and 1). Equipment pools keep
+//! recorded reads as unknown, never as an empty market. A row whose owner has
+//! no identity leaves its table's roster unknown; one whose buyer or receiver
+//! has none stands without it, and a chosen country may be that party. A
+//! request and an accepted contract stay apart (native kind 0 and 1). Equipment pools keep
 //! their native order; amounts stay exact (equipment and CIC fixed5,
 //! lend-lease fuel quantities /32768, fuel shares fixed5).
 //!
@@ -124,6 +126,11 @@ pub enum Field {
     /// 1 while every party of the hour's new occurrences had an identity:
     /// without it a chosen country's empty ledger proves nothing.
     Identified,
+    /// 1 while a standing request's or contract's buyer has no identity: the
+    /// row stands, and any chosen country may be its buyer.
+    ContractUnidentified(u32, u64, u8),
+    /// 1 while a giver's agreement's receiver has no identity.
+    LeaseUnidentified(u32, u64),
 }
 
 /// Entries a stream or index key holds at most. A read decodes a key's whole
@@ -336,9 +343,11 @@ impl Prepared {
                         continue;
                     };
                     let (id, kind) = (row.id, row.kind);
-                    if let Some(buyer) = slot(keyed, row.buyer) {
-                        observed.insert(keyed.key(Field::ContractBuyer(seller, id, kind)), i128::from(buyer));
-                    }
+                    let buyer = match slot(keyed, row.buyer) {
+                        Some(buyer) => (Field::ContractBuyer(seller, id, kind), i128::from(buyer)),
+                        None => (Field::ContractUnidentified(seller, id, kind), 1),
+                    };
+                    observed.insert(keyed.key(buyer.0), buyer.1);
                     observed.insert(keyed.key(Field::ContractSpeed(seller, id, kind)), i128::from(row.speed));
                     for (which, items) in [(0, &row.equipment), (1, &row.prices)] {
                         pool(keyed, observed, named, items, &|ordinal, variant| {
@@ -369,9 +378,11 @@ impl Prepared {
                         continue;
                     };
                     let id = row.id;
-                    if let Some(receiver) = slot(keyed, row.receiver) {
-                        observed.insert(keyed.key(Field::LeaseReceiver(giver, id)), i128::from(receiver));
-                    }
+                    let receiver = match slot(keyed, row.receiver) {
+                        Some(receiver) => (Field::LeaseReceiver(giver, id), i128::from(receiver)),
+                        None => (Field::LeaseUnidentified(giver, id), 1),
+                    };
+                    observed.insert(keyed.key(receiver.0), receiver.1);
                     for (field, value) in [
                         (Field::LeaseRevision(giver, id), i128::from(row.revision)),
                         (Field::LeaseSince(giver, id), i128::from(row.active_since)),
@@ -606,8 +617,9 @@ pub struct MarketPoolItem {
 pub struct ContractHistory {
     pub seller: String,
     pub id: String,
-    /// The buyer's holder.
+    /// The buyer's holder; no run while it had no identity.
     pub buyer: Vec<EconomyRun>,
+    /// Read every hour the row stands: its runs are the row's lifetime.
     pub speed: Vec<EconomyRun>,
     /// Pool 0 equipment, pool 1 agreed prices (CIC).
     pub items: Vec<MarketPoolItem>,
@@ -631,7 +643,9 @@ pub struct OfferHistory {
 pub struct AgreementHistory {
     pub giver: String,
     pub id: String,
+    /// The receiver's holder; no run while it had no identity.
     pub receiver: Vec<EconomyRun>,
+    /// Read every hour the agreement stands: its runs are its lifetime.
     pub revision: Vec<EconomyRun>,
     pub since: Vec<EconomyRun>,
     pub last: Vec<EconomyRun>,
@@ -742,6 +756,7 @@ pub fn history(
             }
             (
                 Field::ContractBuyer(seller, handle, kind)
+                | Field::ContractUnidentified(seller, handle, kind)
                 | Field::ContractSpeed(seller, handle, kind)
                 | Field::ContractPool(seller, handle, kind, ..)
                 | Field::ContractLevel(seller, handle, kind, _),
@@ -752,6 +767,7 @@ pub fn history(
             }
             (
                 Field::LeaseReceiver(giver, handle)
+                | Field::LeaseUnidentified(giver, handle)
                 | Field::LeaseRevision(giver, handle)
                 | Field::LeaseSince(giver, handle)
                 | Field::LeaseLast(giver, handle)
@@ -788,22 +804,32 @@ pub fn history(
         runs.iter().filter_map(|run| run.2.parse().ok()).collect()
     };
     // The other party's runs, read first so a row no chosen country is party
-    // to is skipped before its pools are read.
+    // to is skipped before its pools are read; with a selection, also the
+    // hours that party had no identity.
     let counterpart = |published: &mut Published<'_, Field, Extra>,
                        fields: &[(u64, Field)],
-                       party: fn(&Field) -> bool|
-     -> io::Result<Vec<EconomyRun>> {
-        match fields.iter().find(|(_, field)| party(field)) {
+                       party: fn(&Field) -> bool,
+                       unidentified: fn(&Field) -> bool|
+     -> io::Result<(Vec<EconomyRun>, Vec<EconomyRun>)> {
+        let mut read = |wanted: fn(&Field) -> bool| match fields.iter().find(|(_, field)| wanted(field)) {
             Some(&(id, _)) => published.text(id, &all),
             None => Ok(Vec::new()),
-        }
+        };
+        let runs = read(party)?;
+        let unknown = if chosen.is_some() { read(unidentified)? } else { Vec::new() };
+        Ok((runs, unknown))
     };
     for ((owner, handle, _kind), fields) in owners {
         published.check()?;
         match params.view {
             MarketView::Contracts | MarketView::Requests => {
-                let buyer = counterpart(&mut published, &fields, |field| matches!(field, Field::ContractBuyer(..)))?;
-                let spans = selected_spans(chosen.as_ref(), &[owner], &buyer);
+                let (buyer, unidentified) = counterpart(
+                    &mut published,
+                    &fields,
+                    |field| matches!(field, Field::ContractBuyer(..)),
+                    |field| matches!(field, Field::ContractUnidentified(..)),
+                )?;
+                let spans = selected_spans(chosen.as_ref(), &[owner], &buyer, &unidentified);
                 if spans.is_empty() {
                     continue;
                 }
@@ -840,7 +866,7 @@ pub fn history(
                 reply.contracts.push(contract);
             }
             MarketView::Inventory => {
-                let spans = selected_spans(chosen.as_ref(), &[owner], &[]);
+                let spans = selected_spans(chosen.as_ref(), &[owner], &[], &[]);
                 if spans.is_empty() {
                     continue;
                 }
@@ -864,8 +890,13 @@ pub fn history(
                 reply.offers.push(offer);
             }
             MarketView::Agreements => {
-                let receiver = counterpart(&mut published, &fields, |field| matches!(field, Field::LeaseReceiver(..)))?;
-                let spans = selected_spans(chosen.as_ref(), &[owner], &receiver);
+                let (receiver, unidentified) = counterpart(
+                    &mut published,
+                    &fields,
+                    |field| matches!(field, Field::LeaseReceiver(..)),
+                    |field| matches!(field, Field::LeaseUnidentified(..)),
+                )?;
+                let spans = selected_spans(chosen.as_ref(), &[owner], &receiver, &unidentified);
                 if spans.is_empty() {
                     continue;
                 }

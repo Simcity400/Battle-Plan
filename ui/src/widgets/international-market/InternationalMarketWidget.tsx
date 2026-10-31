@@ -20,7 +20,7 @@ import { groupReasonAt, preparedAt, valueAt } from '../../dashboard/economyHisto
 import { EquipmentCell, EQUIPMENT_UNNAMED, useVariantArt } from '../../dashboard/EquipmentCell';
 import { countryMatch, MEMBERSHIP_PREPARING } from '../../dashboard/groups';
 import MarketDrill from '../../dashboard/MarketDrill';
-import { knownAt, MARKET_HISTORY, validateMarketHistory } from '../../dashboard/marketHistory';
+import { knownAt, MARKET_HISTORY, rosterCount, validateMarketHistory } from '../../dashboard/marketHistory';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
@@ -37,6 +37,7 @@ import '../equipment-stockpile/equipmentStockpile.css';
 import './internationalMarket.css';
 
 const NO_WARNINGS: readonly string[] = [];
+const NO_CONTRACTS: ReturnType<typeof contractRows> = { rows: [], unattributed: 0 };
 const VALIDATORS = { contracts: validateMarketHistory('contracts'), requests: validateMarketHistory('requests'), inventory: validateMarketHistory('inventory') };
 
 /** Who buys what from whom on the international market at the moment shown:
@@ -70,9 +71,14 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: MARKET_HISTORY,
     params: { branchId: track.branch.id, view, tags: [...tags].sort() } } : null;
   const { data, error, retry } = useProduct<MarketHistoryReply>(runtime.client, request, active, VALIDATORS[view], track?.source);
-  useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
   const ready = !!data && data.view === view && match.ready && !match.reason;
-  const contracts = useMemo(() => ready && view !== 'inventory' ? contractRows(data!, hour, match.matches) : [], [ready, data, view, hour, match]);
+  const listed = useMemo(() => ready && view !== 'inventory' ? contractRows(data!, hour, match.matches) : NO_CONTRACTS, [ready, data, view, hour, match]);
+  const contracts = listed.rows;
+  // A row whose country has no tag at this hour may be one the widget keeps: counted, never listed.
+  const warnings = useMemo(() => listed.unattributed
+    ? [...data?.warnings ?? [], `${listed.unattributed} ${view === 'contracts' ? 'contracts' : 'requests'} whose countries were not recorded at this date may also match`]
+    : data?.warnings ?? NO_WARNINGS, [listed.unattributed, data, view]);
+  useDiagnostics(onDiagnostics, warnings);
   const offers = useMemo(() => ready && view === 'inventory' ? offerRows(data!, hour, match.matches) : [], [ready, data, view, hour, match]);
   const [visibleTags, setVisibleTags] = useState<readonly string[]>([]);
   const [visibleVariants, setVisibleVariants] = useState<readonly string[]>([]);
@@ -91,6 +97,8 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   const names = useCountryNamesAt(runtime.client, track, sort.column === 'seller' || sort.column === 'buyer' ? allTags : [], active);
   const art = useVariantArt(runtime, track, fallback[0] ?? visibleTags[0] ?? null, hour, visibleVariants, active);
   const name = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : names.get(nameKey(hour, tag)) ?? tag, [names, hour]);
+  // Tooltips and titles name a shown row's countries as its cells do; `name` is read only to sort.
+  const label = useCallback((tag: string | null) => tag === null ? 'Country name unavailable' : labelAt(hour)(tag).name, [labelAt, hour]);
   const country = useCallback((key: 'seller' | 'buyer', header: string, priority?: number) => ({ key, header, label: header, priority,
     width: 'minmax(4em, 1fr)', renderMissing: true,
     value: (row: ContractRow | OfferRow) => { const tag = (row as ContractRow)[key] ?? null; return tag === null ? null : name(tag); }, text: (row: ContractRow | OfferRow) => name((row as ContractRow)[key] ?? null),
@@ -136,10 +144,10 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     if (row.assigned !== null) lines.push({ label: 'Convoys assigned', value: `${row.assigned} of ${row.convoys ?? '—'}` });
     if (row.collected !== null) lines.push({ label: 'Payment collected', value: cic(row.collected) });
     if (row.deliveries !== null) lines.push({ label: 'Completed deliveries', value: row.deliveries.toString() });
-    return fitTooltip([{ title: `${name(row.seller)} → ${name(row.buyer)}`, subtitle: dayLabel(hour), rows: lines }], viewport);
-  }, [name, hour, viewport]);
-  const offerTooltip = useCallback((row: OfferRow) => fitTooltip([{ title: row.name ?? EQUIPMENT_UNNAMED, subtitle: `${name(row.seller)} · ${dayLabel(hour)}`,
-    rows: [{ label: 'On market', value: units(row.amount) }, { label: 'Price level', value: levelText(row.level) }] }], viewport), [name, hour, viewport]);
+    return fitTooltip([{ title: `${label(row.seller)} → ${label(row.buyer)}`, subtitle: dayLabel(hour), rows: lines }], viewport);
+  }, [label, hour, viewport]);
+  const offerTooltip = useCallback((row: OfferRow) => fitTooltip([{ title: row.name ?? EQUIPMENT_UNNAMED, subtitle: `${label(row.seller)} · ${dayLabel(hour)}`,
+    rows: [{ label: 'On market', value: units(row.amount) }, { label: 'Price level', value: levelText(row.level) }] }], viewport), [label, hour, viewport]);
   const playing = runtime.clock.getSnapshot().playing;
   const open = (title: string, rowTags: (string | null)[], selected: string | null, holders: readonly (string | null)[]) => {
     const parties = data ? partiesOf(data.holders, holders) : [];
@@ -147,7 +155,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
       ...(parties.length ? { parties } : {}) });
     dispatch({ type: 'open', breakdown: DETAILS.id, hour, playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
-  const count = view === 'inventory' ? offers.length : contracts.length;
+  const count = ready ? rosterCount(data!, hour, view === 'inventory' ? offers.length : contracts.length, listed.unattributed) : null;
   const at = drillHour(drill, hour) ?? hour;
   const drillAt = drill.follow ? hour : at;
   const drillTags = picked?.parties ? partyTagsAt(picked.parties, data?.holders, drillAt) : picked?.tags ?? null;
@@ -160,7 +168,7 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   const header = headerSlot && createPortal(<>
     <Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Market view" />
-    {ready && <span className="pill">{count.toLocaleString()} {view === 'contracts' ? 'active contracts' : view === 'requests' ? 'open requests' : 'listed'}</span>}
+    {count !== null && <span className="pill">{count} {view === 'contracts' ? 'active contracts' : view === 'requests' ? 'open requests' : 'listed'}</span>}
   </>, headerSlot);
   if (!ready) return <>{groupFailure}{header}<WidgetState kind="loading" label="Loading the market…" /></>;
   if (!preparedAt(data!, hour)) return <>{groupFailure}{header}<WidgetState kind="loading" label="This range is still being prepared." /></>;
@@ -176,13 +184,14 @@ export default function InternationalMarketWidget({ widget, runtime, active, hea
     ? <WidgetState kind="unavailable" message={view === 'inventory' ? 'Market inventory was not recorded.' : 'Contract terms unavailable.'} />
     : view === 'inventory'
       ? offers.length ? <Table key={`${track.source.id}:${track.branch.id}:inventory`} label="Listed equipment" rows={offers} columns={offerColumns} rowKey={row => row.key}
-        tooltip={offerTooltip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${name(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
+        tooltip={offerTooltip} onVisibleRows={onVisibleOffers} onRowClick={row => open(`${label(row.seller)}: market`, [row.seller], null, [row.offer.seller])} {...common} />
         : <WidgetState kind="empty" icon="globe" message="Nothing listed." />
       : contracts.length ? <Table key={`${track.source.id}:${track.branch.id}:${view}`} label={view === 'contracts' ? 'Market contracts' : 'Market requests'}
         rows={contracts} columns={contractColumns} rowKey={row => row.key} tooltip={contractTooltip} onVisibleRows={onVisibleContracts}
-        onRowClick={row => open(`${name(row.seller)} → ${name(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`,
+        onRowClick={row => open(`${label(row.seller)} → ${label(row.buyer)}`, [row.seller, row.buyer], `contract:${view === 'requests'}:${row.contract.id}`,
           [row.contract.seller, valueAt(row.contract.buyer, hour)])} {...common} />
-        : <WidgetState kind="empty" icon="globe" message={view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'} />;
+        : listed.unattributed ? <WidgetState kind="unavailable" message={`Some ${view === 'contracts' ? 'contracts' : 'requests'}' countries were not recorded at this date.`} />
+          : <WidgetState kind="empty" icon="globe" message={view === 'contracts' ? 'No market contracts at this date.' : 'No open requests.'} />;
   return <div ref={anchor} className="international-market">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}

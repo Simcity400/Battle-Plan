@@ -111,10 +111,12 @@ struct First {
 /// One owner's inventory as a fresh read joins it.
 enum KeptInventory {
     /// The owner's whole part of the inventory.
-    Owner(Vec<ResearchTechnologyRow>),
+    Owner {
+        owner: u32,
+        rows: Vec<ResearchTechnologyRow>,
+    },
     /// The owner's rows of the template indexes `covered` names.
     Rows {
-        owner: u32,
         covered: BTreeSet<u32>,
         rows: BTreeMap<u32, ResearchTechnologyRow>,
     },
@@ -196,25 +198,22 @@ impl BlockExtract {
             // read in the block only, whatever that read assigned.
             let first_read = !self.assigned.contains_key(&slot);
             let earlier = self.assigned.entry(slot).or_default();
-            let inventory = match (&read.inventory, read.inputs.first()) {
-                (Some(Inventory::Table(rows)), Some(input)) => {
-                    let owner = input.country;
+            let inventory = match &read.inventory {
+                Some(Inventory::Table { owner, rows }) => {
+                    let (owner, rows) = (*owner, *rows);
                     Some(if first_read {
-                        KeptInventory::Owner(owned(rows, owner, |row| row.country).to_vec())
+                        KeptInventory::Owner {
+                            owner,
+                            rows: owned(rows, owner, |row| row.country).to_vec(),
+                        }
                     } else {
                         let covered: BTreeSet<u32> = earlier.union(&assigned).copied().collect();
-                        let lookup = Inventory::Table(rows);
+                        let lookup = Inventory::Table { owner, rows };
                         let rows = covered
                             .iter()
-                            .filter_map(|&index| {
-                                lookup.find(owner, index).map(|row| (index, row.clone()))
-                            })
+                            .filter_map(|&index| lookup.find(index).map(|row| (index, row.clone())))
                             .collect();
-                        KeptInventory::Rows {
-                            owner,
-                            covered,
-                            rows,
-                        }
+                        KeptInventory::Rows { covered, rows }
                     })
                 }
                 _ => None,
@@ -390,7 +389,7 @@ fn hour_bytes(hour: &Hour) -> u64 {
                 + sized::<ResearchAppliedBonusRow>(read.bonuses.as_ref().map_or(0, Vec::len))
                 + sized::<ResearchModifierRow>(read.modifiers.as_ref().map_or(0, Vec::len))
                 + match &read.inventory {
-                    Some(KeptInventory::Owner(rows)) => sized::<ResearchTechnologyRow>(rows.len()),
+                    Some(KeptInventory::Owner { rows, .. }) => sized::<ResearchTechnologyRow>(rows.len()),
                     Some(KeptInventory::Rows { covered, rows, .. }) => {
                         sized::<u32>(covered.len()) * 4
                             + sized::<(u32, ResearchTechnologyRow)>(rows.len()) * 2
@@ -461,11 +460,11 @@ impl Reads for KeptReads<'_> {
             bonuses: kept.bonuses.as_deref().map(Cow::Borrowed),
             modifiers: kept.modifiers.as_deref().map(Cow::Borrowed),
             inventory: kept.inventory.as_ref().map(|inventory| match inventory {
-                KeptInventory::Owner(rows) => Inventory::Table(rows),
-                KeptInventory::Rows { owner, rows, .. } => Inventory::Rows {
+                KeptInventory::Owner { owner, rows } => Inventory::Table {
                     owner: *owner,
                     rows,
                 },
+                KeptInventory::Rows { rows, .. } => Inventory::Rows(rows),
             }),
         })
     }
@@ -759,7 +758,7 @@ mod tests {
         let (mut owners, mut rows) = (0, 0);
         for read in facts.hours.iter().flat_map(|hour| hour.fresh.values()) {
             match &read.inventory {
-                Some(KeptInventory::Owner(kept)) => {
+                Some(KeptInventory::Owner { rows: kept, .. }) => {
                     owners += 1;
                     rows += kept.len();
                 }

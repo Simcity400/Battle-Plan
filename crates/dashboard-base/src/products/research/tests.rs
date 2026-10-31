@@ -189,7 +189,7 @@ fn resuming_in_the_same_slot_cannot_complete_the_cancelled_assignment() {
         (7, 7),
         1,
         &[&input(2, 0)],
-        Some(&Inventory::Table(&inventory)),
+        Some(&Inventory::Table { owner: 11, rows: &inventory }),
         Some(&[]),
         None,
     );
@@ -406,7 +406,7 @@ fn delayed_inventory_completion_keeps_the_assignment_end_and_observation_separat
         (7, 7),
         2,
         &[&input(2, 0)],
-        Some(&Inventory::Table(&inventory)),
+        Some(&Inventory::Table { owner: 11, rows: &inventory }),
         Some(&[]),
         None,
     );
@@ -623,6 +623,63 @@ fn carried_hours_hold_the_last_read_until_the_next_and_progress_keeps_its_read_h
             .iter()
             .all(|sample| sample.first_hour == sample.last_hour)
     );
+}
+
+#[test]
+fn a_read_of_no_slots_is_a_known_empty_slot_set() {
+    // SliceReads proves country 11's read even when it holds no slot.
+    let empty = |hour: i32, read: i32| {
+        let mut frame = sliced_research_frame(hour, read, &[]);
+        *frame.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(vec![replay_data::rows::SliceReadRow {
+                table: TableId::ResearchInputs.index() as u32,
+                owner: 11,
+                sample_hour: read,
+            }]));
+        frame
+    };
+    // One slot read at 100; its last slot gone at the read at 124.
+    let frames = (100..=130)
+        .map(|hour| {
+            if hour < 124 {
+                sliced_research_frame(hour, 100, &[Some(1)])
+            } else {
+                empty(hour, 124)
+            }
+        })
+        .collect();
+    let histories =
+        super::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    let history = &histories["GER"];
+    // The read stays covered: the slot ended at it, it did not go unrecorded.
+    assert_eq!(
+        history.coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 130
+        }]
+    );
+    let slot = &history.slots[0];
+    assert_eq!(
+        slot.availability,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 123
+        }]
+    );
+    assert_eq!(slot.entries[0].ended_by_hour, Some(124));
+    // A country that never holds a slot is read all the same.
+    let frames = (100..=110).map(|hour| empty(hour, 100)).collect();
+    let histories =
+        super::research_branch(&research_replay(frames), 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        histories["GER"].coverage,
+        [crate::ResearchCoverage {
+            first_hour: 100,
+            last_hour: 110
+        }]
+    );
+    assert!(histories["GER"].slots.is_empty());
 }
 
 #[test]
@@ -969,7 +1026,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
         (7, 7),
         48,
         &[&later],
-        Some(&Inventory::Table(&[former])),
+        Some(&Inventory::Table { owner: 11, rows: &[former] }),
         Some(&[]),
         None,
     );
@@ -997,7 +1054,7 @@ fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
         (7, 7),
         72,
         &[&idle],
-        Some(&Inventory::Table(&[unrelated])),
+        Some(&Inventory::Table { owner: 11, rows: &[unrelated] }),
         Some(&[]),
         None,
     );
@@ -1201,7 +1258,7 @@ fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
         (7, 7),
         1,
         &[&completed],
-        Some(&Inventory::Table(&[former])),
+        Some(&Inventory::Table { owner: 11, rows: &[former] }),
         Some(&[]),
         None,
     );

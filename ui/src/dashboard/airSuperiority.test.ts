@@ -1,7 +1,7 @@
 import { airChoiceKey, airChoiceToken, heldAirReply, timelineRequestLast } from './airOptions.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { airCountryTags, airSegmentAt, airSideName, airSideTag, airPercent, airPeriods, airState, airSummaryTooltip, airTooltip, airTooltipTags, cellView, lastRecordedAt, momentReadAt, momentReadHours, momentViews, momentWindows, orderedRegions, sideOrder, timelineViews, validateAirReply } from './airSuperiority.ts';
+import { airCountryTags, airScore, airSegmentAt, airSideName, airSideTag, airPercent, airPeriods, airState, airSummaryTooltip, airTooltip, airTooltipTags, cellView, lastRecordedAt, momentReadAt, momentReadHours, momentViews, momentWindows, orderedRegions, sideOrder, timelineViews, validateAirReply } from './airSuperiority.ts';
 import type { AirChoices, AirLooks, AirMoment, AirTimeline } from './airSuperiority.ts';
 import type { DashboardClient } from './client';
 import type { AirSide } from '../generated/dashboard';
@@ -268,6 +268,16 @@ test('theatre filters date their daily membership separately from hourly scores'
   const tip = airTooltip({ name: 'Mod region' }, current, false, tag => ({ name: tag }), false);
   assert.ok(!tip.rows.some(row => row.label === 'Air theatre membership read'));
   assert.equal(airTooltip({ name: 'Mod region' }, momentViews(moment(), 96, looks)[0].view, false, tag => ({ name: tag }), false).rows.some(row => row.label === 'Air theatre membership read'), false);
+});
+
+test('scores read on the denominator the reply gives, never as that many decimals', () => {
+  assert.equal(airScore(4500000n, 100000), '45');
+  assert.equal(airScore(123456n, 100000), '1.23');
+  assert.equal(airScore(0n, 100000), '0');
+  const view = timelineViews(validateAirReply(timeline()) as AirTimeline, looks).viewAt(7000, 0)!;
+  const text = tooltipText(airTooltip({ name: 'Mod region' }, view, false, tag => ({ name: tag }), false));
+  assert.match(text, /45% · 45 score/);
+  assert.match(text, /20% · 20 score/);
 });
 
 test('missing-data tooltips explain recorded omissions in plain words', () => {

@@ -543,11 +543,13 @@ pub fn merged(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
     out
 }
 
-/// With a tag selection, a record answers only for hours when a chosen country was a party.
+/// With a tag selection, a record answers only for hours when a chosen country was a party,
+/// or may have been one: the hours of `unidentified`, while its other party had no identity.
 pub fn selected_spans(
     chosen: Option<&BTreeMap<u32, Vec<(i32, i32)>>>,
     fixed: &[u32],
     parties: &[EconomyRun],
+    unidentified: &[EconomyRun],
 ) -> Vec<(i32, i32)> {
     let Some(chosen) = chosen else {
         return vec![(i32::MIN, i32::MAX)];
@@ -557,6 +559,7 @@ pub fn selected_spans(
         .filter_map(|slot| chosen.get(slot))
         .flatten()
         .copied()
+        .chain(unidentified.iter().map(|EconomyRun(first, last, _)| (*first, *last)))
         .collect();
     for EconomyRun(first, last, value) in parties {
         let Some(tagged) = value.parse::<u32>().ok().and_then(|slot| chosen.get(&slot)) else {

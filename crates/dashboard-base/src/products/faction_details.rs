@@ -101,7 +101,12 @@ pub struct FactionDetailReply {
     pub research_base_raw: Option<String>,
     pub research_countries: Option<Vec<String>>,
     pub research_bonuses: Option<Vec<String>>,
+    /// The faction's member accounts, and those of countries outside every faction whose
+    /// account names this faction as its supplying one.
     pub accounts: Option<Vec<FactionAccountDetail>>,
+    /// Retained accounts of countries outside every faction that name no supplying
+    /// faction: nothing recorded at the hour ties them to this faction or another.
+    pub unassociated_accounts: Option<Vec<FactionAccountDetail>>,
     pub variable_seed: Option<u32>,
     pub variables: Option<Vec<FactionVariableDetail>>,
     pub branch_id: String,
@@ -616,6 +621,7 @@ fn collect_icon_refusals(reply: &mut FactionDetailReply) {
             reply
                 .accounts
                 .iter()
+                .chain(&reply.unassociated_accounts)
                 .flatten()
                 .flat_map(|account| &account.completed),
         )

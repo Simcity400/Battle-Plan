@@ -1,7 +1,7 @@
 import type { ContractHistory, MarketHistoryReply, OfferHistory } from '../../generated/dashboard';
-import { fixedText, valueAt } from '../../dashboard/economyHistory.ts';
+import { fixedText, runAt, valueAt } from '../../dashboard/economyHistory.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import { FIXED5, holderTagAt, poolAt, readHourOf, variantAt } from '../../dashboard/marketHistory.ts';
+import { FIXED5, holderTagAt, poolAt, variantAt } from '../../dashboard/marketHistory.ts';
 import { priceLevel } from '../trade-flows/marketData.ts';
 
 export type MarketTab = 'contracts' | 'requests' | 'inventory';
@@ -36,21 +36,26 @@ export interface OfferRow {
 const items = (reply: MarketHistoryReply, contract: ContractHistory, pool: number, hour: number): MarketItemAt[] =>
   poolAt(contract.items, pool, hour).map(item => ({ ...item, name: variantAt(reply, item.variant, hour) }));
 
-/** The requests or contracts standing at `hour` that the matcher keeps (either party). */
-export function contractRows(reply: MarketHistoryReply, hour: number, matches: (tag: string, hour: number) => boolean): ContractRow[] {
+/** The requests or contracts standing at `hour` that the matcher keeps (either party), and how
+ * many others it cannot rule out: a party with no tag then may be a country it keeps. */
+export function contractRows(reply: MarketHistoryReply, hour: number, matches: (tag: string, hour: number) => boolean): { rows: ContractRow[]; unattributed: number } {
   const rows: ContractRow[] = [];
+  let unattributed = 0;
   for (const contract of reply.contracts) {
-    const read = readHourOf(contract.buyer, hour);
-    if (!read || read.ended) continue;
+    // Its speed is read every hour it stands; its buyer only while the buyer has an identity.
+    if (!runAt(contract.speed, hour)) continue;
     const seller = holderTagAt(reply, contract.seller, hour), buyer = holderTagAt(reply, valueAt(contract.buyer, hour), hour);
-    if (!(seller !== null && matches(seller, hour) || buyer !== null && matches(buyer, hour))) continue;
+    if (!(seller !== null && matches(seller, hour) || buyer !== null && matches(buyer, hour))) {
+      if (seller === null || buyer === null) unattributed++;
+      continue;
+    }
     const at = (index: number) => { const value = valueAt(contract.purchase[index] ?? [], hour); return value === null ? null : BigInt(value); };
     rows.push({ key: `${contract.seller}:${contract.id}`, contract, seller, buyer,
       equipment: items(reply, contract, 0, hour), prices: items(reply, contract, 1, hour),
       levels: poolAt(contract.levels, 2, hour).map(item => ({ variant: item.variant, level: Number(item.amount) })),
       assigned: at(0), convoys: at(1), collected: at(2), deliveries: at(3) });
   }
-  return rows;
+  return { rows, unattributed };
 }
 
 /** Every listed variant of the matching sellers at `hour`, in their native order. */

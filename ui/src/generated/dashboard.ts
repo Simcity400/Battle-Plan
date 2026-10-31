@@ -1355,7 +1355,17 @@ export type FactionVariableDetail = { ordinal: number,
 nameBytes: Array<number>, name: string, valueRaw: string, };
 export type FactionResourceDetail = { ordinal: number, token: string | null, name: string | null, icon: string | null, raw: string, reason: string | null, };
 export type FactionRefusalDetail = { fact: string, count: number, reason: string, };
-export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null, accounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>,
+export type FactionDetailReply = { presentations: Array<FactionRewardDetail>, projectionRaw: string | null, influenceTotalRaw: string | null, projectionEffectsRaw: string | null, resources: Array<FactionResourceDetail> | null, systemResources: Array<FactionResourceDetail> | null, refusals: Array<FactionRefusalDetail>, minimumUpgrades: Array<FactionUpgradeDetail> | null, doctrineFolders: Array<FactionRuleDetail> | null, researchBaseRaw: string | null, researchCountries: Array<string> | null, researchBonuses: Array<string> | null,
+/**
+ * The faction's member accounts, and those of countries outside every faction whose
+ * account names this faction as its supplying one.
+ */
+accounts: Array<FactionAccountDetail> | null,
+/**
+ * Retained accounts of countries outside every faction that name no supplying
+ * faction: nothing recorded at the hour ties them to this faction or another.
+ */
+unassociatedAccounts: Array<FactionAccountDetail> | null, variableSeed: number | null, variables: Array<FactionVariableDetail> | null, branchId: string, hour: number, faction: string, goalReason: string | null, researchUnlocked: boolean | null, manpowerUnlocked: boolean | null, rules: Array<FactionRuleDetail> | null, programmes: Array<FactionProgramDetail> | null, programmesReadHour: number | null, manpower: Array<FactionManpowerDetail> | null, manpowerTotal: number | null, manifest: FactionGoalDefinition | null, goals: Array<FactionGoalDetail>, completed: Array<FactionGoalDefinition>, cancelled: Array<FactionGoalDefinition>, extraSlots: Array<number>, termDates: Array<number>,
 /**
  * The faction's logo as the game draws it: its template's sprite, else the
  * content's default faction icon.
@@ -2770,6 +2780,10 @@ export type ElectionHistory = { tags: Array<HolderTag>,
  */
 held: Array<PoliticsRun>,
 /**
+ * "1" while its schedule was read but its eligibility was not: unknown, not denied.
+ */
+refused: Array<PoliticsRun>,
+/**
  * Signed months.
  */
 interval: Array<PoliticsRun>,
@@ -2998,9 +3012,13 @@ pool: number, ordinal: number,
 variant: string, amounts: Array<EconomyRun>, };
 export type ContractHistory = { seller: string, id: string,
 /**
- * The buyer's holder.
+ * The buyer's holder; no run while it had no identity.
  */
-buyer: Array<EconomyRun>, speed: Array<EconomyRun>,
+buyer: Array<EconomyRun>,
+/**
+ * Read every hour the row stands: its runs are the row's lifetime.
+ */
+speed: Array<EconomyRun>,
 /**
  * Pool 0 equipment, pool 1 agreed prices (CIC).
  */
@@ -3015,7 +3033,15 @@ levels: Array<MarketPoolItem>,
  */
 purchase: Array<Array<EconomyRun>>, };
 export type OfferHistory = { seller: string, inventory: Array<MarketPoolItem>, levels: Array<MarketPoolItem>, };
-export type AgreementHistory = { giver: string, id: string, receiver: Array<EconomyRun>, revision: Array<EconomyRun>, since: Array<EconomyRun>, last: Array<EconomyRun>,
+export type AgreementHistory = { giver: string, id: string,
+/**
+ * The receiver's holder; no run while it had no identity.
+ */
+receiver: Array<EconomyRun>,
+/**
+ * Read every hour the agreement stands: its runs are its lifetime.
+ */
+revision: Array<EconomyRun>, since: Array<EconomyRun>, last: Array<EconomyRun>,
 /**
  * Pools 0 monthly, 1 production share, 2 once, 3 delivered, 4 lost.
  */
@@ -3166,7 +3192,7 @@ licensee: string,
  */
 ordinal: number,
 /**
- * The licensor's holder.
+ * The licensor's holder; no run while it had no identity.
  */
 licensor: Array<EconomyRun>,
 /**
@@ -3174,7 +3200,8 @@ licensor: Array<EconomyRun>,
  */
 lent: Array<EconomyRun>, required: Array<EconomyRun>,
 /**
- * The native start date's hour.
+ * The native start date's hour, read every hour the licence stands: its
+ * runs are the licence's lifetime.
  */
 start: Array<EconomyRun>,
 /**

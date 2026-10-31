@@ -103,6 +103,8 @@ fn election_runs_change_only_with_the_schedule_and_never_cross_a_gap() {
     assert_eq!(history.tags[0].tag, "ELA");
     // Known "not held" is its own value, an unrecorded one has no run.
     assert_eq!(history.held, vec![run(100, 101, "1"), run(102, 102, "0")]);
+    // The read but refused eligibility is dated as such, not left a gap.
+    assert_eq!(history.refused, vec![run(105, 105, "1")]);
     assert_eq!(history.interval[0].first_hour, 100);
     // A stored date is the term's start; it changes with the schedule.
     assert_eq!(history.last.len(), 3);
@@ -150,12 +152,42 @@ fn elections_are_held_only_by_countries_owning_states() {
         reply.elections[0].held,
         vec![run(100, 100, "1"), run(101, 101, "0"), run(103, 103, "1")]
     );
+    // Eligible, but whether it exists was not read: unknown, not denied.
+    assert_eq!(reply.elections[0].refused, vec![run(102, 102, "1")]);
     assert!(
         reply
             .warnings
             .iter()
             .any(|warning| warning.contains("country existence not recorded"))
     );
+}
+
+#[test]
+fn a_holder_whose_eligibility_is_refused_throughout_is_still_listed() {
+    let fixture = Fixture::new();
+    let mut state = Prepared::default();
+    // Its eligibility and interval are never read; its stored last election is.
+    let row = PoliticsRow {
+        country: 1,
+        last_election: engine_native::cdate::HOUR_EPOCH + 1936 * 365 * 24,
+        has_elections: Recorded::NotRecorded,
+        election_interval: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    for hour in [100, 101] {
+        let mut at = frame(hour);
+        countries(&mut at, &[(1, 1, "ELA")], &[]);
+        owned_states(&mut at, &[(1, 3)]);
+        politics(&mut at, vec![row.clone()]);
+        state.step(&at);
+    }
+    publish(&mut state, &fixture);
+    let reply = ask(&fixture, params(PoliticsHistoryMode::Elections, None), 101);
+    assert_eq!(reply.elections.len(), 1);
+    let history = &reply.elections[0];
+    assert!(history.held.is_empty());
+    assert!(history.interval.is_empty());
+    assert_eq!(history.refused, vec![run(100, 101, "1")]);
 }
 
 #[test]

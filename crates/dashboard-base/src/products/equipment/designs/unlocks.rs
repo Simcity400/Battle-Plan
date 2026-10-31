@@ -118,11 +118,12 @@ pub fn module_unlock(
             if !contains(&operands, module)? {
                 continue;
             }
+            // The final limit applies to the whole list, as the project output renderer reads it.
             let limits = items
                 .iter()
-                .filter(|item| item.keyword_is("limit"))
-                .flat_map(|item| item.value.items().unwrap_or_default().iter().cloned())
-                .collect::<Vec<_>>();
+                .rfind(|item| item.keyword_is("limit"))
+                .map(|item| item.value.items().unwrap_or_default())
+                .unwrap_or_default();
             let state = (|| {
                 if !limits.is_empty() && !world.evaluate(&limits, Scopes::empty()).decided()? {
                     return Ok(false);
@@ -182,15 +183,16 @@ mod tests {
                 .into()
             }),
         };
+        // Ascending ids, as a decoded table holds them: lookups search by id.
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(vec![
                 rows::CountryLinkRow {
-                    id: 5_000,
-                    canonical_slot: 1,
-                },
-                rows::CountryLinkRow {
                     id: 4_999,
                     canonical_slot: 2,
+                },
+                rows::CountryLinkRow {
+                    id: 5_000,
+                    canonical_slot: 1,
                 },
             ]));
         *frame.tables[TableId::TechnologyDefinitions.index()] =
@@ -308,5 +310,24 @@ mod tests {
         };
         projects[0].completed = 1;
         assert_eq!(evaluate(&f, &content).unwrap().sources, ["Project p"]);
+        // A repeated limit: only the final one applies to the list, whatever came before it.
+        let limited = |list: &[u8]| {
+            let mut content = Content {
+                technologies: content.technologies.clone(),
+                projects: Default::default(),
+            };
+            let mut project = installed_content_core::special_projects::Project::default();
+            project.output.enable_equipment_modules =
+                installed_content_core::parser::parse(list).unwrap().items;
+            content.projects.projects.insert("p".into(), project);
+            evaluate(&f, &content).unwrap().sources
+        };
+        assert_eq!(
+            limited(b"enable_equipment_modules={m limit={always=no} limit={always=yes}}"),
+            ["Project p"]
+        );
+        assert!(
+            limited(b"enable_equipment_modules={limit={always=yes} m limit={always=no}}").is_empty()
+        );
     }
 }

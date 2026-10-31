@@ -189,6 +189,9 @@ pub(crate) fn values_section(branch: u64) -> String {
 pub enum Field {
     /// 1 when the game holds elections, 0 when it does not.
     ElectionsHeld,
+    /// 1 while the holder's schedule was read but whether it holds elections
+    /// could not be: its eligibility is unknown, not denied.
+    ElectionsRefused,
     ElectionInterval,
     NextElection,
     /// The stored last election's hour, where it is a date rather than an
@@ -449,6 +452,7 @@ impl Prepared {
             let interval = row.election_interval.require("election interval").ok();
             for (field, value) in [
                 (Field::ElectionsHeld, held.map(i128::from)),
+                (Field::ElectionsRefused, held.is_none().then_some(1)),
                 (
                     Field::ElectionInterval,
                     interval.map(|interval| i128::from(*interval)),
@@ -748,6 +752,8 @@ pub struct ElectionHistory {
     pub tags: Vec<HolderTag>,
     /// "1" when the game holds elections, "0" when it does not.
     pub held: Vec<PoliticsRun>,
+    /// "1" while its schedule was read but its eligibility was not: unknown, not denied.
+    pub refused: Vec<PoliticsRun>,
     /// Signed months.
     pub interval: Vec<PoliticsRun>,
     /// The next election's hour.
@@ -1150,6 +1156,7 @@ pub fn query(
                 let mut history = ElectionHistory {
                     tags: holder_tags(tags),
                     held: Vec::new(),
+                    refused: Vec::new(),
                     interval: Vec::new(),
                     next: Vec::new(),
                     last: Vec::new(),
@@ -1157,6 +1164,7 @@ pub fn query(
                 for &(id, field) in by_slot.get(&slot).into_iter().flatten() {
                     let target = match field {
                         Field::ElectionsHeld => &mut history.held,
+                        Field::ElectionsRefused => &mut history.refused,
                         Field::ElectionInterval => &mut history.interval,
                         Field::NextElection => &mut history.next,
                         Field::LastElection => &mut history.last,
@@ -1166,7 +1174,10 @@ pub fn query(
                         Some(value.to_string())
                     });
                 }
-                if !history.held.is_empty() || !history.interval.is_empty() {
+                if !history.held.is_empty()
+                    || !history.refused.is_empty()
+                    || !history.interval.is_empty()
+                {
                     reply.elections.push(history);
                 }
             }
