@@ -10,10 +10,10 @@
 use super::super::{Placed, UNLINKED_DIVISION, find};
 use super::{CADENCE, KeptReason, NamingOperands, kept_artwork, kept_naming};
 use crate::products::{
-    army_content::{self, Holder, TemplateArtwork},
+    army_content::{self, DefinitionsOf, Holder, TemplateArtwork},
     division_needs,
 };
-use dashboard_base::products::equipment::RawVariant;
+use dashboard_base::products::equipment::{self, RawVariant};
 use dashboard_series::hash::{FastMap, Words};
 use dashboard_text::{
     catalogue::Catalogue,
@@ -25,9 +25,11 @@ use dashboard_world::Division;
 use replay::columnar_frames::view_heap_bytes;
 use replay_data::{
     codec::{Decoder, put_varint},
-    rows::{CountryLinkRow, TableId, VariantDefinitionRow, tables},
+    rows::{
+        CountryLinkRow, LexicalTokenRow, RowCodec, TableId, TableRows, VariantDefinitionRow, tables,
+    },
 };
-use replay_frame::frame::{DecodedFrame, SharedView, TableView};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView, not_selected};
 use std::{
     cell::OnceCell,
     cmp::Ordering,
@@ -941,33 +943,252 @@ struct Fixed {
     stock_unclassified: u32,
 }
 
-/// A read's definition of design `handle`.
-fn definition(frame: &DecodedFrame, handle: u64) -> Option<&VariantDefinitionRow> {
-    let rows = frame.complete::<tables::VariantDefinitions>().ok()?;
-    let at = rows.binary_search_by_key(&handle, |row| row.id).ok()?;
-    rows.get(at)
+/// A designs read: its countries' identity and whether it read its definitions and tokens whole,
+/// with the spellings of the tokens its definitions name; its definitions are kept by design.
+struct Read {
+    /// Its frame without its definitions and tokens, so the walk changes theirs in place.
+    identity: DecodedFrame,
+    defined: bool,
+    spelled: bool,
+    /// Sorted by token.
+    tokens: Arc<[LexicalTokenRow]>,
 }
 
-/// A read's spelling of `token`.
-fn spelling(frame: &DecodedFrame, token: u32) -> Option<&[u8]> {
-    let rows = frame.complete::<tables::LexicalTokens>().ok()?;
-    let at = rows.binary_search_by_key(&token, |row| row.token).ok()?;
-    rows.get(at).map(|row| row.literal.as_slice())
+impl Read {
+    /// Designs frame `frame` as a read, its token rows those `history` names.
+    fn of(frame: &DecodedFrame, history: &mut History) -> Self {
+        let tokens = frame.complete::<tables::LexicalTokens>().ok();
+        let mut identity = frame.clone();
+        for table in [TableId::VariantDefinitions, TableId::LexicalTokens] {
+            identity.tables[table.index()] = not_selected();
+        }
+        Self {
+            identity,
+            defined: frame.complete::<tables::VariantDefinitions>().is_ok(),
+            spelled: tokens.is_some(),
+            tokens: history.spelled(tokens.unwrap_or(&[])),
+        }
+    }
+
+    /// The spelling of `token`, where the read spelled the tokens.
+    fn spelling(&self, token: u32) -> Option<&[u8]> {
+        let at = self
+            .tokens
+            .binary_search_by_key(&token, |row| row.token)
+            .ok()?;
+        self.tokens.get(at).map(|row| row.literal.as_slice())
+    }
+
+    /// The frame a save keeps of it: its definitions as `history` keeps them at `hour`.
+    fn saved(&self, history: &History, hour: i32) -> DecodedFrame {
+        let unread = || -> SharedView {
+            TableView::Unavailable {
+                reason: "Not read whole at this designs read".into(),
+            }
+            .into()
+        };
+        let mut frame = self.identity.clone();
+        frame.tables[TableId::VariantDefinitions.index()] = if self.defined {
+            TableView::Complete(TableRows::VariantDefinitions(history.rows_at(hour))).into()
+        } else {
+            unread()
+        };
+        frame.tables[TableId::LexicalTokens.index()] = if self.spelled {
+            TableView::Complete(TableRows::LexicalTokens(self.tokens.to_vec())).into()
+        } else {
+            unread()
+        };
+        frame
+    }
 }
 
-/// Whether two views hold the same rows or refusal.
-fn same(a: &SharedView, b: &SharedView) -> bool {
-    SharedView::ptr_eq(a, b) || **a == **b
+/// Every design's definition at each designs read still looked up, by design: its versions,
+/// each with the hour of the read that first held it, none where the read did not define it.
+#[derive(Default)]
+struct History {
+    versions: FastMap<u64, Vec<(i32, Option<Arc<VariantDefinitionRow>>)>>,
+    /// Designs holding more than one version.
+    varied: Vec<u64>,
+    /// The equipment tokens the latest definitions name, with how many name each.
+    named: BTreeMap<u32, u32>,
+    /// The token rows the last read spelled them with.
+    spelled: Option<Arc<[LexicalTokenRow]>>,
+    /// Whether the latest versions are the last designs frame's: a frame after one that was
+    /// not read is compared whole.
+    based: bool,
+}
+
+impl History {
+    /// The definitions of designs frame `frame` at `hour`: those of `changed` designs where the
+    /// frame before was read and they are known, else every design's.
+    fn read(&mut self, frame: &DecodedFrame, hour: i32, changed: Option<&[u64]>) {
+        let Ok(rows) = frame.complete::<tables::VariantDefinitions>() else {
+            self.based = false;
+            return;
+        };
+        let defined = |id: u64| {
+            let at = rows.binary_search_by_key(&id, |row| row.id).ok()?;
+            rows.get(at)
+        };
+        match changed.filter(|_| self.based) {
+            Some(changed) => {
+                for &id in changed {
+                    self.set(id, defined(id), hour);
+                }
+            }
+            None => {
+                for row in rows {
+                    self.set(row.id, Some(row), hour);
+                }
+                let gone: Vec<u64> = self
+                    .versions
+                    .iter()
+                    .filter(|&(&id, versions)| {
+                        versions.last().is_some_and(|(_, row)| row.is_some())
+                            && defined(id).is_none()
+                    })
+                    .map(|(&id, _)| id)
+                    .collect();
+                for id in gone {
+                    self.set(id, None, hour);
+                }
+            }
+        }
+        self.based = true;
+    }
+
+    /// Design `id`'s definition from `hour` on; a version only where it differs.
+    fn set(&mut self, id: u64, row: Option<&VariantDefinitionRow>, hour: i32) {
+        let latest = self
+            .versions
+            .get(&id)
+            .and_then(|versions| versions.last())
+            .and_then(|(_, row)| row.as_deref());
+        if latest == row {
+            return;
+        }
+        if let Some(token) = latest.map(|latest| latest.equipment_token) {
+            let named = self.named.entry(token).or_default();
+            *named -= 1;
+            if *named == 0 {
+                self.named.remove(&token);
+            }
+        }
+        if let Some(row) = row {
+            *self.named.entry(row.equipment_token).or_default() += 1;
+        }
+        let row = row.map(|row| Arc::new(row.clone()));
+        let versions = self.versions.entry(id).or_default();
+        match versions.last_mut() {
+            Some((at, held)) if *at == hour => *held = row,
+            _ => {
+                if versions.len() == 1 {
+                    self.varied.push(id);
+                }
+                versions.push((hour, row));
+            }
+        }
+    }
+
+    /// Design `id`'s definition at the read at `hour`.
+    fn at(&self, id: u64, hour: i32) -> Option<&VariantDefinitionRow> {
+        let versions = self.versions.get(&id)?;
+        let after = versions.partition_point(|&(at, _)| at <= hour);
+        versions.get(after.checked_sub(1)?)?.1.as_deref()
+    }
+
+    /// The rows of `tokens`, a read's, that the latest definitions name: the last read's rows
+    /// again where they are alike.
+    fn spelled(&mut self, tokens: &[LexicalTokenRow]) -> Arc<[LexicalTokenRow]> {
+        let rows: Vec<LexicalTokenRow> = self
+            .named
+            .keys()
+            .filter_map(|&token| {
+                let at = tokens.binary_search_by_key(&token, |row| row.token).ok()?;
+                tokens.get(at).cloned()
+            })
+            .collect();
+        match &self.spelled {
+            Some(held) if **held == *rows => Arc::clone(held),
+            _ => {
+                let rows: Arc<[LexicalTokenRow]> = rows.into();
+                self.spelled = Some(Arc::clone(&rows));
+                rows
+            }
+        }
+    }
+
+    /// Lets go of the versions no read at or after `oldest` holds; every one but the latest
+    /// when no read is held.
+    fn keep(&mut self, oldest: Option<i32>) {
+        let versions = &mut self.versions;
+        self.varied.retain(|id| {
+            let Some(held) = versions.get_mut(id) else {
+                return false;
+            };
+            let first = match oldest {
+                Some(oldest) => held.partition_point(|&(at, _)| at <= oldest).max(1) - 1,
+                None => held.len() - 1,
+            };
+            held.drain(..first);
+            if held.len() > 1 {
+                return true;
+            }
+            if held.first().is_some_and(|(_, row)| row.is_none()) {
+                versions.remove(id);
+            }
+            false
+        });
+    }
+
+    /// Every definition at the read at `hour`, by design.
+    fn rows_at(&self, hour: i32) -> Vec<VariantDefinitionRow> {
+        let mut rows: Vec<VariantDefinitionRow> = self
+            .versions
+            .keys()
+            .filter_map(|&id| self.at(id, hour).cloned())
+            .collect();
+        rows.sort_unstable_by_key(|row| row.id);
+        rows
+    }
+
+    fn heap(&self) -> usize {
+        self.versions.capacity()
+            * (size_of::<(u64, Vec<(i32, Option<Arc<VariantDefinitionRow>>)>)>() + 1)
+            + self
+                .versions
+                .values()
+                .flatten()
+                .map(|(_, row)| {
+                    size_of::<(i32, Option<Arc<VariantDefinitionRow>>)>()
+                        + row.as_ref().map_or(0, |row| {
+                            16 + size_of::<VariantDefinitionRow>() + row.heap_bytes()
+                        })
+                })
+                .sum::<usize>()
+            + self.varied.capacity() * 8
+            + self.named.len() * 24
+    }
+}
+
+/// The definitions kept at one read.
+struct AsOf<'a> {
+    history: &'a History,
+    hour: i32,
+}
+
+impl DefinitionsOf for AsOf<'_> {
+    fn definition(&self, variant: u64) -> Option<&VariantDefinitionRow> {
+        self.history.at(variant, self.hour)
+    }
 }
 
 /// Whether two designs reads look a design up alike wherever its definition and token rows
 /// are alike: each reads every table a lookup needs, with the same countries' slots and tags,
 /// links and appearance.
-fn designs_alike(a: &DecodedFrame, b: &DecodedFrame) -> bool {
-    let read = |frame: &DecodedFrame| {
-        frame.complete::<tables::VariantDefinitions>().is_ok()
-            && frame.complete::<tables::LexicalTokens>().is_ok()
-    };
+fn designs_alike(a: &Read, b: &Read) -> bool {
+    let read = a.defined && a.spelled && b.defined && b.spelled;
+    let (a, b) = (&a.identity, &b.identity);
     let (Ok(countries), Ok(others)) = (
         a.complete::<tables::Countries>(),
         b.complete::<tables::Countries>(),
@@ -993,9 +1214,7 @@ fn designs_alike(a: &DecodedFrame, b: &DecodedFrame) -> bool {
         (Err(_), Err(_)) => true,
         _ => false,
     };
-    read(a)
-        && read(b)
-        && appearance
+    read && appearance
         && links == other_links
         && countries.len() == others.len()
         && countries
@@ -1338,8 +1557,9 @@ pub(crate) struct Engine {
     wholes: Option<[bool; 4]>,
     /// The links, local sub-units and tokens the needs resolve through, while they last.
     sources: Option<Arc<SourceIndex>>,
-    /// The designs' tables at each read still looked up, and the designs looked up there.
-    reads: BTreeMap<i32, DecodedFrame>,
+    /// Each designs read still looked up, its definitions, and the designs looked up there.
+    reads: BTreeMap<i32, Read>,
+    history: History,
     looks: FastMap<Option<i32>, FastMap<u64, Arc<Look>>>,
     /// Pairs of reads that look a design up alike wherever its rows are alike.
     alike: Vec<((i32, i32), bool)>,
@@ -1440,6 +1660,7 @@ impl Engine {
             wholes: None,
             sources: None,
             reads: BTreeMap::new(),
+            history: History::default(),
             looks: FastMap::default(),
             alike: Vec::new(),
             templates: FastMap::default(),
@@ -1590,6 +1811,7 @@ impl Engine {
         // Only the designs of the reads still looked up are kept.
         let wanted = [self.supplies.designs.read, self.supplies.stock_designs.read];
         self.reads.retain(|hour, _| wanted.contains(&Some(*hour)));
+        self.history.keep(self.reads.keys().next().copied());
         self.looks
             .retain(|read, _| read.is_none() || wanted.contains(read));
         let reads = &self.reads;
@@ -1626,9 +1848,10 @@ impl Engine {
         if self.supplies.designs.read == Some(hour) {
             let designs = input
                 .designs
-                .clone()
+                .as_ref()
                 .ok_or_else(|| invalid("A designs read came without its tables"))?;
-            self.reads.insert(hour, designs);
+            let read = Read::of(designs, &mut self.history);
+            self.reads.insert(hour, read);
         }
         let census_before = self.census.is_some();
         let read_now = self.supplies.pool.read == Some(hour);
@@ -1711,6 +1934,11 @@ impl Engine {
                 touched.templates = held[2..] != wholes[2..];
             }
             self.frame = Some(frame.clone());
+        }
+        // Every designs frame given moves the definitions on, read or not.
+        if let Some(designs) = &input.designs {
+            let changed = input.definitions.as_deref();
+            self.history.read(designs, input.hour, changed);
         }
         // The needs' sources are read from the links, local sub-units and tokens.
         if touched.countries || touched.sources || input.subunits || input.tokens != Tokens::Same {
@@ -2364,27 +2592,29 @@ impl Engine {
     fn reused(&self, other: i32, hour: i32, handle: u64) -> Option<Arc<Look>> {
         let look = self.looks.get(&Some(other))?.get(&handle)?;
         let (was, now) = (self.reads.get(&other)?, self.reads.get(&hour)?);
-        let alike = match (definition(was, handle), definition(now, handle)) {
+        let defined =
+            |read: &Read, at: i32| read.defined.then(|| self.history.at(handle, at)).flatten();
+        let alike = match (defined(was, other), defined(now, hour)) {
             (None, None) => true,
             (Some(a), Some(b)) => {
-                (
-                    a.equipment_token,
-                    a.creator_link,
-                    a.origin_link,
-                    a.append_variant_name,
-                    &a.display_name,
-                    &a.variant_name,
-                ) == (
-                    b.equipment_token,
-                    b.creator_link,
-                    b.origin_link,
-                    b.append_variant_name,
-                    &b.display_name,
-                    &b.variant_name,
-                ) && (SharedView::ptr_eq(
-                    &was.tables[TableId::LexicalTokens.index()],
-                    &now.tables[TableId::LexicalTokens.index()],
-                ) || spelling(was, b.equipment_token) == spelling(now, b.equipment_token))
+                (std::ptr::eq(a, b)
+                    || (
+                        a.equipment_token,
+                        a.creator_link,
+                        a.origin_link,
+                        a.append_variant_name,
+                        &a.display_name,
+                        &a.variant_name,
+                    ) == (
+                        b.equipment_token,
+                        b.creator_link,
+                        b.origin_link,
+                        b.append_variant_name,
+                        &b.display_name,
+                        &b.variant_name,
+                    ))
+                    && (Arc::ptr_eq(&was.tokens, &now.tokens)
+                        || was.spelling(b.equipment_token) == now.spelling(b.equipment_token))
             }
             _ => false,
         };
@@ -2417,10 +2647,12 @@ impl Engine {
         // of the same tokens.
         let unchanged = match (read, was, definitions) {
             (Some(hour), Some(other), Some(definitions)) if other != hour => {
-                let tokens =
-                    |frame: &DecodedFrame| frame.tables[TableId::LexicalTokens.index()].clone();
+                // The tokens its definitions name, each read's.
                 let same_tokens = match (self.reads.get(&other), self.reads.get(&hour)) {
-                    (Some(was), Some(now)) => same(&tokens(was), &tokens(now)),
+                    (Some(was), Some(now)) => {
+                        was.spelled == now.spelled
+                            && (Arc::ptr_eq(&was.tokens, &now.tokens) || was.tokens == now.tokens)
+                    }
                     _ => false,
                 };
                 (same_tokens && self.alike(other, hour)).then(|| {
@@ -2468,8 +2700,26 @@ impl Engine {
         }
         if !fresh.is_empty() {
             let looked: Vec<(u64, super::super::Looked)> = {
-                let frame = read.and_then(|hour| self.reads.get(&hour));
-                let designs = army_content::Designs::new(frame, self.cat.as_ref());
+                let kept = read.and_then(|hour| Some((hour, self.reads.get(&hour)?)));
+                let as_of = kept.map(|(hour, _)| AsOf {
+                    history: &self.history,
+                    hour,
+                });
+                let parts = kept.zip(as_of.as_ref()).and_then(|((hour, read), as_of)| {
+                    let identity = &read.identity;
+                    (read.defined && read.spelled).then_some(())?;
+                    Some((
+                        hour,
+                        equipment::Tags::new(
+                            identity.complete::<tables::Countries>().ok()?,
+                            identity.complete::<tables::CountryLinks>().ok()?,
+                            identity.complete::<tables::CountryAppearance>().ok(),
+                        ),
+                        army_content::Definitions::Kept(as_of),
+                        &read.tokens[..],
+                    ))
+                });
+                let designs = army_content::Designs::of(parts, self.cat.as_ref());
                 fresh
                     .into_iter()
                     .map(|handle| (handle, super::super::Looked::of(&designs, handle)))
@@ -3045,7 +3295,24 @@ impl Engine {
                 .map(|design| 256 + design.0.token.len() + design.0.display_name.len())
                 .sum::<usize>()
             + hashed(&self.kinds);
-        bytes + views(self.reads.values().chain(&self.frame))
+        bytes += self.history.heap()
+            + self
+                .reads
+                .values()
+                .map(|read| {
+                    read.tokens
+                        .iter()
+                        .map(|row| 40 + row.literal.len())
+                        .sum::<usize>()
+                })
+                .sum::<usize>();
+        bytes
+            + views(
+                self.reads
+                    .values()
+                    .map(|read| &read.identity)
+                    .chain(&self.frame),
+            )
     }
 }
 
@@ -3278,8 +3545,8 @@ impl Engine {
         }
         put_ids(out, &countries.ids)?;
         put_count(out, self.reads.len())?;
-        for frame in self.reads.values() {
-            frame.encode_checkpoint(out)?;
+        for (&hour, read) in &self.reads {
+            read.saved(&self.history, hour).encode_checkpoint(out)?;
         }
         Ok(())
     }
@@ -3405,8 +3672,12 @@ impl Engine {
         let count = input.count(1)?;
         for _ in 0..count {
             let frame = DecodedFrame::decode_checkpoint(&mut input)?;
-            engine.reads.insert(frame.hour, frame);
+            engine.history.read(&frame, frame.hour, None);
+            let read = Read::of(&frame, &mut engine.history);
+            engine.reads.insert(frame.hour, read);
         }
+        // The next designs frame follows one this engine never saw.
+        engine.history.based = false;
         input.finish()?;
         engine.open = false;
         Ok(engine)

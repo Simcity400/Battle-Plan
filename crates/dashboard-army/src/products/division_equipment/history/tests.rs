@@ -62,6 +62,15 @@ fn content() -> (Arc<Catalogue>, Folder) {
     (Arc::new(cat), folder)
 }
 
+/// Design `id`'s name, the first design's another when `renamed`.
+fn design_name(id: u64, renamed: bool) -> String {
+    if renamed && id == VARIANTS[0] {
+        "Rifle renamed".to_owned()
+    } else {
+        format!("Rifle {id}")
+    }
+}
+
 /// The lines template `template` holds: one in the first, two in the second.
 fn lines(template: u64) -> i32 {
     if template == TEMPLATES[0] { 1 } else { 2 }
@@ -106,6 +115,8 @@ struct Model {
     hole: bool,
     /// The pool read this hour is refused.
     refused: bool,
+    /// The first design is defined by another name.
+    renamed: bool,
     next: u64,
 }
 
@@ -127,6 +138,7 @@ impl Model {
             stock: BTreeMap::new(),
             hole: false,
             refused: false,
+            renamed: false,
             next: 0,
         };
         for country in 1..=countries {
@@ -275,7 +287,7 @@ impl Model {
                 equipment_token: 3,
                 creator_link: 1,
                 origin_link: 1,
-                display_name: format!("Rifle {id}").into_bytes(),
+                display_name: design_name(id, self.renamed).into_bytes(),
                 ..Default::default()
             })
             .collect();
@@ -458,11 +470,22 @@ struct Published {
 }
 
 fn published(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budget) -> Published {
+    published_with(hours, cuts, resume, budget, None)
+}
+
+/// [`published`] reading content `cat`.
+fn published_with(
+    hours: Vec<Hour>,
+    cuts: &[i32],
+    resume: Option<i32>,
+    budget: &Budget,
+    cat: Option<Arc<Catalogue>>,
+) -> Published {
     let cache = Cache::new(budget);
     let mut pages = Memory::default();
     let first = hours[0].hour;
     let mut writer = Writer::new(budget, identity(), first).unwrap();
-    let mut emit = Emit::new(None);
+    let mut emit = Emit::new(cat.clone());
     let mut root = 0;
     let mut hours = hours.into_iter().peekable();
     for (generation, &cut) in (1..).zip(cuts) {
@@ -490,7 +513,7 @@ fn published(hours: Vec<Hour>, cuts: &[i32], resume: Option<i32>, budget: &Budge
             writer = Writer::resume(&mut pages, &cache, budget, root, identity()).unwrap();
             let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
             let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-            emit = Emit::load(None, &directory, &saved).unwrap();
+            emit = Emit::load(cat.clone(), &directory, &saved).unwrap();
         }
     }
     assert!(hours.next().is_none());
@@ -702,7 +725,14 @@ fn assert_sums(held: &BTreeMap<String, Runs>, models: &[Model], hour: usize, cou
 
 /// Whether a designs read stands at `hour`: one made within the day.
 fn designs_read(hour: usize) -> bool {
-    (hour.saturating_sub(23)..=hour).any(|at| reads(TableId::VariantDefinitions, at as i32))
+    designs_read_at(hour).is_some()
+}
+
+/// The hour of the designs read standing at `hour`.
+fn designs_read_at(hour: usize) -> Option<usize> {
+    (hour.saturating_sub(23)..=hour)
+        .rev()
+        .find(|&at| reads(TableId::VariantDefinitions, at as i32))
 }
 
 /// What one country's owner reply compares at an hour with [`content`] bound, from the model:
@@ -805,6 +835,57 @@ fn a_division_placed_again_moves_its_parts_difference_alone() {
         short && full,
         "some divisions fall short and some hold enough"
     );
+}
+
+/// A design defined anew between two designs reads is named, at every hour, as the designs
+/// read standing then defines it; segments restarting inside that change and an emit saved
+/// and loaded with the engine it leads with go on as the one walk.
+#[test]
+fn a_design_is_named_as_the_designs_read_standing_defines_it() {
+    let budget = Budget::new(256 << 20);
+    let (cat, _folder) = content();
+    let mut seed = 17;
+    let mut hours = models(5, 6, 110, &mut seed);
+    for model in &mut hours[45..] {
+        model.renamed = true;
+    }
+    let project = |starts: &[i32]| project_with(&hours, starts, Some(Arc::clone(&cat)));
+    let publish = |starts: &[i32], cuts: &[i32], resume| {
+        let items = project(starts);
+        read(
+            &published_with(items, cuts, resume, &budget, Some(Arc::clone(&cat))),
+            &budget,
+        )
+    };
+    let whole = publish(&[], &[109], None);
+    assert_eq!(publish(&[50, 80], &[109], None), whole);
+    assert_eq!(
+        publish(&[60], &[61, 109], Some(61)),
+        publish(&[60], &[109], None)
+    );
+    let mut names = BTreeSet::new();
+    for (name, runs) in &whole {
+        let Some(design) = name
+            .split('|')
+            .nth(2)
+            .filter(|code| *code == emit::DESIGN.to_string())
+            .map(|_| name.rsplit('|').next().unwrap_or_default())
+        else {
+            continue;
+        };
+        let handle: u64 = design.parse().unwrap();
+        for run in runs {
+            let raw: serde_json::Value = serde_json::from_str(&run.2).unwrap();
+            let named = raw["display_name"].as_str().unwrap().to_owned();
+            for hour in run.0..=run.1 {
+                let read = designs_read_at(hour as usize).expect("a designs read stands");
+                let expected = design_name(handle, hours[read].renamed);
+                assert_eq!(named, expected, "{name} at {hour}");
+            }
+            names.insert(named);
+        }
+    }
+    assert!(names.contains("Rifle renamed") && names.contains(&design_name(VARIANTS[0], false)));
 }
 
 /// Segments restarting at 30, 60 and 90 hours are stitched by the emit into the publication

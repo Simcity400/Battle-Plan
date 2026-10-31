@@ -293,14 +293,42 @@ pub fn localised(cat: Option<&Arc<Catalogue>>, key: &str) -> Result<String, Stri
         .and_then(|text| catalogue::plain_text(&text))
 }
 
+/// A read's design definitions kept by design, not as the read's rows.
+pub trait DefinitionsOf {
+    fn definition(&self, variant: u64) -> Option<&replay_data::rows::VariantDefinitionRow>;
+}
+
+/// A read's design definitions.
+#[derive(Clone, Copy)]
+pub enum Definitions<'a> {
+    Rows(&'a [replay_data::rows::VariantDefinitionRow]),
+    Kept(&'a dyn DefinitionsOf),
+}
+
+impl<'a> Definitions<'a> {
+    fn definition(self, variant: u64) -> Option<&'a replay_data::rows::VariantDefinitionRow> {
+        match self {
+            Self::Rows(rows) => {
+                let at = rows.binary_search_by_key(&variant, |row| row.id).ok()?;
+                rows.get(at)
+            }
+            Self::Kept(kept) => kept.definition(variant),
+        }
+    }
+}
+
+/// A supplying read of the designs by its parts: its hour, its countries' tags, its
+/// definitions, and the token rows its definitions spell.
+pub type DesignsRead<'a> = (
+    i32,
+    equipment::Tags<'a>,
+    Definitions<'a>,
+    &'a [replay_data::rows::LexicalTokenRow],
+);
+
 /// Design names from the supplying read of their definitions.
 pub struct Designs<'a> {
-    read: Option<(
-        &'a DecodedFrame,
-        equipment::Tags<'a>,
-        &'a [replay_data::rows::VariantDefinitionRow],
-        &'a [replay_data::rows::LexicalTokenRow],
-    )>,
+    read: Option<DesignsRead<'a>>,
     cat: Option<&'a Arc<Catalogue>>,
     types: Result<Arc<installed_content_core::equipment::Database>, String>,
 }
@@ -315,19 +343,25 @@ pub struct Design {
 
 impl<'a> Designs<'a> {
     pub fn new(read: Option<&'a DecodedFrame>, cat: Option<&'a Arc<Catalogue>>) -> Self {
+        let read = read.and_then(|read| -> Option<DesignsRead<'a>> {
+            Some((
+                read.hour,
+                equipment::Tags::new(
+                    read.complete::<tables::Countries>().ok()?,
+                    read.complete::<tables::CountryLinks>().ok()?,
+                    read.complete::<tables::CountryAppearance>().ok(),
+                ),
+                Definitions::Rows(read.complete::<tables::VariantDefinitions>().ok()?),
+                read.complete::<tables::LexicalTokens>().ok()?,
+            ))
+        });
+        Self::of(read, cat)
+    }
+
+    /// Designs of a read given by its parts.
+    pub fn of(read: Option<DesignsRead<'a>>, cat: Option<&'a Arc<Catalogue>>) -> Self {
         Self {
-            read: read.and_then(|read| {
-                Some((
-                    read,
-                    equipment::Tags::new(
-                        read.complete::<tables::Countries>().ok()?,
-                        read.complete::<tables::CountryLinks>().ok()?,
-                        read.complete::<tables::CountryAppearance>().ok(),
-                    ),
-                    read.complete::<tables::VariantDefinitions>().ok()?,
-                    read.complete::<tables::LexicalTokens>().ok()?,
-                ))
-            }),
+            read,
             cat,
             types: cat
                 .ok_or_else(|| "Equipment classification needs the recorded content stack".to_owned())
@@ -353,15 +387,15 @@ impl<'a> Designs<'a> {
     /// A design's naming operands and archetype; none, noted, when its definition was not read.
     /// the reason noted, when its definitions were not read or do not hold it.
     pub fn operand(&self, variant: u64, refusals: &mut Refusals) -> Option<DesignOperand> {
-        let Some((read, tags, definitions, lexical)) = &self.read else {
+        let Some((hour, tags, definitions, lexical)) = &self.read else {
             refusals.note("Equipment designs were not read at or before this hour");
             return None;
         };
-        let Ok(at) = definitions.binary_search_by_key(&variant, |row| row.id) else {
+        let Some(definition) = definitions.definition(variant) else {
             refusals.note("An equipment design has no recorded definition");
             return None;
         };
-        let raw = equipment::raw_variant(&definitions[at], read.hour, tags, lexical);
+        let raw = equipment::raw_variant(definition, *hour, tags, *lexical);
         let archetype = match self
             .types
             .as_ref()
