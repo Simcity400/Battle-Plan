@@ -5,7 +5,7 @@ use installed_content_core::ResolvedLayers;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
-use viewer_foundation::map::gpu_contract::device_descriptor;
+use viewer_foundation::map::gpu_contract::map_device_descriptor;
 use viewer_foundation::map::gpu_contract::select_adapter;
 use {
     viewer_foundation::map::camera, viewer_foundation::map::frame,
@@ -233,7 +233,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None)?;
         let (device, queue) = adapter
-            .request_device(&device_descriptor(&adapter))
+            .request_device(&map_device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
         let mut scene = scene::Scene::new(

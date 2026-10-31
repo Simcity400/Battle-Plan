@@ -208,9 +208,11 @@ impl ProvinceColors {
         Ok(())
     }
 
-    pub(crate) fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    /// Records the pending stripes; `true` when there were any. They stay pending until
+    /// [`Self::submitted`] follows the encoder's submission.
+    pub(crate) fn encode(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
         if !self.pending {
-            return;
+            return false;
         }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("province stripe pixels"),
@@ -221,6 +223,11 @@ impl ProvinceColors {
         let count = self.params[3];
         let stride = self.params[4];
         pass.dispatch_workgroups(count.min(stride), count.div_ceil(stride), 1);
+        true
+    }
+
+    /// The encoder [`Self::encode`] recorded into was submitted: its tiles are drawn.
+    pub(crate) fn submitted(&mut self) {
         self.pending = false;
         let columns = self.params[0].div_ceil(GRID_CELL);
         for [x, y] in self.dirty_tiles.drain(..) {

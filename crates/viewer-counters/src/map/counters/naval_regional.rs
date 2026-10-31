@@ -505,7 +505,8 @@ pub(super) fn prepare<'a>(
                                 flag_owner: slot,
                                 sight: Sight::None,
                                 byte,
-                                ships: context.ships[&handle].0,
+                                // The regional path reads only a complete census.
+                                ships: Some(context.ships[&handle].0),
                                 position: None,
                                 strength: context.ships[&handle].1,
                             });

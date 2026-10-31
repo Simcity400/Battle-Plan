@@ -794,6 +794,10 @@ fn sites(
 /// One icon of one hour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RaidIcon {
+    /// The province its raids or offers group by, which keys its window: another group may
+    /// stand at the same province.
+    pub group: u32,
+    /// Where it stands.
     pub province: u32,
     /// Zero-based strip frame.
     pub frame: u32,
@@ -1237,9 +1241,15 @@ fn finish(
             }
         });
         let icon = match bound {
-            Some((bound, incoming)) => {
-                raid_icon(assets, world, ours, bound, incoming, &mut out.report)
-            }
+            Some((bound, incoming)) => raid_icon(
+                assets,
+                world,
+                ours,
+                province,
+                bound,
+                incoming,
+                &mut out.report,
+            ),
             None => match shown.get(&province) {
                 Some(shown) if shown.withheld => {
                     out.report.withheld += 1;
@@ -1381,6 +1391,7 @@ fn raid_icon(
     assets: &RaidAssets,
     world: &World<'_>,
     ours: u32,
+    group: u32,
     bound: &Bound<'_>,
     incoming: bool,
     report: &mut RaidReport,
@@ -1435,6 +1446,7 @@ fn raid_icon(
         report.own += 1;
     }
     Some(RaidIcon {
+        group,
         province,
         frame: if incoming { 4 } else { 2 } + u32::from(bound.raid.phase == 5),
         enabled: true,
@@ -1567,6 +1579,7 @@ fn offer_icon(
     };
     report.offers += 1;
     Some(RaidIcon {
+        group: province,
         province,
         frame: 0,
         enabled,

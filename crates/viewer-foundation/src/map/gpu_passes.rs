@@ -95,6 +95,11 @@ impl PassTimer {
         }
     }
 
+    /// Forgets the marks of a frame whose encoder was dropped: they were never submitted.
+    pub fn abandon(&mut self) {
+        self.labels.clear();
+    }
+
     /// Resolves the frame's timestamps into the readback buffer.
     pub fn finish(&mut self, encoder: &mut wgpu::CommandEncoder) {
         let count = self.labels.len() as u32;

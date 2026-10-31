@@ -865,7 +865,9 @@ fn subject_colors<'a>(
     let mut colors = BTreeMap::new();
     let mut missing = Vec::new();
     for &slot in slots {
-        let source = color_source(slot, &inherited)?;
+        let Some(source) = color_source(slot, &inherited)? else {
+            continue;
+        };
         match countries.raw.get(&source).and_then(|raw| recorded.get(raw)) {
             Some(&color) => {
                 colors.insert(slot, color);

@@ -141,9 +141,7 @@ pub(crate) fn measure(
         let adapter =
             viewer_foundation::map::gpu_contract::select_adapter(&available_adapters, None)?;
         let (device, queue) = adapter
-            .request_device(&viewer_foundation::map::gpu_contract::device_descriptor(
-                &adapter,
-            ))
+            .request_device(&viewer_foundation::map::gpu_contract::map_device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
         let target_format = viewer_foundation::map::gpu_contract::OUTPUT_FORMAT;

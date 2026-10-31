@@ -8,7 +8,7 @@ fn unit(force: &TaskForceRow, slot: u32, strength: i64) -> NavalUnit<'_> {
         slot,
         flag_owner: unit_flag_owner(slot, force.expeditionary_owner, false, &Some),
         sight: Sight::Full,
-        ships: 1,
+        ships: Some(1),
         position: None,
         strength,
         logical: Some(slot),

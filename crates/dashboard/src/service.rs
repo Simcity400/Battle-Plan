@@ -319,9 +319,10 @@ impl Service {
         }))
     }
 
-    /// Game and user folders for products that read artwork or localisation.
+    /// Game and user folders for products that read artwork or localisation. The preparation
+    /// choice is its own preference ([`Self::apply_saved_preparation`]): a folder change
+    /// leaves it as it is.
     pub fn configure_content(&self, config: &Config, allow_unverified: bool) -> io::Result<()> {
-        self.set_background_preparation(config.background_preparation_enabled());
         let options = match config.resolve_options() {
             Ok(options) => options,
             Err(_) => {
@@ -388,6 +389,13 @@ impl Service {
 
     pub fn set_background_preparation(&self, enabled: bool) {
         self.inner.set_background_preparation(enabled);
+    }
+
+    /// Runs with the saved preparation choice. Read and applied under the lock each save
+    /// applies under ([`Config::save_background_preparation`]), so a choice saved meanwhile is
+    /// not overtaken by this read.
+    pub fn apply_saved_preparation(&self) -> io::Result<()> {
+        Config::apply_background_preparation(|enabled| self.set_background_preparation(enabled))
     }
 
     /// Changes only for worker completion or a changed preparation condition.

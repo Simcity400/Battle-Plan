@@ -382,6 +382,17 @@ struct StateEffect {
     settles: Settles,
 }
 
+/// The largest clock the GUI reads: seconds of an `Instant`'s elapsed `Duration`, whose whole
+/// seconds are a `u64`. An effect settles for good only if its program's values stay finite
+/// up to it ([`Settling::limit`]), since the clock only grows while it shows.
+const LONGEST_CLOCK: f32 = u64::MAX as f32;
+
+/// Whether `settles` has settled `elapsed` seconds past its restart, at clock magnitude `clock`,
+/// for as long as the clock can run.
+fn settled(settles: &Settling, elapsed: f32, clock: f32) -> bool {
+    settles.limit >= LONGEST_CLOCK && settles.reached(elapsed, clock)
+}
+
 /// The related objects reached when an object's visibility changes.
 #[derive(Clone, Debug, PartialEq)]
 enum Drawables {
@@ -3213,7 +3224,7 @@ impl Instance {
             // How long its state's technique changes on the clock, from the effect itself.
             let settles = match &info.effect {
                 Ok(effect) => effect.settles(technique(state)),
-                Err(_) => Settles::Program(Some(0.0)),
+                Err(_) => Settles::Program(Some(Settling::NOW)),
             };
             let runtime = Self::runtime(&mut node.runtime, sprite, made);
             let first = *runtime.first_draw.get_or_insert(time);
@@ -3270,7 +3281,7 @@ impl Instance {
         };
         // The answer of the program the last draw bound; `None` while it is not this
         // Instance's.
-        let mut bound: Option<Option<f32>> = None;
+        let mut bound: Option<Option<Settling>> = None;
         for (index, part) in layout.parts.iter().enumerate() {
             if layout.holders.iter().any(|holder| holder.before == index) {
                 bound = None;
@@ -3279,12 +3290,17 @@ impl Instance {
                 Settles::Program(settles) => bound = Some(settles),
                 Settles::Previous if !part.shading.clocked => {}
                 Settles::Previous => match bound {
-                    Some(Some(settles)) if part.shading.since >= settles => {}
+                    Some(Some(settles))
+                        if settled(
+                            &settles,
+                            part.shading.since,
+                            part.shading.time.abs().max(part.shading.animation.abs()),
+                        ) => {}
                     _ => return true,
                 },
                 // Its program record is bound, which the replay lacks: a kept draw after it is
                 // refused too and never changes.
-                Settles::Refused => bound = Some(Some(0.0)),
+                Settles::Refused => bound = Some(Some(Settling::NOW)),
             }
         }
         false
@@ -3371,8 +3387,13 @@ impl Instance {
                             || (reached
                                 && runtime.first_draw.is_some()
                                 && runtime.effect.is_some_and(|effect| match effect.settles {
-                                    Settles::Program(settles) => settles
-                                        .is_none_or(|settles| self.time - effect.at < settles),
+                                    Settles::Program(settles) => settles.is_none_or(|settles| {
+                                        !settled(
+                                            &settles,
+                                            self.time - effect.at,
+                                            self.time.abs().max(effect.at.abs()),
+                                        )
+                                    }),
                                     // Resolved in draw order at the tick; a refused draw
                                     // draws nothing.
                                     Settles::Previous | Settles::Refused => false,

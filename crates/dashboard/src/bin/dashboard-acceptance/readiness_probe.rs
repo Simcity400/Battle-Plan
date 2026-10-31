@@ -863,11 +863,8 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
         let channel = Arc::new(Channel::default());
         let emit = Arc::clone(&channel);
         let warm = Service::new(Arc::new(move |event: DataEvent| emit.emit(event)))?;
-        let quiet = Config {
-            background_preparation: Some(false),
-            ..config.clone()
-        };
-        warm.configure_content(&quiet, settings.allow_unverified)?;
+        warm.set_background_preparation(false);
+        warm.configure_content(&config, settings.allow_unverified)?;
         let asked = Instant::now();
         warm.dispatch(DataCommand::Open {
             id: "readiness-warm".into(),

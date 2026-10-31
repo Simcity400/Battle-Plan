@@ -237,12 +237,22 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let green = [0, 255, 0, 64];
         pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, blue)]))
             .unwrap();
+        // A frame that fails after recording drops its encoder: the stripes stay pending.
+        let mut aborted = harness.device.create_command_encoder(&Default::default());
+        assert!(pass.encode(&mut aborted));
+        drop(aborted);
         let mut encoder = harness.device.create_command_encoder(&Default::default());
-        pass.encode(&mut encoder);
+        assert!(pass.encode(&mut encoder));
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        pass.submitted();
         for (at, color) in got.channel1.iter().enumerate() {
             assert_eq!(*color, if at % 32 < 16 { red } else { blue });
         }
+        let mut idle = harness.device.create_command_encoder(&Default::default());
+        assert!(
+            !pass.encode(&mut idle),
+            "submitted stripes are no longer pending"
+        );
         pass.update(&harness.queue, &BTreeMap::from([(second, green)]))
             .unwrap();
         pass.update(&harness.queue, &BTreeMap::from([(1, red), (second, green)]))
@@ -250,6 +260,7 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         pass.encode(&mut encoder);
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        pass.submitted();
         for (at, color) in got.channel1.iter().enumerate() {
             assert_eq!(*color, if at % 32 < 16 { red } else { green });
         }
@@ -257,6 +268,7 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fal
         let mut encoder = harness.device.create_command_encoder(&Default::default());
         pass.encode(&mut encoder);
         let got = harness.read(encoder, [&pass.bound.texture; 2], 0);
+        pass.submitted();
         assert!(got.channel1.iter().all(|color| *color == [0; 4]));
     }
 }
@@ -539,6 +551,7 @@ impl Harness {
         let cpu = start.elapsed().as_secs_f64() * 1000.0;
         let textures = self.textures.clone();
         let plane = self.read(encoder, [&textures[0], &textures[1]], 0);
+        gpu.recorded(true);
         if let Some(timer) = &mut self.timer {
             timer.report(&self.device);
         }
@@ -612,9 +625,13 @@ impl Harness {
     /// Render one view's frame: whether it dispatched, then its country and strategic layers.
     fn view(&self, view: &View) -> (bool, LayerPlane, LayerPlane) {
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let dispatched = view.encode(&mut encoder);
+        let encoded = view.encode(&mut encoder);
+        let dispatched = encoded.is_some();
         let [first, second] = view.textures().expect("shown").clone();
         let country = self.read(encoder, [&first, &second], first.height() / 2);
+        if let Some(encoded) = encoded {
+            encoded.submitted();
+        }
         let encoder = self.device.create_command_encoder(&Default::default());
         let strategic = self.read(encoder, [&first, &second], 0);
         (dispatched, country, strategic)
@@ -981,8 +998,10 @@ fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     let (mut a, mut b) = (new_view(), new_view());
     let both = |a: &View, b: &View| {
         let mut encoder = harness.device.create_command_encoder(&Default::default());
-        assert!(a.encode(&mut encoder) && b.encode(&mut encoder));
+        let (first, second) = (a.encode(&mut encoder), b.encode(&mut encoder));
+        assert!(first.is_some() && second.is_some());
         harness.queue.submit([encoder.finish()]);
+        first.into_iter().chain(second).for_each(Encoded::submitted);
     };
     for (first, second) in [
         (tables(halves), tables(other)),
@@ -1057,9 +1076,17 @@ fn political_gpu_fallback_lockstep(fallback: &Fallback) {
             .expect("a warm-up state");
         used[index] = true;
         let dispatched = shown.lock().gpu.dispatched_cells;
+        // A frame that fails after recording drops its encoder and token: the shared fill is
+        // recorded again by the next.
+        let mut aborted = harness.device.create_command_encoder(&Default::default());
+        drop(a.encode(&mut aborted).expect("pending"));
+        drop(aborted);
         let mut encoder = harness.device.create_command_encoder(&Default::default());
-        assert!(a.encode(&mut encoder) && !b.encode(&mut encoder));
+        let recorded = a.encode(&mut encoder).expect("still pending");
+        // The shared fill is recorded once per encoder.
+        assert!(b.encode(&mut encoder).is_none());
         harness.queue.submit([encoder.finish()]);
+        recorded.submitted();
         let region_color = |key| first.country_color(key);
         let layer = Layer::new(LayerKind::Country, &first.country_of, &region_color, &field);
         let cpu = gradient::build_layer(&map, &layer).unwrap();

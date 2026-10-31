@@ -92,7 +92,12 @@ pub(super) fn bind(
         .map(|row| ((row.side, row.battle_slot), row))
         .collect();
     let by_variant: BTreeMap<_, _> = variants.rows().iter().map(|row| (row.id, row)).collect();
-    let by_country: BTreeMap<_, _> = countries.rows().iter().map(|row| (row.id, row)).collect();
+    let links: BTreeMap<_, _> = rows::<tables::CountryLinks>(frame)?
+        .rows()
+        .iter()
+        .map(|row| (row.id, row.canonical_slot))
+        .collect();
+    let by_country = super::naval_details::countries_by_reference(&links, countries.rows());
     let context = VariantContext {
         static_content,
         frame,

@@ -66,6 +66,9 @@ pub enum NativeEvent {
     },
     Ready {
         hwnd: String,
+        /// The anti-aliasing sample counts the renderer's adapter supports
+        /// ([`crate::map_settings::sample_counts`]); `None` when it did not record them.
+        sample_counts: Option<Vec<u32>>,
     },
     State {
         path: Option<String>,
@@ -1138,6 +1141,23 @@ b"
                 "state": { "kind": "refused", "reason": "its mesh did not load" }
             })
         );
+    }
+
+    /// The renderer's ready message carries its anti-aliasing counts to the host, or says it
+    /// has none.
+    #[test]
+    fn ready_carries_the_renderers_sample_counts() {
+        for counts in [Some(vec![1, 2, 4, 8]), None] {
+            let event = NativeEvent::Ready {
+                hwnd: "42".into(),
+                sample_counts: counts.clone(),
+            };
+            let text = serde_json::to_string(&event).unwrap();
+            assert!(matches!(
+                serde_json::from_str::<NativeEvent>(&text).unwrap(),
+                NativeEvent::Ready { hwnd, sample_counts } if hwnd == "42" && sample_counts == counts
+            ));
+        }
     }
 
     #[test]

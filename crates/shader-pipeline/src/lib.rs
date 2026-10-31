@@ -98,15 +98,14 @@ pub struct Compiled {
 }
 
 impl Compiled {
-    /// Seconds after its restart past which the draw no longer changes on the clock alone, when
-    /// constant buffer `register` holds the clock at byte `time` and the restart at `since` in
-    /// both stages, as sprite constants do: the longer stage's [`clock::Clock::settles`];
-    /// `None` while either keeps changing.
-    pub fn settles(&self, register: u32, time: u32, since: u32) -> Option<f32> {
-        let mut settles = 0.0_f32;
+    /// When the draw no longer changes on the clock alone, constant buffer `register` holding
+    /// the clock at byte `time` and the restart at `since` in both stages, as sprite constants
+    /// do: once both stages' [`clock::Clock::settles`] are; `None` while either keeps changing.
+    pub fn settles(&self, register: u32, time: u32, since: u32) -> Option<clock::Settling> {
+        let mut settles = clock::Settling::NOW;
         for (stage, shader) in [(Stage::Vertex, &self.vertex), (Stage::Pixel, &self.pixel)] {
             let binding = binding(register, stage);
-            settles = settles.max(shader.clock.settles((binding, time), (binding, since))?);
+            settles = settles.and(shader.clock.settles((binding, time), (binding, since))?);
         }
         Some(settles)
     }
@@ -186,7 +185,7 @@ impl Compiler {
         stage: Stage,
         defines: &[String],
     ) -> Result<(Shader, BTreeMap<u32, String>), String> {
-        let source = source::native_includes(&program.hlsl(technique, stage, defines)?);
+        let source = source::without_host_files(&program.hlsl(technique, stage, defines)?)?;
         let scratch = Scratch::new()?;
         let input = scratch.0.join("effect.hlsl");
         let output = scratch.0.join("effect.spv");

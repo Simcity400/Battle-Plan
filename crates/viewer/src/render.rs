@@ -16,7 +16,7 @@ use viewer_foundation::profile_writer::profiling;
 use viewer_world::map::scene_content::MapAssets;
 
 use viewer_foundation::map::gpu_contract::{
-    device_descriptor, device_requirements, read_texture, select_adapter,
+    device_requirements, map_device_descriptor, read_texture, select_adapter,
 };
 
 use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
@@ -109,7 +109,7 @@ pub fn configuration() -> eframe::egui_wgpu::WgpuConfiguration {
         configuration.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
     }
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut configuration.wgpu_setup {
-        setup.device_descriptor = Arc::new(device_descriptor);
+        setup.device_descriptor = Arc::new(map_device_descriptor);
         // The window and the dashboard maps it hosts choose like `--dump`.
         setup.native_adapter_selector = Some(Arc::new(|adapters, surface| {
             select_adapter(adapters, surface).map_err(|error| error.to_string())
@@ -126,7 +126,7 @@ pub fn probe_dump_device() -> io::Result<()> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
         let adapter = select_adapter(&adapters, None)?;
-        device_descriptor(&adapter);
+        map_device_descriptor(&adapter);
         Ok(())
     })
 }
@@ -309,7 +309,7 @@ pub fn dump_png(
         let adapter = select_adapter(&adapters, None)?;
         let info = adapter.get_info();
         let (device, queue) = adapter
-            .request_device(&device_descriptor(&adapter))
+            .request_device(&map_device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
         let mut scene = Scene::new(

@@ -1320,7 +1320,8 @@ fn combat_tiles(
                             Sight::Partial
                         },
                         byte: member.visibility,
-                        ships: member.ships,
+                        // The grid exists only over a complete census.
+                        ships: Some(member.ships),
                         position: None,
                         // The mixed-owner flag rule reads each task force's summed strength
                         // As a port item's does.

@@ -495,6 +495,10 @@ pub(super) const CARRIER_SPRITE: &str = "air_base_icon's sprite";
 /// `capital_count_txt` holds the capital-ship sum over every member.
 pub(super) const CAPITALS: &str = "capital_count_txt";
 
+/// `count_txt` holds the ship count: of the fully seen members at sea, of every member of a
+/// mission item.
+pub(super) const COUNT: &str = "count_txt";
+
 /// The `no_orders` and `invalid_orders` glyphs ([`bind_orders`]).
 pub(super) const ORDERS: &str = "the order glyphs";
 
@@ -934,6 +938,11 @@ fn bind_orders(flotilla: &naval::Flotilla, flagged: bool, writes: &mut Writes<'_
 pub(super) const ORDERS_UNDECIDED: &str = "the order glyphs are undecided: a member's order \
      operands (TaskForceCounterInputs, its fleet's regions) are not recorded";
 
+/// Why a ship count is undecided: the hour's Ships census is incomplete, so it may lack a
+/// member's ships.
+pub(super) const SHIP_CENSUS_INCOMPLETE: &str =
+    "the ship count is undecided: the hour's Ships census is incomplete";
+
 /// Why a ship-operand part is undecided: a member's ship operands (`ShipCounterInputs`) are not
 /// recorded.
 pub(super) const SHIPS_UNRECORDED: &str =
@@ -1104,7 +1113,7 @@ fn at_sea(
     bind_carrier(ctx.gui, flotilla, false, report, writes);
     let capitals = match &flotilla.cells {
         Some(cells) => cells.capitals.map(|sum| sum.to_string()),
-        None => (flotilla.ships == 0 && !flotilla.hidden).then(|| "0".to_owned()),
+        None => (flotilla.ships == Some(0) && !flotilla.hidden).then(|| "0".to_owned()),
     };
     // Show the capital glyph and count, then write the sum over every member.
     writes.show(Icon, "capital_ship");
@@ -1115,9 +1124,9 @@ fn at_sea(
     // The coarse pass replaces it with 3; plate colouring follows this state update.
     let active = flotilla.status.active;
     let count = if flotilla.hidden {
-        UNKNOWN_COUNT.to_owned()
+        Some(UNKNOWN_COUNT.to_owned())
     } else {
-        flotilla.ships.to_string()
+        flotilla.ships.map(|ships| ships.to_string())
     };
     // The spotting bar is bound hidden and never shown at sea.
     writes.hide(Container, "spotting_bar_container");
@@ -1141,9 +1150,7 @@ fn at_sea(
         writes.frame(Button, "count_bg", 3);
         writes.wrote(PLATE_FRAME);
         writes.show(TextBox, "count_txt");
-        writes.control(TextBox, "count_txt", |bound| {
-            bound.text = Some(count.clone())
-        });
+        count_write(count, writes);
         match ctx.art.flag(flotilla.owner, true) {
             Some(texture) => {
                 writes.show(Icon, "large_flag");
@@ -1187,9 +1194,7 @@ fn at_sea(
     writes.show(Icon, "counter_overlay");
     writes.hide(Icon, "large_flag");
     writes.show(TextBox, "count_txt");
-    writes.control(TextBox, "count_txt", |bound| {
-        bound.text = Some(count.clone())
-    });
+    count_write(count, writes);
     match &flotilla.bars {
         naval::NavalBars::Hidden => {
             writes.hide(Icon, "bar_str");
@@ -1277,7 +1282,7 @@ fn mission_item(
     report: &mut BTreeMap<Cow<'static, str>, usize>,
     writes: &mut Writes<'_>,
 ) {
-    use native::Kind::{Container, Icon, TextBox};
+    use native::Kind::{Container, Icon};
     let NavyState { flotilla, .. } = *state;
     // Set the medium or small flag without Show. An undecidable mixed-owner flag
     // leaves this part unknown ([`FLAG`]).
@@ -1302,28 +1307,28 @@ fn mission_item(
     writes.hide_and_flag(Icon, "bar_org");
     // First-member visibility words the counts: ? below 100, a range through 249,
     // exact from 250. The sums use signed integer arithmetic and write text alone.
-    let item_text = |total: usize, capital: bool| {
+    // `None` when a count the text shows is unknown: below the count intel the game writes "?"
+    // without reading them.
+    let item_text = |total: Option<usize>, capital: bool| {
         let item = flotilla.item?;
-        Some(viewer_foundation::map::naval_count_approx::format_count(
-            total as i32,
+        viewer_foundation::map::naval_count_approx::format_recorded_count(
+            total.map(|total| total as i32),
             item.first,
             item.byte,
             capital,
-            item.ships as i32,
+            item.ships.map(|ships| ships as i32),
             &ctx.defines.naval_counts,
-        ))
+        )
     };
     let count = flotilla.item.and_then(|item| item_text(item.ships, false));
     // Sum capital ships over all members; an item without ships sums to zero
     // regardless of missing ship operands.
     let capitals = match (&flotilla.cells, flotilla.item) {
-        (_, Some(item)) if item.ships == 0 => item_text(0, true),
-        (Some(cells), Some(_)) => cells.capitals.and_then(|sum| item_text(sum, true)),
+        (_, Some(item)) if item.ships == Some(0) => item_text(Some(0), true),
+        (Some(cells), Some(_)) => item_text(cells.capitals, true),
         _ => None,
     };
-    writes.control(TextBox, "count_txt", |bound| {
-        bound.text = Some(count.clone().unwrap_or_default())
-    });
+    count_write(count, writes);
     capitals_write(capitals, writes);
     // At full first-member intel the bars are unflagged, shown, moved and stretched, and the
     // supply child set (below it neither is touched again).
@@ -1383,6 +1388,19 @@ fn mission_item(
     // members share a fleet; otherwise hide and flag it. Visible controls already
     // have clear hide bits, so repeated unflagging and Show preserve their state.
     bind_marker(flotilla, true, writes);
+}
+
+/// `count_txt`'s text ([`COUNT`]), or the part left unknown by a Ships census the hour lacks.
+fn count_write(count: Option<String>, writes: &mut Writes<'_>) {
+    match count {
+        Some(text) => {
+            writes.control(native::Kind::TextBox, "count_txt", |bound| {
+                bound.text = Some(text)
+            });
+            writes.wrote(COUNT);
+        }
+        None => writes.unknown(COUNT, SHIP_CENSUS_INCOMPLETE),
+    }
 }
 
 /// `capital_count_txt`'s text ([`CAPITALS`]), or the part left unknown by ship operands the hour

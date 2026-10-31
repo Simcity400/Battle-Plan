@@ -1392,14 +1392,14 @@ impl Inner {
             }
             catalogue.as_ref().expect("catalogue loaded").2.clone()
         };
+        let sample_counts = map_settings::sample_counts();
         // Any installed mod can be chosen, and a chosen mod that is no longer installed keeps
         // its place by name; what cannot be shown is named when it is mounted.
         if let Some(settings) = &settings {
             settings.validate().map_err(str::to_owned)?;
-            if settings
-                .graphics
-                .samples
-                .is_some_and(|samples| !map_settings::sample_counts().contains(&samples))
+            // Until the renderer has said, it is the one to refuse a count its adapter lacks.
+            if let (Some(samples), Some(counts)) = (settings.graphics.samples, &sample_counts)
+                && !counts.contains(&samples)
             {
                 return Err(
                     "This anti-aliasing setting is unavailable on the current renderer".into(),
@@ -1447,7 +1447,7 @@ impl Inner {
             recorded_mods,
             applied_mods: Vec::new(),
             applied_notes: Vec::new(),
-            sample_counts: map_settings::sample_counts(),
+            sample_counts,
             game_graphics: store.game().map(|game| game.graphics),
             game_settings_error: store.game_error(),
             presentation_generation: 0,
@@ -1635,9 +1635,10 @@ impl Inner {
                 }
                 let result = request_result(|| {
                     if let Some(enabled) = enabled {
-                        crate::Config::save_background_preparation(enabled)
-                            .map_err(|error| error.to_string())?;
-                        self.set_background_preparation(enabled);
+                        crate::Config::save_background_preparation(enabled, |enabled| {
+                            self.set_background_preparation(enabled)
+                        })
+                        .map_err(|error| error.to_string())?;
                     }
                     bounded_json(&self.preparation_preferences(), &request.cancelled)
                 });

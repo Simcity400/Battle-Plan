@@ -187,7 +187,7 @@ impl PreparedRaids {
             .placed
             .iter()
             .map(|placed| Owner {
-                id: placed.icon.province,
+                id: placed.icon.group,
                 screen: placed.screen,
                 dirty: false,
             })
@@ -196,7 +196,7 @@ impl PreparedRaids {
             .placed
             .iter()
             .enumerate()
-            .map(|(ordinal, placed)| (placed.icon.province, (ordinal, placed)))
+            .map(|(ordinal, placed)| (placed.icon.group, (ordinal, placed)))
             .collect();
         let bindings = context.windows.gui_type(WINDOW.as_bytes()).map(controls);
         let frame = bindings
@@ -320,6 +320,7 @@ mod tests {
                 anchor: UNANCHORED,
                 screen: [100., 200.],
                 icon: RaidIcon {
+                    group: 1,
                     province: 1,
                     frame: 0,
                     enabled: true,
@@ -385,6 +386,7 @@ mod tests {
         let icons = RaidIcons {
             icons: [1, 2]
                 .map(|province| RaidIcon {
+                    group: province,
                     province,
                     frame: 0,
                     enabled: false,
@@ -551,6 +553,7 @@ mod tests {
                 _ => [112., 202.],
             },
             icon: RaidIcon {
+                group: id,
                 province: id,
                 frame: 0,
                 enabled: false,
@@ -673,6 +676,7 @@ mod tests {
                     anchor: UNANCHORED,
                     screen: [100., 200.],
                     icon: RaidIcon {
+                        group: province,
                         province,
                         frame: 0,
                         enabled: true,
@@ -707,6 +711,54 @@ mod tests {
         assert!(batch.quads.is_empty());
     }
 
+    /// A state-building raid and a province raid group apart but may stand at one building
+    /// site: each keeps its own window, so neither replaces the other.
+    #[test]
+    fn groups_standing_at_one_province_keep_their_own_windows() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let resources = draw_resources();
+        let windows = gui::windows(DRAW_GUI);
+        let context = Context {
+            resources: &resources,
+            windows: &windows,
+            viewport: [2048, 1152],
+            time: Some(1.),
+        };
+        let prepared = PreparedRaids {
+            placed: [(4, 2), (5, 4)]
+                .map(|(group, frame)| Placed {
+                    anchor: UNANCHORED,
+                    screen: [100., 200.],
+                    icon: RaidIcon {
+                        group,
+                        province: 5,
+                        frame,
+                        enabled: true,
+                        glyph: Some("glyph".into()),
+                        plus: false,
+                        tooltip: None,
+                    },
+                })
+                .into(),
+            report: Default::default(),
+        };
+        let mut report = RaidReport::default();
+        assert_eq!(
+            prepared.draw(
+                &context,
+                assets().priority,
+                &mut PoolView::default(),
+                &mut Batch::default(),
+                &mut Vec::new(),
+                &mut report
+            ),
+            2,
+            "{:?}",
+            report.reasons
+        );
+    }
+
     #[test]
     fn a_reused_raid_window_withholds_a_missing_or_undecided_glyph() {
         engine_executable::executable_tables::initialize_for_tests()
@@ -724,6 +776,7 @@ mod tests {
                 anchor: UNANCHORED,
                 screen: [100., 200.],
                 icon: RaidIcon {
+                    group: 1,
                     province: 1,
                     frame: 0,
                     enabled: true,
@@ -789,6 +842,7 @@ mod tests {
         let mut instance = Instance::construct(root, [200, 100], &resources).unwrap();
         instance.gui_show(root, root).unwrap();
         let icon = RaidIcon {
+            group: 1,
             province: 1,
             frame: 0,
             enabled: false,

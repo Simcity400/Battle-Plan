@@ -190,6 +190,9 @@ pub(super) fn frame() -> DecodedFrame {
             appearance(200, [0.5, 0.0, 0.25, 1.0]),
             appearance(300, [0.0, 0.5, 0.0, 1.0]),
         ]));
+    // No subject and no autonomy status: every country takes its own colour.
+    tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
+    tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(Vec::new()));
     tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
             id: 9,

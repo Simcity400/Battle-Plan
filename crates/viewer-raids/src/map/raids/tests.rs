@@ -1,6 +1,5 @@
 use super::test_support::*;
 use super::*;
-use script::LeaderRoles;
 use installed_content_core::buildings::BuildingType;
 use installed_content_raids::{raids::RaidType as Kind, raids::TargetType};
 use replay_data::{
@@ -12,6 +11,7 @@ use replay_data::{
     rows::StateRow, rows::TableId, rows::TableRows, rows::TableSchema,
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
+use script::LeaderRoles;
 use std::sync::Arc;
 use std::sync::Mutex;
 use viewer_foundation::map::camera::MapDefines;
@@ -608,6 +608,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
     let icons = RaidIcons {
         icons: vec![
             RaidIcon {
+                group: 1,
                 province: 1,
                 frame: 0,
                 enabled: true,
@@ -616,6 +617,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                 tooltip: None,
             },
             RaidIcon {
+                group: 2,
                 province: 2,
                 frame: 4,
                 enabled: true,
@@ -690,6 +692,7 @@ fn only_the_hours_own_raid_icons_are_drawn() {
     use std::sync::Arc;
     let icons = Arc::new(RaidIcons {
         icons: vec![RaidIcon {
+            group: 3,
             province: 3,
             frame: 2,
             enabled: true,
@@ -1256,6 +1259,7 @@ fn drawn_in(
     ui_scale: f32,
 ) -> (usize, Batch) {
     let icon = |province, frame| RaidIcon {
+        group: province,
         province,
         frame,
         enabled: true,

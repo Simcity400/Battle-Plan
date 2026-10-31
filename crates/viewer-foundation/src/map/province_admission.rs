@@ -96,13 +96,7 @@ pub fn views(mut camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
     let width = camera.map.x();
     let corners = footprint(camera, viewport);
     let [east, west] = reaches(corners, width);
-    let [west_top, east_top, west_bottom, east_bottom] = corners;
-    if east_top < 0.0 && east_bottom < 0.0 {
-        camera.center[0] += width;
-    }
-    if width < west_top && width < west_bottom {
-        camera.center[0] -= width;
-    }
+    camera.center[0] += crossed(corners, width);
     let mut views = vec![camera];
     for (shift, reached) in [(-width, east), (width, west)] {
         if reached {
@@ -112,6 +106,28 @@ pub fn views(mut camera: Camera, viewport: [u32; 2]) -> Vec<Camera> {
         }
     }
     views
+}
+
+/// The game's seam move for the game's camera: a map width east once its whole footprint is west
+/// of the map, a map width west once it is wholly east of it, otherwise nothing. The game moves
+/// its camera and target by it every frame, so the camera stays where its three map copies reach.
+pub fn seam_shift(camera: Camera, viewport: [u32; 2]) -> f32 {
+    if camera.free().is_some() {
+        return 0.0;
+    }
+    crossed(footprint(camera, viewport), camera.map.x())
+}
+
+/// [`seam_shift`] of a footprint, both tests reading its corners before either move.
+fn crossed([west_top, east_top, west_bottom, east_bottom]: [f32; 4], width: f32) -> f32 {
+    let mut shift = 0.0;
+    if east_top < 0.0 && east_bottom < 0.0 {
+        shift += width;
+    }
+    if width < west_top && width < west_bottom {
+        shift -= width;
+    }
+    shift
 }
 
 /// A free eye's views: the eye moved onto the first map copy, then one view per other copy its
@@ -336,6 +352,38 @@ mod tests {
             pose: Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test())
+    }
+
+    /// Panning several times round the world, one seam move a frame keeps the camera where its
+    /// three copies reach: its footprint never lies wholly beyond either seam once it settles.
+    #[test]
+    fn the_seam_move_keeps_the_camera_on_the_maps_copies() {
+        let base = camera([0., 1000.], 300.);
+        let width = base.map.x();
+        for start in [2.5 * width, -3.25 * width, 0.5 * width, width] {
+            let mut moved = camera([start, 1000.], 300.);
+            for _ in 0..16 {
+                moved.center[0] += seam_shift(moved, VIEWPORT);
+            }
+            let [west_top, east_top, west_bottom, east_bottom] = footprint(moved, VIEWPORT);
+            assert!(!(east_top < 0. && east_bottom < 0.), "{start}: wholly west");
+            assert!(
+                !(width < west_top && width < west_bottom),
+                "{start}: wholly east"
+            );
+            assert_eq!(
+                (moved.center[0] - start).rem_euclid(width),
+                0.,
+                "{start}: moves are whole map widths"
+            );
+            assert_eq!(seam_shift(moved, VIEWPORT), 0., "{start}: settled");
+        }
+        // A view straddling a seam stays where it is.
+        let straddling = camera([0., 1000.], 300.);
+        assert_eq!(seam_shift(straddling, VIEWPORT), 0.);
+        // One move a frame, as the game makes.
+        let far = camera([2.5 * width, 1000.], 300.);
+        assert_eq!(seam_shift(far, VIEWPORT), -width);
     }
 
     #[test]

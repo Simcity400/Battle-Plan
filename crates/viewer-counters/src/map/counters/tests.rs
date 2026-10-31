@@ -3010,7 +3010,7 @@ fn sea_items_join_by_allegiance_and_own_fleets_stay_apart() {
             flag_owner: slot,
             sight: Sight::Full,
             byte: 255,
-            ships: 1,
+            ships: Some(1),
             position: None,
             strength: counter_status::FIXED,
         }
@@ -4890,7 +4890,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
             flag_owner: 2,
             sight: Sight::Partial,
             byte,
-            ships: 12,
+            ships: Some(12),
             position: None,
             strength: 0,
         };
@@ -4918,7 +4918,7 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
         flag_owner: 2,
         sight: Sight::Partial,
         byte: 200,
-        ships: 12,
+        ships: Some(12),
         position: None,
         strength: 0,
     };

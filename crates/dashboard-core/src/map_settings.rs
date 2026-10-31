@@ -6,18 +6,29 @@ use serde::Serialize;
 use std::{collections::BTreeMap, fs, io, path::PathBuf, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
-// The browser bridge has no adapter. Only universally supported modes are
-// advertised there; the desktop replaces this mask during device creation.
-static SAMPLE_COUNTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1 | 4);
-pub fn set_sample_counts(mask: u32) {
+/// The map renderer's anti-aliasing sample counts as a mask of 1, 2, 4 and 8; zero until a
+/// renderer has said. The renderer's process records them when it opens its device; a host
+/// learns them from the renderer it runs ([`crate::protocol::NativeEvent::Ready`]).
+static SAMPLE_COUNTS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Records the counts the map renderer's adapter supports; any other count is not a map choice.
+pub fn set_sample_counts(counts: impl IntoIterator<Item = u32>) {
+    let mask = counts
+        .into_iter()
+        .filter(|count| matches!(count, 1 | 2 | 4 | 8))
+        .fold(0, |mask, count| mask | count);
     SAMPLE_COUNTS.store(mask, std::sync::atomic::Ordering::Relaxed);
 }
-pub fn sample_counts() -> Vec<u32> {
+
+/// The renderer's sample counts, ascending; `None` while no renderer has said.
+pub fn sample_counts() -> Option<Vec<u32>> {
     let mask = SAMPLE_COUNTS.load(std::sync::atomic::Ordering::Relaxed);
-    [1, 2, 4, 8]
-        .into_iter()
-        .filter(|count| mask & count != 0)
-        .collect()
+    (mask != 0).then(|| {
+        [1, 2, 4, 8]
+            .into_iter()
+            .filter(|count| mask & count != 0)
+            .collect()
+    })
 }
 
 pub fn campaign_key(replay: &replay::container::Replay) -> String {
@@ -286,7 +297,9 @@ pub struct Reply {
     pub applied_mods: Vec<installed_content_core::content::visual::Choice>,
     /// Selected mods that are not shown, and why.
     pub applied_notes: Vec<String>,
-    pub sample_counts: Vec<u32>,
+    /// The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when
+    /// every count is a choice and the renderer refuses one its adapter lacks.
+    pub sample_counts: Option<Vec<u32>>,
     /// The game's own graphics choices, which a scope's "use the game's settings" reverts to.
     pub game_graphics: Option<MapGraphics>,
     /// Why the game's settings (graphics and volumes) could not be read.
@@ -419,6 +432,17 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
 mod tests {
     use super::*;
     use crate::protocol::{CounterFilter, MapAudioOverrides};
+
+    /// No counts are assumed before a renderer reports its own; what it reports is kept as
+    /// map choices only.
+    #[test]
+    fn sample_counts_are_unknown_until_the_renderer_reports_them() {
+        assert_eq!(sample_counts(), None);
+        set_sample_counts([8, 1, 2, 16, 3]);
+        assert_eq!(sample_counts(), Some(vec![1, 2, 8]));
+        set_sample_counts([1, 2, 4, 8]);
+        assert_eq!(sample_counts(), Some(vec![1, 2, 4, 8]));
+    }
 
     fn choice(id: &str) -> installed_content_core::content::visual::Choice {
         installed_content_core::content::visual::Choice {

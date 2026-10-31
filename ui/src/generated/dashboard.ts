@@ -367,7 +367,12 @@ appliedMods: { id: string, name: string }[],
 /**
  * Selected mods that are not shown, and why.
  */
-appliedNotes: Array<string>, sampleCounts: Array<number>,
+appliedNotes: Array<string>,
+/**
+ * The map renderer's anti-aliasing sample counts; `None` until a renderer has said, when
+ * every count is a choice and the renderer refuses one its adapter lacks.
+ */
+sampleCounts: Array<number> | null,
 /**
  * The game's own graphics choices, which a scope's "use the game's settings" reverts to.
  */

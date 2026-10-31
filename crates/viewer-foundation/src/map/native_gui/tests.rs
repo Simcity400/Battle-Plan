@@ -2837,6 +2837,10 @@ fn a_window_type_root_draws_on_the_views_clock() {
                 low: Some(0.0),
                 high: Some(1.0),
                 open_low: false,
+                slack: 0.0,
+                per: Vec::new(),
+                reach: 0.0,
+                peak: 0.0,
             }],
         },
     ));
@@ -7065,12 +7069,22 @@ fn compiled_effects_keep_frames_coming_for_as_long_as_their_programs_change() {
             low: Some(0.0),
             high: Some(1.0),
             open_low: false,
+            slack: 0.0,
+            per: Vec::new(),
+            reach: 0.0,
+            peak: 0.0,
         }],
     };
-    let (_, steps) = clocked_icon(effect(fading), 1);
+    let (_, steps) = clocked_icon(effect(fading.clone()), 1);
     let active: Vec<bool> = steps.iter().map(|step| step.0).collect();
     assert!(active[..4].iter().all(|active| *active), "{active:?}");
     assert!(!active[5..].iter().any(|active| *active), "{active:?}");
+    // A program whose values could overflow at a clock the GUI may yet read never settles for
+    // good: it keeps presenting frames past its duration.
+    let mut overflowing = fading;
+    overflowing.bounded[0].peak = 1e38;
+    let (_, steps) = clocked_icon(effect(overflowing), 1);
+    assert!(steps.iter().all(|step| step.0), "{steps:?}");
     let (_, steps) = clocked_icon(
         effect(Clock {
             direct: vec![(1, 100, 104)],
@@ -7101,6 +7115,10 @@ fn a_descending_step_keeps_its_instance_active_at_its_edge() {
                 low: Some(0.0),
                 high: Some(0.0),
                 open_low: true,
+                slack: 0.0,
+                per: Vec::new(),
+                reach: 0.0,
+                peak: 0.0,
             }],
         },
     ));
@@ -7348,6 +7366,10 @@ fn a_missing_compiled_technique_runs_on_the_previous_program() {
             low: Some(0.0),
             high: Some(1.0),
             open_low: false,
+            slack: 0.0,
+            per: Vec::new(),
+            reach: 0.0,
+            peak: 0.0,
         }],
     });
     assert!(!before);
@@ -7570,6 +7592,10 @@ fn a_replaced_drawables_compiled_effect_restarts_its_clock() {
                     low: Some(0.0),
                     high: Some(1.0),
                     open_low: false,
+                    slack: 0.0,
+                    per: Vec::new(),
+                    reach: 0.0,
+                    peak: 0.0,
                 }],
             },
         )

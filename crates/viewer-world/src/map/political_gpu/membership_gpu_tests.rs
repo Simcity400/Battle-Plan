@@ -135,6 +135,7 @@ pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_ho
             0,
         );
         let pixels = harness.read(encoder, [&harness.textures[0], &harness.textures[1]], 0);
+        gpu.recorded(true);
         compare(
             &expected_pixels,
             &pixels,

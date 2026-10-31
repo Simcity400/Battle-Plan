@@ -1,6 +1,34 @@
 use super::*;
 use viewer_foundation::tooltip_text::NoIcons;
 
+/// A naval plane, wing or ship may name its country by a historical alias: it names the same
+/// `Countries` row, at the canonical slot `CountryLinks` resolves it to, as the country's own id.
+#[test]
+fn country_aliases_name_the_canonical_slots_row() {
+    let countries = [
+        CountryRow {
+            id: 7,
+            canonical_slot: 1,
+            tag: b"AAA".to_vec(),
+            ..Default::default()
+        },
+        CountryRow {
+            id: 9,
+            canonical_slot: 2,
+            tag: b"BBB".to_vec(),
+            ..Default::default()
+        },
+    ];
+    let links = BTreeMap::from([(7, 1), (3, 1), (9, 2), (5, 4)]);
+    let by_reference = countries_by_reference(&links, &countries);
+    assert_eq!(by_reference[&3].tag, b"AAA");
+    assert_eq!(by_reference[&7].tag, b"AAA");
+    assert_eq!(by_reference[&9].tag, b"BBB");
+    // A link to a slot no row holds, or a reference no link names, names no country.
+    assert!(!by_reference.contains_key(&5));
+    assert!(!by_reference.contains_key(&8));
+}
+
 #[test]
 fn a_refused_flag_preserves_known_naval_counts_and_other_country_flags() {
     let reason = "country 7 original tag is not recorded".to_owned();

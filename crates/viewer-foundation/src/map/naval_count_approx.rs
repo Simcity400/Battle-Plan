@@ -46,6 +46,9 @@ impl Defines {
     };
 }
 
+/// Below this first-member visibility the count is "?" whatever it is.
+const COUNT_INTEL: u16 = 100;
+
 /// Count text for one naval mission counter child. `total_ships` includes the complete
 /// task-force rosters, including partly visible members; a capital child uses the capital sum
 /// as `total`. Every signed arithmetic result is formatted.
@@ -57,7 +60,7 @@ pub fn format_count(
     total_ships: i32,
     defines: &Defines,
 ) -> String {
-    if visibility < 100 {
+    if visibility < COUNT_INTEL {
         return "?".to_owned();
     }
     if visibility >= 250 {
@@ -87,6 +90,29 @@ pub fn format_count(
     } else {
         ">100".to_owned()
     }
+}
+
+/// [`format_count`] when either count may be unrecorded: "?" below the count intel, which
+/// reads neither, and otherwise `None` while either is unknown.
+pub fn format_recorded_count(
+    total: Option<i32>,
+    first_force_handle: u64,
+    visibility: u16,
+    capital: bool,
+    total_ships: Option<i32>,
+    defines: &Defines,
+) -> Option<String> {
+    if visibility < COUNT_INTEL {
+        return Some("?".to_owned());
+    }
+    Some(format_count(
+        total?,
+        first_force_handle,
+        visibility,
+        capital,
+        total_ships?,
+        defines,
+    ))
 }
 
 /// Counts use wrapping signed 32-bit arithmetic and a wrapping seed hash. The signed jitter
@@ -152,6 +178,24 @@ mod tests {
         assert_eq!(format_count(15, FORCE, 150, false, 15, &defines), "14-16");
         assert_eq!(format_count(15, FORCE, 249, false, 15, &defines), "14-16");
         assert_eq!(format_count(15, FORCE, 250, false, 15, &defines), "15");
+    }
+
+    /// An unrecorded count is unknown wherever the text shows it, and nowhere else.
+    #[test]
+    fn unrecorded_counts_are_unknown_only_where_the_text_reads_them() {
+        let defines = vanilla();
+        let text = |total, visibility, ships| {
+            format_recorded_count(total, FORCE, visibility, false, ships, &defines)
+        };
+        assert_eq!(text(None, 99, None).as_deref(), Some("?"));
+        for visibility in [100, 150, 250] {
+            assert_eq!(text(None, visibility, Some(15)), None);
+            assert_eq!(text(Some(15), visibility, None), None);
+            assert_eq!(
+                text(Some(15), visibility, Some(15)),
+                Some(format_count(15, FORCE, visibility, false, 15, &defines))
+            );
+        }
     }
 
     #[test]

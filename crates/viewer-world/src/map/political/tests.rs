@@ -195,6 +195,9 @@ fn frame(rows: Vec<ProvinceRow>) -> DecodedFrame {
             appearance(100, [0.75, 0.5, 0.25]),
             appearance(200, [0.5, 0.0, 0.25]),
         ]));
+    // No subject and no autonomy status: every country takes its own colour.
+    tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(Vec::new()));
+    tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(Vec::new()));
     DecodedFrame {
         branch: 1,
         hour: 42,
@@ -619,17 +622,18 @@ fn incomplete_inheritance_inputs_leave_the_colour_source_undecided() {
         TableView::Complete(TableRows::Subjects(Vec::new())),
     );
     assert!(orphan.source(2).unwrap_err().contains("overlord"));
-    // The political fill names them and keeps its own colour.
+    // The political fill names them and withholds their colour.
     let mut frame = occupied();
     *frame.tables[TableId::Autonomy.index()] =
         TableView::Complete(TableRows::Autonomy(vec![status(b"dominion")]));
     let mut warnings = Vec::new();
+    let sources = super::inherited_colors(&map, &frame, &links, &mut warnings).unwrap();
+    assert!(sources.inherited.is_empty());
     assert!(
-        super::inherited_colors(&map, &frame, &links, &mut warnings)
-            .unwrap()
-            .is_empty()
+        warnings
+            .iter()
+            .any(|line| line.contains("dominion") && line.contains("withheld"))
     );
-    assert!(warnings.iter().any(|line| line.contains("dominion")));
 }
 
 #[test]
@@ -909,6 +913,85 @@ fn territory_refusal_uses_first_province_before_missing_map_rows() {
     assert_eq!(actual.to_string(), expected.to_string());
 }
 
+/// A colour source the hour cannot decide is not guessed as the country's own colour: the
+/// political fill withholds it, incrementally as the independent oracle does, and takes the
+/// decided colour back once the inputs decide it.
+#[test]
+fn undecided_colour_sources_are_withheld_not_guessed() {
+    use replay_frame::frame::{FrameDecoder, FrameEncoder};
+    let mut map = map();
+    map.country_colors.use_overlord_color =
+        [(b"puppet".to_vec(), false), (b"union".to_vec(), true)].into();
+    let map = Arc::new(map);
+    let mut source = occupied();
+    source.tables[TableId::Campaign.index()] = crate::map::test_campaign();
+    source.tables[TableId::Subjects.index()] =
+        TableView::Complete(TableRows::Subjects(vec![SubjectRow {
+            subject: 200,
+            overlord: 100,
+            ..Default::default()
+        }]))
+        .into();
+    let status = |state: &[u8]| {
+        TableView::Complete(TableRows::Autonomy(vec![AutonomyRow {
+            subject: 200,
+            state: state.to_vec(),
+            ..Default::default()
+        }]))
+    };
+    let mut encoder = FrameEncoder::new();
+    let mut decoder =
+        FrameDecoder::new().with_change_facts(map_display_data::credit::display_products().clone());
+    let mut fold = TerritoryFold::default();
+    // Germany is key 1 and the Soviet Union, controlling province 3, key 2.
+    let steps: [(TableView, [u8; 3], [u8; 3], Option<&str>); 5] = [
+        (status(b"union"), GER, GER, None),
+        // A definition the content does not define: its flag is unknown.
+        (
+            status(b"dominion"),
+            GER,
+            UNAVAILABLE_COLOR,
+            Some("dominion"),
+        ),
+        // A country without a row may hold a status the incomplete table lacks.
+        (
+            TableView::Unavailable {
+                reason: "walk failed".into(),
+            },
+            UNAVAILABLE_COLOR,
+            UNAVAILABLE_COLOR,
+            Some("Autonomy is unavailable: walk failed"),
+        ),
+        (status(b"puppet"), GER, SOV, None),
+        (status(b"union"), GER, GER, None),
+    ];
+    for (step, (autonomy, germany, soviet, why)) in steps.into_iter().enumerate() {
+        source.hour = 42 + step as i32;
+        source.tables[TableId::Autonomy.index()] = autonomy.into();
+        let raw = encoder.encode(source.clone(), step == 0).unwrap();
+        let frame = decoder.advance(&raw).unwrap();
+        let next = fold.read_shared(&map, frame).unwrap();
+        assert_eq!(
+            *next.paint,
+            super::oracle::regions(&map, frame).unwrap(),
+            "step {step}"
+        );
+        assert_eq!(next.paint.country_colors[&1], germany, "step {step}");
+        assert_eq!(next.paint.country_colors[&2], soviet, "step {step}");
+        match why {
+            Some(why) => assert!(
+                next.paint
+                    .warnings
+                    .iter()
+                    .any(|line| line.contains(why) && line.contains("withheld")),
+                "step {step}: {:?}",
+                next.paint.warnings
+            ),
+            None => assert!(next.paint.warnings.is_empty(), "step {step}"),
+        }
+    }
+}
+
 #[test]
 fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle() {
     use replay_frame::frame::{FrameDecoder, FrameEncoder};
@@ -1038,7 +1121,6 @@ fn territory_relation_delta_boundaries_and_link_aliases_match_independent_oracle
         }
     }
 }
-
 
 #[test]
 fn batched_territory_indexes_keep_repeated_links_counts_and_sorted_planes_exact() {

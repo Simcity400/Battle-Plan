@@ -28,7 +28,8 @@ pub(super) struct Flotilla {
     pub(super) port: bool,
     /// Coarse grouping at the current camera. Port items never use coarse windows.
     pub(super) coarse: bool,
-    pub(super) ships: usize,
+    /// Ships of the fully seen members; `None` while the hour's Ships census is incomplete.
+    pub(super) ships: Option<usize>,
     /// Whether any task force here is below the engine's 250 visibility.
     pub(super) hidden: bool,
     /// The detailed selected outline requires at least one fully visible member.
@@ -62,7 +63,8 @@ pub(super) struct Flotilla {
 pub(super) struct ItemIntel {
     pub(super) byte: u16,
     pub(super) first: u64,
-    pub(super) ships: usize,
+    /// `None` while the hour's Ships census is incomplete.
+    pub(super) ships: Option<usize>,
 }
 
 /// Below this first-member visibility (0x96), the `type` child uses the no-intel
@@ -332,7 +334,8 @@ pub(super) struct NavalUnit<'a> {
     pub(super) sight: Sight,
     /// Visibility for this perspective.
     pub(super) byte: u16,
-    pub(super) ships: usize,
+    /// Its ships; `None` while the hour's Ships census is incomplete, which may lack some.
+    pub(super) ships: Option<usize>,
     /// Where it stands at sea; `None` in port.
     pub(super) position: Option<counter_move::Position>,
     /// Summed `Ships.strength`; partial when the census is.
@@ -537,7 +540,8 @@ impl<'a> NavalContext<'a> {
         let slot = owner(force.roster_owner)?;
         let byte = self.vision.navy_byte(force.id, slot);
         let sight = self.vision.sees_navy(force.id, slot);
-        let (ships, strength) = self.ships.get(&force.id).copied().unwrap_or_default();
+        let (count, strength) = self.ships.get(&force.id).copied().unwrap_or_default();
+        let ships = self.ships_complete.then_some(count);
         (sight != Sight::None).then(|| NavalUnit {
             force,
             ordinal,
@@ -695,7 +699,7 @@ impl<'a> NavalContext<'a> {
                 .iter()
                 .filter(|unit| unit.sight == Sight::Full)
                 .map(|unit| unit.ships)
-                .sum(),
+                .sum::<Option<usize>>(),
             hidden: units.iter().any(|unit| unit.sight == Sight::Partial),
             visible_member: units.iter().any(|unit| unit.sight == Sight::Full),
             cells: self
@@ -731,7 +735,7 @@ impl<'a> NavalContext<'a> {
             item: port.then(|| ItemIntel {
                 byte: first.byte,
                 first: first.force.id,
-                ships: units.iter().map(|unit| unit.ships).sum(),
+                ships: units.iter().map(|unit| unit.ships).sum::<Option<usize>>(),
             }),
             port_tooltip,
         }

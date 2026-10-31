@@ -71,6 +71,29 @@ impl Inheritance {
     }
 }
 
+impl Inheritance {
+    /// [`Self::source`], telling a source the hour cannot decide (`None`) from inheritance that
+    /// loops, which no hour can hold.
+    pub fn known_source(&self, slot: u32) -> io::Result<Option<u32>> {
+        let mut source = slot;
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(source) {
+                return Err(invalid("cycle in subject colour inheritance"));
+            }
+            if self.undecided.contains_key(&source)
+                || (self.absent.is_some() && !self.with_status.contains(&source))
+            {
+                return Ok(None);
+            }
+            match self.inherited.get(&source) {
+                Some(&overlord) => source = overlord,
+                None => return Ok(Some(source)),
+            }
+        }
+    }
+}
+
 /// This hour's [`Inheritance`].
 pub fn inheritance(
     map: &MapData,

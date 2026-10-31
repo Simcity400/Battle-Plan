@@ -27,7 +27,8 @@ pub(crate) struct Relations {
     by_overlord: ValueIndex<(u32, u32), ()>,
     undecided: ValueIndex<u32, Retained<String>>,
     inherit_conflicts: ValueIndex<u32, ()>,
-    autonomy_absent: bool,
+    /// Why an absent `Autonomy` row is no evidence; `None` when the table is complete.
+    autonomy_gap: Retained<Option<String>>,
     subject_gap: Retained<Option<String>>,
     pub(crate) changed: ValueIndex<u32, ()>,
     pub(crate) warnings: Retained<Vec<String>>,
@@ -53,6 +54,20 @@ fn gap<T: replay_data::rows::TableSchema>(
         }
     })
 }
+/// The warning for an incomplete `Autonomy` table, which leaves a country without a recorded
+/// current autonomy with an unknown colour source.
+pub(crate) fn autonomy_gap_warning(gap: &str) -> String {
+    format!(
+        "{gap}, so a country without a recorded current autonomy has an unknown colour source; \
+         its colour is withheld"
+    )
+}
+
+/// The warning for a country whose colour source the hour cannot decide, and why.
+pub(crate) fn undecided_warning(slot: u32, why: &str) -> String {
+    format!("Country slot {slot}'s colour source is unknown ({why}); its colour is withheld")
+}
+
 fn missing_link(reference: u32, role: &str) -> io::Result<Retained<String>> {
     Retained::build(96 + role.len(), || {
         format!("political fill references missing country link {reference} for {role}")
@@ -95,7 +110,7 @@ impl Relations {
             },
         )?;
         let subject_gap = gap(&subject_rows, "Subjects")?;
-        let autonomy_absent = !autonomy_rows.is_complete();
+        let autonomy_gap = gap(&autonomy_rows, "Autonomy")?;
         let mut next = match previous {
             Some(old) => old.clone(),
             None => Self {
@@ -120,7 +135,7 @@ impl Relations {
                 by_overlord: Default::default(),
                 undecided: Default::default(),
                 inherit_conflicts: Default::default(),
-                autonomy_absent,
+                autonomy_gap: autonomy_gap.clone(),
                 subject_gap: subject_gap.clone(),
                 changed: Default::default(),
                 warnings: Retained::build(0, Vec::new)?,
@@ -290,8 +305,10 @@ impl Relations {
             return Err(invalid(error.to_string()));
         }
         next.changed = ValueIndex::default();
-        let mut warnings_changed = next.autonomy_absent != autonomy_absent;
+        let mut warnings_changed = next.autonomy_gap != autonomy_gap;
         for (&slot, _) in dirty_slots.iter() {
+            // Its rows changed, so whether its source is known may have, edge or not.
+            next.changed = next.changed.inserted(slot, ())?;
             let before_edge = next.inherited.get(&slot).copied();
             let before_warning = next.undecided.get(&slot).cloned();
             next.inherited = next.inherited.removed(&slot)?;
@@ -333,13 +350,8 @@ impl Relations {
                 if let Some(overlord) = after_edge {
                     next.by_overlord = next.by_overlord.inserted((overlord, slot), ())?;
                 }
-                next.changed = next.changed.inserted(slot, ())?;
             }
             warnings_changed |= before_warning.as_ref() != next.undecided.get(&slot);
-            warnings_changed |= previous.is_none_or(|old| {
-                old.overlords.get(&slot).is_some() != next.overlords.get(&slot).is_some()
-                    || old.states.get(&slot).is_some() != next.states.get(&slot).is_some()
-            });
         }
         if let Some(&slot) = next.inherit_conflicts.keys().next() {
             return Err(invalid(format!(
@@ -347,60 +359,69 @@ impl Relations {
             )));
         }
         if previous.is_none() || warnings_changed {
-            let missing = if autonomy_absent {
-                next.overlords
-                    .keys()
-                    .filter(|slot| next.states.get(slot).is_none())
-                    .count()
-            } else {
-                0
-            };
-            let count = missing
-                .checked_add(next.undecided.len())
+            let gap = autonomy_gap.as_ref();
+            let count = next
+                .undecided
+                .len()
+                .checked_add(usize::from(gap.is_some()))
                 .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let bytes = next.undecided.values().try_fold(
-                count
-                    .checked_mul(size_of::<String>() + 128)
-                    .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
-                |bytes, why| {
-                    bytes
-                        .checked_add(why.len())
-                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))
-                },
-            )?;
+            let bytes = next
+                .undecided
+                .values()
+                .map(|why| why.len())
+                .chain(gap.map(String::len))
+                .try_fold(
+                    count
+                        .checked_mul(size_of::<String>() + 160)
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))?,
+                    |bytes, length| {
+                        bytes
+                            .checked_add(length)
+                            .ok_or_else(|| io::Error::from(io::ErrorKind::OutOfMemory))
+                    },
+                )?;
             next.warnings = Retained::build(bytes, || {
                 let mut warnings = Vec::with_capacity(count);
-                if autonomy_absent {
-                    warnings.extend(next.overlords.keys().filter(|slot| next.states.get(slot).is_none()).map(|slot| format!("Subject slot {slot} current autonomy is unavailable; its own colour is used")));
-                }
-                warnings.extend(next.undecided.iter().map(|(slot, why)| format!("Country slot {slot}'s colour source is unknown ({why}); its own colour is used")));
+                warnings.extend(gap.map(|gap| autonomy_gap_warning(gap)));
+                warnings.extend(
+                    next.undecided
+                        .iter()
+                        .map(|(slot, why)| undecided_warning(*slot, why)),
+                );
                 warnings
             })?;
         }
-        next.autonomy_absent = autonomy_absent;
+        next.autonomy_gap = autonomy_gap;
         next.subject_gap = subject_gap;
         next.subjects = subjects;
         next.autonomy = autonomy;
         next.hour = frame.hour;
         Ok(next)
     }
-    pub(crate) fn source(&self, slot: u32) -> io::Result<u32> {
-        let (mut slow, mut fast) = (slot, slot);
-        loop {
-            slow = match self.inherited.get(&slow) {
-                Some(&next) => next,
-                None => return Ok(slow),
-            };
-            for _ in 0..2 {
-                fast = match self.inherited.get(&fast) {
-                    Some(&next) => next,
-                    None => return Ok(fast),
-                };
+    /// The slot whose colour `slot` takes, following inheriting subjects to their overlords as
+    /// the game does; `None` when the hour cannot say: a country reached has undecided
+    /// inheritance, or no recorded current autonomy while `Autonomy` is incomplete.
+    pub(crate) fn source(&self, slot: u32) -> io::Result<Option<u32>> {
+        let mut source = slot;
+        // A chain without a cycle reaches each inheriting country once.
+        for _ in 0..=self.inherited.len() {
+            if self.undecided.get(&source).is_some()
+                || (self.autonomy_gap.is_some() && self.states.get(&source).is_none())
+            {
+                return Ok(None);
             }
-            if slow == fast {
-                return Err(invalid("cycle in subject colour inheritance"));
+            match self.inherited.get(&source) {
+                Some(&next) => source = next,
+                None => return Ok(Some(source)),
             }
         }
+        Err(invalid("cycle in subject colour inheritance"))
+    }
+
+    /// Whether `Autonomy` became complete or incomplete since `previous`, which decides the
+    /// source of every country without a recorded current autonomy.
+    pub(crate) fn recolors_all(&self, previous: Option<&Self>) -> bool {
+        previous.is_some_and(|old| old.autonomy_gap.is_some() != self.autonomy_gap.is_some())
     }
     pub(crate) fn affected(&self, previous: Option<&Self>) -> io::Result<ValueIndex<u32, ()>> {
         let mut pending = self.changed.clone();

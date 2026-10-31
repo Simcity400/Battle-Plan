@@ -127,12 +127,16 @@ impl DashboardService {
                     true
                 }))
                 .map_err(|error| error.to_string())?;
+                // Choices saved later apply as they are saved.
+                if let Err(error) = runtime.apply_saved_preparation() {
+                    runtime.shutdown();
+                    return Err(error.to_string());
+                }
                 *saved = Some(runtime);
             }
             Arc::clone(saved.as_ref().expect("runtime initialized"))
         };
         let (config, allow_unverified) = host_config()?;
-        runtime.set_background_preparation(config.background_preparation_enabled());
         let key = (
             config.game_dir.clone(),
             config.user_dir.clone(),

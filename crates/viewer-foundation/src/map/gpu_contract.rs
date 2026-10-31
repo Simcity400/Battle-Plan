@@ -580,7 +580,42 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
         wanted |= crate::map::gpu_passes::features();
     }
     let features = adapter.features() & wanted;
-    let sample_mask = [1, 2, 4, 8]
+    wgpu::DeviceDescriptor {
+        label: Some("Battle Plan viewer"),
+        required_features: features,
+        required_limits: wgpu::Limits {
+            max_buffer_size: limits.max_buffer_size,
+            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+            max_texture_dimension_1d: limits.max_texture_dimension_1d,
+            max_texture_dimension_2d: limits.max_texture_dimension_2d,
+            max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
+            max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
+            // Compiled programs bind every constant buffer at a dynamic offset into the
+            // frame's upload arena; D3D11 allows fourteen per stage.
+            max_dynamic_uniform_buffers_per_pipeline_layout: limits
+                .max_dynamic_uniform_buffers_per_pipeline_layout,
+            ..base_limits
+        },
+        ..Default::default()
+    }
+}
+
+/// [`device_descriptor`] for the map renderer's own device: also records the anti-aliasing its
+/// adapter supports, which its scenes check and its host advertises. Other devices, such as the
+/// game windows' on the host, leave that record alone.
+pub fn map_device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
+    let descriptor = device_descriptor(adapter);
+    dashboard_core::map_settings::set_sample_counts(sample_counts(
+        adapter,
+        descriptor.required_features,
+    ));
+    descriptor
+}
+
+/// The sample counts every map target format supports on `adapter` with `features`, resolve
+/// included for the colour targets.
+pub fn sample_counts(adapter: &wgpu::Adapter, features: wgpu::Features) -> Vec<u32> {
+    [1, 2, 4, 8]
         .into_iter()
         .filter(|&count| {
             [
@@ -603,26 +638,7 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
                         || flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
             })
         })
-        .fold(0, |mask, count| mask | count);
-    dashboard_core::map_settings::set_sample_counts(sample_mask);
-    wgpu::DeviceDescriptor {
-        label: Some("Battle Plan viewer"),
-        required_features: features,
-        required_limits: wgpu::Limits {
-            max_buffer_size: limits.max_buffer_size,
-            max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
-            max_texture_dimension_1d: limits.max_texture_dimension_1d,
-            max_texture_dimension_2d: limits.max_texture_dimension_2d,
-            max_sampled_textures_per_shader_stage: limits.max_sampled_textures_per_shader_stage,
-            max_samplers_per_shader_stage: limits.max_samplers_per_shader_stage,
-            // Compiled programs bind every constant buffer at a dynamic offset into the
-            // frame's upload arena; D3D11 allows fourteen per stage.
-            max_dynamic_uniform_buffers_per_pipeline_layout: limits
-                .max_dynamic_uniform_buffers_per_pipeline_layout,
-            ..base_limits
-        },
-        ..Default::default()
-    }
+        .collect()
 }
 
 pub fn read_texture(

@@ -207,7 +207,7 @@ fn port_unit(force: &TaskForceRow, slot: u32) -> NavalUnit<'_> {
         flag_owner: 0,
         sight: Sight::Full,
         byte: 250,
-        ships: 1,
+        ships: Some(1),
         position: None,
         strength: 0,
     }
@@ -409,6 +409,44 @@ fn a_port_force_dropped_for_a_missing_operand_leaves_its_roster_undecided() {
         assert_eq!(admit(context, Ok(true), &owner), "out");
         context.ships_complete = false;
         assert_eq!(admit(context, Ok(true), &owner), PORT_SHIPS_UNRECORDED);
+    });
+}
+
+/// A Ships census that may lack a task force's ships leaves its count, and every sum over it,
+/// unknown rather than zero or the part the hour holds.
+#[test]
+fn an_incomplete_ship_census_leaves_task_force_counts_unknown() {
+    let force = TaskForceRow {
+        id: 7,
+        province: 12,
+        fleet: 3,
+        roster_owner: 1,
+        ..Default::default()
+    };
+    let forces = [force.clone()];
+    let owner = |raw: u32| (raw < 100).then_some(raw);
+    with_port_context(&forces, |context| {
+        context.ships = Arc::new(BTreeMap::from([(7, (2, 0))]));
+        let counts = |context: &NavalContext<'_>| {
+            let unit = context.unit(&forces[0], &owner, 0, None).unwrap();
+            let item = context.flotilla(&[&unit], true, false).item.unwrap();
+            (unit.ships, item.ships)
+        };
+        assert_eq!(counts(&*context), (Some(2), Some(2)));
+        context.ships_complete = false;
+        assert_eq!(
+            counts(&*context),
+            (None, None),
+            "a truncated census may hold a part"
+        );
+        Arc::make_mut(&mut context.ships).clear();
+        assert_eq!(
+            counts(&*context),
+            (None, None),
+            "an absent row is not an empty force"
+        );
+        context.ships_complete = true;
+        assert_eq!(counts(&*context), (Some(0), Some(0)));
     });
 }
 

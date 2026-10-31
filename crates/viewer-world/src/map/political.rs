@@ -29,9 +29,10 @@ use std::{
     io,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::color_inheritance::inheritance;
 #[cfg(test)]
-use viewer_foundation::map::color_inheritance::{active_subject, slot_of};
+use viewer_foundation::map::color_inheritance::{
+    Inheritance, active_subject, inheritance, slot_of,
+};
 
 use installed_content_core::{map::MapData, map::ProvinceKind};
 use installed_content_regions::regions::StrategicRegion;
@@ -48,8 +49,8 @@ use {
 #[cfg(doc)]
 use super::gradient;
 
-/// The viewer's marker fill for a country whose recorded colour is missing this hour. It is not a
-/// game colour; the warning names the countries and the table state.
+/// The viewer's marker fill for a country whose recorded colour, or whose colour source, is
+/// unknown this hour. It is not a game colour; the warnings name the countries and why.
 pub const UNAVAILABLE_COLOR: [u8; 3] = [128, 128, 128];
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -196,58 +197,56 @@ fn examples(mut items: impl Iterator<Item = String>) -> String {
     text
 }
 
-/// The political fill's colour sources: [`inheritance`], each undecided country filled with its
-/// own colour and named in `warnings`.
-pub fn inherited_colors(
+/// The political fill's colour sources ([`inheritance`]), naming in `warnings` why any
+/// country's source is undecided, as [`relations::Relations`] does: its colour is withheld.
+#[cfg(test)]
+pub(crate) fn inherited_colors(
     map: &MapData,
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
     warnings: &mut Vec<String>,
-) -> io::Result<BTreeMap<u32, u32>> {
+) -> io::Result<Inheritance> {
     let inheritance = inheritance(map, frame, links)?;
-    if inheritance.absent.is_some() {
-        for slot in inheritance.subjects.difference(&inheritance.with_status) {
-            warnings.push(format!(
-                "Subject slot {slot} current autonomy is unavailable; its own colour is used"
-            ));
-        }
-    }
-    for (slot, why) in &inheritance.undecided {
-        warnings.push(format!(
-            "Country slot {slot}'s colour source is unknown ({why}); its own colour is used"
-        ));
-    }
-    Ok(inheritance.inherited)
+    warnings.extend(
+        inheritance
+            .absent
+            .as_deref()
+            .map(relations::autonomy_gap_warning),
+    );
+    warnings.extend(
+        inheritance
+            .undecided
+            .iter()
+            .map(|(slot, why)| relations::undecided_warning(*slot, why)),
+    );
+    Ok(inheritance)
 }
 
-/// Controller colour from its resolved colour source, or None when the hour has no colour for that
-/// source. Follow subject colour inheritance to the end of the overlord chain.
-pub fn color_source(slot: u32, inherited: &BTreeMap<u32, u32>) -> io::Result<u32> {
-    let mut source = slot;
-    let mut visited = BTreeSet::new();
-    while let Some(&overlord) = inherited.get(&source) {
-        if !visited.insert(source) {
-            return Err(invalid("cycle in subject colour inheritance"));
-        }
-        source = overlord;
-    }
-    Ok(source)
+/// A controller's colour source, following inheriting subjects to their overlords; `None` when
+/// the hour cannot decide it.
+#[cfg(test)]
+pub(crate) fn color_source(slot: u32, inheritance: &Inheritance) -> io::Result<Option<u32>> {
+    inheritance.known_source(slot)
 }
 
+/// A controller's recorded colour: `None` when its source is undecided, `Some(None)` when its
+/// source has no recorded colour.
 #[cfg(test)]
 fn color_of(
     slot: u32,
     countries: &BTreeMap<u32, &CountryRow>,
-    inherited: &BTreeMap<u32, u32>,
+    inheritance: &Inheritance,
     recorded: &BTreeMap<u32, [u8; 3]>,
-) -> io::Result<Option<[u8; 3]>> {
-    let source = color_source(slot, inherited)?;
+) -> io::Result<Option<Option<[u8; 3]>>> {
+    let Some(source) = color_source(slot, inheritance)? else {
+        return Ok(None);
+    };
     let country = countries.get(&source).ok_or_else(|| {
         invalid(format!(
             "political fill country slot {source} has no Countries row"
         ))
     })?;
-    Ok(recorded.get(&country.id).copied())
+    Ok(Some(recorded.get(&country.id).copied()))
 }
 
 /// The loader resolves every bitmap ID through definitions, so this never scans pixels per hour.

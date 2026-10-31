@@ -12,6 +12,8 @@ const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
 const COUNTER_FILTER = 'Counters shown for';
 type Switch = Exclude<keyof MapGraphics, 'samples' | 'textureQuality'>;
+/** The anti-aliasing sample counts a map setting can name. */
+const MAP_SAMPLE_COUNTS = [1, 2, 4, 8];
 type Item = { key: Switch; label: string; parts?: [Switch, string][] };
 /** Quality choices that change how the map looks rather than what it shows. */
 const QUALITY: [Switch, string][] = [
@@ -127,8 +129,13 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       <Select label={label} disabled={!enabled} value={isSet(own) ? String(own) : ''} onChange={value => setGraphics(key, value === '' ? null : Number(value))}
         options={[{ value: '', label: !draft ? (!available ? 'No campaign' : error ? 'Unavailable' : 'Loading...') : `Inherit (${describe(parent)})` }, ...choices]} /></div>;
   };
-  const samples = [...new Set([...(reply?.sampleCounts ?? []), ...(isSet(draft?.graphics.samples) ? [draft!.graphics.samples!] : [])])].sort((a, b) => a - b)
-    .map(count => ({ value: String(count), label: `${count === 1 ? 'Off' : `${count}x MSAA`}${reply && !reply.sampleCounts.includes(count) ? ' (unavailable)' : ''}`, disabled: !!reply && !reply.sampleCounts.includes(count) }));
+  // Until a map renderer has reported its counts every map count is a choice; the renderer refuses one its adapter lacks.
+  const supported = reply?.sampleCounts ?? null;
+  const samples = [...new Set([...(reply ? supported ?? MAP_SAMPLE_COUNTS : []), ...(isSet(draft?.graphics.samples) ? [draft!.graphics.samples!] : [])])].sort((a, b) => a - b)
+    .map(count => {
+      const unavailable = !!supported && !supported.includes(count);
+      return { value: String(count), label: `${count === 1 ? 'Off' : `${count}x MSAA`}${unavailable ? ' (unavailable)' : ''}`, disabled: unavailable };
+    });
   const filter = draft?.counters ?? null;
   const shownFilter = filter ?? inherited?.counters ?? { kind: 'all' as const };
   const chosen = shownFilter.kind === 'countries' ? shownFilter.tags : [];

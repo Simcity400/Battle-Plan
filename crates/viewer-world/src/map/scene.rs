@@ -443,10 +443,19 @@ impl Scene {
     ) -> io::Result<Self> {
         crate::map::political_gpu::check_device(device)?;
         let samples = graphics.samples;
-        if !dashboard_core::map_settings::sample_counts().contains(&samples) {
-            return Err(invalid(
-                "Selected anti-aliasing is unavailable on this graphics device",
-            ));
+        match dashboard_core::map_settings::sample_counts() {
+            Some(counts) if counts.contains(&samples) => {}
+            Some(_) => {
+                return Err(invalid(
+                    "Selected anti-aliasing is unavailable on this graphics device",
+                ));
+            }
+            None => {
+                return Err(invalid(
+                    "the map's graphics device was opened without recording its anti-aliasing \
+                     support (gpu_contract::map_device_descriptor)",
+                ));
+            }
         }
         if !device
             .features()
@@ -2014,7 +2023,16 @@ impl Scene {
         request: Request<'_>,
     ) -> io::Result<()> {
         let _cost = replay_frame::cpu::scope("viewer", Some("render-submit"));
-        let rendered = self.render_frame(device, queue, request);
+        // Lent to the frame and back on every way out; a frame that fails drops its marks with
+        // its encoder.
+        let mut timer = self.pass_timer.take();
+        let rendered = self.render_frame(device, queue, request, &mut timer);
+        if rendered.is_err()
+            && let Some(timer) = &mut timer
+        {
+            timer.abandon();
+        }
+        self.pass_timer = timer;
         // A frame that failed before its walk leaves the schedule as if it was never cut.
         self.restore_province_frame();
         rendered
@@ -2025,6 +2043,7 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         request: Request<'_>,
+        timer: &mut Option<PassTimer>,
     ) -> io::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         let faults = &self.test_faults;
@@ -2421,26 +2440,28 @@ impl Scene {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
         let mut command_buffers = Vec::new();
-        // Taken for the encoder's lifetime and put back on every way out.
-        let mut timer = self.pass_timer.take();
         let mut mark = |encoder: &mut wgpu::CommandEncoder, label: &'static str| {
             cpu_mark(if label == "model_layers" {
                 "model_recycle"
             } else {
                 label
             });
-            if let Some(timer) = &mut timer {
+            if let Some(timer) = timer.as_mut() {
                 timer.mark(encoder, label);
             }
         };
         self.compiled_terrain.validate_grid(self.grid)?;
         mark(&mut encoder, "start");
-        if let Some(political) = &self.political {
-            political.encode(&mut encoder);
-        }
-        if let Some(colors) = &mut self.province_colors {
-            colors.encode(&mut encoder);
-        }
+        // Recorded fills stay pending until the encoder is submitted: one this frame drops on a
+        // failure is recorded again by the next.
+        let political = self
+            .political
+            .as_ref()
+            .and_then(|political| political.encode(&mut encoder));
+        let stripes = self
+            .province_colors
+            .as_mut()
+            .is_some_and(|colors| colors.encode(&mut encoder));
         mark(&mut encoder, "political_compute");
         // Invoke underwater in pre-frame, before the scene's
         // shadow-screen clear and receiver passes. It reads the previous
@@ -3485,7 +3506,6 @@ impl Scene {
                             },
                             packets,
                         ) {
-                            self.pass_timer = timer;
                             return Err(error);
                         }
                         //Particle b1 replaces PS's mesh allocation even when
@@ -3614,7 +3634,7 @@ impl Scene {
         #[cfg(any(test, feature = "test-support"))]
         faults.draw_sentinel(device, &mut encoder, targets);
         mark(&mut encoder, "overlay_sprites");
-        if let Some(timer) = &mut timer {
+        if let Some(timer) = timer.as_mut() {
             timer.finish(&mut encoder);
         }
         cpu_mark("timestamp_resolve");
@@ -3626,12 +3646,17 @@ impl Scene {
         // Joining here preserves native buffer order without earlier encoder waits.
         queue.submit(ModelPass::submitted_buffers(command_buffers));
         cpu_mark("queue_submit");
+        if let Some(political) = political {
+            political.submitted();
+        }
+        if stripes && let Some(colors) = &mut self.province_colors {
+            colors.submitted();
+        }
         #[cfg(any(test, feature = "test-support"))]
         faults.submissions.set(faults.submissions.get() + 1);
-        if let Some(timer) = &mut timer {
+        if let Some(timer) = timer.as_mut() {
             timer.report(device);
         }
-        self.pass_timer = timer;
         cpu_mark("submit_report");
         if let (Some(clock), Some(animated), Some(prepared), Some(encoded)) =
             (clock, animated, prepared, encoded)

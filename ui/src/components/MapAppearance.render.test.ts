@@ -91,6 +91,32 @@ test('every installed mod can be chosen and a chosen mod no longer installed kee
   } finally { await vite.close(); delete host.__mapGraphics; }
 });
 
+test('anti-aliasing is unavailable only when the renderer has said its adapter lacks it', async () => {
+  const settings = { graphics: { samples: 8 }, audio: {}, counters: null, visualMods: null };
+  const reply = (sampleCounts: number[] | null) => ({ settings, inheritedSettings: { graphics: { samples: 4 }, audio: {}, counters: { kind: 'all' }, visualMods: null },
+    mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts, gameGraphics: null, gameSettingsError: null });
+  const host = globalThis as typeof globalThis & { __mapGraphics?: { reply: unknown; draft: unknown } };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'map-samples-fixture', enforce: 'pre',
+      transform(source, id) {
+        if (!id.replaceAll('\\', '/').endsWith('/components/MapAppearance.tsx')) return;
+        return source.replace('useState<MapSettingsReply | null>(null)', 'useState(globalThis.__mapGraphics.reply)')
+          .replace('useState<CampaignMapSettings | null>(null)', 'useState(globalThis.__mapGraphics.draft)');
+      },
+    }] });
+  try {
+    const { default: MapAppearance } = await vite.ssrLoadModule('/ui/src/components/MapAppearance.tsx') as typeof import('./MapAppearance');
+    const render = (sampleCounts: number[] | null) => {
+      host.__mapGraphics = { reply: reply(sampleCounts), draft: settings };
+      return renderToStaticMarkup(createElement(MapAppearance, { global: true, source: null, client: { mapSettings: async () => reply(sampleCounts) } as never }));
+    };
+    // No renderer has reported: a saved 8x is a choice, not refused.
+    assert.match(render(null), /8x MSAA/);
+    assert.doesNotMatch(render(null), /8x MSAA \(unavailable\)/);
+    assert.doesNotMatch(render([1, 2, 4, 8]), /\(unavailable\)/);
+    assert.match(render([1, 4]), /8x MSAA \(unavailable\)/);
+  } finally { await vite.close(); delete host.__mapGraphics; }
+});
 
 test('day/night changes stay drafts until Apply and save the intended scope without losing other overrides', async () => {
   type Settings = import('../dashboard/client').CampaignMapSettings;

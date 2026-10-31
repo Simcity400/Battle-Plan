@@ -2,6 +2,7 @@
 //! Missing techniques retain the preceding program and samplers, while their blend state
 //! defaults to off. Tests describe selection and scheduling with explicit fixture metadata.
 
+pub use shader_pipeline::clock::Settling;
 use std::sync::Arc;
 
 /// A sampler's addressing on one axis.
@@ -72,7 +73,7 @@ pub enum Blend {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FixtureTechnique {
     pub id: u32,
-    pub settles: Option<f32>,
+    pub settles: Option<Settling>,
 }
 
 /// A selected fixture technique, or an absent technique that retains the previous program.
@@ -147,8 +148,8 @@ impl Effect {
 /// Whether a draw still changes after its drawable's restart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Settles {
-    /// Seconds after restart, or continuous activity when absent.
-    Program(Option<f32>),
+    /// When it settles after its restart, or continuous activity when absent.
+    Program(Option<Settling>),
     /// The preceding program remains bound, with this draw's constants.
     Previous,
     /// A declared program cannot compile; it and later inherited draws are refused.
@@ -196,7 +197,7 @@ pub mod synthetic {
             name,
             FixtureTechnique {
                 id,
-                settles: Some(seconds),
+                settles: Some(Settling::after(seconds)),
             },
             Blend::Alpha,
         )
@@ -269,14 +270,17 @@ mod tests {
             Technique::Run {
                 fixture: FixtureTechnique {
                     id: 4,
-                    settles: Some(0.25)
+                    settles: Some(Settling::after(0.25))
                 },
                 blend: Blend::Alpha,
             }
         );
         assert_eq!(effect.technique("Texture"), Technique::Keep);
         assert!(effect.has_technique("over"));
-        assert_eq!(effect.settles("Down"), Settles::Program(Some(0.0625)));
+        assert_eq!(
+            effect.settles("Down"),
+            Settles::Program(Some(Settling::after(0.0625)))
+        );
         assert_eq!(effect.settles("Texture"), Settles::Previous);
     }
 

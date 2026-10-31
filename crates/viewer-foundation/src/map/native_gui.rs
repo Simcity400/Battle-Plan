@@ -38,7 +38,7 @@ pub use fixed::fixed_window_layout;
 pub use hit::{AlphaMask, HitGeometry};
 
 use super::{
-    native_effects::{Blend, Effect, FixtureTechnique, Sampler, Settles, Technique},
+    native_effects::{Blend, Effect, FixtureTechnique, Sampler, Settles, Settling, Technique},
     native_text::{self, Limits, Piece, Placement},
     sprites::{Batch, SpriteSheet},
 };

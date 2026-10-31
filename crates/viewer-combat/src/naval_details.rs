@@ -288,6 +288,24 @@ fn sortie_member_breakdown(
     Ok(text)
 }
 
+/// `Countries` rows by every recorded reference to them: a reference resolves through
+/// `CountryLinks` (`links`, raw reference to canonical slot) to its canonical slot, as the game
+/// resolves it, and names that slot's row. A historical alias names the same row as the
+/// country's own id.
+pub(crate) fn countries_by_reference<'a>(
+    links: &BTreeMap<u32, u32>,
+    countries: &'a [CountryRow],
+) -> BTreeMap<u32, &'a CountryRow> {
+    let by_slot: BTreeMap<u32, &CountryRow> = countries
+        .iter()
+        .map(|row| (row.canonical_slot, row))
+        .collect();
+    links
+        .iter()
+        .filter_map(|(raw, slot)| Some((*raw, *by_slot.get(slot)?)))
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)] // The hour's frame, the battle's identity and its draw state.
 fn air_entries(
     out: &mut Bindings,
@@ -311,7 +329,7 @@ fn air_entries(
     let variants = rows::<tables::VariantDefinitions>(frame)?;
     let by_variant: BTreeMap<_, _> = variants.rows().iter().map(|row| (row.id, row)).collect();
     let countries = rows::<tables::Countries>(frame)?;
-    let by_country: BTreeMap<_, _> = countries.rows().iter().map(|row| (row.id, row)).collect();
+    let by_country = countries_by_reference(aliases, countries.rows());
     let tokens = TokenNames::new(frame)?;
     let database = static_content.assets.naval_air_groups.equipment();
     let wings = rows::<tables::AirWings>(frame)?;

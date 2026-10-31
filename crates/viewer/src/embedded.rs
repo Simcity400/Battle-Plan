@@ -272,7 +272,8 @@ impl ReportedState {
 #[derive(Default)]
 struct Outgoing {
     details: Option<dashboard::protocol::MapDetails>,
-    ready: Option<String>,
+    /// The window handle, and the map device's sample counts as attaching found them.
+    ready: Option<(String, Option<Vec<u32>>)>,
     state: Option<ReportedState>,
     error: Option<String>,
     maps: BTreeMap<String, DashboardMapState>,
@@ -571,7 +572,10 @@ impl Parent {
                             outgoing
                                 .ready
                                 .take()
-                                .map(|hwnd| NativeEvent::Ready { hwnd }),
+                                .map(|(hwnd, sample_counts)| NativeEvent::Ready {
+                                    hwnd,
+                                    sample_counts,
+                                }),
                             outgoing.state.take().map(ReportedState::into_event),
                             outgoing
                                 .error
@@ -639,7 +643,11 @@ impl Parent {
             .outgoing
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .ready = Some(controller.window.hwnd.to_string());
+            .ready = Some((
+            controller.window.hwnd.to_string(),
+            // Recorded as eframe opened the map device ([`crate::render::configuration`]).
+            dashboard::map_settings::sample_counts(),
+        ));
         shared.output_ready.notify_one();
         cc.egui_ctx.request_repaint();
         Ok(controller)

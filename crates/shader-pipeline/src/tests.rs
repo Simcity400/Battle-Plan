@@ -548,14 +548,23 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
             .unwrap()
             .settles(2, 68, 64)
     };
-    assert_eq!(settles("Still"), Some(0.0));
-    assert_eq!(settles("Shade"), Some(0.125));
-    assert_eq!(settles("Fade"), Some(3.0));
-    assert_eq!(settles("Looped"), Some(1.0 / 32.0));
+    assert_eq!(settles("Still"), Some(clock::Settling::NOW));
+    // Literal-scaled durations settle at their saturation, f32 rounding allowed for.
+    let near = |name, seconds: f32| {
+        let settling = settles(name).unwrap_or_else(|| panic!("{name} never settles"));
+        assert!(
+            seconds <= settling.after && settling.after <= seconds.next_up().next_up(),
+            "{name}: {settling:?}"
+        );
+        assert!(settling.per_clock < 1e-5, "{name}: {settling:?}");
+    };
+    near("Shade", 0.125);
+    near("Fade", 3.0);
+    near("Looped", 1.0 / 32.0);
     // `step` is `x >= edge`: going down, 1 at its edge and 0 only past it; going up, final at
     // its edge.
-    assert_eq!(settles("Drop"), Some(0.25_f32.next_up()));
-    assert_eq!(settles("Rise"), Some(0.75));
+    near("Drop", 0.25_f32.next_up());
+    near("Rise", 0.75);
     for name in ["Pulse", "Moment", "Gate", "Wobble"] {
         assert_eq!(settles(name), None, "{name}");
     }
@@ -581,10 +590,16 @@ fn vanilla_button_states_settle_as_their_programs_say() {
                 .unwrap()
                 .settles(0, 96, 100)
         };
-        assert_eq!(settles("Up"), Some(0.0));
-        assert_eq!(settles("Disable"), Some(0.0));
-        assert_eq!(settles("Over"), Some(0.25));
-        assert_eq!(settles("Down"), Some(1.0 / 16.0));
+        assert_eq!(settles("Up"), Some(clock::Settling::NOW));
+        assert_eq!(settles("Disable"), Some(clock::Settling::NOW));
+        for (name, seconds) in [("Over", 0.25_f32), ("Down", 1.0 / 16.0)] {
+            let settling = settles(name).unwrap();
+            assert!(
+                seconds <= settling.after && settling.after <= seconds.next_up().next_up(),
+                "{name}: {settling:?}"
+            );
+            assert!(settling.per_clock < 1e-5, "{name}: {settling:?}");
+        }
     }
 }
 

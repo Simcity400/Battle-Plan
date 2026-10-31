@@ -2488,6 +2488,26 @@ fn opening_a_newer_revision_takes_over_its_library_preparation() {
     service.shutdown();
 }
 
+/// Folder Apply binds folders only: a configuration read before a preparation choice was
+/// saved does not bring the older choice back to the running service.
+#[test]
+fn folder_binding_keeps_the_running_preparation_choice() {
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    for (running, stale) in [(false, Some(true)), (true, Some(false)), (false, None)] {
+        service.set_background_preparation(running);
+        let config = crate::Config {
+            background_preparation: stale,
+            ..Default::default()
+        };
+        service.configure_content(&config, false).unwrap();
+        assert_eq!(
+            service.preparation_preferences().background_enabled,
+            running
+        );
+    }
+    service.shutdown();
+}
+
 #[test]
 fn background_preparation_off_schedules_nothing() {
     let fixture = LibraryFixture::new(&["off-earlier", "off-session"]);

@@ -32,6 +32,9 @@ struct Base {
     source_of: ValueIndex<u32, u32>,
     by_source_target: ValueIndex<(u32, u32), ()>,
     colors: ValueIndex<u32, Bits>,
+    /// Shown countries whose colour source the hour cannot decide ([`Relations::source`]).
+    unknown: Slots,
+    /// Shown countries whose decided source has no recorded colour.
     missing: usize,
 }
 impl Base {
@@ -108,6 +111,11 @@ impl Base {
             }
         }
         let mut dirty = relations.affected(old.map(|old| &old.relations))?;
+        if relations.recolors_all(old.map(|old| &old.relations)) {
+            for &slot in slots.keys() {
+                dirty = dirty.inserted(slot, ())?;
+            }
+        }
         dirty = changed_keys(
             &slots,
             &old.map_or_else(Slots::default, |old| old.slots.clone()),
@@ -125,13 +133,18 @@ impl Base {
             }
         }
         let mut colors = old.map_or_else(ValueIndex::default, |old| old.colors.clone());
+        let mut unknown = old.map_or_else(Slots::default, |old| old.unknown.clone());
         let mut missing = old.map_or(0, |old| old.missing);
         for &target in dirty.keys() {
-            if old.is_some_and(|old| {
-                old.slots.get(&target).is_some() && old.colors.get(&target).is_none()
-            }) {
+            let was_unknown = unknown.get(&target).is_some();
+            if !was_unknown
+                && old.is_some_and(|old| {
+                    old.slots.get(&target).is_some() && old.colors.get(&target).is_none()
+                })
+            {
                 missing -= 1;
             }
+            unknown = unknown.removed(&target)?;
             if let Some(source) = source_of.get(&target).copied() {
                 by_source_target = by_source_target.removed(&(source, target))?;
             }
@@ -140,7 +153,13 @@ impl Base {
                 colors = colors.removed(&target)?;
                 continue;
             }
-            let source = relations.source(target)?;
+            // Relations' warnings name why; the country takes no fill.
+            let Some(source) = relations.source(target)? else {
+                source_of = source_of.removed(&target)?;
+                colors = colors.removed(&target)?;
+                unknown = unknown.inserted(target, ())?;
+                continue;
+            };
             source_of = source_of.inserted(target, source)?;
             by_source_target = by_source_target.inserted((source, target), ())?;
             colors = match raw
@@ -169,6 +188,7 @@ impl Base {
             source_of,
             by_source_target,
             colors,
+            unknown,
             missing,
         })
     }

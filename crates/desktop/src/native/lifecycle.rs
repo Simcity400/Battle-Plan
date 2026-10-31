@@ -409,7 +409,14 @@ impl NativeHost {
                 let _ = app.emit("dashboard-map-state", states);
                 return;
             }
-            NativeEvent::Ready { .. } => inner.status.ready = true,
+            NativeEvent::Ready { sample_counts, .. } => {
+                inner.status.ready = true;
+                // The host's own data service advertises and checks map anti-aliasing against
+                // the renderer that draws it, not a device of this process.
+                if let Some(counts) = sample_counts {
+                    dashboard::map_settings::set_sample_counts(counts);
+                }
+            }
             NativeEvent::CameraMode { mode, overlays } => {
                 inner.status.camera_mode = mode;
                 inner.status.camera_overlays = overlays;

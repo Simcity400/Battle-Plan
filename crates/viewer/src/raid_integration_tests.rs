@@ -299,6 +299,7 @@ fn hover_tooltip(offer: bool) {
     let prepared = PreparedRaids::test_icon(
         [100., 200.],
         RaidIcon {
+            group: 1,
             province: 1,
             frame: if offer { 0 } else { 2 },
             enabled: !offer,

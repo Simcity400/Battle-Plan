@@ -10,7 +10,7 @@ use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::frame::DayNight;
 use viewer_foundation::map::gpu_contract::OUTPUT_FORMAT;
-use viewer_foundation::map::gpu_contract::device_descriptor;
+use viewer_foundation::map::gpu_contract::map_device_descriptor;
 use viewer_foundation::map::gpu_contract::select_adapter;
 use viewer_foundation::map::name_draw::Placements;
 use viewer_foundation::map::perspective::Choice;
@@ -62,7 +62,7 @@ impl Fixture {
             let adapter = select_adapter(&available_adapters, None)?;
             eprintln!("Scene failure GPU: {:?}", adapter.get_info());
             let (device, queue) = adapter
-                .request_device(&device_descriptor(&adapter))
+                .request_device(&map_device_descriptor(&adapter))
                 .await
                 .map_err(io::Error::other)?;
             let renderer =

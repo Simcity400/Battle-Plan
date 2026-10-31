@@ -730,11 +730,12 @@ impl View {
         Ok(changed)
     }
 
-    /// Record the shown state's pending fill before terrain; `true` when it dispatched.
-    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
-        let Some(state) = &self.shown else {
-            return false;
-        };
+    /// Record the shown state's pending fill before terrain, when it has one not yet recorded
+    /// into an encoder awaiting submission. It stays pending until [`Encoded::submitted`]
+    /// follows that encoder's submission; dropping the token instead, as an aborted frame does,
+    /// leaves it to be recorded again.
+    pub fn encode(&self, encoder: &mut wgpu::CommandEncoder) -> Option<Encoded> {
+        let state = self.shown.as_ref()?;
         let [first, second] = &state.textures;
         let mut fill = state.lock();
         let held = holders(fill.channels);
@@ -747,19 +748,56 @@ impl View {
                 .collect::<Vec<_>>()
         };
         let fill = &mut *fill;
-        let mut dispatched = false;
-        for (layer, gpu) in [
+        let mut layers = [false; 3];
+        for (recorded, (layer, gpu)) in layers.iter_mut().zip([
             (Held::Naval, &mut fill.naval),
             (Held::Country, &mut fill.gpu),
             (Held::Mode, &mut fill.mode),
-        ] {
+        ]) {
             let rows = rows(layer);
             // A layer no channel shows keeps its update until one does.
             if !rows.is_empty() {
-                dispatched |= gpu.encode_rows(encoder, [first, second], &rows);
+                *recorded = gpu.encode_rows(encoder, [first, second], &rows);
             }
         }
-        dispatched
+        layers.contains(&true).then(|| Encoded {
+            state: Arc::clone(state),
+            layers,
+            submitted: false,
+        })
+    }
+}
+
+/// The layers of a state [`View::encode`] recorded into an encoder: pending until that encoder
+/// is submitted. Dropped without [`Self::submitted`], they are recorded again by the next encode.
+#[must_use = "a recorded fill stays pending until `submitted` follows its encoder's submission"]
+pub struct Encoded {
+    state: Arc<State>,
+    /// Naval, country and mode layers.
+    layers: [bool; 3],
+    submitted: bool,
+}
+
+impl Encoded {
+    /// The encoder holding the recorded layers was submitted: their update is done.
+    pub fn submitted(mut self) {
+        self.submitted = true;
+    }
+}
+
+impl Drop for Encoded {
+    fn drop(&mut self) {
+        let mut fill = self.state.lock();
+        let fill = &mut *fill;
+        for (&recorded, gpu) in
+            self.layers
+                .iter()
+                .zip([&mut fill.naval, &mut fill.gpu, &mut fill.mode])
+        {
+            if recorded {
+                gpu.recorded(self.submitted);
+            }
+        }
     }
 }
 
@@ -903,6 +941,8 @@ pub struct PoliticalGpu {
     kind: gradient::LayerKind,
     initialized: bool,
     pending: bool,
+    /// The pending update is recorded into an encoder not yet submitted.
+    recorded: bool,
     /// Number of cells in the most recent dispatch, useful to the exactness/performance harness.
     pub dispatched_cells: usize,
 }
@@ -1143,6 +1183,7 @@ impl PoliticalGpu {
             kind: layer.kind,
             initialized: false,
             pending: false,
+            recorded: false,
             dispatched_cells: 0,
         })
     }
@@ -1549,8 +1590,9 @@ impl PoliticalGpu {
         }
     }
 
-    /// Record before terrain; `true` when there was a pending update. Buffer copies preserve the
-    /// exact bytes in the sRGB textures.
+    /// Record before terrain; `true` when there was a pending update not yet recorded. It stays
+    /// pending until [`Self::recorded`] says the encoder was submitted. Buffer copies preserve
+    /// the exact bytes in the sRGB textures.
     pub fn encode(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1580,9 +1622,10 @@ impl PoliticalGpu {
         true
     }
 
-    /// Run the pending update's passes into the output buffer; `false` when nothing was pending.
+    /// Run the pending update's passes into the output buffer; `false` when nothing was pending
+    /// or an encoder awaiting submission already holds them.
     fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) -> bool {
-        if !self.pending {
+        if !self.pending || self.recorded {
             return false;
         }
         let dispatch = |encoder: &mut wgpu::CommandEncoder, pipeline: usize, indirect: bool| {
@@ -1608,9 +1651,17 @@ impl PoliticalGpu {
             dispatch(encoder, if step % 2 == 0 { 2 } else { 3 }, false);
         }
         dispatch(encoder, 4, true);
-        self.pending = false;
-        self.initialized = true;
+        self.recorded = true;
         true
+    }
+
+    /// The encoder holding the recorded update was submitted, or dropped unsubmitted.
+    pub fn recorded(&mut self, submitted: bool) {
+        if self.recorded && submitted {
+            self.pending = false;
+            self.initialized = true;
+        }
+        self.recorded = false;
     }
 
     /// Copy output rectangles `[x, y, width, height]` of both channels into a layer's textures.

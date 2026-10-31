@@ -349,8 +349,9 @@ impl TerritoryFold {
                         paint[0] = match slot.checked_add(1) {
                             Some(key) => key,
                             None => {
-                                let source = relations.source(slot)?;
-                                if by_slot.get(&source).is_none() {
+                                if let Some(source) = relations.source(slot)?
+                                    && by_slot.get(&source).is_none()
+                                {
                                     return Err(invalid(format!(
                                         "political fill country slot {source} has no Countries row"
                                     )));
@@ -426,6 +427,11 @@ impl TerritoryFold {
                 dirty_colors = dirty_colors.inserted(slot, ())?;
             }
         }
+        if relations.recolors_all(before.map(|old| &old.relations)) {
+            for &slot in references.keys() {
+                dirty_colors = dirty_colors.inserted(slot, ())?;
+            }
+        }
         for key in appearance.edits.iter() {
             for (&(_, slot), _) in by_color_source
                 .iter_from(&(*key as u32, 0))
@@ -456,7 +462,10 @@ impl TerritoryFold {
                 continue;
             }
             let color = (|| -> io::Result<[u8; 3]> {
-                let source = relations.source(slot)?;
+                // An undecidable source is filled as unavailable; Relations names why.
+                let Some(source) = relations.source(slot)? else {
+                    return Ok(UNAVAILABLE_COLOR);
+                };
                 let native = by_slot.get(&source).copied().ok_or_else(|| {
                     invalid(format!(
                         "political fill country slot {source} has no Countries row"

@@ -53,9 +53,11 @@ impl Config {
     }
 
     fn save_folders_at(&self, path: &Path) -> io::Result<()> {
-        update(path, |stored| {
-            stored.game_dir = self.game_dir.clone();
-            stored.user_dir = self.user_dir.clone();
+        locked(path, || {
+            replace(path, |stored| {
+                stored.game_dir = self.game_dir.clone();
+                stored.user_dir = self.user_dir.clone();
+            })
         })
     }
 
@@ -63,13 +65,36 @@ impl Config {
         self.background_preparation.unwrap_or(true)
     }
 
-    /// Store only preparation admission, preserving the folders.
-    pub fn save_background_preparation(enabled: bool) -> io::Result<()> {
-        Self::save_background_preparation_at(&Self::path()?, enabled)
+    /// Stores only preparation admission, preserving the folders, and gives it to `apply`
+    /// before the preferences unlock: concurrent choices take effect in the order they are
+    /// saved, so the last one saved is the one running.
+    pub fn save_background_preparation(enabled: bool, apply: impl FnOnce(bool)) -> io::Result<()> {
+        Self::save_background_preparation_at(&Self::path()?, enabled, apply)
     }
 
-    fn save_background_preparation_at(path: &Path, enabled: bool) -> io::Result<()> {
-        update(path, |stored| stored.background_preparation = Some(enabled))
+    fn save_background_preparation_at(
+        path: &Path,
+        enabled: bool,
+        apply: impl FnOnce(bool),
+    ) -> io::Result<()> {
+        locked(path, || {
+            replace(path, |stored| stored.background_preparation = Some(enabled))?;
+            apply(enabled);
+            Ok(())
+        })
+    }
+
+    /// Gives the saved preparation choice to `apply` under the same lock, so no choice saved
+    /// meanwhile is overtaken by this older read.
+    pub fn apply_background_preparation(apply: impl FnOnce(bool)) -> io::Result<()> {
+        Self::apply_background_preparation_at(&Self::path()?, apply)
+    }
+
+    fn apply_background_preparation_at(path: &Path, apply: impl FnOnce(bool)) -> io::Result<()> {
+        locked(path, || {
+            apply(Self::load_from(path)?.background_preparation_enabled());
+            Ok(())
+        })
     }
 
     pub fn resolve_options(&self) -> io::Result<ResolveOptions> {
@@ -91,12 +116,12 @@ impl Config {
     }
 }
 
-/// Reads, changes and replaces the preferences as one transaction. The desktop
-/// host's folder Apply, its data service's preparation choice and the
-/// development bridge all write the same file, so an exclusive lock on a
-/// sibling file spans the whole read-modify-write, across threads and
-/// processes alike; each writer also stages its bytes in a file of its own.
-fn update(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
+/// Runs `work` as one transaction on the preferences. The desktop host's folder
+/// Apply, its data service's preparation choice and the development bridge all
+/// write the same file, so an exclusive lock on a sibling file spans the whole
+/// read-modify-write and what the writer does with it, across threads and
+/// processes alike.
+fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let folder = path
         .parent()
         .ok_or_else(|| invalid("content preferences have no folder"))?;
@@ -107,6 +132,12 @@ fn update(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
         .write(true)
         .open(path.with_extension("lock"))?;
     lock.lock()?;
+    work()
+}
+
+/// Reads, changes and replaces the preferences; each writer stages its bytes in
+/// a file of its own. Only under [`locked`].
+fn replace(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
     let mut config = Config::load_from(path)?;
     change(&mut config);
     let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
@@ -166,7 +197,7 @@ mod tests {
                 .unwrap()
                 .background_preparation_enabled()
         );
-        Config::save_background_preparation_at(&path, false).unwrap();
+        Config::save_background_preparation_at(&path, false, |_| {}).unwrap();
         assert!(
             !Config::load_from(&path)
                 .unwrap()
@@ -184,7 +215,7 @@ mod tests {
         assert_eq!(saved.game_dir, Path::new("G"));
         assert_eq!(saved.user_dir, Path::new("U"));
         assert!(!saved.background_preparation_enabled());
-        Config::save_background_preparation_at(&path, true).unwrap();
+        Config::save_background_preparation_at(&path, true, |_| {}).unwrap();
         let saved = Config::load_from(&path).unwrap();
         assert!(saved.background_preparation_enabled());
         assert_eq!(saved.game_dir, Path::new("G"));
@@ -200,7 +231,9 @@ mod tests {
         for round in 0..20 {
             let enabled = round % 2 == 0;
             std::thread::scope(|scope| {
-                scope.spawn(|| Config::save_background_preparation_at(&path, enabled).unwrap());
+                scope.spawn(|| {
+                    Config::save_background_preparation_at(&path, enabled, |_| {}).unwrap()
+                });
                 scope.spawn(|| {
                     Config {
                         game_dir: format!("G{round}").into(),
@@ -225,6 +258,49 @@ mod tests {
             .filter(|name| name.ends_with(".tmp"))
             .collect();
         assert!(left.is_empty(), "staged files left behind: {left:?}");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A choice applies while the preferences stay locked, whether saved or read: no other
+    /// save can land between it and its effect, so the running choice is the one saved last.
+    #[test]
+    fn a_choice_applies_under_the_preferences_lock() {
+        let folder = folder();
+        let path = folder.join("battle-plan").join("content.json");
+        let locked = || {
+            let other = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path.with_extension("lock"))
+                .unwrap();
+            matches!(other.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+        };
+        let mut applied = Vec::new();
+        for enabled in [false, true] {
+            Config::save_background_preparation_at(&path, enabled, |running| {
+                assert!(locked(), "a save applies under the lock");
+                applied.push(running);
+            })
+            .unwrap();
+            Config::apply_background_preparation_at(&path, |running| {
+                assert!(locked(), "a read applies under the lock");
+                applied.push(running);
+            })
+            .unwrap();
+        }
+        assert_eq!(applied, [false, false, true, true]);
+        // Released once applied.
+        assert!(!locked());
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// Before any choice is saved, the default one applies.
+    #[test]
+    fn an_unsaved_choice_applies_the_default() {
+        let folder = folder();
+        let path = folder.join("battle-plan").join("content.json");
+        let mut applied = None;
+        Config::apply_background_preparation_at(&path, |enabled| applied = Some(enabled)).unwrap();
+        assert_eq!(applied, Some(true));
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

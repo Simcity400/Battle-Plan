@@ -124,6 +124,25 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
     }
 }
 
+/// Escape, as the map-mode keys, reaches one dashboard map: the one owning keyboard input, or the
+/// hovered one while none owns it. A lone map always takes it.
+#[cfg(test)]
+#[test]
+fn escape_reaches_only_the_map_owning_its_keys() {
+    let (a, b) = (egui::Id::new("map a"), egui::Id::new("map b"));
+    assert!(takes_map_keys(true, Some(a), a, false));
+    assert!(!takes_map_keys(true, Some(a), b, true));
+    assert!(takes_map_keys(true, None, b, true));
+    assert!(!takes_map_keys(true, None, a, false));
+    assert!(takes_map_keys(false, Some(a), b, false));
+    let source = include_str!("app.rs");
+    let body = source.split("\n    pub(crate) fn map_ui(").nth(1).unwrap();
+    assert!(
+        body.contains("let escape = takes_keys && ui.input("),
+        "Escape is read for every map"
+    );
+}
+
 #[cfg(test)]
 mod fly_render_tests;
 #[cfg(test)]
@@ -3614,9 +3633,14 @@ impl Viewer {
         // The interface is laid out in interface pixels, so its hit tests are
         // too: counters, combat bubbles, the combat window and its lists.
         let extent = ui_scale_extent(pixels, ui_scale);
+        // Map keys go to one map: the one that owns keyboard input, as the camera keys do.
+        let owner = ui
+            .ctx()
+            .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
+        let takes_keys = takes_map_keys(self.dashboard_map, owner, response.id, response.hovered());
         // Escape first gives back a pointer held for looking around (the input layer does that);
         // only a later one reaches the map's interface. A mode choosing its start takes it.
-        let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        let escape = takes_keys && ui.input(|input| input.key_pressed(egui::Key::Escape));
         if escape && !held_pointer && !self.start_pick.choosing() {
             // Escape closes the tactics popup before the battle window.
             if self.combat.tactics_open {
@@ -3666,11 +3690,7 @@ impl Viewer {
             pixels,
             ui_scale,
         );
-        // Map-mode keys go to one map: the one that owns keyboard input, as the camera keys do.
-        let owner = ui
-            .ctx()
-            .data(|data| data.get_temp::<egui::Id>(egui::Id::new(MAP_INPUT_OWNER)));
-        if takes_map_keys(self.dashboard_map, owner, response.id, response.hovered()) {
+        if takes_keys {
             self.picker_keys(ui, document, extent);
         }
         // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
@@ -3971,6 +3991,13 @@ impl Viewer {
                 self.camera_manual = true;
                 ui.ctx().request_repaint();
             }
+        }
+        // As the game does each frame, a view wholly past a seam moves back a map width with its
+        // target, so panning round the world never outruns the map copies the passes draw.
+        let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
+        if shift != 0.0 {
+            camera.center[0] += shift;
+            self.zoom.shift([shift, 0.0]);
         }
         self.camera = Some(camera.placement());
         // The camera the map draws with, and the one its interface is laid out for: the free

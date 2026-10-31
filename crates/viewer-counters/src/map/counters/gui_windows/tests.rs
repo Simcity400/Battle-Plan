@@ -268,7 +268,7 @@ pub(in crate::map::counters) fn at_sea_flotilla(coarse: bool) -> naval::Flotilla
         flag_owner: Some(if coarse { 0 } else { 5 }),
         port: false,
         coarse,
-        ships: 12,
+        ships: Some(12),
         hidden: false,
         visible_member: true,
         cells: Some(naval::NavalCells {
@@ -302,7 +302,7 @@ pub(in crate::map::counters) fn port_flotilla() -> naval::Flotilla {
         item: Some(naval::ItemIntel {
             byte: 255,
             first: (7 << 32) | 51,
-            ships: 12,
+            ships: Some(12),
         }),
         ..at_sea_flotilla(false)
     }
@@ -950,6 +950,52 @@ fn an_undecidable_hull_leaves_the_type_sprite_unknown() {
 /// fleet and supply leave order glyphs, pride, carrier, capital count, group marker,
 /// bars and supply unknown, plus the at-sea plate frame. They still write plate colour
 /// without showing or hiding those undecided children.
+/// A Ships census the hour lacks leaves the ship counts unknown: no exact zero or subtotal is
+/// written at sea or in port, while a mission item's low intel still writes the "?" it shows
+/// without reading them.
+#[test]
+fn an_incomplete_ship_census_leaves_the_counts_unknown() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let fixture = navy_fixture();
+    let windows = windows();
+    let window = windows.navy();
+    let unknown = |update: &Update, part: &str| update.unknown.iter().any(|(at, _)| *at == part);
+    let count_text = |update: &Update| {
+        update.calls.iter().any(|(path, call)| {
+            path.ends_with(".count_txt")
+                && matches!(call, Call::Control(bound) if bound.text.is_some())
+        })
+    };
+    for coarse in [false, true] {
+        let mut sea = at_sea_flotilla(coarse);
+        sea.ships = None;
+        sea.cells = None;
+        let (update, _) = production(window, &sea, CounterSettings::default(), &fixture);
+        assert!(unknown(&update, COUNT), "coarse {coarse}");
+        assert!(unknown(&update, CAPITALS), "coarse {coarse}");
+        assert!(!count_text(&update), "coarse {coarse}: {:?}", update.calls);
+        // A known count is written and lifts the part.
+        sea.ships = Some(0);
+        let (update, _) = production(window, &sea, CounterSettings::default(), &fixture);
+        assert!(update.wrote.contains(&COUNT) && count_text(&update));
+    }
+    let mut item = port_flotilla();
+    item.cells = None;
+    item.item = item.item.map(|intel| naval::ItemIntel {
+        ships: None,
+        ..intel
+    });
+    let (update, _) = production(window, &item, CounterSettings::default(), &fixture);
+    assert!(unknown(&update, COUNT) && unknown(&update, CAPITALS));
+    assert!(!count_text(&update), "{:?}", update.calls);
+    item.item = item
+        .item
+        .map(|intel| naval::ItemIntel { byte: 99, ..intel });
+    let (update, _) = production(window, &item, CounterSettings::default(), &fixture);
+    assert!(!unknown(&update, COUNT) && update.wrote.contains(&COUNT));
+}
+
 #[test]
 fn missing_operands_leave_exactly_their_parts_unknown() {
     engine_executable::executable_tables::initialize_for_tests()

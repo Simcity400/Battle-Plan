@@ -1,93 +1,452 @@
-//! Raw HLSL includes have no handler. Only PdxShader `Includes` (already
-//! resolved by installed-content) can load content. A compiler CLI must not search its host filesystem
-//! for raw HLSL #include directives. Turn them into preprocessor errors, preserving #if branches.
+//! Raw HLSL can read or probe the host's files: `#include` and the `__has_include` builtins. Only
+//! PdxShader `Includes` (already resolved by installed-content) may load content, and a compiler CLI has
+//! no include handler to refuse the rest, so the source the compiler receives cannot name a host
+//! file. A raw include's directive name becomes one DXC refuses, preserving #if branches; the
+//! builtins are undefined before the program.
+//!
+//! The scan follows DXC's lexer (its clang `Lexer.cpp`, with HLSL's fixed language options):
+//! `\n` and `\r` each end a line; a backslash, horizontal whitespace and a newline (`\r\n` and
+//! `\n\r` count as one) splice lines everywhere; trigraphs and digraphs are off. Wherever DXC's
+//! whitespace could differ from this scan's, the scan takes more as whitespace, so it finds every
+//! directive DXC does. The scan reads a spliced view, but the compiler receives the program's own
+//! bytes: splicing the spliced text again could join lines the program kept apart.
+//!
+//! An active `#error`, `#warning` or `#pragma mark` reads the rest of its line raw, one in a block
+//! #if leaves out reads it as tokens, and this scan cannot tell which: a program where the two
+//! readings differ, a block comment that tokens open there and close past the line, is refused.
+//! So is one holding NUL, which DXC skips between a backslash and its newline only where that
+//! splice ends a block comment.
 
-pub fn native_includes(source: &str) -> String {
-    // Line splicing precedes preprocessing/comment removal in HLSL. Splicing first also keeps
-    // a split directive from taking a different path through an external compiler's includer.
-    let source = source.replace("\\\r\n", "").replace("\\\n", "");
-    let bytes = source.as_bytes();
-    let mut visible = bytes.to_vec();
+/// Undefines the builtins that test a host path; a program naming one afterwards names an
+/// ordinary identifier. `#line` restores the program's own line numbers.
+const PROLOGUE: &str = "#undef __has_include\n#undef __has_include_next\n#line 1\n";
+
+/// What replaces a raw include's directive name: no directive, so DXC refuses it where it is
+/// active and reads the rest of its line as tokens wherever it is, as it did the include's.
+const REFUSED: &str = "Raw_HLSL_includes_are_not_supported";
+
+/// The program as the compiler may receive it, or why it cannot.
+pub fn without_host_files(source: &str) -> Result<String, String> {
+    if source.contains('\0') {
+        return Err(
+            "raw HLSL holding NUL is refused: DXC reads where its comments end differently"
+                .into(),
+        );
+    }
+    let (view, origin) = spliced(source);
+    let text = Text {
+        view: &view,
+        origin: &origin,
+        source: source.as_bytes(),
+    };
+    let bytes = view.as_bytes();
+    let mut replacements = Vec::new();
     let mut index = 0;
-    let mut quote = None;
+    let mut line_start = true;
     while index < bytes.len() {
-        if let Some(delimiter) = quote {
-            if bytes[index] == b'\\' {
-                index = (index + 2).min(bytes.len());
-                continue;
-            }
-            if bytes[index] == delimiter {
-                quote = None;
-            }
-        } else if matches!(bytes[index], b'"' | b'\'') {
-            quote = Some(bytes[index]);
-        } else if bytes[index..].starts_with(b"//") {
-            while index < bytes.len() && bytes[index] != b'\n' {
-                visible[index] = b' ';
+        match bytes[index] {
+            b'\n' | b'\r' => {
+                line_start = true;
                 index += 1;
             }
-            continue;
-        } else if bytes[index..].starts_with(b"/*") {
-            visible[index..index + 2].fill(b' ');
-            index += 2;
-            while index < bytes.len() {
-                if bytes[index..].starts_with(b"*/") {
-                    visible[index..index + 2].fill(b' ');
-                    index += 2;
-                    break;
-                }
-                if bytes[index] != b'\n' {
-                    visible[index] = b' ';
-                }
-                index += 1;
+            b'#' if line_start && bytes.get(index + 1) != Some(&b'#') => {
+                line_start = false;
+                index = text.directive(index + 1, &mut replacements)?;
             }
+            _ => {
+                if let Some(after) = text.blank(index) {
+                    index = after;
+                    continue;
+                }
+                line_start = false;
+                index = match bytes[index] {
+                    quote @ (b'"' | b'\'') => literal(bytes, index + 1, quote),
+                    _ => index + 1,
+                };
+            }
+        }
+    }
+    let mut out = String::with_capacity(PROLOGUE.len() + source.len() + 32 * replacements.len());
+    out.push_str(PROLOGUE);
+    let mut copied = 0;
+    for range in replacements {
+        // The name's own bytes, and any splice inside it, in the program's text.
+        let (start, end) = (origin[range.start], origin[range.end - 1] + 1);
+        out.push_str(&source[copied..start]);
+        out.push_str(REFUSED);
+        copied = end;
+    }
+    out.push_str(&source[copied..]);
+    Ok(out)
+}
+
+/// The length of the line splice starting at `index`: a backslash, any horizontal whitespace,
+/// then a newline, the other newline character following it counting as part of it.
+fn splice(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index) != Some(&b'\\') {
+        return None;
+    }
+    let mut end = index + 1;
+    while end < bytes.len() && matches!(bytes[end], b' ' | b'\t' | b'\x0b' | b'\x0c') {
+        end += 1;
+    }
+    let first = *bytes.get(end).filter(|byte| matches!(byte, b'\n' | b'\r'))?;
+    end += 1;
+    if bytes
+        .get(end)
+        .is_some_and(|&second| matches!(second, b'\n' | b'\r') && second != first)
+    {
+        end += 1;
+    }
+    Some(end - index)
+}
+
+/// `source` with every line splice removed, and where in `source` each of its bytes is.
+fn spliced(source: &str) -> (String, Vec<usize>) {
+    let bytes = source.as_bytes();
+    let mut view = Vec::with_capacity(bytes.len());
+    let mut origin = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if let Some(length) = splice(bytes, index) {
+            index += length;
             continue;
         }
+        view.push(bytes[index]);
+        origin.push(index);
         index += 1;
     }
-    let mut replacements = Vec::new();
-    let mut offset = 0;
-    for line in visible.split_inclusive(|byte| *byte == b'\n') {
-        let first = line.iter().position(|byte| !byte.is_ascii_whitespace());
-        if let Some(first) = first.filter(|first| line[*first] == b'#') {
-            let tail = &line[first + 1..];
-            if let Some(word) = tail.iter().position(|byte| !byte.is_ascii_whitespace()) {
-                let word = first + 1 + word;
-                let end = line[word..]
-                    .iter()
-                    .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
-                    .map_or(line.len(), |length| word + length);
-                if &line[word..end] == b"include" {
-                    replacements.push(offset + word..offset + end);
+    let view = String::from_utf8(view).expect("removing ASCII bytes keeps UTF-8 whole");
+    (view, origin)
+}
+
+/// The spliced view the scan reads, and the program's own bytes it came from.
+struct Text<'a> {
+    view: &'a str,
+    /// Where in `source` each byte of `view` is.
+    origin: &'a [usize],
+    source: &'a [u8],
+}
+
+impl Text<'_> {
+    /// After a comment or whitespace starting at `index`, where the scan resumes; `None` when
+    /// something else starts there. Block comments may span lines without ending one; a line
+    /// comment stops before its newline. Form feed, vertical tab, a UCN escape and any non-ASCII
+    /// character count as whitespace.
+    fn blank(&self, index: usize) -> Option<usize> {
+        let bytes = self.view.as_bytes();
+        match bytes[index] {
+            b' ' | b'\t' | b'\x0b' | b'\x0c' => Some(index + 1),
+            b'/' if bytes.get(index + 1) == Some(&b'/') => Some(line_end(bytes, index + 2)),
+            b'/' if bytes.get(index + 1) == Some(&b'*') => Some(self.comment_end(index + 2)),
+            b'\\' => {
+                let digits = match bytes.get(index + 1) {
+                    Some(b'u') => 4,
+                    Some(b'U') => 8,
+                    _ => return None,
+                };
+                let hex = bytes.get(index + 2..index + 2 + digits)?;
+                hex.iter()
+                    .all(u8::is_ascii_hexdigit)
+                    .then_some(index + 2 + digits)
+            }
+            byte if !byte.is_ascii() => {
+                Some(index + self.view[index..].chars().next().map_or(1, char::len_utf8))
+            }
+            _ => None,
+        }
+    }
+
+    /// Past the `*/` closing a block comment whose `/*` ended before `index`, or the end. DXC
+    /// closes one only across at most one splice between the two.
+    fn comment_end(&self, index: usize) -> usize {
+        let bytes = self.view.as_bytes();
+        let mut at = index;
+        while let Some(found) = bytes[at..].windows(2).position(|pair| pair == b"*/") {
+            let star = at + found;
+            let gap = &self.source[self.origin[star] + 1..self.origin[star + 1]];
+            if gap.is_empty() || splice(gap, 0) == Some(gap.len()) {
+                return star + 2;
+            }
+            at = star + 1;
+        }
+        bytes.len()
+    }
+
+    /// Whether reading the rest of a line from `index` as tokens opens a block comment that
+    /// closes past the line, where reading it raw opens none.
+    fn comment_past_line(&self, mut index: usize) -> bool {
+        let bytes = self.view.as_bytes();
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\n' | b'\r' => return false,
+                quote @ (b'"' | b'\'') => index = literal(bytes, index + 1, quote),
+                b'/' if bytes.get(index + 1) == Some(&b'/') => return false,
+                b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                    let end = self.comment_end(index + 2);
+                    if bytes[index + 2..end]
+                        .iter()
+                        .any(|&byte| matches!(byte, b'\n' | b'\r'))
+                    {
+                        return true;
+                    }
+                    index = end;
                 }
+                _ => index += 1,
             }
         }
-        offset += line.len();
+        false
     }
-    let mut out = source;
-    for range in replacements.into_iter().rev() {
-        out.replace_range(range, "error Raw_HLSL_includes_are_not_supported");
+
+    /// A directive whose `#` ended before `index`: records the range of a raw include's name in
+    /// `replacements` and returns where the scan resumes, past the line of a directive DXC may
+    /// read raw.
+    fn directive(
+        &self,
+        index: usize,
+        replacements: &mut Vec<std::ops::Range<usize>>,
+    ) -> Result<usize, String> {
+        let bytes = self.view.as_bytes();
+        let skip = |mut index: usize| {
+            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+                match self.blank(index) {
+                    Some(after) => index = after,
+                    None => break,
+                }
+            }
+            index
+        };
+        let word = |start: usize| {
+            let end = bytes[start..]
+                .iter()
+                .position(|&byte| !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'))
+                .map_or(bytes.len(), |length| start + length);
+            (&bytes[start..end], end)
+        };
+        let raw = |name: &str, index: usize| {
+            if self.comment_past_line(index) {
+                return Err(format!(
+                    "a #{name} line opens a block comment past it, which DXC reads or not as the \
+                     line is active or left out by #if, so the raw HLSL's includes cannot be found"
+                ));
+            }
+            Ok(line_end(bytes, index))
+        };
+        let start = skip(index);
+        let (name, end) = word(start);
+        match name {
+            b"include" => {
+                replacements.push(start..end);
+                Ok(end)
+            }
+            b"error" => raw("error", end),
+            b"warning" => raw("warning", end),
+            b"pragma" => {
+                let at = skip(end);
+                match word(at) {
+                    (b"mark", after) => raw("pragma mark", after),
+                    _ => Ok(at),
+                }
+            }
+            _ => Ok(end),
+        }
     }
-    out
+}
+
+/// The newline at or after `index`, or the end.
+fn line_end(bytes: &[u8], index: usize) -> usize {
+    bytes[index..]
+        .iter()
+        .position(|&byte| matches!(byte, b'\n' | b'\r'))
+        .map_or(bytes.len(), |end| index + end)
+}
+
+/// Past a string or character literal whose quote ended before `index`: its closing quote, or
+/// the newline or end that leaves it unterminated.
+fn literal(bytes: &[u8], mut index: usize, quote: u8) -> usize {
+    while index < bytes.len() {
+        match bytes[index] {
+            // A backslash left before a newline had a splice after it, which the compiler reads
+            // as the escaped character: the newline still ends the literal.
+            b'\\' if matches!(bytes.get(index + 1), Some(b'\n' | b'\r')) => index += 1,
+            b'\\' => index += 2,
+            b'\n' | b'\r' => return index,
+            byte if byte == quote => return index + 1,
+            _ => index += 1,
+        }
+    }
+    bytes.len()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn lowered(source: &str) -> String {
+        without_host_files(source).unwrap()
+    }
+
+    fn refused(source: &str) -> usize {
+        lowered(source).matches(REFUSED).count()
+    }
+
     #[test]
     fn host_includes_become_conditional_compiler_errors() {
         let source = "/* #include \"comment\" */\n#if 0\n# /*comment*/ include \"inactive\"\n#endif\n#inc\\\nlude \"active\"\n// #include \"comment\"\n";
-        let lowered = native_includes(source);
+        let lowered = lowered(source);
+        // The spliced name is replaced whole, splice and all.
         assert_eq!(
             lowered
-                .matches("#error Raw_HLSL_includes_are_not_supported")
+                .matches("#Raw_HLSL_includes_are_not_supported \"active\"")
                 .count(),
             1
         );
-        assert!(lowered.contains("# /*comment*/ error Raw_HLSL_includes_are_not_supported"));
+        assert!(lowered.contains("# /*comment*/ Raw_HLSL_includes_are_not_supported"));
         assert!(lowered.contains("/* #include \"comment\" */"));
         assert!(lowered.contains("// #include \"comment\""));
         assert!(lowered.contains("#if 0\n"));
+        assert!(lowered.starts_with(PROLOGUE));
+    }
+
+    /// DXC ends lines at a bare carriage return too: a line comment stops there, and the
+    /// include after it is a directive.
+    #[test]
+    fn every_newline_the_compiler_takes_ends_a_line() {
+        for newline in ["\r", "\n", "\r\n", "\n\r"] {
+            let source = format!("float x; // comment{newline}#include \"C:/host.h\"{newline}");
+            assert_eq!(refused(&source), 1, "{newline:?}");
+        }
+        assert_eq!(refused("#if 0\r#include \"a\"\r#endif\r#include \"b\"\r"), 2);
+    }
+
+    /// A splice is a backslash, horizontal whitespace and one newline of any kind, and it joins
+    /// the directive or comment it is in to the next line.
+    #[test]
+    fn splices_follow_the_compilers_escaped_newlines() {
+        for splice in ["\\\n", "\\\r", "\\\r\n", "\\\n\r", "\\ \t\x0b\x0c\n"] {
+            assert_eq!(refused(&format!("#inc{splice}lude \"a\"\n")), 1, "{splice:?}");
+            // A spliced line comment hides the next line.
+            assert_eq!(
+                refused(&format!("// note{splice}#include \"a\"\n")),
+                0,
+                "{splice:?}"
+            );
+        }
+        // Spliced into the line before, `#` does not start a directive.
+        assert_eq!(refused("float x; \\\n#include \"a\"\n"), 0);
+    }
+
+    /// The compiler receives the program's own bytes: a backslash before a splice stays apart
+    /// from the newline after it, as DXC reads it, rather than splicing again.
+    #[test]
+    fn the_compiler_receives_the_programs_own_splices() {
+        let source = "#inc\\\\\n\nlude \"C:/host.h\"\n";
+        assert_eq!(lowered(source), format!("{PROLOGUE}{source}"));
+    }
+
+    /// Whitespace DXC skips before `#` or between it and the name hides no directive: vertical
+    /// tab, form feed, Unicode whitespace and its UCN spelling, and a block comment spanning
+    /// lines.
+    #[test]
+    fn whatever_the_compiler_skips_cannot_hide_a_directive() {
+        for gap in [
+            "\x0b",
+            "\x0c",
+            "\u{a0}",
+            "\u{3000}",
+            "\\u00A0",
+            "\\U000000a0",
+            "/*\n*/",
+            "/*\r*/",
+        ] {
+            assert_eq!(refused(&format!("{gap}#include \"a\"\n")), 1, "{gap:?} before");
+            assert_eq!(refused(&format!("#{gap}include \"a\"\n")), 1, "{gap:?} after");
+        }
+        // Not at the start of a line, not a directive name, or `##`: no directive.
+        for other in [
+            "x #include \"a\"\n",
+            "#include_next \"a\"\n",
+            "#include$ \"a\"\n",
+            "##include \"a\"\n",
+        ] {
+            assert_eq!(refused(other), 0, "{other:?}");
+        }
+    }
+
+    /// DXC ends a block comment at `*`, a backslash, NUL and a newline, then `/`: raw HLSL
+    /// holding NUL is refused rather than read otherwise.
+    #[test]
+    fn raw_hlsl_holding_nul_is_refused() {
+        let source = "/* *\\\0\n/\n#include \"C:/host.h\"\n// */\n";
+        assert!(without_host_files(source).is_err());
+        assert!(without_host_files("float x;\0\n").is_err());
+    }
+
+    /// DXC closes a block comment across one splice between `*` and `/`, never two: a comment
+    /// the program keeps open past two hides nothing DXC reads after its real end, even on the
+    /// same line.
+    #[test]
+    fn a_comment_ends_where_dxc_ends_it() {
+        assert_eq!(refused("/* x *\\\n/ #include \"a\"\n"), 1);
+        assert_eq!(refused("/* x *\\ \r\n/ #include \"a\"\n"), 1);
+        assert_eq!(refused("/* x *\\\n\\\n/ // */ #include \"C:/host.h\"\n"), 1);
+        // The doubly spliced pair stays inside the comment until its real end.
+        assert_eq!(refused("/* x *\\\n\\\n/ #include \"a\"\n*/\n"), 0);
+    }
+
+    /// A refused include stays a line DXC reads as tokens, as it read the include: a comment it
+    /// opens hides what it spans.
+    #[test]
+    fn a_refused_include_line_reads_as_tokens() {
+        assert_eq!(refused("#include \"a\" /*\n#include \"b\"\n*/\n"), 1);
+    }
+
+    /// An active `#error`, `#warning` or `#pragma mark` reads its line raw and one #if leaves out
+    /// reads it as tokens. Where the two readings agree the scan goes on; where a comment opened
+    /// there would close past the line, they differ and the program is refused.
+    #[test]
+    fn a_line_dxc_may_read_raw_or_as_tokens_is_refused_when_the_readings_differ() {
+        for line in [
+            "#error x /*",
+            "#warning x /*",
+            "#pragma mark x /*",
+            "# pragma /**/ mark x /*",
+            "#error x \" /* \" /*",
+        ] {
+            let source = format!("{line}\n#include \"b\"\n*/\n");
+            assert!(without_host_files(&source).is_err(), "{line}");
+        }
+        // A skipped warning's comment closes at its first `*/`; its quote then opens a literal
+        // that ends at the line, so the include after `#endif` is live.
+        let skipped = "#if 0\n#warning /*\n\" */ \" /*\n#endif\n#include \"C:/host.h\"\n// */\n";
+        assert!(without_host_files(skipped).is_err());
+        for line in ["#error x /* closed */", "#warning \"/*\" it's", "#pragma mark // x"] {
+            let source = format!("{line}\n#include \"b\"\n");
+            assert_eq!(refused(&source), 1, "{line}");
+        }
+        // Elsewhere a block comment hides what it spans.
+        assert_eq!(refused("#define X /*\n#include \"a\"\n*/\n"), 0);
+    }
+
+    /// A literal ends at its newline, unterminated, so one cannot swallow a later comment's
+    /// start and leave an include in what the scan took for a comment.
+    #[test]
+    fn literals_end_where_the_compiler_ends_them() {
+        let source = "#if 0\n\"\n#endif\n\"/*\"\n#include \"a\"\n// */\n";
+        assert_eq!(refused(source), 1);
+        assert_eq!(refused("float x = '\\''; /* \n#include \"a\"\n */\n"), 0);
+        assert_eq!(refused("#define S \"/*\"\n#include \"a\"\n"), 1);
+        // A backslash before a splice and an empty line escapes no newline.
+        assert_eq!(refused("float s = \"a\\\\\n\n#include \"b\"\n"), 1);
+    }
+
+    /// The builtins that test a host path are undefined before the program, which names an
+    /// ordinary identifier with them, however it spells or builds the name.
+    #[test]
+    fn host_path_tests_are_undefined_first() {
+        let lowered = lowered("#if __has_include(\"C:/host.h\")\n#endif\n");
+        assert!(lowered.starts_with(
+            "#undef __has_include\n#undef __has_include_next\n#line 1\n#if __has_include"
+        ));
     }
 }
