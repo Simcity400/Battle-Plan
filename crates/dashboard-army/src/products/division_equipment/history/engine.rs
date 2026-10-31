@@ -14,6 +14,7 @@ use crate::products::{
     division_needs,
 };
 use dashboard_base::products::equipment::RawVariant;
+use dashboard_series::hash::{FastMap, Words};
 use dashboard_text::{
     catalogue::Catalogue,
     metadata::link_slot,
@@ -29,11 +30,15 @@ use replay_data::{
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use std::{
     cell::OnceCell,
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    hash::BuildHasherDefault,
     io,
     mem::size_of,
     sync::Arc,
 };
+
+type FastSet<K> = HashSet<K, BuildHasherDefault<Words>>;
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -629,24 +634,47 @@ struct Look {
 
 /// A stockpile read, its rows grouped by the links of its hour.
 struct StockRead {
-    /// Each slot's designs and amounts, and how many rows no link places; none where the
-    /// read's countries or links were not read whole.
-    grouped: Option<(HashMap<u32, Vec<(u64, i64)>>, usize)>,
+    /// Each slot's designs and amounts in design order, and how many rows no link places;
+    /// none where the read's countries or links were not read whole.
+    grouped: Option<(FastMap<u32, Vec<(u64, i64)>>, usize)>,
     ids: Option<BTreeMap<u32, u32>>,
 }
 
 /// What a reply reads of the national stockpile.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct StockPart {
-    /// Each classified kind's stock; none where it is withheld.
-    totals: Option<BTreeMap<u32, i128>>,
+    /// Each classified kind's stock, by kind; none where it is withheld.
+    totals: Option<Vec<(u32, i128)>>,
     notes: Vec<(u32, u32)>,
     /// Each design looked up, with its naming operands when named.
     designs: Vec<(u64, Option<u32>)>,
 }
 
+impl StockPart {
+    fn refused(note: u32) -> Self {
+        Self {
+            totals: None,
+            notes: vec![(note, 1)],
+            designs: Vec::new(),
+        }
+    }
+}
+
+/// `list` by key, each key once with the sum of its values.
+fn summed<K: Ord + Copy, V: Copy + std::ops::AddAssign>(list: &mut Vec<(K, V)>) {
+    list.sort_unstable_by_key(|&(key, _)| key);
+    list.dedup_by(|later, kept| {
+        let same = later.0 == kept.0;
+        if same {
+            kept.1 += later.1;
+        }
+        same
+    });
+}
+
 /// A template's need, required manpower and naming operands at the hour.
 struct Template {
+    /// Each kind's amount by kind, a kind needed twice at its first.
     need: Result<Arc<[(u32, i64)]>, u32>,
     required: Option<i64>,
     naming: u32,
@@ -655,37 +683,138 @@ struct Template {
     hourly: bool,
 }
 
-/// One type of a division's pool: its holding and each design's.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Holding {
+/// A listed type: its holding, and its need, capped holding and shortfall where compared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TypeShare {
     kind: u32,
-    total: i128,
-    variants: Vec<(u64, i128)>,
-}
-
-/// Each type's need, capped holding and shortfall.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Compared {
-    types: Vec<(u32, i128, i128, i128)>,
-    needed: i128,
+    held: i128,
+    need: i128,
     filled: i128,
-    /// The kinds it is short of.
-    short: Vec<u32>,
+    shortfall: i128,
 }
 
 /// A division's part of its replies: its pool compared with its template's need, and its
-/// refusals but those of its own numbers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// refusals but those of its own numbers. Its lists are sorted, so two parts diff in a pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Share {
-    holdings: Vec<Holding>,
-    compared: Option<Compared>,
-    /// A known need's kinds, listed for a division whose comparison is unknown.
-    listed: Vec<u32>,
-    /// Every kind it lists a type for, once.
-    kinds: Vec<u32>,
+    /// Each kind held or needed.
+    types: Vec<TypeShare>,
+    /// Each design's holding, by kind and design.
+    variants: Vec<(u32, u64, i128)>,
+    /// The need and capped holding compared; none while the comparison is unknown.
+    compared: Option<(i128, i128)>,
     notes: Vec<u32>,
     handles: Vec<u64>,
     required: Option<i64>,
+}
+
+impl Share {
+    /// The part of a division with `pool` (none: unread) and `template`, made in this room.
+    fn fill(
+        &mut self,
+        pool: Option<&[Row]>,
+        looks: Option<&FastMap<u64, Arc<Look>>>,
+        template: &Template,
+        (fixed, unclassified): (&Fixed, u32),
+    ) {
+        let Self {
+            types,
+            variants,
+            compared,
+            notes,
+            handles,
+            required,
+        } = self;
+        types.clear();
+        variants.clear();
+        notes.clear();
+        handles.clear();
+        if template.required.is_none() {
+            notes.push(fixed.required);
+        }
+        if let Err(note) = &template.need {
+            notes.push(*note);
+        }
+        let mut classified = true;
+        match pool {
+            None => notes.push(fixed.pool),
+            Some(rows) => {
+                for &(_, handle, amount) in rows {
+                    let looked = looks.and_then(|looks| looks.get(&handle));
+                    let kind = match looked.and_then(|look| look.kind) {
+                        Some(kind) => kind,
+                        None => {
+                            notes.push(fixed.unclassified);
+                            classified = false;
+                            unclassified
+                        }
+                    };
+                    variants.push((kind, handle, i128::from(amount)));
+                }
+            }
+        }
+        notes.sort_unstable();
+        // A design held in two rows holds their sum; a design reads one kind.
+        variants.sort_unstable_by_key(|&(kind, handle, _)| (kind, handle));
+        variants.dedup_by(|later, kept| {
+            let same = (later.0, later.1) == (kept.0, kept.1);
+            if same {
+                kept.2 += later.2;
+            }
+            same
+        });
+        handles.extend(variants.iter().map(|&(_, handle, _)| handle));
+        handles.sort_unstable();
+        let need = template.need.as_deref().unwrap_or(&[]);
+        let known = template.need.is_ok() && pool.is_some() && classified;
+        let (mut needed, mut filled) = (0, 0);
+        let (mut holdings, mut needs) = (variants.iter().peekable(), need.iter().peekable());
+        loop {
+            let kind = match (holdings.peek(), needs.peek()) {
+                (None, None) => break,
+                (Some(held), None) => held.0,
+                (None, Some(wanted)) => wanted.0,
+                (Some(held), Some(wanted)) => held.0.min(wanted.0),
+            };
+            let mut in_pool = 0;
+            while let Some(&(_, _, amount)) = holdings.next_if(|held| held.0 == kind) {
+                in_pool += amount;
+            }
+            let amount = needs
+                .next_if(|wanted| wanted.0 == kind)
+                .map_or(0, |&(_, amount)| i128::from(amount));
+            let mut part = TypeShare {
+                kind,
+                held: in_pool,
+                need: 0,
+                filled: 0,
+                shortfall: 0,
+            };
+            if known {
+                part.need = amount;
+                part.filled = in_pool.clamp(0, amount.max(0));
+                part.shortfall = (amount - in_pool).max(0);
+                needed += amount;
+                filled += part.filled;
+            }
+            types.push(part);
+        }
+        *compared = known.then_some((needed, filled));
+        *required = template.required;
+    }
+
+    /// Whether a compared type falls short.
+    fn short(&self) -> bool {
+        self.types.iter().any(|part| part.shortfall > 0)
+    }
+
+    /// The kinds it falls short of.
+    fn shorts(&self) -> impl Iterator<Item = u32> + '_ {
+        self.types
+            .iter()
+            .filter(|part| part.shortfall > 0)
+            .map(|part| part.kind)
+    }
 }
 
 /// A division's own numbers: hit points, and maximum hit points and manpower where read.
@@ -708,7 +837,10 @@ struct DivisionState {
     added: Option<Added>,
 }
 
-/// A reply's sum over its divisions.
+/// A value a reply gave last; none until it gives one.
+type Given = Option<Option<Value>>;
+
+/// A reply's sum over its divisions, and the values its reply gave last of it.
 #[derive(Default)]
 struct Sums {
     divisions: u32,
@@ -718,6 +850,8 @@ struct Sums {
     templates: BTreeMap<u64, TemplateSum>,
     notes: BTreeMap<u32, u32>,
     handles: BTreeMap<u64, u32>,
+    /// Its divisions, those short and those unknown.
+    given: [Given; 3],
 }
 
 #[derive(Default)]
@@ -725,13 +859,25 @@ struct TypeSum {
     /// Divisions listing the type.
     refs: u32,
     held: i128,
-    variants: BTreeMap<u64, (u32, i128)>,
+    variants: BTreeMap<u64, VariantSum>,
     /// Known divisions comparing the type, and their sums.
     known: u32,
     needed: i128,
     filled: i128,
     missing: i128,
     short: u32,
+    /// In [`MEASURES`] order; the stock is each country's own.
+    given: [Given; 7],
+}
+
+/// A design's holding under a type.
+#[derive(Default)]
+struct VariantSum {
+    /// Divisions holding it.
+    divisions: u32,
+    amount: i128,
+    /// Its holding and naming operands.
+    given: [Given; 2],
 }
 
 #[derive(Default)]
@@ -747,6 +893,8 @@ struct TemplateSum {
     needed: i128,
     held: i128,
     short: BTreeMap<u32, u32>,
+    /// In [`PARTS`] order.
+    given: [Given; 11],
 }
 
 /// What an hour changed of a reply.
@@ -761,17 +909,17 @@ struct Dirty {
     notes: bool,
 }
 
-/// What an hour's rows changed.
+/// What an hour's rows changed; a division may be listed more than once.
 #[derive(Default)]
 struct Touched {
     /// Divisions whose placement, a number's presence, or existence changed.
-    structural: BTreeSet<u64>,
+    structural: Vec<u64>,
     /// Divisions gone, with what they added.
     gone: Vec<(u64, Added)>,
     /// Divisions whose pool rows changed.
-    pools: BTreeSet<u64>,
+    pools: Vec<u64>,
     /// Divisions whose hit points, maximum or manpower changed, presence alike.
-    numeric: BTreeSet<u64>,
+    numeric: Vec<u64>,
     countries: bool,
     /// A table the needs' sources or the templates' facts read became, or stopped being,
     /// whole.
@@ -929,6 +1077,225 @@ fn counted<K: Ord + Copy>(map: &mut BTreeMap<K, u32>, key: K, sign: i128) {
     }
 }
 
+/// One more where only `now` holds, one fewer where only `was` does: whether it changed.
+fn recount(count: &mut u32, was: bool, now: bool) -> bool {
+    match (was, now) {
+        (false, true) => *count += 1,
+        (true, false) => *count -= 1,
+        _ => return false,
+    }
+    true
+}
+
+/// Each key of two lists sorted by it, once each, with its item in either.
+fn merged<T, K: Ord>(
+    a: &[T],
+    b: &[T],
+    key: impl Fn(&T) -> K,
+    mut each: impl FnMut(K, Option<&T>, Option<&T>),
+) {
+    let (mut i, mut j) = (0, 0);
+    loop {
+        let order = match (a.get(i), b.get(j)) {
+            (None, None) => return,
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(x), Some(y)) => key(x).cmp(&key(y)),
+        };
+        match order {
+            Ordering::Less => {
+                each(key(&a[i]), Some(&a[i]), None);
+                i += 1;
+            }
+            Ordering::Greater => {
+                each(key(&b[j]), None, Some(&b[j]));
+                j += 1;
+            }
+            Ordering::Equal => {
+                each(key(&a[i]), Some(&a[i]), Some(&b[j]));
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+}
+
+/// The part of a division not counted anywhere.
+static NO_SHARE: Share = Share {
+    types: Vec::new(),
+    variants: Vec::new(),
+    compared: None,
+    notes: Vec::new(),
+    handles: Vec::new(),
+    required: None,
+};
+
+/// One reply's sums moved from what a division added to what it adds, marking what differs.
+fn shift_sums(
+    sums: &mut Sums,
+    dirty: &mut Dirty,
+    template: u64,
+    was: Option<(&Share, &Numbers)>,
+    now: Option<(&Share, &Numbers)>,
+    (manpower, maximum): (u32, u32),
+) {
+    let (old, new) = (
+        was.map_or(&NO_SHARE, |(share, _)| share),
+        now.map_or(&NO_SHARE, |(share, _)| share),
+    );
+    let unknown =
+        |side: Option<(&Share, &Numbers)>| side.is_some_and(|(share, _)| share.compared.is_none());
+    let counts = recount(&mut sums.divisions, was.is_some(), now.is_some())
+        | recount(&mut sums.short, old.short(), new.short());
+    if recount(&mut sums.unknown, unknown(was), unknown(now)) {
+        dirty.counts = true;
+        dirty.unknown = true;
+    } else if counts {
+        dirty.counts = true;
+    }
+    merged(
+        &old.variants,
+        &new.variants,
+        |&(kind, handle, _)| (kind, handle),
+        |(kind, handle), gone, come| {
+            let (gone, come) = (gone.map(|held| held.2), come.map(|held| held.2));
+            if gone == come {
+                return;
+            }
+            let total = sums.types.entry(kind).or_default();
+            let variant = total.variants.entry(handle).or_default();
+            for (amount, sign) in [(gone, -1), (come, 1)] {
+                if let Some(amount) = amount {
+                    count(&mut variant.divisions, sign);
+                    add(&mut variant.amount, amount, sign);
+                }
+            }
+            if variant.divisions == 0 {
+                total.variants.remove(&handle);
+            }
+            dirty.variants.insert((kind, handle));
+        },
+    );
+    // A type's part: its holding, and its comparison where known.
+    let part = |part: &TypeShare, known: bool| {
+        let compared = known.then_some((part.need, part.filled, part.shortfall));
+        (part.held, compared)
+    };
+    let known = (old.compared.is_some(), new.compared.is_some());
+    merged(
+        &old.types,
+        &new.types,
+        |listed| listed.kind,
+        |kind, gone, come| {
+            let gone = gone.map(|gone| part(gone, known.0));
+            let come = come.map(|come| part(come, known.1));
+            if gone == come {
+                return;
+            }
+            let total = sums.types.entry(kind).or_default();
+            for (side, sign) in [(gone, -1), (come, 1)] {
+                let Some((held, compared)) = side else {
+                    continue;
+                };
+                count(&mut total.refs, sign);
+                add(&mut total.held, held, sign);
+                if let Some((need, filled, shortfall)) = compared {
+                    count(&mut total.known, sign);
+                    add(&mut total.needed, need, sign);
+                    add(&mut total.filled, filled, sign);
+                    add(&mut total.missing, shortfall, sign);
+                    if shortfall > 0 {
+                        count(&mut total.short, sign);
+                    }
+                }
+            }
+            if total.refs == 0 {
+                sums.types.remove(&kind);
+            }
+            dirty.types.insert(kind);
+        },
+    );
+    let parts = |side: Option<(&Share, &Numbers)>| {
+        side.map(|(share, numbers)| (share.compared, share.required, *numbers))
+    };
+    if parts(was) != parts(now) || !old.shorts().eq(new.shorts()) {
+        let total = sums.templates.entry(template).or_default();
+        for (side, sign) in [(was, -1), (now, 1)] {
+            let Some((share, numbers)) = side else {
+                continue;
+            };
+            count(&mut total.divisions, sign);
+            if share.compared.is_none() {
+                count(&mut total.unknown, sign);
+            }
+            for ((missing, sum), value) in [
+                (&mut total.manpower, numbers.manpower),
+                (&mut total.required, share.required),
+                (&mut total.maximum, numbers.maximum),
+            ] {
+                match value {
+                    Some(value) => add(sum, i128::from(value), sign),
+                    None => count(missing, sign),
+                }
+            }
+            add(&mut total.hp, i128::from(numbers.hp), sign);
+            if let Some((needed, filled)) = share.compared {
+                count(&mut total.known, sign);
+                add(&mut total.needed, needed, sign);
+                add(&mut total.held, filled, sign);
+                for kind in share.shorts() {
+                    counted(&mut total.short, kind, sign);
+                }
+            }
+        }
+        if total.divisions == 0 {
+            sums.templates.remove(&template);
+        }
+        dirty.templates.insert(template);
+    }
+    let mut noted = false;
+    if old.notes != new.notes {
+        for (notes, sign) in [(&old.notes, -1), (&new.notes, 1)] {
+            for &note in notes {
+                counted(&mut sums.notes, note, sign);
+            }
+        }
+        noted = true;
+    }
+    let lacks = |side: Option<(&Share, &Numbers)>| {
+        side.map_or((false, false), |(_, numbers)| {
+            (numbers.manpower.is_none(), numbers.maximum.is_none())
+        })
+    };
+    let (gone, come) = (lacks(was), lacks(now));
+    for (note, gone, come) in [(manpower, gone.0, come.0), (maximum, gone.1, come.1)] {
+        if gone != come {
+            counted(&mut sums.notes, note, if come { 1 } else { -1 });
+            noted = true;
+        }
+    }
+    merged(
+        &old.handles,
+        &new.handles,
+        |&handle| handle,
+        |handle, gone, come| {
+            let sign = match (gone, come) {
+                (Some(_), None) => -1,
+                (None, Some(_)) => 1,
+                _ => return,
+            };
+            let before = sums.handles.contains_key(&handle);
+            counted(&mut sums.handles, handle, sign);
+            if before != sums.handles.contains_key(&handle) {
+                noted = true;
+            }
+        },
+    );
+    if noted {
+        dirty.notes = true;
+    }
+}
+
 /// One branch's replies, kept from hour to hour.
 pub(crate) struct Engine {
     cat: Option<Arc<Catalogue>>,
@@ -950,48 +1317,54 @@ pub(crate) struct Engine {
     /// Whether the last hour's replies were given.
     open: bool,
     complete: [bool; 7],
-    divisions: HashMap<u64, DivisionState>,
-    maxima: HashMap<u64, i64>,
-    manpower: HashMap<u64, i64>,
-    new: HashMap<u64, Arc<[Row]>>,
+    divisions: FastMap<u64, DivisionState>,
+    maxima: FastMap<u64, i64>,
+    manpower: FastMap<u64, i64>,
+    new: FastMap<u64, Arc<[Row]>>,
     /// The daily pools as the table holds them, and as their last read did.
-    daily: HashMap<u64, Arc<[Row]>>,
-    pooled: HashMap<u64, Arc<[Row]>>,
+    daily: FastMap<u64, Arc<[Row]>>,
+    pooled: FastMap<u64, Arc<[Row]>>,
     /// Divisions whose daily pool rows changed since the last read.
-    daily_since: HashSet<u64>,
+    daily_since: FastSet<u64>,
     /// The divisions the last pool read saw, sorted; none when Divisions was incomplete then.
     census: Option<Vec<u64>>,
     /// Stockpile rows by raw country.
-    stock_rows: HashMap<u64, Arc<[Row]>>,
+    stock_rows: FastMap<u64, Arc<[Row]>>,
     stock: Option<StockRead>,
     countries: Arc<Countries>,
-    /// The small tables as last given.
+    /// The small tables as last given, until the hour that gives them again.
     frame: Option<DecodedFrame>,
+    /// Whether the needs' and templates' four tables were whole as last given.
+    wholes: Option<[bool; 4]>,
     /// The links, local sub-units and tokens the needs resolve through, while they last.
     sources: Option<Arc<SourceIndex>>,
     /// The designs' tables at each read still looked up, and the designs looked up there.
     reads: BTreeMap<i32, DecodedFrame>,
-    looks: HashMap<Option<i32>, HashMap<u64, Arc<Look>>>,
+    looks: FastMap<Option<i32>, FastMap<u64, Arc<Look>>>,
     /// Pairs of reads that look a design up alike wherever its rows are alike.
     alike: Vec<((i32, i32), bool)>,
-    templates: HashMap<u64, Template>,
+    templates: FastMap<u64, Template>,
     /// Countries numbered, by index; each listed one's holder, by index.
     tags: Vec<Arc<str>>,
     numbers: HashMap<Arc<str>, u32>,
     listed: BTreeMap<u32, Option<Holder>>,
-    slots: HashMap<u32, Vec<u32>>,
+    slots: FastMap<u32, Vec<u32>>,
     fresh_tags: Vec<(u32, Arc<str>)>,
-    sums: HashMap<(u32, u8), Sums>,
+    sums: FastMap<(u32, u8), Sums>,
     unlinked: [u32; 2],
-    by_template: HashMap<u64, HashSet<u64>>,
-    by_handle: HashMap<u64, HashSet<u64>>,
-    stock_parts: HashMap<u32, StockPart>,
+    by_template: FastMap<u64, FastSet<u64>>,
+    by_handle: FastMap<u64, FastSet<u64>>,
+    stock_parts: FastMap<u32, StockPart>,
     /// Each country's notes and stockpile designs as last given, by attribution.
-    given: HashMap<(u32, u8), BTreeMap<u32, u32>>,
-    stock_given: HashMap<(u32, u8), Vec<u64>>,
-    dirty: HashMap<(u32, u8), Dirty>,
+    given: FastMap<(u32, u8), BTreeMap<u32, u32>>,
+    stock_given: FastMap<(u32, u8), Vec<(u64, u32)>>,
+    dirty: FastMap<(u32, u8), Dirty>,
     stock_dirty: BTreeSet<u32>,
     notes_dirty: bool,
+    /// The room the next division's part is made in.
+    scratch: Share,
+    /// A pool read with no rows.
+    empty: Arc<[Row]>,
 }
 
 /// Whether two divisions are placed alike: their countries, template and reveal byte.
@@ -1052,38 +1425,41 @@ impl Engine {
             last: None,
             open: false,
             complete: [false; 7],
-            divisions: HashMap::new(),
-            maxima: HashMap::new(),
-            manpower: HashMap::new(),
-            new: HashMap::new(),
-            daily: HashMap::new(),
-            pooled: HashMap::new(),
-            daily_since: HashSet::new(),
+            divisions: FastMap::default(),
+            maxima: FastMap::default(),
+            manpower: FastMap::default(),
+            new: FastMap::default(),
+            daily: FastMap::default(),
+            pooled: FastMap::default(),
+            daily_since: FastSet::default(),
             census: None,
-            stock_rows: HashMap::new(),
+            stock_rows: FastMap::default(),
             stock: None,
             countries: Arc::default(),
             frame: None,
+            wholes: None,
             sources: None,
             reads: BTreeMap::new(),
-            looks: HashMap::new(),
+            looks: FastMap::default(),
             alike: Vec::new(),
-            templates: HashMap::new(),
+            templates: FastMap::default(),
             tags: Vec::new(),
             numbers: HashMap::new(),
             listed: BTreeMap::new(),
-            slots: HashMap::new(),
+            slots: FastMap::default(),
             fresh_tags: Vec::new(),
-            sums: HashMap::new(),
+            sums: FastMap::default(),
             unlinked: [0; 2],
-            by_template: HashMap::new(),
-            by_handle: HashMap::new(),
-            stock_parts: HashMap::new(),
-            given: HashMap::new(),
-            stock_given: HashMap::new(),
-            dirty: HashMap::new(),
+            by_template: FastMap::default(),
+            by_handle: FastMap::default(),
+            stock_parts: FastMap::default(),
+            given: FastMap::default(),
+            stock_given: FastMap::default(),
+            dirty: FastMap::default(),
             stock_dirty: BTreeSet::new(),
             notes_dirty: false,
+            scratch: Share::default(),
+            empty: Arc::from([]),
         };
         engine.unclassified = engine.kind(None);
         let warnings: Vec<String> = division_needs::warnings(&engine.content)
@@ -1191,6 +1567,11 @@ impl Engine {
         self.supplies.own()
     }
 
+    /// Lets go of the small tables, so the walk changes their views in place, not copies.
+    pub(crate) fn release(&mut self) {
+        self.frame = None;
+    }
+
     /// One hour: its rows applied, its reads stepped, and its replies' changes; none while
     /// the reads it stands on are not its own.
     pub(crate) fn step(&mut self, input: &Input) -> io::Result<Option<Output>> {
@@ -1252,10 +1633,17 @@ impl Engine {
         let census_before = self.census.is_some();
         let read_now = self.supplies.pool.read == Some(hour);
         if read_now {
-            self.pooled = self.daily.clone();
-            touched.pools.extend(self.daily_since.drain());
+            for id in self.daily_since.drain() {
+                match self.daily.get(&id) {
+                    Some(rows) => self.pooled.insert(id, Arc::clone(rows)),
+                    None => self.pooled.remove(&id),
+                };
+                touched.pools.push(id);
+            }
+            let mut ids = self.census.take().unwrap_or_default();
             self.census = self.complete[DIVISIONS].then(|| {
-                let mut ids: Vec<u64> = self.divisions.keys().copied().collect();
+                ids.clear();
+                ids.extend(self.divisions.keys().copied());
                 ids.sort_unstable();
                 ids
             });
@@ -1311,15 +1699,16 @@ impl Engine {
             self.countries = Arc::clone(countries);
         }
         if let Some(frame) = &input.frame {
-            if let Some(held) = &self.frame {
-                let whole = |frame: &DecodedFrame, table: TableId| {
-                    matches!(&*frame.tables[table.index()], TableView::Complete(_))
-                };
-                let flipped = |table| whole(held, table) != whole(frame, table);
-                touched.sources =
-                    flipped(TableId::LexicalTokens) || flipped(TableId::CountryLocalSubunits);
-                touched.templates =
-                    flipped(TableId::DivisionTemplates) || flipped(TableId::DivisionTemplateIcons);
+            let wholes = [
+                TableId::LexicalTokens,
+                TableId::CountryLocalSubunits,
+                TableId::DivisionTemplates,
+                TableId::DivisionTemplateIcons,
+            ]
+            .map(|table| matches!(&*frame.tables[table.index()], TableView::Complete(_)));
+            if let Some(held) = self.wholes.replace(wholes) {
+                touched.sources = held[..2] != wholes[..2];
+                touched.templates = held[2..] != wholes[2..];
             }
             self.frame = Some(frame.clone());
         }
@@ -1330,7 +1719,7 @@ impl Engine {
         match &input.divisions {
             Rows::Same => {}
             Rows::Whole(rows) => {
-                let ids: HashSet<u64> = rows.iter().map(|row| row.id).collect();
+                let ids: FastSet<u64> = rows.iter().map(|row| row.id).collect();
                 let gone: Vec<u64> = self
                     .divisions
                     .keys()
@@ -1355,11 +1744,11 @@ impl Engine {
         }
         apply_values(&input.maxima, &mut self.maxima, touched);
         apply_values(&input.manpower, &mut self.manpower, touched);
-        let mut changed = HashSet::new();
+        let mut changed = Vec::new();
         apply_rows(&input.new, &mut self.new, &mut changed);
-        touched.pools.extend(changed.drain());
+        touched.pools.append(&mut changed);
         apply_rows(&input.daily, &mut self.daily, &mut changed);
-        self.daily_since.extend(changed.drain());
+        self.daily_since.extend(changed.drain(..));
         apply_rows(&input.stock, &mut self.stock_rows, &mut changed);
         Ok(())
     }
@@ -1370,15 +1759,15 @@ impl Engine {
             Some(division) => {
                 let before = std::mem::replace(&mut division.facts, facts);
                 if !placed_alike(&before, &facts) {
-                    touched.structural.insert(facts.id);
+                    touched.structural.push(facts.id);
                 } else if before.hit_points != facts.hit_points {
-                    touched.numeric.insert(facts.id);
+                    touched.numeric.push(facts.id);
                 }
             }
             None => {
                 self.divisions
                     .insert(facts.id, DivisionState { facts, added: None });
-                touched.structural.insert(facts.id);
+                touched.structural.push(facts.id);
             }
         }
     }
@@ -1395,7 +1784,7 @@ impl Engine {
     fn stock_read(&self) -> StockRead {
         let countries = &self.countries;
         let grouped = countries.complete.then(|| {
-            let mut slots: HashMap<u32, Vec<(u64, i64)>> = HashMap::new();
+            let mut slots: FastMap<u32, Vec<(u64, i64)>> = FastMap::default();
             let mut unlinked = 0;
             for (&raw, rows) in &self.stock_rows {
                 match link_slot(&countries.links, raw as u32) {
@@ -1405,6 +1794,9 @@ impl Engine {
                         .extend(rows.iter().map(|row| (row.1, row.2))),
                     None => unlinked += rows.len(),
                 }
+            }
+            for rows in slots.values_mut() {
+                rows.sort_unstable();
             }
             (slots, unlinked)
         });
@@ -1438,11 +1830,11 @@ impl Engine {
                 self.slots.entry(holder.slot).or_default().push(index);
             }
         }
-        let ids: Vec<u64> = self.divisions.keys().copied().collect();
-        for &id in &ids {
-            if let Some(division) = self.divisions.get_mut(&id) {
-                division.added = None;
-            }
+        // In id order, as an hour places them: a division numbers the operands it names first.
+        let mut ids: Vec<u64> = self.divisions.keys().copied().collect();
+        ids.sort_unstable();
+        for division in self.divisions.values_mut() {
+            division.added = None;
         }
         let frame = self.frame()?;
         let needs = self.needs(&frame);
@@ -1504,10 +1896,16 @@ impl Engine {
 
     fn template(&mut self, needs: &LazyNeeds<'_>, frame: &DecodedFrame, handle: u64) -> Template {
         let need = match needs.template(handle) {
-            Ok(need) => Ok(need
-                .into_iter()
-                .map(|(key, amount)| (self.kind(Some(Arc::from(key))), amount))
-                .collect()),
+            Ok(need) => {
+                let mut need: Vec<(u32, i64)> = need
+                    .into_iter()
+                    .map(|(key, amount)| (self.kind(Some(Arc::from(key))), amount))
+                    .collect();
+                // A kind needed twice is compared at its first amount.
+                need.sort_by_key(|&(kind, _)| kind);
+                need.dedup_by_key(|&mut (kind, _)| kind);
+                Ok(need.into())
+            }
             Err(why) => Err(self.note(why)),
         };
         let required = find(
@@ -1545,12 +1943,18 @@ impl Engine {
         let frame = self.frame()?;
         let needs = self.needs(&frame);
         // Appended tokens spell only what was unspelled: only refused needs can change. Local
-        // sub-units and tokens reach the needs alone.
+        // sub-units and tokens reach the needs alone. Asked in handle order: a template numbers
+        // the operands it names first.
+        let every_template = |templates: &FastMap<u64, Template>| {
+            let mut asked: Vec<u64> = templates.keys().copied().collect();
+            asked.sort_unstable();
+            asked
+        };
         let asked: Vec<u64> = match (&input.templates, input.tokens) {
             _ if input.subunits || touched.sources || touched.templates => {
-                self.templates.keys().copied().collect()
+                every_template(&self.templates)
             }
-            (_, Tokens::Changed) | (None, _) => self.templates.keys().copied().collect(),
+            (_, Tokens::Changed) | (None, _) => every_template(&self.templates),
             (Some(changed), tokens) => {
                 let mut asked: BTreeSet<u64> = changed
                     .iter()
@@ -1588,10 +1992,13 @@ impl Engine {
         for (id, added) in std::mem::take(&mut touched.gone) {
             self.take(id, &added);
         }
-        let mut refresh: BTreeSet<u64> = touched.structural;
-        refresh.extend(touched.pools);
+        // Placed in id order: a division numbers the operands it names first.
+        let mut refresh = std::mem::take(&mut touched.structural);
         if every {
+            refresh.clear();
             refresh.extend(self.divisions.keys().copied());
+        } else {
+            refresh.append(&mut touched.pools);
         }
         // A new designs read: each design held is looked up in it, and only those it looks up
         // otherwise reach their holders, a classification their divisions too.
@@ -1624,12 +2031,17 @@ impl Engine {
                 }
             }
         }
+        refresh.sort_unstable();
+        refresh.dedup();
         for &id in &refresh {
             self.place(id, &frame, &needs)?;
         }
         self.keep_sources(&needs);
-        for id in touched.numeric {
-            if !refresh.contains(&id) {
+        let mut numeric = std::mem::take(&mut touched.numeric);
+        numeric.sort_unstable();
+        numeric.dedup();
+        for id in numeric {
+            if refresh.binary_search(&id).is_err() {
                 self.renumber(id, &frame, &needs)?;
             }
         }
@@ -1683,13 +2095,12 @@ impl Engine {
             else {
                 continue;
             };
-            let kinds: Vec<u32> = added
+            let kinds = added
                 .share
-                .holdings
+                .variants
                 .iter()
-                .filter(|holding| holding.variants.iter().any(|&(held, _)| held == handle))
-                .map(|holding| holding.kind)
-                .collect();
+                .filter(|&&(_, held, _)| held == handle)
+                .map(|&(kind, _, _)| kind);
             for (side, slot) in added.placed.slots.into_iter().enumerate() {
                 let Some(slot) = slot else {
                     continue;
@@ -1698,35 +2109,76 @@ impl Engine {
                 dirty.notes = true;
                 dirty
                     .variants
-                    .extend(kinds.iter().map(|&kind| (kind, handle)));
+                    .extend(kinds.clone().map(|kind| (kind, handle)));
             }
         }
     }
 
-    /// Takes what division `id` added out of its replies and puts its part in again.
+    /// Division `id`'s part made again, and what differs from what it added changed.
     fn place(&mut self, id: u64, frame: &DecodedFrame, needs: &LazyNeeds<'_>) -> io::Result<()> {
         let Some(state) = self.divisions.get_mut(&id) else {
             return Ok(());
         };
         let facts = state.facts;
-        if let Some(added) = state.added.take() {
-            self.take(id, &added);
-        }
+        let was = state.added.take();
         let Some(placed) = super::super::place(&facts.row(), &self.countries.links) else {
+            if let Some(was) = was {
+                self.take(id, &was);
+            }
             return Ok(());
         };
         if !self.templates.contains_key(&placed.template) {
             let template = self.template(needs, frame, placed.template);
             self.templates.insert(placed.template, template);
         }
-        let share = self.share(id, placed);
+        let pool = self.pool(id);
+        let read = self.supplies.designs.read;
+        let looked = self.looks.get(&read);
+        if let Some(rows) = &pool
+            && rows
+                .iter()
+                .any(|row| looked.is_none_or(|looks| !looks.contains_key(&row.1)))
+        {
+            let handles: Vec<u64> = rows.iter().map(|row| row.1).collect();
+            self.look_up(read, read, None, &handles);
+        }
+        let mut share = std::mem::take(&mut self.scratch);
+        share.fill(
+            pool.as_deref(),
+            self.looks.get(&read),
+            &self.templates[&placed.template],
+            (&self.fixed, self.unclassified),
+        );
         let numbers = self.numbers_of(&facts);
-        let added = Added {
-            placed,
-            share,
-            numbers,
+        let added = match was {
+            Some(mut was) if was.placed == placed => {
+                if (&was.share, was.numbers) != (&share, numbers) {
+                    self.shift(
+                        id,
+                        placed,
+                        Some((&was.share, &was.numbers)),
+                        Some((&share, &numbers)),
+                    );
+                    std::mem::swap(&mut was.share, &mut share);
+                    was.numbers = numbers;
+                }
+                self.scratch = share;
+                was
+            }
+            was => {
+                if let Some(was) = was {
+                    self.take(id, &was);
+                    self.scratch = was.share;
+                }
+                let added = Added {
+                    placed,
+                    share,
+                    numbers,
+                };
+                self.put(id, &added);
+                added
+            }
         };
-        self.put(id, &added);
         if let Some(state) = self.divisions.get_mut(&id) {
             state.added = Some(added);
         }
@@ -1794,14 +2246,12 @@ impl Engine {
         }
     }
 
-    /// The division's pool as its replies read it: design and amount by row, or none when it
-    /// was not read.
-    fn pool(&self, id: u64) -> Option<Vec<(u64, i64)>> {
-        let designs = |rows: &[Row]| rows.iter().map(|row| (row.1, row.2)).collect();
+    /// The division's pool as its replies read it, or none when it was not read.
+    fn pool(&self, id: u64) -> Option<Arc<[Row]>> {
         if self.complete[NEW]
             && let Some(rows) = self.new.get(&id).filter(|rows| !rows.is_empty())
         {
-            return Some(designs(rows));
+            return Some(Arc::clone(rows));
         }
         let daily = self.supplies.pool.read.is_some();
         let existed = self
@@ -1810,258 +2260,85 @@ impl Engine {
             .filter(|_| daily)
             .map(|ids| ids.binary_search(&id).is_ok());
         if daily {
-            let held = self.pooled.get(&id).map_or(&[][..], |rows| &rows[..]);
-            if !held.is_empty() || existed == Some(true) {
-                return Some(designs(held));
+            match self.pooled.get(&id).filter(|rows| !rows.is_empty()) {
+                Some(rows) => return Some(Arc::clone(rows)),
+                None if existed == Some(true) => return Some(Arc::clone(&self.empty)),
+                None => {}
             }
         }
         if existed == Some(false) && daily && self.complete[NEW] {
-            return Some(Vec::new());
+            return Some(Arc::clone(&self.empty));
         }
         None
     }
 
-    /// A placed division's part: its pool against its template's need.
-    fn share(&mut self, id: u64, placed: Placed) -> Share {
-        let pool = self.pool(id);
-        let read = self.supplies.designs.read;
-        if let Some(pool) = &pool {
-            let handles: Vec<u64> = pool.iter().map(|row| row.0).collect();
-            self.look_up(read, read, None, &handles);
-        }
-        let fixed = &self.fixed;
-        let template = &self.templates[&placed.template];
-        let mut notes = Vec::new();
-        if template.required.is_none() {
-            notes.push(fixed.required);
-        }
-        if let Err(note) = &template.need {
-            notes.push(*note);
-        }
-        if pool.is_none() {
-            notes.push(fixed.pool);
-        }
-        let mut holdings: BTreeMap<u32, Holding> = BTreeMap::new();
-        let mut handles = BTreeSet::new();
-        let mut unclassified = false;
-        for &(handle, amount) in pool.iter().flatten() {
-            handles.insert(handle);
-            let kind = match self.look(read, handle).and_then(|look| look.kind) {
-                Some(kind) => kind,
-                None => {
-                    notes.push(fixed.unclassified);
-                    unclassified = true;
-                    self.unclassified
-                }
-            };
-            let holding = holdings.entry(kind).or_insert_with(|| Holding {
-                kind,
-                total: 0,
-                variants: Vec::new(),
-            });
-            holding.total += i128::from(amount);
-            match holding
-                .variants
-                .binary_search_by_key(&handle, |&(held, _)| held)
-            {
-                Ok(at) => holding.variants[at].1 += i128::from(amount),
-                Err(at) => holding.variants.insert(at, (handle, i128::from(amount))),
-            }
-        }
-        let compared = match &template.need {
-            Ok(need) if pool.is_some() && !unclassified => {
-                let mut keys: BTreeSet<u32> = need.iter().map(|&(kind, _)| kind).collect();
-                keys.extend(holdings.keys().copied());
-                let mut compared = Compared {
-                    types: Vec::with_capacity(keys.len()),
-                    needed: 0,
-                    filled: 0,
-                    short: Vec::new(),
-                };
-                for kind in keys {
-                    let amount = need
-                        .iter()
-                        .find(|&&(need, _)| need == kind)
-                        .map_or(0, |&(_, amount)| i128::from(amount));
-                    let in_pool = holdings.get(&kind).map_or(0, |holding| holding.total);
-                    let shortfall = (amount - in_pool).max(0);
-                    let filled = in_pool.clamp(0, amount.max(0));
-                    compared.needed += amount;
-                    compared.filled += filled;
-                    if shortfall > 0 {
-                        compared.short.push(kind);
-                    }
-                    compared.types.push((kind, amount, filled, shortfall));
-                }
-                Some(compared)
-            }
-            _ => None,
-        };
-        let listed: Vec<u32> = match (&compared, &template.need) {
-            (None, Ok(need)) => need.iter().map(|&(kind, _)| kind).collect(),
-            _ => Vec::new(),
-        };
-        let mut kinds: BTreeSet<u32> = holdings.keys().copied().collect();
-        kinds.extend(
-            compared
-                .iter()
-                .flat_map(|compared| compared.types.iter().map(|types| types.0)),
-        );
-        kinds.extend(listed.iter().copied());
-        notes.sort_unstable();
-        Share {
-            holdings: holdings.into_values().collect(),
-            compared,
-            listed,
-            kinds: kinds.into_iter().collect(),
-            notes,
-            handles: handles.into_iter().collect(),
-            required: template.required,
-        }
-    }
-
     /// Puts division `id`'s part into its replies.
     fn put(&mut self, id: u64, added: &Added) {
-        self.change(id, added, 1);
-        let template = added.placed.template;
-        self.by_template.entry(template).or_default().insert(id);
-        for &handle in &added.share.handles {
-            self.by_handle.entry(handle).or_default().insert(id);
-        }
+        self.shift(id, added.placed, None, Some((&added.share, &added.numbers)));
     }
 
     /// Takes what a division added out of its replies; `id` names it while it is kept.
     fn take(&mut self, id: u64, added: &Added) {
-        self.change(id, added, -1);
-        let template = added.placed.template;
-        if let Some(users) = self.by_template.get_mut(&template) {
-            users.remove(&id);
-            if users.is_empty() {
-                self.by_template.remove(&template);
-            }
-        }
-        for handle in &added.share.handles {
-            if let Some(users) = self.by_handle.get_mut(handle) {
-                users.remove(&id);
-                if users.is_empty() {
-                    self.by_handle.remove(handle);
-                }
-            }
-        }
+        self.shift(id, added.placed, Some((&added.share, &added.numbers)), None);
     }
 
-    /// Adds (`sign` 1) or takes (-1) what a division adds to each reply it is listed in.
-    fn change(&mut self, id: u64, added: &Added, sign: i128) {
-        let _ = id;
-        let Added {
-            placed,
-            share,
-            numbers,
-        } = added;
+    /// What division `id` adds at `placed` moved from `was` to `now`, none for nothing.
+    fn shift(
+        &mut self,
+        id: u64,
+        placed: Placed,
+        was: Option<(&Share, &Numbers)>,
+        now: Option<(&Share, &Numbers)>,
+    ) {
+        let template = placed.template;
+        match (was.is_some(), now.is_some()) {
+            (false, true) => {
+                self.by_template.entry(template).or_default().insert(id);
+            }
+            (true, false) => {
+                if let Some(users) = self.by_template.get_mut(&template) {
+                    users.remove(&id);
+                    if users.is_empty() {
+                        self.by_template.remove(&template);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let (old, new) = (
+            was.map_or(&NO_SHARE, |(share, _)| share),
+            now.map_or(&NO_SHARE, |(share, _)| share),
+        );
+        merged(
+            &old.handles,
+            &new.handles,
+            |&handle| handle,
+            |handle, gone, come| match (gone, come) {
+                (Some(_), None) => {
+                    if let Some(users) = self.by_handle.get_mut(&handle) {
+                        users.remove(&id);
+                        if users.is_empty() {
+                            self.by_handle.remove(&handle);
+                        }
+                    }
+                }
+                (None, Some(_)) => {
+                    self.by_handle.entry(handle).or_default().insert(id);
+                }
+                _ => {}
+            },
+        );
         let fixed = (self.fixed.manpower, self.fixed.maximum);
         for (side, slot) in placed.slots.into_iter().enumerate() {
             let Some(slot) = slot else {
-                if sign > 0 {
-                    self.unlinked[side] += 1;
-                } else {
-                    self.unlinked[side] -= 1;
+                if recount(&mut self.unlinked[side], was.is_some(), now.is_some()) {
+                    self.notes_dirty = true;
                 }
-                self.notes_dirty = true;
                 continue;
             };
             let sums = self.sums.entry((slot, side as u8)).or_default();
             let dirty = self.dirty.entry((slot, side as u8)).or_default();
-            dirty.counts = true;
-            count(&mut sums.divisions, sign);
-            match &share.compared {
-                Some(compared) if !compared.short.is_empty() => count(&mut sums.short, sign),
-                Some(_) => {}
-                None => {
-                    count(&mut sums.unknown, sign);
-                    dirty.unknown = true;
-                }
-            }
-            for &kind in &share.kinds {
-                count(&mut sums.types.entry(kind).or_default().refs, sign);
-                dirty.types.insert(kind);
-            }
-            for holding in &share.holdings {
-                let total = sums.types.entry(holding.kind).or_default();
-                add(&mut total.held, holding.total, sign);
-                for &(handle, amount) in &holding.variants {
-                    let variant = total.variants.entry(handle).or_default();
-                    count(&mut variant.0, sign);
-                    add(&mut variant.1, amount, sign);
-                    if variant.0 == 0 {
-                        total.variants.remove(&handle);
-                    }
-                    dirty.variants.insert((holding.kind, handle));
-                }
-            }
-            if let Some(compared) = &share.compared {
-                for &(kind, need, filled, shortfall) in &compared.types {
-                    let total = sums.types.entry(kind).or_default();
-                    count(&mut total.known, sign);
-                    add(&mut total.needed, need, sign);
-                    add(&mut total.filled, filled, sign);
-                    add(&mut total.missing, shortfall, sign);
-                    if shortfall > 0 {
-                        count(&mut total.short, sign);
-                    }
-                }
-            }
-            for &kind in &share.kinds {
-                if sums.types.get(&kind).is_some_and(|total| total.refs == 0) {
-                    sums.types.remove(&kind);
-                }
-            }
-            let template = sums.templates.entry(placed.template).or_default();
-            count(&mut template.divisions, sign);
-            if share.compared.is_none() {
-                count(&mut template.unknown, sign);
-            }
-            for ((missing, sum), value) in [
-                (&mut template.manpower, numbers.manpower),
-                (&mut template.required, share.required),
-                (&mut template.maximum, numbers.maximum),
-            ] {
-                match value {
-                    Some(value) => add(sum, i128::from(value), sign),
-                    None => count(missing, sign),
-                }
-            }
-            add(&mut template.hp, i128::from(numbers.hp), sign);
-            if let Some(compared) = &share.compared {
-                count(&mut template.known, sign);
-                add(&mut template.needed, compared.needed, sign);
-                add(&mut template.held, compared.filled, sign);
-                for &kind in &compared.short {
-                    counted(&mut template.short, kind, sign);
-                }
-            }
-            if template.divisions == 0 {
-                sums.templates.remove(&placed.template);
-            }
-            dirty.templates.insert(placed.template);
-            let own = [
-                (numbers.manpower.is_none(), fixed.0),
-                (numbers.maximum.is_none(), fixed.1),
-            ];
-            for note in share.notes.iter().copied().chain(
-                own.into_iter()
-                    .filter(|(lacks, _)| *lacks)
-                    .map(|(_, note)| note),
-            ) {
-                counted(&mut sums.notes, note, sign);
-                dirty.notes = true;
-            }
-            for &handle in &share.handles {
-                let before = sums.handles.contains_key(&handle);
-                counted(&mut sums.handles, handle, sign);
-                if before != sums.handles.contains_key(&handle) {
-                    dirty.notes = true;
-                }
-            }
+            shift_sums(sums, dirty, template, was, now, fixed);
             if sums.divisions == 0 {
                 self.sums.remove(&(slot, side as u8));
             }
@@ -2147,7 +2424,7 @@ impl Engine {
                     _ => false,
                 };
                 (same_tokens && self.alike(other, hour)).then(|| {
-                    let changed: HashSet<u64> = definitions.iter().copied().collect();
+                    let changed: FastSet<u64> = definitions.iter().copied().collect();
                     (other, changed)
                 })
             }
@@ -2223,14 +2500,16 @@ impl Engine {
 
     /// `holder`'s stockpile part.
     fn stock_part(&mut self, holder: Holder) -> StockPart {
-        let refused = |note: u32| StockPart {
-            totals: None,
-            notes: vec![(note, 1)],
-            designs: Vec::new(),
+        let Some(stock) = self.stock.take() else {
+            return StockPart::refused(self.fixed.stock_unread);
         };
-        let Some(stock) = &self.stock else {
-            return refused(self.fixed.stock_unread);
-        };
+        let part = self.stock_part_of(&stock, holder);
+        self.stock = Some(stock);
+        part
+    }
+
+    /// `holder`'s part of stockpile read `stock`.
+    fn stock_part_of(&mut self, stock: &StockRead, holder: Holder) -> StockPart {
         let same = match &stock.ids {
             None => Err("its country identity was not recorded"),
             Some(ids) => match ids.get(&holder.slot) {
@@ -2239,50 +2518,57 @@ impl Engine {
                 Some(_) => Err("it belongs to another country identity"),
             },
         };
-        let grouped = stock.grouped.as_ref().map(|(slots, unlinked)| {
-            (
-                slots.get(&holder.slot).cloned().unwrap_or_default(),
-                *unlinked,
-            )
-        });
         if let Err(why) = same {
             let note = format!("National equipment stockpile is left out: {why} at its read");
-            return refused(self.literal(&note));
+            return StockPart::refused(self.literal(&note));
         }
-        let Some((rows, unlinked)) = grouped else {
-            return refused(self.fixed.stock_links);
+        let Some((slots, unlinked)) = &stock.grouped else {
+            return StockPart::refused(self.fixed.stock_links);
         };
+        let rows = slots.get(&holder.slot).map_or(&[][..], Vec::as_slice);
         let read = self.supplies.stock_designs.read;
-        let handles: Vec<u64> = rows.iter().map(|row| row.0).collect();
-        self.look_up(read, read, None, &handles);
-        let mut notes: BTreeMap<u32, u32> = BTreeMap::new();
+        let looked = self.looks.get(&read);
+        if rows
+            .iter()
+            .any(|(handle, _)| looked.is_none_or(|looks| !looks.contains_key(handle)))
+        {
+            let handles: Vec<u64> = rows.iter().map(|&(handle, _)| handle).collect();
+            self.look_up(read, read, None, &handles);
+        }
+        let looks = self.looks.get(&read);
+        let mut notes = Vec::new();
         let mut complete = true;
-        if unlinked > 0 {
-            *notes.entry(self.fixed.stock_unlinked).or_default() += unlinked as u32;
+        if *unlinked > 0 {
+            notes.push((self.fixed.stock_unlinked, *unlinked as u32));
             complete = false;
         }
-        let mut totals: BTreeMap<u32, i128> = BTreeMap::new();
-        let mut looked = BTreeMap::new();
-        for (handle, amount) in rows {
-            let look = self.look(read, handle).cloned();
-            if !looked.contains_key(&handle) {
-                for &(note, times) in look.iter().flat_map(|look| &look.notes) {
-                    *notes.entry(note).or_default() += times as u32;
-                }
-                looked.insert(handle, look.as_ref().and_then(|look| look.raw));
+        let mut totals = Vec::new();
+        let mut designs = Vec::new();
+        // Each design's rows together: its lookup's notes count once.
+        for rows in rows.chunk_by(|a, b| a.0 == b.0) {
+            let handle = rows[0].0;
+            let look = looks.and_then(|looks| looks.get(&handle));
+            for &(note, times) in look.iter().flat_map(|look| &look.notes) {
+                notes.push((note, times as u32));
             }
+            designs.push((handle, look.and_then(|look| look.raw)));
             match look.and_then(|look| look.kind) {
-                Some(kind) => *totals.entry(kind).or_default() += i128::from(amount),
+                Some(kind) => {
+                    let amount = rows.iter().map(|&(_, amount)| i128::from(amount)).sum();
+                    totals.push((kind, amount));
+                }
                 None => {
-                    *notes.entry(self.fixed.stock_unclassified).or_default() += 1;
+                    notes.push((self.fixed.stock_unclassified, rows.len() as u32));
                     complete = false;
                 }
             }
         }
+        summed(&mut notes);
+        summed(&mut totals);
         StockPart {
             totals: complete.then_some(totals),
-            notes: notes.into_iter().collect(),
-            designs: looked.into_iter().collect(),
+            notes,
+            designs,
         }
     }
 
@@ -2295,14 +2581,21 @@ impl Engine {
         let notes_all = std::mem::take(&mut self.notes_dirty);
         let mut touched: BTreeMap<(u32, u8), Dirty> = BTreeMap::new();
         for ((slot, side), reply) in dirty {
-            for &tag in self.slots.get(&slot).into_iter().flatten() {
-                let into = touched.entry((tag, side)).or_default();
-                into.counts |= reply.counts;
-                into.unknown |= reply.unknown;
-                into.types.extend(reply.types.iter().copied());
-                into.variants.extend(reply.variants.iter().copied());
-                into.templates.extend(reply.templates.iter().copied());
-                into.notes |= reply.notes;
+            match self.slots.get(&slot).map_or(&[][..], Vec::as_slice) {
+                &[tag] => {
+                    touched.insert((tag, side), reply);
+                }
+                tags => {
+                    for &tag in tags {
+                        let into = touched.entry((tag, side)).or_default();
+                        into.counts |= reply.counts;
+                        into.unknown |= reply.unknown;
+                        into.types.extend(reply.types.iter().copied());
+                        into.variants.extend(reply.variants.iter().copied());
+                        into.templates.extend(reply.templates.iter().copied());
+                        into.notes |= reply.notes;
+                    }
+                }
             }
         }
         for &tag in &stock_dirty {
@@ -2325,7 +2618,7 @@ impl Engine {
             self.reply(
                 (tag, side, holder.slot),
                 &dirty,
-                stock_dirty.contains(&tag),
+                (stock_dirty.contains(&tag), false),
                 &mut changes,
             );
         }
@@ -2374,65 +2667,110 @@ impl Engine {
                 field: Field::State,
                 value: Some(Value::Number(1)),
             });
-            self.reply((tag, side, holder.slot), &dirty, true, changes);
+            self.reply((tag, side, holder.slot), &dirty, (true, true), changes);
         }
     }
 
     /// The dirty values of country `tag`'s reply for `side`, its holder at `slot`; every
-    /// type's stock and the stockpile's designs too when `stock`.
+    /// type's stock and the stockpile's designs too when `stock`, every design when `whole`.
+    /// A slot one country holds keeps what it gave, and leaves out what is given unchanged.
     fn reply(
         &mut self,
         (tag, side, slot): (u32, u8, u32),
         dirty: &Dirty,
-        stock: bool,
+        (stock, whole): (bool, bool),
         changes: &mut Changes,
     ) {
         let read = self.supplies.designs.read;
-        let empty = Sums::default();
-        let sums = self.sums.get(&(slot, side)).unwrap_or(&empty);
+        let kept = self.slots.get(&slot).is_some_and(|tags| tags.len() == 1);
+        let mut empty = Sums::default();
+        let sums = self.sums.get_mut(&(slot, side)).unwrap_or(&mut empty);
         let part = self.stock_parts.get(&tag);
-        let mut put = |field: Field, value: Option<i128>| {
+        let mut give = |field: Field, value: Option<Value>, given: Option<&mut Given>| {
+            if kept && let Some(given) = given {
+                if *given == Some(value) {
+                    return;
+                }
+                *given = Some(value);
+            }
             changes.push(Change {
                 tag,
                 side,
                 field,
-                value: value.map(Value::Number),
+                value,
             });
         };
+        let number = |value: Option<i128>| value.map(Value::Number);
         if dirty.counts {
-            put(Field::Divisions, Some(i128::from(sums.divisions)));
-            put(Field::Short, Some(i128::from(sums.short)));
-            put(Field::Unknown, Some(i128::from(sums.unknown)));
+            let counts = [sums.divisions, sums.short, sums.unknown];
+            for ((field, count), given) in [Field::Divisions, Field::Short, Field::Unknown]
+                .into_iter()
+                .zip(counts)
+                .zip(&mut sums.given)
+            {
+                give(field, number(Some(i128::from(count))), Some(given));
+            }
         }
+        let every = dirty.unknown || stock;
         let mut types: BTreeSet<u32> = dirty.types.clone();
-        if dirty.unknown || stock {
+        if every {
             types.extend(sums.types.keys().copied());
         }
-        let unclassified = self.unclassified;
+        // A design the hour changed is given in its type's place, which orders the keys it makes.
+        types.extend(dirty.variants.iter().map(|&(kind, _)| kind));
+        let (unclassified, unknown) = (self.unclassified, sums.unknown);
         for kind in types {
-            let total = sums.types.get(&kind);
-            let known =
-                |value: fn(&TypeSum) -> i128| total.filter(|total| total.known > 0).map(value);
-            let stocked = total.and_then(|_| {
-                let totals = part?.totals.as_ref()?;
-                (kind != unclassified).then(|| totals.get(&kind).copied().unwrap_or(0))
-            });
-            for (measure, value) in [
-                (Measure::Held, total.map(|total| total.held)),
-                (Measure::Needed, known(|total| total.needed)),
-                (Measure::Filled, known(|total| total.filled)),
-                (Measure::Missing, known(|total| total.missing)),
-                (Measure::Stock, stocked),
-                (Measure::Short, total.map(|total| i128::from(total.short))),
-                (Measure::Unknown, total.map(|_| i128::from(sums.unknown))),
-            ] {
-                put(Field::Type(kind, measure), value);
+            let measured = dirty.types.contains(&kind) || (every && sums.types.contains_key(&kind));
+            let Some(total) = sums.types.get_mut(&kind) else {
+                for measure in MEASURES.into_iter().filter(|_| measured) {
+                    give(Field::Type(kind, measure), None, None);
+                }
+                continue;
+            };
+            let known = total.known > 0;
+            let stocked = part
+                .and_then(|part| part.totals.as_ref())
+                .filter(|_| kind != unclassified)
+                .map(|totals| {
+                    totals
+                        .binary_search_by_key(&kind, |&(kind, _)| kind)
+                        .map_or(0, |at| totals[at].1)
+                });
+            let values = [
+                Some(total.held),
+                known.then_some(total.needed),
+                known.then_some(total.filled),
+                known.then_some(total.missing),
+                stocked,
+                Some(i128::from(total.short)),
+                Some(i128::from(unknown)),
+            ];
+            if measured {
+                let values = MEASURES.into_iter().zip(values).zip(&mut total.given);
+                for ((measure, value), given) in values {
+                    let given = (measure != Measure::Stock).then_some(given);
+                    give(Field::Type(kind, measure), number(value), given);
+                }
             }
-            if dirty.types.contains(&kind)
-                && let Some(total) = total
-            {
-                for (&handle, &(_, amount)) in &total.variants {
-                    put(Field::Variant(kind, handle), Some(amount));
+            if whole {
+                for (&handle, variant) in &mut total.variants {
+                    let value = number(Some(variant.amount));
+                    give(
+                        Field::Variant(kind, handle),
+                        value,
+                        Some(&mut variant.given[0]),
+                    );
+                }
+            } else {
+                for &(_, handle) in dirty.variants.range((kind, 0)..=(kind, u64::MAX)) {
+                    if let Some(variant) = total.variants.get_mut(&handle) {
+                        let value = number(Some(variant.amount));
+                        give(
+                            Field::Variant(kind, handle),
+                            value,
+                            Some(&mut variant.given[0]),
+                        );
+                    }
                 }
             }
         }
@@ -2442,99 +2780,63 @@ impl Engine {
             looks?.get(&handle)?.raw
         };
         for &(kind, handle) in &dirty.variants {
-            let amount = sums
+            let held = sums
                 .types
-                .get(&kind)
-                .and_then(|total| total.variants.get(&handle))
-                .map(|&(_, amount)| amount);
-            changes.push(Change {
-                tag,
-                side,
-                field: Field::Variant(kind, handle),
-                value: amount.map(Value::Number),
-            });
-            changes.push(Change {
-                tag,
-                side,
-                field: Field::Design(kind, handle),
-                value: amount.and(design(handle)).map(Value::Operand),
-            });
+                .get_mut(&kind)
+                .and_then(|total| total.variants.get_mut(&handle));
+            match held {
+                Some(variant) => {
+                    let [amount, named] = &mut variant.given;
+                    let value = number(Some(variant.amount));
+                    give(Field::Variant(kind, handle), value, Some(amount));
+                    let value = design(handle).map(Value::Operand);
+                    give(Field::Design(kind, handle), value, Some(named));
+                }
+                None => {
+                    give(Field::Variant(kind, handle), None, None);
+                    give(Field::Design(kind, handle), None, None);
+                }
+            }
         }
-        // A type given again gives its designs again.
-        for &kind in &dirty.types {
-            if let Some(total) = sums.types.get(&kind) {
-                for &handle in total.variants.keys() {
-                    changes.push(Change {
-                        tag,
-                        side,
-                        field: Field::Design(kind, handle),
-                        value: design(handle).map(Value::Operand),
-                    });
+        // A type given whole gives its designs.
+        for &kind in dirty.types.iter().filter(|_| whole) {
+            if let Some(total) = sums.types.get_mut(&kind) {
+                for (&handle, variant) in &mut total.variants {
+                    let value = design(handle).map(Value::Operand);
+                    give(
+                        Field::Design(kind, handle),
+                        value,
+                        Some(&mut variant.given[1]),
+                    );
                 }
             }
         }
         for &handle in &dirty.templates {
-            let total = sums.templates.get(&handle);
-            let present = |value: (u32, i128)| (value.0 == 0).then_some(value.1);
-            let template = self.templates.get(&handle);
-            let mut put = |part: Part, value: Option<Value>| {
-                changes.push(Change {
-                    tag,
-                    side,
-                    field: Field::Template(handle, part),
-                    value: total.and(value),
-                });
+            let Some(total) = sums.templates.get_mut(&handle) else {
+                for part in PARTS {
+                    give(Field::Template(handle, part), None, None);
+                }
+                continue;
             };
-            let number = |value: Option<i128>| value.map(Value::Number);
-            put(
-                Part::Divisions,
-                number(total.map(|total| i128::from(total.divisions))),
-            );
-            put(
-                Part::Unknown,
-                number(total.map(|total| i128::from(total.unknown))),
-            );
-            put(
-                Part::TypesShort,
-                number(total.map(|total| total.short.len() as i128)),
-            );
-            put(
-                Part::Manpower,
-                number(total.and_then(|total| present(total.manpower))),
-            );
-            put(
-                Part::Required,
-                number(total.and_then(|total| present(total.required))),
-            );
-            put(Part::Hp, number(total.map(|total| total.hp)));
-            put(
-                Part::HpMax,
-                number(total.and_then(|total| present(total.maximum))),
-            );
-            put(
-                Part::Needed,
-                number(
-                    total
-                        .filter(|total| total.known > 0)
-                        .map(|total| total.needed),
-                ),
-            );
-            put(
-                Part::Held,
-                number(
-                    total
-                        .filter(|total| total.known > 0)
-                        .map(|total| total.held),
-                ),
-            );
-            put(
-                Part::Naming,
+            let present = |value: (u32, i128)| (value.0 == 0).then_some(value.1);
+            let known = total.known > 0;
+            let template = self.templates.get(&handle);
+            let values = [
+                number(Some(i128::from(total.divisions))),
+                number(Some(i128::from(total.unknown))),
+                number(Some(total.short.len() as i128)),
+                number(present(total.manpower)),
+                number(present(total.required)),
+                number(Some(total.hp)),
+                number(present(total.maximum)),
+                number(known.then_some(total.needed)),
+                number(known.then_some(total.held)),
                 template.map(|template| Value::Operand(template.naming)),
-            );
-            put(
-                Part::Artwork,
                 template.map(|template| Value::Operand(template.artwork)),
-            );
+            ];
+            for ((part, value), given) in PARTS.into_iter().zip(values).zip(&mut total.given) {
+                give(Field::Template(handle, part), value, Some(given));
+            }
         }
         if dirty.notes {
             let mut notes: BTreeMap<u32, u32> = sums.notes.clone();
@@ -2580,49 +2882,50 @@ impl Engine {
         }
         if stock {
             let read = self.supplies.stock_designs.read;
-            let designs: BTreeMap<u64, u32> = part
+            // In design order, as the part holds them.
+            let designs: Vec<(u64, u32)> = part
                 .into_iter()
                 .flat_map(|part| &part.designs)
                 .filter_map(|&(handle, raw)| Some((handle, read.and(raw)?)))
                 .collect();
-            for (&handle, &raw) in &designs {
-                changes.push(Change {
-                    tag,
-                    side,
-                    field: Field::StockDesign(handle),
-                    value: Some(Value::Operand(raw)),
-                });
+            let given = self.stock_given.remove(&(tag, side)).unwrap_or_default();
+            for &(handle, raw) in &designs {
+                if given.binary_search(&(handle, raw)).is_err() {
+                    changes.push(Change {
+                        tag,
+                        side,
+                        field: Field::StockDesign(handle),
+                        value: Some(Value::Operand(raw)),
+                    });
+                }
             }
             // A design the stockpile no longer holds ends; the emit ends what it never held.
-            let ended: Vec<u64> = self
-                .stock_given
-                .remove(&(tag, side))
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|handle| !designs.contains_key(handle))
-                .collect();
-            for handle in ended {
-                changes.push(Change {
-                    tag,
-                    side,
-                    field: Field::StockDesign(handle),
-                    value: None,
-                });
+            for &(handle, _) in &given {
+                if designs
+                    .binary_search_by_key(&handle, |&(handle, _)| handle)
+                    .is_err()
+                {
+                    changes.push(Change {
+                        tag,
+                        side,
+                        field: Field::StockDesign(handle),
+                        value: None,
+                    });
+                }
             }
-            self.stock_given
-                .insert((tag, side), designs.into_keys().collect());
+            self.stock_given.insert((tag, side), designs);
         }
     }
 
     /// The bytes it holds on the heap, its frames' views too: handed on, it outlives the walk.
     pub(crate) fn heap(&self) -> usize {
-        fn hashed<K, V>(map: &HashMap<K, V>) -> usize {
+        fn hashed<K, V, S>(map: &HashMap<K, V, S>) -> usize {
             map.capacity() * (size_of::<(K, V)>() + 1)
         }
         fn ordered<K, V>(map: &BTreeMap<K, V>) -> usize {
             map.len() * (size_of::<(K, V)>() + 8)
         }
-        let rows = |map: &HashMap<u64, Arc<[Row]>>| {
+        let rows = |map: &FastMap<u64, Arc<[Row]>>| {
             hashed(map)
                 + map
                     .values()
@@ -2630,15 +2933,9 @@ impl Engine {
                     .sum::<usize>()
         };
         let share = |share: &Share| {
-            share
-                .holdings
-                .iter()
-                .map(|holding| size_of::<Holding>() + holding.variants.capacity() * 24)
-                .sum::<usize>()
-                + share.compared.as_ref().map_or(0, |compared| {
-                    compared.types.capacity() * 52 + compared.short.capacity() * 4
-                })
-                + (share.listed.capacity() + share.kinds.capacity() + share.notes.capacity()) * 4
+            share.types.capacity() * size_of::<TypeShare>()
+                + share.variants.capacity() * size_of::<(u32, u64, i128)>()
+                + share.notes.capacity() * 4
                 + share.handles.capacity() * 8
         };
         let mut bytes = hashed(&self.divisions)
@@ -2648,6 +2945,7 @@ impl Engine {
                 .filter_map(|division| division.added.as_ref())
                 .map(|added| size_of::<Added>() + share(&added.share))
                 .sum::<usize>()
+            + share(&self.scratch)
             + hashed(&self.maxima)
             + hashed(&self.manpower)
             + rows(&self.new)
@@ -2701,7 +2999,9 @@ impl Engine {
             .stock_parts
             .values()
             .map(|part| {
-                part.totals.as_ref().map_or(0, ordered)
+                part.totals
+                    .as_ref()
+                    .map_or(0, |totals| totals.capacity() * size_of::<(u32, i128)>())
                     + part.notes.capacity() * 8
                     + part.designs.capacity() * 16
             })
@@ -2719,7 +3019,7 @@ impl Engine {
             + self
                 .stock_given
                 .values()
-                .map(|handles| handles.capacity() * 8)
+                .map(|designs| designs.capacity() * size_of::<(u64, u32)>())
                 .sum::<usize>();
         bytes += self.tags.iter().map(|tag| 32 + tag.len()).sum::<usize>()
             + hashed(&self.numbers)
@@ -2788,7 +3088,7 @@ fn hour_of(input: &mut Decoder<'_>) -> io::Result<Option<i32>> {
     }
 }
 
-fn put_rows(out: &mut Vec<u8>, map: &HashMap<u64, Arc<[Row]>>) -> io::Result<()> {
+fn put_rows(out: &mut Vec<u8>, map: &FastMap<u64, Arc<[Row]>>) -> io::Result<()> {
     put_count(out, map.len())?;
     for (&owner, rows) in map {
         out.extend_from_slice(&owner.to_le_bytes());
@@ -2802,9 +3102,9 @@ fn put_rows(out: &mut Vec<u8>, map: &HashMap<u64, Arc<[Row]>>) -> io::Result<()>
     Ok(())
 }
 
-fn rows_of(input: &mut Decoder<'_>) -> io::Result<HashMap<u64, Arc<[Row]>>> {
+fn rows_of(input: &mut Decoder<'_>) -> io::Result<FastMap<u64, Arc<[Row]>>> {
     let owners = input.count(12)?;
-    let mut map = HashMap::with_capacity(owners);
+    let mut map = FastMap::with_capacity_and_hasher(owners, Default::default());
     for _ in 0..owners {
         let owner = input.u64()?;
         let count = input.count(20)?;
@@ -2817,7 +3117,7 @@ fn rows_of(input: &mut Decoder<'_>) -> io::Result<HashMap<u64, Arc<[Row]>>> {
     Ok(map)
 }
 
-fn put_values(out: &mut Vec<u8>, map: &HashMap<u64, i64>) -> io::Result<()> {
+fn put_values(out: &mut Vec<u8>, map: &FastMap<u64, i64>) -> io::Result<()> {
     put_count(out, map.len())?;
     for (&id, &value) in map {
         out.extend_from_slice(&id.to_le_bytes());
@@ -2826,9 +3126,9 @@ fn put_values(out: &mut Vec<u8>, map: &HashMap<u64, i64>) -> io::Result<()> {
     Ok(())
 }
 
-fn values_of(input: &mut Decoder<'_>) -> io::Result<HashMap<u64, i64>> {
+fn values_of(input: &mut Decoder<'_>) -> io::Result<FastMap<u64, i64>> {
     let count = input.count(16)?;
-    let mut map = HashMap::with_capacity(count);
+    let mut map = FastMap::with_capacity_and_hasher(count, Default::default());
     for _ in 0..count {
         map.insert(input.u64()?, input.i64()?);
     }
@@ -3049,7 +3349,8 @@ impl Engine {
                     0 => None,
                     1 => {
                         let count = input.count(8)?;
-                        let mut slots = HashMap::with_capacity(count);
+                        let mut slots =
+                            FastMap::with_capacity_and_hasher(count, Default::default());
                         for _ in 0..count {
                             let slot = input.u32()?;
                             let rows = input.count(16)?;
@@ -3114,22 +3415,22 @@ impl Engine {
 
 /// One value table's rows applied, its changes noted as numeric, or as structural where a
 /// value appears or goes.
-fn apply_values(rows: &Rows<(u64, i64)>, values: &mut HashMap<u64, i64>, touched: &mut Touched) {
+fn apply_values(rows: &Rows<(u64, i64)>, values: &mut FastMap<u64, i64>, touched: &mut Touched) {
     let mut note = |id: u64, before: Option<i64>, now: Option<i64>| match (before, now) {
         (Some(before), Some(now)) => {
             if before != now {
-                touched.numeric.insert(id);
+                touched.numeric.push(id);
             }
         }
         (None, None) => {}
         _ => {
-            touched.structural.insert(id);
+            touched.structural.push(id);
         }
     };
     match rows {
         Rows::Same => {}
         Rows::Whole(rows) => {
-            let now: HashMap<u64, i64> = rows.iter().copied().collect();
+            let now: FastMap<u64, i64> = rows.iter().copied().collect();
             for (&id, &before) in values.iter() {
                 if !now.contains_key(&id) {
                     note(id, Some(before), None);
@@ -3155,28 +3456,35 @@ fn apply_values(rows: &Rows<(u64, i64)>, values: &mut HashMap<u64, i64>, touched
 }
 
 /// A pool or stockpile table's rows applied to `held`, its rows by owner (the key past its
-/// ordinal) in ordinal order; the owners whose rows changed go to `changed`.
-fn apply_rows(rows: &Rows<Entry>, held: &mut HashMap<u64, Arc<[Row]>>, changed: &mut HashSet<u64>) {
-    let row = |entry: &Entry| (entry.key as u32, entry.variant, entry.amount);
+/// ordinal) in ordinal order; the owners whose rows changed go to `changed`, once each.
+fn apply_rows(rows: &Rows<Entry>, held: &mut FastMap<u64, Arc<[Row]>>, changed: &mut Vec<u64>) {
+    let owner = |key: u128| (key >> 32) as u64;
     match rows {
         Rows::Same => {}
         Rows::Whole(rows) => {
-            let mut now: HashMap<u64, Vec<Row>> = HashMap::new();
-            for entry in rows {
-                now.entry((entry.key >> 32) as u64)
-                    .or_default()
-                    .push(row(entry));
-            }
-            let mut next = HashMap::with_capacity(now.len());
-            for (owner, mut rows) in now {
-                rows.sort_unstable_by_key(|row| row.0);
+            let mut sorted: Vec<(u64, Row)> = rows
+                .iter()
+                .map(|entry| {
+                    (
+                        owner(entry.key),
+                        (entry.key as u32, entry.variant, entry.amount),
+                    )
+                })
+                .collect();
+            sorted.sort_unstable_by_key(|&(owner, row)| (owner, row.0));
+            let mut next = FastMap::with_capacity_and_hasher(held.len(), Default::default());
+            let mut now = Vec::new();
+            for group in sorted.chunk_by(|a, b| a.0 == b.0) {
+                let owner = group[0].0;
+                now.clear();
+                now.extend(group.iter().map(|&(_, row)| row));
                 match held.remove(&owner) {
-                    Some(was) if *was == *rows => {
+                    Some(was) if *was == *now => {
                         next.insert(owner, was);
                     }
                     _ => {
-                        changed.insert(owner);
-                        next.insert(owner, Arc::from(rows));
+                        changed.push(owner);
+                        next.insert(owner, Arc::from(&now[..]));
                     }
                 }
             }
@@ -3184,50 +3492,46 @@ fn apply_rows(rows: &Rows<Entry>, held: &mut HashMap<u64, Arc<[Row]>>, changed: 
             *held = next;
         }
         Rows::Changed(rows, gone) => {
-            let mut edited: HashMap<u64, Vec<Row>> = HashMap::new();
-            let take = |owner: u64, held: &mut HashMap<u64, Arc<[Row]>>| -> Vec<Row> {
-                held.get(&owner)
-                    .map(|rows| rows.to_vec())
-                    .unwrap_or_default()
-            };
-            for &key in gone {
-                let owner = (key >> 32) as u64;
-                let rows = match edited.get_mut(&owner) {
-                    Some(rows) => rows,
-                    None => {
-                        let rows = take(owner, held);
-                        edited.entry(owner).or_insert(rows)
+            // Each owner's edits by ordinal, in the order they apply: deletions, then rows set.
+            let mut edits: Vec<(u64, u32, Option<(u64, i64)>)> =
+                Vec::with_capacity(gone.len() + rows.len());
+            edits.extend(gone.iter().map(|&key| (owner(key), key as u32, None)));
+            edits.extend(rows.iter().map(|entry| {
+                let set = (entry.variant, entry.amount);
+                (owner(entry.key), entry.key as u32, Some(set))
+            }));
+            edits.sort_by_key(|&(owner, ordinal, _)| (owner, ordinal));
+            let mut next = Vec::new();
+            for group in edits.chunk_by(|a, b| a.0 == b.0) {
+                let owner = group[0].0;
+                next.clear();
+                let same = {
+                    let was: &[Row] = held.get(&owner).map_or(&[], |rows| rows);
+                    let mut at = 0;
+                    for keyed in group.chunk_by(|a, b| a.1 == b.1) {
+                        let ordinal = keyed[0].1;
+                        while let Some(&row) = was.get(at).filter(|row| row.0 < ordinal) {
+                            next.push(row);
+                            at += 1;
+                        }
+                        if was.get(at).is_some_and(|row| row.0 == ordinal) {
+                            at += 1;
+                        }
+                        if let Some((_, _, Some((variant, amount)))) = keyed.last() {
+                            next.push((ordinal, *variant, *amount));
+                        }
                     }
+                    next.extend_from_slice(&was[at..]);
+                    *was == *next
                 };
-                if let Ok(at) = rows.binary_search_by_key(&(key as u32), |row| row.0) {
-                    rows.remove(at);
-                }
-            }
-            for entry in rows {
-                let owner = (entry.key >> 32) as u64;
-                let row = row(entry);
-                let rows = match edited.get_mut(&owner) {
-                    Some(rows) => rows,
-                    None => {
-                        let rows = take(owner, held);
-                        edited.entry(owner).or_insert(rows)
-                    }
-                };
-                match rows.binary_search_by_key(&row.0, |held| held.0) {
-                    Ok(at) => rows[at] = row,
-                    Err(at) => rows.insert(at, row),
-                }
-            }
-            for (owner, rows) in edited {
-                let same = held.get(&owner).is_some_and(|was| **was == *rows);
                 if same {
                     continue;
                 }
-                changed.insert(owner);
-                if rows.is_empty() {
+                changed.push(owner);
+                if next.is_empty() {
                     held.remove(&owner);
                 } else {
-                    held.insert(owner, Arc::from(rows));
+                    held.insert(owner, Arc::from(&next[..]));
                 }
             }
         }

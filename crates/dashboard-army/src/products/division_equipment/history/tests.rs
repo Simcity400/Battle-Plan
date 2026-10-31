@@ -1,8 +1,8 @@
 //! Division equipment's family on synthetic hours, walked by segments as preparation walks
 //! them: an operator per segment on its own world, the emit stepping each restart's hours
-//! before its reads are its own on the engine the segment before handed on. No content is
-//! bound, so every need is refused and every design unclassified: the parts, sums and reads
-//! are what is checked.
+//! before its reads are its own on the engine the segment before handed on. Where no content
+//! is bound every need is refused and every design unclassified: the parts, sums and reads are
+//! what is checked; with [`content`], each division's need is compared too.
 
 use super::{
     emit::{self, Emit, SCHEMA},
@@ -13,6 +13,7 @@ use dashboard_series::{
     family::{Directory, Scalar},
     memory::{Memory, publish},
 };
+use dashboard_text::catalogue::{Catalogue, tests::Folder};
 use dashboard_world::World;
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
@@ -24,12 +25,15 @@ use replay_data::{
     rows::{
         CampaignRow, CountryAppearanceRow, CountryLinkRow, CountryLocalSubunitRow, CountryRow,
         DivisionEquipmentRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
-        DivisionStatusRow, DivisionTemplateIconRow, DivisionTemplateRow, LexicalTokenRow, RowCodec,
-        StockpileRow, TableId, VariantDefinitionRow,
+        DivisionStatusRow, DivisionTemplateIconRow, DivisionTemplateRow, LexicalTokenRow, Recorded,
+        RowCodec, StockpileRow, TableId, TemplateSettings, TemplateSubunit, VariantDefinitionRow,
     },
     scope::CaptureMode,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 const FORMAT: FormatVersion = FormatVersion::CURRENT;
 const BRANCH: u64 = 1;
@@ -37,6 +41,31 @@ const VARIANTS: [u64; 3] = [11, 12, 13];
 const TEMPLATES: [u64; 2] = [101, 102];
 /// The unclassified type's name in [`read`]'s names.
 const UNCLASSIFIED: &str = "null";
+/// [`content`]'s line, its one need, of `NEED` raw a line, and the designs' equipment.
+const LINE: &str = "test_line";
+const KIND: &str = "widgets";
+const NEED: i128 = 10_000_000;
+const DOCUMENT: &str = r#"
+sub_units = { test_line = { type = infantry need = { widgets = 100 } } }
+equipments = {
+    widgets = { is_archetype = yes type = infantry }
+    widgets_1 = { archetype = widgets }
+}
+"#;
+
+/// Content of one line needing one equipment, which every design is a model of.
+fn content() -> (Arc<Catalogue>, Folder) {
+    let (cat, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+        ("common/units/equipment/test.txt", DOCUMENT),
+        ("common/units/test.txt", DOCUMENT),
+    ]);
+    (Arc::new(cat), folder)
+}
+
+/// The lines template `template` holds: one in the first, two in the second.
+fn lines(template: u64) -> i32 {
+    if template == TEMPLATES[0] { 1 } else { 2 }
+}
 
 type Pools = BTreeMap<u64, Vec<(u64, i64)>>;
 
@@ -131,9 +160,13 @@ impl Model {
         );
         self.maxima.insert(id, 1_000_000);
         self.manpower.insert(id, 900 + id as i32);
+        // About a line's need: some divisions are short of it, others hold enough.
         self.pools.insert(
             id,
-            vec![(VARIANTS[n % 3], 500_000), (VARIANTS[(n + 1) % 3], 200_000)],
+            vec![
+                (VARIANTS[n % 3], 4_000_000 * (1 + id as i64 % 4)),
+                (VARIANTS[(n + 1) % 3], 2_000_000),
+            ],
         );
     }
 
@@ -148,7 +181,8 @@ impl Model {
             }
             2 => {
                 let variant = VARIANTS[draw(seed, 3) as usize];
-                self.pools.insert(picked, vec![(variant, 400_000)]);
+                let amount = 1_000_000 * (1 + picked as i64 % 25);
+                self.pools.insert(picked, vec![(variant, amount)]);
             }
             3 => {
                 let row = self.divisions.get_mut(&picked).expect("a division");
@@ -194,10 +228,20 @@ impl Model {
                 canonical_slot: id,
             })
             .collect();
-        let tokens = [LexicalTokenRow {
-            token: 1,
-            literal: b"infantry_equipment".to_vec(),
-        }];
+        let tokens = [
+            LexicalTokenRow {
+                token: 1,
+                literal: LINE.as_bytes().to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: KIND.as_bytes().to_vec(),
+            },
+            LexicalTokenRow {
+                token: 3,
+                literal: b"widgets_1".to_vec(),
+            },
+        ];
         let templates: Vec<DivisionTemplateRow> = TEMPLATES
             .iter()
             .map(|&template| DivisionTemplateRow {
@@ -211,6 +255,16 @@ impl Model {
             .iter()
             .map(|&template| DivisionTemplateIconRow {
                 template,
+                country: 1,
+                subunits: vec![TemplateSubunit {
+                    token: 1,
+                    local: 0,
+                    count: lines(template),
+                }],
+                settings: Recorded::Value(Some(Arc::new(TemplateSettings {
+                    total_manpower: 1_000,
+                    ..Default::default()
+                }))),
                 ..Default::default()
             })
             .collect();
@@ -218,7 +272,7 @@ impl Model {
             .iter()
             .map(|&id| VariantDefinitionRow {
                 id,
-                equipment_token: 1,
+                equipment_token: 3,
                 creator_link: 1,
                 origin_link: 1,
                 display_name: format!("Rifle {id}").into_bytes(),
@@ -322,6 +376,11 @@ fn put<R: RowCodec>(walk: &mut Synthetic, hour: i32, table: TableId, rows: Optio
 /// The model's hours from hour 0, a segment starting there and at each of `starts`, each
 /// walked by an operator and a world of its own; their items in walk order.
 fn project(models: &[Model], starts: &[i32]) -> Vec<Hour> {
+    project_with(models, starts, None)
+}
+
+/// [`project`] reading content `cat`.
+fn project_with(models: &[Model], starts: &[i32], cat: Option<Arc<Catalogue>>) -> Vec<Hour> {
     let mut walk = Synthetic::new(facts::TABLES, BRANCH, 0).unwrap();
     let needs = facts::needs().unwrap();
     let mut held: Option<World> = None;
@@ -336,7 +395,7 @@ fn project(models: &[Model], starts: &[i32]) -> Vec<Hour> {
                 done.end(&mut out).unwrap();
             }
             let mut operator =
-                Projector::within(FORMAT, (vec![(BRANCH, 0)], Vec::new()), None).unwrap();
+                Projector::within(FORMAT, (vec![(BRANCH, 0)], Vec::new()), cat.clone()).unwrap();
             let start = match hour {
                 0 => Start::Run { continues: false },
                 _ => Start::Restart(walk.state()),
@@ -639,6 +698,113 @@ fn assert_sums(held: &BTreeMap<String, Runs>, models: &[Model], hour: usize, cou
             "{tag} template {template} hit points at {hour}"
         );
     }
+}
+
+/// Whether a designs read stands at `hour`: one made within the day.
+fn designs_read(hour: usize) -> bool {
+    (hour.saturating_sub(23)..=hour).any(|at| reads(TableId::VariantDefinitions, at as i32))
+}
+
+/// What one country's owner reply compares at an hour with [`content`] bound, from the model:
+/// its divisions' need, capped holdings and shortfall of the one equipment, and how many fall
+/// short of it, of how many; none while no pool or designs read stands or it has no division.
+fn compared(
+    model: &Model,
+    pools: Option<&Pools>,
+    designs: bool,
+    country: u32,
+) -> Option<[i128; 5]> {
+    let pools = pools.filter(|_| designs)?;
+    let mut sums = None;
+    for row in model
+        .divisions
+        .values()
+        .filter(|row| row.reveal_skip == 0 && row.roster_owner == country)
+    {
+        let need = NEED * i128::from(lines(row.template));
+        let held: i128 = pools
+            .get(&row.id)
+            .into_iter()
+            .flatten()
+            .map(|&(_, amount)| i128::from(amount))
+            .sum();
+        let sums = sums.get_or_insert([0; 5]);
+        sums[0] += need;
+        sums[1] += held.clamp(0, need);
+        sums[2] += (need - held).max(0);
+        sums[3] += i128::from(held < need);
+        sums[4] += 1;
+    }
+    sums
+}
+
+/// With content bound, each division's need is compared with its pool: a pool changing by its
+/// amounts places its division again by its part's difference, and the replies stay their
+/// divisions' parts, which segments placing every division anew at their restarts agree with.
+#[test]
+fn a_division_placed_again_moves_its_parts_difference_alone() {
+    let budget = Budget::new(256 << 20);
+    let (cat, _folder) = content();
+    let mut seed = 13;
+    let hours = models(6, 8, 120, &mut seed);
+    let whole = read(
+        &published(
+            project_with(&hours, &[], Some(Arc::clone(&cat))),
+            &[119],
+            None,
+            &budget,
+        ),
+        &budget,
+    );
+    let stitched = read(
+        &published(
+            project_with(&hours, &[30, 60, 90], Some(cat)),
+            &[119],
+            None,
+            &budget,
+        ),
+        &budget,
+    );
+    assert_eq!(stitched, whole);
+    let (mut short, mut full) = (false, false);
+    for hour in 0..hours.len() {
+        for country in 1..=6 {
+            let tag = format!("C{country:04}");
+            let value = |code: u64, named: &str| {
+                at(&whole, &format!("{tag}|0|{code}|{named}"), hour as i32)
+            };
+            let expect = compared(
+                &hours[hour],
+                pooled(&hours, hour),
+                designs_read(hour),
+                country,
+            );
+            for (at, code) in [emit::TYPE + 1, emit::TYPE + 2, emit::TYPE + 3]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(
+                    value(code, KIND),
+                    expect.map(|sums| sums[at].to_string()),
+                    "{tag} measure {code} at {hour}"
+                );
+            }
+            let shorts = expect.map_or(0, |sums| sums[3]);
+            assert_eq!(
+                value(emit::SHORT, ""),
+                Some(shorts.to_string()),
+                "{tag} short at {hour}"
+            );
+            if let Some(sums) = expect {
+                short |= sums[3] > 0;
+                full |= sums[3] < sums[4];
+            }
+        }
+    }
+    assert!(
+        short && full,
+        "some divisions fall short and some hold enough"
+    );
 }
 
 /// Segments restarting at 30, 60 and 90 hours are stitched by the emit into the publication

@@ -486,6 +486,10 @@ impl Operator<World> for Projector {
         } else {
             None
         };
+        // A view the engine still held would be copied, not changed in place.
+        if context_changed && let Some(engine) = self.engine.as_mut() {
+            engine.release();
+        }
         let input = Input {
             hour: at,
             gap: self
