@@ -199,7 +199,7 @@ fn the_walk_decodes_the_tables_its_plan_selects() {
 
 /// Every family ordinary preparation prepares on its own, and the job
 /// beside them.
-const PUBLISHERS: [&str; 54] = [
+const PUBLISHERS: [&str; 53] = [
     "aces",
     "air",
     "air-missions",
@@ -209,7 +209,6 @@ const PUBLISHERS: [&str; 54] = [
     "casualties",
     "construction",
     "convoys",
-    "diplomacy_state",
     "divisions",
     "doctrine-mastery",
     "equipment_losses",

@@ -5,10 +5,10 @@ use dashboard_base::products::{Product, ReplyWarnings, validate_tag};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub mod block;
-pub use prepared::columnar;
+pub mod emit;
 mod evidence;
-pub mod prepared;
+pub mod facts;
+mod opinions;
 pub mod query;
 pub mod served;
 

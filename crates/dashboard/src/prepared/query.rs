@@ -1419,10 +1419,9 @@ fn query_data(
             }
         }
         "diplomacy-state" => {
-            let params: crate::products::diplomacy_state::DiplomacyParams =
-                serde_json::from_value(request.params.clone())?;
-            crate::products::diplomacy_state::DiplomacyState::validate(&params)
-                .map_err(crate::invalid)?;
+            use crate::products::diplomacy_state::{self as diplomacy, DiplomacyParams};
+            let params: DiplomacyParams = serde_json::from_value(request.params.clone())?;
+            diplomacy::DiplomacyState::validate(&params).map_err(crate::invalid)?;
             let branch = branch(source, params.branch_id())?;
             let mut prefix = super::prefix::read_or_empty(
                 source,
@@ -1432,10 +1431,8 @@ fn query_data(
                 params.hour(),
                 cancelled,
             )?;
-            if matches!(
-                &params,
-                crate::products::diplomacy_state::DiplomacyParams::Pair { .. }
-            ) {
+            let pair = matches!(&params, DiplomacyParams::Pair { .. });
+            if pair {
                 let identities = super::prefix::read_or_empty(
                     source,
                     content,
@@ -1449,9 +1446,49 @@ fn query_data(
                 prefix.coverage.complete &= identities.coverage.complete;
                 prefix = super::prefix::Prefix::new(source, branch, prefix.coverage, None);
             }
-            crate::products::diplomacy_state::query::query(
-                source, &params, content, &store, &key, prefix, cancelled,
-            )?
+            // Opinions past the prefix wait for their hour to be prepared.
+            if params.hour().is_some_and(|hour| hour > prefix.coverage.last_hour) {
+                return Ok(Value::Null);
+            }
+            let reply = match published::open(
+                source,
+                content,
+                "diplomacy_state",
+                diplomacy::emit::SCHEMA,
+                branch,
+            )? {
+                Some(opened) => {
+                    let history = pair
+                        .then(|| {
+                            dashboard_base::prepared::query::progressive::histories(
+                                &store,
+                                &key,
+                                branch,
+                                Some(&prefix.coverage),
+                                &std::collections::BTreeMap::new(),
+                                &std::collections::BTreeMap::new(),
+                                source.replay_ref(),
+                                &[],
+                                cancelled,
+                            )
+                        })
+                        .transpose()?;
+                    opened.read(cancelled, |snapshot, directory| {
+                        diplomacy::query::reply(
+                            source,
+                            &params,
+                            content,
+                            snapshot,
+                            directory,
+                            history.as_ref(),
+                            prefix,
+                            cancelled,
+                        )
+                    })?
+                }
+                None => diplomacy::query::unpublished(&params, prefix)?,
+            };
+            serde_json::to_value(reply)?
         }
         "party-history" => {
             let id = request

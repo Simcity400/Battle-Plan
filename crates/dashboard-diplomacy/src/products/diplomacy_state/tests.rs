@@ -1,22 +1,39 @@
+//! Diplomacy's replies of synthetic walks, each hour written as the native recorder writes it,
+//! projected, emitted and published as the segment driver does; and the same replies however
+//! the walk is cut into segments, published and resumed.
 use super::*;
 use dashboard_base::{
     prepared::{
         coverage::{self, Coverage},
-        frame_changes::FrameChanges,
         prefix::Prefix,
-        series::{Reader, tests::Fixture},
     },
-    products::country_history::HistoryScan,
+    products::country_history::{HistoryScan, RecordedHistories},
     test_fixtures,
 };
-use replay_data::{format::FormatVersion, rows::*};
+use dashboard_series::{
+    Blob, Budget, Cache, Identity, Publication, Snapshot, Span, Writer,
+    family::Directory,
+    memory::{Memory, publish},
+};
+use replay::{
+    columnar_frames::synthetic::{Input, Sample, Synthetic},
+    segments::{self, Operator, Start},
+};
+use replay_data::{
+    format::FormatVersion,
+    rows::{tables, *},
+    scope::CaptureMode,
+};
 use replay_frame::frame::{DecodedFrame, TableView};
-use std::{collections::BTreeMap, sync::atomic::AtomicBool};
+use std::sync::{Arc, atomic::AtomicBool};
+
 const A: u32 = 1000;
 const B: u32 = 1001;
+
 fn flag() -> AtomicBool {
     AtomicBool::new(false)
 }
+
 fn frame(hour: i32, read: i32) -> DecodedFrame {
     let mut frame = test_fixtures::source(1, hour, None);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(vec![
@@ -70,6 +87,7 @@ fn frame(hour: i32, read: i32) -> DecodedFrame {
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
     frame
 }
+
 fn opinions(frame: &mut DecodedFrame, rows: &[(u32, u32, i32)]) {
     let mut rows: Vec<_> = rows
         .iter()
@@ -85,69 +103,277 @@ fn opinions(frame: &mut DecodedFrame, rows: &[(u32, u32, i32)]) {
     *frame.tables[TableId::RelationOpinions.index()] =
         TableView::Complete(TableRows::RelationOpinions(rows));
 }
-fn observe(scan: &mut prepared::Prepared, frame: &DecodedFrame) {
-    scan.observe(
-        frame,
-        FormatVersion::CURRENT,
-        &FrameChanges::alone(frame, FormatVersion::CURRENT),
-        &flag(),
-    )
-    .unwrap();
-}
-fn source(frames: &[DecodedFrame]) -> dashboard_base::Source {
-    test_fixtures::file_source(test_fixtures::replay(frames.to_vec())).0
-}
-fn prefix(source: &dashboard_base::Source, last: i32, complete: bool) -> Prefix {
-    Prefix::new(
-        source,
-        1,
-        Coverage {
-            schema: coverage::SCHEMA,
-            first_hour: source.block_windows(1)[0].first_hour,
-            last_hour: last,
-            complete,
+
+fn write<T: TableSchema>(walk: &mut Synthetic, input: &DecodedFrame) {
+    let read = input.metrics.table_ns[T::ID.index()] != 0;
+    let sample = Sample::FromReadBit;
+    let input = match &*input.tables[T::ID.index()] {
+        TableView::Complete(rows) => Input::Snapshot {
+            rows: rows.rows::<T>().unwrap(),
+            partial: None,
+            read,
+            sample,
         },
-        None,
-    )
+        TableView::Truncated { rows, missing } => Input::Snapshot {
+            rows: rows.rows::<T>().unwrap(),
+            partial: Some(*missing),
+            read,
+            sample,
+        },
+        TableView::Unavailable { reason } => Input::Unavailable {
+            reason,
+            read,
+            sample,
+        },
+        TableView::NotRecorded { .. } => Input::NotRecorded { read, sample },
+    };
+    walk.table(T::ID, input).unwrap();
 }
-fn publish(fixture: &Fixture, scan: &mut prepared::Prepared, frames: &[DecodedFrame]) {
-    let mut writer = fixture.writer();
-    scan.flush(&mut writer, 1, &flag()).unwrap();
-    scan.save(&mut writer, 1).unwrap();
-    let mut history = HistoryScan::new(false, &[]);
-    for frame in frames {
-        history.observe(frame);
+
+fn write_hour(walk: &mut Synthetic, input: &DecodedFrame) {
+    write::<tables::Campaign>(walk, input);
+    write::<tables::Countries>(walk, input);
+    write::<tables::CountryLinks>(walk, input);
+    write::<tables::SliceReads>(walk, input);
+    write::<tables::RelationOpinions>(walk, input);
+    write::<tables::RelationTuples>(walk, input);
+    write::<tables::IncomingDiplomaticActions>(walk, input);
+    write::<tables::LexicalTokens>(walk, input);
+}
+
+/// `frames` as runs of consecutive hours: an hour missing between two is a gap.
+fn runs(frames: &[DecodedFrame]) -> Vec<&[DecodedFrame]> {
+    let mut runs = Vec::new();
+    let mut first = 0;
+    for at in 1..=frames.len() {
+        if at == frames.len() || frames[at].hour != frames[at - 1].hour + 1 {
+            runs.push(&frames[first..at]);
+            first = at;
+        }
     }
-    writer
-        .write_at(
-            "country-identities-1",
-            0,
-            serde_json::to_vec(&history).unwrap().as_slice(),
+    runs
+}
+
+/// The projected hours of `frames`, each run walked from empty tables, a projector of its own
+/// starting a segment at each frame index `restarts` holds.
+fn project(frames: &[DecodedFrame], restarts: &[usize]) -> Vec<facts::Hour> {
+    let format = FormatVersion::CURRENT;
+    let mut hours = Vec::new();
+    let mut index = 0;
+    for (run, inputs) in runs(frames).into_iter().enumerate() {
+        let mut walk = Synthetic::new(facts::TABLES, 1, inputs[0].hour).unwrap();
+        let mut held = None;
+        let mut projector = facts::Projector::new(format).unwrap();
+        projector
+            .start(Start::Run { continues: run > 0 }, 1, inputs[0].hour)
+            .unwrap();
+        let mut first = 0;
+        for (ordinal, input) in inputs.iter().enumerate() {
+            if ordinal > 0 && restarts.contains(&(index + ordinal)) {
+                projector.end(&mut hours).unwrap();
+                projector = facts::Projector::new(format).unwrap();
+                projector
+                    .start(Start::Restart(walk.state()), 1, input.hour)
+                    .unwrap();
+                first = ordinal;
+            }
+            write_hour(&mut walk, input);
+            walk.end(|state, manifest, frame, walk_starts| {
+                assert_eq!(frame.hour, input.hour);
+                let world = dashboard_world::World::at(
+                    &mut held,
+                    walk_starts,
+                    &facts::needs().unwrap(),
+                    (format, CaptureMode::Full),
+                    state,
+                    manifest,
+                )
+                .unwrap();
+                projector
+                    .hour(
+                        &segments::Hour {
+                            branch: 1,
+                            hour: frame.hour,
+                            run: run as u32,
+                            ordinal: ordinal as u32,
+                            starts: ordinal == first,
+                            opens: ordinal == first,
+                            state,
+                            manifest,
+                            world,
+                        },
+                        &mut hours,
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+        }
+        projector.end(&mut hours).unwrap();
+        index += inputs.len();
+    }
+    hours
+}
+
+fn identity() -> Identity {
+    Identity {
+        source: [1; 32],
+        content: [2; 32],
+        branch: [3; 32],
+        schema: emit::SCHEMA,
+    }
+}
+
+/// A publication of `hours`, cut after each of `cuts`' hours; at each of `resume`'s, the emit
+/// is saved and goes on from the publication, as a preparation of a grown recording does: the
+/// hour after one starts a segment, as a grown recording's next segment does.
+fn build(hours: Vec<facts::Hour>, cuts: &[i32], resume: &[i32]) -> (Memory, u64) {
+    let budget = Budget::new(1 << 30);
+    let cache = Cache::new(&budget);
+    let mut pages = Memory::default();
+    let first = hours[0].hour;
+    let mut writer = Writer::new(&budget, identity(), first).unwrap();
+    let mut emit = emit::Emit::new();
+    let mut root = 0;
+    let mut hours = hours.into_iter().peekable();
+    for (generation, &cut) in (1..).zip(cuts) {
+        while let Some(hour) = hours.next_if(|hour| hour.hour <= cut) {
+            emit.hour(&mut writer, hour).unwrap();
+        }
+        emit.cut(&mut writer, cut).unwrap();
+        let publication = Publication {
+            generation,
+            segment: generation - 1,
+            accepted: Span::new(first, cut).unwrap(),
+            reached: cut,
+            refusal: None,
+        };
+        root = publish(&mut writer, &mut pages, &cache, publication, Blob::EMPTY).unwrap();
+        if resume.contains(&cut) {
+            let mut saved = Vec::new();
+            emit.save(&mut saved).unwrap();
+            writer = Writer::resume(&mut pages, &cache, &budget, root, identity()).unwrap();
+            let mut snapshot = Snapshot::open(pages.clone(), &cache, root, identity()).unwrap();
+            let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+            emit = emit::Emit::load(&directory, &saved).unwrap();
+        }
+    }
+    assert!(hours.next().is_none(), "every hour is cut");
+    (pages, root)
+}
+
+/// A prepared walk of `frames`: its source, publication and identity histories.
+struct Prepared {
+    source: dashboard_base::Source,
+    pages: Memory,
+    root: u64,
+    history: RecordedHistories,
+}
+
+impl Prepared {
+    /// `frames` projected as one segment per run and published once.
+    fn new(frames: &[DecodedFrame]) -> Self {
+        let last = frames.last().unwrap().hour;
+        Self::cut(frames, &[], &[last], &[])
+    }
+
+    fn cut(frames: &[DecodedFrame], restarts: &[usize], cuts: &[i32], resume: &[i32]) -> Self {
+        let (pages, root) = build(project(frames, restarts), cuts, resume);
+        let mut history = HistoryScan::new(false, &[]);
+        for frame in frames {
+            history.observe(frame);
+        }
+        Self {
+            source: test_fixtures::file_source(test_fixtures::replay(frames.to_vec())).0,
+            pages,
+            root,
+            history: history.finish(),
+        }
+    }
+
+    fn prefix(&self, last: i32) -> Prefix {
+        Prefix::new(
+            &self.source,
+            1,
+            Coverage {
+                schema: coverage::SCHEMA,
+                first_hour: self.source.block_windows(1)[0].first_hour,
+                last_hour: last,
+                complete: true,
+            },
+            None,
         )
-        .unwrap();
-    writer.commit().unwrap();
+    }
+
+    /// The reply through `last`, read from the publication of the last cut by then, as a query
+    /// pins the gate's prefix.
+    fn reply(&self, value: serde_json::Value, last: i32) -> std::io::Result<serde_json::Value> {
+        let budget = Budget::new(1 << 30);
+        let cache = Cache::new(&budget);
+        let mut snapshot = Snapshot::open(self.pages.clone(), &cache, self.root, identity())
+            .unwrap()
+            .through(last)
+            .unwrap()
+            .unwrap();
+        let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+        let params: DiplomacyParams = serde_json::from_value(value).unwrap();
+        let reply = query::reply(
+            &self.source,
+            &params,
+            None,
+            &mut snapshot,
+            &directory,
+            Some(&self.history),
+            self.prefix(last),
+            &flag(),
+        )?;
+        Ok(serde_json::to_value(reply).unwrap())
+    }
+
+    fn ask(&self, value: serde_json::Value, last: i32) -> serde_json::Value {
+        self.reply(value, last).unwrap()
+    }
+
+    /// The run of `actor`'s `measure`, split by `dimension`, at `hour`.
+    fn value(
+        &self,
+        actor: &DiplomacyCountry,
+        measure: u64,
+        dimension: Option<&DiplomacyCountry>,
+        hour: i32,
+    ) -> Option<dashboard_series::Run> {
+        let budget = Budget::new(1 << 30);
+        let cache = Cache::new(&budget);
+        let mut snapshot =
+            Snapshot::open(self.pages.clone(), &cache, self.root, identity()).unwrap();
+        let directory = Directory::read(&mut snapshot, emit::SCHEMA).unwrap();
+        let actor_of = |country| directory.actor(&emit::country_name(country)).unwrap();
+        let key = directory.key(actor_of(actor), measure, dimension.map(actor_of))?;
+        dashboard_base::prepared::engine::run_at(&mut snapshot, key, hour)
+            .unwrap()
+            .map(|(run, _)| run)
+    }
 }
-fn ask(
-    source: &dashboard_base::Source,
-    fixture: &Fixture,
-    value: serde_json::Value,
-    last: i32,
-) -> serde_json::Value {
-    let params = serde_json::from_value(value).unwrap();
-    query::query(
-        source,
-        &params,
-        None,
-        &fixture.store,
-        &fixture.key,
-        prefix(source, last, true),
-        &flag(),
-    )
-    .unwrap()
-}
+
 fn opinion_params(hour: i32) -> serde_json::Value {
     serde_json::json!({"view":"opinions","branchId":"1","hour":hour,"tags":["first","second"]})
 }
+
+fn first() -> DiplomacyCountry {
+    DiplomacyCountry {
+        tag: "first".into(),
+        slot: 1,
+        country_id: A,
+    }
+}
+
+fn second() -> DiplomacyCountry {
+    DiplomacyCountry {
+        tag: "second".into(),
+        slot: 2,
+        country_id: B,
+    }
+}
+
 #[test]
 fn sparse_zero_self_asymmetric_extremes_and_clear_are_exact() {
     let mut first = frame(0, 0);
@@ -158,27 +384,18 @@ fn sparse_zero_self_asymmetric_extremes_and_clear_are_exact() {
     let mut held = first.clone();
     held.hour = 1;
     let cleared = frame(2, 2);
-    let frames = vec![first, held, cleared];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(&source, &fixture, opinion_params(1), 2);
+    let prepared = Prepared::new(&[first, held, cleared]);
+    let reply = prepared.ask(opinion_params(1), 2);
     assert_eq!(reply["owners"][0]["known"], true);
     assert_eq!(reply["owners"][0]["readHour"], 0);
     assert_eq!(
         reply["owners"][0]["opinions"],
         serde_json::json!([{"target":"first","value":i32::MIN},{"target":"second","value":i32::MAX}])
     );
-    let cleared = ask(&source, &fixture, opinion_params(2), 2);
+    let cleared = prepared.ask(opinion_params(2), 2);
     assert_eq!(cleared["owners"][0]["known"], true);
     assert_eq!(cleared["owners"][0]["opinions"], serde_json::json!([]));
-    let pair = ask(
-        &source,
-        &fixture,
+    let pair = prepared.ask(
         serde_json::json!({"view":"pair","branchId":"1","first":"first","second":"second","hour":0}),
         2,
     );
@@ -186,6 +403,7 @@ fn sparse_zero_self_asymmetric_extremes_and_clear_are_exact() {
     assert_eq!(pair["reverse"][0]["value"], -17);
     assert_eq!(pair["forward"][1]["value"], 0);
 }
+
 #[test]
 fn aliases_unresolved_targets_and_unavailable_reads_refuse_not_zero() {
     let mut duplicate = frame(0, 0);
@@ -196,26 +414,15 @@ fn aliases_unresolved_targets_and_unavailable_reads_refuse_not_zero() {
     };
     let mut unknown = frame(2, 2);
     opinions(&mut unknown, &[(A, 99999, 7)]);
-    let frames = vec![duplicate, missing, unknown];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
+    let prepared = Prepared::new(&[duplicate, missing, unknown]);
     for hour in [0, 1, 2] {
-        let reply = ask(&source, &fixture, opinion_params(hour), 2);
+        let reply = prepared.ask(opinion_params(hour), 2);
         assert_eq!(reply["owners"][0]["known"], false);
         assert_eq!(reply["owners"][0]["opinions"], serde_json::json!([]));
     }
-    assert!(
-        ask(&source, &fixture, opinion_params(0), 2)["unresolved"]
-            .as_u64()
-            .unwrap()
-            > 0
-    );
+    assert!(prepared.ask(opinion_params(0), 2)["unresolved"].as_u64().unwrap() > 0);
 }
+
 #[test]
 fn an_unproven_selected_country_leaves_every_other_pair_known() {
     let mut first = frame(0, 0);
@@ -244,18 +451,9 @@ fn an_unproven_selected_country_leaves_every_other_pair_known() {
             },
         );
     }
-    let frames = vec![first, joined];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
+    let prepared = Prepared::new(&[first, joined]);
     let matrix = |hour: i32, third: &str| {
-        ask(
-            &source,
-            &fixture,
+        prepared.ask(
             serde_json::json!({"view":"opinions","branchId":"1","hour":hour,"tags":["first","second",third]}),
             1,
         )
@@ -291,72 +489,49 @@ fn an_unproven_selected_country_leaves_every_other_pair_known() {
         serde_json::json!([{"target":"second","value":5}])
     );
 }
+
 #[test]
-fn owner_read_helper_preserves_rowless_scheduled_dirty_and_full_evidence() {
+fn rowless_owners_are_read_on_their_own_scheduled_slice_alone() {
     let slot = replay_data::cadence::slice_of(A) as i32;
-    let mut frame = frame(slot, slot);
-    *frame.tables[TableId::SliceReads.index()] =
-        TableView::Complete(TableRows::SliceReads(Vec::new()));
-    assert_eq!(
-        evidence::owner_read(&frame, FormatVersion::CURRENT, TableId::RelationOpinions, A),
-        Some(slot)
-    );
-    frame.hour = slot + 1;
-    assert_eq!(
-        evidence::owner_read(&frame, FormatVersion::CURRENT, TableId::RelationOpinions, A),
-        None
-    );
-    let daily = TableId::ALL
+    let frames: Vec<_> = [slot, slot + 1]
         .into_iter()
-        .find(|&table| {
-            table != TableId::CountryIntel
-                && matches!(
-                    replay_data::cadence::cadence(table),
-                    replay_data::cadence::Cadence::Daily(_)
-                )
-                && !replay_data::cadence::is_refresh(table, frame.hour)
+        .map(|hour| {
+            let mut frame = frame(hour, hour);
+            *frame.tables[TableId::SliceReads.index()] =
+                TableView::Complete(TableRows::SliceReads(Vec::new()));
+            frame
         })
-        .unwrap();
-    frame.metrics.table_ns[daily.index()] = 1;
-    assert!(evidence::full_refresh(&frame, FormatVersion::CURRENT));
-    assert_eq!(
-        evidence::owner_read(&frame, FormatVersion::CURRENT, TableId::RelationOpinions, A),
-        Some(frame.hour)
-    );
-    *frame.tables[TableId::RelationOpinions.index()] = TableView::Unavailable {
+        .collect();
+    let hours = project(&frames, &[]);
+    let read = |hour: &facts::Hour| {
+        hour.opinions
+            .as_ref()
+            .unwrap()
+            .current
+            .iter()
+            .map(|&(country, read, _)| (country, read))
+            .collect::<Vec<_>>()
+    };
+    // The first is country 0, its tag ordering first.
+    assert!(read(&hours[0]).contains(&(0, Some(slot))));
+    assert!(read(&hours[1]).iter().all(|&(country, _)| country != 0));
+    let mut unread = frames[0].clone();
+    *unread.tables[TableId::RelationOpinions.index()] = TableView::Unavailable {
         reason: "not read".into(),
     };
-    assert_eq!(
-        evidence::owner_read(&frame, FormatVersion::CURRENT, TableId::RelationOpinions, A),
-        None
-    );
+    assert!(project(&[unread], &[])[0].opinions.is_none());
 }
-#[test]
-fn owner_runs_give_each_owner_and_its_row_count_in_order() {
-    let rows = [3u32, 3, 4, 9, 9, 9];
-    let runs: Vec<_> = evidence::owner_runs(&rows, |row| *row).collect();
-    assert_eq!(runs, [(3, 2), (4, 1), (9, 3)]);
-    assert_eq!(evidence::owner_runs(&[] as &[u32], |row| *row).count(), 0);
-}
+
 #[test]
 fn expired_reads_and_gaps_do_not_interpolate() {
     let mut first = frame(0, 0);
     opinions(&mut first, &[(A, B, 29)]);
     let mut expired = first.clone();
     expired.hour = 24;
-    let frames = vec![first, expired];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(&source, &fixture, opinion_params(24), 24);
+    let prepared = Prepared::new(&[first, expired]);
+    let reply = prepared.ask(opinion_params(24), 24);
     assert_eq!(reply["owners"][0]["known"], false);
-    let pair = ask(
-        &source,
-        &fixture,
+    let pair = prepared.ask(
         serde_json::json!({"view":"pair","branchId":"1","first":"first","second":"second","hour":0}),
         24,
     );
@@ -368,6 +543,7 @@ fn expired_reads_and_gaps_do_not_interpolate() {
             .any(|run| run["value"].is_null())
     );
 }
+
 fn tuple(kind: u32, ordinal: u16, first: u32, second: u32) -> RelationTupleRow {
     RelationTupleRow {
         owner_country: A,
@@ -382,6 +558,7 @@ fn tuple(kind: u32, ordinal: u16, first: u32, second: u32) -> RelationTupleRow {
         retired: 0,
     }
 }
+
 #[test]
 fn all_seventeen_kinds_ordered_occurrences_offer_directions_and_raw_flags_survive() {
     let mut first = frame(0, 0);
@@ -429,15 +606,8 @@ fn all_seventeen_kinds_ordered_occurrences_offer_directions_and_raw_flags_surviv
         TableView::Complete(TableRows::RelationTuples(tuples));
     *first.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(tokens));
-    let frames = vec![first];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &frames[0]);
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&[first]);
+    let reply = prepared.ask(
         serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
         0,
     );
@@ -458,6 +628,7 @@ fn all_seventeen_kinds_ordered_occurrences_offer_directions_and_raw_flags_surviv
     assert_eq!(by_ordinal(48)["cancelled"], serde_json::Value::Null);
     assert_eq!(reply["pacts"][0]["startHour"], -40);
     assert_eq!(reply["pacts"][0]["firstSeen"], 0);
+    assert_eq!(reply["pacts"][0]["id"], "pact:0:0");
     assert!(
         reply["kinds"]
             .as_array()
@@ -466,6 +637,7 @@ fn all_seventeen_kinds_ordered_occurrences_offer_directions_and_raw_flags_surviv
             .all(|kind| kind["name"].is_null() && kind["reason"].is_string())
     );
 }
+
 fn queue(frame: &mut DecodedFrame, stored: i32, ordinal: u32) {
     *frame.tables[TableId::IncomingDiplomaticActions.index()] =
         TableView::Complete(TableRows::IncomingDiplomaticActions(vec![
@@ -484,6 +656,7 @@ fn queue(frame: &mut DecodedFrame, stored: i32, ordinal: u32) {
             },
         ]));
 }
+
 #[test]
 fn daily_queue_null_slots_reordering_disappearance_handle_reuse_and_gap_bounds() {
     let mut a = frame(22, 22);
@@ -519,16 +692,8 @@ fn daily_queue_null_slots_reordering_disappearance_handle_reuse_and_gap_bounds()
         frame.hour = hour;
         frames.push(frame);
     }
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&frames);
+    let reply = prepared.ask(
         serde_json::json!({"view":"proposals","branchId":"1","tags":["second"]}),
         166,
     );
@@ -539,6 +704,7 @@ fn daily_queue_null_slots_reordering_disappearance_handle_reuse_and_gap_bounds()
     assert_eq!(proposals[0]["goneByBound"], false);
     assert_eq!(proposals[0]["firstSeen"], 22);
     assert_eq!(proposals[0]["lastSeen"], 46);
+    assert_eq!(proposals[0]["id"], "proposal:22:0");
     assert_eq!(proposals[1]["goneByBound"], true);
     assert_eq!(proposals[2]["goneBy"], 166);
     assert!(proposals.iter().all(|p| p.get("kind").is_none()
@@ -546,101 +712,124 @@ fn daily_queue_null_slots_reordering_disappearance_handle_reuse_and_gap_bounds()
         && p.get("status").is_none()
         && p.get("actionType").is_none()));
 }
+
 #[test]
-fn prepared_snapshot_parity_cold_pending_and_resume_append() {
-    let mut frames = Vec::new();
-    for hour in 0..=8 {
-        let mut f = frame(hour, hour);
-        opinions(&mut f, &[(A, B, if hour < 4 { 7 } else { -9 })]);
-        frames.push(f);
-    }
-    let source = source(&frames);
-    let fixture = Fixture::new();
+fn an_unpublished_branch_answers_every_accepted_hour_unobserved() {
+    let frames = vec![frame(0, 0)];
+    let source = test_fixtures::file_source(test_fixtures::replay(frames)).0;
     let cold = Prefix::new(
         &source,
         1,
         dashboard_base::prepared::prefix::extent(&source, 1, None).unwrap(),
         None,
     );
-    let cold_reply = query::query(
-        &source,
-        &serde_json::from_value::<DiplomacyParams>(
-            serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
-        )
-        .unwrap(),
-        None,
-        &fixture.store,
-        &fixture.key,
-        cold,
-        &flag(),
+    let params = serde_json::from_value::<DiplomacyParams>(
+        serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
     )
     .unwrap();
-    assert_eq!(cold_reply["pacts"], serde_json::json!([]));
-    assert!(!cold_reply["pending"].as_array().unwrap().is_empty());
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames[..4] {
-        observe(&mut scan, frame);
+    let reply = serde_json::to_value(query::unpublished(&params, cold).unwrap()).unwrap();
+    assert_eq!(reply["pacts"], serde_json::json!([]));
+    assert_eq!(reply["unobserved"], serde_json::json!([]));
+    assert!(!reply["pending"].as_array().unwrap().is_empty());
+}
+
+/// Every view's reply at every hour of `frames`.
+fn replies(prepared: &Prepared, frames: &[DecodedFrame], last: i32) -> Vec<serde_json::Value> {
+    let mut replies = Vec::new();
+    for view in ["pacts", "proposals"] {
+        for tags in [serde_json::Value::Null, serde_json::json!(["second"])] {
+            replies.push(prepared.ask(
+                serde_json::json!({"view":view,"branchId":"1","tags":tags}),
+                last,
+            ));
+        }
     }
-    publish(&fixture, &mut scan, &frames[..4]);
-    let partial = query::query(
-        &source,
-        &serde_json::from_value(opinion_params(8)).unwrap(),
-        None,
-        &fixture.store,
-        &fixture.key,
-        prefix(&source, 3, false),
-        &flag(),
-    )
-    .unwrap();
-    assert_eq!(partial["snapshot"], true);
-    assert_eq!(partial["owners"][0]["opinions"][0]["value"], -9);
-    let saved = fixture
-        .store
-        .read(&fixture.key, &prepared::state_section(1), 0)
-        .unwrap()
-        .unwrap();
-    scan = prepared::Prepared::restore(saved).unwrap();
-    for frame in &frames[4..] {
-        observe(&mut scan, frame);
+    for frame in frames.iter().filter(|frame| frame.hour <= last) {
+        replies.push(prepared.ask(opinion_params(frame.hour), last));
+        replies.push(prepared.ask(
+            serde_json::json!({"view":"pair","branchId":"1","first":"first","second":"second","hour":frame.hour}),
+            last,
+        ));
     }
-    publish(&fixture, &mut scan, &frames);
-    let prepared = ask(&source, &fixture, opinion_params(8), 8);
-    assert_eq!(prepared["owners"], partial["owners"]);
-    let mut appended = fixture;
-    let mut writer = appended.append_writer();
-    let mut f = frame(9, 9);
-    opinions(&mut f, &[(A, B, 33)]);
-    observe(&mut scan, &f);
-    scan.flush(&mut writer, 1, &flag()).unwrap();
-    scan.save(&mut writer, 1).unwrap();
-    writer.commit().unwrap();
-    let reader_cancelled = flag();
-    let mut reader = Reader::new(
-        &appended.store,
-        &appended.key,
-        prepared::section(1),
-        &reader_cancelled,
-    )
-    .unwrap();
-    let a = DiplomacyCountry {
-        tag: "first".into(),
-        slot: 1,
-        country_id: A,
-    };
-    let b = DiplomacyCountry {
-        tag: "second".into(),
-        slot: 2,
-        country_id: B,
-    };
+    replies
+}
+
+/// Opinions, relations and the queue changing over two daily reads, a rename between them.
+fn campaign() -> Vec<DecodedFrame> {
+    (22..=70)
+        .map(|hour| {
+            let read = hour - (hour - 22) % 24;
+            let mut f = frame(hour, read);
+            opinions(&mut f, &[(A, B, if hour < 46 { 19 } else { -4 }), (B, A, 3)]);
+            let mut back = tuple(112, 0, B, A);
+            back.owner_country = B;
+            back.target_country = A;
+            back.end_hour = if hour < 50 { 900 } else { 950 };
+            set_tuples(&mut f, vec![tuple(111, 0, A, B), back]);
+            queue(&mut f, 3, 4);
+            if hour >= 40
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *f.tables[TableId::Countries.index()]
+            {
+                rows[1].tag = b"renamed".to_vec();
+            }
+            f
+        })
+        .collect()
+}
+
+#[test]
+fn segments_cuts_and_resumes_publish_the_same_replies() {
+    let frames = campaign();
+    let last = frames.last().unwrap().hour;
+    let whole = replies(&Prepared::new(&frames), &frames, last);
+    for (restarts, cuts, resume) in [
+        (&[10_usize, 30][..], &[last][..], &[][..]),
+        (&[24][..], &[30, 45, last][..], &[45][..]),
+        (&[8, 24, 25][..], &[29, 45, 46, last][..], &[29, 46][..]),
+    ] {
+        let prepared = Prepared::cut(&frames, restarts, cuts, resume);
+        assert_eq!(
+            replies(&prepared, &frames, last),
+            whole,
+            "{restarts:?} {cuts:?} {resume:?}"
+        );
+    }
+    // A cut's publication answers its own prefix as a walk ending there does.
+    let early = Prepared::cut(&frames, &[24], &[45, last], &[45]);
+    let shorter: Vec<_> = frames.iter().filter(|f| f.hour <= 45).cloned().collect();
     assert_eq!(
-        reader
-            .value_at(scan.keys[&prepared::pair_key(&a, &b)], 9)
-            .unwrap()
+        replies(&Prepared::new(&shorter), &shorter, 45),
+        replies(&early, &frames, 45)
+    );
+}
+
+#[test]
+fn a_resumed_emit_goes_on_with_what_it_held() {
+    let mut frames = Vec::new();
+    for hour in 0..=9 {
+        let mut f = frame(hour, hour);
+        opinions(&mut f, &[(A, B, if hour < 4 { 7 } else if hour < 9 { -9 } else { 33 })]);
+        frames.push(f);
+    }
+    let resumed = Prepared::cut(&frames, &[4, 9], &[3, 8, 9], &[3, 8]);
+    assert_eq!(
+        resumed.ask(opinion_params(8), 9)["owners"][0]["opinions"][0]["value"],
+        -9
+    );
+    assert_eq!(
+        resumed
+            .value(&first(), emit::OPINION, Some(&second()), 9)
             .unwrap()
             .value,
         33
     );
+    assert_eq!(
+        replies(&resumed, &frames, 9),
+        replies(&Prepared::new(&frames), &frames, 9)
+    );
 }
+
 #[test]
 fn pair_follows_rename_and_excludes_a_reused_tag_holder() {
     let mut frames = Vec::new();
@@ -676,16 +865,8 @@ fn pair_follows_rename_and_excludes_a_reused_tag_holder() {
         }
         frames.push(f);
     }
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut scan, f);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&frames);
+    let reply = prepared.ask(
         serde_json::json!({"view":"pair","branchId":"1","first":"first","second":"second","hour":0}),
         3,
     );
@@ -702,74 +883,15 @@ fn pair_follows_rename_and_excludes_a_reused_tag_holder() {
             .any(|run| run["firstHour"] == 1 && run["startsSegment"] == true)
     );
     // Chosen after the tag passed to another country, the pair is that holder's.
-    let later = ask(
-        &source,
-        &fixture,
+    let later = prepared.ask(
         serde_json::json!({"view":"pair","branchId":"1","first":"first","second":"second","hour":3}),
         3,
     );
     assert_ne!(later["first"]["countryId"], A);
 }
+
 #[test]
-fn prepass_and_hourly_preparation_publish_equal_payloads() {
-    let frames: Vec<_> = (0..=5)
-        .map(|hour| {
-            let mut f = frame(hour, hour);
-            opinions(&mut f, &[(A, B, hour + 1)]);
-            f
-        })
-        .collect();
-    let replay = test_fixtures::replay(frames.clone());
-    let mut direct = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut direct, f);
-    }
-    let mut folded = prepared::Prepared::default();
-    for index in &replay.index {
-        let facts =
-            dashboard_base::prepared::prepass::extract_alone(&replay, index, &block::FAMILY)
-                .unwrap();
-        block::fold(
-            &mut folded,
-            facts,
-            &replay,
-            &mut |_, result| {
-                result?;
-                Ok(true)
-            },
-            &mut || Ok(()),
-        )
-        .unwrap();
-    }
-    let left = Fixture::new();
-    let right = Fixture::new();
-    publish(&left, &mut direct, &frames);
-    publish(&right, &mut folded, &frames);
-    let select = |fixture: &Fixture| {
-        fixture
-            .payloads()
-            .into_iter()
-            .filter(|((section, _), _)| section.starts_with("diplomacy"))
-            .collect::<BTreeMap<_, _>>()
-    };
-    assert_eq!(select(&left), select(&right));
-}
-#[test]
-fn cancellation_and_oversized_inventory_refuse_explicitly() {
-    let f = frame(0, 0);
-    let mut scan = prepared::Prepared::default();
-    let cancelled = AtomicBool::new(true);
-    assert_eq!(
-        scan.observe(
-            &f,
-            FormatVersion::CURRENT,
-            &FrameChanges::alone(&f, FormatVersion::CURRENT),
-            &cancelled
-        )
-        .unwrap_err()
-        .kind(),
-        std::io::ErrorKind::Interrupted
-    );
+fn oversized_inventory_refuses_explicitly() {
     let reply = DiplomacyProposalsReply {
         proposals: Vec::new(),
         reads: Vec::new(),
@@ -790,6 +912,7 @@ fn cancellation_and_oversized_inventory_refuse_explicitly() {
             .contains("reply budget")
     );
 }
+
 fn assert_relation_title_mod_override(token: u32, expected_key: &str) {
     let root = std::env::temp_dir().join(format!("diplomacy-mod-{}", uuid::Uuid::new_v4()));
     let base = root.join("base");
@@ -846,6 +969,7 @@ fn assert_relation_title_mod_override(token: u32, expected_key: &str) {
         );
     }
 }
+
 macro_rules! relation_title_mod_test {
     ($name:ident, $kind:ident, $key:literal) => {
         #[test]
@@ -961,13 +1085,8 @@ fn opinions_do_not_wait_for_unavailable_tuples_or_daily_queue() {
             reason: "independently unavailable".into(),
         };
     }
-    let frames = vec![f];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &frames[0]);
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(&source, &fixture, opinion_params(0), 0);
+    let prepared = Prepared::new(&[f]);
+    let reply = prepared.ask(opinion_params(0), 0);
     assert_eq!(reply["owners"][0]["known"], true);
     assert_eq!(reply["owners"][0]["opinions"][0]["value"], 765);
 }
@@ -988,6 +1107,7 @@ fn set_tuples(frame: &mut DecodedFrame, mut rows: Vec<RelationTupleRow>) {
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(tokens));
 }
+
 #[test]
 fn unlinked_opinion_owners_are_counted_and_tuple_owners_are_not_dropped() {
     let mut f = frame(0, 0);
@@ -1005,27 +1125,19 @@ fn unlinked_opinion_owners_are_counted_and_tuple_owners_are_not_dropped() {
         });
         reads.sort_by_key(|row| (row.table, row.owner));
     }
-    let frames = vec![f];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &frames[0]);
-    publish(&fixture, &mut scan, &frames);
-    assert_eq!(
-        ask(&source, &fixture, opinion_params(0), 0)["unresolved"],
-        1
-    );
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&[f]);
+    assert_eq!(prepared.ask(opinion_params(0), 0)["unresolved"], 1);
+    let reply = prepared.ask(
         serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
         0,
     );
     assert_eq!(reply["pacts"].as_array().unwrap().len(), 1);
     assert!(reply["pacts"][0]["owner"].is_null());
     assert_eq!(reply["pacts"][0]["rawCountries"][0], 99999);
+    assert_eq!(reply["pacts"][0]["lastSeen"], 0);
     assert!(!reply["warnings"].as_array().unwrap().is_empty());
 }
+
 #[test]
 fn target_only_inventory_selection_includes_storage_and_queue_owner_reads() {
     let mut present = frame(22, 22);
@@ -1045,18 +1157,10 @@ fn target_only_inventory_selection_includes_storage_and_queue_owner_reads() {
             frame
         })
         .collect();
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
+    let prepared = Prepared::new(&frames);
     let owner = serde_json::json!({"tag":"first","slot":1,"countryId":A});
     for view in ["pacts", "proposals"] {
-        let reply = ask(
-            &source,
-            &fixture,
+        let reply = prepared.ask(
             serde_json::json!({"view":view,"branchId":"1","tags":["second"]}),
             46,
         );
@@ -1080,6 +1184,7 @@ fn target_only_inventory_selection_includes_storage_and_queue_owner_reads() {
         );
     }
 }
+
 #[test]
 fn queue_owner_read_evidence_stops_at_owner_identity_changes() {
     let frames: Vec<_> = (22..=46)
@@ -1095,16 +1200,8 @@ fn queue_owner_read_evidence_stops_at_owner_identity_changes() {
             frame
         })
         .collect();
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for frame in &frames {
-        observe(&mut scan, frame);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&frames);
+    let reply = prepared.ask(
         serde_json::json!({"view":"proposals","branchId":"1","tags":["second"]}),
         46,
     );
@@ -1130,6 +1227,7 @@ fn queue_owner_read_evidence_stops_at_owner_identity_changes() {
         ]
     );
 }
+
 #[test]
 fn tuple_read_proofs_close_on_unavailable_tables_and_resume_without_bridge() {
     let mut first = frame(0, 0);
@@ -1143,17 +1241,8 @@ fn tuple_read_proofs_close_on_unavailable_tables_and_resume_without_bridge() {
     };
     let mut again = frame(3, 3);
     set_tuples(&mut again, vec![tuple(111, 3, A, B)]);
-    let frames = vec![first, held, missing, again];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut scan, f);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&[first, held, missing, again]);
+    let reply = prepared.ask(
         serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
         3,
     );
@@ -1161,6 +1250,7 @@ fn tuple_read_proofs_close_on_unavailable_tables_and_resume_without_bridge() {
     assert_eq!(reply["pacts"][0]["endedBy"], true);
     assert_eq!(reply["pacts"][0]["lastSeen"], 0);
     assert_eq!(reply["pacts"][1]["firstSeen"], 3);
+    assert_eq!(reply["pacts"][1]["lastSeen"], 3);
     assert_eq!(
         reply["unobserved"],
         serde_json::json!([{"firstHour":2,"lastHour":2}])
@@ -1174,6 +1264,7 @@ fn tuple_read_proofs_close_on_unavailable_tables_and_resume_without_bridge() {
                 || read["lastHour"].as_i64().unwrap() < 2)
     );
 }
+
 #[test]
 fn endpoint_identity_changes_end_pacts_and_queue_episodes_before_the_next_read() {
     let mut frames = Vec::new();
@@ -1190,16 +1281,8 @@ fn endpoint_identity_changes_end_pacts_and_queue_episodes_before_the_next_read()
         }
         frames.push(f);
     }
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut scan, f);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let pacts = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&frames);
+    let pacts = prepared.ask(
         serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
         46,
     );
@@ -1207,35 +1290,21 @@ fn endpoint_identity_changes_end_pacts_and_queue_episodes_before_the_next_read()
     assert_eq!(pacts["pacts"][0]["endedBy"], true);
     assert_eq!(pacts["pacts"][0]["target"], "second");
     assert_eq!(pacts["pacts"][1]["target"], "renamed");
-    let cancelled = flag();
-    let mut reader = Reader::new(
-        &fixture.store,
-        &fixture.key,
-        prepared::section(1),
-        &cancelled,
-    )
-    .unwrap();
-    let old_target = DiplomacyCountry {
-        tag: "second".into(),
-        slot: 2,
-        country_id: B,
-    };
-    let owner = DiplomacyCountry {
-        tag: "first".into(),
-        slot: 1,
-        country_id: A,
-    };
-    let key = scan.keys[&prepared::pair_key(&owner, &old_target)];
+    // The pair toward the old identity ended where it left.
     assert!(
-        reader
-            .runs(key, 22, 46)
-            .unwrap()
-            .iter()
-            .all(|run| run.last_hour <= 22)
+        prepared
+            .value(&first(), emit::OPINION, Some(&second()), 23)
+            .is_none()
     );
-    let proposals = ask(
-        &source,
-        &fixture,
+    assert_eq!(
+        prepared
+            .value(&first(), emit::OPINION, Some(&second()), 22)
+            .unwrap()
+            .span
+            .last,
+        22
+    );
+    let proposals = prepared.ask(
         serde_json::json!({"view":"proposals","branchId":"1","tags":null}),
         46,
     );
@@ -1245,22 +1314,60 @@ fn endpoint_identity_changes_end_pacts_and_queue_episodes_before_the_next_read()
     assert!(proposals["proposals"][0]["goneBy"].is_null());
     assert_eq!(proposals["proposals"][1]["sender"], "renamed");
 }
+
+#[test]
+fn a_departed_identity_keeps_off_the_carry_what_its_return_reads() {
+    // The first country takes another tag every hour and comes back once, unread then.
+    let tags = ["first", "away1", "away2", "away3", "first"];
+    let frames: Vec<_> = tags
+        .iter()
+        .enumerate()
+        .map(|(hour, tag)| {
+            let hour = hour as i32;
+            let mut f = frame(hour, hour.min(3));
+            opinions(&mut f, &[(A, B, 7)]);
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *f.tables[TableId::Countries.index()]
+            {
+                rows[0].tag = tag.as_bytes().to_vec();
+            }
+            f
+        })
+        .collect();
+    let back = Prepared::new(&frames).ask(opinion_params(4), 4);
+    // The read it left with, which proves nothing now.
+    assert_eq!(back["owners"][0]["readHour"], 0);
+    assert_eq!(back["owners"][0]["known"], false);
+    let budget = Budget::new(1 << 30);
+    let mut writer = Writer::new(&budget, identity(), 0).unwrap();
+    let mut emit = emit::Emit::new();
+    let mut open = Vec::new();
+    for hour in project(&frames[..4], &[]) {
+        let at = hour.hour;
+        emit.hour(&mut writer, hour).unwrap();
+        emit.cut(&mut writer, at).unwrap();
+        open.push(emit.open_runs());
+    }
+    // Past each cut, one live first country's runs, however many tags it held before.
+    assert_eq!(open[1], open[2]);
+    assert_eq!(open[2], open[3]);
+}
+
 #[test]
 fn unrelated_country_balances_do_not_reproject_held_opinion_rows() {
     let mut first = frame(0, 0);
     opinions(&mut first, &[(A, B, 19)]);
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &first);
-    let count = scan.projected_rows;
-    let mut held = first.clone();
-    held.hour = 1;
+    let mut held = frame(1, 1);
+    opinions(&mut held, &[(A, B, 19)]);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *held.tables[TableId::Countries.index()]
     {
         rows[0].political_power_raw = Some(123456);
     }
-    observe(&mut scan, &held);
-    assert_eq!(scan.projected_rows, count);
+    let hours = project(&[first, held], &[]);
+    let values = |hour: &facts::Hour| Arc::clone(&hour.opinions.as_ref().unwrap().current[0].2);
+    assert!(hours[1].ids.is_none());
+    assert!(Arc::ptr_eq(&values(&hours[0]), &values(&hours[1])));
 }
 
 #[test]
@@ -1291,54 +1398,133 @@ fn duplicate_queue_handles_refuse_only_the_queue_inventory() {
         duplicate.ordinal = 7;
         rows.push(duplicate);
     }
-    let frames = vec![f];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &frames[0]);
-    publish(&fixture, &mut scan, &frames);
-    let opinion = ask(&source, &fixture, opinion_params(22), 22);
+    let prepared = Prepared::new(&[f]);
+    let opinion = prepared.ask(opinion_params(22), 22);
     assert_eq!(opinion["owners"][0]["opinions"][0]["value"], 51);
-    let error = query::query(
-        &source,
-        &DiplomacyParams::Proposals {
-            branch_id: "1".into(),
-            tags: None,
-        },
-        None,
-        &fixture.store,
-        &fixture.key,
-        prefix(&source, 22, true),
-        &flag(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("queue handles (count: 1)"));
-}
-#[test]
-fn block_cancellation_is_checked_during_row_projection() {
-    let mut f = frame(0, 0);
-    opinions(&mut f, &[(A, A, 1), (A, B, 2)]);
-    let mut scan = prepared::Prepared::default();
-    let mut checks = 0;
-    let error = scan
-        .observe_checked(
-            &f,
-            FormatVersion::CURRENT,
-            &FrameChanges::alone(&f, FormatVersion::CURRENT),
-            &mut || {
-                checks += 1;
-                if checks >= 2 {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Interrupted,
-                        "synthetic cancel",
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
+    let error = prepared
+        .reply(
+            serde_json::json!({"view":"proposals","branchId":"1","tags":null}),
+            22,
         )
         .unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+    assert!(error.to_string().contains("queue handles (count: 1)"));
+}
+
+#[test]
+fn a_handle_held_across_interruptions_ends_every_episode_at_its_absence_alone() {
+    let frames: Vec<_> = (22..=118)
+        .map(|hour| {
+            let mut f = frame(hour, hour);
+            if hour < 118 {
+                queue(&mut f, 8, 0);
+            }
+            if hour == 50 || hour == 75 {
+                *f.tables[TableId::IncomingDiplomaticActions.index()] = TableView::Unavailable {
+                    reason: "synthetic interruption".into(),
+                };
+            }
+            f
+        })
+        .collect();
+    let prepared = Prepared::cut(&frames, &[], &[117, 118], &[]);
+    let reply = prepared.ask(
+        serde_json::json!({"view":"proposals","branchId":"1","tags":null}),
+        118,
+    );
+    let field = |name: &str| {
+        reply["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p[name].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(field("lastSeen"), [46, 70, 94]);
+    assert_eq!(field("goneBy"), [118, 118, 118]);
+    assert_eq!(field("goneByBound"), [true, true, false]);
+    // Before the read without the handle, what the interruptions left stays unknown.
+    let before = prepared.ask(
+        serde_json::json!({"view":"proposals","branchId":"1","tags":null}),
+        117,
+    );
+    assert!(
+        before["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["goneBy"].is_null())
+    );
+    // Only present proposals are held past a cut, however many episodes the handle had.
+    let budget = Budget::new(1 << 30);
+    let mut writer = Writer::new(&budget, identity(), 22).unwrap();
+    let mut emit = emit::Emit::new();
+    let mut held = Vec::new();
+    for hour in project(&frames, &[]) {
+        let at = hour.hour;
+        emit.hour(&mut writer, hour).unwrap();
+        if [49, 74, 99, 118].contains(&at) {
+            emit.cut(&mut writer, at).unwrap();
+            held.push(emit.held_proposals());
+        }
+    }
+    assert_eq!(held, [1, 1, 1, 0]);
+}
+
+#[test]
+fn a_kind_names_the_token_its_latest_read_names() {
+    let guarantee = engine_native::cguarantee_relation::TYPE;
+    let frames: Vec<_> = (0..=1)
+        .map(|hour| {
+            let mut f = frame(hour, 0);
+            let mut other = tuple(123, 0, B, A);
+            other.owner_country = B;
+            other.target_country = A;
+            let mut rows = vec![tuple(guarantee, 0, A, B), other];
+            rows.sort_by_key(RowCodec::key);
+            *f.tables[TableId::RelationTuples.index()] =
+                TableView::Complete(TableRows::RelationTuples(rows));
+            let mut tokens = vec![
+                LexicalTokenRow {
+                    token: guarantee,
+                    literal: b"same".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 123,
+                    literal: b"same".to_vec(),
+                },
+            ];
+            tokens.sort_by_key(|row| row.token);
+            *f.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(tokens));
+            // Only the first owner's relations are read again, unchanged.
+            if hour == 1
+                && let TableView::Complete(TableRows::SliceReads(reads)) =
+                    &mut *f.tables[TableId::SliceReads.index()]
+            {
+                for read in reads.iter_mut().filter(|read| {
+                    read.owner == A && read.table == TableId::RelationTuples.index() as u32
+                }) {
+                    read.sample_hour = 1;
+                }
+            }
+            f
+        })
+        .collect();
+    let reason = |last: usize| {
+        Prepared::new(&frames[..=last]).ask(
+            serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
+            last as i32,
+        )["kinds"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert!(reason(0).contains("not supported"), "{}", reason(0));
+    assert!(
+        reason(1).contains("recorded content is not configured"),
+        "{}",
+        reason(1)
+    );
 }
 
 #[test]
@@ -1349,16 +1535,8 @@ fn continuous_queue_handle_reuse_splits_and_bounds_the_previous_row() {
         queue(&mut f, if hour < 46 { 3 } else { 40 }, 4);
         frames.push(f);
     }
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut scan, f);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(
-        &source,
-        &fixture,
+    let prepared = Prepared::new(&frames);
+    let reply = prepared.ask(
         serde_json::json!({"view":"proposals","branchId":"1","tags":null}),
         46,
     );
@@ -1366,6 +1544,7 @@ fn continuous_queue_handle_reuse_splits_and_bounds_the_previous_row() {
     assert_eq!(reply["proposals"][0]["goneBy"], 46);
     assert_eq!(reply["proposals"][0]["goneByBound"], false);
     assert_eq!(reply["proposals"][1]["presentAtEnd"], true);
+    assert_eq!(reply["proposals"][1]["lastSeen"], 46);
 }
 
 #[test]
@@ -1383,16 +1562,12 @@ fn reserved_target_zero_is_not_resolved_through_a_recorded_alias() {
         );
     }
     opinions(&mut f, &[(A, 0, 37)]);
-    let frames = vec![f];
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    observe(&mut scan, &frames[0]);
-    publish(&fixture, &mut scan, &frames);
-    let reply = ask(&source, &fixture, opinion_params(0), 0);
+    let prepared = Prepared::new(&[f]);
+    let reply = prepared.ask(opinion_params(0), 0);
     assert_eq!(reply["owners"][0]["known"], false);
     assert_eq!(reply["unresolved"], 1);
 }
+
 #[test]
 fn reads_expire_exactly_a_period_after_their_supplying_hour() {
     let frames: Vec<_> = (0..=24)
@@ -1425,48 +1600,21 @@ fn reads_expire_exactly_a_period_after_their_supplying_hour() {
             f
         })
         .collect();
-    let a = DiplomacyCountry {
-        tag: "first".into(),
-        slot: 1,
-        country_id: A,
-    };
-    let b = DiplomacyCountry {
-        tag: "second".into(),
-        slot: 2,
-        country_id: B,
-    };
     let through = |last: usize| {
-        let frames = &frames[..=last];
-        let source = source(frames);
-        let fixture = Fixture::new();
-        let mut scan = prepared::Prepared::default();
-        for f in frames {
-            observe(&mut scan, f);
-        }
-        publish(&fixture, &mut scan, frames);
-        let cancelled = flag();
-        let mut reader = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            prepared::section(1),
-            &cancelled,
-        )
-        .unwrap();
-        let mut at = |prefix: &str, country: &DiplomacyCountry| {
-            reader
-                .value_at(
-                    scan.keys[&prepared::country_key(prefix, country)],
-                    last as i32,
-                )
-                .unwrap()
-                .map(|run| run.value)
-        };
-        let reads = [&a, &b].map(|country| (at("o", country), at("t", country)));
-        let pacts = ask(
-            &source,
-            &fixture,
+        let prepared = Prepared::new(&frames[..=last]);
+        let hour = last as i32;
+        let reads = [first(), second()].map(|country| {
+            let owner = prepared
+                .value(&country, emit::OWNER, None, hour)
+                .and_then(|run| (run.value & 1 == 1).then_some(run.value >> 1));
+            let tuples = prepared
+                .value(&country, emit::TUPLES, None, hour)
+                .map(|run| run.value);
+            (owner, tuples)
+        });
+        let pacts = prepared.ask(
             serde_json::json!({"view":"pacts","branchId":"1","tags":null}),
-            last as i32,
+            hour,
         );
         let mut present: Vec<_> = pacts["pacts"]
             .as_array()
@@ -1489,6 +1637,7 @@ fn reads_expire_exactly_a_period_after_their_supplying_hour() {
     assert_eq!(reads, [(None, None), (Some(12), Some(12))]);
     assert_eq!(present, [(1000, false), (1001, true), (99999, false)]);
 }
+
 #[test]
 fn unread_opinions_leave_their_orphan_rows_out_of_the_unresolved_count() {
     let mut frames: Vec<_> = (0..3).map(|hour| frame(hour, hour)).collect();
@@ -1498,14 +1647,8 @@ fn unread_opinions_leave_their_orphan_rows_out_of_the_unresolved_count() {
     *frames[1].tables[TableId::RelationOpinions.index()] = TableView::Unavailable {
         reason: "synthetic failure".into(),
     };
-    let source = source(&frames);
-    let fixture = Fixture::new();
-    let mut scan = prepared::Prepared::default();
-    for f in &frames {
-        observe(&mut scan, f);
-    }
-    publish(&fixture, &mut scan, &frames);
-    let unresolved = |hour| ask(&source, &fixture, opinion_params(hour), 2)["unresolved"].clone();
+    let prepared = Prepared::new(&frames);
+    let unresolved = |hour| prepared.ask(opinion_params(hour), 2)["unresolved"].clone();
     assert_eq!(unresolved(0), 1);
     assert_eq!(unresolved(1), 0);
     assert_eq!(unresolved(2), 1);

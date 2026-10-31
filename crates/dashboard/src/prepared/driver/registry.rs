@@ -265,10 +265,9 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["diplomacy-state"],
         queries: &["diplomacy-state"],
         gates: &["diplomacy-state"],
-        sections: &[
-            products::diplomacy_state::prepared::FAMILY_NAME,
-            "diplomacy-series",
-        ],
+        // 2: facts on the segment driver, published as a series root.
+        version: 2,
+        segments: true,
         ..family("diplomacy_state")
     },
     Descriptor {

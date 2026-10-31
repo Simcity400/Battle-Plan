@@ -407,8 +407,6 @@ const PENDING_UNDER_COUNTED: &[&str] = &[
     "air_superiority",
     // The catalogue advances scan.last without project records.
     "construction",
-    // Flush seals unchanged identity and unresolved runs outside the batch charge.
-    "diplomacy_state",
     // Flush seals carried read-version runs outside pending loss rows.
     "equipment_losses",
     // FeedBranch::pending omits the private HistoryScan its flush writes.

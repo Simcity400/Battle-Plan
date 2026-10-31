@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+dashboard-series.workspace = true
 dashboard-world.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
@@ -20,7 +21,6 @@ replay-frame.workspace = true
 installed-content-core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-store = { path = "../store" }
 ts-rs = "11.1"
 
 [dev-dependencies]

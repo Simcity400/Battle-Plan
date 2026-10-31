@@ -4010,9 +4010,14 @@ fn held_delay(error: &io::Error, elapsed: Duration, last: Option<Duration>) -> O
 /// [`posix_delete`], again while another process holds the file ([`held`]). A retry that finds
 /// it gone found it deleted: only the directory's flush after its deletion failed.
 fn delete(path: &Path) -> io::Result<()> {
+    deleting(path, posix_delete)
+}
+
+/// [`delete`] by `unlink`.
+fn deleting(path: &Path, mut unlink: impl FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
     let mut retried = false;
     held(|| {
-        let result = posix_delete(path);
+        let result = unlink(path);
         let retry = std::mem::replace(&mut retried, true);
         match result {
             Err(error) if retry && error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -4081,8 +4086,10 @@ fn skip_sync() -> bool {
     cfg!(feature = "test-support")
 }
 
+/// `path` opened to read, again while another process holds it ([`held`]): a commit reopens
+/// the manifest and names it has just written.
 fn read_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new().read(true).share_mode(SHARING).open(path)
+    held(|| OpenOptions::new().read(true).share_mode(SHARING).open(path))
 }
 
 fn pack_name(id: u64) -> String {

@@ -382,7 +382,6 @@ static ROWS: &[&dyn Own] = &[
     &air_superiority::AIR_SUPERIORITY,
     &world_tension::TENSION,
     &factions::FACTIONS,
-    &diplomacy::DIPLOMACY,
     &evaluated::RESEARCH,
     &evaluated::PROJECTS,
     &evaluated::OCCUPATION,
@@ -442,7 +441,6 @@ pub(super) mod focus;
 /// Air superiority, with its own read of the country groups.
 pub(super) mod air_superiority;
 
-pub(super) mod diplomacy;
 /// World tension.
 pub(super) mod world_tension;
 

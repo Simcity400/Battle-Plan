@@ -35,7 +35,7 @@ use dashboard_text::{
 use dashboard_unit_leaders::products::unit_leaders;
 use dashboard_world::Needs;
 use replay::{columnar_frames::Segment, container::Replay, segments};
-use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
+use replay_data::{format::FormatVersion, rows::TableId};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     collections::BTreeMap,
@@ -194,7 +194,7 @@ macro_rules! projected {
 projected!(
     army_size::facts::Hour,
     country_fuel::facts::Hour,
-    diplomacy_state::columnar::Hour,
+    diplomacy_state::facts::Hour,
     equipment_losses::columnar::Hour,
     unit_leaders::columnar::Hour,
     event_feed::Hour,
@@ -248,6 +248,7 @@ emits!(
     politics_ledger::emit::Emit => politics_ledger::facts::Hour,
     equipment_stockpile::emit::Emit => equipment_stockpile::columnar::Hour,
     country_fuel::emit::Emit => country_fuel::facts::Hour,
+    diplomacy_state::emit::Emit => diplomacy_state::facts::Hour,
 );
 
 impl<E: Emits> Emits for Box<E> {
@@ -457,7 +458,6 @@ impl Native for Fuel {
 
 struct Diplomacy {
     format: FormatVersion,
-    mode: CaptureMode,
 }
 
 fn diplomacy<'p>(
@@ -466,42 +466,39 @@ fn diplomacy<'p>(
     stage: Stage<'p, 'p>,
     taken: Taken<'p>,
 ) -> Made<'p> {
-    let replay = content.source.replay_ref();
-    let native = Diplomacy {
-        format: replay.format,
-        mode: replay.capture_mode,
-    };
-    bound(id, native, stage, taken)
+    let format = content.source.replay_ref().format;
+    bound(id, Diplomacy { format }, stage, taken)
 }
 
 impl Native for Diplomacy {
-    type Operator = diplomacy_state::columnar::Projector;
-    type Branch = Box<diplomacy_state::prepared::Prepared>;
+    type Operator = diplomacy_state::facts::Projector;
+    type Branch = Series<Box<diplomacy_state::emit::Emit>>;
 
     fn tables(&self) -> &'static [TableId] {
-        diplomacy_state::block::TABLES
+        diplomacy_state::facts::TABLES
     }
 
     fn needs(&self) -> io::Result<Needs> {
-        diplomacy_state::columnar::needs()
+        diplomacy_state::facts::needs()
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
-        diplomacy_state::columnar::Projector::new(self.format, self.mode)
+        diplomacy_state::facts::Projector::new(self.format)
     }
 
-    fn branch(&self, _: u64, _: i32) -> io::Result<Self::Branch> {
-        Ok(Box::default())
+    fn branch(&self, _: u64, first: i32) -> io::Result<Self::Branch> {
+        let emit = diplomacy_state::emit::Emit::new();
+        Ok(Series::new(Box::new(emit), first))
     }
 
     fn observe(
         &self,
         state: &mut Self::Branch,
-        _: &mut Stage<'_, '_>,
-        _: u64,
-        hour: diplomacy_state::columnar::Hour,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        hour: diplomacy_state::facts::Hour,
     ) -> io::Result<()> {
-        state.observe_projected(hour)
+        state.observe(stage, branch, hour.hour, hour)
     }
 
     fn flush(
@@ -510,30 +507,25 @@ impl Native for Diplomacy {
         stage: &mut Stage<'_, '_>,
         branch: u64,
         _: Option<i32>,
-        cancelled: &AtomicBool,
+        _: &AtomicBool,
     ) -> io::Result<()> {
-        let pages = stage.pages()?;
-        state.flush(pages, branch, cancelled)?;
-        state.save(pages, branch)
+        state.flush(stage, branch)
     }
 
-    // It goes on from the state its flush saved.
-    fn save(&self, _: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
-        Ok(Some(Vec::new()))
+    fn save(&self, state: &mut Self::Branch) -> io::Result<Option<Vec<u8>>> {
+        state.save()
     }
 
     fn resume(
         &self,
         stage: &mut Stage<'_, '_>,
         branch: u64,
-        _: &Published,
-        _: &[u8],
+        published: &Published,
+        saved: &[u8],
     ) -> io::Result<Self::Branch> {
-        let section = diplomacy_state::prepared::state_section(branch);
-        let range = stage.pages()?.read_at(&section, 0)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Its saved state is missing")
-        })?;
-        diplomacy_state::prepared::Prepared::restore(range).map(Box::new)
+        let directory = directory(stage, branch, published, diplomacy_state::emit::SCHEMA)?;
+        let emit = diplomacy_state::emit::Emit::load(&directory, saved)?;
+        Ok(Series::new(Box::new(emit), published.frontier.first_hour))
     }
 }
 

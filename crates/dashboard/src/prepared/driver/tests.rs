@@ -45,6 +45,7 @@ fn every_family_has_one_backend_and_every_status_row_one_reporter() {
         "politics_ledger",
         "stockpile",
         "fuel",
+        "diplomacy_state",
     ] {
         assert_eq!(
             rows.backend(segments),
@@ -311,10 +312,6 @@ fn every_section_a_writer_names_belongs_to_its_publisher() {
                 products::special_projects::prepared::completion_stream::FAMILY
             ),
             family("projects"),
-        ),
-        (
-            catalogue_section(products::diplomacy_state::prepared::FAMILY_NAME, 1),
-            family("diplomacy_state"),
         ),
         // Stability's parts and each faction's goals.
         ("parts-1".to_owned(), family("parts")),

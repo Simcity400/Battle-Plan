@@ -3572,22 +3572,43 @@ fn deleting_a_held_file_waits_for_its_holder_and_a_missing_one_is_an_error() {
     fs::create_dir_all(&fixture.store.directory).unwrap();
     let path = fixture.store.directory.join("pack_00000000000000aa.bin");
     fs::write(&path, b"x").unwrap();
-    // Held without delete sharing, as a scanner may, and let go a moment later.
-    let holder = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(&path)
-        .unwrap();
-    let release = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(30));
-        drop(holder);
-    });
-    delete(&path).unwrap();
-    release.join().unwrap();
+    // Held without delete sharing, as a scanner may, and let go at the first refusal.
+    let mut holder = Some(
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap(),
+    );
+    let mut refusals = 0;
+    deleting(&path, |path| {
+        let result = posix_delete(path);
+        if result.is_err() {
+            refusals += 1;
+            holder = None;
+        }
+        result
+    })
+    .unwrap();
+    assert_eq!(refusals, 1, "the holder refused the first attempt alone");
     assert!(!path.exists());
     assert_eq!(
         delete(&path).unwrap_err().kind(),
         io::ErrorKind::NotFound,
         "a first attempt that finds nothing deleted nothing"
     );
+    // An unlink whose directory flush was refused leaves nothing for the retry to find.
+    fs::write(&path, b"x").unwrap();
+    let mut attempts = 0;
+    deleting(&path, |path| {
+        attempts += 1;
+        if attempts == 1 {
+            fs::remove_file(path)?;
+            return Err(io::Error::from_raw_os_error(32));
+        }
+        posix_delete(path)
+    })
+    .unwrap();
+    assert_eq!(attempts, 2);
+    assert!(!path.exists());
 }

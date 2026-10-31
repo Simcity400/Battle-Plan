@@ -1,18 +1,47 @@
+//! Diplomacy's hours from a columnar walk ([`replay::segments`]). Each segment keeps, from the
+//! tables' change lists, which owner every opinion and relation row belongs to, the reads
+//! SliceReads stamps, and the incoming queue. An hour hands the ordered emit
+//! ([`super::emit::Emit`]) the identities where they may have changed, the owners its tables
+//! read then with their opinions and relation rows, shared with the read before while those
+//! are unchanged, and the queue at a fresh read.
 use super::{
-    rows::{Groups, Stamps, unrecorded},
-    *,
+    DiplomacyCountry,
+    evidence::{self, Joins},
+    opinions,
 };
+use dashboard_text::metadata::slot_read;
 use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    segments::{self, Operator, Sink, Start, State},
+    segments::{self, Item, Operator, Sink, Start, State},
 };
 use replay_data::{
     cadence,
-    rows::{IncomingDiplomaticActionRow, LexicalTokenRow, TABLE_COUNT},
-    scope::CaptureMode,
+    format::FormatVersion,
+    rows::{
+        IncomingDiplomaticActionRow, LexicalTokenRow, RelationTupleRow, TABLE_COUNT, TableId,
+    },
 };
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    io,
+    mem::size_of,
+    sync::Arc,
+};
+
+/// The tables diplomacy reads: the identities, the read stamps, opinions, relations, the
+/// incoming queue and the relation kinds' spellings.
+pub const TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::SliceReads,
+    TableId::RelationOpinions,
+    TableId::RelationTuples,
+    TableId::IncomingDiplomaticActions,
+    TableId::LexicalTokens,
+];
 
 /// What a projection reads of its walk's world: the countries, and their identity tables.
 pub fn needs() -> io::Result<Needs> {
@@ -23,45 +52,37 @@ pub fn needs() -> io::Result<Needs> {
     })
 }
 
-struct Fields {
-    opinion: usize,
-    sample_hour: usize,
-}
-
-pub struct Projector {
-    format: FormatVersion,
-    fields: Fields,
-    shapes: [Option<columns::Status>; TABLE_COUNT],
-    ids: Option<Arc<Ids>>,
-    opinions: Groups,
-    tuples: Groups,
-    stamps: Stamps,
-    /// The last values by country, and whether its rows are unchanged since.
-    opinion_values: HashMap<u32, (Arc<Values>, bool)>,
-    tuple_values: HashMap<u32, (Arc<TupleRows>, bool)>,
-    spellings: HashMap<u32, Option<Arc<str>>>,
-    orphan_counts: HashMap<u32, usize>,
-    orphan_opinions: usize,
-    orphan_tuples: BTreeSet<u32>,
-    orphan_slices: BTreeMap<u32, BTreeSet<u32>>,
-    /// Whether the emit may hold another orphan set than `orphan_tuples`.
-    orphans_pending: bool,
-    queue: Option<Arc<proposals::Queue>>,
-    /// The queue changed since an hour last carried it.
-    queue_changed: bool,
-    /// The bytes of the shared values made since an hour last carried them.
-    charged: usize,
-    /// Whether the emit may admit a baseline at the next hour.
-    baseline: bool,
+/// A cell the recording did not record, which a row decoded from the columns refuses too.
+fn unrecorded(table: TableId, slot: u32) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{table:?} slot {slot} holds no recorded value"),
+    )
 }
 
 fn slice(hour: i32) -> u32 {
     hour.rem_euclid(cadence::STAGGER_PERIOD) as u32
 }
 
+/// One identity read, shared with the emit; a country is its index into `countries`.
+pub(crate) struct Ids {
+    /// Ascending.
+    pub(crate) countries: Vec<DiplomacyCountry>,
+    /// Country index by raw id, ascending.
+    index: Vec<(u32, u32)>,
+    /// Each country's raw aliases, as the links list them.
+    pub(crate) aliases: Vec<Box<[u32]>>,
+    /// By scheduled slice.
+    slices: Vec<Vec<u32>>,
+    /// Every Countries row's id, ascending.
+    canonical: Vec<u32>,
+    /// The tags no country resolves.
+    pub(crate) unresolved: usize,
+}
+
 impl Ids {
     fn new(joins: Joins, canonical: Vec<u32>) -> Self {
-        let countries: Vec<DiplomacyCountry> = joins.countries.values().cloned().collect();
+        let countries: Vec<DiplomacyCountry> = joins.countries.into_values().collect();
         let index: Vec<(u32, u32)> = joins
             .raw
             .iter()
@@ -83,16 +104,63 @@ impl Ids {
             slices[cadence::slice_of(country.country_id) as usize].push(at as u32);
         }
         Self {
-            joins,
             countries,
             index,
             aliases,
             slices,
             canonical,
+            unresolved: joins.unresolved,
         }
     }
+
+    /// The bytes it owns, itself included.
+    fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.countries.capacity() * size_of::<DiplomacyCountry>()
+            + self
+                .countries
+                .iter()
+                .map(|country| country.tag.capacity())
+                .sum::<usize>()
+            + self.index.capacity() * size_of::<(u32, u32)>()
+            + self.aliases.capacity() * size_of::<Box<[u32]>>()
+            + self
+                .aliases
+                .iter()
+                .map(|raws| raws.len() * size_of::<u32>())
+                .sum::<usize>()
+            + self.slices.capacity() * size_of::<Vec<u32>>()
+            + self
+                .slices
+                .iter()
+                .map(|slice| slice.capacity() * size_of::<u32>())
+                .sum::<usize>()
+            + self.canonical.capacity() * size_of::<u32>()
+    }
+
+    /// The country `raw` names.
+    pub(crate) fn index_of(&self, raw: u32) -> Option<u32> {
+        self.index
+            .binary_search_by_key(&raw, |&(raw, _)| raw)
+            .ok()
+            .map(|at| self.index[at].1)
+    }
 }
+
+/// An opinion owner's known pairs by target index, and its rows refusing them.
+pub(crate) struct Values {
+    /// Shared while the owner's targets do not change.
+    pub(crate) targets: Arc<[u32]>,
+    pub(crate) values: Box<[i32]>,
+    pub(crate) unresolved: usize,
+}
+
 impl Values {
+    /// The bytes it owns, itself and its targets included.
+    fn heap(&self) -> usize {
+        size_of::<Self>() + (self.targets.len() + self.values.len()) * size_of::<u32>()
+    }
+
     /// Values of `pairs`, sharing what the owner's last values hold alike.
     fn new(pairs: Vec<(u32, i32)>, unresolved: usize, old: Option<&Arc<Self>>) -> Arc<Self> {
         let targets = old.map(|old| &old.targets).filter(|targets| {
@@ -122,7 +190,22 @@ impl Values {
         })
     }
 }
+
+/// A raw relation owner's rows, in key order.
+pub(crate) struct TupleRows {
+    /// Each row's spelling; shared while no row's key, endpoints, start or spelling changes.
+    pub(crate) identity: Arc<[Option<Arc<str>>]>,
+    pub(crate) rows: Box<[RelationTupleRow]>,
+}
+
 impl TupleRows {
+    /// The bytes it owns, itself and its spellings' slots included.
+    fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.identity.len() * size_of::<Option<Arc<str>>>()
+            + self.rows.len() * size_of::<RelationTupleRow>()
+    }
+
     /// Rows of one owner, sharing what its last rows hold alike.
     fn new(
         rows: Vec<RelationTupleRow>,
@@ -157,8 +240,379 @@ impl TupleRows {
     }
 }
 
+/// An incoming action and the country index of each of its roles, in [`Proposal::raw`]'s order.
+pub(crate) struct Proposal {
+    pub(crate) row: IncomingDiplomaticActionRow,
+    pub(crate) roles: [Option<u32>; 5],
+}
+
+impl Proposal {
+    /// Its owner, actor, recipient, original actor and original recipient.
+    pub(crate) fn raw(&self) -> [u32; 5] {
+        let row = &self.row;
+        [
+            row.country,
+            row.actor,
+            row.recipient,
+            row.original_actor,
+            row.original_recipient,
+        ]
+    }
+
+    fn new(row: IncomingDiplomaticActionRow, ids: &Ids) -> Self {
+        let mut proposal = Self {
+            row,
+            roles: [None; 5],
+        };
+        proposal.roles = proposal.raw().map(|raw| ids.index_of(raw));
+        proposal
+    }
+}
+
+/// The incoming queue, by row key, with each owner's handles and how many repeat one.
+#[derive(Clone, Default)]
+pub(crate) struct Queue {
+    pub(crate) rows: BTreeMap<u128, Arc<Proposal>>,
+    pub(crate) handles: BTreeMap<(u32, u64), usize>,
+    pub(crate) duplicates: usize,
+}
+
+impl Queue {
+    /// The bytes it owns, itself and its proposals included.
+    fn heap(&self) -> usize {
+        size_of::<Self>()
+            + self.rows.len() * (size_of::<(u128, Arc<Proposal>)>() + size_of::<Proposal>())
+            + self.handles.len() * size_of::<((u32, u64), usize)>()
+    }
+
+    fn set(&mut self, key: u128, proposal: Option<Arc<Proposal>>) {
+        if let Some(old) = self.rows.remove(&key) {
+            let handle = (old.row.country, old.row.handle);
+            let count = self.handles.get_mut(&handle).expect("queued handle");
+            self.duplicates -= usize::from(*count > 1);
+            *count -= 1;
+            if *count == 0 {
+                self.handles.remove(&handle);
+            }
+        }
+        if let Some(proposal) = proposal {
+            let count = self
+                .handles
+                .entry((proposal.row.country, proposal.row.handle))
+                .or_default();
+            self.duplicates += usize::from(*count > 0);
+            *count += 1;
+            self.rows.insert(key, proposal);
+        }
+    }
+}
+
+/// A selected opinion owner's index, supplying read and values.
+pub(crate) type Opinion = (u32, Option<i32>, Arc<Values>);
+/// A selected raw relation owner, its supplying read and rows.
+pub(crate) type TupleOwner = (u32, i32, Arc<TupleRows>);
+
+/// The hour's opinion reads: the owners read now, and those only a baseline reads.
+pub(crate) struct Opinions {
+    pub(crate) current: Vec<Opinion>,
+    pub(crate) baseline: Vec<Opinion>,
+    /// The rows of owners no country resolves.
+    pub(crate) orphans: usize,
+}
+
+/// The hour's relation reads: the countries read and their supplying reads, and the raw owners
+/// with their rows, now and for a baseline.
+pub(crate) struct Tuples {
+    pub(crate) countries: Vec<(u32, i32)>,
+    pub(crate) baseline_countries: Vec<(u32, i32)>,
+    pub(crate) owners: Vec<TupleOwner>,
+    pub(crate) baseline_owners: Vec<TupleOwner>,
+}
+
+pub(crate) enum QueueRead {
+    Unavailable,
+    Carried,
+    Fresh(Arc<Queue>),
+}
+
+/// One hour of a segment.
+pub struct Hour {
+    pub branch: u64,
+    pub hour: i32,
+    /// The identities when the hour read them again; otherwise the hour before's hold.
+    pub(crate) ids: Option<Arc<Ids>>,
+    /// No identities resolve.
+    pub(crate) refused: bool,
+    /// Whether the ready tables carry the owners only a baseline reads.
+    pub(crate) baseline: bool,
+    pub(crate) opinions: Option<Opinions>,
+    pub(crate) tuples: Option<Tuples>,
+    pub(crate) queue: QueueRead,
+    /// The bytes of the identities, values, rows and queues made since an hour last carried
+    /// them: the first to carry them counts them.
+    shared: usize,
+}
+
+impl Item for Hour {
+    fn heap(&self) -> usize {
+        let opinions = self.opinions.as_ref().map_or(0, |opinions| {
+            (opinions.current.capacity() + opinions.baseline.capacity()) * size_of::<Opinion>()
+        });
+        let tuples = self.tuples.as_ref().map_or(0, |tuples| {
+            (tuples.countries.capacity() + tuples.baseline_countries.capacity())
+                * size_of::<(u32, i32)>()
+                + (tuples.owners.capacity() + tuples.baseline_owners.capacity())
+                    * size_of::<TupleOwner>()
+        });
+        self.shared + opinions + tuples
+    }
+}
+
+/// `current` and `added`, whose indexes are not in `current`, in index order.
+pub(crate) fn merged<T>(
+    mut current: Vec<T>,
+    added: impl IntoIterator<Item = T>,
+    index: impl Fn(&T) -> u32,
+) -> Vec<T> {
+    current.extend(added);
+    current.sort_unstable_by_key(index);
+    current
+}
+
+/// Notes `owner` once for a run of slots it holds, as an owner's rows mostly are.
+fn touch(touched: &mut Vec<u32>, owner: u32) {
+    if touched.last() != Some(&owner) {
+        touched.push(owner);
+    }
+}
+
+/// A table's live slots by the owner their keys name, each owner's in key order.
+struct Groups {
+    owner: fn(u128) -> u32,
+    complete: bool,
+    slots: HashMap<u32, Vec<u32>>,
+    /// The owners whose rows the last hour may have changed, ascending.
+    touched: Vec<u32>,
+}
+
+impl Groups {
+    fn new(owner: fn(u128) -> u32) -> Self {
+        Self {
+            owner,
+            complete: false,
+            slots: HashMap::new(),
+            touched: Vec::new(),
+        }
+    }
+
+    /// Follows the hour's changes to `table`; empty while it is not complete.
+    fn update<W>(&mut self, hour: &segments::Hour<'_, W>, table: TableId) -> io::Result<()> {
+        self.touched.clear();
+        let complete = columns::complete(hour.state, table);
+        let whole = hour.starts || hour.opens || !self.complete;
+        self.complete = complete;
+        if whole || !complete {
+            self.touched
+                .extend(self.slots.drain().map(|(owner, _)| owner));
+        }
+        if complete {
+            let held = columns::table(hour.state, table)?;
+            if whole {
+                for slot in held.live().ones() {
+                    if let Some(key) = held.key(slot) {
+                        self.slots.entry((self.owner)(key)).or_default().push(slot);
+                    }
+                }
+                for (&owner, slots) in &mut self.slots {
+                    slots.sort_unstable_by_key(|&slot| held.key(slot));
+                    self.touched.push(owner);
+                }
+            } else {
+                let edits = columns::changes(hour.state, table)?;
+                for (&slot, &key) in edits.deleted.iter().zip(&edits.deleted_keys) {
+                    let owner = (self.owner)(key);
+                    if let Some(slots) = self.slots.get_mut(&owner) {
+                        slots.retain(|&other| other != slot);
+                        if slots.is_empty() {
+                            self.slots.remove(&owner);
+                        }
+                    }
+                    touch(&mut self.touched, owner);
+                }
+                for &slot in &edits.inserted {
+                    if let Some(key) = held.key(slot) {
+                        let owner = (self.owner)(key);
+                        let slots = self.slots.entry(owner).or_default();
+                        let at = slots.partition_point(|&other| held.key(other) < Some(key));
+                        slots.insert(at, slot);
+                        touch(&mut self.touched, owner);
+                    }
+                }
+                for &slot in edits.changed.iter().chain(&edits.fill_slots) {
+                    if let Some(key) = held.key(slot) {
+                        touch(&mut self.touched, (self.owner)(key));
+                    }
+                }
+            }
+        }
+        self.touched.sort_unstable();
+        self.touched.dedup();
+        Ok(())
+    }
+
+    fn owner(&self, owner: u32) -> &[u32] {
+        self.slots
+            .get(&owner)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn owners(&self) -> impl Iterator<Item = (u32, usize)> + '_ {
+        self.slots
+            .iter()
+            .map(|(&owner, slots)| (owner, slots.len()))
+    }
+}
+
+const STAMPED: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
+
+fn stamped(table: u32) -> Option<usize> {
+    STAMPED.iter().position(|kept| kept.index() as u32 == table)
+}
+
+/// SliceReads' stamps of `STAMPED`, by owner and by read hour.
+#[derive(Default)]
+struct Stamps {
+    complete: bool,
+    reads: [HashMap<u32, i32>; 2],
+    hours: [BTreeMap<i32, BTreeSet<u32>>; 2],
+}
+
+impl Stamps {
+    fn update<W>(&mut self, hour: &segments::Hour<'_, W>, field: usize) -> io::Result<()> {
+        let table = TableId::SliceReads;
+        let complete = columns::complete(hour.state, table);
+        let whole = hour.starts || hour.opens || !self.complete;
+        self.complete = complete;
+        if whole || !complete {
+            for (reads, hours) in self.reads.iter_mut().zip(&mut self.hours) {
+                reads.clear();
+                hours.clear();
+            }
+        }
+        if !complete {
+            return Ok(());
+        }
+        let held = columns::table(hour.state, table)?;
+        let cells = columns::plain::<i32>(held, field)?;
+        let decode = |slot: u32| -> io::Result<Option<(usize, u32, i32)>> {
+            let Some((at, owner)) = held
+                .key(slot)
+                .and_then(|key| Some((stamped((key >> 32) as u32)?, key as u32)))
+            else {
+                return Ok(None);
+            };
+            match cells.get(slot as usize) {
+                Some(&read) if held.recorded(field, slot) => Ok(Some((at, owner, read))),
+                _ => Err(unrecorded(table, slot)),
+            }
+        };
+        if whole {
+            for slot in held.live().ones() {
+                if let Some((at, owner, read)) = decode(slot)? {
+                    self.set(at, owner, read);
+                }
+            }
+            return Ok(());
+        }
+        let edits = columns::changes(hour.state, table)?;
+        for &key in &edits.deleted_keys {
+            if let Some(at) = stamped((key >> 32) as u32) {
+                self.remove(at, key as u32);
+            }
+        }
+        for &slot in edits
+            .changed
+            .iter()
+            .chain(&edits.fill_slots)
+            .chain(&edits.inserted)
+        {
+            if let Some((at, owner, read)) = decode(slot)? {
+                self.set(at, owner, read);
+            }
+        }
+        Ok(())
+    }
+
+    fn set(&mut self, at: usize, owner: u32, read: i32) {
+        if let Some(old) = self.reads[at].insert(owner, read) {
+            self.forget(at, owner, old);
+        }
+        self.hours[at].entry(read).or_default().insert(owner);
+    }
+
+    fn remove(&mut self, at: usize, owner: u32) {
+        if let Some(old) = self.reads[at].remove(&owner) {
+            self.forget(at, owner, old);
+        }
+    }
+
+    fn forget(&mut self, at: usize, owner: u32, read: i32) {
+        if let Some(owners) = self.hours[at].get_mut(&read) {
+            owners.remove(&owner);
+            if owners.is_empty() {
+                self.hours[at].remove(&read);
+            }
+        }
+    }
+
+    fn stamp(&self, table: TableId, owner: u32) -> Option<i32> {
+        self.reads[stamped(table.index() as u32)?]
+            .get(&owner)
+            .copied()
+    }
+
+    fn current(&self, table: TableId, hour: i32) -> impl Iterator<Item = u32> + '_ {
+        stamped(table.index() as u32)
+            .and_then(|at| self.hours[at].get(&hour))
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+}
+
+struct Fields {
+    opinion: usize,
+    sample_hour: usize,
+}
+
+pub struct Projector {
+    format: FormatVersion,
+    fields: Fields,
+    shapes: [Option<columns::Status>; TABLE_COUNT],
+    ids: Option<Arc<Ids>>,
+    opinions: Groups,
+    tuples: Groups,
+    stamps: Stamps,
+    /// The last values by country, and whether its rows are unchanged since.
+    opinion_values: HashMap<u32, (Arc<Values>, bool)>,
+    tuple_values: HashMap<u32, (Arc<TupleRows>, bool)>,
+    spellings: HashMap<u32, Option<Arc<str>>>,
+    orphan_counts: HashMap<u32, usize>,
+    orphan_opinions: usize,
+    orphan_tuples: BTreeSet<u32>,
+    orphan_slices: BTreeMap<u32, BTreeSet<u32>>,
+    queue: Option<Arc<Queue>>,
+    /// The queue changed since an hour last carried it.
+    queue_changed: bool,
+    /// The bytes of the shared values made since an hour last carried them.
+    charged: usize,
+    /// Whether the emit may admit a baseline at the next hour.
+    baseline: bool,
+}
+
 impl Projector {
-    pub fn new(format: FormatVersion, _: CaptureMode) -> io::Result<Self> {
+    pub fn new(format: FormatVersion) -> io::Result<Self> {
         Ok(Self {
             format,
             fields: Fields {
@@ -177,19 +631,19 @@ impl Projector {
             orphan_opinions: 0,
             orphan_tuples: BTreeSet::new(),
             orphan_slices: BTreeMap::new(),
-            orphans_pending: true,
             queue: None,
             queue_changed: false,
             charged: 0,
             baseline: true,
         })
     }
+
     /// Follows the hour's tables; whether the identities may have changed.
     fn tables(&mut self, hour: &segments::Hour<'_, World>) -> io::Result<bool> {
         let state = hour.state;
         let mut changed = [false; TABLE_COUNT];
         let mut reshaped = [false; TABLE_COUNT];
-        for &table in super::super::super::block::TABLES {
+        for &table in TABLES {
             let index = table.index();
             let shape = columns::status(state, table);
             reshaped[index] = self.shapes[index] != Some(shape);
@@ -223,6 +677,7 @@ impl Projector {
         }
         Ok(naming)
     }
+
     fn orphans(&mut self, ids: &Ids, naming: bool) {
         if naming {
             self.orphan_counts = self
@@ -246,7 +701,6 @@ impl Projector {
                         .insert(raw);
                 }
                 self.orphan_tuples = orphans;
-                self.orphans_pending = true;
             }
             return;
         }
@@ -263,16 +717,17 @@ impl Projector {
             if ids.index_of(raw).is_none() && !self.tuples.owner(raw).is_empty() {
                 if self.orphan_tuples.insert(raw) {
                     self.orphan_slices.entry(slice).or_default().insert(raw);
-                    self.orphans_pending = true;
                 }
-            } else if self.orphan_tuples.remove(&raw) {
-                if let Some(owners) = self.orphan_slices.get_mut(&slice) {
-                    owners.remove(&raw);
-                }
-                self.orphans_pending = true;
+            } else if self.orphan_tuples.remove(&raw)
+                && let Some(owners) = self.orphan_slices.get_mut(&slice)
+            {
+                owners.remove(&raw);
             }
         }
     }
+
+    /// The supplying read of `raw`'s rows of `table` at `hour`: a stamp from the cadence period
+    /// before, else the canonical owner's own scheduled slice.
     fn read_at(&self, ids: &Ids, table: TableId, raw: u32, hour: i32, full: bool) -> Option<i32> {
         if full {
             return Some(hour);
@@ -285,12 +740,14 @@ impl Projector {
         (ids.canonical.binary_search(&raw).is_ok() && cadence::slice_of(raw) == slice(hour))
             .then_some(hour)
     }
+
     fn read(&self, ids: &Ids, table: TableId, country: u32, hour: i32, full: bool) -> Option<i32> {
         std::iter::once(ids.countries[country as usize].country_id)
             .chain(ids.aliases[country as usize].iter().copied())
             .filter_map(|raw| self.read_at(ids, table, raw, hour, full))
             .max()
     }
+
     fn selection(
         &self,
         ids: &Ids,
@@ -322,6 +779,7 @@ impl Projector {
             .map(|country| (country, self.read(ids, table, country, hour, full)))
             .collect()
     }
+
     fn baseline_selection(
         &self,
         ids: &Ids,
@@ -341,6 +799,7 @@ impl Projector {
             .map(|country| (country, self.read(ids, table, country, hour, full)))
             .collect()
     }
+
     fn opinion(
         &mut self,
         state: &State,
@@ -374,8 +833,7 @@ impl Projector {
                         _ => Err(unrecorded(TableId::RelationOpinions, slot)),
                     }
                 });
-            let (pairs, unresolved) =
-                opinions::project(rows, |raw| ids.index_of(raw), &mut || Ok(()))?;
+            let (pairs, unresolved) = opinions::project(rows, |raw| ids.index_of(raw))?;
             let values = Values::new(pairs, unresolved, old.as_ref());
             if old.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &values)) {
                 self.charged += values.heap();
@@ -386,6 +844,7 @@ impl Projector {
         }
         Ok(projected)
     }
+
     fn spelling(&mut self, state: &State, token: u32) -> io::Result<Option<Arc<str>>> {
         if let Some(spelling) = self.spellings.get(&token) {
             return Ok(spelling.clone());
@@ -403,6 +862,7 @@ impl Projector {
         self.spellings.insert(token, spelling.clone());
         Ok(spelling)
     }
+
     fn tuple_rows(&mut self, state: &State, raw: u32) -> io::Result<Arc<TupleRows>> {
         let old = match self.tuple_values.get(&raw) {
             Some((rows, true)) => return Ok(Arc::clone(rows)),
@@ -427,6 +887,7 @@ impl Projector {
         self.tuple_values.insert(raw, (Arc::clone(&rows), true));
         Ok(rows)
     }
+
     /// For a baseline, every orphan with a proven read and none of `baseline`'s owners.
     fn tuple_owners(
         &mut self,
@@ -469,7 +930,8 @@ impl Projector {
             .map(|(raw, read)| Ok((raw, read, self.tuple_rows(state, raw)?)))
             .collect()
     }
-    /// The queue's census with `ids`' roles; None while the table is not complete.
+
+    /// The queue's census with `ids`' roles; none while the table is not complete.
     fn census(
         &mut self,
         hour: &segments::Hour<'_, World>,
@@ -484,9 +946,9 @@ impl Projector {
         }
         let held = columns::table(state, table)?;
         let format = self.format.version();
-        let project = |slot: u32| -> io::Result<(u128, Arc<proposals::Proposal>)> {
+        let project = |slot: u32| -> io::Result<(u128, Arc<Proposal>)> {
             let row: IncomingDiplomaticActionRow = columns::row(state, table, slot, format)?;
-            Ok((row.key(), proposals::project_one(&row, &ids.joins)?))
+            Ok((row.key(), Arc::new(Proposal::new(row, ids))))
         };
         let follow = !(naming || hour.starts || hour.opens);
         if let Some(queue) = self.queue.as_mut().filter(|_| follow) {
@@ -515,7 +977,7 @@ impl Projector {
                 }
             }
         } else {
-            let mut queue = proposals::Queue::default();
+            let mut queue = Queue::default();
             for slot in held.live().ones() {
                 let (key, proposal) = project(slot)?;
                 queue.set(key, Some(proposal));
@@ -526,8 +988,10 @@ impl Projector {
         Ok(())
     }
 }
+
 impl Operator<World> for Projector {
     type Output = Hour;
+
     fn start(&mut self, start: Start<'_>, _: u64, _: i32) -> io::Result<()> {
         // The emit admits a baseline only at its branch's first hour and after a refused one.
         self.baseline = match start {
@@ -539,6 +1003,7 @@ impl Operator<World> for Projector {
         };
         Ok(())
     }
+
     fn hour(
         &mut self,
         hour: &segments::Hour<'_, World>,
@@ -642,8 +1107,6 @@ impl Operator<World> for Projector {
                 baseline_countries,
                 owners,
                 baseline_owners,
-                orphans: std::mem::take(&mut self.orphans_pending)
-                    .then(|| self.orphan_tuples.clone()),
             })
         } else {
             None
