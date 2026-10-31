@@ -982,7 +982,7 @@ impl Store {
                     .and_then(parse_log)
                     .is_some_and(|id| logs.contains(&id));
             if !keep {
-                posix_delete(&entry.path())?;
+                delete(&entry.path())?;
             }
         }
         Ok(())
@@ -1055,7 +1055,7 @@ fn remove_folder(folder: &Path) -> io::Result<()> {
         if entry.file_type()?.is_dir() {
             remove_folder(&entry.path())?;
         } else {
-            gone(posix_delete(&entry.path()))?;
+            gone(delete(&entry.path()))?;
         }
     }
     gone(fs::remove_dir(folder))
@@ -3813,10 +3813,14 @@ impl Writer {
                 names = id;
                 file
             } else {
-                OpenOptions::new()
-                    .write(true)
-                    .share_mode(SHARING)
-                    .open(self.directory.join(names_name(names)))?
+                let path = self.directory.join(names_name(names));
+                held(|| {
+                    OpenOptions::new()
+                        .write(true)
+                        .share_mode(SHARING)
+                        .open(&path)
+                })
+                .map_err(|error| met(error, "opening", &path))?
             };
             // Readers read only the bytes their root lists; names an
             // unpublished transaction left past them are written over.
@@ -3970,16 +3974,72 @@ fn publish(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::
     durable(path)
 }
 
+/// How long a replace or flush retries the refusals of another process holding a fresh file.
+const HELD_RETRY: Duration = Duration::from_secs(1);
+
+/// `attempt`, again while Windows refuses it as denied or shared (os errors 5 and 32): a virus
+/// scanner or indexer opening a file just written holds it for a moment.
+fn held<T>(mut attempt: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let started = Instant::now();
+    let mut delay = None;
+    loop {
+        match attempt() {
+            Err(error) => match held_delay(&error, started.elapsed(), delay) {
+                Some(next) => {
+                    std::thread::sleep(next);
+                    delay = Some(next);
+                }
+                None => return Err(error),
+            },
+            done => return done,
+        }
+    }
+}
+
+/// How long [`held`] waits before trying again after `error`, `elapsed` into its retries, its
+/// last wait `last`; none once the error is not a holder's or the retries are spent.
+fn held_delay(error: &io::Error, elapsed: Duration, last: Option<Duration>) -> Option<Duration> {
+    if !matches!(error.raw_os_error(), Some(5 | 32)) || elapsed >= HELD_RETRY {
+        return None;
+    }
+    Some(last.map_or(Duration::from_millis(1), |last| {
+        (last * 2).min(Duration::from_millis(50))
+    }))
+}
+
+/// [`posix_delete`], again while another process holds the file ([`held`]). A retry that finds
+/// it gone found it deleted: only the directory's flush after its deletion failed.
+fn delete(path: &Path) -> io::Result<()> {
+    let mut retried = false;
+    held(|| {
+        let result = posix_delete(path);
+        let retry = std::mem::replace(&mut retried, true);
+        match result {
+            Err(error) if retry && error.kind() == io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    })
+    .map_err(|error| met(error, "deleting", path))
+}
+
+/// `error`, naming what it met and on which file.
+fn met(error: io::Error, what: &str, path: &Path) -> io::Error {
+    io::Error::new(error.kind(), format!("{what} {}: {error}", path.display()))
+}
+
 /// Writes `path` whole and puts it in place: readers see it once this returns, before it is
 /// flushed.
 fn put(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .access_mode(DELETE | GENERIC_WRITE)
-        .share_mode(SHARING)
-        .create_new(true)
-        .open(&temporary)?;
+    let mut file = held(|| {
+        OpenOptions::new()
+            .write(true)
+            .access_mode(DELETE | GENERIC_WRITE)
+            .share_mode(SHARING)
+            .create_new(true)
+            .open(&temporary)
+    })
+    .map_err(|error| met(error, "creating", &temporary))?;
     #[cfg(test)]
     tests::CREATED.set(tests::CREATED.get() + 1);
     write(&mut file)?;
@@ -3989,7 +4049,9 @@ fn put(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Resu
         .encode_wide()
         .chain(Some(0))
         .collect();
-    if !posix_replace(&file, &target)? {
+    let replaced =
+        held(|| posix_replace(&file, &target)).map_err(|error| met(error, "replacing", path))?;
+    if !replaced {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "prepared storage requires POSIX replacement",
@@ -4004,7 +4066,11 @@ fn put(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) -> io::Resu
 fn durable(path: &Path) -> io::Result<()> {
     #[cfg(test)]
     tests::SYNCS.set(tests::SYNCS.get() + 1);
-    if skip_sync() { Ok(()) } else { sync_file(path) }
+    if skip_sync() {
+        Ok(())
+    } else {
+        held(|| sync_file(path)).map_err(|error| met(error, "flushing", path))
+    }
 }
 
 fn skip_sync() -> bool {

@@ -3517,3 +3517,77 @@ fn a_pinned_scope_reads_its_own_publication_or_fails_as_superseded() {
     let current = fixture.store.session(&key).unwrap().unwrap().snapshot();
     assert_eq!(bytes(current.read("pages", 0).unwrap().unwrap()), b"second");
 }
+
+#[test]
+fn held_retries_only_a_holders_refusals_backing_off_until_its_second_is_spent() {
+    let denied = io::Error::from_raw_os_error(5);
+    let shared = io::Error::from_raw_os_error(32);
+    let missing = io::Error::from_raw_os_error(2);
+    let ms = Duration::from_millis;
+    assert_eq!(held_delay(&denied, Duration::ZERO, None), Some(ms(1)));
+    assert_eq!(
+        held_delay(&shared, Duration::ZERO, Some(ms(1))),
+        Some(ms(2))
+    );
+    assert_eq!(held_delay(&denied, ms(500), Some(ms(32))), Some(ms(50)));
+    assert_eq!(held_delay(&denied, ms(900), Some(ms(50))), Some(ms(50)));
+    assert_eq!(
+        held_delay(&denied, HELD_RETRY - ms(1), Some(ms(50))),
+        Some(ms(50))
+    );
+    // A refusal that outlasts the retries is the caller's, as is any other error at once.
+    assert_eq!(held_delay(&denied, HELD_RETRY, Some(ms(50))), None);
+    assert_eq!(held_delay(&shared, HELD_RETRY + ms(1), None), None);
+    assert_eq!(held_delay(&missing, Duration::ZERO, None), None);
+    assert_eq!(
+        held_delay(&io::Error::other("other"), Duration::ZERO, None),
+        None
+    );
+}
+
+#[test]
+fn held_goes_on_once_the_holder_lets_go_and_stops_at_any_other_error() {
+    let mut attempts = 0;
+    let done = held(|| {
+        attempts += 1;
+        match attempts {
+            1 => Err(io::Error::from_raw_os_error(5)),
+            2 => Err(io::Error::from_raw_os_error(32)),
+            _ => Ok(attempts),
+        }
+    });
+    assert_eq!(done.unwrap(), 3);
+    let mut attempts = 0;
+    let refused = held(|| -> io::Result<()> {
+        attempts += 1;
+        Err(io::Error::from_raw_os_error(2))
+    });
+    assert_eq!(refused.unwrap_err().raw_os_error(), Some(2));
+    assert_eq!(attempts, 1, "an error no holder causes is never retried");
+}
+
+#[test]
+fn deleting_a_held_file_waits_for_its_holder_and_a_missing_one_is_an_error() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(&fixture.store.directory).unwrap();
+    let path = fixture.store.directory.join("pack_00000000000000aa.bin");
+    fs::write(&path, b"x").unwrap();
+    // Held without delete sharing, as a scanner may, and let go a moment later.
+    let holder = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(&path)
+        .unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        drop(holder);
+    });
+    delete(&path).unwrap();
+    release.join().unwrap();
+    assert!(!path.exists());
+    assert_eq!(
+        delete(&path).unwrap_err().kind(),
+        io::ErrorKind::NotFound,
+        "a first attempt that finds nothing deleted nothing"
+    );
+}
