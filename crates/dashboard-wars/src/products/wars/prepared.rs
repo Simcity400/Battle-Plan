@@ -690,13 +690,30 @@ fn read_query_counters(
     key: &store::SourceKey,
     branch: u64,
     structure_only: bool,
-) -> io::Result<Option<KeyCatalogue<QueryCounters>>> {
+) -> io::Result<Option<Arc<KeyCatalogue<QueryCounters>>>> {
     let _cpu = replay_frame::cpu::scope_phase("wars:query_catalogue");
     if structure_only {
-        return series::read_catalogue::<serde::de::IgnoredAny>(store, key, "wars", branch)
-            .map(|catalogue| catalogue.map(|_| (BTreeMap::new(), QueryCounters::default())));
+        // A structure reads no counter, but its catalogue must still be whole.
+        let checked = series::read_shared_catalogue::<serde::de::IgnoredAny>(
+            store,
+            key,
+            "wars",
+            branch,
+            |(keys, _)| series::catalogue_key_bytes(keys),
+        )?;
+        return Ok(checked.map(|_| Arc::default()));
     }
-    series::read_catalogue(store, key, "wars", branch)
+    series::read_shared_catalogue::<QueryCounters>(
+        store,
+        key,
+        "wars",
+        branch,
+        |(keys, counters)| {
+            series::catalogue_key_bytes(keys)
+                + counters.first_reads.capacity() * size_of::<i32>()
+                + counters.batch.held_bytes()
+        },
+    )
 }
 
 /// Whole-branch native projection, including membership and naming history before
@@ -719,9 +736,10 @@ pub(crate) fn projection(
 ) -> io::Result<Option<WarsReply>> {
     Wars::validate(params).map_err(invalid)?;
     let branch = params.branch_id.parse().expect("validated branch");
-    let Some((indices, state)) = read_query_counters(store, key, branch, hours.is_empty())? else {
+    let Some(catalogue) = read_query_counters(store, key, branch, hours.is_empty())? else {
         return Ok(None);
     };
+    let (indices, state) = &*catalogue;
     let branch_info = source
         .replay_ref()
         .branches
@@ -738,7 +756,7 @@ pub(crate) fn projection(
         HashMap::new()
     } else {
         let mut reader = Reader::new(store, key, format!("wars-series-{branch}"), cancelled)?;
-        casualties_at(&mut reader, &indices, &state, &reply.wars, hours)?
+        casualties_at(&mut reader, indices, state, &reply.wars, hours)?
     };
     let _cpu = replay_frame::cpu::scope_phase("wars:query_finish");
     for (index, war) in reply.wars.iter_mut().enumerate() {
@@ -1035,9 +1053,10 @@ mod query_tests {
         series::write_catalogue(&mut writer, "wars", 1, &state.indices, &state).unwrap();
         writer.commit().unwrap();
         let before = SNAPSHOT_BYTES.get();
-        let (keys, reached) = read_query_counters(&fixture.store, &fixture.key, 1, false)
+        let read = read_query_counters(&fixture.store, &fixture.key, 1, false)
             .unwrap()
             .unwrap();
+        let (keys, reached) = &*read;
         assert_eq!(
             SNAPSHOT_BYTES.get(),
             before,
@@ -1051,9 +1070,10 @@ mod query_tests {
                 state.batch.state(1 + index * 4).unwrap().last
             );
         }
-        let (_, structure) = read_query_counters(&fixture.store, &fixture.key, 1, true)
+        let read = read_query_counters(&fixture.store, &fixture.key, 1, true)
             .unwrap()
             .unwrap();
+        let (_, structure) = &*read;
         assert!(structure.first_reads.is_empty());
         assert!(
             structure.batch.state(1).is_none(),

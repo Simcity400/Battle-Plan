@@ -511,3 +511,40 @@ fn catalogue_pending_counts_the_exact_escaped_publication_text() {
     writer.commit().unwrap();
     assert_eq!(published(&fixture, "sized-1-catalogue"), expected.as_slice());
 }
+
+#[test]
+fn a_shared_catalogue_is_parsed_once_for_its_pages_and_again_when_they_change() {
+    let fixture = Fixture::new();
+    let publish = |note: &str| {
+        let mut writer = fixture.writer();
+        let keys = BTreeMap::from([("a".to_owned(), 0)]);
+        series::write_catalogue(&mut writer, "shared", 1, &keys, &note.to_owned()).unwrap();
+        writer.commit().unwrap();
+    };
+    let read = || {
+        series::read_shared_catalogue::<String>(
+            &fixture.store,
+            &fixture.key,
+            "shared",
+            1,
+            |(keys, note)| series::catalogue_key_bytes(keys) + note.capacity(),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    publish("first");
+    let scope = series::cache_scope(None);
+    let first = read();
+    let held = scope.finish();
+    let scope = series::cache_scope(Some(&held));
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &read()),
+        "the next ask reuses the parse"
+    );
+    let held = scope.finish();
+    publish("second");
+    let _scope = series::cache_scope(Some(&held));
+    let second = read();
+    assert_eq!(second.1, "second", "new pages are parsed afresh");
+    assert_eq!(second.0, first.0);
+}

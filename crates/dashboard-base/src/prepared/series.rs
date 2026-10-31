@@ -736,6 +736,12 @@ impl Accumulator {
     pub fn bytes(&self) -> usize {
         self.batch.bytes()
     }
+    /// The memory its key states and the batch hold, at most.
+    pub fn held_bytes(&self) -> usize {
+        btree_bytes::<u64, KeyState>(self.states.len())
+            + btree_bytes::<u64, ()>(self.active.len())
+            + self.batch.bytes()
+    }
     pub fn census_keys(&self) -> (usize, usize) {
         (self.states.len(), self.active.len())
     }
@@ -1175,6 +1181,48 @@ pub fn read_catalogue<T: DeserializeOwned>(
     family: &str,
     branch: u64,
 ) -> io::Result<Option<Catalogue<T>>> {
+    catalogue_text(store, key, family, branch)?
+        .map(|(_, text)| Ok(serde_json::from_slice(&text)?))
+        .transpose()
+}
+
+/// [`read_catalogue`] parsed once for its pages: a query's scope keeps it for the next ask
+/// ([`query::reuse_value`]), charged what `bytes` says the parse holds.
+pub fn read_shared_catalogue<T: DeserializeOwned + Send + Sync + 'static>(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+    bytes: impl FnOnce(&Catalogue<T>) -> usize,
+) -> io::Result<Option<Arc<Catalogue<T>>>> {
+    let Some((pages, text)) = catalogue_text(store, key, family, branch)? else {
+        return Ok(None);
+    };
+    query::reuse_value(pages, &(family, branch), bytes, || {
+        Ok(serde_json::from_slice(&text)?)
+    })
+    .map(Some)
+}
+
+/// The memory a parsed catalogue's keys hold, at most.
+pub fn catalogue_key_bytes(keys: &BTreeMap<String, u64>) -> usize {
+    btree_bytes::<String, u64>(keys.len()) + keys.keys().map(String::capacity).sum::<usize>()
+}
+
+/// What a `BTreeMap<K, V>` of `len` entries allocates at most: every node but the root holds at
+/// least 5 of its 11 slots, and any may be internal, with 12 child pointers.
+fn btree_bytes<K, V>(len: usize) -> usize {
+    let nodes = len.div_ceil(5) + 1;
+    nodes * (11 * size_of::<(K, V)>() + 14 * size_of::<usize>())
+}
+
+/// The pages `family`'s catalogue spans and its text, none before it is published.
+fn catalogue_text(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+) -> io::Result<Option<(Vec<[u64; 3]>, Arc<Vec<u8>>)>> {
     let Some(session) = store.session(key)? else {
         return Ok(None);
     };
@@ -1189,13 +1237,13 @@ pub fn read_catalogue<T: DeserializeOwned>(
     if ranges.is_empty() {
         return Ok(None);
     }
-    let ids = ranges.iter().map(|range| range.id().cache_key()).collect();
-    let text = query::text(query::TextKind::Catalogue, ids, || {
+    let pages: Vec<_> = ranges.iter().map(|range| range.id().cache_key()).collect();
+    let text = query::text(query::TextKind::Catalogue, pages.clone(), || {
         let mut ranges = ranges.into_iter();
         catalogue::read(|_| Ok(ranges.next()))?
             .ok_or_else(|| invalid("Prepared catalogue is missing"))
     })?;
-    Ok(Some(serde_json::from_slice(&text)?))
+    Ok(Some((pages, text)))
 }
 /// The catalogue as `saved` published it when that is an earlier key whose
 /// prefix this preparation continues, else as `key` published it.
