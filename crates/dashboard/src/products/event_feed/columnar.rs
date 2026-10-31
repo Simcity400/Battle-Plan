@@ -39,11 +39,10 @@ use replay_data::{
 };
 use replay_frame::frame::{DecodedFrame, Metrics, TableView};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     mem::size_of,
-    sync::{Arc, atomic::AtomicBool},
-    thread::JoinHandle,
+    sync::{Arc, atomic::AtomicBool, mpsc},
 };
 
 /// The tables the feed and its identity history read.
@@ -1133,33 +1132,80 @@ fn name_targets(
     }
 }
 
-/// Facts a thread writes at a time: a few days of roster rebuilds, so threads start rarely.
+/// Facts the writer takes at a time: a few days of roster rebuilds.
 const BATCH: usize = 256;
 /// Batches written at once: past them the emit appends the oldest before sending another.
 const WRITING: usize = 2;
 
-/// Facts whose bytes another thread writes ([`Draft::write`]) while the emit goes on, appended
-/// in their publication's order.
+/// A batch of facts with their keys, and what writing it gave: each fact's key, hour and bytes.
+type FactBatch = Vec<(u64, Draft)>;
+type WrittenFacts = io::Result<Vec<(u64, i32, Vec<u8>)>>;
+
+/// Facts whose bytes a thread of their own writes ([`Draft::write`]) while the emit goes on,
+/// appended in their publication's order.
 #[derive(Default)]
 struct Writing {
     /// Facts held since the last batch went, with their keys.
-    open: Vec<(u64, Draft)>,
-    /// Batches being written, oldest first.
-    sent: VecDeque<JoinHandle<io::Result<Vec<(u64, i32, Vec<u8>)>>>>,
+    open: FactBatch,
+    /// The thread writing every batch of this preparation in turn, from the first one sent.
+    writer: Option<FactWriter>,
+    /// Batches sent and not yet appended.
+    sent: usize,
+}
+
+/// One thread for a preparation's batches, so a long campaign starts one rather than one a
+/// batch (whose exits strand their heaps' pages).
+struct FactWriter {
+    batches: mpsc::Sender<FactBatch>,
+    written: mpsc::Receiver<WrittenFacts>,
+}
+
+impl FactWriter {
+    fn start() -> io::Result<Self> {
+        let (batches, sent) = mpsc::channel::<FactBatch>();
+        let (done, written) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("event feed facts".into())
+            .spawn(move || {
+                for facts in sent {
+                    let _cpu = replay_frame::cpu::scope("event-feed-facts", None);
+                    let result: WrittenFacts = facts
+                        .into_iter()
+                        .map(|(key, draft)| {
+                            let hour = draft.read_hour();
+                            Ok((key, hour, draft.write()?))
+                        })
+                        .collect();
+                    if done.send(result).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self { batches, written })
+    }
+}
+
+fn panicked() -> io::Error {
+    crate::invalid("An event-feed fact writer panicked")
 }
 
 impl Writing {
-    fn hold(&mut self, facts: Vec<(u64, Draft)>) {
+    fn hold(&mut self, facts: FactBatch) {
         self.open.extend(facts);
     }
 
     /// Appends the batches already written, in order, and sends a full batch to be written.
     fn advance(&mut self, feed: &mut Observer) -> io::Result<()> {
-        while self.sent.front().is_some_and(JoinHandle::is_finished) {
-            self.append(feed)?;
+        while self.sent > 0 {
+            let writer = self.writer.as_ref().ok_or_else(panicked)?;
+            match writer.written.try_recv() {
+                Ok(written) => self.appended(feed, written)?,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Err(panicked()),
+            }
         }
         if self.open.len() >= BATCH {
-            while self.sent.len() >= WRITING {
+            while self.sent >= WRITING {
                 self.append(feed)?;
             }
             self.send()?;
@@ -1172,7 +1218,7 @@ impl Writing {
         if !self.open.is_empty() {
             self.send()?;
         }
-        while !self.sent.is_empty() {
+        while self.sent > 0 {
             self.append(feed)?;
         }
         Ok(())
@@ -1180,29 +1226,25 @@ impl Writing {
 
     fn send(&mut self) -> io::Result<()> {
         let facts = std::mem::take(&mut self.open);
-        let thread = std::thread::Builder::new()
-            .name("event feed facts".into())
-            .spawn(move || {
-                let _cpu = replay_frame::cpu::scope("event-feed-facts", None);
-                facts
-                    .into_iter()
-                    .map(|(key, draft)| {
-                        let hour = draft.read_hour();
-                        Ok((key, hour, draft.write()?))
-                    })
-                    .collect()
-            })?;
-        self.sent.push_back(thread);
+        if self.writer.is_none() {
+            self.writer = Some(FactWriter::start()?);
+        }
+        let writer = self.writer.as_ref().ok_or_else(panicked)?;
+        writer.batches.send(facts).map_err(|_| panicked())?;
+        self.sent += 1;
         Ok(())
     }
 
+    /// Appends the oldest batch sent, once it is written.
     fn append(&mut self, feed: &mut Observer) -> io::Result<()> {
-        let Some(thread) = self.sent.pop_front() else {
-            return Ok(());
-        };
-        let written = thread
-            .join()
-            .map_err(|_| crate::invalid("An event-feed fact writer panicked"))??;
+        let writer = self.writer.as_ref().ok_or_else(panicked)?;
+        let written = writer.written.recv().map_err(|_| panicked())?;
+        self.appended(feed, written)
+    }
+
+    fn appended(&mut self, feed: &mut Observer, written: WrittenFacts) -> io::Result<()> {
+        self.sent -= 1;
+        let written = written?;
         for (key, hour, bytes) in written {
             feed.written(key, hour, bytes)?;
         }
