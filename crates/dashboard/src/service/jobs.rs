@@ -14,7 +14,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex, TryLockError, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc::TrySendError,
     },
@@ -1484,8 +1484,17 @@ impl Inner {
     pub(super) fn run_loader(self: &Arc<Self>, jobs: &Mutex<Receiver<LoadJob>>, lane: Lane) {
         loop {
             let job = {
-                let receiver = jobs.lock().unwrap_or_else(|error| error.into_inner());
-                receiver.recv()
+                // Before it can block, a loader returns what its last jobs freed: here when
+                // another loader holds the receiver, else as the receiver finds no job.
+                let receiver = match jobs.try_lock() {
+                    Ok(receiver) => receiver,
+                    Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                    Err(TryLockError::WouldBlock) => {
+                        crate::allocator::return_freed();
+                        jobs.lock().unwrap_or_else(|error| error.into_inner())
+                    }
+                };
+                receiver.recv_idle(crate::allocator::return_freed)
             };
             let Ok(job) = job else {
                 return;

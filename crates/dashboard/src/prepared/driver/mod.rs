@@ -31,6 +31,7 @@ pub fn prepare(
     cancelled: &AtomicBool,
     mut accepted: impl FnMut(&Accepted),
 ) -> io::Result<Accepted> {
+    let _returned = crate::allocator::ReturnFreed;
     // The index first: the viewer serves the map from it while the families prepare. Native
     // recordings refused for it are the campaign map's refusal alone, named in its status, from
     // the first progress the families report on.

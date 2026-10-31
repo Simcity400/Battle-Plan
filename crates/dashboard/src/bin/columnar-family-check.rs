@@ -139,6 +139,8 @@ fn run() -> io::Result<()> {
 }
 
 fn main() {
+    // Measured with the memory settings the data service runs with.
+    dashboard::allocator::return_freed_memory_promptly();
     if let Err(error) = run() {
         eprintln!("columnar-family-check: {error}");
         std::process::exit(1);

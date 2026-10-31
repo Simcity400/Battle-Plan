@@ -87,12 +87,21 @@ impl<T> Drop for Receiver<T> {
     }
 }
 impl<T> Receiver<T> {
+    #[cfg(test)]
     pub(super) fn recv(&self) -> Result<T, ()> {
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        self.recv_idle(|| {})
+    }
+
+    /// The next value, calling `idle` once, without the lock, before it first waits for one.
+    pub(super) fn recv_idle(&self, idle: impl FnOnce()) -> Result<T, ()> {
+        let lock = || {
+            self.0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        };
+        let mut idle = Some(idle);
+        let mut state = lock();
         loop {
             let refresh_due = !state.refresh.is_empty()
                 && (state.first.is_empty() || state.first_burst >= FIRST_ASK_BURST);
@@ -112,6 +121,12 @@ impl<T> Receiver<T> {
             }
             if state.closed {
                 return Err(());
+            }
+            if let Some(idle) = idle.take() {
+                drop(state);
+                idle();
+                state = lock();
+                continue;
             }
             state = self
                 .0
