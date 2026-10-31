@@ -85,6 +85,8 @@ pub struct PreparedFrame {
     /// Each complete table diffed with its baseline, by index, with the rows that diff wrote.
     changed: Vec<(usize, ChangedRows)>,
     unchanged: [bool; TABLE_COUNT],
+    /// Each stored table's update bytes, which follow the frame's header in table order.
+    sizes: [usize; TABLE_COUNT],
     revision: u64,
     encoder: u64,
     previous_revision: u64,
@@ -98,6 +100,40 @@ impl PreparedFrame {
     /// Move the bytes to the spool without copying; retain the pending baselines.
     pub fn take_frame(&mut self) -> EncodedFrame {
         self.frame.take().expect("prepared record already taken")
+    }
+
+    /// [`Self::take_frame`] holding only the updates of the tables `kept` names, with this
+    /// frame's keyframe and baselines; every other table it stores is left to the native capture.
+    pub fn take_frame_keeping(
+        &mut self,
+        kept: impl Fn(TableId) -> bool,
+    ) -> io::Result<EncodedFrame> {
+        let frame = self.take_frame();
+        let header = frame.bytes.len() - self.sizes.iter().sum::<usize>();
+        let mut keep = [false; TABLE_COUNT];
+        let mut length = header;
+        for ((table, &size), keep) in TableId::ALL.into_iter().zip(&self.sizes).zip(&mut keep) {
+            *keep = size != 0 && kept(table);
+            length += if *keep { size } else { usize::from(size != 0) };
+        }
+        if length == frame.bytes.len() {
+            return Ok(frame);
+        }
+        let mut bytes = allocation::vec(length)?;
+        bytes.extend_from_slice(&frame.bytes[..header]);
+        let mut at = header;
+        for (&size, keep) in self.sizes.iter().zip(keep) {
+            if size == 0 {
+                continue;
+            }
+            if keep {
+                bytes.extend_from_slice(&frame.bytes[at..at + size]);
+            } else {
+                bytes.push(5);
+            }
+            at += size;
+        }
+        Ok(EncodedFrame { bytes, ..frame })
     }
 
     /// The input as encoded: rows rounded and refused tables rewritten.
@@ -557,6 +593,7 @@ impl FrameEncoder {
         output.extend_from_slice(&source.metrics.pool_bytes.to_le_bytes());
         output.extend_from_slice(&source.metrics.dropped_frames.to_le_bytes());
         let mut unchanged = [false; TABLE_COUNT];
+        let mut sizes = [0; TABLE_COUNT];
         let mut changed_rows = Vec::new();
         let mut deleted = std::mem::take(&mut self.deleted);
         for table in TableId::ALL {
@@ -564,6 +601,7 @@ impl FrameEncoder {
                 continue;
             }
             let mut changed = None;
+            let table_start = output.len();
             unchanged[table.index()] = match segments[table.index()].take() {
                 Some(segment) => {
                     if segment.context != context || segment.table != table {
@@ -614,6 +652,7 @@ impl FrameEncoder {
                     }
                 }
             };
+            sizes[table.index()] = output.len() - table_start;
             // Diagnostics for the columnar writer beside the rows: a recording that cannot
             // be held is left out.
             if let Some(changed) = changed
@@ -633,6 +672,7 @@ impl FrameEncoder {
             source,
             changed: changed_rows,
             unchanged,
+            sizes,
             revision,
             encoder: self.identity,
             previous_revision: self.revision,
@@ -778,9 +818,8 @@ impl FrameEncoder {
                 false
             }
             TableInput::Sampled(TableView::NotRecorded { .. }) => {
-                return Err(invalid(
-                    "a table its capture mode does not record has no update",
-                ));
+                output.push(5);
+                false
             }
             TableInput::Sampled(TableView::Unavailable { reason }) => {
                 if reason.is_empty() {

@@ -608,7 +608,6 @@ mod tests {
     /// every fixture row of every owner-sliced table.
     #[test]
     fn every_sliced_table_keeps_its_owner_in_the_top_32_key_bits() {
-        use crate::rows::RowCodec;
         let mut sliced = 0;
         for table in TableId::ALL {
             let empty = TableRows::empty(table);

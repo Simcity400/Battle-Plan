@@ -193,6 +193,37 @@ fn branches_gaps_empty_truncated_unavailable_and_fifteen_hundred_countries() {
     }
 }
 
+/// Tables row frames leave to the native capture, private-alias tables among them, stream as the
+/// reference decodes them, left out in every hour or only some, in either capture mode.
+#[test]
+fn tables_left_to_the_native_capture_stream_as_not_recorded() {
+    use crate::scope::CaptureMode;
+    for mode in [CaptureMode::Full, CaptureMode::Map] {
+        let build = || {
+            test_recording::build_branches_mode(
+                b"stream-native",
+                &[(1, &[1, 2, 3, 4, 5, 6, 7], &[]), (2, &[3, 4, 5], &[4])],
+                |_, hour, tables| {
+                    tables[TableId::Divisions.index()] =
+                        TableView::Complete(TableRows::Divisions(Vec::new()));
+                    for table in [TableId::DivisionMovement, TableId::ArmyOrders] {
+                        tables[table.index()] = TableView::NotRecorded { mode };
+                    }
+                    if hour % 3 == 0 {
+                        tables[TableId::Divisions.index()] = TableView::NotRecorded { mode };
+                    }
+                    Metrics::default()
+                },
+                crate::container::MAX_BLOCK_RAW_BYTES,
+                mode,
+            )
+        };
+        for workers in [1, 3] {
+            compare(build(), &TableId::ALL, workers, workers > 1);
+        }
+    }
+}
+
 pub(crate) fn rewrite(
     replay: Replay,
     mut change: impl FnMut(usize, usize, &mut Vec<u8>),

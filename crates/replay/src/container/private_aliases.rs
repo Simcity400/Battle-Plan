@@ -1,6 +1,8 @@
 //! Storage-only alias marks, independent of native rows and their delta masks.
 use super::super::check::Check;
-use super::{complete, find, plain, update};
+use super::{complete, find, plain, resolved_update};
+#[cfg(test)]
+use super::update;
 use crate::{
     Hour,
     codec::{Decoder, invalid_static as invalid, put_varint},
@@ -892,7 +894,7 @@ impl Encoder {
             // A table the capture mode leaves out stores nothing to alias.
             if matches!(
                 &*decoded.tables[table.index()],
-                TableView::NotRecorded { .. }
+                TableView::NotRecorded { mode } if !crate::scope::records(*mode, table)
             ) {
                 continue;
             }
@@ -2169,7 +2171,7 @@ impl<'m> TableResolution<'m> {
             Some(emitted) => emitted,
             None => {
                 let _cpu = crate::cpu::reader("reader_canonical_diff", table);
-                update(table, &plain, at == 0)?
+                resolved_update(table, &plain, at == 0, &raw)?
             }
         });
         self.previous_raw = Some((hours[at], view));

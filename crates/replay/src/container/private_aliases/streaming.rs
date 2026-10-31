@@ -335,7 +335,7 @@ impl Resolution {
                 if self.table == TableId::Divisions {
                     self.sparse.provinces.reset(&loaded_sources)?;
                 }
-                let emitted = update(self.table, &plain, at == 0)?;
+                let emitted = resolved_update(self.table, &plain, at == 0, &raw)?;
                 (plain, emitted)
             }
         };

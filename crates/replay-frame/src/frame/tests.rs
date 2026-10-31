@@ -3706,7 +3706,7 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
 }
 
 #[test]
-fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
+fn a_frame_refuses_a_mix_of_capture_modes_and_tables_its_mode_leaves_out() {
     use crate::scope::CaptureMode;
     let map = map_input(source(1, 0));
     assert_eq!(map.capture_mode().unwrap(), CaptureMode::Map);
@@ -3714,21 +3714,34 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
     let mut extra = map.clone();
     extra.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::empty(TableId::DivisionStatus)).into();
-    // A table Map records, left out.
+    // A table marked in another mode.
+    let mut mixed = map.clone();
+    mixed.tables[TableId::Divisions.index()] = TableView::NotRecorded {
+        mode: CaptureMode::Full,
+    }
+    .into();
+    for input in [extra, mixed] {
+        assert!(input.capture_mode().is_err());
+        assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
+    }
+    // A table its mode records, left to the native capture.
     let mut missing = map.clone();
     missing.tables[TableId::Divisions.index()] = TableView::NotRecorded {
         mode: CaptureMode::Map,
     }
     .into();
-    // A table Full records, left out.
     let mut full = FrameInput::from(source(1, 0));
     full.tables[TableId::DivisionStatus.index()] = TableView::NotRecorded {
         mode: CaptureMode::Full,
     }
     .into();
-    for input in [extra, missing, full] {
-        assert!(input.capture_mode().is_err());
-        assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
+    for (input, table, mode) in [
+        (missing, TableId::Divisions, CaptureMode::Map),
+        (full, TableId::DivisionStatus, CaptureMode::Full),
+    ] {
+        assert_eq!(input.capture_mode().unwrap(), mode);
+        let encoded = FrameEncoder::new().encode_input(input, true).unwrap();
+        assert_eq!(encoded.tables[table.index()], TableUpdate::NotRecorded { mode });
     }
     // A frame naming no mode is Full and need not mark what Full leaves out.
     let mut unnamed = FrameInput::from(source(1, 0));
@@ -3742,6 +3755,63 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
             mode: CaptureMode::Full
         }
     );
+}
+
+/// A frame keeping some tables holds their updates as the whole frame encoded them and leaves
+/// every other table its mode records to the native capture; its hours chain as the whole
+/// frames' do.
+#[test]
+fn a_frame_keeping_some_tables_leaves_the_rest_to_the_native_capture() {
+    use crate::scope::{self, CaptureMode};
+    let kept = [TableId::Clock, TableId::Countries];
+    for mode in [CaptureMode::Full, CaptureMode::Map] {
+        let input = |hour| match mode {
+            CaptureMode::Full => FrameInput::from(source(1, hour)),
+            CaptureMode::Map => map_input(source(1, hour)),
+        };
+        let mut encoder = FrameEncoder::new();
+        let (mut whole, mut cut) = (FrameDecoder::new(), FrameDecoder::new());
+        for hour in 0..3 {
+            let mut prepared = encoder.prepare_bytes(input(hour), hour == 0).unwrap();
+            let complete = prepared.frame().decode().unwrap();
+            let encoded = prepared
+                .take_frame_keeping(|table| kept.contains(&table))
+                .unwrap();
+            encoder.commit(prepared).unwrap();
+            assert_eq!(encoded.keyframe(), hour == 0, "{mode} hour {hour}");
+            let frame = encoded.decode().unwrap();
+            assert_eq!(frame.capture_mode().unwrap(), mode);
+            assert_eq!(frame.metrics, complete.metrics, "{mode} hour {hour}");
+            let mut bytes = Vec::new();
+            let sizes = frame.encode_with_sizes(&mut bytes).unwrap();
+            assert_eq!(bytes[..], encoded.bytes[EncodedFrame::PREFIX_BYTES..]);
+            assert_eq!(sizes, frame.table_encoded_sizes().unwrap());
+            let expected = whole.apply(&complete).unwrap();
+            let decoded = cut.apply(&frame).unwrap();
+            for table in TableId::ALL {
+                let index = table.index();
+                if kept.contains(&table) {
+                    assert_eq!(frame.tables[index], complete.tables[index], "{mode} {table:?}");
+                    assert_eq!(
+                        *decoded.tables[index], *expected.tables[index],
+                        "{mode} {table:?} hour {hour}"
+                    );
+                } else if table.last_change().present(crate::FORMAT_VERSION) {
+                    assert_eq!(
+                        frame.tables[index],
+                        TableUpdate::NotRecorded { mode },
+                        "{mode} {table:?}"
+                    );
+                    assert_eq!(
+                        sizes[index],
+                        usize::from(scope::records(mode, table)),
+                        "{mode} {table:?}"
+                    );
+                    assert!(!decoded.recorded(table), "{mode} {table:?}");
+                }
+            }
+        }
+    }
 }
 
 #[test]

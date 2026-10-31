@@ -468,6 +468,44 @@ fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -
     })
 }
 
+/// The tables the row spool's frames hold beside those [`crate::history`] reads back: the
+/// recorder's clock, campaign, players and lexicon, and every table recording names read. The
+/// native capture holds every table.
+const SPOOL_TABLES: [TableId; 12] = [
+    TableId::Clock,
+    TableId::Campaign,
+    TableId::Players,
+    TableId::LocalPlayer,
+    TableId::LexicalTokens,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::Politics,
+    TableId::PoliticalParties,
+    TableId::Autonomy,
+    TableId::ReservedCountryNaming,
+];
+
+/// Whether the row spool's frames hold `table`'s updates.
+fn spooled(table: TableId) -> bool {
+    #[cfg(test)]
+    if KEEP_EVERY_TABLE.with(std::cell::Cell::get) {
+        return true;
+    }
+    SPOOL_TABLES.contains(&table) || crate::history::reads(table)
+}
+
+#[cfg(test)]
+thread_local! {
+    static KEEP_EVERY_TABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Spools every table's updates on this thread, for tests of the rows the encoder writes.
+#[cfg(test)]
+pub(crate) fn keep_every_table() {
+    KEEP_EVERY_TABLE.with(|keep| keep.set(true));
+}
+
 /// Tables whose packs witness their captures ([`crate::projection::Witness`]).
 const REPUBLISHING: [(&str, TableId); 9] = [
     ("division_templates", TableId::DivisionTemplates),
@@ -1528,7 +1566,7 @@ impl<B: SegmentBackend> Campaign<B> {
         };
         let columnar = self.columnar.prepare(prepared.input(), row, &lanes);
         let mut span = span.switch(crate::spool_phases::Phase::Write);
-        let encoded = prepared.take_frame();
+        let encoded = prepared.take_frame_keeping(spooled)?;
         // Rotate only at an already encoded keyframe; never reset the capture encoder for packing.
         let rotate = restarting || encoded.keyframe();
         let mut context = self.context(rotate, 2)?;
@@ -5511,6 +5549,7 @@ mod tests {
     #[test]
     fn validation_refuses_only_bad_table_and_next_hour_rebaselines() {
         use replay_frame::frame::{FrameDecoder, TableUpdate};
+        crate::spooling::keep_every_table();
         let directory =
             std::env::temp_dir().join(format!("hoi4-contain-table-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
@@ -6048,59 +6087,62 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A session's spool holds the spooled tables its mode records; it leaves every other table
+    /// its mode records to the native capture, and marks every table its mode leaves out.
     #[test]
-    fn a_map_session_spools_nothing_for_the_tables_it_leaves_out() {
+    fn a_session_spools_only_the_spooled_tables_its_mode_records() {
         use replay_data::scope::{self, CaptureMode};
         use replay_frame::frame::FrameDecoder;
-        let directory =
-            std::env::temp_dir().join(format!("hoi4-capture-mode-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        let mut start = session();
-        start.capture_mode = CaptureMode::Map;
-        let mut processor =
-            Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
-        for hour in [10, 11] {
-            processor.frame(&captured(hour)).unwrap();
-        }
-        processor.detach().unwrap();
-        let campaign = processor
-            .campaigns
-            .get_mut(std::str::from_utf8(ID).unwrap())
-            .unwrap();
-        let mut decoder = FrameDecoder::new();
-        let mut frames = 0;
-        for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
-            if !file.file_name().to_string_lossy().starts_with("spool.") {
-                continue;
+        for mode in CaptureMode::ALL {
+            let directory = std::env::temp_dir().join(format!(
+                "hoi4-capture-mode-{mode}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            let mut start = session();
+            start.capture_mode = mode;
+            let mut processor =
+                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+            for hour in [10, 11] {
+                processor.frame(&captured(hour)).unwrap();
             }
-            for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
-                let Record::Frame(frame) = record else {
+            processor.detach().unwrap();
+            let campaign = processor
+                .campaigns
+                .get_mut(std::str::from_utf8(ID).unwrap())
+                .unwrap();
+            let mut decoder = FrameDecoder::new();
+            let mut frames = 0;
+            for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
+                if !file.file_name().to_string_lossy().starts_with("spool.") {
                     continue;
-                };
-                assert_eq!(frame.capture_mode().unwrap(), CaptureMode::Map);
-                let decoded = decoder.apply(&frame).unwrap();
-                frames += 1;
-                for table in TableId::ALL {
-                    let left_out = table.last_change().present(replay_data::FORMAT_VERSION)
-                        && !scope::records(CaptureMode::Map, table);
-                    let view = &*decoded.tables[table.index()];
-                    assert_eq!(
-                        left_out,
-                        matches!(
-                            view,
-                            TableView::NotRecorded {
-                                mode: CaptureMode::Map
-                            }
-                        ),
-                        "{table:?}"
-                    );
                 }
-                assert!(decoded.complete::<tables::Clock>().is_ok());
+                for record in
+                    replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records
+                {
+                    let Record::Frame(frame) = record else {
+                        continue;
+                    };
+                    assert_eq!(frame.capture_mode().unwrap(), mode);
+                    let decoded = decoder.apply(&frame).unwrap();
+                    frames += 1;
+                    for table in TableId::ALL {
+                        let present = table.last_change().present(replay_data::FORMAT_VERSION);
+                        let held = scope::records(mode, table) && super::spooled(table);
+                        let view = &*decoded.tables[table.index()];
+                        assert_eq!(
+                            present && !held,
+                            matches!(view, TableView::NotRecorded { mode: marked } if *marked == mode),
+                            "{mode} {table:?}"
+                        );
+                    }
+                    assert!(decoded.complete::<tables::Clock>().is_ok());
+                }
             }
+            assert_eq!(frames, 2, "{mode}");
+            drop(processor);
+            fs::remove_dir_all(directory).unwrap();
         }
-        assert_eq!(frames, 2);
-        drop(processor);
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -6109,6 +6151,7 @@ mod tests {
         use crate::sampling::capture_scope_test_kit::{self as kit, Fixture};
         use replay_data::scope::{self, CaptureMode};
         use replay_frame::frame::FrameDecoder;
+        crate::spooling::keep_every_table();
         const CHILD: &str = "BATTLE_PLAN_MAP_DISPATCH_EQUIVALENCE";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -9089,6 +9132,7 @@ mod tests {
     fn periodic_keyframes_re_encode_held_sliced_rows_and_merging_continues_across_them() {
         use crate::slicing::SliceSelection;
         use replay_frame::frame::FrameDecoder;
+        crate::spooling::keep_every_table();
         let (mut campaign, store) = campaign();
         let owners = 1..=48_u32;
         let slice = |hour: i32, full: bool| {
@@ -9240,6 +9284,7 @@ mod tests {
     fn a_failed_slice_update_write_caches_the_merged_rows_of_its_hour() {
         use crate::slicing::SliceSelection;
         use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
+        crate::spooling::keep_every_table();
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let write = |campaign: &mut Campaign<MemoryBackend>,
@@ -9570,6 +9615,7 @@ mod tests {
     fn reserved_intel_latest_pair_survives_encoding_or_write_failure_recovery() {
         use replay_data::rows::ReservedCountryIntelSample;
         use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
+        crate::spooling::keep_every_table();
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -9854,6 +9900,7 @@ mod tests {
         use crate::line_output::{Drained, Entry};
         use replay_data::{rows::ProductionLineRow, rows::TableRows};
         use replay_frame::frame::FrameDecoder;
+        crate::spooling::keep_every_table();
         const LINE_A: u64 = 0x10_0000_0021;
         const LINE_B: u64 = 0x11_0000_0021;
         const VARIANT: u64 = 0x5_0000_0046;
@@ -10165,6 +10212,7 @@ mod tests {
     #[test]
     fn intel_shadow_reuses_exact_hourly_rows_through_keyframes_failed_writes_and_new_branches() {
         use replay_frame::frame::TableUpdate;
+        crate::spooling::keep_every_table();
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();
             let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -10410,6 +10458,7 @@ mod tests {
     #[test]
     fn scientist_daily_projection_survives_off_slot_keyframe_slot_and_following_delta() {
         use replay_frame::frame::{FrameDecoder, TableUpdate};
+        crate::spooling::keep_every_table();
         let (mut campaign, store) = campaign();
         let mut decoder = FrameDecoder::new();
         for (hour, daily, ordinal) in [(3, false, 0), (4, true, 0), (5, false, 1)] {
@@ -10480,6 +10529,7 @@ mod tests {
 
     #[test]
     fn staggered_complete_cache_and_encoder_share_refreshes_off_hours_and_keyframes() {
+        crate::spooling::keep_every_table();
         let (mut campaign, store) = campaign();
         let mut reference = FrameEncoder::new();
         let table = DAILY;
@@ -10585,6 +10635,7 @@ mod tests {
     #[test]
     fn latest_shared_sample_survives_encoding_or_write_failure_and_recovery_snapshots_it() {
         use replay_frame::frame::TableUpdate;
+        crate::spooling::keep_every_table();
         let table = DAILY;
         for fail_encoding in [false, true] {
             let (mut campaign, store) = campaign();

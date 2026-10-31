@@ -78,6 +78,7 @@ impl DiagnosticsCursor {
 pub(crate) struct TableCursor {
     table: TableId,
     format: FormatVersion,
+    mode: CaptureMode,
     layout: Layout,
     fields: usize,
     gap: Option<String>,
@@ -147,6 +148,7 @@ impl TableCursor {
             Self {
                 table,
                 format,
+                mode: replay.capture_mode,
                 layout,
                 fields,
                 gap: HISTORY[table.index()].table_gap(table, format.version()),
@@ -241,6 +243,7 @@ impl TableCursor {
         let Self {
             table,
             format,
+            mode,
             layout,
             fields,
             gap,
@@ -256,7 +259,7 @@ impl TableCursor {
             first,
             ..
         } = self;
-        let (table, format, layout, fields) = (*table, *format, *layout, *fields);
+        let (table, format, mode, layout, fields) = (*table, *format, *mode, *layout, *fields);
         let version = format.version();
         let decode = |plain: &[u8]| -> io::Result<TableUpdate> {
             #[cfg(test)]
@@ -265,7 +268,8 @@ impl TableCursor {
             );
             let _cpu = crate::cpu::scope("decode_wire", None);
             let mut input = Decoder::new(plain);
-            let update = decode_update(table, &HISTORY[table.index()], format, false, &mut input)?;
+            let update =
+                decode_recorded_update(table, &HISTORY[table.index()], format, mode, false, &mut input)?;
             input.finish()?;
             Ok(update)
         };

@@ -69,11 +69,7 @@ fn plain(
             out.push(4);
             put_string(&mut out, reason)?;
         }
-        TableView::NotRecorded { .. } => {
-            return Err(invalid(
-                "a table its capture mode does not record has no update",
-            ));
-        }
+        TableView::NotRecorded { .. } => out.push(5),
     }
     Ok(out)
 }
@@ -89,6 +85,20 @@ fn update(table: TableId, bytes: &[u8], keyframe: bool) -> io::Result<TableUpdat
     )?;
     input.finish()?;
     Ok(update)
+}
+
+/// The update of an hour whose stored update is `raw`, from its resolved bytes; a table the
+/// row frame leaves to the native capture resolves to `raw` itself.
+fn resolved_update(
+    table: TableId,
+    bytes: &[u8],
+    keyframe: bool,
+    raw: &TableUpdate,
+) -> io::Result<TableUpdate> {
+    match raw {
+        TableUpdate::NotRecorded { mode } => Ok(TableUpdate::NotRecorded { mode: *mode }),
+        _ => update(table, bytes, keyframe),
+    }
 }
 
 #[derive(Default)]

@@ -567,6 +567,56 @@ fn grouped_blocks_round_trip_every_update_kind() {
     );
 }
 
+/// Tables row frames leave to the native capture, private-alias tables among them, round trip as
+/// not recorded, in every hour of a block or only some.
+#[test]
+fn grouped_blocks_round_trip_tables_left_to_the_native_capture() {
+    let left = crate::frame::TableView::NotRecorded {
+        mode: crate::scope::CaptureMode::Full,
+    };
+    let mut frames = Vec::new();
+    for hour in 1..=30 {
+        let mut frame = source(1, hour);
+        for table in [TableId::Divisions, TableId::ArmyOrders] {
+            *frame.tables[table.index()] = left.clone();
+        }
+        if hour % 3 == 0 {
+            for table in [TableId::Provinces, TableId::DivisionMovement] {
+                *frame.tables[table.index()] = left.clone();
+            }
+        }
+        frames.push(frame);
+    }
+    let records = session_records(&frames);
+    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
+    let parallel = Parallel {
+        workers: 3,
+        on_worker: &|| {},
+    };
+    let mut read = Vec::new();
+    for block in &replay.index {
+        let frames = replay.read_block(block).unwrap();
+        assert_eq!(replay.read_block_parallel(block, &parallel).unwrap(), frames);
+        read.extend(frames);
+    }
+    assert_eq!(read, spool_frames(&records));
+    let decoded = decoded_hours(&replay);
+    assert_eq!(decoded.len(), frames.len());
+    for decoded in &decoded {
+        assert!(!decoded.recorded(TableId::Divisions));
+        assert!(!decoded.recorded(TableId::ArmyOrders));
+        for table in [TableId::Provinces, TableId::DivisionMovement] {
+            assert_eq!(
+                decoded.recorded(table),
+                decoded.hour % 3 != 0,
+                "{table:?} hour {}",
+                decoded.hour
+            );
+        }
+        assert!(decoded.complete::<crate::rows::tables::Countries>().is_ok());
+    }
+}
+
 #[test]
 fn current_recordings_write_again_to_the_same_hours() {
     let mut frames = Vec::new();

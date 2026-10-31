@@ -157,7 +157,14 @@ impl TableAnchors {
             let _memory = super::super::reader::ownership::category(
                 super::super::reader::ownership::Kind::Updates,
             );
-            decode_update(table, change, format, head.anchor.is_none(), &mut wire)?
+            decode_recorded_update(
+                table,
+                change,
+                format,
+                replay.capture_mode,
+                head.anchor.is_none(),
+                &mut wire,
+            )?
         };
         wire.finish()?;
         let update = match rows {

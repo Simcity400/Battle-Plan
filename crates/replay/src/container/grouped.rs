@@ -12,7 +12,7 @@ use crate::{
     format::FormatVersion,
     frame::{
         DecodedFrame, Frame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, SharedView,
-        TABLE_COUNT, TableUpdate, TableView, decode_update,
+        TABLE_COUNT, TableUpdate, TableView, decode_recorded_update, decode_update,
     },
     rows::{
         Change, Kind, TableId, TableRows, Token,
@@ -160,10 +160,14 @@ const DELTA: u8 = 1;
 const UNCHANGED: u8 = 2;
 const TRUNCATED: u8 = 3;
 const UNAVAILABLE: u8 = 4;
+/// The plain update of a table the row frame leaves to the native capture.
+const NOT_RECORDED: u8 = 5;
 const ANCHOR_DELTA: u8 = 5;
 const ANCHOR_UNCHANGED: u8 = 6;
 /// A delta against the previous frame, stored against its predictions.
 const RESIDUAL: u8 = 7;
+/// The entry of a [`NOT_RECORDED`] plain update.
+const NOT_RECORDED_ENTRY: u8 = 8;
 
 /// Plain encodings of byte fields by row key and field: patch bases. A row
 /// of a table with an [`advance_pair`] also keeps its head field's value and,
@@ -606,6 +610,7 @@ fn put_entry(
                 "grouped keyframe entry depends on a baseline",
             ));
         }
+        (NOT_RECORDED, _) => NOT_RECORDED_ENTRY,
         (status, _) => status,
     };
     put_varint(&mut out.0[CONTROL], u128::from(entry));
@@ -909,12 +914,12 @@ fn take_head(
     let allowed = match previous {
         None => matches!(
             entry,
-            SNAPSHOT | UNAVAILABLE | ANCHOR_DELTA | ANCHOR_UNCHANGED
+            SNAPSHOT | UNAVAILABLE | NOT_RECORDED_ENTRY | ANCHOR_DELTA | ANCHOR_UNCHANGED
         ),
         Some(_) => {
             matches!(
                 entry,
-                SNAPSHOT | DELTA | UNCHANGED | TRUNCATED | UNAVAILABLE
+                SNAPSHOT | DELTA | UNCHANGED | TRUNCATED | UNAVAILABLE | NOT_RECORDED_ENTRY
             ) || (entry == RESIDUAL && layout.predicts())
         }
     };
@@ -933,6 +938,7 @@ fn take_head(
     let status = match entry {
         ANCHOR_DELTA => DELTA,
         ANCHOR_UNCHANGED => UNCHANGED,
+        NOT_RECORDED_ENTRY => NOT_RECORDED,
         status => status,
     };
     plain.push(status);
@@ -1116,7 +1122,7 @@ fn take_body_checked(
                 }
             }
         }
-        UNCHANGED => {}
+        UNCHANGED | NOT_RECORDED => {}
         UNAVAILABLE => {
             let control = &mut input.0[CONTROL];
             let length = varint_usize(control)?;
@@ -3890,10 +3896,11 @@ fn keyframe_update(
     let marks = key_input.1.map(engine_allocation::copy_vec).transpose()?;
     let mut plain = Vec::new();
     let mut shadow = Shadow::new();
+    let mode = replay.capture_mode;
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
         let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
-        let update = decode_update(table, change, format, keyframe, &mut input)?;
+        let update = decode_recorded_update(table, change, format, mode, keyframe, &mut input)?;
         input.finish()?;
         Ok(update)
     };
@@ -4227,10 +4234,11 @@ fn raw_column(
         later_input.2 = chunks.ahead();
         keep_marks(&mut marks_read, later_input.1)?;
     }
+    let mode = context.replay.capture_mode;
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
         let _cpu = crate::cpu::scope("decode_wire", None);
         let mut input = Decoder::new(plain);
-        let update = decode_update(table, change, format, keyframe, &mut input)?;
+        let update = decode_recorded_update(table, change, format, mode, keyframe, &mut input)?;
         input.finish()?;
         Ok(update)
     };

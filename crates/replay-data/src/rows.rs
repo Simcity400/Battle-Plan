@@ -1595,6 +1595,7 @@ impl TableId {
                 }
                 visit(Token::Reason, token);
             }
+            5 => {}
             _ => return Err(invalid("unknown table status")),
         }
         input.finish()

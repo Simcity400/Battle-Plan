@@ -5,6 +5,7 @@ use replay::{container::Replay, recording_files};
 use replay_data::{
     codec::invalid, format::FormatVersion, identity::Identity, identity::SessionStart,
 };
+use replay_data::rows::TableId;
 use replay_frame::branches::BranchTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -363,6 +364,31 @@ fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
     Ok(paths)
 }
 
+const COMPLETIONS: [TableId; 1] = [TableId::OperationCompletions];
+const MAP_EVENTS: [TableId; 1] = [TableId::MapEvents];
+const NAVAL_RESULTS: [TableId; 1] = [TableId::NavalResultSources];
+const EVENT_LEDGERS: [TableId; 4] = [
+    TableId::AirLossEvents,
+    TableId::BuildingBombingDamage,
+    TableId::NuclearStrikes,
+    TableId::MarketEvents,
+];
+const EVENT_FEED: [TableId; 1] = [TableId::EventFeedHistory];
+
+/// Whether preparing a campaign's history reads `table` back from its recording's rows.
+pub(crate) fn reads(table: TableId) -> bool {
+    [
+        &COMPLETIONS[..],
+        &MAP_EVENTS,
+        &crate::extended::politics::TABLES,
+        &NAVAL_RESULTS,
+        &EVENT_LEDGERS,
+        &EVENT_FEED,
+    ]
+    .iter()
+    .any(|tables| tables.contains(&table))
+}
+
 /// The collector owns a resident history snapshot; append and rollback never change that snapshot.
 pub(crate) fn lease(path: &Path) -> io::Result<File> {
     OpenOptions::new()
@@ -372,9 +398,9 @@ pub(crate) fn lease(path: &Path) -> io::Result<File> {
 }
 
 fn completion_sequence(replay: &Replay) -> io::Result<u64> {
-    use replay_data::{rows::TableId, rows::tables};
+    use replay_data::rows::tables;
     use replay_frame::frame::FrameDecoder;
-    let selected = [TableId::OperationCompletions];
+    let selected = COMPLETIONS;
     let mut maximum = 0;
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
@@ -389,9 +415,9 @@ fn completion_sequence(replay: &Replay) -> io::Result<u64> {
 }
 
 fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
-    use replay_data::{rows::TableId, rows::tables};
+    use replay_data::rows::tables;
     use replay_frame::frame::FrameDecoder;
-    let selected = [TableId::MapEvents];
+    let selected = MAP_EVENTS;
     let mut latest = (0, 0);
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
@@ -409,7 +435,6 @@ fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
 }
 
 fn politics_epoch(replay: &Replay) -> io::Result<u64> {
-    use replay_data::rows::TableId;
     use replay_frame::frame::FrameDecoder;
     let selected = crate::extended::politics::TABLES;
     let mut latest = 0;
@@ -447,9 +472,9 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
 }
 
 fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
-    use replay_data::{rows::TableId, rows::tables};
+    use replay_data::rows::tables;
     use replay_frame::{frame::FrameDecoder, frame::TableView};
-    let selected = [TableId::NavalResultSources];
+    let selected = NAVAL_RESULTS;
     let mut maximum = 0;
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
@@ -469,14 +494,9 @@ fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
 }
 
 fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
-    use replay_data::{rows::TableId, rows::tables};
+    use replay_data::rows::tables;
     use replay_frame::{frame::FrameDecoder, frame::TableView};
-    let selected = [
-        TableId::AirLossEvents,
-        TableId::BuildingBombingDamage,
-        TableId::NuclearStrikes,
-        TableId::MarketEvents,
-    ];
+    let selected = EVENT_LEDGERS;
     let mut maximum = [None; 4];
     for block in &replay.index {
         let mut decoder = FrameDecoder::for_tables(&selected);
@@ -537,9 +557,9 @@ fn event_feed_history(
     Option<u64>,
     replay_data::event_feed_rows::EventFeedCounts,
 )> {
-    use replay_data::{rows::TableId, rows::tables};
+    use replay_data::rows::tables;
     use replay_frame::{frame::FrameDecoder, frame::TableView};
-    let selected = [TableId::EventFeedHistory];
+    let selected = EVENT_FEED;
     let mut maximum = None;
     let mut generation = None;
     let mut counts = replay_data::event_feed_rows::EventFeedCounts::default();

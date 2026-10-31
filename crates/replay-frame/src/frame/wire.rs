@@ -51,7 +51,7 @@ impl Frame {
                     return Ok(0);
                 }
                 let bytes = match &self.tables[table.index()] {
-                    TableUpdate::NotRecorded { .. } => 0,
+                    TableUpdate::NotRecorded { .. } => 1,
                     TableUpdate::Snapshot(rows) => 1 + rows.recorded_rows_bytes()?,
                     TableUpdate::Truncated { rows, .. } => 5 + rows.recorded_rows_bytes()?,
                     TableUpdate::Unavailable { reason } => 5 + reason.len(),
@@ -120,6 +120,7 @@ impl Frame {
                     update,
                     TableUpdate::Snapshot(_)
                         | TableUpdate::Unavailable { .. }
+                        | TableUpdate::NotRecorded { .. }
                         | TableUpdate::Incompatible { .. }
                 )
             {
@@ -171,9 +172,7 @@ impl Frame {
                     out.push(4);
                     put_string(out, reason)?;
                 }
-                TableUpdate::NotRecorded { .. } => {
-                    unreachable!("capture_mode refuses a recorded table without an update")
-                }
+                TableUpdate::NotRecorded { .. } => out.push(5),
             }
             sizes[table.index()] = out.len() - table_start;
         }
@@ -238,7 +237,8 @@ impl Frame {
                 continue;
             }
             let retain = selected.is_none_or(|tables| tables.contains(&table));
-            let update = decode_retained_update(table, change, format, keyframe, retain, input)?;
+            let update =
+                decode_retained_update(table, change, format, Some(mode), keyframe, retain, input)?;
             tables.push(
                 if retain
                     || matches!(update, TableUpdate::Incompatible { .. })
@@ -264,7 +264,8 @@ impl Frame {
 
 /// Decode one table's update in `format`, from its status byte. Absent tables
 /// read nothing; a catalogued layout gap discards the update's bytes by its
-/// proven framing and keeps their length.
+/// proven framing and keeps their length. A table the row frame leaves to the
+/// native capture is refused: [`decode_recorded_update`] reads it.
 pub fn decode_update(
     table: TableId,
     change: &LastChange,
@@ -272,7 +273,20 @@ pub fn decode_update(
     keyframe: bool,
     input: &mut Decoder<'_>,
 ) -> io::Result<TableUpdate> {
-    decode_retained_update(table, change, format, keyframe, true, input)
+    decode_retained_update(table, change, format, None, keyframe, true, input)
+}
+
+/// [`decode_update`] of an update a recording of `mode` stored, which may leave
+/// the table to the native capture.
+pub fn decode_recorded_update(
+    table: TableId,
+    change: &LastChange,
+    format: FormatVersion,
+    mode: CaptureMode,
+    keyframe: bool,
+    input: &mut Decoder<'_>,
+) -> io::Result<TableUpdate> {
+    decode_retained_update(table, change, format, Some(mode), keyframe, true, input)
 }
 
 /// [`decode_update`], validating an unretained delta's rows without
@@ -281,6 +295,7 @@ fn decode_retained_update(
     table: TableId,
     change: &LastChange,
     format: FormatVersion,
+    mode: Option<CaptureMode>,
     keyframe: bool,
     retain: bool,
     input: &mut Decoder<'_>,
@@ -294,6 +309,12 @@ fn decode_retained_update(
     input.recorded_fields = change.fields(table, format.version());
     let update_start = input.remaining();
     let status = input.u8()?;
+    // The row frame leaves the table to the native capture.
+    if status == 5 {
+        return mode
+            .map(|mode| TableUpdate::NotRecorded { mode })
+            .ok_or_else(|| invalid("unknown table status"));
+    }
     if let Some(reason) = gap {
         if keyframe && status != 0 && status != 4 {
             return Err(invalid("keyframe contains a dependent or partial table"));

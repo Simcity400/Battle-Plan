@@ -40,7 +40,7 @@ pub use self::decoder::{
     not_selected,
 };
 #[doc(hidden)]
-pub use self::wire::decode_update;
+pub use self::wire::{decode_recorded_update, decode_update};
 pub use self::{
     decoder::{FrameAdvance, FrameDecoder, Spare, Spares, change_credit},
     encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment},
@@ -118,7 +118,8 @@ pub enum TableView {
     Unavailable {
         reason: String,
     },
-    /// The recording's capture mode leaves the table out ([`crate::scope`]).
+    /// The recording's capture mode leaves the table out ([`crate::scope`]), or the row frame
+    /// leaves it to the native capture.
     NotRecorded {
         mode: CaptureMode,
     },
@@ -733,7 +734,7 @@ pub enum TableUpdate {
     Unavailable {
         reason: String,
     },
-    /// Stored as nothing.
+    /// Stored as nothing where the capture mode leaves the table out; elsewhere as its status.
     NotRecorded {
         mode: CaptureMode,
     },
@@ -885,8 +886,10 @@ fn recorded_here(table: TableId) -> bool {
         .present(crate::format::FormatVersion::CURRENT.version())
 }
 
-/// Refused unless exactly the tables the mode leaves out are NotRecorded. A frame that
-/// names no mode is Full, and need not name the tables Full leaves out: none is stored.
+/// Refused unless every table the mode leaves out is NotRecorded, in that one mode. A table
+/// the mode records may be NotRecorded too: the row frame leaves it to the native capture. A
+/// frame that names no mode is Full, and need not name the tables Full leaves out: none is
+/// stored.
 fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Result<CaptureMode> {
     let named = TableId::ALL
         .into_iter()
@@ -900,9 +903,6 @@ fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Resu
         match not_recorded(table.index()) {
             Some(other) if other != mode => {
                 return Err(invalid("frame names more than one capture mode"));
-            }
-            Some(_) if scope::records(mode, table) => {
-                return Err(invalid("frame leaves out a table its capture mode records"));
             }
             None if named.is_some() && !scope::records(mode, table) => {
                 return Err(invalid(
