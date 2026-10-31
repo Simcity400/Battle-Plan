@@ -1082,6 +1082,88 @@ impl JoinCosts {
     }
 }
 
+/// Free frames, taken newest first: an hour takes the frame the spool returned last, whose
+/// held stores are the previous hour's and whose memory is still cached.
+pub struct FreeFrames {
+    /// Bit `index` is set while that frame is free.
+    free: AtomicU64,
+    /// When each frame was last returned; an idle lease keeps its frame's.
+    returned: [AtomicU64; BUFFERS],
+    returns: AtomicU64,
+}
+
+const _: () = assert!(BUFFERS <= 64);
+
+impl FreeFrames {
+    pub const fn new() -> Self {
+        Self {
+            free: AtomicU64::new(0),
+            returned: [const { AtomicU64::new(0) }; BUFFERS],
+            returns: AtomicU64::new(0),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.free.load(Ordering::Acquire).count_ones() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Frees a returned frame as the newest.
+    pub fn push(&self, index: usize) -> Result<(), usize> {
+        if index >= BUFFERS {
+            return Err(index);
+        }
+        let stamp = self.returns.fetch_add(1, Ordering::Relaxed) + 1;
+        self.returned[index].store(stamp, Ordering::Relaxed);
+        self.restore(index)
+    }
+
+    /// Frees a leased frame again, as old as it was when taken.
+    pub fn restore(&self, index: usize) -> Result<(), usize> {
+        if index >= BUFFERS
+            || self.free.fetch_or(1 << index, Ordering::Release) & (1 << index) != 0
+        {
+            return Err(index);
+        }
+        Ok(())
+    }
+
+    /// The newest free frame.
+    pub fn pop(&self) -> Option<usize> {
+        let mut free = self.free.load(Ordering::Acquire);
+        loop {
+            let index = (0..BUFFERS)
+                .filter(|&index| free & (1 << index) != 0)
+                .max_by_key(|&index| self.returned[index].load(Ordering::Relaxed))?;
+            match self.free.compare_exchange_weak(
+                free,
+                free & !(1 << index),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(index),
+                Err(actual) => free = actual,
+            }
+        }
+    }
+
+    /// Takes `index` if it is free, and with `keep_one` only while another frame stays free.
+    pub fn take(&self, index: usize, keep_one: bool) -> bool {
+        if index >= BUFFERS {
+            return false;
+        }
+        let bit = 1_u64 << index;
+        self.free
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
+                (free & bit != 0 && (!keep_one || free.count_ones() >= 2)).then_some(free & !bit)
+            })
+            .is_ok()
+    }
+}
+
 pub struct Shared {
     /// Initialized before hook publication; workers own raw jobs, never frames.
     pub acquisition: OnceLock<acquisition::Pool>,
@@ -1146,7 +1228,7 @@ pub struct Shared {
     pub buffer_wait_ns: AtomicU64,
     pub buffer_wait_calls: AtomicU64,
     pub buffer_wait_max_ns: AtomicU64,
-    pub free: Arc<ArrayQueue<usize>>,
+    pub free: FreeFrames,
     pub(crate) frame_priority: Arc<crate::frame_priority::Pipeline>,
     pub ready: ArrayQueue<usize>,
     /// Single FIFO decode queue between the game thread and the spool ready
@@ -1494,7 +1576,6 @@ impl Shared {
             .then(|| Box::new(extended::country_counters::CounterStore::observed()));
         let appearance_store = cfg!(feature = "appearance_changes")
             .then(|| Box::new(extended::country_appearance::AppearanceStore::default()));
-        let free = Arc::new(ArrayQueue::new(BUFFERS));
         let frame_priority = Arc::new(crate::frame_priority::Pipeline::new());
         let army_stat_store = cfg!(feature = "army_stat_changes").then(|| {
             let slot = extended::division_presentation::held_store::Slot::new(Box::new(
@@ -1557,17 +1638,15 @@ impl Shared {
             buffer_wait_ns: AtomicU64::new(0),
             buffer_wait_calls: AtomicU64::new(0),
             buffer_wait_max_ns: AtomicU64::new(0),
-            free,
+            free: FreeFrames::new(),
             frame_priority,
             ready: ArrayQueue::new(BUFFERS),
             decode_queue: decode::new_queue(),
             dropped: AtomicU64::new(0),
             pool_bytes: Arc::new(AtomicU64::new(
                 (pool_bytes + size_of::<AtomicU64>() + 2 * size_of::<usize>()
-                    + size_of::<crate::frame_priority::Pipeline>() + 2 * size_of::<usize>()
-                    + std::alloc::Layout::new::<[AtomicUsize; 2]>()
-                        .extend(std::alloc::Layout::new::<ArrayQueue<usize>>()).unwrap().0
-                        .pad_to_align().size()) as u64,
+                    + size_of::<crate::frame_priority::Pipeline>() + 2 * size_of::<usize>())
+                    as u64,
             )),
             recording: AtomicBool::new(true),
             stop_spool: AtomicBool::new(false),
@@ -1795,16 +1874,14 @@ impl Shared {
         index
     }
 
-    /// Check after popping so a concurrent game pop cannot hide the last free frame.
-    pub(crate) fn take_idle_frame_for_growth(&self) -> Option<usize> {
-        let index = self.free.pop()?;
+    /// An idle frame while another stays free for the game's next hour.
+    pub(crate) fn take_idle_frame_for_growth(&self, index: usize) -> bool {
+        if !self.free.take(index, true) {
+            return false;
+        }
         self.frame_priority
             .claim(index, crate::frame_priority::Caller::Worker);
-        if self.free.is_empty() {
-            self.recycle_frame(index);
-            return None;
-        }
-        Some(index)
+        true
     }
 
     /// End the spool loop's idle wait. Allocation-free and lock-free, so the
@@ -1848,8 +1925,18 @@ impl Shared {
         self.recycle_frame(index);
     }
 
+    /// Frees an idle frame again, no newer than when it was taken.
+    pub(crate) fn restore_idle_frame_prepared(&self, index: usize) {
+        self.prepare_frame_for_reuse(index);
+        self.return_frame(index, false);
+    }
+
     /// Publish all completed writes before waking a callback waiting for reuse.
     pub fn recycle_frame(&self, index: usize) {
+        self.return_frame(index, true);
+    }
+
+    fn return_frame(&self, index: usize, newest: bool) {
         self.history_frames.recycle(index);
         // The caller owns this queue lease; its loss witnesses were consumed or restored.
         unsafe {
@@ -1859,7 +1946,11 @@ impl Shared {
         }
         let _returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
         self.frame_priority.publish(index);
-        let published = self.free.push(index);
+        let published = if newest {
+            self.free.push(index)
+        } else {
+            self.free.restore(index)
+        };
         debug_assert!(published.is_ok());
         self.frame_available.notify_one();
         drop(_returned);
@@ -1963,8 +2054,10 @@ impl Shared {
             Ordering::Relaxed,
         );
         result?;
-        for _ in 0..self.free.len() {
-            let Some(index) = self.free.pop() else { break };
+        for index in 0..BUFFERS {
+            if !self.free.take(index, false) {
+                continue;
+            }
             self.frame_priority
                 .claim(index, crate::frame_priority::Caller::Worker);
             let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
@@ -1972,7 +2065,7 @@ impl Shared {
             let result = frame.prepare_clock(required);
             self.pool_bytes
                 .fetch_add((frame.allocated_bytes() - before) as u64, Ordering::Relaxed);
-            self.recycle_frame(index);
+            self.return_frame(index, false);
             result?;
         }
         capture.prepared = required;

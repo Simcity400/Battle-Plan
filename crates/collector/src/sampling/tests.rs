@@ -1445,7 +1445,6 @@ fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
 #[test]
 fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     let shared = Shared::new(0, 0, 1);
-    assert_eq!(shared.free.capacity(), BUFFERS);
     assert_eq!(shared.ready.capacity(), BUFFERS);
     assert_eq!(shared.free.len(), BUFFERS);
     let mut bytes = size_of::<AtomicU64>() + 2 * size_of::<usize>();
@@ -1465,7 +1464,6 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
             .size()
     };
     bytes += arc(std::alloc::Layout::new::<crate::frame_priority::Pipeline>());
-    bytes += arc(std::alloc::Layout::new::<ArrayQueue<usize>>());
     for slot in &shared.frames {
         let frame = slot.load(Ordering::Acquire);
         assert!(!frame.is_null());
@@ -3014,14 +3012,16 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     crate::test_support::with_allocations_denied(|| {
         let mut capture = shared.wait_clock_preparation(&long);
         let (entry, _) = capture.read(&long, 0).unwrap();
-        for _ in 0..BUFFERS {
-            let index = shared.take_frame(&mut 0).unwrap();
+        let held: [usize; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0).unwrap());
+        for &index in &held {
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
             frame.set_clock(Some(entry));
             assert_eq!(
                 frame.clock.as_ref().unwrap().campaign_id.as_bytes().len(),
                 5_001
             );
+        }
+        for index in held {
             shared.recycle_frame(index);
         }
     });
@@ -3225,4 +3225,38 @@ fn every_air_bases_join_has_a_raw_payload_or_a_failure() {
             }
         }
     }
+}
+
+#[test]
+fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
+    let free = FreeFrames::new();
+    for index in 0..BUFFERS {
+        free.push(index).unwrap();
+    }
+    assert_eq!(free.restore(0), Err(0));
+    assert_eq!(free.len(), BUFFERS);
+    assert!(free.take(1, true));
+    assert!(!free.take(1, false));
+    // A return while the lease is out is newer than the leased frame.
+    let newest = free.pop().unwrap();
+    assert_eq!(newest, BUFFERS - 1);
+    free.push(newest).unwrap();
+    free.restore(1).unwrap();
+    assert_eq!(free.restore(1), Err(1));
+    assert!(free.take(BUFFERS - 1, false));
+    free.restore(BUFFERS - 1).unwrap();
+    let newest_first: Vec<_> = std::iter::from_fn(|| free.pop()).collect();
+    assert_eq!(newest_first, (0..BUFFERS).rev().collect::<Vec<_>>());
+    assert!(free.is_empty());
+    assert!(!free.take(0, false));
+    // The frame returned last is the next one taken.
+    free.push(2).unwrap();
+    free.push(0).unwrap();
+    assert_eq!(free.pop(), Some(0));
+    free.push(0).unwrap();
+    assert_eq!(free.pop(), Some(0));
+    // The last free frame stays for the game.
+    assert!(!free.take(2, true));
+    assert!(free.take(2, false));
+    assert!(free.is_empty());
 }

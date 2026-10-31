@@ -126,11 +126,7 @@ fn decode_panic_retains_its_lease_and_first_cause_across_later_drain() {
     .unwrap_err();
     assert_eq!(shared.ready.pop(), None);
     assert_eq!(shared.completed[interrupted].load(Ordering::Acquire), 0);
-    for _ in 0..shared.free.len() {
-        let free = shared.free.pop().unwrap();
-        assert_ne!(free, interrupted);
-        shared.free.push(free).unwrap();
-    }
+    assert!(!shared.free.take(interrupted, false));
     let first = failure::joined(panic, "worker failed");
     for expected in [
         "worker=decode worker",
@@ -3632,8 +3628,9 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     }
     assert!(shared.decode_queue.is_empty() && shared.ready.is_empty());
     assert_eq!(memory.reads.get(), reads);
+    // The frame recycled last is the next one taken.
     let index = shared.free.pop().unwrap();
-    assert_eq!(index, leases[0]);
+    assert_eq!(index, leases[1]);
     shared.completed[index].store(0, Ordering::Relaxed);
     memory.refuse.set(false);
     memory.written(13);
@@ -3656,7 +3653,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     // Reacquiring the same frame must not expose its previous successful store.
     shared.recycle_frame_prepared(index);
     let recycled = shared.free.pop().unwrap();
-    assert_eq!(recycled, leases[1]);
+    assert_eq!(recycled, index);
     shared.completed[recycled].store(0, Ordering::Relaxed);
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     kit::acquire(frame.extended.projects_pilot(), &memory, true);
@@ -3667,7 +3664,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     assert!(kit::variables(frame.extended.projects_pilot()).is_none());
     shared.recycle_frame_prepared(recycled);
     let index = shared.free.pop().unwrap();
-    assert_eq!(index, leases[0]);
+    assert_eq!(index, recycled);
     shared.completed[index].store(0, Ordering::Relaxed);
     memory.refuse.set(false);
     memory.written(17);

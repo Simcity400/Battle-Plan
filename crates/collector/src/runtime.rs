@@ -4547,13 +4547,13 @@ fn grow_combat_hints(
         return false;
     }
     let mut refused = false;
-    for _ in 0..shared.free.len() {
-        let Some(index) = shared.take_idle_frame_for_growth() else {
-            break;
-        };
+    for index in 0..sampling::BUFFERS {
+        if !shared.take_idle_frame_for_growth(index) {
+            continue;
+        }
         let hint = pending[index];
         if hint.land.is_none() && hint.naval.is_none() {
-            shared.recycle_frame_prepared(index);
+            shared.restore_idle_frame_prepared(index);
             continue;
         }
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -4570,7 +4570,7 @@ fn grow_combat_hints(
             applied[index].naval = hint.naval;
         }
         shared.pool_bytes.fetch_add(added as u64, Ordering::Relaxed);
-        shared.recycle_frame_prepared(index);
+        shared.restore_idle_frame_prepared(index);
     }
     refused
 }
@@ -4582,10 +4582,10 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .extended
         .combat_progress
         .presize(&live, shared.base);
-    for _ in 0..shared.free.len() {
-        let Some(idle_index) = shared.take_idle_frame_for_growth() else {
-            break;
-        };
+    for idle_index in 0..sampling::BUFFERS {
+        if !shared.take_idle_frame_for_growth(idle_index) {
+            continue;
+        }
         #[cfg(test)]
         if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
             check(sizing, shared);
@@ -4594,7 +4594,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         let before = idle.allocated_bytes();
         capacities.grow_frame(idle);
         sizing.account_frame(shared, idle, before);
-        shared.recycle_frame_prepared(idle_index);
+        shared.restore_idle_frame_prepared(idle_index);
     }
 }
 
