@@ -271,6 +271,8 @@ pub(super) struct Store {
     payload_bytes: usize,
     requested: bool,
     reordered: bool,
+    /// This walk's settlement replaced a held layout or settings payload.
+    changed: bool,
 }
 
 fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Certificate> {
@@ -391,6 +393,12 @@ impl Store {
     pub fn begin(&mut self) {
         self.requested = false;
         self.reordered = false;
+        self.changed = false;
+    }
+
+    /// Whether this walk's settlement published a payload other than the one held.
+    pub fn changed(&self) -> bool {
+        self.changed
     }
 
     /// This walk moved a held template within its roster.
@@ -628,6 +636,7 @@ impl Store {
                     && same_grid(&layout.regimental_support, 2)
             });
             if !layout_equal {
+                self.changed = true;
                 entry.layout = (|| {
                     if row.model_failure.is_some() {
                         return None;
@@ -659,6 +668,7 @@ impl Store {
                     }
                 });
             if !settings_equal {
+                self.changed = true;
                 entry.settings = Some(Arc::new(TemplateSettings {
                     roster_ordinal: r.roster_ordinal,
                     names_group: row

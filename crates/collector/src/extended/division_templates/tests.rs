@@ -1411,11 +1411,9 @@ fn site(name: &str) -> usize {
         .unwrap()
 }
 
-#[test]
-fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
+/// The fixture with a regiment grid on its template at 0x5000.
+fn gridded_fixture() -> Fixture {
     const A: usize = 0x5000;
-    const B: usize = 0x7800;
-    let changes = CoreChanges::new();
     let mut source = fixture();
     source.bytes[A + native::REGIMENT_DATA..][..8].copy_from_slice(&0x6100_u64.to_le_bytes());
     source.bytes[A + native::REGIMENT_DATA + 8..][..8]
@@ -1424,7 +1422,17 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
     source.bytes[0x6110..0x6118].copy_from_slice(&0x7000_u64.to_le_bytes());
     source.bytes[A + native::GRID_DIMENSIONS..][..4]
         .copy_from_slice(&0x0003_0001_u32.to_le_bytes());
+    source
+}
+
+#[test]
+fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
+    const A: usize = 0x5000;
+    const B: usize = 0x7800;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
     let mut capture = Captured::with_capacities(&capacity());
+    let mut previous = None;
     for hour in 0..16 {
         // The templates this hour reads in full.
         let read: &[usize] = match hour {
@@ -1523,11 +1531,49 @@ fn held_templates_read_nothing_and_every_other_template_is_read_in_full() {
         if read.is_empty() {
             assert_eq!(recording.shared(), 0, "hour {hour}");
         }
-        // Only a capture that read nothing and moved nothing witnesses its rows.
-        if !read.is_empty() || hour == 6 {
+        if hour == 6 {
             assert!(capture.witness.is_none(), "hour {hour}");
         }
+        // An hour witnessing the previous hour's rows publishes exactly them.
+        let tables = capture.tables();
+        if let Some((witness, rows)) = &previous
+            && capture.witness.is_some()
+            && capture.witness == *witness
+        {
+            assert_eq!(&tables, rows, "hour {hour}");
+        }
+        previous = Some((capture.witness, tables));
     }
+}
+
+#[test]
+fn a_writer_that_changes_no_template_keeps_the_witness_and_one_that_does_renews_it() {
+    const A: usize = 0x5000;
+    let changes = CoreChanges::new();
+    let mut source = gridded_fixture();
+    let mut capture = Captured::with_capacities(&capacity());
+    let mut witnesses = Vec::new();
+    for hour in 0..5 {
+        match hour {
+            2 => drop(changes.templates.notify(A, site("rebuild_template_caches"))),
+            3 => {
+                source.bytes[A + native::FORMATION_DIVISION_COUNT..][..4]
+                    .copy_from_slice(&19_i32.to_le_bytes());
+                drop(changes.templates.notify(A, site("rebuild_template_caches")));
+            }
+            _ => {}
+        }
+        let recording = Recording::new(&source);
+        capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
+        assert_eq!(recording.template(A) > 0, matches!(hour, 0 | 2 | 3), "hour {hour}");
+        // The first hour reads its countries afresh.
+        assert_eq!(capture.witness.is_some(), hour > 0, "hour {hour}");
+        witnesses.push(capture.witness);
+    }
+    // Re-read unchanged after the writer.
+    assert_eq!(witnesses[1], witnesses[2]);
+    assert_ne!(witnesses[2], witnesses[3]);
+    assert_eq!(witnesses[3], witnesses[4]);
 }
 
 /// Fresh-only observation reads every template under standing certificates.

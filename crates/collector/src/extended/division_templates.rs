@@ -197,11 +197,16 @@ pub struct Captured {
     /// Each walked template's span of `speed_keys`, by template, ascending;
     /// `None` is its counted refusal.
     speed_spans: Vec<(u64, Option<(usize, usize)>)>,
-    /// Writer tokens unchanged across a capture that read and refused nothing.
+    /// The roster of a walk that refused nothing with no writer running, for its settlement.
+    clean: Option<[u64; 5]>,
+    /// Names the held rows and payloads; renewed by any hour that did not publish exactly them.
+    generation: u64,
+    /// The held generation and roster of a clean hour, once settled.
     witness: Option<Witness>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.clean = None;
         self.witness = None;
         self.pending_owned = false;
         self.rows
@@ -256,11 +261,14 @@ impl Captured {
             locals: Arena::new(capacity.locals),
             speed_keys: Vec::new(),
             speed_spans: Vec::new(),
+            clean: None,
+            generation: 0,
             witness: None,
         }
     }
     pub fn reset(&mut self) {
         self.discard_owned();
+        self.clean = None;
         self.witness = None;
         self.preacquired = None;
         self.rows.reset();
@@ -599,44 +607,36 @@ impl Captured {
             .outcomes()
             .iter()
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }));
-        let held = !force
+        let clean = !force
             && complete
-            && templates[1] == 0
             && rereads == 0
             && speed_refusals == 0
             && self.model_failures == ModelFailures::default()
             && !self.country_cache.changed
-            && !self.held.reordered();
+            && !self.held.reordered()
+            && matches!(tokens, (Some(_), Some(_)))
+            && (changes.quiet(), changes.core_dependencies()) == tokens;
         // The counts catch an unhooked removal; an addition is always read. The
         // roster digest separates pooled buffers that hold different roster orders.
-        self.witness = match tokens {
-            (Some(quiet), Some(dependencies))
-                if held && (changes.quiet(), changes.core_dependencies()) == tokens =>
-            {
-                let roster = icon_rows.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, row| {
-                    [
-                        row.template,
-                        row.pointer as u64,
-                        u64::from(row.owner),
-                        u64::from(row.settings.roster_ordinal),
-                    ]
-                    .into_iter()
-                    .fold(hash, |hash, word| (hash ^ word).wrapping_mul(0x0100_0000_01b3))
-                });
-                Some(Witness::new([
-                    base as u64,
-                    state as u64,
-                    quiet.0,
-                    quiet.1,
-                    dependencies.0,
-                    dependencies.1,
-                    self.icon_rows.outcome.len() as u64,
-                    self.country_rows.outcome.len() as u64,
-                    roster,
-                ]))
-            }
-            _ => None,
-        };
+        self.clean = clean.then(|| {
+            let roster = icon_rows.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, row| {
+                [
+                    row.template,
+                    row.pointer as u64,
+                    u64::from(row.owner),
+                    u64::from(row.settings.roster_ordinal),
+                ]
+                .into_iter()
+                .fold(hash, |hash, word| (hash ^ word).wrapping_mul(0x0100_0000_01b3))
+            });
+            [
+                base as u64,
+                state as u64,
+                self.icon_rows.outcome.len() as u64,
+                self.country_rows.outcome.len() as u64,
+                roster,
+            ]
+        });
         [
             qpc().saturating_sub(start).max(0) as u64,
             icons.saturating_sub(country_native_ticks),
@@ -680,11 +680,20 @@ impl Captured {
         {
             self.country_snapshot = Some(std::sync::Arc::new(rows));
         }
-        if crate::allocation::failed() {
+        let failed = crate::allocation::failed();
+        if failed {
             self.discard_owned();
         } else {
             self.pending_owned = false;
         }
+        let clean = self.clean.take().filter(|_| !failed);
+        if clean.is_none() || self.core.changed() || self.held.changed() || self.generation == 0 {
+            self.generation = collector_projection::projection::generation();
+        }
+        // A clean hour published exactly what it holds, so a later unchanged hour matches it.
+        self.witness = clean.map(|[base, state, icons, countries, roster]| {
+            Witness::new([self.generation, base, state, icons, countries, roster])
+        });
     }
     /// DivisionTemplateIcons.speed_keys of every walked template, read from
     /// its template object after the walk; returns the refused templates.

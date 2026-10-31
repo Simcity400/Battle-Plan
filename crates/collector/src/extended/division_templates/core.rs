@@ -6,7 +6,7 @@ use crate::template_changes::Changes;
 /// Template, owner and local-definition writer stamps.
 pub(super) type Certificate = [(u64, u64); 3];
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 struct Core {
     row: native::IconRow,
     bytes: Vec<u8>,
@@ -99,6 +99,8 @@ pub(super) struct Store {
     entries: Vec<Entry>,
     live: Vec<u64>,
     payload_bytes: usize,
+    /// This walk read a row, or speed keys, other than the ones held, or held a row no longer.
+    changed: bool,
 }
 
 impl Store {
@@ -108,9 +110,15 @@ impl Store {
     }
 
     pub fn begin(&mut self) {
+        self.changed = false;
         for entry in &mut self.entries {
             entry.carried = false;
         }
+    }
+
+    /// Whether this walk's reads published anything other than the rows already held.
+    pub fn changed(&self) -> bool {
+        self.changed
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -180,12 +188,14 @@ impl Store {
         names: &[u8],
     ) {
         let Some(certificate) = certificate else {
+            self.changed = true;
             return;
         };
         if changes.sequence(row.pointer) != Some(certificate[0])
             || changes.sequence(row.owner as usize) != Some(certificate[1])
             || changes.core_dependencies() != Some(certificate[2])
         {
+            self.changed = true;
             return;
         }
         let found = self
@@ -196,6 +206,7 @@ impl Store {
             return;
         }
         let Some(core) = Core::read(row, bytes, counts, variants, names) else {
+            self.changed = true;
             if let Ok(at) = found {
                 let entry = self.entries.remove(at);
                 self.payload_bytes -= entry.core.allocated_bytes();
@@ -205,12 +216,14 @@ impl Store {
         let at = match found {
             Ok(at) => {
                 let entry = &mut self.entries[at];
+                self.changed |= entry.core != core;
                 self.payload_bytes -= entry.core.allocated_bytes();
                 entry.certificate = certificate;
                 entry.core = core;
                 at
             }
             Err(at) => {
+                self.changed = true;
                 if engine_allocation::reserve(&mut self.entries, 1).is_err() {
                     return;
                 }
@@ -245,6 +258,7 @@ impl Store {
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
         else {
+            self.changed = true;
             return;
         };
         let entry = &mut self.entries[at];
@@ -252,9 +266,14 @@ impl Store {
             || changes.sequence(entry.core.row.owner as usize) != Some(entry.certificate[1])
             || changes.core_dependencies() != Some(entry.certificate[2])
         {
+            self.changed = true;
             entry.speed = None;
             return;
         }
+        if entry.speed.as_deref() == keys {
+            return;
+        }
+        self.changed = true;
         entry.speed = keys.and_then(|keys| engine_allocation::copy_vec(keys).ok());
     }
 
