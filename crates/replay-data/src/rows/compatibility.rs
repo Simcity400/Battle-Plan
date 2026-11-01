@@ -76,6 +76,8 @@ pub const RAID_DISPATCHERS_FORMAT: u16 = 125;
 /// and 6) as tombstones: the game 1.19.4 has neither. Older recordings still decode
 /// the table and discard those values.
 pub const MARKET_AUTOMATION_FORMAT: u16 = 126;
+/// Exact combat base stats, accumulators and individual modifier values.
+pub const EXACT_COMBAT_FORMAT: u16 = 127;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1590,8 +1592,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::LandCombatDivisions.index()] = appended_at(
         TableId::LandCombatDivisions,
-        PRIVATE_COPY_ALIASES_FORMAT,
-        "container-private combat scalar aliases",
+        EXACT_COMBAT_FORMAT,
+        "exact combat inputs",
         &[
             AppendedField {
                 index: 30,
@@ -3051,8 +3053,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         introduced: LAND_MODIFIER_ROWS_FORMAT,
         ..table(
             TableId::LandCombatDivisionModifiers,
-            PRIVATE_COPY_ALIASES_FORMAT,
-            "container-private identity alias",
+            EXACT_COMBAT_FORMAT,
+            "exact combat inputs",
         )
     };
     history[TableId::FuelDemandParts.index()] = LastChange {
@@ -4442,7 +4444,14 @@ mod tests {
                 TableId::LandCombatDivisions | TableId::ProductionLines
             ) {
                 assert_eq!(history.kind, ChangeKind::Layout);
-                assert_eq!(history.format, PRIVATE_COPY_ALIASES_FORMAT);
+                assert_eq!(
+                    history.format,
+                    if field.table == TableId::LandCombatDivisions {
+                        EXACT_COMBAT_FORMAT
+                    } else {
+                        PRIVATE_COPY_ALIASES_FORMAT
+                    }
+                );
                 assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_some());
                 assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
                 continue;
@@ -4796,12 +4805,13 @@ mod tests {
                 CHUNKED_FORMAT,
                 RAID_DISPATCHERS_FORMAT,
                 MARKET_AUTOMATION_FORMAT,
+                EXACT_COMBAT_FORMAT,
             ],
             [
-                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126
+                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127
             ],
         );
-        assert_eq!(FORMAT_VERSION, MARKET_AUTOMATION_FORMAT);
+        assert_eq!(FORMAT_VERSION, EXACT_COMBAT_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
@@ -4860,13 +4870,22 @@ mod tests {
             (TableId::ProductionLines, 13),
         ] {
             assert_eq!(table.field_count(), fields);
-            assert_eq!(table.last_change().format, PRIVATE_COPY_ALIASES_FORMAT);
+            let format = if matches!(
+                table,
+                TableId::LandCombatDivisions | TableId::LandCombatDivisionModifiers
+            ) {
+                EXACT_COMBAT_FORMAT
+            } else {
+                PRIVATE_COPY_ALIASES_FORMAT
+            };
+            assert_eq!(table.last_change().format, format);
             assert!(
                 table
                     .last_change()
-                    .table_gap(table, PRIVATE_COPY_ALIASES_FORMAT)
+                    .table_gap(table, format)
                     .is_none()
             );
+            assert!(table.last_change().table_gap(table, format - 1).is_some());
             assert_eq!(table.field_name(fields), None);
         }
     }

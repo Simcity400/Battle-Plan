@@ -129,11 +129,17 @@ fn map_battle_windows_read_only_recorded_tables() {
                 bindings.entries[..2].iter().all(|side| !side.is_empty()),
                 "both sides' committed entries bind"
             );
-            // Division hovers name what they omit in the window's warnings.
             assert!(
-                bindings.warnings.iter().any(|warning| warning.contains(
-                    "division hover parts are omitted: division history: DivisionHistory not recorded in this recording"
-                )),
+                bindings.warnings.iter().any(|warning| warning
+                    .contains("has no DivisionStatus row, which holds its maximum")),
+                "{:?}",
+                bindings.warnings
+            );
+            assert!(
+                bindings
+                    .warnings
+                    .iter()
+                    .all(|warning| !warning.contains("division history:")),
                 "{:?}",
                 bindings.warnings
             );

@@ -773,14 +773,7 @@ pub(super) fn alias_fixture_at(layout: Layout, hours: &[Hour]) -> (Replay, Vec<F
         let mut member = LandCombatDivisionRow {
             combat: 17,
             division: 7,
-            stat_values: std::array::from_fn(|at| {
-                (if at == 2 {
-                    value
-                } else {
-                    LandCombatDivisionRow::STAT_STEP.round(value)
-                })
-                .into()
-            }),
+            stat_values: [value.into(); 5],
             armour: value,
             piercing: value,
             reconnaissance: value,

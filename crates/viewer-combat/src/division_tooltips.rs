@@ -1502,8 +1502,7 @@ pub(super) fn bind(
                 }
             };
             set_hover(values, "org_bar", organisation, None);
-            let template_name = |handle| template_display_name(loc, frame, handle);
-            let name = template_name(row.context.template);
+            let name = template_display_name(loc, frame, row.context.template);
             let invasion =
                 naval_invasion(*unit, &movements, &all_divisions, &provinces, &kinds, &wars);
             let summary = match invasion {
@@ -1519,127 +1518,7 @@ pub(super) fn bind(
             }
             .and_then(|progress| division_summary(icons, loc, &name?, row, progress, defines));
             let summary = match summary {
-                Ok(mut text) => {
-                    let transition = frame
-                        .complete::<tables::DivisionStatus>()
-                        .ok()
-                        .and_then(|rows| {
-                            rows.binary_search_by_key(unit, |r| r.division)
-                                .ok()
-                                .map(|at| &rows[at])
-                        })
-                        .ok_or_else(|| "division pending template status unavailable".to_owned())
-                        .and_then(|status| {
-                            status
-                                .pending_template
-                                .require("DivisionStatus.pending_template")
-                                .map_err(|reason| reason.to_string())
-                        })
-                        .and_then(|value| {
-                            value.ok_or_else(|| "division pending template unavailable".to_owned())
-                        })
-                        .and_then(|handle| {
-                            if handle == 0 {
-                                return Ok(None);
-                            }
-                            let old = template_name(handle)?;
-                            let new = template_name(row.context.template)?;
-                            builtin(
-                                icons,
-                                loc,
-                                "DIVISION_IN_TEMPLATE_TRANSFER",
-                                &[("OLD", Argument::Text(&old)), ("NEW", Argument::Text(&new))],
-                            )
-                            .map(Some)
-                        });
-                    match transition {
-                        Ok(Some(transition)) => {
-                            text.push('\n');
-                            text.push_str(&transition);
-                        }
-                        Ok(None) => {}
-                        Err(reason) => {
-                            *refused.entry(reason).or_default() += 1;
-                        }
-                    }
-                    let experience = frame
-                        .complete::<tables::DivisionStatus>()
-                        .ok()
-                        .and_then(|rows| {
-                            rows.binary_search_by_key(unit, |r| r.division)
-                                .ok()
-                                .map(|i| &rows[i])
-                        })
-                        // Only with a status row are the land inputs read.
-                        .and_then(|status| {
-                            frame
-                                .complete::<tables::DivisionLandInputs>()
-                                .ok()
-                                .and_then(|rows| {
-                                    rows.binary_search_by_key(unit, |r| r.division)
-                                        .ok()
-                                        .map(|i| (status, &rows[i]))
-                                })
-                        })
-                        .and_then(|(status, inputs)| {
-                            status.normalized_experience(
-                                inputs
-                                    .manpower
-                                    .iter()
-                                    .fold(0_i32, |sum, entry| sum.wrapping_add(entry.amount)),
-                            )
-                        });
-                    let experience = experience
-                        .ok_or_else(|| "division experience unavailable".to_owned())
-                        .and_then(|experience| {
-                            let defines =
-                                defines.ok_or("division experience defines unavailable")?;
-                            let content = defines.experience.as_ref().ok_or_else(|| {
-                                defines
-                                    .experience_refusal
-                                    .clone()
-                                    .unwrap_or("division experience defines unavailable".into())
-                            })?;
-                            division_experience_tooltip(icons, loc, content.progress(experience))
-                        });
-                    match experience {
-                        Ok(experience) => {
-                            text.push('\n');
-                            text.push_str(&experience);
-                        }
-                        Err(reason) => {
-                            *refused.entry(reason).or_default() += 1;
-                        }
-                    }
-
-                    match panel::text(static_content, frame, row.division) {
-                        Ok((stats, reasons)) => {
-                            text.push('\n');
-                            text.push_str(&stats);
-                            for reason in reasons {
-                                *refused.entry(reason).or_default() += 1;
-                            }
-                        }
-                        Err(reason) => {
-                            *refused.entry(reason).or_default() += 1;
-                        }
-                    }
-                    match history::text(static_content, frame, *unit) {
-                        Ok((history, reasons)) => {
-                            if !history.is_empty() {
-                                text.push('\n');
-                                text.push_str(&history);
-                            }
-                            for reason in reasons {
-                                *refused.entry(reason).or_default() += 1;
-                            }
-                        }
-                        Err(reason) => {
-                            *refused
-                                .entry(format!("division history: {reason}"))
-                                .or_default() += 1;
-                        }
-                    }
+                Ok(text) => {
                     unpierced += usize::from(defines.is_none());
                     hover_text(&text)
                 }

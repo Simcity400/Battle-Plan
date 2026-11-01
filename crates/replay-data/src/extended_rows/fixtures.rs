@@ -5974,8 +5974,8 @@ fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
     use crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT;
     let table = TableId::LandCombatDivisions;
     let fuel = [500_000, 1_000_000];
-    let stats = [3_000_000, 1_000_000, 50_000, 7_000_000, 2_000_000];
-    let scales = [99_000, 101_230, 100_000, 100_000];
+    let stats = [3_000_009, 1_000_001, 50_001, 7_009_999, 2_001_234];
+    let scales = [99_001, 101_239, 100_001, 100_009];
     let row = LandCombatDivisionRow {
         combat: 9,
         side: 1,
@@ -6008,7 +6008,7 @@ fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
     next.scales[0] = Recorded::Value(99_010);
     let delta = next.delta(Some(&row)).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 38);
-    next.stat_values[2] = Recorded::Value(50_001);
+    next.stat_values[2] = Recorded::Value(50_002);
     next.fuel_inputs[1] = Recorded::Value(999_999);
     let delta = next.delta(Some(&row)).unwrap().unwrap();
     assert_eq!(delta.mask, (1 << 32) | (1 << 35) | (1 << 38));
@@ -6021,32 +6021,25 @@ fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
         row
     );
     input.finish().unwrap();
-    // The stats and accumulators keep their display steps a field each:
-    // a drift below the printed precision is no change.
     let mut drifted = row.clone();
-    drifted.stat_values[0] = Recorded::Value(3_009_999);
-    drifted.scales[1] = Recorded::Value(101_239);
+    let drifted_stats = stats.map(|value| value + 1);
+    let drifted_scales = scales.map(|value| value - 1);
+    drifted.stat_values = drifted_stats.map(Recorded::Value);
+    drifted.scales = drifted_scales.map(Recorded::Value);
     RowCodec::round_to_display(&mut drifted);
-    assert_eq!(drifted, row);
-    // Hardness and the invasion scales stay exact.
-    let mut exact = row.clone();
-    exact.stat_values[2] = Recorded::Value(50_001);
-    exact.scales[2] = Recorded::Value(100_001);
-    RowCodec::round_to_display(&mut exact);
-    assert_eq!(
-        exact.stat_values(),
-        Some([3_000_000, 1_000_000, 50_001, 7_000_000, 2_000_000])
-    );
-    assert_eq!(exact.scales(), Some([99_000, 101_230, 100_001, 100_000]));
+    assert_eq!(drifted.stat_values(), Some(drifted_stats));
+    assert_eq!(drifted.scales(), Some(drifted_scales));
+    let delta = drifted.delta(Some(&row)).unwrap().unwrap();
+    assert_eq!(delta.mask, ((1_u64 << 9) - 1) << 33);
+    assert_eq!(delta.apply(Some(row.clone())).unwrap(), drifted);
 
-    // Format 101 held each as one packet. Its table is now refused after the
-    // private-alias layout change; the standalone retained packets still answer.
+    // Format 101's table is refused; its standalone retained packets still answer.
     let previous = crate::format::FormatVersion::read(LAND_DIVISION_NUMBERS_FORMAT - 1).unwrap();
     assert_eq!(
         previous.table_refusal(table).unwrap(),
         format!(
             "{table:?} layout or meaning changed at format {}; this recording is format {}",
-            crate::rows::compatibility::PRIVATE_COPY_ALIASES_FORMAT,
+            crate::rows::compatibility::EXACT_COMBAT_FORMAT,
             previous.version()
         )
     );

@@ -35,13 +35,7 @@ fn fixture(hour: i32) -> DecodedFrame {
         ..Default::default()
     };
     for (at, stat) in [11, 12, 20, 9, 10].into_iter().enumerate() {
-        let value = panel.panel_stats[stat].unwrap();
-        member.stat_values[at] = (if at == 2 {
-            value
-        } else {
-            LandCombatDivisionRow::STAT_STEP.round(value)
-        })
-        .into();
+        member.stat_values[at] = panel.panel_stats[stat].unwrap().into();
     }
     let status = DivisionStatusRow {
         division,

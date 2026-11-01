@@ -239,13 +239,7 @@ fn candidates(
     let mut values = [None; MEMBER_FIELDS];
     if let Some(panel) = panel {
         for (at, stat) in [11, 12, 20, 9, 10].into_iter().enumerate() {
-            values[at] = panel.panel_stats[stat].map(|value| {
-                if at == 2 {
-                    value
-                } else {
-                    LandCombatDivisionRow::STAT_STEP.round(value)
-                }
-            });
+            values[at] = panel.panel_stats[stat];
         }
         for (at, stat) in [(5, 13), (6, 14), (7, 3), (8, 15)] {
             values[at] = panel.panel_stats[stat];

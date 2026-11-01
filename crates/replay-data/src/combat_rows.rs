@@ -7,22 +7,10 @@ pub struct CombatModifierValue {
     pub value_a: i64,
     pub value_b: i64,
 }
-impl CombatModifierValue {
-    /// Both values at the game's display precision ([`crate::display`]): the
-    /// combat window prints them only as percentages with two decimals,
-    /// in the individual and attack/defence/breakthrough modifier lines,
-    /// every installed mod the same: 0.01% is 10 raw, truncated by the
-    /// fixed5 formatter. Those lines are skipped when a value is
-    /// zero and coloured and signed by it, so a nonzero value below one step
-    /// keeps one step with its sign (it then shows 0.01% where the game shows
-    /// 0.00%). The modifier icons read only `id`.
-    pub const STEP: crate::display::Step =
-        crate::display::Step::fixed5(10, crate::display::Rounding::TowardZeroNonzero);
-}
 value_struct!(CombatModifierValue {
     id: u32,
-    value_a @ Self::STEP: i64,
-    value_b @ Self::STEP: i64
+    value_a: i64,
+    value_b: i64
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1062,23 +1050,6 @@ impl LandCombatDivisionRow {
     pub fn scales(&self) -> Option<[i64; 4]> {
         recorded_or_packet(&self.scales, &self.scale_packet)
     }
-    /// Defence, breakthrough, soft and hard attack (`stat_values` 0, 1, 3 and
-    /// 4) at the game's display precision: base-value lines print one decimal,
-    /// truncated by the fixed5 formatter, as every installed mod does. By
-    /// owner decision 2026-10-11 the stat boxes (whole-unit formatting of
-    /// their products), the side headlines (one highlighted decimal,
-    /// two in BlackICE) and the early damage estimate behind the
-    /// heading frame, outcome text and map tint read the stepped values and
-    /// can differ from the game in their last digit at boundaries.
-    pub const STAT_STEP: crate::display::Step =
-        crate::display::Step::fixed5(10_000, crate::display::Rounding::TowardZero);
-    /// The attack and defence accumulators (`scales` 0 and 1) at the game's display precision:
-    /// total-modifier lines print percentages in a fixed colour with the default two decimals, 10
-    /// raw, truncated by the fixed5 formatter. By owner decision 2026-10-11 the stat boxes and the
-    /// heading read the stepped products and can differ from the game in their last digit at
-    /// boundaries.
-    pub const SCALE_STEP: crate::display::Step =
-        crate::display::Step::fixed5(10, crate::display::Rounding::TowardZero);
     /// The reinforcement calculation clamps the reserve speed share to [0, 0x30D40].
     pub const SPEED_SHARE_MAXIMUM: i64 = 200_000;
 }
@@ -1100,7 +1071,7 @@ fn recorded_or_packet<const N: usize>(
 }
 typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
- { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (name_type): I32, 4 => (name_order): I32, 5 => (name_ordered): U8, 6 => (name_programmatic): U8, 7 => (name_custom): Bytes, 8 => (name_group): Bytes, 9 => (strength_combat_factor): I64, 10 => (fuel_packet): Opaque, 11 => (stat_packet): Opaque, 12 => (armour): I64, 13 => (piercing): I64, 14 => (air_attack): I64, 15 => (reconnaissance): I64, 16 => (initiative): I64, 17 => (commander): U64, 18 => (scale_packet): Opaque, 19 => (context): Opaque, 20 => (width_terms): Opaque, 21 => (commander_inputs): Opaque, 22 => (reinforcement): Opaque, 23 => (reinforcement_modifiers): Opaque, 24 => (reinforcement_supply): Opaque, 25 => (reinforcement_acclimatization): Opaque, 26 => (reinforcement_transport): Opaque, 27 => (direction_group): I32, 28 => (exile): Opaque, 29 => (categories): U64, 30 => (reinforcement_speed): OptionalI64, 31 => (fuel_inputs[0]): I64, 32 => (fuel_inputs[1]): I64, 33 => (stat_values[0]): I64 @ Self::STAT_STEP, 34 => (stat_values[1]): I64 @ Self::STAT_STEP, 35 => (stat_values[2]): I64, 36 => (stat_values[3]): I64 @ Self::STAT_STEP, 37 => (stat_values[4]): I64 @ Self::STAT_STEP, 38 => (scales[0]): I64 @ Self::SCALE_STEP, 39 => (scales[1]): I64 @ Self::SCALE_STEP, 40 => (scales[2]): I64, 41 => (scales[3]): I64 }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); }
+ { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (name_type): I32, 4 => (name_order): I32, 5 => (name_ordered): U8, 6 => (name_programmatic): U8, 7 => (name_custom): Bytes, 8 => (name_group): Bytes, 9 => (strength_combat_factor): I64, 10 => (fuel_packet): Opaque, 11 => (stat_packet): Opaque, 12 => (armour): I64, 13 => (piercing): I64, 14 => (air_attack): I64, 15 => (reconnaissance): I64, 16 => (initiative): I64, 17 => (commander): U64, 18 => (scale_packet): Opaque, 19 => (context): Opaque, 20 => (width_terms): Opaque, 21 => (commander_inputs): Opaque, 22 => (reinforcement): Opaque, 23 => (reinforcement_modifiers): Opaque, 24 => (reinforcement_supply): Opaque, 25 => (reinforcement_acclimatization): Opaque, 26 => (reinforcement_transport): Opaque, 27 => (direction_group): I32, 28 => (exile): Opaque, 29 => (categories): U64, 30 => (reinforcement_speed): OptionalI64, 31 => (fuel_inputs[0]): I64, 32 => (fuel_inputs[1]): I64, 33 => (stat_values[0]): I64, 34 => (stat_values[1]): I64, 35 => (stat_values[2]): I64, 36 => (stat_values[3]): I64, 37 => (stat_values[4]): I64, 38 => (scales[0]): I64, 39 => (scales[1]): I64, 40 => (scales[2]): I64, 41 => (scales[3]): I64 }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); }
     if matches!(row.reinforcement_speed, Recorded::Value(Some(share)) if !(0..=LandCombatDivisionRow::SPEED_SHARE_MAXIMUM).contains(&share)) { return Err(invalid("reserve speed share outside reinforcement bounds")); } Ok(()) });
 
 /// LandCombatModifiers: one row a side of each combat whose modifier context

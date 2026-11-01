@@ -50,7 +50,7 @@ fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() 
     assert_eq!(table.field_name(1), Some("entries"));
     assert_eq!(table.field_name(2), None);
     assert_eq!(table.field_count(), 2);
-    let row = member(u32::MAX, vec![entry(7, 10, -20)]);
+    let row = member(u32::MAX, vec![entry(7, 11, -29), entry(8, 1, -1)]);
     assert_eq!(
         row.key(),
         LandCombatDivisionRow {
@@ -97,13 +97,14 @@ fn one_division_whose_entries_change_stores_only_its_row() {
     let delta = after[1].delta(Some(&before[1])).unwrap().unwrap();
     assert_eq!(delta.mask, 1 << 1);
     assert_eq!(delta.apply(Some(before[1].clone())).unwrap(), after[1]);
-    // Values below a displayed step round onto it, so a drift inside one
-    // stores no change.
     let mut drifted = after[1].clone();
     drifted.entries[1].value_a = 69;
+    drifted.entries[1].value_b = -1;
     drifted.round_to_display();
-    assert_eq!(drifted, after[1]);
-    assert!(after[1].delta(Some(&drifted)).unwrap().is_none());
+    assert_eq!(drifted.entries[1], entry(2, 69, -1));
+    let delta = drifted.delta(Some(&after[1])).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 1);
+    assert_eq!(delta.apply(Some(after[1].clone())).unwrap(), drifted);
 }
 
 #[test]

@@ -370,13 +370,14 @@ mod tests {
             if version < crate::rows::compatibility::NUCLEAR_STRIKES_FORMAT {
                 expected.push(TableId::NuclearStrikes);
             }
-            if version < crate::rows::compatibility::PRIVATE_COPY_ALIASES_FORMAT {
+            if version < crate::rows::compatibility::EXACT_COMBAT_FORMAT {
                 expected.extend([
                     TableId::LandCombatDivisions,
                     TableId::LandCombatDivisionModifiers,
-                    TableId::Divisions,
-                    TableId::ProductionLines,
                 ]);
+            }
+            if version < crate::rows::compatibility::PRIVATE_COPY_ALIASES_FORMAT {
+                expected.extend([TableId::Divisions, TableId::ProductionLines]);
             }
             if version < crate::rows::compatibility::FUEL_DEMAND_PARTS_FORMAT {
                 expected.push(TableId::FuelDemandParts);
