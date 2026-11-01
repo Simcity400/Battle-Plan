@@ -14,8 +14,43 @@ use std::{mem::size_of, sync::Mutex};
 // complete daily values. Each payload owns its resolved rows before resuming.
 #[derive(Default)]
 struct DailyObservers {
+    /// In visit order, which the next hour's walk repeats.
     rows: Vec<replay_data::rows::CombatLogObserverRow>,
+    /// `rows` indices by semantic key; the keys are unique.
+    sorted: Vec<u32>,
     charge: crate::raw_memory::Charge,
+}
+
+impl DailyObservers {
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.sorted.clear();
+    }
+
+    /// The held row with `row`'s semantic key: first the one after the
+    /// previous match, as the walk repeats last hour's order, else by key.
+    fn find(
+        &self,
+        row: &replay_data::rows::CombatLogObserverRow,
+        next: &std::cell::Cell<usize>,
+    ) -> Option<&replay_data::rows::CombatLogObserverRow> {
+        let key = row.semantic_key();
+        let at = Some(next.get())
+            .filter(|&at| {
+                self.rows
+                    .get(at)
+                    .is_some_and(|held| held.semantic_key() == key)
+            })
+            .or_else(|| {
+                let position = self
+                    .sorted
+                    .binary_search_by_key(&key, |&at| self.rows[at as usize].semantic_key())
+                    .ok()?;
+                Some(self.sorted[position] as usize)
+            })?;
+        next.set(at + 1);
+        Some(&self.rows[at])
+    }
 }
 static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
@@ -81,6 +116,8 @@ pub struct Captured {
     observer_scratch: std::sync::Mutex<collector_combat_log::observer_projection::Scratch>,
     daily_refresh: bool,
     daily_previous: Option<DailyObservers>,
+    /// The held row after this hour's latest match ([`DailyObservers::find`]).
+    observer_cursor: usize,
 }
 
 impl Captured {
@@ -102,6 +139,7 @@ impl Captured {
             observer_scratch: Default::default(),
             daily_refresh: true,
             daily_previous: None,
+            observer_cursor: 0,
         }
     }
     pub fn reset(&mut self) {
@@ -146,7 +184,7 @@ impl Captured {
         {
             // Revoke before dispatch, even if this worker is rejected. Retain
             // the allocation for the next native acquisition to reuse.
-            previous.rows.clear();
+            previous.clear();
         }
     }
 
@@ -158,10 +196,11 @@ impl Captured {
             .unwrap_or_else(|e| e.into_inner())
             .take();
         self.daily_previous = previous;
+        self.observer_cursor = 0;
         if self.daily_refresh
             && let Some(previous) = &mut self.daily_previous
         {
-            previous.rows.clear();
+            previous.clear();
         }
         self.equipment.reset();
         self.len = 0;
@@ -243,20 +282,15 @@ impl Captured {
         self.rows.rows[self.len] = source.id;
         self.len += 1;
         if self.observer_failure.is_none() {
+            let cursor = std::cell::Cell::new(self.observer_cursor);
             for (side, pointer) in source.sides.into_iter().enumerate() {
                 let mut storage = Ok(());
                 use replay_data::rows::{CombatLogObserverKind as K, CombatLogObserverRow};
-                let previous = self
-                    .daily_previous
-                    .as_ref()
-                    .map(|held| held.rows.as_slice())
-                    .unwrap_or_default();
+                let previous = self.daily_previous.as_ref();
                 let mut parent_held = false;
                 let lookup = |row: &CombatLogObserverRow| {
                     previous
-                        .binary_search_by_key(&row.semantic_key(), |row| row.semantic_key())
-                        .ok()
-                        .map(|at| &previous[at])
+                        .and_then(|held| held.find(row, &cursor))
                         .filter(|held| {
                             (held.identity, held.identity_2, held.identity_3)
                                 == (row.identity, row.identity_2, row.identity_3)
@@ -295,13 +329,15 @@ impl Captured {
                         }
                     }
                 };
-                let read =
-                    engine_land_inputs::combat_log_events::observer(memory, base, pointer, &mut put);
+                let read = engine_land_inputs::combat_log_events::observer(
+                    memory, base, pointer, &mut put,
+                );
                 if let Err(reason) = read.and(storage) {
                     self.observer_failure = Some(reason);
                     break;
                 }
             }
+            self.observer_cursor = cursor.get();
         }
     }
     pub fn finish(&mut self, parent: Outcome) {
@@ -330,26 +366,30 @@ impl Captured {
     }
     fn remember_daily(&mut self) {
         let mut next = self.daily_previous.take().unwrap_or_default();
-        next.rows.clear();
+        next.clear();
         let complete =
             self.observer_failure.is_none() && matches!(self.rows.outcome, Outcome::Rows { .. });
         let stored = complete
+            && u32::try_from(self.observers.len()).is_ok()
             && engine_allocation::advisory(|| {
-                engine_allocation::reserve(&mut next.rows, self.observers.len())
+                engine_allocation::reserve(&mut next.rows, self.observers.len())?;
+                engine_allocation::reserve(&mut next.sorted, self.observers.len())
             })
             .is_ok();
         let next = if stored {
             next.rows.extend(self.observers.iter().cloned());
-            next.rows.sort_unstable_by_key(|row| row.semantic_key());
+            let DailyObservers { rows, sorted, .. } = &mut next;
+            sorted.extend(0..rows.len() as u32);
+            sorted.sort_unstable_by_key(|&at| rows[at as usize].semantic_key());
+            let unique = !sorted.windows(2).any(|pair| {
+                rows[pair[0] as usize].semantic_key() == rows[pair[1] as usize].semantic_key()
+            });
             next.charge.set(crate::raw_memory::Capacity {
-                auxiliary_vectors: crate::raw_memory::vector_bytes(&next.rows),
+                auxiliary_vectors: crate::raw_memory::vector_bytes(&next.rows)
+                    + crate::raw_memory::vector_bytes(&next.sorted),
                 ..Default::default()
             });
-            (!next
-                .rows
-                .windows(2)
-                .any(|rows| rows[0].semantic_key() == rows[1].semantic_key()))
-            .then_some(next)
+            unique.then_some(next)
         } else {
             None
         };
@@ -419,21 +459,23 @@ impl Captured {
                 },
             ),
             match self.outcomes()[1] {
-                Outcome::Rows { .. } => match collector_combat_log::observer_projection::project_with(
-                    &self.observers,
-                    previous,
-                    &mut self
-                        .observer_scratch
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                ) {
-                    Ok(rows) => {
-                        TableView::Complete(replay_data::rows::TableRows::CombatLogObservers(rows))
+                Outcome::Rows { .. } => {
+                    match collector_combat_log::observer_projection::project_with(
+                        &self.observers,
+                        previous,
+                        &mut self
+                            .observer_scratch
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    ) {
+                        Ok(rows) => TableView::Complete(
+                            replay_data::rows::TableRows::CombatLogObservers(rows),
+                        ),
+                        Err(reason) => TableView::Unavailable {
+                            reason: reason.into(),
+                        },
                     }
-                    Err(reason) => TableView::Unavailable {
-                        reason: reason.into(),
-                    },
-                },
+                }
                 Outcome::Unavailable { reason } => TableView::Unavailable {
                     reason: reason.into(),
                 },

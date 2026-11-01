@@ -323,6 +323,7 @@ fn constructor_sites(family: Family) -> Vec<usize> {
             world_lifetime_sites::CONSTRUCT.rva,
             world_lifetime_sites::DELETE.rva,
             world_lifetime_sites::STATE_RELOAD.rva,
+            world_lifetime_sites::STRAITS_RELOAD.rva,
         ],
     };
     match family {

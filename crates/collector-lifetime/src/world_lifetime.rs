@@ -60,6 +60,7 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static DELETE_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 static STATE_RELOAD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
+static STRAITS_RELOAD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 pub fn generation() -> u64 {
     SIGNAL.generation.load(Ordering::SeqCst)
@@ -132,12 +133,20 @@ extern "system" fn deleting() {
 /// state and its template: the world is invalid from its entry, and again at
 /// its return, so a boundary while it runs admits nothing it wrote.
 unsafe extern "system" fn state_reload(editor: usize, b: usize, c: usize, d: usize) -> usize {
+    unsafe { reload(&STATE_RELOAD_ORIGINAL, editor, b, c, d) }
+}
+/// The authored adjacency loader (`native::STRAITS_RELOAD`) rewrites the
+/// provinces' neighbour records, which per-world stores hold, in the same way.
+unsafe extern "system" fn straits_reload(map: usize, b: usize, c: usize, d: usize) -> usize {
+    unsafe { reload(&STRAITS_RELOAD_ORIGINAL, map, b, c, d) }
+}
+unsafe fn reload(original: &AtomicUsize, a: usize, b: usize, c: usize, d: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     SIGNAL.invalidate();
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
-        unsafe { std::mem::transmute(STATE_RELOAD_ORIGINAL.load(Ordering::Acquire)) };
-    let result = timing.original(|| unsafe { original(editor, b, c, d) });
+        unsafe { std::mem::transmute(original.load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(a, b, c, d) });
     SIGNAL.invalidate();
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
     result
@@ -177,6 +186,7 @@ pub struct Hooks {
     taps: [Tap; 2],
     delete: Hook,
     state_reload: Hook,
+    straits_reload: Hook,
 }
 impl Hooks {
     /// # Safety
@@ -196,6 +206,7 @@ impl Hooks {
             &native::RESET,
             &native::CONSTRUCT,
             &native::STATE_RELOAD,
+            &native::STRAITS_RELOAD,
             &native::DELETE,
         ] {
             if !crate::hook::installation::sentinel(memory, base + site.rva, site.sentinel) {
@@ -229,10 +240,20 @@ impl Hooks {
         }
         .map_err(|_| "native state reload hook construction failed")?;
         STATE_RELOAD_ORIGINAL.store(state_reload.trampoline(), Ordering::SeqCst);
+        let straits_reload = unsafe {
+            Hook::new(
+                base + native::STRAITS_RELOAD.rva,
+                straits_reload as *const () as usize,
+                native::STRAITS_RELOAD.sentinel,
+            )
+        }
+        .map_err(|_| "native straits reload hook construction failed")?;
+        STRAITS_RELOAD_ORIGINAL.store(straits_reload.trampoline(), Ordering::SeqCst);
         Ok(Self {
             taps,
             delete,
             state_reload,
+            straits_reload,
         })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -247,6 +268,7 @@ impl Hooks {
                 construct.publication_hook(),
                 &mut self.delete,
                 &mut self.state_reload,
+                &mut self.straits_reload,
             ],
             enabled,
         )
@@ -262,6 +284,7 @@ impl Hooks {
             .flat_map(Tap::executable_ranges)
             .chain(self.delete.executable_ranges())
             .chain(self.state_reload.executable_ranges())
+            .chain(self.straits_reload.executable_ranges())
             .chain(std::iter::once(delete_range()))
     }
 }

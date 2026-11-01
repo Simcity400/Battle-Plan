@@ -76,6 +76,29 @@ pub(crate) const PHASE_NAMES: [&str; PHASES] = [
 ];
 // The local-refusal count is a subset of owned admission, not another pass.
 static SOURCE_ADMISSIONS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+/// Ordered hours by the first condition that refused owned settlement.
+const ORDERED_REASONS: [&str; 13] = [
+    "owned settlement off",
+    "preparation not ready",
+    "no divisions",
+    "no army stat store",
+    "no boundary",
+    "boundary failed",
+    "world epoch",
+    "lifetime epoch",
+    "retired variants",
+    "no variant capability",
+    "part sources not ready",
+    "part rows short",
+    "part reads incomplete",
+];
+static ORDERED_BY_REASON: [AtomicU64; ORDERED_REASONS.len()] =
+    [const { AtomicU64::new(0) }; ORDERED_REASONS.len()];
+fn count_ordered(reason: &'static str) {
+    if let Some(index) = ORDERED_REASONS.iter().position(|known| *known == reason) {
+        ORDERED_BY_REASON[index].fetch_add(1, Ordering::Relaxed);
+    }
+}
 pub(crate) fn source_admission_data() -> impl serde::Serialize {
     let [owned, local_refusal, ordered, unavailable] =
         SOURCE_ADMISSIONS
@@ -86,6 +109,15 @@ pub(crate) fn source_admission_data() -> impl serde::Serialize {
         "owned_local_province_refusal": local_refusal,
         "ordered": ordered,
         "unavailable": unavailable,
+        "incomplete_reads": crate::status::map(
+            collector_division_parts::panel_sources::incomplete_read_counts().into_iter()
+        ),
+        "ordered_by_reason": crate::status::map(
+            ORDERED_REASONS
+                .iter()
+                .zip(&ORDERED_BY_REASON)
+                .map(|(reason, count)| (*reason, count.load(Ordering::Relaxed)))
+        ),
     })
 }
 pub const TABLES: [TableId; N] = [
@@ -2052,6 +2084,25 @@ impl Captured {
         } else {
             SOURCE_ADMISSIONS[if army_stats.is_some() { 2 } else { 3 }]
                 .fetch_add(1, Ordering::Relaxed);
+            if army_stats.is_some() {
+                count_ordered(if !self.owned_settlement {
+                    "owned settlement off"
+                } else if !ready {
+                    "preparation not ready"
+                } else if rows.is_empty() {
+                    "no divisions"
+                } else {
+                    army_stats
+                        .as_deref()
+                        .and_then(|store| store.sources.owned_refusal())
+                        .or_else(|| {
+                            probes[..preparation_count]
+                                .iter()
+                                .find_map(|part| part.source_refusal())
+                        })
+                        .unwrap_or("no army stat store")
+                });
+            }
         }
         self.attack.sources = if self.sources_deferred {
             None

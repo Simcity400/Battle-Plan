@@ -171,6 +171,12 @@ pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> 
     WATCHES.observed_sequence_at(receiver, slot)
 }
 
+/// [`sequence_at`] that registers a receiver no slot names yet, for range
+/// reads that read a cold receiver themselves. Registration is lock-free.
+pub fn register_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+    WATCHES.sequence_at(receiver, slot)
+}
+
 /// Provisional range lookup; the ordered consumer still registers the receiver.
 pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.observed_sequence(receiver)

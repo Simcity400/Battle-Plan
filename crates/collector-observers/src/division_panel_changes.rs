@@ -110,6 +110,14 @@ pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> 
 pub fn state_sequence_at(state: u32, slot: usize) -> Option<((u64, u64), usize)> {
     STATES.observed_sequence_at(state as usize, slot)
 }
+/// [`sequence_at`] and [`state_sequence_at`] that register a receiver no slot
+/// names yet, for range reads that read a cold receiver themselves.
+pub fn register_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
+    OPERANDS.sequence_at(receiver, slot)
+}
+pub fn state_register_at(state: u32, slot: usize) -> Option<((u64, u64), usize)> {
+    STATES.sequence_at(state as usize, slot)
+}
 
 /// Passive lookups for range reads, revalidated at ordered admission.
 pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {

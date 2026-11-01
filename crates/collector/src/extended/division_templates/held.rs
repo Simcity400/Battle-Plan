@@ -273,7 +273,12 @@ pub(super) struct Store {
     reordered: bool,
     /// This walk's settlement replaced a held layout or settings payload.
     changed: bool,
+    /// Each walk visit's entry index ([`hinted`]) and this walk's visits.
+    hints: Vec<u32>,
+    visits: usize,
 }
+
+use super::core::hinted;
 
 fn certificate(changes: &dyn Changes, pointer: usize, owner: u32) -> Option<Certificate> {
     Some([
@@ -394,6 +399,7 @@ impl Store {
         self.requested = false;
         self.reordered = false;
         self.changed = false;
+        self.visits = 0;
     }
 
     /// Whether this walk's settlement published a payload other than the one held.
@@ -410,6 +416,7 @@ impl Store {
         self.entries.capacity() * size_of::<Entry>()
             + self.live.capacity() * size_of::<u64>()
             + self.payload_bytes
+            + self.hints.capacity() * size_of::<u32>()
     }
 
     /// Only a complete existing census may retire payloads. Ordinary quiet
@@ -460,10 +467,17 @@ impl Store {
         current: Option<Certificate>,
         fresh: bool,
     ) -> bool {
-        let at = match self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-        {
+        let slot = self.visits;
+        self.visits += 1;
+        let found = match hinted(&self.entries, &self.hints, slot, template, |entry| {
+            entry.template
+        }) {
+            Some(at) => Ok(at),
+            None => self
+                .entries
+                .binary_search_by_key(&template, |entry| entry.template),
+        };
+        let at = match found {
             Ok(at) => at,
             Err(at) => {
                 if engine_allocation::reserve(&mut self.entries, 1).is_err() {
@@ -479,6 +493,7 @@ impl Store {
                 at
             }
         };
+        super::core::remember_hint(&mut self.hints, slot, at);
         let entry = &mut self.entries[at];
         let same = entry.pointer == pointer && entry.owner == owner;
         if current.is_none() && !fresh {

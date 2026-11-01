@@ -72,6 +72,25 @@ impl Store {
             .operands
             .take(|visit| operands::take_operands(visit));
     }
+    /// Why the owned settlement refuses this boundary, or None when it can settle.
+    pub fn owned_refusal(&self) -> Option<&'static str> {
+        let boundary = &self.boundary;
+        if !boundary.active {
+            Some("no boundary")
+        } else if boundary.result.is_err() {
+            Some("boundary failed")
+        } else if self.world_epoch != boundary.world_epoch {
+            Some("world epoch")
+        } else if self.lifetime_epoch != boundary.lifetime_epoch {
+            Some("lifetime epoch")
+        } else if !boundary.retired.is_empty() {
+            Some("retired variants")
+        } else if boundary.availability.is_none() {
+            Some("no variant capability")
+        } else {
+            None
+        }
+    }
     /// New or retired bindings retain the original ordered authentication path.
     pub fn can_settle_owned(&self) -> bool {
         self.boundary.active

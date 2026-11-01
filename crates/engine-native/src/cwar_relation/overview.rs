@@ -170,6 +170,26 @@ pub struct CountrySource {
 /// Header fingerprints reuse discovery only. Pointer pages are still checked,
 /// and retired bytes, goal lists and every score operand are always fresh.
 /// Full refreshes and failures invalidate the retained discovery.
+/// One census visit of the latest complete walk.
+#[derive(Clone, Copy, Debug)]
+struct Visit {
+    country: ccountry::Country,
+    diplomacy: usize,
+    has_war: bool,
+}
+
+/// The latest complete walk, carried while its caller certifies that no writer
+/// of the owned occurrences, their relations or their goals ran since.
+#[derive(Debug, Default)]
+struct Held {
+    visits: Vec<Visit>,
+    /// Owned rows in `DiscoveryCache::rows`.
+    owned: usize,
+    goals: Vec<cwar_goal::relation::Row>,
+    /// [`ccountry::copy_links_and_roster`] of that walk.
+    countries: Vec<u8>,
+}
+
 pub struct DiscoveryCache {
     generation: u64,
     headers: Vec<OwnerHeader>,
@@ -185,6 +205,11 @@ pub struct DiscoveryCache {
     required: usize,
     scope: Option<(usize, usize)>,
     viewpoint: Option<Result<u32, &'static str>>,
+    held: Option<Held>,
+    /// The walk being read, held once it completes.
+    next: Held,
+    /// The latest walk published the held one.
+    carried: bool,
 }
 impl DiscoveryCache {
     pub fn new(countries: usize, relations: usize) -> Self {
@@ -209,6 +234,9 @@ impl DiscoveryCache {
             required: 0,
             scope: None,
             viewpoint: None,
+            held: None,
+            next: Held::default(),
+            carried: false,
         })
     }
     pub fn country_sources(&self) -> impl Iterator<Item = CountrySource> + '_ {
@@ -228,7 +256,16 @@ impl DiscoveryCache {
     }
     pub fn invalidate(&mut self) {
         self.viewpoint = None;
+        self.held = None;
         self.headers.fill(OwnerHeader::default());
+    }
+    /// The owned rows of the held walk, which a carry would publish.
+    pub fn held_rows(&self) -> Option<&[OwnedRow]> {
+        self.held.as_ref().map(|held| &self.rows[..held.owned])
+    }
+    /// Whether the latest walk published the held one without walking.
+    pub fn carried(&self) -> bool {
+        self.carried
     }
     pub fn grow(&mut self, countries: usize, relations: usize) {
         let _ = self.try_grow(countries, relations);
@@ -254,6 +291,15 @@ impl DiscoveryCache {
             + (self.rows.capacity() + self.next_rows.capacity()) * std::mem::size_of::<OwnedRow>()
             + self.reachable.capacity()
             + self.enemies.capacity()
+            + [self.held.as_ref(), Some(&self.next)]
+                .into_iter()
+                .flatten()
+                .map(|held| {
+                    held.visits.capacity() * std::mem::size_of::<Visit>()
+                        + held.goals.capacity() * std::mem::size_of::<cwar_goal::relation::Row>()
+                        + held.countries.capacity()
+                })
+                .sum::<usize>()
     }
 }
 
@@ -524,6 +570,7 @@ pub fn walk_cached(
         Buffer::Fixed(scores),
         cache,
         &mut |_, _| {},
+        &mut || false,
     )
 }
 
@@ -547,12 +594,20 @@ pub fn walk_cached_growing(
         Buffer::Growing(scores),
         cache,
         &mut |_, _| {},
+        &mut || false,
     )
 }
 
 /// The existing authenticated owner visit, lent to another capture without
 /// repeating the country or diplomacy authentication. Its errors stay with
 /// that capture; this walk keeps its independent outcome.
+///
+/// `certify` is asked whether no writer of the held walk's owned occurrences
+/// ([`DiscoveryCache::held_rows`]), their relations or their goals ran since.
+/// When it says so and the census visits the same countries through equal
+/// country links and roster, the held owned and goal rows are published and
+/// the held owners visited without reading any diplomacy, relation or goal;
+/// the viewpoint and the score rows are read as on every hour.
 #[allow(clippy::too_many_arguments)]
 pub fn walk_cached_growing_with_owners(
     memory: &impl Memory,
@@ -563,6 +618,7 @@ pub fn walk_cached_growing_with_owners(
     scores: &mut Vec<CountryRow>,
     cache: &mut DiscoveryCache,
     owners: &mut dyn FnMut(ccountry::Country, usize),
+    certify: &mut dyn FnMut() -> bool,
 ) -> [Outcome; 3] {
     walk_cached_buffer(
         memory,
@@ -573,7 +629,78 @@ pub fn walk_cached_growing_with_owners(
         Buffer::Growing(scores),
         cache,
         owners,
+        certify,
     )
+}
+
+/// Publishes the held walk when `certify` and the census allow
+/// ([`walk_cached_growing_with_owners`]); false reads nothing.
+#[allow(clippy::too_many_arguments)]
+fn carry_held(
+    countries: &ccountry::Reader<'_, impl Memory>,
+    output: &mut Buffer<'_, OwnedRow>,
+    goals: &mut Buffer<'_, cwar_goal::relation::Row>,
+    scores: &mut Buffer<'_, CountryRow>,
+    cache: &mut DiscoveryCache,
+    owners: &mut dyn FnMut(ccountry::Country, usize),
+    certify: &mut dyn FnMut() -> bool,
+    used: &mut [usize; 3],
+    wanted: &mut [usize; 3],
+) -> Result<bool, &'static str> {
+    let DiscoveryCache {
+        generation,
+        headers,
+        rows,
+        next_rows,
+        held,
+        next,
+        ..
+    } = cache;
+    let Some(held) = held.as_ref() else {
+        return Ok(false);
+    };
+    if held.countries != next.countries || held.owned > rows.len().min(next_rows.len()) {
+        return Ok(false);
+    }
+    let mut visits = held.visits.iter();
+    for slot in 1..countries.count() {
+        if let Some(country) = countries.at(slot)?
+            && visits.next().map(|visit| visit.country) != Some(country)
+        {
+            return Ok(false);
+        }
+    }
+    if visits.next().is_some()
+        || !certify()
+        || !output.ensure(held.owned)?
+        || !goals.ensure(held.goals.len())?
+    {
+        return Ok(false);
+    }
+    output[..held.owned].copy_from_slice(&rows[..held.owned]);
+    // The swap after the walk keeps the held rows.
+    next_rows[..held.owned].copy_from_slice(&rows[..held.owned]);
+    goals[..held.goals.len()].copy_from_slice(&held.goals);
+    (used[0], used[1]) = (held.owned, held.goals.len());
+    (wanted[0], wanted[1]) = (held.owned, held.goals.len());
+    for visit in &held.visits {
+        if let Some(header) = headers.get_mut(visit.country.canonical_slot as usize) {
+            header.generation = *generation;
+        }
+        owners(visit.country, visit.diplomacy);
+        if visit.has_war {
+            wanted[2] += 1;
+            if let Some(row) = scores.get_mut(used[2]) {
+                *row = CountryRow {
+                    country: visit.country.id,
+                    major: 0,
+                    ..Default::default()
+                };
+                used[2] += 1;
+            }
+        }
+    }
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -586,12 +713,19 @@ fn walk_cached_buffer(
     mut scores: Buffer<'_, CountryRow>,
     cache: &mut DiscoveryCache,
     owners: &mut dyn FnMut(ccountry::Country, usize),
+    certify: &mut dyn FnMut() -> bool,
 ) -> [Outcome; 3] {
     if cache.scope != Some((base, state)) {
         cache.invalidate();
         cache.scope = Some((base, state));
     }
     cache.viewpoint = None;
+    cache.carried = false;
+    cache.next.visits.clear();
+    cache.next.goals.clear();
+    let witnessed = ccountry::copy_links_and_roster(memory, state, &mut cache.next.countries);
+    // A visit or goal that cannot be held leaves this walk unheld.
+    let mut holdable = witnessed;
     let mut used = [0_usize; 3];
     let mut wanted = [0_usize; 3];
     let mut score_failure = None;
@@ -627,243 +761,281 @@ fn walk_cached_buffer(
         let view = view.ok().flatten();
         cache.reachable.fill(false);
         cache.enemies.fill(false);
-        let mut entry_start = 0_usize;
-        let mut pending = [Occurrence::default(); 64];
-        let mut pending_len = 0;
-        for page in (1..countries.count()).step_by(64) {
-            let mut seeds = [None; 64];
-            let mut pointers = [0; 64];
-            let mut n = 0;
-            for slot in page..(page + 64).min(countries.count()) {
-                if let Some(country) = countries.at(slot)? {
-                    seeds[n] = Some(country);
-                    pointers[n] = country.pointer;
-                    n += 1;
-                }
-            }
-            let mut roots = [0; 64 * 8];
-            gather(
-                memory,
-                &pointers[..n],
-                [(ccountry::DIPLOMACY_STATUS, 8)],
-                &mut roots,
+        cache.carried = witnessed
+            && carry_held(
+                &countries,
+                &mut output,
+                &mut goals,
+                &mut scores,
+                cache,
+                owners,
+                certify,
+                &mut used,
+                &mut wanted,
             )?;
-            let roots: [usize; 64] = std::array::from_fn(|i| pointer(&roots[i * 8..]));
-            let mut records = [0; 64 * 32];
-            gather(
-                memory,
-                &roots[..n],
-                [
-                    (0, 8),
-                    (cdiplomacy_status::OWNED_RELATIONS, 16),
-                    (cdiplomacy_status::COUNTRY, 8),
-                ],
-                &mut records,
-            )?;
-            let mut vectors = [Array::default(); 64];
-            let mut addresses = [0; 64];
-            for index in 0..n {
-                let record = &records[index * 32..(index + 1) * 32];
-                vectors[index] = Array::from_header(record[8..24].try_into().unwrap(), 8)
-                    .ok_or("war overview array invalid or unreadable")?;
-                if vectors[index].count != 0 {
-                    addresses[index] = vectors[index]
-                        .element(0, 8)
-                        .ok_or("war owned vector address overflow")?;
+        if !cache.carried {
+            let mut entry_start = 0_usize;
+            let mut pending = [Occurrence::default(); 64];
+            let mut pending_len = 0;
+            for page in (1..countries.count()).step_by(64) {
+                let mut seeds = [None; 64];
+                let mut pointers = [0; 64];
+                let mut n = 0;
+                for slot in page..(page + 64).min(countries.count()) {
+                    if let Some(country) = countries.at(slot)? {
+                        seeds[n] = Some(country);
+                        pointers[n] = country.pointer;
+                        n += 1;
+                    }
                 }
-            }
-            // Most owners fit in one page. Gather those exact spans together;
-            // larger modded vectors keep ordered bounded continuation pages.
-            let mut owned_pages = [0; 64 * 512];
-            let mut chunks = owned_pages.chunks_exact_mut(512);
-            let mut destinations: [&mut [u8]; 64] = std::array::from_fn(|i| {
-                &mut chunks.next().unwrap()[..vectors[i].count.min(64) as usize * 8]
-            });
-            if memory.copy_scattered(addresses, &mut destinations) != 64 {
-                return Err("war overview owned pointer page unreadable");
-            }
-            let mut type_starts = [0; 64];
-            let mut page_types = [0; 64 * 64 * 4];
-            gather_owned_types(
-                memory,
-                &owned_pages,
-                &vectors[..n],
-                &mut type_starts,
-                &mut page_types,
-            )?;
-            for index in 0..n {
-                let country = seeds[index].unwrap();
-                let slot = country.canonical_slot;
-                let root = roots[index];
-                let record = &records[index * 32..(index + 1) * 32];
-                if pointer(record)
-                    != base
-                        .checked_add(cdiplomacy_status::VTABLE_RVA)
-                        .ok_or("war diplomacy vtable address overflow")?
-                {
-                    return Err("war overview vtable mismatch");
+                let mut roots = [0; 64 * 8];
+                gather(
+                    memory,
+                    &pointers[..n],
+                    [(ccountry::DIPLOMACY_STATUS, 8)],
+                    &mut roots,
+                )?;
+                let roots: [usize; 64] = std::array::from_fn(|i| pointer(&roots[i * 8..]));
+                let mut records = [0; 64 * 32];
+                gather(
+                    memory,
+                    &roots[..n],
+                    [
+                        (0, 8),
+                        (cdiplomacy_status::OWNED_RELATIONS, 16),
+                        (cdiplomacy_status::COUNTRY, 8),
+                    ],
+                    &mut records,
+                )?;
+                let mut vectors = [Array::default(); 64];
+                let mut addresses = [0; 64];
+                for index in 0..n {
+                    let record = &records[index * 32..(index + 1) * 32];
+                    vectors[index] = Array::from_header(record[8..24].try_into().unwrap(), 8)
+                        .ok_or("war overview array invalid or unreadable")?;
+                    if vectors[index].count != 0 {
+                        addresses[index] = vectors[index]
+                            .element(0, 8)
+                            .ok_or("war owned vector address overflow")?;
+                    }
                 }
-                if pointer(&record[24..]) != country.pointer {
-                    return Err("war overview diplomacy owner mismatch");
+                // Most owners fit in one page. Gather those exact spans together;
+                // larger modded vectors keep ordered bounded continuation pages.
+                let mut owned_pages = [0; 64 * 512];
+                let mut chunks = owned_pages.chunks_exact_mut(512);
+                let mut destinations: [&mut [u8]; 64] = std::array::from_fn(|i| {
+                    &mut chunks.next().unwrap()[..vectors[i].count.min(64) as usize * 8]
+                });
+                if memory.copy_scattered(addresses, &mut destinations) != 64 {
+                    return Err("war overview owned pointer page unreadable");
                 }
-                owners(country, root);
-                let owned = vectors[index];
-                if output.is_growing() {
-                    let required = entry_start
-                        .checked_add(owned.count as usize)
-                        .ok_or("war discovery demand overflow")?;
-                    cache
-                        .try_grow(countries.count() as usize, required)
-                        .map_err(|_| "war discovery allocation failed")?;
-                    output.ensure(required)?;
-                }
-                let mut header = OwnerHeader {
-                    generation: cache.generation,
-                    raw: country.id,
-                    country: country.pointer,
-                    diplomacy: root,
-                    owned,
-                    start: entry_start,
-                    owned_start: wanted[0].min(output.len()),
-                    owned_count: 0,
-                };
-                let previous_header = cache
-                    .headers
-                    .get(slot as usize)
-                    .copied()
-                    .unwrap_or_default();
-                let unchanged = previous_header.country == header.country
-                    && previous_header.diplomacy == header.diplomacy
-                    && previous_header.owned == header.owned
-                    && previous_header.start == header.start
-                    && previous_header.owned_start == header.owned_start;
-                let mut has_war = false;
-                for first_ordinal in (0..owned.count).step_by(64) {
-                    let count = (owned.count - first_ordinal).min(64) as usize;
-                    let mut handles = [0; 64 * 8];
-                    let handles = if first_ordinal == 0 {
-                        &owned_pages[index * 512..(index + 1) * 512]
-                    } else {
-                        if !crate::read_slice(
-                            memory,
-                            owned
-                                .element(first_ordinal, 8)
-                                .ok_or("war owned vector address overflow")?,
-                            &mut handles[..count * 8],
-                        ) {
-                            return Err("war overview owned pointer page unreadable");
-                        }
-                        &handles[..]
+                let mut type_starts = [0; 64];
+                let mut page_types = [0; 64 * 64 * 4];
+                gather_owned_types(
+                    memory,
+                    &owned_pages,
+                    &vectors[..n],
+                    &mut type_starts,
+                    &mut page_types,
+                )?;
+                for index in 0..n {
+                    let country = seeds[index].unwrap();
+                    let slot = country.canonical_slot;
+                    let root = roots[index];
+                    let record = &records[index * 32..(index + 1) * 32];
+                    if pointer(record)
+                        != base
+                            .checked_add(cdiplomacy_status::VTABLE_RVA)
+                            .ok_or("war diplomacy vtable address overflow")?
+                    {
+                        return Err("war overview vtable mismatch");
+                    }
+                    if pointer(&record[24..]) != country.pointer {
+                        return Err("war overview diplomacy owner mismatch");
+                    }
+                    owners(country, root);
+                    let owned = vectors[index];
+                    holdable &= crate::allocation::advisory(|| {
+                        crate::allocation::reserve(&mut cache.next.visits, 1)
+                    })
+                    .is_ok();
+                    if holdable {
+                        cache.next.visits.push(Visit {
+                            country,
+                            diplomacy: root,
+                            has_war: false,
+                        });
+                    }
+                    if output.is_growing() {
+                        let required = entry_start
+                            .checked_add(owned.count as usize)
+                            .ok_or("war discovery demand overflow")?;
+                        cache
+                            .try_grow(countries.count() as usize, required)
+                            .map_err(|_| "war discovery allocation failed")?;
+                        output.ensure(required)?;
+                    }
+                    let mut header = OwnerHeader {
+                        generation: cache.generation,
+                        raw: country.id,
+                        country: country.pointer,
+                        diplomacy: root,
+                        owned,
+                        start: entry_start,
+                        owned_start: wanted[0].min(output.len()),
+                        owned_count: 0,
                     };
-                    let pointers: [usize; 64] = std::array::from_fn(|i| pointer(&handles[i * 8..]));
-                    let mut types = [0; 64 * 4];
-                    // The type word is immutable for a relation's lifetime, but a
-                    // pointer can be recycled. Read it even on fingerprint hits.
-                    let types = if first_ordinal == 0 {
-                        &page_types[type_starts[index] * 4..(type_starts[index] + count) * 4]
-                    } else {
-                        gather(
-                            memory,
-                            &pointers[..count],
-                            [(crelation::TYPE_ID, 4)],
-                            &mut types,
-                        )?;
-                        &types[..count * 4]
-                    };
-                    let mut wars = [0; 64];
-                    let mut ordinals = [0; 64];
-                    let mut n = 0;
-                    let range = entry_start + first_ordinal as usize
-                        ..entry_start + first_ordinal as usize + count;
-                    let reusable = unchanged
-                        && cache.pointers.get(range.clone()) == Some(&pointers[..count])
-                        && cache.types.get(range.start * 4..range.end * 4)
-                            == Some(&types[..count * 4]);
-                    if reusable {
-                        let old = &cache.rows[previous_header.owned_start
-                            ..previous_header.owned_start + previous_header.owned_count];
-                        let first = old.partition_point(|r| r.ordinal < first_ordinal);
-                        for row in old[first..]
-                            .iter()
-                            .take_while(|r| r.ordinal < first_ordinal + count as u32)
-                        {
-                            wars[n] = pointers[(row.ordinal - first_ordinal) as usize];
-                            ordinals[n] = row.ordinal;
-                            n += 1;
-                        }
-                    } else {
-                        for (index, &source) in pointers[..count].iter().enumerate() {
-                            if word(&types[index * 4..]) == super::TYPE {
-                                wars[n] = source;
-                                ordinals[n] = first_ordinal + index as u32;
+                    let previous_header = cache
+                        .headers
+                        .get(slot as usize)
+                        .copied()
+                        .unwrap_or_default();
+                    let unchanged = previous_header.country == header.country
+                        && previous_header.diplomacy == header.diplomacy
+                        && previous_header.owned == header.owned
+                        && previous_header.start == header.start
+                        && previous_header.owned_start == header.owned_start;
+                    let mut has_war = false;
+                    for first_ordinal in (0..owned.count).step_by(64) {
+                        let count = (owned.count - first_ordinal).min(64) as usize;
+                        let mut handles = [0; 64 * 8];
+                        let handles = if first_ordinal == 0 {
+                            &owned_pages[index * 512..(index + 1) * 512]
+                        } else {
+                            if !crate::read_slice(
+                                memory,
+                                owned
+                                    .element(first_ordinal, 8)
+                                    .ok_or("war owned vector address overflow")?,
+                                &mut handles[..count * 8],
+                            ) {
+                                return Err("war overview owned pointer page unreadable");
+                            }
+                            &handles[..]
+                        };
+                        let pointers: [usize; 64] =
+                            std::array::from_fn(|i| pointer(&handles[i * 8..]));
+                        let mut types = [0; 64 * 4];
+                        // The type word is immutable for a relation's lifetime, but a
+                        // pointer can be recycled. Read it even on fingerprint hits.
+                        let types = if first_ordinal == 0 {
+                            &page_types[type_starts[index] * 4..(type_starts[index] + count) * 4]
+                        } else {
+                            gather(
+                                memory,
+                                &pointers[..count],
+                                [(crelation::TYPE_ID, 4)],
+                                &mut types,
+                            )?;
+                            &types[..count * 4]
+                        };
+                        let mut wars = [0; 64];
+                        let mut ordinals = [0; 64];
+                        let mut n = 0;
+                        let range = entry_start + first_ordinal as usize
+                            ..entry_start + first_ordinal as usize + count;
+                        let reusable = unchanged
+                            && cache.pointers.get(range.clone()) == Some(&pointers[..count])
+                            && cache.types.get(range.start * 4..range.end * 4)
+                                == Some(&types[..count * 4]);
+                        if reusable {
+                            let old = &cache.rows[previous_header.owned_start
+                                ..previous_header.owned_start + previous_header.owned_count];
+                            let first = old.partition_point(|r| r.ordinal < first_ordinal);
+                            for row in old[first..]
+                                .iter()
+                                .take_while(|r| r.ordinal < first_ordinal + count as u32)
+                            {
+                                wars[n] = pointers[(row.ordinal - first_ordinal) as usize];
+                                ordinals[n] = row.ordinal;
                                 n += 1;
+                            }
+                        } else {
+                            for (index, &source) in pointers[..count].iter().enumerate() {
+                                if word(&types[index * 4..]) == super::TYPE {
+                                    wars[n] = source;
+                                    ordinals[n] = first_ordinal + index as u32;
+                                    n += 1;
+                                }
+                            }
+                        }
+                        if let Some(old) = cache.pointers.get_mut(range.clone()) {
+                            old.copy_from_slice(&pointers[..count]);
+                        }
+                        if let Some(old) = cache.types.get_mut(range.start * 4..range.end * 4) {
+                            old.copy_from_slice(&types[..count * 4]);
+                        }
+                        for index in 0..n {
+                            has_war = true;
+                            wanted[0] += 1;
+                            pending[pending_len] = Occurrence {
+                                diplomacy: root,
+                                owner: country.id,
+                                ordinal: ordinals[index],
+                                pointer: wars[index],
+                            };
+                            pending_len += 1;
+                            if pending_len == pending.len() {
+                                copy_wars(
+                                    memory,
+                                    base,
+                                    &countries,
+                                    &pending,
+                                    &mut output,
+                                    &mut goals,
+                                    cache,
+                                    &mut used,
+                                    &mut wanted,
+                                )?;
+                                pending_len = 0;
                             }
                         }
                     }
-                    if let Some(old) = cache.pointers.get_mut(range.clone()) {
-                        old.copy_from_slice(&pointers[..count]);
+                    entry_start = entry_start
+                        .checked_add(owned.count as usize)
+                        .ok_or("war discovery demand overflow")?;
+                    header.owned_count = wanted[0].min(output.len()) - header.owned_start;
+                    if let Some(old) = cache.headers.get_mut(slot as usize) {
+                        *old = header;
                     }
-                    if let Some(old) = cache.types.get_mut(range.start * 4..range.end * 4) {
-                        old.copy_from_slice(&types[..count * 4]);
-                    }
-                    for index in 0..n {
-                        has_war = true;
-                        wanted[0] += 1;
-                        pending[pending_len] = Occurrence {
-                            diplomacy: root,
-                            owner: country.id,
-                            ordinal: ordinals[index],
-                            pointer: wars[index],
-                        };
-                        pending_len += 1;
-                        if pending_len == pending.len() {
-                            copy_wars(
-                                memory,
-                                base,
-                                &countries,
-                                &pending,
-                                &mut output,
-                                &mut goals,
-                                cache,
-                                &mut used,
-                                &mut wanted,
-                            )?;
-                            pending_len = 0;
+                    if has_war {
+                        if holdable && let Some(visit) = cache.next.visits.last_mut() {
+                            visit.has_war = true;
+                        }
+                        wanted[2] += 1;
+                        if let Some(row) = scores.get_mut(used[2]) {
+                            *row = CountryRow {
+                                country: country.id,
+                                major: 0,
+                                ..Default::default()
+                            };
+                            used[2] += 1;
                         }
                     }
                 }
-                entry_start = entry_start
-                    .checked_add(owned.count as usize)
-                    .ok_or("war discovery demand overflow")?;
-                header.owned_count = wanted[0].min(output.len()) - header.owned_start;
-                if let Some(old) = cache.headers.get_mut(slot as usize) {
-                    *old = header;
-                }
-                if has_war {
-                    wanted[2] += 1;
-                    if let Some(row) = scores.get_mut(used[2]) {
-                        *row = CountryRow {
-                            country: country.id,
-                            major: 0,
-                            ..Default::default()
-                        };
-                        used[2] += 1;
-                    }
-                }
+            }
+            copy_wars(
+                memory,
+                base,
+                &countries,
+                &pending[..pending_len],
+                &mut output,
+                &mut goals,
+                cache,
+                &mut used,
+                &mut wanted,
+            )?;
+            cache.required = entry_start;
+            holdable &= used[1] == wanted[1]
+                && used[0] <= cache.next_rows.len()
+                && crate::allocation::advisory(|| {
+                    crate::allocation::reserve(&mut cache.next.goals, used[1])
+                })
+                .is_ok();
+            if holdable {
+                cache.next.goals.extend_from_slice(&goals[..used[1]]);
             }
         }
-        copy_wars(
-            memory,
-            base,
-            &countries,
-            &pending[..pending_len],
-            &mut output,
-            &mut goals,
-            cache,
-            &mut used,
-            &mut wanted,
-        )?;
-        cache.required = entry_start;
         // Majors have a row for every owned country; strength/subject operands
         // below are limited to the viewpoint's candidate reach.
         for rows in scores[..used[2]].chunks_mut(64) {
@@ -983,6 +1155,14 @@ fn walk_cached_buffer(
     }
     if wanted[0] != used[0] {
         cache.invalidate();
+    } else if !cache.carried {
+        // The previous held walk's storage serves the next walk.
+        let previous = cache.held.take();
+        if holdable && wanted[1] == used[1] {
+            let mut held = std::mem::replace(&mut cache.next, previous.unwrap_or_default());
+            held.owned = used[0];
+            cache.held = Some(held);
+        }
     }
     let mut outcomes = std::array::from_fn(|index| {
         let unread = wanted[index] - used[index];

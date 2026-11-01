@@ -460,13 +460,18 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
             denied: true,
             ..clean
         },
-        Case {
-            warm: false,
-            denied: true,
-            ..clean
-        },
     ] {
         let (current, old, memory, old_memory) = run(case);
         exact(&current, &old, &memory, &old_memory);
     }
+    // Cold receivers: the ranges register the pool the passive original leaves
+    // unobserved; with staging denied neither hour completes.
+    let (current, old, _, _) = run(Case {
+        warm: false,
+        denied: true,
+        ..clean
+    });
+    assert!(!current.complete && !old.complete);
+    assert!(old.membership_observation.is_none());
+    assert!(current.membership_observation.is_some());
 }

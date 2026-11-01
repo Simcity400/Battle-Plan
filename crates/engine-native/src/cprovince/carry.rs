@@ -92,7 +92,8 @@ pub struct RowStore {
     /// epoch; None when it refused.
     modifier_marks: Vec<u32>,
     modifier_take: Option<u64>,
-    /// The modifier epoch and the country links and roster ([`read_countries`])
+    /// The modifier epoch and the country links and roster
+    /// ([`crate::ccountry::copy_links_and_roster`])
     /// every held `fort_bunker` was read under; None certifies none.
     bunkers: Option<u64>,
     countries: Vec<u8>,
@@ -249,43 +250,6 @@ const AREA_BYTES: usize = 24;
 const AREA_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&AREA_FIELDS, AREA_BYTES).expect("valid record layout");
 
-/// The country links and roster (`cgame_state::COUNTRY_LINKS` and
-/// `COUNTRIES`), headers and slots, into `out`: what a bunker term resolves
-/// its controller and the hash's ids through. False when any part does not
-/// read.
-fn read_countries(memory: &impl Memory, game_state: usize, out: &mut Vec<u8>) -> bool {
-    out.clear();
-    let [Some(links), Some(roster)] = [
-        (crate::cgame_state::COUNTRY_LINKS, 4),
-        (crate::cgame_state::COUNTRIES, 8),
-    ]
-    .map(|(offset, stride)| {
-        game_state
-            .checked_add(offset)
-            .and_then(|address| Array::read(memory, address, stride))
-            .map(|array| (array, stride))
-    }) else {
-        return false;
-    };
-    let len = [links, roster]
-        .iter()
-        .map(|(array, stride)| 12 + array.count as usize * stride)
-        .sum();
-    if crate::allocation::advisory(|| crate::allocation::reserve(out, len)).is_err() {
-        return false;
-    }
-    for (array, stride) in [links, roster] {
-        out.extend_from_slice(&(array.data as u64).to_le_bytes());
-        out.extend_from_slice(&array.count.to_le_bytes());
-        let at = out.len();
-        out.resize(at + array.count as usize * stride, 0);
-        if at != out.len() && !memory.copy(array.data, &mut out[at..]) {
-            return false;
-        }
-    }
-    true
-}
-
 /// One walk's view of the store.
 pub(super) struct Hour<'a> {
     pub store: &'a mut RowStore,
@@ -322,9 +286,10 @@ pub(super) fn walk(
         marks.dedup();
     }
     let modifiers = store.modifier_take.take();
-    let witnessed =
-        modifiers.is_some() && read_countries(memory, game_state, &mut store.fresh_countries);
-    let bunkers = witnessed && store.bunkers == modifiers && store.countries == store.fresh_countries;
+    let witnessed = modifiers.is_some()
+        && crate::ccountry::copy_links_and_roster(memory, game_state, &mut store.fresh_countries);
+    let bunkers =
+        witnessed && store.bunkers == modifiers && store.countries == store.fresh_countries;
     let force_full = std::mem::take(&mut store.force_full);
     let eligible = !force_full
         && take.is_some()
@@ -408,7 +373,9 @@ fn hold(store: &mut RowStore, array: Array, rows: &[Row], areas: &[Pointers]) ->
 enum Kind {
     Carried,
     /// Read into body `body`.
-    Read { body: usize },
+    Read {
+        body: usize,
+    },
 }
 
 /// [`read_rows`] for an hour the store certifies: the batch's carried rows

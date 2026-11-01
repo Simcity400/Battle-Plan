@@ -822,3 +822,60 @@ fn discovery_capacity_overflow_is_a_checked_error() {
     assert_eq!(cache.pointers.len(), 5_000);
     assert_eq!(cache.types.len(), 20_000);
 }
+
+type Hour = (
+    [Outcome; 3],
+    Vec<OwnedRow>,
+    Vec<cwar_goal::relation::Row>,
+    Vec<CountryRow>,
+    Vec<u32>,
+);
+
+fn certified_hour(world: &World, cache: &mut DiscoveryCache, certified: bool) -> Hour {
+    let (mut owned, mut goals, mut scores, mut visited) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let outcomes = walk_cached_growing_with_owners(
+        &world.memory(),
+        0,
+        world.game_state(),
+        &mut owned,
+        &mut goals,
+        &mut scores,
+        cache,
+        &mut |country, _| visited.push(country.id),
+        &mut || certified,
+    );
+    let [o, g, s] = outcomes.map(Outcome::len);
+    owned.truncate(o);
+    goals.truncate(g);
+    scores.truncate(s);
+    (outcomes, owned, goals, scores, visited)
+}
+
+/// A certified hour publishes the held walk and visits its owners without
+/// reading any relation: a broken relation it no longer reads leaves the
+/// rows equal, while an uncertified hour reads it and refuses.
+#[test]
+fn a_certified_hour_publishes_the_held_walk_without_reading_relations() {
+    let mut world = fixture(4);
+    let mut cache = DiscoveryCache::new(5, 0);
+    let walked = certified_hour(&world, &mut cache, true);
+    assert!(matches!(walked.0[0], Outcome::Rows { len: 4 }));
+    assert!(!cache.carried());
+    assert_eq!(cache.held_rows(), Some(&walked.1[..]));
+    let carried = certified_hour(&world, &mut cache, true);
+    assert!(cache.carried());
+    assert_eq!(carried, walked);
+    assert_eq!(cache.country_sources().count(), 4);
+    world.u64(walked.1[0].source.relation, 0);
+    assert_eq!(certified_hour(&world, &mut cache, true), walked);
+    let refused = certified_hour(&world, &mut cache, false);
+    assert!(!cache.carried());
+    assert_eq!(
+        refused.0[0],
+        Outcome::Unavailable {
+            reason: "war overview vtable mismatch"
+        }
+    );
+    assert_eq!(cache.held_rows(), None);
+}

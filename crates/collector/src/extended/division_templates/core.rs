@@ -101,6 +101,41 @@ pub(super) struct Store {
     payload_bytes: usize,
     /// This walk read a row, or speed keys, other than the ones held, or held a row no longer.
     changed: bool,
+    /// Each walk visit's entry index ([`hinted`]) and this walk's visits.
+    hints: Vec<u32>,
+    visits: usize,
+    /// The entries this walk carried, in visit order, and the next one `held` takes.
+    carried: Vec<u32>,
+    next_held: usize,
+}
+/// Where visit `slot` found its entry last walk, when that entry still names
+/// `template`: the roster order rarely changes, so most lookups skip the search.
+pub(super) fn hinted<E>(
+    entries: &[E],
+    hints: &[u32],
+    slot: usize,
+    template: u64,
+    key: impl Fn(&E) -> u64,
+) -> Option<usize> {
+    let at = *hints.get(slot)? as usize;
+    entries
+        .get(at)
+        .filter(|entry| key(entry) == template)
+        .map(|_| at)
+}
+
+/// Remembers where visit `slot` found its entry; a hint that cannot be kept only costs a search.
+pub(super) fn remember_hint(hints: &mut Vec<u32>, slot: usize, at: usize) {
+    let Ok(at) = u32::try_from(at) else {
+        return;
+    };
+    if let Some(hint) = hints.get_mut(slot) {
+        *hint = at;
+    } else if slot == hints.len()
+        && engine_allocation::advisory(|| engine_allocation::reserve(hints, 1)).is_ok()
+    {
+        hints.push(at);
+    }
 }
 
 impl Store {
@@ -111,6 +146,9 @@ impl Store {
 
     pub fn begin(&mut self) {
         self.changed = false;
+        self.visits = 0;
+        self.carried.clear();
+        self.next_held = 0;
         for entry in &mut self.entries {
             entry.carried = false;
         }
@@ -124,6 +162,7 @@ impl Store {
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
             + self.live.capacity() * size_of::<u64>()
+            + (self.hints.capacity() + self.carried.capacity()) * size_of::<u32>()
             + self.payload_bytes
             + self
                 .entries
@@ -142,15 +181,22 @@ impl Store {
         owner: u32,
         certificate: Option<Certificate>,
     ) -> bool {
+        let slot = self.visits;
+        self.visits += 1;
         let Some(certificate) = certificate else {
             return false;
         };
-        let Ok(at) = self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-        else {
+        let Some(at) = hinted(&self.entries, &self.hints, slot, template, |entry| {
+            entry.template
+        })
+        .or_else(|| {
+            self.entries
+                .binary_search_by_key(&template, |entry| entry.template)
+                .ok()
+        }) else {
             return false;
         };
+        remember_hint(&mut self.hints, slot, at);
         let entry = &mut self.entries[at];
         let carried = entry.core.row.pointer == pointer
             && entry.core.row.owner == owner
@@ -158,14 +204,26 @@ impl Store {
             // Refused or unheld speed keys take the fresh path.
             && entry.speed.is_some();
         entry.carried |= carried;
+        if carried {
+            let next = self.carried.len();
+            remember_hint(&mut self.carried, next, at);
+        }
         carried
     }
 
-    pub fn held(&self, template: u64) -> Option<native::IconCore<'_>> {
-        let entry = &self.entries[self
-            .entries
-            .binary_search_by_key(&template, |entry| entry.template)
-            .ok()?];
+    /// The row the walk carried for `template`; the walk asks in the order it carried them.
+    pub fn held(&mut self, template: u64) -> Option<native::IconCore<'_>> {
+        let slot = self.next_held;
+        self.next_held += 1;
+        let at = hinted(&self.entries, &self.carried, slot, template, |entry| {
+            entry.template
+        })
+        .or_else(|| {
+            self.entries
+                .binary_search_by_key(&template, |entry| entry.template)
+                .ok()
+        })?;
+        let entry = &self.entries[at];
         entry.carried.then_some(native::IconCore {
             row: entry.core.row,
             bytes: &entry.core.bytes,
@@ -349,7 +407,15 @@ mod tests {
             ..Default::default()
         };
         let mut store = Store::default();
-        store.remember(&changes, certificate(&changes, &row), &row, &[], &[], &[], names);
+        store.remember(
+            &changes,
+            certificate(&changes, &row),
+            &row,
+            &[],
+            &[],
+            &[],
+            names,
+        );
         store.remember_speed(row.template, Some(&[155]), &changes);
         let carried = |store: &mut Store, changes: &Stamped, pointer: usize, owner: u32| {
             store.begin();
@@ -359,7 +425,10 @@ mod tests {
         assert!(carried(&mut store, &changes, row.pointer, row.owner));
         let core = store.held(row.template).unwrap();
         let display = core.row.display_name.unwrap();
-        assert_eq!(&core.names[display.literal.start..][..display.literal.len], b"Alpha");
+        assert_eq!(
+            &core.names[display.literal.start..][..display.literal.len],
+            b"Alpha"
+        );
         let key = core.row.name_key.unwrap();
         assert_eq!(&core.names[key.start..][..key.len], b"key");
         assert_eq!(store.speed(row.template), Some([155].as_slice()));
@@ -378,7 +447,15 @@ mod tests {
         drop(changes.watches.notify(row.pointer, 0));
         store.remember(&changes, before, &row, &[], &[], &[], names);
         assert!(!carried(&mut store, &changes, row.pointer, row.owner));
-        store.remember(&changes, certificate(&changes, &row), &row, &[], &[], &[], names);
+        store.remember(
+            &changes,
+            certificate(&changes, &row),
+            &row,
+            &[],
+            &[],
+            &[],
+            names,
+        );
         assert!(carried(&mut store, &changes, row.pointer, row.owner));
         // An unreadable name is not held, and drops the earlier read.
         store.begin();
@@ -386,7 +463,15 @@ mod tests {
             name_key: None,
             ..row
         };
-        store.remember(&changes, certificate(&changes, &row), &unnamed, &[], &[], &[], names);
+        store.remember(
+            &changes,
+            certificate(&changes, &row),
+            &unnamed,
+            &[],
+            &[],
+            &[],
+            names,
+        );
         assert!(store.entries.is_empty() && store.payload_bytes == 0);
     }
 }

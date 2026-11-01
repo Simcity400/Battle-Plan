@@ -381,6 +381,41 @@ pub struct LinkRow {
     pub canonical_slot: u32,
 }
 
+/// The country links and roster (`cgame_state::COUNTRY_LINKS` and
+/// `COUNTRIES`), headers and slots, into `out`: what resolves a raw country id
+/// to its country. Equal copies resolve every id alike. False when any part
+/// does not read.
+pub fn copy_links_and_roster(memory: &impl Memory, game_state: usize, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let [Some(links), Some(roster)] =
+        [(cgame_state::COUNTRY_LINKS, 4), (cgame_state::COUNTRIES, 8)].map(|(offset, stride)| {
+            game_state
+                .checked_add(offset)
+                .and_then(|address| Array::read(memory, address, stride))
+                .map(|array| (array, stride))
+        })
+    else {
+        return false;
+    };
+    let len = [links, roster]
+        .iter()
+        .map(|(array, stride)| 12 + array.count as usize * stride)
+        .sum();
+    if crate::allocation::advisory(|| crate::allocation::reserve(out, len)).is_err() {
+        return false;
+    }
+    for (array, stride) in [links, roster] {
+        out.extend_from_slice(&(array.data as u64).to_le_bytes());
+        out.extend_from_slice(&array.count.to_le_bytes());
+        let at = out.len();
+        out.resize(at + array.count as usize * stride, 0);
+        if at != out.len() && !memory.copy(array.data, &mut out[at..]) {
+            return false;
+        }
+    }
+    true
+}
+
 /// An authenticated country object; its current native id may be an alias.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Country {

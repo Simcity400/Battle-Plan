@@ -64,6 +64,7 @@ fn same_hq_source(held: HqSource, current: HqSource) -> bool {
 
 const SITES: usize = MUTATIONS.len();
 const UNIT_TYPE_SITE: usize = 23;
+const AI_ROLE_SITE: usize = 25;
 static WATCHES: Watches = Watches::new();
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL: [AtomicUsize; SITES] = [const { AtomicUsize::new(0) }; SITES];
@@ -83,6 +84,7 @@ pub(crate) struct Watches {
     registry: WatchRegistry,
     calls: [AtomicU64; SITES],
     unchanged_unit_type_writes: AtomicU64,
+    unchanged_ai_role_rebuilds: AtomicU64,
 }
 
 impl Watches {
@@ -91,6 +93,7 @@ impl Watches {
             registry: WatchRegistry::new(),
             calls: [const { AtomicU64::new(0) }; SITES],
             unchanged_unit_type_writes: AtomicU64::new(0),
+            unchanged_ai_role_rebuilds: AtomicU64::new(0),
         }
     }
 
@@ -320,6 +323,7 @@ pub fn status() -> impl serde::Serialize {
         "hour_carried_templates": hour[0],
         "hour_read_templates": hour[1],
         "unchanged_unit_type_writes": WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
+        "unchanged_ai_role_rebuilds": WATCHES.unchanged_ai_role_rebuilds.load(Ordering::Relaxed),
         "events": events,
         "watches": WATCHES.registry.status(),
         "hq_source_bytes": HQ_SOURCE_BYTES.load(Ordering::Relaxed),
@@ -605,7 +609,38 @@ callback!(update_template_tracked_variant, 56);
 callback!(set_template_symbol, 57);
 callback!(add_template_effect, 58);
 callback!(add_colonial_template_effect, 59);
-callback!(rebuild_template_ai_role, 25);
+unsafe extern "system-unwind" fn rebuild_template_ai_role(
+    first: usize,
+    second: usize,
+    third: usize,
+    fourth: usize,
+) -> usize {
+    use engine_native::creferenced_division_template::{AI_ROLE, AI_ROLE_FALLBACK};
+    let timing = crate::hook_timing::enter(crate::hook_timing::Family::TemplateChanges);
+    // The role, its presence byte and its fallback are this rebuild's only stores: one that
+    // leaves them equal notifies nothing, as an unchanged unit type does.
+    let running = ManuallyDrop::new(WATCHES.registry.running());
+    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let fields = first.checked_add(AI_ROLE - DATA);
+    let read = || {
+        fields
+            .and_then(|at| engine_native::read::<[u8; AI_ROLE_FALLBACK + 4 - AI_ROLE]>(&memory, at))
+    };
+    let before = read();
+    let original: NativeFunction =
+        unsafe { std::mem::transmute(ORIGINAL[AI_ROLE_SITE].load(Ordering::Acquire)) };
+    let result = timing.original(|| unsafe { original(first, second, third, fourth) });
+    if before.is_some() && before == read() {
+        WATCHES.calls[AI_ROLE_SITE].fetch_add(1, Ordering::Relaxed);
+        WATCHES
+            .unchanged_ai_role_rebuilds
+            .fetch_add(1, Ordering::Relaxed);
+    } else {
+        drop(native_notification(&WATCHES, AI_ROLE_SITE, first, second));
+    }
+    drop(ManuallyDrop::into_inner(running));
+    result
+}
 callback!(resize_template_grids, 26);
 callback!(refresh_template_name_group, 27);
 callback!(set_template_force_recruiting, 28);

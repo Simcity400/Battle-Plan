@@ -837,6 +837,7 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (name, site) in [
         ("delete", &world_lifetime_sites::DELETE),
         ("state_reload", &world_lifetime_sites::STATE_RELOAD),
+        ("straits_reload", &world_lifetime_sites::STRAITS_RELOAD),
     ] {
         add("world_lifetime", name, site.rva, PATCH, &site.sentinel);
     }

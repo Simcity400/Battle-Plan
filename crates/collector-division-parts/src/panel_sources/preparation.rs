@@ -1,4 +1,5 @@
-//! Range-owned native reads and warm certificates; cold admission and row edits stay ordered.
+//! Range-owned native reads and certificates; a cold receiver registers here and is read like
+//! a changed one, and only a full table or a refusal keeps the ordered path. Row edits stay ordered.
 use super::*;
 
 #[cfg(test)]
@@ -141,7 +142,32 @@ pub(super) struct StateRead {
     certificate: Option<(u64, u64)>,
     pub values: [Result<i64, &'static str>; 3],
 }
+/// Why range reads could not settle the sources, by first site (status only).
+pub const INCOMPLETE_REASONS: [&str; 12] = [
+    "store cannot settle",
+    "world epoch",
+    "cold root",
+    "repeated division",
+    "cold pool",
+    "cold state",
+    "cold variant",
+    "variant lifetime moved",
+    "no countries",
+    "new context refusal",
+    "leader block failed",
+    "shared selection failed",
+];
+pub static INCOMPLETE: [std::sync::atomic::AtomicU64; INCOMPLETE_REASONS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; INCOMPLETE_REASONS.len()];
+fn incomplete(complete: &mut bool, reason: usize) {
+    if std::mem::replace(complete, false) {
+        INCOMPLETE[reason].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 impl NativeReads {
+    pub(super) fn incomplete(&mut self, reason: usize) {
+        incomplete(&mut self.complete, reason);
+    }
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
         self.complete = true;
         self.membership_observation = None;
@@ -198,10 +224,10 @@ impl NativeReads {
         // A reset may retire every retained pointer. Selection observations are
         // independently authenticated, but held row/membership hints cannot carry.
         if !store.can_settle_owned() {
-            self.complete = false;
+            self.incomplete(0);
         }
         if store.world_epoch != operands::world_epoch() {
-            self.complete = false;
+            self.incomplete(1);
             return;
         }
         if let Some((_, Ok(country))) = selection.country {
@@ -291,13 +317,13 @@ impl NativeReads {
                 slot.insert(RootObservation::default())
             }
         };
-        // Cold/full admissions stay in the original ordered slow path. Warm
-        // receivers are already registered; a slot hint never trusts a table pointer.
+        // A cold receiver registers here; a full table keeps the ordered slow path.
+        // A slot hint never trusts a table pointer.
         let held = store.roots.get(&identity);
         let hint = held.map_or(usize::MAX, |held| held.slot);
-        let acquired = changes::sequence_at(receiver, hint);
+        let acquired = changes::register_at(receiver, hint);
         let Some((certificate, slot)) = acquired else {
-            self.complete = false;
+            self.incomplete(2);
             return;
         };
         index_slot.sequence = Some((certificate, slot));
@@ -377,7 +403,7 @@ impl NativeReads {
         quiet: &crate::observations::Taken,
     ) {
         if self.membership_indices.contains_key(&seed.division) {
-            self.complete = false;
+            self.incomplete(3);
             return;
         }
         let Some(pool) = seed
@@ -396,9 +422,9 @@ impl NativeReads {
             return;
         }
         let hint = held.map_or(usize::MAX, |held| held.slot);
-        let acquired = operands::sequence_at(pool, hint);
+        let acquired = operands::register_at(pool, hint);
         let Some((certificate, slot)) = acquired else {
-            self.complete = false;
+            self.incomplete(4);
             return;
         };
         self.membership_observation = Some((certificate, slot));
@@ -473,9 +499,9 @@ impl NativeReads {
         };
         let held = store.states.get(&(id, country));
         let hint = held.map_or(usize::MAX, |held| held.slot);
-        let acquired = operands::state_sequence_at(id, hint);
+        let acquired = operands::state_register_at(id, hint);
         let Some((certificate, slot)) = acquired else {
-            self.complete = false;
+            self.incomplete(5);
             return;
         };
         state_slot.sequence = Some((certificate, slot));
@@ -529,14 +555,14 @@ impl NativeReads {
         let held = store.variants.get(&handle);
         index_slot.sequence = certificate.zip(lifetime);
         if index_slot.sequence.is_none() {
-            self.complete = false;
+            incomplete(&mut self.complete, 6);
         }
         if !fresh_membership
             && !held.is_some_and(|held| {
                 held.pointer == pointer && lifetime.is_some() && held.lifetime == lifetime
             })
         {
-            self.complete = false;
+            self.incomplete(7);
             return;
         }
         if certificate.is_none()

@@ -38,6 +38,17 @@ pub const STATE_RELOAD: Site = Site {
     ],
 };
 
+/// The authored adjacency loader, which the straits reload runs again after
+/// map load: it rewrites both provinces' neighbour records, crossing kind and
+/// through province included. One argument (RCX, the map).
+pub const STRAITS_RELOAD: Site = Site {
+    rva: 0x00ab_35f0,
+    sentinel: [
+        0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d,
+        0xac,
+    ],
+};
+
 /// Deleting destructor. Its entry precedes quadtree clearing, runtime-state
 /// reset and eventual deallocation.
 pub const DELETE: Site = Site {

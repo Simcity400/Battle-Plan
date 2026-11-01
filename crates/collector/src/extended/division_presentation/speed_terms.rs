@@ -186,6 +186,38 @@ impl Held {
     }
 }
 
+/// River crossing answers by (from, to) province id for one world. A province's
+/// neighbour crossing kinds are written only by the map load and the authored
+/// adjacency loader the straits reload runs again; both start a new world. One
+/// world's answer serves its every later hour.
+#[derive(Default)]
+struct HeldCrossings {
+    world: Option<u64>,
+    answers: std::collections::HashMap<(u32, u32), Option<u8>>,
+    charge: crate::raw_memory::Charge,
+}
+#[cfg(not(test))]
+static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = Mutex::new(None);
+#[cfg(test)]
+thread_local! {
+    // Each test thread is its own process.
+    static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = const { Mutex::new(None) };
+}
+
+fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
+    let with = |slot: &Mutex<Option<HeldCrossings>>| {
+        visit(
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get_or_insert_with(HeldCrossings::default),
+        )
+    };
+    #[cfg(not(test))]
+    return with(&HELD_CROSSINGS);
+    #[cfg(test)]
+    HELD_CROSSINGS.with(with)
+}
+
 /// `carmy::movement_attacking` for the hour's land movers from their route copy
 /// and census owner. Each destination id and each (controller, logical owner)
 /// pair is read once per pass rather than once per mover. Only a successful
@@ -1372,8 +1404,34 @@ impl SpeedTerms {
         let mut crossings = std::mem::take(&mut self.crossings);
         crossings.enable_growth();
         let ready = crossings.begin(memory, base, game);
-        let result = self.capture_rivers_with_crossings(memory, base, countries, |from, to| {
-            ready.and_then(|()| crossings.acquire_crossing(memory, from, to))
+        let result = held_crossings(|held| {
+            let world = crate::world_lifetime::generation();
+            if held.world != Some(world) || world == u64::MAX {
+                held.answers.clear();
+                held.world = (world != u64::MAX).then_some(world);
+            }
+            let result = self.capture_rivers_with_crossings(memory, base, countries, |from, to| {
+                if let Some(&answer) = held.answers.get(&(from, to)) {
+                    return Ok(answer);
+                }
+                let answer = ready.and_then(|()| crossings.acquire_crossing(memory, from, to))?;
+                if held.world.is_some()
+                    && engine_allocation::advisory(|| {
+                        engine_allocation::reserve_map(&mut held.answers, 1)
+                    })
+                    .is_ok()
+                {
+                    held.answers.insert((from, to), answer);
+                }
+                Ok(answer)
+            });
+            held.charge.set(crate::raw_memory::Capacity {
+                index_vectors: (held.answers.capacity()
+                    * (size_of::<((u32, u32), Option<u8>)>() + 1))
+                    as u64,
+                ..Default::default()
+            });
+            result
         });
         crossings.clear();
         self.crossings = crossings;

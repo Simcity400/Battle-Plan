@@ -69,6 +69,19 @@ fn observe() {
     }
 }
 
+/// The goal writers' token over every country; equal tokens prove that no
+/// goal writer ran in between.
+pub fn goals_quiet() -> Option<(u64, u64)> {
+    WATCHES[0].quiet()
+}
+
+/// The goal writers' sequence of `country`, the first part of its
+/// [`certificate`]: a goal it acts in was added to a war, created, read or
+/// destroyed when it moves.
+pub fn goal_sequence(country: u32) -> Option<(u64, u64)> {
+    WATCHES[0].sequence(watch_key(country))
+}
+
 pub fn certificate(country: u32) -> Option<Certificate> {
     Some([
         WATCHES[0].sequence(watch_key(country))?,

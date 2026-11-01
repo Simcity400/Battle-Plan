@@ -6,6 +6,16 @@ mod owned;
 mod preparation;
 use preparation::NativeReads;
 
+/// Range reads that could not settle the sources, by first site, since attach.
+pub fn incomplete_read_counts() -> [(&'static str, u64); preparation::INCOMPLETE_REASONS.len()] {
+    std::array::from_fn(|index| {
+        (
+            preparation::INCOMPLETE_REASONS[index],
+            preparation::INCOMPLETE[index].load(std::sync::atomic::Ordering::Relaxed),
+        )
+    })
+}
+
 pub const PHASE_NAMES: [&str; 4] = [
     "sources_ordered",
     "sources_prune",
@@ -171,7 +181,7 @@ pub struct Selection {
     membership: Option<((u64, u64), usize)>,
 }
 
-/// Reused range-local read memos; cold writer-certificate admission stays ordered.
+/// Reused range-local read memos; ranges register cold writer certificates.
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
     countries: Map<u32, Result<ccountry::Country, &'static str>>,
@@ -240,7 +250,7 @@ impl Preparation {
         seed: &DivisionSeed,
     ) -> Selection {
         if countries.is_none() {
-            self.reads.complete = false;
+            self.reads.incomplete(8);
         }
         let country = source_owner(seed).ok().and_then(|owner| {
             countries.map(|countries| {
@@ -273,11 +283,9 @@ impl Preparation {
                     let handle = match self.commanders.entry(receiver) {
                         std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
                         std::collections::hash_map::Entry::Vacant(slot) => {
-                            let handle = read::<u64>(
-                                memory,
-                                receiver + engine_native::cunit_leader::TYPE,
-                            )
-                            .ok_or("division source commander identity unreadable");
+                            let handle =
+                                read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
+                                    .ok_or("division source commander identity unreadable");
                             if let Ok(handle) = handle {
                                 slot.insert(handle);
                             }
@@ -303,7 +311,7 @@ impl Preparation {
             {
                 // A new refusal can fail allocation before certification.
                 // Only an already published refusal may bypass that barrier.
-                self.reads.complete = false;
+                self.reads.incomplete(9);
             }
         }
         let context = province
@@ -344,7 +352,7 @@ impl Preparation {
         .and_then(|block| match block {
             Ok(block) => block,
             Err(_) => {
-                self.reads.complete = false;
+                self.reads.incomplete(10);
                 None
             }
         });
@@ -356,7 +364,7 @@ impl Preparation {
             || commander.is_some_and(|(_, value)| value.is_err())
             || context.is_some_and(|value| value.is_err())
         {
-            self.reads.complete = false;
+            self.reads.incomplete(11);
         }
         self.reads
             .capture(memory, base, state, store, seed, selection, block);
