@@ -28,6 +28,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use viewer_foundation::map::counter_move::{Drawn, Position, SharedMovement};
 use viewer_foundation::map::province_admission::province_boxes;
 use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
@@ -484,6 +485,10 @@ pub struct FrameModels {
 pub struct History {
     /// The hour's targets by province and slot.
     targets: Targets,
+    /// This frame's moving figures and formations, by slot.
+    movement: Vec<(Slot, MovementDelta)>,
+    /// This frame's map render delta, which the naval animators advance by as the drawn ones do.
+    movement_delta: Option<f32>,
     naval: naval::History,
     combats: naval_combat::History,
     provinces: Provinces,
@@ -520,9 +525,72 @@ pub struct History {
     empty_fast_path: Option<bool>,
 }
 
+/// Where an entity's root is drawn this frame, against where the hour placed it.
+#[derive(Clone, Copy, Debug)]
+struct MovementDelta {
+    base: [f32; 3],
+    at: [f32; 3],
+    turn: f32,
+    /// The drawn stack scale over the one the hour sized the entity with.
+    scale: f32,
+}
+
+impl MovementDelta {
+    /// `rotation` and `scale` are the root rotation and stack scale the hour placed it with.
+    fn new(position: &Position, drawn: Drawn, rotation: f32, scale: f32) -> Self {
+        let (at, heading) = drawn.motion.position_heading();
+        Self {
+            base: position.at(),
+            at,
+            turn: heading + crate::map::unit_models::MESH_FORWARD_OFFSET - rotation,
+            scale: if scale > 0.0 { drawn.scale / scale } else { 1.0 },
+        }
+    }
+
+    /// Carries a part with its root, turning and scaling its offset with the root.
+    fn apply(self, mut instance: ModelInstance) -> ModelInstance {
+        let (sin, cos) = self.turn.sin_cos();
+        let [x, y, z] =
+            std::array::from_fn(|axis| (instance.position[axis] - self.base[axis]) * self.scale);
+        instance.position = [
+            self.at[0] + x * cos - z * sin,
+            self.at[1] + y,
+            self.at[2] + x * sin + z * cos,
+        ];
+        instance.rotation += self.turn;
+        instance.scale *= self.scale;
+        instance
+    }
+}
+
 impl History {
     pub fn set_selection(&mut self, selected: &BTreeSet<Unit>) {
         self.naval.set_selection(selected);
+    }
+
+    /// Draws the hour's figures and formations where the view's animators move them this frame:
+    /// `positions` are their hour placements, root rotations and settled stack scales.
+    pub fn set_movement<'a>(
+        &mut self,
+        positions: impl Iterator<Item = (Unit, &'a Position, f32, f32)>,
+        history: &SharedMovement,
+    ) {
+        self.movement.clear();
+        let mut history = history.lock().unwrap_or_else(|error| error.into_inner());
+        self.movement_delta = history.delta();
+        for (unit, position, rotation, scale) in positions {
+            let slot = match unit {
+                Unit::Division(id) => (Kind::Land, id),
+                Unit::TaskForce(id) => (Kind::Ship, id),
+                Unit::RailwayGun(_) => continue,
+            };
+            if let Some(drawn) = history.sample(unit, position) {
+                self.movement
+                    .push((slot, MovementDelta::new(position, drawn, rotation, scale)));
+            }
+        }
+        self.movement.sort_unstable_by_key(|entry| entry.0);
+        self.movement.dedup_by_key(|entry| entry.0);
     }
 
     /// Arrow admission is map geometry; a refused 3D entity library must not suppress it.
@@ -869,6 +937,11 @@ impl History {
             steady: self.steady,
         };
         self.last = Some(time);
+        // Naval animators advance by the render delta the view's drawn animators take.
+        let animators = Frame {
+            delta: self.movement_delta.take().unwrap_or(frame.delta),
+            ..frame
+        };
         self.combats.begin_frame(frame.delta);
         // The native literal, advanced before the province updates (unless
         // the frame already advanced it for its map icons); never indexed by
@@ -928,7 +1001,7 @@ impl History {
                     } else {
                         province.visit(
                             targets,
-                            self.naval.representatives(id, frame),
+                            self.naval.representatives(id, animators),
                             frame,
                             &mut self.epoch,
                             budget,
@@ -985,7 +1058,7 @@ impl History {
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
         let _collect_span = viewer_foundation::profiling::span("units_collect");
-        let mut placed = self.provinces.placed();
+        let mut placed = self.provinces.placed(&self.movement);
         placed.extend(self.combats.placed());
         placed.extend(self.raids.iter().map(|&(mesh, instance)| {
             (
@@ -1213,6 +1286,84 @@ pub mod tests {
             }
             self.arrows = frame.arrows;
             queued
+        }
+    }
+
+    #[test]
+    fn moving_formations_rotate_hull_offsets_with_their_headings() {
+        let mut target = target(1, Kind::Ship);
+        target.identity = 7;
+        target.instance.position = [2.0, 0.0, 0.0];
+        let mut epoch = 0;
+        let mut provinces = Provinces::default();
+        provinces.ensure([1]);
+        provinces.records[0].province.entities.insert(
+            (Kind::Ship, 7),
+            Entity {
+                kind: Kind::Ship,
+                scale: 1.0,
+                shrinking: false,
+                parts: BTreeMap::from([(0, Part::new(target, &mut epoch, true))]),
+            },
+        );
+        provinces.populated.insert(0);
+        let turn = std::f32::consts::FRAC_PI_2;
+        let placed = provinces.placed(&[(
+            (Kind::Ship, 7),
+            MovementDelta {
+                base: [0.0; 3],
+                at: [10.0, 0.0, 0.0],
+                turn,
+                scale: 1.5,
+            },
+        )]);
+        let instance = placed[0].1;
+        assert!((instance.position[0] - 10.0).abs() < 1e-5);
+        assert!((instance.position[2] - 3.0).abs() < 1e-5);
+        assert_eq!(instance.rotation, turn);
+        assert_eq!(instance.scale, 1.5);
+    }
+
+    #[test]
+    fn a_glide_into_a_standing_province_takes_its_heading_whatever_the_standing_rotation() {
+        let position = Position::still([3.0, 0.0, 4.0]);
+        let motion = viewer_foundation::map::counter_move::Motion::new(
+            1000.0,
+            &[[0.0, 0.0, 0.0], [0.0, 0.0, 100.0]],
+        )
+        .unwrap();
+        let drawn = Drawn { motion, scale: 1.0 };
+        let expected = motion.position_heading().1 + crate::map::unit_models::MESH_FORWARD_OFFSET;
+        for standing in [0.0, 1.25, -2.5] {
+            let delta = MovementDelta::new(&position, drawn, standing, 1.0);
+            let instance = delta.apply(ModelInstance {
+                position: position.standing,
+                rotation: standing,
+                ..ModelInstance::default()
+            });
+            assert!((instance.rotation - expected).abs() < 1e-5, "{standing}");
+            assert_eq!(instance.position, motion.position());
+        }
+    }
+
+    #[test]
+    fn movement_deltas_reach_retained_figures_without_replacing_their_players() {
+        let mut h = history(vec![target(1, Kind::Land)], true);
+        let first = near(&mut h, 0.0)[0].1;
+        for x in [0.25, 0.5, 0.75] {
+            h.movement = vec![(
+                (Kind::Land, 1),
+                MovementDelta {
+                    base: [0.0; 3],
+                    at: [x, 0.0, 0.0],
+                    turn: 0.0,
+                    scale: 1.0,
+                },
+            )];
+            let shown = near(&mut h, x)[0].1;
+            assert_eq!(shown.position, [x, 0.0, 0.0]);
+            assert_eq!(shown.animation_identity, first.animation_identity);
+            assert_eq!(shown.animation_epoch, first.animation_epoch);
         }
     }
 

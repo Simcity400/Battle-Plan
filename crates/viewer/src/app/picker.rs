@@ -841,6 +841,7 @@ mod tests {
                 revision: "revision".into(),
                 branch_id: "1".into(),
                 playing: false,
+                hours_per_second: 1.0,
                 hour: 0,
                 fraction: 0.,
                 sequence: 1,

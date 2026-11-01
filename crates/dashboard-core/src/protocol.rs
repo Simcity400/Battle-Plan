@@ -590,6 +590,7 @@ pub struct DashboardMapView {
     /// before `hour`. Paused targets and exports stay exact.
     #[serde(default)]
     pub playing: bool,
+    pub hours_per_second: f64,
     pub hour: i32,
     pub fraction: f32,
     pub sequence: u64,
@@ -624,6 +625,9 @@ impl DashboardMapView {
         }
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
             return Err("Map hour fraction must be finite and in [0, 1)");
+        }
+        if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
+            return Err("Map playback speed must be finite and positive");
         }
         if self.sequence > MAX_EXACT_JS_INTEGER
             || self
@@ -796,7 +800,7 @@ mod tests {
     fn map_targets_preserve_seek_sequence_and_accept_pinned_targets_without_it() {
         let input = serde_json::json!({
             "id": "map", "sourceId": "source", "path": "replay.battleplan",
-            "revision": "1", "branchId": "1", "playing": true,
+            "revision": "1", "branchId": "1", "playing": true, "hoursPerSecond": 0.25,
             "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2,
             "bounds": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "clip": { "x": 0, "y": 0, "width": 640, "height": 360 },
@@ -805,6 +809,12 @@ mod tests {
         let view: super::DashboardMapView = serde_json::from_value(input.clone()).unwrap();
         view.validate().unwrap();
         assert_eq!(view.seek_sequence, Some(2));
+        assert_eq!(view.hours_per_second, 0.25);
+        for speed in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut invalid = view.clone();
+            invalid.hours_per_second = speed;
+            assert!(invalid.validate().is_err());
+        }
         let mut pinned = input;
         pinned.as_object_mut().unwrap().remove("seekSequence");
         let mut view: super::DashboardMapView = serde_json::from_value(pinned).unwrap();

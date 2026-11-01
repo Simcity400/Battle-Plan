@@ -122,6 +122,7 @@ use {
     viewer_foundation::map::counter_move, viewer_foundation::map::perspective::Sight,
     viewer_foundation::map::perspective::Vision, viewer_foundation::map::tables::core,
     viewer_foundation::map::tables::rows, viewer_foundation::map::unit_rules::STANDSTILL,
+    viewer_foundation::unit_handle::Unit,
 };
 
 /// The suffix every unit entity's name ends with (seven bytes).
@@ -1545,6 +1546,7 @@ impl UnitModelAssets {
         self.ensure_with_spans(&names, spans);
         lap("um_ensure");
         let library = self.library();
+        let clock_unavailable = counter_move::MovementFrame::clock_speed(frame).is_none();
         let mut placed = Vec::new();
         for (province, owner, stack, level, name, base, key, transport) in chosen {
             if let Some(reason) = self.refusal(&name) {
@@ -1571,10 +1573,7 @@ impl UnitModelAssets {
             }
             let position = match &stack.route {
                 Some(route) => route.position(province, world, anchor),
-                None => anchor(province, STANDSTILL).map(|standing| counter_move::Position {
-                    standing,
-                    motion: None,
-                }),
+                None => anchor(province, STANDSTILL).map(counter_move::Position::still),
             };
             let Some(position) = position else {
                 report.unanchored += 1;
@@ -1594,6 +1593,9 @@ impl UnitModelAssets {
             };
             if position.motion.is_some() {
                 report.moving += 1;
+                if clock_unavailable {
+                    report.error("unit movement: Clock speed is unavailable");
+                }
             }
             if let Some(mesh) = library.meshes.get(slot) {
                 if mesh.own_radius < RIG_RADIUS {
@@ -2247,6 +2249,28 @@ struct StagedField {
 }
 
 impl PreparedModels {
+    /// Each figure and formation's hour placement, root rotation and settled stack scale, for
+    /// its animator.
+    pub fn movement_positions(
+        &self,
+    ) -> impl Iterator<Item = (Unit, &counter_move::Position, f32, f32)> {
+        let land = self.placed.iter().map(|(target, position)| {
+            let rotation = position.motion.map_or(target.instance.rotation, |motion| {
+                motion.position_heading().1 + MESH_FORWARD_OFFSET
+            });
+            (Unit::Division(target.identity), position, rotation, 1.0)
+        });
+        let ships = self.ships.positions.iter().map(|placed| {
+            (
+                Unit::TaskForce(placed.force),
+                &placed.position,
+                placed.rotation,
+                placed.scale,
+            )
+        });
+        land.chain(ships)
+    }
+
     /// Materializes the upload field on the hour builder, after raids and convoys
     /// have joined it. Later views or scene recreations rebuild the same field.
     pub fn stage_field(&mut self, assets: &UnitModelAssets) {

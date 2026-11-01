@@ -12,6 +12,18 @@ pub struct Sources {
     pub candidates: Vec<Candidate>,
     pub formations: Vec<Formation>,
     pub combats: super::naval_combat::Sources,
+    /// Each formation's hour placement, which its animator moves.
+    pub positions: Vec<FormationPlacement>,
+}
+
+/// Where the hour placed a formation's root.
+#[derive(Clone)]
+pub struct FormationPlacement {
+    pub force: u64,
+    pub position: viewer_foundation::map::counter_move::Position,
+    pub rotation: f32,
+    /// The settled stack scale its hulls and locator offsets were sized with.
+    pub scale: f32,
 }
 
 impl Sources {

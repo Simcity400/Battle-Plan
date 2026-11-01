@@ -74,8 +74,9 @@ impl TaskForceMotions {
             .ok_or("task-force motion row absent")
     }
 
-    /// Where `force` stands this hour. `anchor` is a province's unit-stack slot and `land`
-    /// whether a province is land. A route the content cannot place stands on its province.
+    /// Where `force` stands this hour. `anchor` is a province's unit-stack slot, `land`
+    /// whether a province is land and `scale` a slot's stack scale. A route the content cannot
+    /// place stands on its province.
     pub fn visual(
         &self,
         force: &TaskForceRow,
@@ -83,6 +84,7 @@ impl TaskForceMotions {
         world: Option<&RouteWorld<'_>>,
         anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
         land: &dyn Fn(u32) -> bool,
+        scale: &dyn Fn(u32, u32) -> f32,
     ) -> Result<Placement, &'static str> {
         let row = self.row(force.id)?;
         let route = UnitRoute::task_force(row);
@@ -116,20 +118,22 @@ impl TaskForceMotions {
                 ..Default::default()
             })
         });
-        let position = route
-            .standing(force.province, here, kind, anchor)
-            .map(|standing| Position {
-                standing,
-                motion: (!counter_move::snaps_to_stack(
-                    class,
-                    kind,
-                    route.combat_role,
-                    route.combat_count,
-                ))
-                .then(|| animator.and_then(|sample| sample.motion))
-                .flatten(),
+        let mut position = world
+            .and_then(|world| route.position(force.province, kind, world, anchor))
+            .or_else(|| {
+                route
+                    .standing(force.province, here, kind, anchor)
+                    .map(Position::still)
             })
             .ok_or("task-force province has no unit-stack anchor")?;
+        let standing_scale = |province| scale(province, class.standstill(land(province)));
+        position.scale_route([
+            standing_scale(force.province),
+            route
+                .display_path()
+                .first()
+                .map_or(1.0, |&next| standing_scale(next)),
+        ]);
         Ok(Placement {
             kind,
             position,
@@ -155,7 +159,7 @@ impl TaskForceMotions {
         anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
         land: &dyn Fn(u32) -> bool,
     ) -> Result<[f32; 3], &'static str> {
-        let placed = self.visual(force, movement, world, anchor, land)?;
+        let placed = self.visual(force, movement, world, anchor, land, &|_, _| 1.0)?;
         if let Some(reason) = placed.unplaced_route {
             return Err(reason);
         }
@@ -353,7 +357,7 @@ mod tests {
             ..Default::default()
         });
         let placed = partial
-            .visual(&force, Some(&movement), Some(&world), &anchor, &|_| true)
+            .visual(&force, Some(&movement), Some(&world), &anchor, &|_| true, &|_, _| 1.0)
             .unwrap();
         assert_eq!(placed.kind, 19);
         assert_eq!(placed.animator.unwrap().sample_count, 0);
@@ -367,7 +371,7 @@ mod tests {
             ..Default::default()
         });
         let placed = valid
-            .visual(&force, Some(&movement), Some(&world), &anchor, &|_| true)
+            .visual(&force, Some(&movement), Some(&world), &anchor, &|_| true, &|_, _| 1.0)
             .unwrap();
         assert_eq!(placed.kind, 20);
         assert!(placed.animator.unwrap().sample_count != 0);
@@ -403,7 +407,7 @@ mod tests {
             ..Default::default()
         });
         // Without movement content a standing task force takes its slot's anchor: 0 at sea.
-        let at_sea = standing.visual(&force, None, None, &anchor, &sea).unwrap();
+        let at_sea = standing.visual(&force, None, None, &anchor, &sea, &|_, _| 1.0).unwrap();
         assert_eq!(
             (at_sea.kind, at_sea.position.standing),
             (0, [5.0, 0.0, 0.0])
@@ -412,7 +416,7 @@ mod tests {
         // In a land province it is docked: kind 19, the naval base's port item.
         assert_eq!(
             standing
-                .visual(&force, None, None, &anchor, &land)
+                .visual(&force, None, None, &anchor, &land, &|_, _| 1.0)
                 .unwrap()
                 .kind,
             19
@@ -426,7 +430,7 @@ mod tests {
                 path: vec![6],
                 ..Default::default()
             });
-            let placed = fighting.visual(&force, None, None, &anchor, &sea).unwrap();
+            let placed = fighting.visual(&force, None, None, &anchor, &sea, &|_, _| 1.0).unwrap();
             assert_eq!(
                 (placed.kind, placed.position.standing),
                 (kind, [5.0, 0.0, kind as f32])
@@ -445,7 +449,7 @@ mod tests {
         };
         assert_eq!(
             standing
-                .visual(&other, None, None, &anchor, &sea)
+                .visual(&other, None, None, &anchor, &sea, &|_, _| 1.0)
                 .unwrap_err(),
             "task-force motion row absent"
         );

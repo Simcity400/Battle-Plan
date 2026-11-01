@@ -1038,9 +1038,10 @@ pub struct Viewer {
     pointer_grabbed: bool,
     playing: bool,
     speed: f64,
-    /// Hours the playing clock ran ahead of a late host update at an unchanged rate: it holds
-    /// that much of its next advance, so it meets the host's position without stepping back.
-    clock_lead: f64,
+    /// The host's last target, play state and rate: a repeat leaves the running clock alone.
+    clock_anchor: Option<(Playhead, bool, f64)>,
+    /// The drawn lighting, eased toward each presented hour as the game eases it.
+    day_night: viewer_foundation::map::frame::DayNightPlayback,
     last_step: Instant,
     profile_playback: profile_playback::Clock,
     started: Instant,
@@ -1574,7 +1575,8 @@ impl Viewer {
             map_error: None,
             playing: false,
             speed: 24.0,
-            clock_lead: 0.0,
+            clock_anchor: None,
+            day_night: Default::default(),
             last_step: Instant::now(),
             profile_playback: Default::default(),
             started: Instant::now(),
@@ -1662,6 +1664,9 @@ impl Viewer {
     }
 
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
+        self.clock_anchor = None;
+        self.playhead = None;
+        self.day_night = Default::default();
         self.counter_view = CounterView::new(self.options.counter_settings(document.game_counters));
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
@@ -1899,13 +1904,20 @@ impl Viewer {
             hours.seek();
         }
         self.map_animation_target = Some(animation_target);
-        self.playing = target.playing;
-        self.playhead = Some(head);
-        self.clock_lead = 0.0;
         let valid = self
             .document
             .as_ref()
             .and_then(|document| document.playback.range(branch));
+        if let Some((_, last)) = valid {
+            self.anchor_playback(
+                head,
+                target.playing,
+                target.hours_per_second,
+                sought,
+                Instant::now(),
+                last,
+            );
+        }
         self.error = match valid {
             Some((first, last)) if (first..=last).contains(&target.hour) => None,
             Some((first, last)) => Some(format!(
@@ -1930,7 +1942,7 @@ impl Viewer {
             }
             self.document = Some(document);
         }
-        if self.presentation_ready(head, target.playing)
+        if self.presentation_ready(self.playhead.unwrap_or(head), target.playing)
             && self.error.is_none()
             && self.map_error.is_none()
         {
@@ -1944,8 +1956,38 @@ impl Viewer {
         if self.playing
             && let Some(head) = &mut self.playhead
         {
-            self.playing = tick_clock(head, &mut self.clock_lead, self.speed, seconds, last);
+            self.playing = tick_clock(head, self.speed, seconds, last);
         }
+    }
+
+    fn anchor_playback(
+        &mut self,
+        target: Playhead,
+        playing: bool,
+        speed: f64,
+        sought: bool,
+        now: Instant,
+        last: i32,
+    ) {
+        let anchor = (target, playing, speed);
+        if !sought && self.playhead.is_some() && self.clock_anchor == Some(anchor) {
+            return;
+        }
+        if self.capture.is_none() {
+            self.tick_playhead(now.duration_since(self.last_step).as_secs_f64(), last);
+        }
+        self.last_step = now;
+        self.playhead = Some(anchor_clock(
+            self.playhead,
+            target,
+            playing
+                && !sought
+                && self.speed == speed
+                && (self.playing || self.clock_anchor.is_some_and(|(_, playing, _)| playing)),
+        ));
+        self.speed = speed;
+        self.playing = playing && self.playhead.is_some_and(|head| head.hour < last);
+        self.clock_anchor = Some(anchor);
     }
 
     /// The map mode of the hour on screen: the chosen one ([`Self::map_mode`]) once an hour
@@ -1999,11 +2041,16 @@ impl Viewer {
                 .and(self.map_error.clone())
         });
         let ready = target.branch_id.parse().ok().is_some_and(|branch| {
+            let requested = Playhead {
+                branch,
+                hour: target.hour,
+                fraction: f64::from(target.fraction),
+            };
             self.presentation_ready(
-                Playhead {
-                    branch,
-                    hour: target.hour,
-                    fraction: f64::from(target.fraction),
+                if target.playing {
+                    self.playhead.unwrap_or(requested)
+                } else {
+                    requested
                 },
                 target.playing,
             )
@@ -2531,7 +2578,7 @@ impl Viewer {
                     hour: document.playback.hour(),
                     fraction: f64::from(document.hour_fraction),
                 });
-                self.clock_lead = 0.0;
+                self.clock_anchor = None;
                 self.counter_view =
                     CounterView::new(self.options.counter_settings(document.game_counters));
                 if self.embedded.is_none() {
@@ -3442,7 +3489,7 @@ impl Viewer {
             .profile_playback
             .sample(Instant::now)
             .filter(|_| self.profile_playback.wall_active());
-        if !self.dashboard_map && (self.capture.is_none() || wall_clock.is_some()) {
+        if self.capture.is_none() || wall_clock.is_some() {
             let (now, elapsed) = wall_clock.map_or_else(
                 || {
                     let now = Instant::now();
@@ -4116,10 +4163,7 @@ impl Viewer {
                 ));
             }
         }
-        // Playing, the raid units move every rendered frame by the playback
-        // fraction, the tick's progress read by movement updates
-        // each frame; paused, they stand at the host's exact fraction.
-        // Only they move within the hour: the figures and ships stay uploaded.
+        // Raid movement uses the replay fraction; ordinary units move on the view's animators.
         let tick = document.hour_fraction;
         // The trade-route convoys sail by the presentation clock, so while they show they are
         // placed again every frame, with the raid units.
@@ -4519,6 +4563,46 @@ impl Viewer {
                         },
                     )
                     .map_err(|error| error.to_string())?;
+                // The unit animators advance with this frame's province updates, before the
+                // figures and map icons read them.
+                let presentation = &self.counter_view.presentation;
+                {
+                    let schedule = presentation
+                        .schedule()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    presentation
+                        .movement()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .begin_frame(
+                            viewer_foundation::map::counter_move::MovementFrame {
+                                time: animation_time,
+                                hour: document.playback.hour(),
+                                clock_speed: document.frame().ok().and_then(
+                                    viewer_foundation::map::counter_move::MovementFrame::clock_speed,
+                                ),
+                                speeds: document.content.counters.defines.movement_speeds,
+                                steady: self.options.window_dump,
+                            },
+                            schedule.updates().filter_map(|(province, update)| {
+                                (update == viewer_foundation::map::province_schedule::Update::InView)
+                                    .then_some(province)
+                            }),
+                        );
+                }
+                if let Some(prepared) = &self.unit_models {
+                    scene
+                        .apply(
+                            &state.device,
+                            &state.queue,
+                            SceneInput::SetUnitMovement {
+                                prepared,
+                                history: presentation.movement(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
             }
             if self.overlay_fraction != Some(document.hour_fraction) {
                 let prepared = self.prepared_overlay.as_mut().expect("prepared above");
@@ -4985,7 +5069,13 @@ impl Viewer {
                 && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
                 .then(|| Arc::clone(&hit.members))
         });
-        let day_night = self.frame_day_night(document.playback.hour());
+        let target_light = self.frame_day_night(document.playback.hour());
+        let day_night = self.day_night.update(
+            document.playback.hour(),
+            target_light,
+            f64::from(animation_time),
+            1.0 / self.speed,
+        );
         let scene = self.scene.as_mut().unwrap();
         if let Some(prepared) = &self.prepared_overlay {
             let carrier_ranges = hovered_air_carriers
@@ -5918,30 +6008,21 @@ fn skipped_hours<T>(
     Some(passed)
 }
 
-/// A delayed host update re-anchors a playing clock without reversing it: a clock ahead of the
-/// host keeps its position and returns the hours it leads by, which it holds before advancing
-/// again. Explicit seeks, paused targets and a changed rate (`forward` false) take the host
-/// position exactly.
-fn anchor_clock(current: Option<Playhead>, target: Playhead, forward: bool) -> (Playhead, f64) {
+// Late anchors must neither reverse nor stall a running renderer.
+fn anchor_clock(current: Option<Playhead>, target: Playhead, forward: bool) -> Playhead {
     match current {
         Some(current) if forward && current.branch == target.branch => {
-            let lead = f64::from(current.hour - target.hour) + current.fraction - target.fraction;
-            if lead > 0.0 {
-                (current, lead)
-            } else {
-                (target, 0.0)
-            }
+            let lead = f64::from(current.hour) - f64::from(target.hour) + current.fraction
+                - target.fraction;
+            if lead > 0.0 { current } else { target }
         }
-        _ => (target, 0.0),
+        _ => target,
     }
 }
 
-// Repay a delayed host update's lead before advancing either playback clock.
-fn tick_clock(head: &mut Playhead, lead: &mut f64, speed: f64, seconds: f64, last: i32) -> bool {
+fn tick_clock(head: &mut Playhead, speed: f64, seconds: f64, last: i32) -> bool {
     let step = seconds.max(0.0) * speed;
-    let held = step.min(*lead);
-    *lead -= held;
-    advance_clock(head, head.fraction + step - held, last)
+    advance_clock(head, head.fraction + step, last)
 }
 
 /// Moves a playing playhead `fraction` hours past its hour, whether or not the
@@ -5975,7 +6056,7 @@ fn latest_built_key<T>(
 /// hour of its branch.
 fn presentation_matches(rendered: Playhead, target: Playhead, playing: bool) -> bool {
     rendered == target
-        || (playing && rendered.branch == target.branch && rendered.hour < target.hour)
+        || (playing && rendered.branch == target.branch && rendered.hour <= target.hour)
 }
 
 /// Whether the shown overlay, `(engaged_covered, branch, hour)`, was laid out
@@ -7052,6 +7133,7 @@ pub(crate) mod tests {
             revision: "revision".into(),
             branch_id: "1".into(),
             playing: false,
+            hours_per_second: 1.0,
             hour: 0,
             fraction: 0.,
             sequence: 1,
@@ -7324,6 +7406,15 @@ pub(crate) mod tests {
             true
         ));
         assert!(presentation_matches(target, target, false));
+        for fraction in [0.1, 1.0 / 3.0, 0.999_999] {
+            let target = Playhead { fraction, ..target };
+            let rendered = Playhead {
+                fraction: f64::from(fraction as f32),
+                ..target
+            };
+            assert!(presentation_matches(rendered, target, true));
+            assert!(!presentation_matches(rendered, target, false));
+        }
     }
 
     #[test]
@@ -7343,84 +7434,110 @@ pub(crate) mod tests {
                 ..current
             },
         ] {
-            assert_eq!(anchor_clock(Some(current), target, true).0, current);
-            assert_eq!(anchor_clock(Some(current), target, false), (target, 0.0));
+            assert_eq!(anchor_clock(Some(current), target, true), current);
+            assert_eq!(anchor_clock(Some(current), target, false), target);
         }
         let later = Playhead {
             hour: 21,
             fraction: 0.125,
             ..current
         };
-        assert_eq!(anchor_clock(Some(current), later, true), (later, 0.0));
+        assert_eq!(anchor_clock(Some(current), later, true), later);
         let branch = Playhead {
             branch: 2,
             hour: 10,
             ..current
         };
-        assert_eq!(anchor_clock(Some(current), branch, true), (branch, 0.0));
-        assert_eq!(anchor_clock(None, current, true), (current, 0.0));
+        assert_eq!(anchor_clock(Some(current), branch, true), branch);
+        assert_eq!(anchor_clock(None, current, true), current);
     }
 
     #[test]
-    fn the_clock_tick_repays_its_lead_first_and_stops_at_the_branch_end() {
-        let mut head = Playhead {
-            branch: 1,
-            hour: 100,
-            fraction: 0.5,
-        };
-        let mut lead = 0.75;
-        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.0625, 1_000));
-        assert_eq!((head.hour, head.fraction, lead), (100, 0.5, 0.5));
-        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.125, 1_000));
-        assert_eq!((head.hour, head.fraction, lead), (100, 0.5, 0.0));
-        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.4375, 1_000));
-        assert_eq!((head.hour, head.fraction), (102, 0.25));
-        assert!(tick_clock(&mut head, &mut lead, 4.0, -1.0, 1_000));
-        assert_eq!((head.hour, head.fraction), (102, 0.25));
-        assert!(!tick_clock(&mut head, &mut lead, 1_440.0, 1.0, 1_000));
-        assert_eq!((head.hour, head.fraction), (1_000, 0.0));
-    }
-
-    #[test]
-    fn a_clock_ahead_of_a_late_update_holds_until_the_host_catches_up() {
+    fn late_anchors_do_not_freeze_frames_and_controls_remain_exact() {
+        let now = Instant::now();
         let mut viewer = Viewer::create(
-            crate::Config::default(),
-            crate::Options::default(),
+            Config::default(),
+            Options::default(),
             None,
             Arc::new(Mutex::new(None)),
             None,
             None,
         );
-        viewer.playing = true;
-        viewer.speed = 24.0;
         let host = Playhead {
             branch: 1,
             hour: 100,
             fraction: 0.0,
         };
-        let ahead = Playhead {
-            fraction: 0.5,
-            ..host
-        };
-        let (head, lead) = anchor_clock(Some(ahead), host, true);
-        assert_eq!((head, lead), (ahead, 0.5));
-        (viewer.playhead, viewer.clock_lead) = (Some(head), lead);
-        // A quarter hour later the host is still behind: the shown position holds.
-        viewer.tick_playhead(0.25 / 24.0, 1_000);
-        assert_eq!(viewer.playhead, Some(ahead));
-        // Another half hour: a quarter of it meets the host, the rest advances.
-        viewer.tick_playhead(0.5 / 24.0, 1_000);
-        let head = viewer.playhead.unwrap();
-        assert_eq!(head.hour, 100);
-        assert!((head.fraction - 0.75).abs() < 1e-9, "{head:?}");
-        assert_eq!(viewer.clock_lead, 0.0);
-        // A changed rate or the branch end never keeps a lead: the host position is exact.
-        let overshot = Playhead {
-            hour: 1_000,
+        viewer.last_step = now;
+        viewer.anchor_playback(host, true, 4.0, true, now, 1_000);
+        for frame in 1..=60 {
+            let at = now + Duration::from_secs_f64(f64::from(frame) / 60.0);
+            if frame % 3 == 0 {
+                let delayed = Playhead {
+                    fraction: 0.0,
+                    hour: 100 + (frame - 3) / 15,
+                    ..host
+                };
+                viewer.anchor_playback(delayed, true, 4.0, false, at, 1_000);
+            }
+            viewer.tick_playhead(at.duration_since(viewer.last_step).as_secs_f64(), 1_000);
+            viewer.last_step = at;
+            let head = viewer.playhead.unwrap();
+            let position = f64::from(head.hour) + head.fraction;
+            assert!((position - (100.0 + f64::from(frame) / 15.0)).abs() < 1e-7);
+        }
+        viewer.anchor_playback(host, false, 4.0, false, now + Duration::from_secs(1), 1_000);
+        assert_eq!(viewer.playhead, Some(host));
+        assert!(!viewer.playing);
+        viewer.anchor_playback(host, true, 0.25, false, now + Duration::from_secs(1), 1_000);
+        assert_eq!(viewer.playhead, Some(host));
+        viewer.tick_playhead(0.5, 1_000);
+        assert_eq!(viewer.playhead.unwrap().fraction, 0.125);
+        viewer.anchor_playback(host, true, 0.25, true, now + Duration::from_secs(1), 1_000);
+        assert_eq!(viewer.playhead, Some(host));
+        assert!(!tick_clock(
+            viewer.playhead.as_mut().unwrap(),
+            1440.0,
+            1.0,
+            1_000
+        ));
+        assert_eq!(viewer.playhead.unwrap().hour, 1_000);
+    }
+
+    #[test]
+    fn late_playing_anchors_cannot_rewind_a_clock_at_the_branch_end() {
+        let now = Instant::now();
+        let mut viewer = Viewer::create(
+            Config::default(),
+            Options::default(),
+            None,
+            Arc::new(Mutex::new(None)),
+            None,
+            None,
+        );
+        viewer.last_step = now;
+        let head = Playhead {
+            branch: 1,
+            hour: 99,
             fraction: 0.0,
-            ..host
         };
-        assert_eq!(anchor_clock(Some(overshot), host, false), (host, 0.0));
+        viewer.anchor_playback(head, true, 4.0, true, now, 100);
+        viewer.tick_playhead(0.5, 100);
+        assert!(!viewer.playing);
+        let delayed = Playhead {
+            fraction: 0.5,
+            ..head
+        };
+        viewer.anchor_playback(
+            delayed,
+            true,
+            4.0,
+            false,
+            now + Duration::from_millis(500),
+            100,
+        );
+        assert_eq!(viewer.playhead.unwrap().hour, 100);
+        assert!(!viewer.playing);
     }
 
     #[test]

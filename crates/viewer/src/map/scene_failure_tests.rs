@@ -165,7 +165,11 @@ impl Fixture {
         let rails = d.rail_mesh()?;
         scene.set_railways(device, queue, &d.rail_assets, &rails)?;
         scene.set_bridges(device, queue, &d.bridges, d.bridges.field(&rails))?;
-        let _ = scene.set_aircraft(d.aircraft.clone(), d.aircraft_plan(&perspective)?)?;
+        let _ = scene.set_aircraft(
+            d.aircraft.clone(),
+            d.aircraft_plan(&perspective)?,
+            Continuity::Reset,
+        )?;
         let _ = scene.set_trains(
             d.trains.clone(),
             d.train_plan(&perspective)?,

@@ -1,4 +1,4 @@
-use super::{Capture, Playhead, Viewer, VisualStale, anchor_clock, seek_open_target};
+use super::{Capture, Playhead, Viewer, VisualStale, seek_open_target};
 use eframe::{egui, wgpu};
 use replay_data::rows::TableId;
 use replay_frame::frame::TableView;
@@ -261,14 +261,6 @@ impl Viewer {
                         .range(seek.branch)
                         .expect("validated above")
                         .1;
-                    // Bank the old rate before anchoring the new one. A pause
-                    // is exact, even if the local clock had run farther ahead.
-                    if self.capture.is_none()
-                        && self.playhead.is_some_and(|head| head.branch == seek.branch)
-                    {
-                        self.tick_playhead(now.duration_since(self.last_step).as_secs_f64(), last);
-                    }
-                    self.last_step = now;
                     let animation_target = Target {
                         branch: seek.branch,
                         hour: seek.hour,
@@ -289,19 +281,10 @@ impl Viewer {
                         hour: seek.hour,
                         fraction: seek.playback.map_or(0.0, |clock| clock.fraction),
                     };
-                    // A changed rate takes the host position exactly: what the old rate ran on
-                    // past it while the update travelled is not playback at the new rate.
-                    let rate_changed = seek
+                    let speed = seek
                         .playback
-                        .is_some_and(|clock| clock.hours_per_second != self.speed);
-                    let (head, lead) =
-                        anchor_clock(self.playhead, target, playing && !sought && !rate_changed);
-                    self.playhead = Some(head);
-                    self.clock_lead = lead;
-                    if let Some(clock) = seek.playback {
-                        self.speed = clock.hours_per_second;
-                    }
-                    self.playing = playing && self.playhead.is_some_and(|head| head.hour < last);
+                        .map_or(self.speed, |clock| clock.hours_per_second);
+                    self.anchor_playback(target, playing, speed, sought, now, last);
                 }
                 Err(error) => {
                     self.error = Some(error);

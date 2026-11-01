@@ -1323,6 +1323,16 @@ fn scenario_rig(
 }
 
 impl AircraftAssets {
+    pub fn launch_lifetime(&self, mesh: usize, seed: u32) -> f32 {
+        played_end(
+            &self.library().rig_source(mesh),
+            ModelInstance {
+                animation_seed: seed,
+                ..launches::Launch::instance_for(0)
+            },
+        )
+    }
+
     pub fn lazy_diagnostics(&self) -> Vec<installed_content_core::Diagnostic> {
         self.lazy_diagnostics
             .lock()
@@ -1729,7 +1739,7 @@ impl Random {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Route {
     points: Vec<[f32; 3]>,
     arcs: Vec<f32>,
@@ -2003,6 +2013,7 @@ enum Ground {
 /// every actor's update reports it done.
 #[derive(Clone, Debug)]
 struct Run {
+    initialized: bool,
     flights: std::ops::Range<usize>,
     start: f32,
     cycle: u32,
@@ -2105,7 +2116,7 @@ impl Flight {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Flight {
     /// The family a viewer can hide this flight's aircraft with.
     mission: AirMission,
@@ -2138,6 +2149,9 @@ struct Flight {
 #[derive(Clone, Default)]
 pub struct AircraftPlan {
     flights: Vec<Flight>,
+    flight_seeds: Vec<u32>,
+    launch_seeds: Vec<u32>,
+    next_seed: u64,
     /// Each placed scenario's run on the viewer's frames.
     runs: Vec<Run>,
     /// The presentation time the runs last advanced to.
@@ -2279,8 +2293,8 @@ impl LaunchRecords {
         let max_delay = assets.launch_content.max_delay()?;
         // The entity plays its default state until its own player reads
         // its root clip's length.
-        let source = assets.library().rig_source(mesh);
-        let length = played_end(&source, launches::Launch::instance_for(index));
+        let length =
+            assets.launch_lifetime(mesh, launches::Launch::instance_for(index).animation_seed);
         let seed = wing.id as u32 ^ (wing.id >> 32) as u32 ^ province.rotate_left(16);
         let explosions = match request.kind {
             scenarios::LaunchKind::Mission => None,
@@ -3388,6 +3402,7 @@ impl AircraftPlan {
         }
         let first = self.flights.len();
         self.runs.push(Run {
+            initialized: false,
             flights: first..first + group.len(),
             start: 0.0,
             cycle: 0,
@@ -3973,7 +3988,8 @@ impl AircraftPlan {
             }
             let elapsed = seconds.max(0.0) * clock_speed + lead.phase * total;
             let reset = |run: &mut Run| run.grounds.fill(Ground::Following);
-            if restart || elapsed < run.start {
+            if restart || !run.initialized || elapsed < run.start {
+                run.initialized = true;
                 let cycle = (elapsed / total).floor();
                 run.start = cycle * total;
                 run.cycle = cycle as u32;
@@ -3983,7 +3999,13 @@ impl AircraftPlan {
                 for index in run.flights.clone() {
                     if let Some((province, position, bounds)) = self.flights[index].impact {
                         finished.push(super::strike_effects::Impact {
-                            id: (index as u64) << 32 | u64::from(run.cycle),
+                            id: u64::from(
+                                self.flight_seeds
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or(index as u32),
+                            ) << 32
+                                | u64::from(run.cycle),
                             province,
                             effect: super::strike_effects::Effect::MissileExplosion,
                             position,
@@ -4053,7 +4075,10 @@ impl AircraftPlan {
                         let read = hidden
                             || GroundContact::from(band).exploded(played((
                                 flight.mesh,
-                                index as u32,
+                                self.flight_seeds
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or(index as u32),
                                 run.cycle,
                             )));
                         *ground = Ground::Exploding {
@@ -4090,7 +4115,12 @@ impl AircraftPlan {
                 let record = finished(launch)?;
                 let (province, position, bounds) = launch.explosion(record)?;
                 Some(super::strike_effects::Impact {
-                    id: LAUNCH_IMPACT | (index as u64) << 32 | u64::from(record),
+                    id: LAUNCH_IMPACT
+                        | u64::from(
+                            self.launch_seed(index)
+                                ^ launches::Launch::instance_for(0).animation_seed,
+                        ) << 32
+                        | u64::from(record),
                     province,
                     effect: super::strike_effects::Effect::MissileExplosion,
                     position,
@@ -4155,6 +4185,7 @@ impl AircraftPlan {
                 .collect(),
             runs: (0..provinces.len())
                 .map(|index| Run {
+                    initialized: false,
                     flights: index..index + 1,
                     start: 0.0,
                     cycle: 0,
@@ -4254,6 +4285,129 @@ impl AircraftPlan {
         placed
     }
 
+    fn flight_seed(&self, index: usize) -> u32 {
+        self.flight_seeds
+            .get(index)
+            .copied()
+            .unwrap_or(index as u32)
+    }
+
+    fn launch_seed(&self, index: usize) -> u32 {
+        self.launch_seeds
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| launches::Launch::instance_for(index).animation_seed)
+    }
+
+    pub fn carry_presentation(
+        &mut self,
+        previous: &mut Self,
+        continuity: viewer_foundation::map::presentation::Continuity,
+        launch_lifetime: &dyn Fn(usize, u32) -> f32,
+    ) -> io::Result<()> {
+        if continuity == viewer_foundation::map::presentation::Continuity::Reset {
+            return Ok(());
+        }
+        let mut next_seed = previous.next_seed.max(
+            (0..previous.flights.len())
+                .map(|index| previous.flight_seed(index))
+                .chain((0..previous.launches.len()).map(|index| previous.launch_seed(index)))
+                .max()
+                .map_or(0, |seed| u64::from(seed) + 1),
+        );
+        let mut fresh = || -> io::Result<u32> {
+            let seed = u32::try_from(next_seed)
+                .map_err(|_| io::Error::other("aircraft animation seed space exhausted"))?;
+            next_seed += 1;
+            Ok(seed)
+        };
+        let mut prior: BTreeMap<Vec<FlightKey>, Vec<usize>> = BTreeMap::new();
+        for (index, run) in previous.runs.iter().enumerate() {
+            prior
+                .entry(
+                    previous.flights[run.flights.clone()]
+                        .iter()
+                        .map(Flight::key)
+                        .collect(),
+                )
+                .or_default()
+                .push(index);
+        }
+        self.flight_seeds.resize(self.flights.len(), 0);
+        let mut retained = BTreeSet::new();
+        for run in &mut self.runs {
+            let flights = &self.flights[run.flights.clone()];
+            let key = flights.iter().map(Flight::key).collect::<Vec<_>>();
+            let matched = prior.get_mut(&key).and_then(|candidates| {
+                let at = candidates.iter().position(|&index| {
+                    flights == &previous.flights[previous.runs[index].flights.clone()]
+                })?;
+                Some(candidates.remove(at))
+            });
+            if let Some(index) = matched {
+                let old = &previous.runs[index];
+                for (next, old) in run.flights.clone().zip(old.flights.clone()) {
+                    self.flight_seeds[next] = previous.flight_seed(old);
+                }
+                run.start = old.start;
+                run.cycle = old.cycle;
+                run.initialized = old.initialized;
+                run.grounds.clone_from(&old.grounds);
+                retained.extend(key);
+            } else {
+                for index in run.flights.clone() {
+                    self.flight_seeds[index] = fresh()?;
+                }
+            }
+        }
+        let mut launches: BTreeMap<(u64, usize, [u32; 3], u32), Vec<usize>> = BTreeMap::new();
+        for (index, launch) in previous.launches.iter().enumerate() {
+            launches
+                .entry((
+                    launch.wing,
+                    launch.mesh,
+                    launch.position.map(f32::to_bits),
+                    launch.seed,
+                ))
+                .or_default()
+                .push(index);
+        }
+        self.launch_seeds.clear();
+        for launch in &mut self.launches {
+            let key = (
+                launch.wing,
+                launch.mesh,
+                launch.position.map(f32::to_bits),
+                launch.seed,
+            );
+            let old = launches.get_mut(&key).and_then(|candidates| {
+                let at = candidates
+                    .iter()
+                    .position(|&index| launch.same_source(&previous.launches[index]))?;
+                Some(candidates.remove(at))
+            });
+            let seed = match old {
+                Some(index) => {
+                    launch.length = previous.launches[index].length;
+                    previous.launch_seed(index)
+                }
+                None => {
+                    let seed = fresh()?;
+                    launch.length = launch_lifetime(launch.mesh, seed);
+                    seed
+                }
+            };
+            self.launch_seeds.push(seed);
+        }
+        self.next_seed = next_seed;
+        self.ran_at = previous.ran_at;
+        self.finished.append(&mut previous.finished);
+        self.carry_opening(previous);
+        self.carry_easing(previous);
+        self.eased.retain(|key, _| retained.contains(key));
+        Ok(())
+    }
+
     /// Takes over the drawn transforms of the plan this one replaces, for the
     /// flights the two share.
     pub fn carry_easing(&mut self, previous: &mut Self) {
@@ -4276,7 +4430,11 @@ impl AircraftPlan {
                 runs[index] = Some((run.start, run.cycle, *ground));
             }
         }
-        place_runs(&self.flights, rigs, defines, seconds, &|index| runs[index])
+        let mut placed = place_runs(&self.flights, rigs, defines, seconds, &|index| runs[index]);
+        for (index, instance) in &mut placed {
+            instance.animation_seed = self.flight_seed(*index);
+        }
+        placed
     }
 
     /// The launch entities shown at presentation time `seconds`.
@@ -4284,7 +4442,11 @@ impl AircraftPlan {
         self.launches
             .iter()
             .enumerate()
-            .filter_map(|(index, launch)| Some((launch.mesh, launch.instance(index, seconds)?)))
+            .filter_map(|(index, launch)| {
+                let mut instance = launch.instance(index, seconds)?;
+                instance.animation_seed = self.launch_seed(index);
+                Some((launch.mesh, instance))
+            })
             .collect()
     }
 

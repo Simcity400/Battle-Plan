@@ -1760,6 +1760,7 @@ fn the_initial_gate_uses_the_wings_own_operands() {
 }
 
 mod band;
+mod continuity;
 mod model_inputs;
 mod launch_effects;
 mod paired;
@@ -2296,6 +2297,7 @@ fn one_run(
             terrain: (!lands).then(|| Arc::new(Terrain::capture(&heights, (0.0, 6.0), (0.0, 6.0)))),
         }],
         runs: vec![Run {
+            initialized: false,
             flights: 0..1,
             start: 0.0,
             cycle: 0,

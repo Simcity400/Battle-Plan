@@ -1544,6 +1544,7 @@ fn draw_land_action_fixture_with(
                 sprites: vec![None],
                 flotillas: Vec::new(),
                 positions: Vec::new(),
+                units: Vec::new(),
                 icons: Vec::new(),
                 source_kinds: Vec::new(),
                 groups: Vec::new(),
@@ -1663,6 +1664,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
     };
     let localisation = Default::default();
     let schedule = Shared::default();
+    let movement_history = Default::default();
     let inputs = CounterInputs {
         content: &content,
         equipment: Err("unreached variant content"),
@@ -1695,6 +1697,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         selected_fleets: &[],
         hovered: None,
         schedule: &schedule,
+        movement_history: &movement_history,
         visibility: Visibility::POLITICAL,
     };
     run(inputs)
@@ -4264,6 +4267,8 @@ fn counter_defines_read_each_define_through_its_native_getter() {
             NGraphics = {
                 UNITS_ICONS_DISTANCE_CUTOFF = 12.345674,
                 UNITS_DISTANCE_CUTOFF = 120,
+                LAND_UNIT_MOVEMENT_SPEED = 12,
+                NAVAL_UNIT_MOVEMENT_SPEED = 6.5,
                 AIRBASE_ICON_DISTANCE_CUTOFF = 900,
                 NAVALBASE_ICON_DISTANCE_CUTOFF = 900,
                 NAVAL_MISSION_ICONS_DISTANCE_CUTOFF = 1500,
@@ -4336,6 +4341,7 @@ fn counter_defines_read_each_define_through_its_native_getter() {
     assert_eq!(read.type_colors, type_tint::Colors::TEST);
     // fixed5 keeps five decimals where a plain number would keep 12.345674.
     assert_eq!(read.icons_cutoff, 12.34567);
+    assert_eq!(read.movement_speeds, [12.0, 6.5]);
     // Integer defines truncate; the game compares strictly, and the
     // naval bubble's small form takes the same answer.
     assert_eq!(read.coarse_distance, [500.0, 350.0]);

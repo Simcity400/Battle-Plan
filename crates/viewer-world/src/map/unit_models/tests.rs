@@ -30,10 +30,7 @@ fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
         targets: None,
         placed: vec![(
             target(5, 1, Kind::Land),
-            counter_move::Position {
-                standing: [0.0; 3],
-                motion: None,
-            },
+            counter_move::Position::still([0.0; 3]),
         )],
         ships: NavalSources {
             candidates: vec![crate::map::unit_history::naval::Candidate {

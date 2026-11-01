@@ -485,6 +485,16 @@ impl Viewer {
             &document.playback.replay().gaps,
         );
         let unit_restart = presentation_unit_restart(previous, next, self.animation_seek);
+        // Presentation history starts again with the trains and the weather.
+        if continuity == Continuity::Reset {
+            self.day_night = Default::default();
+            self.counter_view
+                .presentation
+                .movement()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
         // Audio follows the same continuity: a reset, or recreated units,
         // ends what sounds and does not count present events as fired.
         if continuity == Continuity::Reset || unit_restart != UnitRestart::Keep {
@@ -622,6 +632,7 @@ impl Viewer {
                     SceneInput::SetAircraft {
                         assets: document.aircraft.clone(),
                         plan: aircraft,
+                        continuity,
                     },
                 )?
                 .into_aircraft();

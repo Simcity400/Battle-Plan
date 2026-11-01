@@ -894,7 +894,9 @@ pub(super) fn add_task_forces<'a>(
         let placement =
             match tables
                 .task_forces
-                .visual(force, inputs.movement, world.as_ref(), &anchor, &land)
+                .visual(force, inputs.movement, world.as_ref(), &anchor, &land, &|province, kind| {
+                    inputs.content.stack_scale(province, kind)
+                })
             {
                 Ok(placement) => placement,
                 Err(reason) => {

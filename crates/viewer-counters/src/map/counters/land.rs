@@ -149,6 +149,8 @@ pub(super) struct PreparedLand {
     /// The naval items among the column plates, drawn with the naval window.
     pub(super) flotillas: Vec<Flotilla>,
     pub(super) positions: Vec<counter_move::Position>,
+    /// Each position's unit, whose presentation history moves its counter.
+    pub(super) units: Vec<Unit>,
     pub(super) icons: Vec<counter_groups::Icon>,
     /// Each icon's province visual bucket, distinguishing same-province sources.
     pub(super) source_kinds: Vec<u32>,
@@ -174,8 +176,25 @@ impl PreparedLand {
         missing_owners: &mut Vec<u32>,
         at_sea: &mut Vec<AtSeaPlate>,
     ) -> io::Result<Vec<Arc<ColumnPlacement>>> {
-        for (icon, position) in self.icons.iter_mut().zip(&self.positions) {
-            icon.anchor = position.at();
+        {
+            let mut history = inputs
+                .movement_history
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let settled = history.clock_unavailable();
+            for ((icon, position), &unit) in
+                self.icons.iter_mut().zip(&self.positions).zip(&self.units)
+            {
+                icon.anchor = history
+                    .sample(unit, position)
+                    .map_or_else(|| position.at(), |drawn| drawn.motion.position());
+                if settled && position.motion.is_some() {
+                    *report
+                        .land_counter_gaps
+                        .entry("unit movement: Clock speed is unavailable".into())
+                        .or_default() += 1;
+                }
+            }
         }
         counter_groups::update_anchors(&mut self.groups, &self.icons, &self.levels, &self.extents);
         report.groups += self.groups.len();
@@ -1599,10 +1618,7 @@ fn add_railway_guns(
             (Some(kind), Some(world)) => route.position(gun.province, kind, world, &anchor),
             _ => route
                 .standing(gun.province, true, kind, &anchor)
-                .map(|standing| counter_move::Position {
-                    standing,
-                    motion: None,
-                }),
+                .map(counter_move::Position::still),
         };
         let on_land = movement
             .and_then(|movement| movement.map.terrain(gun.province))
@@ -1867,6 +1883,7 @@ pub(super) fn land_counters<'a>(
     let mut source_kinds = Vec::new();
     let mut admitted = Vec::new();
     let mut positions = Vec::new();
+    let mut units = Vec::new();
     for ((province, kind), mut source) in sources {
         source.units.sort_by_key(SourceUnit::ordinal);
         // Use each source's selected anchor; ordinary sources use the first member's animator position.
@@ -1875,10 +1892,7 @@ pub(super) fn land_counters<'a>(
             inputs
                 .content
                 .port(province)
-                .map(|standing| counter_move::Position {
-                    standing,
-                    motion: None,
-                })
+                .map(counter_move::Position::still)
         } else {
             match &source.units[0] {
                 SourceUnit::Land(first) => match &first.gun {
@@ -1901,6 +1915,11 @@ pub(super) fn land_counters<'a>(
             anchor: position.at(),
         });
         source_kinds.push(kind);
+        units.push(match &source.units[0] {
+            SourceUnit::Land(unit) if unit.gun.is_some() => Unit::RailwayGun(unit.id),
+            SourceUnit::Land(unit) => Unit::Division(unit.id),
+            SourceUnit::Naval(unit) => Unit::TaskForce(unit.force.id),
+        });
         positions.push(position);
         admitted.push(source);
     }
@@ -2043,6 +2062,7 @@ pub(super) fn land_counters<'a>(
         })
         .collect();
     Ok(PreparedLand {
+        units,
         sprites: (0..drawn.len()).map(|_| None).collect(),
         stacks: drawn,
         styles,
@@ -2925,10 +2945,7 @@ pub(super) fn stack_position(
     let anchor = |id, kind| inputs.content.anchor(id, kind);
     match moving {
         Some(moving) => moving.position(province, inputs.route_world().as_ref(), &anchor),
-        None => anchor(province, STANDSTILL).map(|standing| counter_move::Position {
-            standing,
-            motion: None,
-        }),
+        None => anchor(province, STANDSTILL).map(counter_move::Position::still),
     }
 }
 

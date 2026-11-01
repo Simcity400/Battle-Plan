@@ -23,7 +23,7 @@ test('map load errors hide diagnostics and retain Retry; an hour not indexed yet
     const props = { widget: { id: 'map', kind: 'map', trackIds: ['t'], countries: { kind: 'all' }, time: { mode: 'follow' } }, active: true, mapOptions: { fog: true },
       runtime: { client: { available: true, nativeMaps: true }, maps: { retry() {}, register() {}, schedule() {} },
         tracks: [{ id: 't', axisOffset: 0, branch: { id: 'b', firstHour: 100, lastHour: 110 }, source: { id: 's', path: 'synthetic', revision: 'r' } }],
-        clock: { getHour: () => 105, getSnapshot: () => ({ position: 105, hour: 105, playing: true, sequence: 0, fraction: 0 }) } } } as unknown as WidgetProps;
+        clock: { getHour: () => 105, getSnapshot: () => ({ position: 105, hour: 105, playing: true, sequence: 0, fraction: 0, hoursPerSecond: 4 }) } } } as unknown as WidgetProps;
     const render = () => renderToStaticMarkup(createElement(Widget, props));
     const failed = render();
     assert.match(failed, /Couldn’t load\./);

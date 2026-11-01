@@ -4,6 +4,52 @@ use crate::map::camera::Pose;
 const REFERENCE_HOUR: i32 = 60_826_314;
 
 #[test]
+fn playback_lighting_moves_on_every_frame_at_each_rate() {
+    for speed in [0.25, 1.0, 4.0, 24.0, 168.0, 720.0, 1440.0] {
+        let mut clock = DayNightPlayback::default();
+        let initial = DayNight::at_hour(18);
+        assert_eq!(clock.update(18, initial, 0.0, 1.0 / speed), initial);
+        let target = DayNight::at_hour(19);
+        let mut previous = initial.hour_fraction;
+        for frame in 1..=120 {
+            let shown = clock.update(19, target, f64::from(frame) / (120.0 * speed), 1.0 / speed);
+            assert!(shown.hour_fraction > previous);
+            assert!(shown.hour_fraction <= target.hour_fraction);
+            previous = shown.hour_fraction;
+        }
+        assert_eq!(
+            clock
+                .update(19, target, 2.0 / speed, 1.0 / speed)
+                .hour_fraction,
+            target.hour_fraction
+        );
+    }
+}
+
+#[test]
+fn playback_lighting_wraps_midnight_forward_and_resets_without_history() {
+    let mut clock = DayNightPlayback::default();
+    clock.update(23, DayNight::at_hour(23), 0.0, 1.0);
+    let middle = clock.update(24, DayNight::at_hour(24), 0.25, 1.0);
+    assert!(middle.hour_fraction > 23.0 / 24.0);
+    assert_eq!(
+        clock
+            .update(24, DayNight::at_hour(24), 2.0, 1.0)
+            .hour_fraction,
+        0.0
+    );
+    assert_eq!(
+        clock
+            .update(100, DayNight::at_hour(100), 2.1, 1.0)
+            .hour_fraction,
+        hour_fraction(100)
+    );
+    let mut sought = DayNightPlayback::default();
+    let target = DayNight::at_hour(4).with_cycle(false);
+    assert_eq!(sought.update(4, target, 10.0, 1.0), target);
+}
+
+#[test]
 fn the_reference_hour_reproduces_the_report_sun_and_moon() {
     let day_night = DayNight::at_hour(REFERENCE_HOUR);
     assert_eq!(day_night.hour_fraction, 0.75);

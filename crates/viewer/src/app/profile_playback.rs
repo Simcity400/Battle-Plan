@@ -213,23 +213,13 @@ mod tests {
         let mut clock = Clock::default();
         clock.configure(Some(Mode::Wall(1440.0)), true);
         let mut head = head();
-        let mut lead = 0.0;
         for (millis, hour) in [(0, 100), (125, 280), (375, 640), (1000, 1540)] {
             let sample = clock
                 .sample(|| origin + Duration::from_millis(millis))
                 .unwrap();
             assert!(clock.wall_active());
-            assert!(tick_clock(
-                &mut head,
-                &mut lead,
-                1440.0,
-                sample.seconds,
-                10_000
-            ));
-            assert_eq!(
-                (head.branch, head.hour, head.fraction, lead),
-                (7, hour, 0.25, 0.0)
-            );
+            assert!(tick_clock(&mut head, 1440.0, sample.seconds, 10_000));
+            assert_eq!((head.branch, head.hour, head.fraction), (7, hour, 0.25));
         }
         assert_eq!(clock.elapsed, Duration::from_secs(1));
         assert_eq!(
@@ -238,13 +228,7 @@ mod tests {
         );
         let sample = clock.sample(|| origin + Duration::from_secs(10)).unwrap();
         assert_eq!(sample.seconds, 9.0);
-        assert!(!tick_clock(
-            &mut head,
-            &mut lead,
-            1440.0,
-            sample.seconds,
-            2000
-        ));
+        assert!(!tick_clock(&mut head, 1440.0, sample.seconds, 2000));
         assert_eq!((head.hour, head.fraction), (2000, 0.0));
         assert_eq!(
             clock.stamp(Some(head), false).to_string(),
@@ -258,17 +242,10 @@ mod tests {
         let mut clock = Clock::default();
         clock.configure(Some(Mode::Nominal(1440.0)), true);
         let mut head = head();
-        let mut lead = 0.0;
         for (secs, hour) in [(0, 106), (1, 112), (4, 118)] {
             clock.sample(|| origin + Duration::from_secs(secs)).unwrap();
             assert!(!clock.wall_active());
-            assert!(tick_clock(
-                &mut head,
-                &mut lead,
-                1440.0,
-                1.0 / 240.0,
-                10_000
-            ));
+            assert!(tick_clock(&mut head, 1440.0, 1.0 / 240.0, 10_000));
             assert_eq!((head.hour, head.fraction), (hour, 0.25));
         }
         assert_eq!(clock.elapsed, Duration::from_secs(4));

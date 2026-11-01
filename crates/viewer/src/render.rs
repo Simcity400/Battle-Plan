@@ -397,7 +397,11 @@ pub fn dump_png(
             )?;
         }
         if !layers.omitted.models {
-            let _ = scene.set_aircraft(layers.aircraft.clone(), layers.aircraft_plan.clone())?;
+            let _ = scene.set_aircraft(
+                layers.aircraft.clone(),
+                layers.aircraft_plan.clone(),
+                Continuity::Reset,
+            )?;
             scene.set_unit_models(
                 &device,
                 &queue,

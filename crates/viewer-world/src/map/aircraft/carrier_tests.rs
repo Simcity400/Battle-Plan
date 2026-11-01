@@ -136,6 +136,7 @@ fn carrier_takeoff_uses_the_joined_task_forces_settled_route_point() {
             Some(&world),
             &anchor,
             &|_| false,
+            &|_, _| 1.0,
         )
         .unwrap();
     assert!(visual.position.motion.is_some());

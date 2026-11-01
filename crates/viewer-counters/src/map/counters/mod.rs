@@ -262,6 +262,9 @@ pub struct TextChild {
 /// Every `NDefines` value the counter pass reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CounterDefines {
+    /// `LAND_UNIT_MOVEMENT_SPEED` and `NAVAL_UNIT_MOVEMENT_SPEED`: the free arc's speeds, which
+    /// a view's movement clock carries to its counters and figures.
+    pub movement_speeds: [f32; 2],
     /// `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`, a fixed5 define : unit counters
     /// draw below it.
     pub icons_cutoff: f32,
@@ -313,6 +316,10 @@ impl CounterDefines {
         };
         let int = |name| defines.int32("NGraphics", name).map(|value| value as f32);
         Ok(Self {
+            movement_speeds: [
+                number("LAND_UNIT_MOVEMENT_SPEED")?,
+                number("NAVAL_UNIT_MOVEMENT_SPEED")?,
+            ],
             icons_cutoff: fixed("UNITS_ICONS_DISTANCE_CUTOFF")?,
             units_cutoff: number("UNITS_DISTANCE_CUTOFF")?,
             air_base_cutoff: number("AIRBASE_ICON_DISTANCE_CUTOFF")?,
@@ -368,6 +375,7 @@ impl CounterDefines {
     /// The shipped `00_graphics.lua` values, for tests only.
     #[cfg(any(test, feature = "test-support"))]
     pub const VANILLA: Self = Self {
+        movement_speeds: [12.0; 2],
         icons_cutoff: 900.0,
         units_cutoff: 120.0,
         air_base_cutoff: 900.0,
@@ -1693,6 +1701,8 @@ pub struct CounterInputs<'a> {
     pub hovered: Option<Unit>,
     /// The host view's shared province schedule.
     pub schedule: &'a Shared,
+    /// The host view's unit presentation history, which its figures share.
+    pub movement_history: &'a viewer_foundation::map::counter_move::SharedMovement,
     /// What the view's map mode shows of the counters and icons.
     pub visibility: Visibility,
 }

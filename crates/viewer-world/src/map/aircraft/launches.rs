@@ -202,7 +202,7 @@ fn draws(seed: u32, record: u32, stream: u32) -> Random {
 const DELAY_STREAM: u32 = 2;
 
 /// A base's launch effect on the presentation clock.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct Launch {
     pub mesh: usize,
     pub wing: u64,
@@ -220,6 +220,15 @@ pub(super) struct Launch {
 }
 
 impl Launch {
+    pub(super) fn same_source(&self, other: &Self) -> bool {
+        self.mesh == other.mesh
+            && self.wing == other.wing
+            && self.position == other.position
+            && self.spawn == other.spawn
+            && self.seed == other.seed
+            && self.explosions == other.explosions
+    }
+
     /// A launch whose records wait `delay` aircraft-clock seconds, drawn
     /// once from its seed, on a clock of `clock_speed` per presentation
     /// second.

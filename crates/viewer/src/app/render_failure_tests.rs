@@ -21,6 +21,7 @@ pub(super) fn target(fixture: &Fixture) -> dashboard::protocol::DashboardMapView
         revision: "fixture".into(),
         branch_id: fixture.input.branch.to_string(),
         playing: false,
+        hours_per_second: 1.0,
         hour: fixture.input.hour,
         fraction: 0.,
         sequence: 1,

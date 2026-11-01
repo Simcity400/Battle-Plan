@@ -1410,14 +1410,17 @@ impl Scene {
         &mut self,
         assets: Arc<crate::map::aircraft::AircraftAssets>,
         mut plan: crate::map::aircraft::AircraftPlan,
+        continuity: Continuity,
     ) -> io::Result<Option<crate::map::aircraft::AircraftPlan>> {
         // Hand back the old plan so its flights can be freed off the frame path.
         if let Some((pass, _, current)) = &mut self.aircraft {
-            pass.reset_animation();
-            plan.carry_opening(current);
-            let mut previous = std::mem::replace(current, plan);
-            current.carry_easing(&mut previous);
-            Ok(Some(previous))
+            plan.carry_presentation(current, continuity, &|mesh, seed| {
+                assets.launch_lifetime(mesh, seed)
+            })?;
+            if continuity == Continuity::Reset {
+                pass.reset_animation();
+            }
+            Ok(Some(std::mem::replace(current, plan)))
         } else {
             let pass = ModelPass::new(&assets.library(), "flying aircraft");
             self.aircraft = Some((pass, assets, plan));

@@ -312,11 +312,7 @@ fn the_turn_ahead_bends_the_first_world_unit_and_sets_the_heading() {
 fn a_one_province_route_leaves_the_counter_where_it_stands() {
     assert_eq!(settled(&[[1.0, 2.0, 3.0]]), None);
     assert_eq!(settled(&[]), None);
-    let position = Position {
-        standing: [4.0, 5.0, 6.0],
-        motion: None,
-    };
-    assert_eq!(position.at(), [4.0, 5.0, 6.0]);
+    assert_eq!(Position::still([4.0, 5.0, 6.0]).at(), [4.0, 5.0, 6.0]);
 }
 
 #[test]
@@ -807,4 +803,359 @@ fn counter_action_route_idle_uses_native_signed_counts() {
     let etas = Etas::default();
     let routes = DivisionRoutes::read(&frame, &etas, None, &|_| None).unwrap();
     assert!(routes.by_division[&7].idle);
+}
+
+fn live_position(province: u32, path: &[u32], start: f32, combat: bool) -> Position {
+    let movement = Movement {
+        province,
+        path: path.into(),
+        class: CounterClass::Division,
+        combat,
+        snapped: false,
+        width: 1000.0,
+        anchors: [[start, 0.0, 0.0], [start + 10.0, 0.0, 0.0]],
+        samples: if path.is_empty() {
+            Vec::new()
+        } else {
+            vec![
+                Sample {
+                    at: [start, 0.0, 0.0],
+                    arc: 0.0,
+                },
+                Sample {
+                    at: [start + 10.0, 0.0, 0.0],
+                    arc: 10.0,
+                },
+            ]
+        },
+        next: usize::from(!path.is_empty()),
+        scales: [1.0; 2],
+    };
+    Position {
+        standing: [start, 0.0, 0.0],
+        motion: movement.settled(),
+        movement: Some(Arc::new(movement)),
+    }
+}
+
+/// The same route with its stack snapped to its combat anchor.
+fn snapped(position: &Position, combat: bool) -> Position {
+    let mut movement = Movement::clone(position.movement.as_ref().unwrap());
+    movement.snapped = true;
+    movement.combat = combat;
+    Position {
+        standing: [position.standing[0], 5.0, 0.0],
+        motion: None,
+        movement: Some(Arc::new(movement)),
+    }
+}
+
+const SEEN: [u32; 4] = [1, 2, 5, 9];
+
+fn movement_frame(time: f32, hour: i32, speed: f32) -> MovementFrame {
+    MovementFrame {
+        time,
+        hour,
+        clock_speed: Some(0),
+        speeds: [speed; 2],
+        steady: false,
+    }
+}
+
+/// A history whose render delta has settled on 0.1 s frames (the sorted ring takes about 160 to
+/// fill), in which `units` have run from their anchors to the settled arc of `old` at hour 100,
+/// its last frame at time zero.
+fn settled_on(old: &Position, units: &[Unit]) -> MovementHistory {
+    let mut history = MovementHistory::default();
+    for frame in -256..=0 {
+        let hour = if frame < -250 { 99 } else { 100 };
+        history.begin_frame(movement_frame(frame as f32 / 10.0, hour, 2.0), SEEN);
+        if hour == 100 {
+            for &unit in units {
+                history.sample(unit, old);
+            }
+        }
+    }
+    history
+}
+
+fn next_frame(history: &mut MovementHistory, frame: i32, hour: i32, speed: f32) {
+    history.begin_frame(movement_frame(frame as f32 / 10.0, hour, speed), SEEN);
+}
+
+fn drawn(history: &mut MovementHistory, unit: Unit, position: &Position) -> [f32; 3] {
+    history
+        .sample(unit, position)
+        .map_or_else(|| position.at(), |drawn| drawn.motion.position())
+}
+
+#[test]
+fn the_render_delta_averages_the_middle_of_its_sorted_frame_times_and_caps_at_half_a_second() {
+    let mut delta = RenderDelta::default();
+    // One time among 31 zeros sorts to the top, outside the middle 26.
+    assert_eq!(delta.step(0.1), 0.05);
+    // The cursor writes over the sorted ring, so a steady rate fills it in about five sweeps.
+    for _ in 0..32 {
+        delta.step(0.1);
+    }
+    assert!(delta.step(0.1) < 0.08);
+    for _ in 0..256 {
+        delta.step(0.1);
+    }
+    assert!((delta.step(0.1) - 0.1).abs() < 1e-6);
+    assert_eq!(delta.step(2.0), 0.5);
+    assert_eq!(delta.step(-1.0), 0.0);
+}
+
+#[test]
+fn arrivals_keep_the_old_route_and_move_each_frame_without_advancing_twice() {
+    for unit in [Unit::Division(7), Unit::RailwayGun(7), Unit::TaskForce(7)] {
+        let old = live_position(1, &[2, 3], 0.0, false);
+        let next = live_position(2, &[3], 10.0, false);
+        let mut history = settled_on(&old, &[unit]);
+        assert_eq!(history.sample(unit, &old), None);
+        let mut previous = 1.0;
+        for frame in 1..=60 {
+            next_frame(&mut history, frame, 101, 2.0);
+            let x = drawn(&mut history, unit, &next)[0];
+            assert_eq!(drawn(&mut history, unit, &next)[0], x);
+            assert!(
+                x >= previous && x - previous <= 0.201,
+                "{frame}: {previous} -> {x}"
+            );
+            previous = x;
+        }
+        assert!((previous - 11.0).abs() < 1e-4);
+        assert_eq!(history.sample(unit, &next), None);
+        assert!(!history.running());
+    }
+}
+
+#[test]
+fn layers_placing_one_unit_share_its_advance() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    // The counter and the figure build their own copies of the same route.
+    let counter = live_position(2, &[3], 10.0, false);
+    let figure = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    for frame in 1..=10 {
+        next_frame(&mut history, frame, 101, 2.0);
+        let shown = drawn(&mut history, unit, &counter);
+        assert_eq!(drawn(&mut history, unit, &figure), shown);
+        assert!((shown[0] - (1.0 + 0.2 * frame as f32)).abs() < 1e-4);
+    }
+}
+
+#[test]
+fn units_off_screen_keep_their_arc_until_their_province_updates_in_view() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let next = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    next_frame(&mut history, 1, 101, 2.0);
+    drawn(&mut history, unit, &next);
+    next_frame(&mut history, 2, 101, 2.0);
+    let before = drawn(&mut history, unit, &next);
+    for frame in 3..=40 {
+        history.begin_frame(movement_frame(frame as f32 / 10.0, 101, 2.0), [1, 9]);
+        assert_eq!(drawn(&mut history, unit, &next), before);
+        assert!(!history.running());
+    }
+    next_frame(&mut history, 41, 101, 2.0);
+    assert!((drawn(&mut history, unit, &next)[0] - before[0] - 0.2).abs() < 1e-4);
+}
+
+#[test]
+fn a_rendering_hitch_advances_an_arrival_at_most_half_a_second() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let next = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    next_frame(&mut history, 1, 101, 12.0);
+    let before = drawn(&mut history, unit, &next)[0];
+    history.begin_frame(movement_frame(2.1, 101, 12.0), SEEN);
+    let after = drawn(&mut history, unit, &next)[0];
+    assert!((after - before - 6.0).abs() < 1e-4, "{before} -> {after}");
+}
+
+#[test]
+fn entering_combat_on_the_same_route_keeps_the_arc_and_stops_it() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let route = live_position(5, &[6], 50.0, false);
+    let fighting = live_position(5, &[6], 50.0, true);
+    let mut history = settled_on(&old, &[unit]);
+    // A reroute rebuilds at the province's anchor and climbs toward the settled arc.
+    next_frame(&mut history, 1, 101, 2.0);
+    assert!((drawn(&mut history, unit, &route)[0] - 50.2).abs() < 1e-4);
+    next_frame(&mut history, 2, 101, 2.0);
+    assert!((drawn(&mut history, unit, &route)[0] - 50.4).abs() < 1e-4);
+    for frame in 3..=8 {
+        next_frame(&mut history, frame, 102, 2.0);
+        assert!((drawn(&mut history, unit, &fighting)[0] - 50.4).abs() < 1e-4);
+        assert!(!history.running());
+    }
+}
+
+#[test]
+fn movement_never_glides_across_reroutes_combat_gaps_or_multiple_hops() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    for next in [
+        live_position(9, &[3], 90.0, false),
+        live_position(3, &[], 20.0, false),
+        live_position(2, &[3], 10.0, true),
+    ] {
+        let mut history = settled_on(&old, &[unit]);
+        next_frame(&mut history, 1, 101, 2.0);
+        let at = drawn(&mut history, unit, &next)[0];
+        assert!(at >= next.standing[0] && at <= next.at()[0], "{at}");
+    }
+    let next = live_position(2, &[], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    history.clear();
+    next_frame(&mut history, 1, 101, 2.0);
+    assert_eq!(history.sample(unit, &next), None);
+    history.begin_frame(
+        MovementFrame {
+            steady: true,
+            ..movement_frame(0.2, 101, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(history.sample(unit, &old), None);
+}
+
+#[test]
+fn movement_arrival_deadlines_and_unit_classes_remain_independent() {
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let next = live_position(2, &[3], 10.0, false);
+    let units = [Unit::Division(7), Unit::RailwayGun(7), Unit::TaskForce(7)];
+    let mut history = settled_on(&old, &units);
+    for frame in 1..=2 {
+        next_frame(&mut history, frame, 101, 0.1);
+        for unit in units {
+            history.sample(unit, &next);
+        }
+    }
+    assert_eq!(history.units.len(), 3);
+    assert!(history.running());
+    // Six days after the glide's first advance it gives up and rebuilds at the new anchor.
+    next_frame(&mut history, 3, 101 + 6 * 24, 0.1);
+    let at = drawn(&mut history, Unit::Division(7), &next);
+    assert!((at[0] - 10.01).abs() < 1e-5, "{at:?}");
+}
+
+#[test]
+fn recorded_maximum_speed_rebuilds_arrivals_and_clamps_new_routes() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let next = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    next_frame(&mut history, 1, 101, 2.0);
+    next_frame(&mut history, 2, 101, 2.0);
+    assert!(drawn(&mut history, unit, &next)[0] < 2.0);
+    let fastest = MovementFrame {
+        clock_speed: Some(4),
+        ..movement_frame(0.3, 101, 2.0)
+    };
+    history.begin_frame(fastest, SEEN);
+    assert_eq!(history.sample(unit, &next), None);
+    assert_eq!(history.sample(unit, &next), None);
+    assert!(!history.running());
+}
+
+#[test]
+fn settling_and_abandoned_entries_do_not_keep_a_view_animated() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let next = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    next_frame(&mut history, 1, 101, 2.0);
+    history.sample(unit, &next);
+    assert!(history.running());
+    next_frame(&mut history, 2, 101, 2.0);
+    assert!(!history.running());
+    history.begin_frame(
+        MovementFrame {
+            steady: true,
+            ..movement_frame(0.3, 101, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(history.sample(unit, &next), None);
+    assert!(!history.running() && history.units.is_empty());
+    history.begin_frame(
+        MovementFrame {
+            clock_speed: None,
+            ..movement_frame(0.4, 102, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(history.sample(unit, &old), None);
+    assert!(!history.running() && history.units.is_empty());
+}
+
+#[test]
+fn units_no_layer_drew_last_hour_leave_the_history() {
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let mut history = settled_on(&old, &[Unit::Division(1), Unit::Division(2)]);
+    next_frame(&mut history, 1, 101, 2.0);
+    history.sample(Unit::Division(1), &old);
+    next_frame(&mut history, 2, 102, 2.0);
+    assert_eq!(
+        history.units.keys().copied().collect::<Vec<_>>(),
+        [Unit::Division(1)]
+    );
+}
+
+#[test]
+fn a_glide_interpolates_the_drawn_routes_stack_scale_over_its_next_anchor() {
+    let unit = Unit::TaskForce(7);
+    let mut old = live_position(1, &[2, 3], 0.0, false);
+    old.scale_route([1.0, 2.0]);
+    let mut next = live_position(2, &[3], 10.0, false);
+    next.scale_route([2.0, 3.0]);
+    let mut history = settled_on(&old, &[unit]);
+    next_frame(&mut history, 1, 101, 10.0);
+    next_frame(&mut history, 2, 101, 10.0);
+    // One world unit plus one frame along the old route's ten: a fifth of its scale step.
+    let glide = history.sample(unit, &next).unwrap();
+    assert!((glide.motion.position()[0] - 2.0).abs() < 1e-4);
+    assert!((glide.scale - 1.2).abs() < 1e-4, "{}", glide.scale);
+}
+
+#[test]
+fn a_snapped_combat_keeps_the_route_so_the_later_arrival_still_glides() {
+    let unit = Unit::TaskForce(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let fighting = snapped(&old, true);
+    let next = live_position(2, &[3], 10.0, false);
+    let mut history = settled_on(&old, &[unit]);
+    for frame in 1..=3 {
+        next_frame(&mut history, frame, 101, 2.0);
+        assert_eq!(history.sample(unit, &fighting), None);
+    }
+    for frame in 4..=6 {
+        next_frame(&mut history, frame, 102, 2.0);
+        history.sample(unit, &fighting);
+    }
+    next_frame(&mut history, 7, 103, 2.0);
+    let at = drawn(&mut history, unit, &next)[0];
+    assert!((at - 1.2).abs() < 1e-4, "{at}");
+}
+
+#[test]
+fn a_new_animator_starts_at_its_anchor_as_the_naval_one_does() {
+    let unit = Unit::Division(7);
+    let old = live_position(1, &[2, 3], 0.0, false);
+    let mut history = settled_on(&old, &[]);
+    for frame in 1..=5 {
+        next_frame(&mut history, frame, 100, 2.0);
+        let x = drawn(&mut history, unit, &old)[0];
+        assert!((x - 0.2 * frame as f32).abs() < 1e-4, "{frame}: {x}");
+    }
+    next_frame(&mut history, 6, 100, 2.0);
+    assert_eq!(history.sample(unit, &old), None);
 }

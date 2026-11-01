@@ -1,5 +1,5 @@
 //! Retained province records and their hourly operand joins.
-use super::{Entity, ModelInstance, Province, ProvinceTargets, Targets, naval};
+use super::{ModelInstance, MovementDelta, Province, ProvinceTargets, Slot, Targets, naval};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -252,15 +252,22 @@ impl Provinces {
         }
     }
 
-    pub fn placed(&self) -> Vec<(usize, ModelInstance)> {
+    /// Every entity's placed parts, `movement` (sorted by slot) carrying the moving ones.
+    pub(super) fn placed(
+        &self,
+        movement: &[(Slot, MovementDelta)],
+    ) -> Vec<(usize, ModelInstance)> {
         self.populated
             .iter()
-            .flat_map(|&at| {
-                self.records[at]
-                    .province
-                    .entities
-                    .values()
-                    .flat_map(Entity::placed)
+            .flat_map(|&at| self.records[at].province.entities.iter())
+            .flat_map(|(slot, entity)| {
+                let delta = movement
+                    .binary_search_by_key(slot, |entry| entry.0)
+                    .ok()
+                    .map(|index| movement[index].1);
+                entity.placed().map(move |(mesh, instance)| {
+                    (mesh, delta.map_or(instance, |delta| delta.apply(instance)))
+                })
             })
             .collect()
     }

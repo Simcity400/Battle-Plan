@@ -24,6 +24,7 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard::protocol::Dashboard
         revision: "fixture".into(),
         branch_id: fixture.input.branch.to_string(),
         playing: false,
+        hours_per_second: 1.0,
         hour: fixture.input.hour,
         fraction: 0.,
         sequence: 1,

@@ -1,4 +1,4 @@
-//! Settled unit movement positions for counters and figures.
+//! Unit movement positions for counters and figures.
 //!
 //! The movement animator builds a polyline through successive provinces' standstill
 //! anchors: slot zero for divisions, the railway-gun slot for guns and port building
@@ -16,20 +16,20 @@
 //!
 //! Arrival glides along the old spline before rebuilding. Reroutes, teleports, jumps
 //! of two or more hops, game speed five, combat and six game days force a rebuild.
-//! Recorded hours use the settled arc ([`SETTLED_ARC`]); they do not carry the arrival
-//! glide clock. The settled prefix is walked only until its necessary controls are
-//! known, and rejected hops are counted. Allocation occurs during hour preparation;
-//! frames read the stored point. Naval admission shares a complete route sample
-//! between task-force kind, position and scale.
+//! Each hour places units at the settled arc ([`Position`]); a view's
+//! [`MovementHistory`] runs each unit's animator from its anchor and carries the free arc and
+//! arrival glide across hours on the game's render delta.
 
 use crate::map::movement_routes::catmull_rom;
 use crate::map::province_map::HeightField;
 use crate::map::tables::rows;
 use crate::movement_timing::Etas;
 use crate::unit_class::CounterClass;
+use crate::unit_handle::Unit;
 use installed_content_core::movement::MovementMap;
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, btree_map::Entry};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Land-counter display inputs. Animator operands belong to this view rather
@@ -317,22 +317,21 @@ impl<'a> UnitRoute<'a> {
                 .is_some_and(|terrain| terrain.flags & 1 != 0)
         };
         let standing = self.standing(province, land(province), kind, anchor)?;
-        let snapped = snaps_to_stack(self.class, kind, self.combat_role, self.combat_count);
-        let path = self.display_path();
-        if snapped || path.is_empty() {
-            return Some(Position {
-                standing,
-                motion: None,
-            });
-        }
         let class = self.class;
-        let motion = Motion::from_route(
+        let movement = Movement::build(
             province,
-            path,
+            self.display_path(),
+            class,
+            self.combat_count != 0,
+            snaps_to_stack(class, kind, self.combat_role, self.combat_count),
             &|id| anchor(id, class.standstill(land(id))),
             world,
         );
-        Some(Position { standing, motion })
+        Some(Position {
+            standing,
+            motion: movement.as_ref().and_then(Movement::settled),
+            movement: movement.map(Arc::new),
+        })
     }
 }
 
@@ -397,12 +396,8 @@ impl DivisionRoute {
         world: Option<&RouteWorld<'_>>,
         anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
     ) -> Option<Position> {
-        let standing = || {
-            anchor(province, CounterClass::Division.standstill(false)).map(|standing| Position {
-                standing,
-                motion: None,
-            })
-        };
+        let standing =
+            || anchor(province, CounterClass::Division.standstill(false)).map(Position::still);
         let Some(world) = world else {
             return standing();
         };
@@ -841,26 +836,24 @@ impl RouteSample {
 }
 
 impl Motion {
-    /// Builds the game's route from `province` along the display `path` with
-    /// the matching map content ([`walk_route`]). The neighbour crossing and the
-    /// height callback are presentation geometry; neither is recorded from the
-    /// client's map entities. `A` is searched against the next province's
-    /// anchor whatever the walk skipped, the origin for a
-    /// province without one, as the native reads a null province's.
-    pub fn from_route(
+    /// A moving division's settled point, as [`UnitRoute::position`] builds it.
+    #[cfg(test)]
+    fn from_route(
         province: u32,
         path: &[u32],
         anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
         world: &RouteWorld<'_>,
     ) -> Option<Self> {
-        let start = anchor(province)?;
-        let next = path
-            .first()
-            .and_then(|&hop| anchor(hop))
-            .unwrap_or_default();
-        let walk = walk_route(world.map, province, path, anchor);
-        Self::from_hops(world.width, &walk.hops, [start, next], &world.heights)
-            .and_then(|sample| sample.motion)
+        Movement::build(
+            province,
+            path,
+            CounterClass::Division,
+            false,
+            false,
+            anchor,
+            world,
+        )?
+        .settled()
     }
 
     /// Sample once for the stack selector, route point and scale. The complete
@@ -965,15 +958,392 @@ fn scale_fraction(next_arc: f32) -> f32 {
     }
 }
 
-/// An anchored stack, with its optional settled route point.
+///// An anchored stack: where the hour places it, and the route its presentation glides along.
 #[derive(Clone, Debug)]
 pub struct Position {
     pub standing: [f32; 3],
+    /// The settled point on the route, `None` standing on the anchor.
     pub motion: Option<Motion>,
+    pub movement: Option<Arc<Movement>>,
 }
+
 impl Position {
+    /// A stack without a route.
+    pub fn still(standing: [f32; 3]) -> Self {
+        Self {
+            standing,
+            motion: None,
+            movement: None,
+        }
+    }
+
     pub fn at(&self) -> [f32; 3] {
         self.motion.as_ref().map_or(self.standing, Motion::position)
+    }
+
+    /// The stack scales at the unit's province and its next province, which the route
+    /// interpolates as it glides.
+    pub(crate) fn scale_route(&mut self, scales: [f32; 2]) {
+        if let Some(movement) = &mut self.movement {
+            Arc::make_mut(movement).scales = scales;
+        }
+    }
+}
+
+/// One unit's animator route this hour, which its presentation history compares and glides
+/// along. A snapped stack keeps its route but stands on its stack anchor.
+#[derive(Clone, Debug)]
+pub struct Movement {
+    province: u32,
+    path: Box<[u32]>,
+    class: CounterClass,
+    combat: bool,
+    snapped: bool,
+    width: f32,
+    /// The unit's province's anchor and the next province's.
+    anchors: [[f32; 3]; 2],
+    /// Empty for a route of fewer than four controls.
+    samples: Vec<Sample>,
+    /// The sample at the next province's anchor.
+    next: usize,
+    /// The stack scales the route interpolates from and to; one for land units.
+    scales: [f32; 2],
+}
+
+impl Movement {
+    /// The game's route from `province` along the display `path` ([`walk_route`]). The neighbour
+    /// crossing and the height callback are presentation geometry, never recorded. `A` is
+    /// searched against the next province's anchor whatever the walk skipped, the origin for a
+    /// province without one, as the native reads a null province's.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        province: u32,
+        path: &[u32],
+        class: CounterClass,
+        combat: bool,
+        snapped: bool,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+        world: &RouteWorld<'_>,
+    ) -> Option<Self> {
+        let _timer = ProfileTimer::start();
+        let start = anchor(province)?;
+        let next = path
+            .first()
+            .and_then(|&hop| anchor(hop))
+            .unwrap_or_default();
+        let mut samples = Vec::new();
+        if !path.is_empty() {
+            let walk = walk_route(world.map, province, path, anchor);
+            let points = route_control_points(world.width, &walk.hops);
+            // Fewer than four controls clear the route: not moving.
+            if points.len() >= 4 {
+                samples = spline(&points, SUBDIVISIONS);
+            }
+            // Arc length is accumulated on the flat controls before terrain height is sampled.
+            for sample in &mut samples {
+                if !sample.at[0].is_finite() || !sample.at[2].is_finite() {
+                    return None;
+                }
+                sample.at[1] = world.heights.native_height(sample.at[0], sample.at[2]);
+            }
+        }
+        Some(Self {
+            next: next_anchor_sample(world.width, &samples, next),
+            province,
+            path: path.into(),
+            class,
+            combat,
+            snapped,
+            width: world.width,
+            anchors: [start, next],
+            samples,
+            scales: [1.0; 2],
+        })
+    }
+
+    /// Where the hour places a stack that does not snap.
+    fn settled(&self) -> Option<Motion> {
+        (!self.snapped).then(|| self.at(SETTLED_ARC)).flatten()
+    }
+
+    fn at(&self, arc: f32) -> Option<Motion> {
+        let index = segment(&self.samples, self.next, arc)?;
+        Some(Motion {
+            at: point_on(&self.samples, index, arc),
+            heading: heading_on(&self.samples, index, self.width, &self.anchors),
+        })
+    }
+
+    /// The stack scale at `arc`, interpolated over the next anchor's arc.
+    fn scale(&self, arc: f32) -> f32 {
+        let end = self.samples.get(self.next).map_or(0.0, |sample| sample.arc);
+        let fraction = if end == 0.0 {
+            1.0
+        } else {
+            (arc / end).clamp(0.0, 1.0)
+        };
+        (self.scales[1] - self.scales[0]) * fraction + self.scales[0]
+    }
+
+    fn drawn(&self, arc: f32) -> Option<Drawn> {
+        Some(Drawn {
+            motion: self.at(arc)?,
+            scale: self.scale(arc),
+        })
+    }
+
+    fn moves(&self) -> bool {
+        !self.samples.is_empty()
+    }
+
+    /// The same unit on the same route, placed by another layer or a later hour. Combat only
+    /// changes the route's speed and whether the stack snaps.
+    fn same_route(&self, other: &Self) -> bool {
+        self.province == other.province && self.path == other.path && self.class == other.class
+    }
+
+    /// The free arc's speed; a land unit in combat has none.
+    fn speed(&self, speeds: [f32; 2]) -> f32 {
+        match self.class {
+            CounterClass::TaskForce => speeds[1],
+            _ if self.combat => 0.0,
+            _ => speeds[0],
+        }
+    }
+}
+
+/// Where a unit is drawn this frame along the route its history shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Drawn {
+    pub motion: Motion,
+    /// The stack scale along that route.
+    pub scale: f32,
+}
+
+/// One view's movement clock, set by its frame before any layer reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MovementFrame {
+    /// Presentation seconds.
+    pub time: f32,
+    /// The presented replay hour.
+    pub hour: i32,
+    /// The recorded game-speed index; without it every unit stays settled.
+    pub clock_speed: Option<i32>,
+    /// `LAND_UNIT_MOVEMENT_SPEED` and `NAVAL_UNIT_MOVEMENT_SPEED`.
+    pub speeds: [f32; 2],
+    /// Every unit settled, as window dumps draw them.
+    pub steady: bool,
+}
+
+impl MovementFrame {
+    /// The presented frame's recorded game speed.
+    pub fn clock_speed(frame: &replay_frame::frame::DecodedFrame) -> Option<i32> {
+        let clock = rows::<replay_data::rows::tables::Clock>(frame).ok()?;
+        clock
+            .rows()
+            .first()
+            .filter(|_| clock.is_complete())
+            .map(|clock| clock.speed)
+    }
+}
+
+/// The map's render delta: half the mean of the middle 26 of the last 32 frame times, sorted in
+/// place, plus half this frame's, within [0, 0.5] seconds.
+#[derive(Debug, Default)]
+struct RenderDelta {
+    times: [f32; 32],
+    next: usize,
+}
+
+impl RenderDelta {
+    fn step(&mut self, frame_time: f32) -> f32 {
+        self.times[self.next] = frame_time;
+        self.next = (self.next + 1) % self.times.len();
+        // The game writes the next time over whatever the sort left at the cursor.
+        self.times.sort_unstable_by(f32::total_cmp);
+        let mean = self.times[3..29].iter().sum::<f32>() / 26.0;
+        (mean * 0.5 + frame_time * 0.5).clamp(0.0, 0.5)
+    }
+}
+
+pub type SharedMovement = Arc<Mutex<MovementHistory>>;
+
+/// One view's unit animators: each moving unit's free arc and the route it is drawn on, shared
+/// by its counter and its figure, and advanced once on each frame its province updates in view.
+#[derive(Debug, Default)]
+pub struct MovementHistory {
+    frame: Option<MovementFrame>,
+    render: RenderDelta,
+    delta: f32,
+    frames: u64,
+    /// The provinces this frame updates in view.
+    in_view: HashSet<u32>,
+    units: BTreeMap<Unit, Moving>,
+}
+
+#[derive(Debug)]
+struct Moving {
+    /// The route drawn: the previous hour's while the unit glides into its new province.
+    shown: Arc<Movement>,
+    /// This hour's route.
+    current: Arc<Movement>,
+    arc: f32,
+    arriving: bool,
+    /// The game day the arrival glide gives up at, from its first advance.
+    deadline: Option<i64>,
+    /// The frame that last advanced it.
+    advanced: u64,
+    /// The hour a layer last placed it.
+    hour: i32,
+}
+
+impl Moving {
+    fn new(input: &Arc<Movement>, hour: i32) -> Self {
+        Self {
+            shown: Arc::clone(input),
+            current: Arc::clone(input),
+            // A new animator starts at its anchor, as the naval one does.
+            arc: 0.0,
+            arriving: false,
+            deadline: None,
+            advanced: 0,
+            hour,
+        }
+    }
+
+    fn rebuild(&mut self) {
+        self.shown = Arc::clone(&self.current);
+        self.arc = 0.0;
+        self.arriving = false;
+        self.deadline = None;
+    }
+
+    /// This hour's route: it continues the drawn route, glides along it into the next province,
+    /// or rebuilds the animator at zero.
+    fn offer(&mut self, input: &Arc<Movement>, day: i64, fastest: bool) {
+        if !Arc::ptr_eq(&self.current, input) {
+            self.current = Arc::clone(input);
+        }
+        if self.shown.same_route(input) {
+            self.shown = Arc::clone(input);
+            self.arriving = false;
+            self.deadline = None;
+        } else if self.shown.moves()
+            && !input.combat
+            && !fastest
+            && self.shown.path.first() == Some(&input.province)
+            && self.shown.path[1..] == *input.path
+            && self.deadline.is_none_or(|deadline| day < deadline)
+        {
+            self.arriving = true;
+        } else {
+            self.rebuild();
+        }
+    }
+
+    fn advance(&mut self, frame: MovementFrame, day: i64, fastest: bool, delta: f32) {
+        let step = delta * self.current.speed(frame.speeds);
+        if self.arriving {
+            self.deadline.get_or_insert(day + 6);
+            // Reaching the next anchor rebuilds at zero, without a second advance.
+            let end = self.shown.samples[self.shown.next].arc;
+            self.arc = (self.arc + step).clamp(0.0, end);
+            if self.arc == end {
+                self.rebuild();
+            }
+        } else if self.shown.moves() {
+            let least = if fastest { SETTLED_ARC } else { 0.0 };
+            self.arc = (self.arc + step).clamp(least, SETTLED_ARC);
+        }
+    }
+}
+
+/// The game's zero-based day of a replay hour.
+fn game_day(hour: i32) -> i64 {
+    (i64::from(hour) - 43_800_000) / 24
+}
+
+impl MovementHistory {
+    pub fn clear(&mut self) {
+        self.units.clear();
+    }
+
+    /// Starts a frame whose province updates reach `in_view` in view.
+    pub fn begin_frame(&mut self, frame: MovementFrame, in_view: impl IntoIterator<Item = u32>) {
+        let previous = self.frame.replace(frame);
+        self.frames += 1;
+        self.in_view.clear();
+        self.in_view.extend(in_view);
+        let frame_time = previous.map_or(0.0, |previous| (frame.time - previous.time).max(0.0));
+        self.delta = self.render.step(frame_time);
+        if frame.steady
+            || frame.clock_speed.is_none()
+            || previous.is_some_and(|previous| frame.time < previous.time)
+        {
+            self.units.clear();
+        } else if let Some(previous) = previous.filter(|previous| previous.hour != frame.hour) {
+            // A unit no layer placed in the previous hour has left the view.
+            self.units.retain(|_, state| state.hour == previous.hour);
+        }
+    }
+
+    /// Where `unit` is drawn this frame when its animator moves it off the hour's placement
+    /// (`position`); `None` draws it there. The first layer to place it this frame offers this
+    /// hour's route, then advances it when its province updates in view, as the game installs
+    /// routes before its province updates.
+    pub fn sample(&mut self, unit: Unit, position: &Position) -> Option<Drawn> {
+        let frame = self.frame.filter(|frame| !frame.steady)?;
+        let clock = frame.clock_speed?;
+        // A layer placing the unit without a route leaves the animator to the layers that route it.
+        let input = position.movement.as_ref()?;
+        let state = match self.units.entry(unit) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) if input.moves() => entry.insert(Moving::new(input, frame.hour)),
+            Entry::Vacant(_) => return None,
+        };
+        let (day, fastest) = (game_day(frame.hour), clock >= 4);
+        state.offer(input, day, fastest);
+        state.hour = frame.hour;
+        if state.advanced != self.frames && self.in_view.contains(&state.current.province) {
+            state.advance(frame, day, fastest, self.delta);
+            state.advanced = self.frames;
+        }
+        if !state.shown.moves() {
+            self.units.remove(&unit);
+            return None;
+        }
+        if input.snapped {
+            return None;
+        }
+        let drawn = state.shown.drawn(state.arc)?;
+        let settled = position.motion.map(|motion| Drawn {
+            motion,
+            scale: input.scale(SETTLED_ARC),
+        });
+        (Some(drawn) != settled).then_some(drawn)
+    }
+
+    /// This frame's map render delta, which every animator of the view advances by.
+    pub fn delta(&self) -> Option<f32> {
+        self.frame.filter(|frame| !frame.steady).map(|_| self.delta)
+    }
+
+    /// Whether this frame leaves moving units settled for want of the recorded game speed.
+    pub fn clock_unavailable(&self) -> bool {
+        self.frame
+            .is_some_and(|frame| !frame.steady && frame.clock_speed.is_none())
+    }
+
+    /// Whether a unit advanced this frame is still moving, so the view draws another.
+    pub fn running(&self) -> bool {
+        let Some(frame) = self.frame.filter(|frame| !frame.steady) else {
+            return false;
+        };
+        self.units.values().any(|state| {
+            state.advanced == self.frames
+                && state.current.speed(frame.speeds) > 0.0
+                && (state.arriving || (state.shown.moves() && state.arc < SETTLED_ARC))
+        })
     }
 }
 

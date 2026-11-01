@@ -67,6 +67,7 @@ pub enum SceneInput<'a> {
     SetAircraft {
         assets: Arc<AircraftAssets>,
         plan: AircraftPlan,
+        continuity: Continuity,
     },
     RestartUnitModels(Option<&'a BTreeSet<u32>>),
     SetOrders {
@@ -107,6 +108,11 @@ pub enum SceneInput<'a> {
         at: (replay_data::BranchId, i32),
         seek: bool,
         reason: String,
+    },
+    /// Draws the hour's figures where the view's presentation history moves them this frame.
+    SetUnitMovement {
+        prepared: &'a crate::map::unit_models::PreparedModels,
+        history: &'a viewer_foundation::map::counter_move::SharedMovement,
     },
     SetUnitModels {
         assets: &'a UnitModelAssets,
@@ -307,9 +313,11 @@ impl Scene {
                 plan,
                 continuity,
             } => SceneOutput::Trains(self.set_trains(assets, plan, continuity)?),
-            SceneInput::SetAircraft { assets, plan } => {
-                SceneOutput::Aircraft(self.set_aircraft(assets, plan)?)
-            }
+            SceneInput::SetAircraft {
+                assets,
+                plan,
+                continuity,
+            } => SceneOutput::Aircraft(self.set_aircraft(assets, plan, continuity)?),
             SceneInput::RestartUnitModels(provinces) => {
                 self.restart_unit_models(provinces);
                 applied
@@ -355,6 +363,11 @@ impl Scene {
             }
             SceneInput::MissingMapTextEvents { at, seek, reason } => {
                 self.missing_map_text_events(at, seek, reason);
+                applied
+            }
+            SceneInput::SetUnitMovement { prepared, history } => {
+                self.unit_history
+                    .set_movement(prepared.movement_positions(), history);
                 applied
             }
             SceneInput::SetUnitModels {

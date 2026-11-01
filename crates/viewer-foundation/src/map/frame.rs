@@ -153,6 +153,54 @@ impl DayNight {
     }
 }
 
+/// The renderer eases toward each recorded hour on its own frame clock.
+#[derive(Default)]
+pub struct DayNightPlayback {
+    previous: Option<(i32, DayNight, f64)>,
+    changed_at: f64,
+}
+
+impl DayNightPlayback {
+    pub fn update(&mut self, hour: i32, target: DayNight, time: f64, interval: f64) -> DayNight {
+        let Some((previous_hour, mut shown, previous_time)) = self.previous else {
+            self.previous = Some((hour, target, time));
+            self.changed_at = time;
+            return target;
+        };
+        if hour != previous_hour {
+            self.changed_at = time;
+        }
+        let elapsed = (time - previous_time).max(0.0);
+        let remaining = self.changed_at + interval - time;
+        let blend = if remaining > 0.0 {
+            (elapsed / remaining).clamp(0.0, 1.0) as f32
+        } else {
+            1.0
+        };
+        if (0..24).contains(&(i64::from(hour) - i64::from(previous_hour))) {
+            let delta = (target.hour_fraction - shown.hour_fraction).rem_euclid(1.0);
+            shown.hour_fraction = (shown.hour_fraction + delta * blend).rem_euclid(1.0);
+        } else {
+            shown.hour_fraction = target.hour_fraction;
+        }
+        let blend = (12.0 * elapsed as f32).clamp(0.001, 1.0);
+        for axis in 0..3 {
+            shown.sun_direction[axis] +=
+                (target.sun_direction[axis] - shown.sun_direction[axis]) * blend;
+        }
+        let length = shown
+            .sun_direction
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        shown.sun_direction = shown.sun_direction.map(|value| value / length);
+        shown.strength += (target.strength - shown.strength) * blend;
+        self.previous = Some((hour, shown, time));
+        shown
+    }
+}
+
 /// `(hour mod 24) / 24`, handling negative hours the way a modulo should.
 pub fn hour_fraction(hour: i32) -> f32 {
     (hour.rem_euclid(24)) as f32 / 24.0

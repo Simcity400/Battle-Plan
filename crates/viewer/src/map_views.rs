@@ -2,6 +2,7 @@
 
 use std::sync::{Condvar, Mutex};
 use std::{collections::BTreeSet, sync::Arc};
+use viewer_foundation::map::counter_move::SharedMovement;
 use viewer_foundation::map::province_schedule::Shared;
 use viewer_foundation::parallel::Workers;
 use viewer_foundation::unit_handle::Unit;
@@ -213,6 +214,9 @@ pub struct Presentation {
     /// The view's province schedule and dirty bits, which its scene advances each frame and its
     /// map icons read ([`crate::map::province_schedule`]).
     schedule: Shared,
+    /// The view's unit presentation history, which its frame clocks and its counters and figures
+    /// read.
+    movement: SharedMovement,
 }
 
 impl Presentation {
@@ -221,14 +225,26 @@ impl Presentation {
         &self.schedule
     }
 
-    /// Whether a map-icon window changed on its own at the last presented frame, cleared: a view
-    /// draws its retained overlay again on the next one while one does, as the game ticks every
-    /// window each frame. The hour/camera preparation does not read those clocks.
+    pub fn movement(&self) -> &SharedMovement {
+        &self.movement
+    }
+
+    /// Whether a map-icon window changed on its own or a unit still moves at the last presented
+    /// frame, cleared: a view draws its retained overlay again on the next one while one does, as
+    /// the game ticks every window and animator each frame. The hour/camera preparation does not
+    /// read those clocks.
     pub fn take_running(&self) -> bool {
-        self.windows
+        let windows = self
+            .windows
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take_running()
+            .take_running();
+        let moving = self
+            .movement
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .running();
+        windows || moving
     }
 }
 

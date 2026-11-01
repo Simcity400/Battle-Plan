@@ -175,6 +175,7 @@ fn naval_sources(battle: Battle) -> unit_history::naval::Sources {
             battles: [(battle.id, battle)].into_iter().collect(),
             roots: [(1, geometry(10.0))].into_iter().collect(),
         },
+        positions: Vec::new(),
     }
 }
 

@@ -13,6 +13,7 @@ mod combat_content;
 mod selection;
 use {
     crate::map::unit_history::naval::Candidate, crate::map::unit_history::naval::Formation,
+    crate::map::unit_history::naval::FormationPlacement,
     crate::map::unit_history::naval::Hull, crate::map::unit_history::naval::Sources,
     viewer_foundation::map::task_force_visual::MissionSkips,
     viewer_foundation::map::task_force_visual::TaskForceMotions,
@@ -381,7 +382,7 @@ impl UnitModelAssets {
                 let placement =
                     match places
                         .motions
-                        .visual(force, places.movement, world, anchor, places.land)
+                        .visual(force, places.movement, world, anchor, places.land, places.scale)
                     {
                         Ok(placement) => placement,
                         Err(reason) => {
@@ -466,15 +467,7 @@ impl UnitModelAssets {
                     // Convert the current hour to its zero-based day.
                     day: (frame.hour - 43_800_000) / 24,
                 });
-                // Native slots 9/10 still offer a representative, but create the
-                // province's two-sided combat actor rather than an ordinary root.
-                if matches!(placement.kind, 9 | 10) {
-                    continue;
-                }
                 let position = placement.position;
-                let Some(roster) = roster.get(&force.id) else {
-                    continue;
-                };
                 let (root, turn) = match &position.motion {
                     Some(motion) => {
                         let (at, heading) = motion.position_heading();
@@ -496,6 +489,21 @@ impl UnitModelAssets {
                 let animator_scale = placement.animator.map_or(from_scale, |sample| {
                     sample.interpolate_scale(from_scale, to_scale)
                 });
+                // Every candidate keeps its animator, a combat's included.
+                placed.positions.push(FormationPlacement {
+                    force: force.id,
+                    position,
+                    rotation: turn,
+                    scale: animator_scale,
+                });
+                // Native slots 9/10 still offer a representative, but create the
+                // province's two-sided combat actor rather than an ordinary root.
+                if matches!(placement.kind, 9 | 10) {
+                    continue;
+                }
+                let Some(roster) = roster.get(&force.id) else {
+                    continue;
+                };
                 if roster.iter().any(|model| model.counter.is_none()) {
                     report.error("naval_formation_roster: ShipModels lacks roster ordinals");
                     continue;

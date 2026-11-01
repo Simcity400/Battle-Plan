@@ -722,6 +722,7 @@ impl PreparedOverlay {
             selected_fleets: &self.counter_view.fleets_selected,
             hovered: self.counter_view.hovered,
             schedule: self.counter_view.presentation.schedule(),
+            movement_history: self.counter_view.presentation.movement(),
             visibility: self.counter_view.visibility,
         };
         // One advance before forking. Workers snapshot/read it, never advance it.
@@ -4415,6 +4416,7 @@ impl<'a> Hour<'a> {
             selected_fleets: &view.fleets_selected,
             hovered: view.hovered,
             schedule: view.presentation.schedule(),
+            movement_history: view.presentation.movement(),
             visibility: view.visibility,
         };
         let label_inputs = labels::LabelInputs {
