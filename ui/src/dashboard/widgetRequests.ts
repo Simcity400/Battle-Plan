@@ -15,6 +15,14 @@ import type { WeatherShow } from '../widgets/weather-by-region/weatherData';
 import { weatherWindow } from '../widgets/weather-by-region/weatherData.ts';
 
 type Track = BoundTrack | undefined;
+export function clockRequest(widget: WidgetSpec, track: Track, window: HourWindow | null) {
+  if (!track || !window) return null;
+  const firstHour = widget.time.mode !== 'range'
+    ? track.branch.firstHour : Math.max(track.branch.firstHour, Math.floor(window.firstHour));
+  const lastHour = Math.min(track.branch.lastHour, Math.floor(window.lastHour));
+  return firstHour <= lastHour ? { sourceId: track.source.id, revision: track.source.revision, product: 'campaign-clock',
+    params: { branchId: track.branch.id, firstHour, lastHour } } : null;
+}
 const request = <P>(track: BoundTrack, product: string, params: P): ProductRequest<P> =>
   ({ sourceId: track.source.id, revision: track.source.revision, product, params });
 const firstTag = (widget: WidgetSpec, track: Track) => selectedTags(widget.countries, track)[0] ?? null;

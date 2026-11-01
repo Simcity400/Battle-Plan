@@ -353,6 +353,8 @@ fn take(catalogue: &Catalogue, subject: &str, findings: &mut Vec<Finding>) {
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
     use products::*;
     match key {
+        campaign_clock::CampaignClock::KEY => Ok("Campaign clock totals require recorded real-time intervals, pause-state coverage and each session's clock frequency; no authored content is read. Recording-dependent values are unavailable offline.".into()),
+        player_apm::PlayerApm::KEY => Ok("eAPM requires recorded accepted-command kinds, player lifetimes, provenance and unpaused timing coverage; no authored content is read. Recording-dependent values are unavailable offline.".into()),
         national_focus::NationalFocus::KEY
         | focus_artwork::FocusArtwork::KEY
         | crate::prepared_focus::FocusArt::KEY => {

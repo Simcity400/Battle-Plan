@@ -1250,6 +1250,7 @@ pub struct Shared {
     /// then takes it once, independent of any particular FIFO buffer.
     pub roster: UnsafeCell<Option<Box<Roster>>>,
     pub roster_ready: AtomicBool,
+    roster_sampling: AtomicBool,
     /// Only the game thread writes this, inside the hook. The spool worker takes
     /// it after the hook is quiescent.
     pub pending: UnsafeCell<LossBatch>,
@@ -1668,6 +1669,7 @@ impl Shared {
             decode_waker: OnceLock::new(),
             roster: UnsafeCell::new(Some(roster)),
             roster_ready: AtomicBool::new(false),
+            roster_sampling: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             clock_capture: Mutex::new(ClockCapture::default()),
             clock_available: Condvar::new(),
@@ -2150,15 +2152,27 @@ impl Shared {
         memory: &impl engine_native::Memory,
         clock: Option<Clock<&[u8]>>,
     ) {
-        if self.roster_ready.load(Ordering::Acquire) {
+        self.sample_content_roster(memory, clock.map(|clock| clock.hour));
+    }
+
+    pub(crate) fn sample_content_roster(&self, memory: &impl Memory, hour: Option<i32>) {
+        if hour.is_none()
+            || self.roster_ready.load(Ordering::Acquire)
+            || self
+                .roster_sampling
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+        {
             return;
         }
-        if let Some(clock) = clock {
+        if !self.roster_ready.load(Ordering::Acquire) {
             let _reads = crate::read_accounting::table(replay_data::rows::TableId::Players);
             let roster = unsafe { (&mut *self.roster.get()).as_mut().unwrap() };
-            roster.sample(memory, self.base, Some(clock.hour));
+            roster.sample(memory, self.base, hour);
             self.roster_ready.store(roster.sampled(), Ordering::Release);
         }
+        self.roster_sampling.store(false, Ordering::Release);
+        self.wake_spool();
     }
 }
 

@@ -51,6 +51,7 @@ struct Store {
     files: BTreeMap<([u8; 36], u32), Vec<u8>>,
     gate: Option<(i32, Arc<Gate>, bool)>,
     fail_sync: bool,
+    fail_commands: bool,
     sync_gate: Option<(Arc<Gate>, bool)>,
     create_gate: Option<(u32, Arc<Gate>, bool)>,
     closed: usize,
@@ -106,6 +107,11 @@ impl Write for Sink {
             let mut input =
                 replay_data::codec::Decoder::new(&bytes[replay::spool::RECORD_HEADER_BYTES..]);
             let hour = match Record::decode(&mut input).unwrap() {
+                Record::Control(ControlRecord::PlayerCommands { .. })
+                    if std::mem::take(&mut store.fail_commands) =>
+                {
+                    return Err(io::Error::other("injected command write failure"));
+                }
                 Record::Frame(frame) => Some(frame.hour),
                 _ => None,
             };
@@ -185,6 +191,7 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
         )),
         history: PreparedCampaigns::default(),
         session,
+        session_verified: false,
         campaigns: Campaigns::new(),
         stats: Statistics::default(),
         unknown_pending: 0,
@@ -199,6 +206,15 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
         queued: std::collections::VecDeque::new(),
         flight: None,
         writer_error: None,
+        command_drain: Default::default(),
+        command_pending: Vec::new(),
+        command_contexts: Default::default(),
+        command_anchors: Default::default(),
+        command_ordinals: Default::default(),
+        command_definitions: Default::default(),
+        command_last_flush: std::time::Instant::now(),
+        command_ready: Default::default(),
+        command_inflight: Default::default(),
     };
     (processor, store)
 }
@@ -487,7 +503,12 @@ fn branch_ids(processor: &mut Processor) -> Vec<BranchId> {
 fn parent(processor: &mut Processor, branch: BranchId) -> Parentage {
     let id = std::str::from_utf8(ID).unwrap();
     let campaign = processor.campaigns.get_mut(id).unwrap();
-    campaign.tracker.branch_start(branch).unwrap().parent.clone()
+    campaign
+        .tracker
+        .branch_start(branch)
+        .unwrap()
+        .parent
+        .clone()
 }
 
 fn written_parent(written: &replay::container::Replay, branch: BranchId) -> Parentage {
@@ -1087,4 +1108,170 @@ fn a_queued_close_keeps_its_pending_context_charged_until_its_receipt_is_applied
         drop(processor);
         assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
+}
+
+#[test]
+fn command_packets_retry_without_losing_first_catalog_or_later_packets() {
+    let (mut processor, store) = processor();
+    processor.frame(&campaign_frame(ID, 7, 8)).unwrap();
+    processor.drain_writer().unwrap();
+    let id = std::str::from_utf8(ID).unwrap().to_owned();
+    let branch = processor
+        .campaigns
+        .get_mut(&id)
+        .unwrap()
+        .tracker
+        .current_branch()
+        .unwrap();
+    for ordinal in 0..3 {
+        let mut batch = replay::commands::Batch::default();
+        if ordinal == 0 {
+            batch.kinds.push(replay::commands::Kind {
+                id: 0,
+                token: 0,
+                name: "synthetic".into(),
+                category: replay::commands::Category::Other,
+            });
+        }
+        let record = Record::Control(ControlRecord::PlayerCommands {
+            session: processor.session.id,
+            packet: replay::commands::Packet::pack(
+                branch,
+                1,
+                100,
+                ordinal,
+                ordinal * 10,
+                (ordinal + 1) * 10,
+                0,
+                &batch,
+            )
+            .unwrap(),
+        });
+        processor.command_ready.insert(
+            (100, ordinal),
+            CommandWrite {
+                id: id.clone(),
+                world: 100,
+                ordinal,
+                record,
+                attempted: false,
+                storage: None,
+            },
+        );
+    }
+    store.lock().unwrap().fail_commands = true;
+    let _ = processor.submit_commands();
+    processor.drain_writer().unwrap();
+    assert_eq!(processor.command_ready.len(), 3);
+    assert!(processor.command_inflight.is_empty());
+    processor.submit_commands().unwrap();
+    processor.drain_writer().unwrap();
+    assert!(processor.command_ready.is_empty());
+    let replay = replay(&store);
+    let packets: Vec<_> = replay
+        .controls
+        .iter()
+        .filter_map(|control| match control {
+            ControlRecord::PlayerCommands { packet, .. } => Some(packet),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(packets.len(), 3);
+    assert_eq!(packets[0].unpack().unwrap().kinds.len(), 1);
+    assert_eq!(
+        packets
+            .iter()
+            .map(|packet| packet.ordinal)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+}
+
+#[test]
+fn command_declarations_wait_for_parent_hours_and_remain_immutable_across_retry() {
+    let (mut processor, store) = processor();
+    processor.frame(&campaign_frame(ID, 7, 10)).unwrap();
+    let release = block(&store, 11, true);
+    admit(&mut processor, ID, 7, 11);
+    release.0.entered();
+    admit(&mut processor, ID, 8, 11);
+    let id = std::str::from_utf8(ID).unwrap().to_owned();
+    let campaign = processor.campaigns.get_mut(&id).unwrap();
+    let branch = campaign.tracker.current_branch().unwrap();
+    let start = campaign.tracker.branch_start(branch).unwrap().clone();
+    assert!(matches!(start.parent, Parentage::Probable { hour: 11, .. }));
+    let columns = campaign.directory.join("columnar.0.h4col");
+    let mut packet = replay::commands::Packet::pack(
+        branch,
+        1,
+        100,
+        0,
+        100,
+        200,
+        0,
+        &replay::commands::Batch::default(),
+    )
+    .unwrap();
+    packet.phase = Some(replay::commands::Phase {
+        start,
+        campaign: *ID,
+        qpc: 100,
+        hour: 11,
+        load_signal: 8,
+    });
+    processor.command_ready.insert(
+        (100, 0),
+        CommandWrite {
+            id: id.clone(),
+            world: 100,
+            ordinal: 0,
+            record: Record::Control(ControlRecord::PlayerCommands {
+                session: processor.session.id,
+                packet,
+            }),
+            attempted: false,
+            storage: None,
+        },
+    );
+    processor.submit_commands().unwrap();
+    assert!(!processor.command_ready[&(100, 0)].attempted);
+    assert!(processor.command_inflight.is_empty());
+    release.0.release();
+    processor.drain_writer().unwrap();
+    assert_eq!(parent(&mut processor, branch), Parentage::Unknown);
+    store.lock().unwrap().fail_commands = true;
+    processor.submit_commands().unwrap();
+    processor.drain_writer().unwrap();
+    let failed = &processor.command_ready[&(100, 0)];
+    assert!(failed.attempted);
+    let record = failed.record.clone();
+    let Record::Control(ControlRecord::PlayerCommands { packet, .. }) = &record else {
+        unreachable!()
+    };
+    assert_eq!(
+        packet.phase.as_ref().unwrap().start.parent,
+        Parentage::Unknown
+    );
+    processor.submit_commands().unwrap();
+    processor.drain_writer().unwrap();
+    admit(&mut processor, ID, 8, 12);
+    processor.drain_writer().unwrap();
+    processor.detach().unwrap();
+    let rows = replay(&store);
+    assert_eq!(written_parent(&rows, branch), Parentage::Unknown);
+    let Record::Control(control) = record else {
+        unreachable!()
+    };
+    assert!(rows.controls.contains(&control));
+    let columns = replay::commands::Recording::open_path(&columns).unwrap();
+    assert_eq!(
+        columns
+            .branches
+            .iter()
+            .find(|start| start.id == branch)
+            .unwrap()
+            .parent,
+        Parentage::Unknown
+    );
+    assert!(columns.controls.contains(&control));
 }

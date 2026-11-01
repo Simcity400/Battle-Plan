@@ -511,13 +511,12 @@ impl Recording {
     /// The capture the file's runs belong to, as the root's control records hold it; none
     /// when the root holds none.
     pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
-        let Some(extent) = self.controls.iter().find(|extent| extent.stream == 0) else {
-            return Ok(None);
-        };
         let mut decoder = Decoder::new()?;
-        let mut raw = Vec::new();
-        decoder.append(&self.source, extent, &mut raw)?;
-        crate::columnar_file::Capture::read(&raw).map(Some)
+        crate::columnar_file::read_capture(&self.controls, |extent| {
+            let mut raw = Vec::new();
+            decoder.append(&self.source, extent, &mut raw)?;
+            Ok(raw)
+        })
     }
 
     /// Why each run directory or page that cannot be read is refused.

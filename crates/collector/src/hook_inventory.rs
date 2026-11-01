@@ -758,6 +758,16 @@ pub(crate) fn patches() -> Vec<Patch> {
             &site.sentinel[..tap(&site.sentinel)],
         );
     }
+    for (index, site) in engine_native::command_inputs::SITES.iter().enumerate() {
+        let sentinel = hashed_sentinel(site.rva, site.fingerprint);
+        add(
+            "player_commands",
+            &format!("site {index}"),
+            site.rva,
+            site.span,
+            &sentinel[..site.span],
+        );
+    }
     for (index, site) in air_loss_sites::SITES.iter().enumerate() {
         add(
             "air_losses",
@@ -1122,4 +1132,15 @@ pub(crate) fn patches() -> Vec<Patch> {
         &peace_finalizer_site::SENTINEL,
     );
     out
+}
+
+#[cfg(test)]
+mod command_tap_tests {
+    #[test]
+    fn authenticated_command_sites_replace_exact_instruction_spans() {
+        for site in engine_native::command_inputs::SITES {
+            let bytes = super::hashed_sentinel(site.rva, site.fingerprint);
+            assert_eq!(super::tap(&bytes), site.span);
+        }
+    }
 }

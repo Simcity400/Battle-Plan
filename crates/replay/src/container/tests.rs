@@ -1030,6 +1030,7 @@ fn history_resumes_last_written_branch_and_checks_actual_session_metadata() {
             branch: 2,
             hour: 2,
             load_signal: Some(42),
+            recorded: true,
         })
     );
     let mut tracker = history.tracker_for(&session(1)).unwrap();
@@ -1071,6 +1072,32 @@ fn history_resumes_last_written_branch_and_checks_actual_session_metadata() {
 }
 
 #[test]
+fn history_keeps_a_missing_observation_separate_from_its_recorded_tail() {
+    let mut input = records(1, &[1]);
+    input.push(Record::Gap(Gap {
+        branch: 1,
+        first_hour: 2,
+        last_hour: 3,
+        reason: "synthetic failed frames".into(),
+    }));
+    let history = Replay::from_records(CAMPAIGN.into(), &[input])
+        .unwrap()
+        .into_history()
+        .unwrap();
+    assert_eq!(history.branches[0].hours, [1]);
+    assert_eq!(history.branches[0].last_missing_hour, Some(3));
+    assert!(history.session_tail(1).unwrap().recorded);
+    assert_eq!(history.session_tail(1).unwrap().hour, 1);
+    let mut tracker = history.tracker_for(&session(1)).unwrap();
+    assert_eq!(tracker.last_observation(), Some((1, 3)));
+    assert!(tracker.record_hour(1, 3).is_err());
+    assert_ne!(tracker.observe(Some(3), 3, Some(0), &[]).unwrap().branch, 1);
+    let mut tracker = history.tracker_for(&session(1)).unwrap();
+    assert_eq!(tracker.observe(Some(4), 4, Some(0), &[]).unwrap().branch, 1);
+    assert_eq!(tracker.recorded_hours(1).unwrap(), [1]);
+}
+
+#[test]
 fn history_uses_matching_witness_only_when_tail_clock_is_unavailable() {
     for clock_available in [false, true] {
         let mut input = records(1, &[1, 2]);
@@ -1098,6 +1125,7 @@ fn history_uses_matching_witness_only_when_tail_clock_is_unavailable() {
                 branch: 1,
                 hour: 2,
                 load_signal: Some(if clock_available { 0 } else { 42 }),
+                recorded: true,
             })
         );
     }

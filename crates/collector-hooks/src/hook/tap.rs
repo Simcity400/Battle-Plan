@@ -133,13 +133,18 @@ impl Tap {
             } else {
                 None
             };
-            let code = unsafe {
-                VirtualAlloc(
-                    ptr::null(),
-                    PAGE_BYTES * 2,
-                    MEM_RESERVE | MEM_COMMIT,
-                    PAGE_READWRITE,
-                )
+            let store_target = rip_store_target(site, &sentinel[..instructions])?;
+            let code = if let Some(target) = store_target {
+                super::allocate_near(target, PAGE_BYTES * 2)
+            } else {
+                unsafe {
+                    VirtualAlloc(
+                        ptr::null(),
+                        PAGE_BYTES * 2,
+                        MEM_RESERVE | MEM_COMMIT,
+                        PAGE_READWRITE,
+                    )
+                }
             };
             if code.is_null() {
                 return Err(io::Error::last_os_error().to_string());
@@ -176,7 +181,7 @@ impl Tap {
                     in_flight,
                     stub: code as usize..code as usize + PAGE_BYTES,
                 });
-                let bridge = if let Some(target) = jump_target {
+                let mut bridge = if let Some(target) = jump_target {
                     let binding = unsafe {
                         code.cast::<u8>()
                             .add(PAGE_BYTES + size_of::<AtomicUsize>())
@@ -204,6 +209,13 @@ impl Tap {
                         &sentinel[..instructions],
                     )
                 };
+                if let Some(target) = store_target {
+                    relocate_rip_store(
+                        &mut bridge.code[bridge.continuation..bridge.completion],
+                        code as usize + bridge.continuation,
+                        target,
+                    )?;
+                }
                 if bridge.code.len() > UNWIND_OFFSET
                     || bridge.unwind.len() > LEAF_UNWIND_OFFSET - UNWIND_OFFSET
                 {
@@ -343,6 +355,9 @@ fn entry(begin: usize, end: usize, unwind: usize) -> IMAGE_RUNTIME_FUNCTION_ENTR
 // Ordinary copied operands use neither RSP, RIP, branches nor calls: the native
 // CALL return slot therefore cannot change its meaning. Other forms refuse.
 pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
+    if bytes.starts_with(&[0xc7, 0x05]) {
+        return Ok(10);
+    }
     // Counter publication followed by a stack-local reload. The continuation
     // compensates for its native CALL return slot before executing the reload.
     if counter_reload(bytes) {
@@ -447,14 +462,31 @@ pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
         let prefix = usize::from(rex != 0);
         let opcode = bytes[end + prefix];
         let register = |low: u8, extension: u8| low != 4 || rex & extension != 0;
-        if rex & 8 != 0 && matches!(opcode, 0xb8..=0xbf) {
+        if matches!(opcode, 0xb8..=0xbf) {
             if !register(opcode & 7, 1) {
                 return Err("tap stack register immediate not supported");
             }
-            end += prefix + 9;
+            end += prefix + if rex & 8 != 0 { 9 } else { 5 };
+            continue;
+        }
+        if opcode == 0x0f && matches!(bytes[end + prefix + 1], 0x90..=0x9f) {
+            let modrm = bytes[end + prefix + 2];
+            if modrm >> 6 != 3 || modrm & 0x38 != 0 || (rex != 0 && modrm & 7 == 4 && rex & 1 == 0)
+            {
+                return Err("tap condition result requires a stack-independent byte register");
+            }
+            end += prefix + 3;
             continue;
         }
         let conditional = opcode == 0x0f && matches!(bytes[end + prefix + 1], 0x48 | 0x4f);
+        if matches!(opcode, 0x31 | 0x33) {
+            let modrm = bytes[end + prefix + 1];
+            if modrm >> 6 != 3 || !register((modrm >> 3) & 7, 4) || !register(modrm & 7, 1) {
+                return Err("tap XOR requires stack-independent registers");
+            }
+            end += prefix + 2;
+            continue;
+        }
         if conditional || opcode == 0x3b {
             let modrm = bytes[end + prefix + 1 + usize::from(conditional)];
             if modrm >> 6 != 3 || !register((modrm >> 3) & 7, 4) || !register(modrm & 7, 1) {
@@ -493,6 +525,7 @@ pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
                 | 0x2b
                 | 0x63
                 | 0x85
+                | 0x80
                 | 0x83
                 | 0xc6
                 | 0xc7
@@ -506,14 +539,15 @@ pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
         let base = modrm & 7;
         let register = (modrm >> 3) & 7;
         let immediate = match opcode {
-            0x83 if matches!(register, 0 | 5) => 1, // ADD/SUB only.
+            0x80 if register == 7 => 1,
+            0x83 if matches!(register, 0 | 5 | 7) => 1, // ADD/SUB/CMP.
             0xc6 if register == 0 => 1,
             0xc7 if register == 0 => 4,
             0xff if matches!(register, 0 | 1) => 0, // INC/DEC only; no CALL/JMP/PUSH.
-            0x83 | 0xc6 | 0xc7 | 0xff => return Err("tap opcode extension not supported"),
+            0x80 | 0x83 | 0xc6 | 0xc7 | 0xff => return Err("tap opcode extension not supported"),
             _ => 0,
         };
-        let explicit_register = !sse && !matches!(opcode, 0x83 | 0xc6 | 0xc7 | 0xff);
+        let explicit_register = !sse && !matches!(opcode, 0x80 | 0x83 | 0xc6 | 0xc7 | 0xff);
         if explicit_register && register == 4 && rex & 4 == 0 && (opcode != 0x88 || rex != 0) {
             return Err("tap stack register not supported");
         }
@@ -522,7 +556,7 @@ pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
             // a stack register, register LEA, or implicit/control opcode extensions.
             if !matches!(
                 opcode,
-                0x89 | 0x8b | 0x03 | 0x01 | 0x29 | 0x2b | 0x63 | 0x85 | 0x83 | 0xff
+                0x89 | 0x8b | 0x03 | 0x01 | 0x29 | 0x2b | 0x63 | 0x85 | 0x80 | 0x83 | 0xff
             ) || base == 4 && rex & 1 == 0
             {
                 return Err("tap register-only operand not supported");
@@ -560,6 +594,35 @@ pub fn instruction_span(bytes: &[u8; 16]) -> Result<usize, &'static str> {
 
 fn counter_reload(bytes: &[u8]) -> bool {
     bytes.len() >= 10 && bytes[..2] == [0xff, 0x47] && bytes[3..6] == [0x8b, 0xbc, 0x24]
+}
+
+fn rip_store_target(site: usize, instructions: &[u8]) -> Result<Option<usize>, &'static str> {
+    if !instructions.starts_with(&[0xc7, 0x05]) {
+        return Ok(None);
+    }
+    if instructions.len() != 10 {
+        return Err("tap RIP store has an invalid span");
+    }
+    let displacement = i32::from_le_bytes(instructions[2..6].try_into().unwrap());
+    site.checked_add(10)
+        .and_then(|end| end.checked_add_signed(displacement as isize))
+        .map(Some)
+        .ok_or("tap RIP store target overflow")
+}
+
+fn relocate_rip_store(
+    instructions: &mut [u8],
+    at: usize,
+    target: usize,
+) -> Result<(), &'static str> {
+    if instructions.len() != 10 || !instructions.starts_with(&[0xc7, 0x05]) {
+        return Err("tap RIP store has an invalid continuation");
+    }
+    let end = at.checked_add(10).ok_or("tap RIP continuation overflow")?;
+    let displacement = i32::try_from(target as i128 - end as i128)
+        .map_err(|_| "tap RIP store target is out of range")?;
+    instructions[2..6].copy_from_slice(&displacement.to_le_bytes());
+    Ok(())
 }
 
 struct Bridge {

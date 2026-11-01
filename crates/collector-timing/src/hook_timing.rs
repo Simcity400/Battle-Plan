@@ -179,8 +179,9 @@ pub enum Family {
     MarketChanges,
     /// Bilateral war contribution writers, first-credit capture and delivery histories.
     WarParticipation,
+    PlayerCommands,
 }
-pub const FAMILY_COUNT: usize = 65;
+pub const FAMILY_COUNT: usize = Family::PlayerCommands as usize + 1;
 
 /// How collector code surrounds the native original.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,10 +277,12 @@ impl Family {
         Self::FactionRefreshPhases,
         Self::MarketChanges,
         Self::WarParticipation,
+        Self::PlayerCommands,
     ];
     /// The status key; families with their own status reuse that key.
     pub fn name(self) -> &'static str {
         match self {
+            Self::PlayerCommands => "player_commands",
             Self::Hourly => "hourly",
             Self::EquipmentDestruction => "equipment_destruction",
             Self::LandEvents => "land_events",
@@ -406,6 +409,7 @@ impl Family {
             | Self::FactionCompanions
             | Self::NavalManagementChanges => Kind::Mixed,
             Self::ExperienceGains
+            | Self::PlayerCommands
             | Self::FuelAwards
             | Self::PoliticsCaptureTaps
             | Self::PeaceSettlements
@@ -1056,7 +1060,10 @@ mod tests {
         });
         assert_eq!(counter.total(0), 4000);
         assert_eq!(counter.total(1), 4000);
-        assert_eq!(counter.slots[SHARED_SLOT].0[1].load(Ordering::Relaxed), 4000);
+        assert_eq!(
+            counter.slots[SHARED_SLOT].0[1].load(Ordering::Relaxed),
+            4000
+        );
         assert_eq!(TABLE.totals()[Family::RaidChanges as usize].calls, 0);
     }
 

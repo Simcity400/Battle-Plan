@@ -33,6 +33,8 @@ mod tests;
 
 /// Game hours between the file's published revisions: at most what a dead collector loses.
 const REVISION_HOURS: i32 = 168;
+/// Real time between revisions that commands alone force, as when the game is paused.
+const COMMAND_REVISION: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Each finished campaign's counters, which the spool status keeps reporting after detach.
 /// Finishing only moves them here; the status thread formats them.
@@ -108,10 +110,10 @@ impl native_frame::Lanes for Lanes<'_> {
 pub(crate) struct Live {
     directory: PathBuf,
     /// The file while it is written, and its finished name, which the recorder publishes;
-    /// named when the first hour opens it ([`Live::claim`]).
+    /// named when the first hour or command opens it ([`Live::claim`]).
     partial: PathBuf,
     finished_path: PathBuf,
-    /// The file's identity until the first hour opens it.
+    /// The file's identity until the first hour or command opens it.
     identity: Option<envelope::Identity>,
     /// The capture the root names: this session alone, every run its own.
     capture: Option<Capture>,
@@ -131,6 +133,8 @@ pub(crate) struct Live {
     /// Why the next run starts, when the rows said.
     next_epoch: Option<u8>,
     finished: bool,
+    command_branch: Option<u64>,
+    revised: Instant,
     /// Runs started, which a run's first hour carries to the file.
     started: u64,
     counters: Counters,
@@ -224,6 +228,8 @@ impl Columnar {
                 last: None,
                 next_epoch: None,
                 finished: false,
+                command_branch: None,
+                revised: Instant::now(),
                 started: 0,
                 counters: Counters {
                     stopped: None,
@@ -343,7 +349,7 @@ impl Columnar {
 
     /// Ends the recording on its healthy path: the root naming the capture (and where writing
     /// stopped, when it did) and the footer, durable under its finished name. A file that
-    /// holds no hour, or cannot finish, is removed.
+    /// holds neither hours nor commands, or cannot finish, is removed.
     pub(crate) fn finish(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.finish());
@@ -363,13 +369,29 @@ impl Columnar {
 
 impl Live {
     fn note(&mut self, records: &[replay::spool::Record]) {
+        let command_branch = records.iter().find_map(|record| match record {
+            replay::spool::Record::Control(replay::spool::ControlRecord::PlayerCommands {
+                packet,
+                ..
+            }) => Some(packet.branch),
+            _ => None,
+        });
         let noted = Self::encoded(records).and_then(|records| {
             self.notes.try_reserve(1).map_err(|_| engine_allocation::oom())?;
             self.notes.push_back(Note {
                 awaits: None,
                 records,
             });
-            self.release()
+            self.release()?;
+            if let Some(branch) = command_branch.filter(|_| self.writing()) {
+                let opened = self.file.is_none();
+                self.file()?;
+                self.command_branch = Some(branch);
+                if opened || self.revised.elapsed() >= COMMAND_REVISION {
+                    self.revise()?;
+                }
+            }
+            Ok(())
         });
         if let Err(error) = noted {
             self.stop(&error);
@@ -684,31 +706,19 @@ impl Live {
         if hour % REVISION_HOURS != 0 {
             return Ok(());
         }
-        let (Some(file), Some(template)) = (self.file.as_mut(), &self.capture) else {
+        self.revise()
+    }
+
+    fn revise(&mut self) -> io::Result<()> {
+        let (Some(file), Some(capture)) = (self.file.as_mut(), self.capture.as_mut()) else {
             return Ok(());
         };
         crate::tick_gate::wait();
-        let mut sessions = engine_allocation::vec(template.sessions.len())?;
-        for session in &template.sessions {
-            sessions.push(engine_allocation::copy_vec(session)?);
-        }
-        let capture = Capture {
-            campaign_id: engine_allocation::copy_vec(&template.campaign_id)?,
-            content: engine_allocation::copy_vec(&template.content)?,
-            capture_mode: template.capture_mode,
-            sessions,
-            run_sessions: engine_allocation::filled(file.published_runs(), 0)?,
-            stop: None,
-            format: template.format,
-            controls: {
-                let mut controls = engine_allocation::vec(template.controls.len())?;
-                for control in &template.controls {
-                    controls.push(engine_allocation::copy_vec(control)?);
-                }
-                controls
-            },
-        };
-        file.revise(Some(&capture), |file| file.sync_data())
+        // The file writes only the control records added since its last revision.
+        capture.run_sessions = engine_allocation::filled(file.published_runs(), 0)?;
+        file.revise(Some(capture), |file| file.sync_data())?;
+        self.revised = Instant::now();
+        Ok(())
     }
 
     /// Drops the records of frames the rows never wrote: a failed write's context is given
@@ -740,11 +750,13 @@ impl Live {
         let Some(file) = self.file.take() else {
             return;
         };
-        let (Some(mut capture), Some((branch, last_hour))) = (self.capture.take(), self.last)
+        let Some(mut capture) = self
+            .capture
+            .take()
+            .filter(|_| self.last.is_some() || self.command_branch.is_some())
         else {
             drop(file);
-            // A file that holds no hour is removed only on the healthy path; after a failure it
-            // stays partial, which nothing publishes, since removing it would allocate.
+            // Empty files are removed only on the healthy path; failures stay partial.
             if self.counters.stopped.is_none() {
                 let _ = fs::remove_file(&self.partial);
             }
@@ -756,8 +768,12 @@ impl Live {
             capture.run_sessions = engine_allocation::filled(runs, 0)?;
             capture.stop = match &self.counters.stopped {
                 Some(reason) => Some(Stop {
-                    branch,
-                    last_hour: Some(last_hour),
+                    branch: self
+                        .last
+                        .map(|(branch, _)| branch)
+                        .or(self.command_branch)
+                        .expect("captured branch"),
+                    last_hour: self.last.map(|(_, hour)| hour),
                     reason: engine_allocation::string(reason.text())?,
                 }),
                 None => None,

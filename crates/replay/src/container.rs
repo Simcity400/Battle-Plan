@@ -340,14 +340,33 @@ pub struct RecordedBranchHistory {
     pub start: BranchStart,
     /// Actual frame hours only. Holes in the block index are never filled.
     pub hours: Vec<Hour>,
+    pub last_missing_hour: Option<Hour>,
 }
 
-/// The last recorded frame in that process's block write order, not its largest hour.
+/// A process's latest frame or explicitly witnessed command-only phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionTail {
     pub branch: BranchId,
     pub hour: Hour,
     pub load_signal: Option<i64>,
+    pub recorded: bool,
+}
+
+impl SessionTail {
+    pub fn resume(
+        self,
+        tracker: &mut BranchTracker,
+        session: SessionId,
+        last_missing_hour: Option<Hour>,
+    ) -> io::Result<()> {
+        if let Some(hour) = last_missing_hour.filter(|hour| *hour >= self.hour) {
+            tracker.resume_observation(session, self.branch, hour, self.load_signal)
+        } else if self.recorded {
+            tracker.resume_session(session, self.branch, self.hour, self.load_signal)
+        } else {
+            tracker.resume_commands(session, self.branch, self.hour, self.load_signal)
+        }
+    }
 }
 
 impl CampaignHistory {
@@ -389,9 +408,16 @@ impl CampaignHistory {
         }
         if previous.is_some() {
             let tail = self.session_tail(session.id).ok_or_else(|| {
-                invalid_static("existing process session has no recorded hour to resume")
+                invalid_static(
+                    "existing process session has no witnessed frame or command phase to resume",
+                )
             })?;
-            tracker.resume_session(session.id, tail.branch, tail.hour, tail.load_signal)?;
+            let last_missing_hour = self
+                .branches
+                .iter()
+                .find(|branch| branch.start.id == tail.branch)
+                .and_then(|branch| branch.last_missing_hour);
+            tail.resume(&mut tracker, session.id, last_missing_hour)?;
         } else {
             tracker.begin_session(session.id)?;
         }
@@ -937,8 +963,16 @@ impl Replay {
             .map(|start| RecordedBranchHistory {
                 start: start.clone(),
                 hours: Vec::new(),
+                last_missing_hour: None,
             })
             .collect();
+        for gap in &self.gaps {
+            let index = *positions
+                .get(&gap.branch)
+                .ok_or_else(|| invalid("gap refers to an unknown branch"))?;
+            let last = &mut branches[index].last_missing_hour;
+            *last = Some(last.map_or(gap.last_hour, |hour| hour.max(gap.last_hour)));
+        }
         let mut tails: Vec<(SessionId, SessionTail)> = Vec::new();
         for block in &self.index {
             let index = *positions
@@ -970,6 +1004,7 @@ impl Replay {
                 branch: block.branch,
                 hour: block.last_hour,
                 load_signal,
+                recorded: true,
             };
             if let Some((_, old)) = tails
                 .iter_mut()
@@ -996,6 +1031,54 @@ impl Replay {
             {
                 tail.load_signal = Some(*signal);
             }
+        }
+        let mut observed: BTreeMap<SessionId, u64> = BTreeMap::new();
+        for control in &self.controls {
+            if let ControlRecord::ClockWitness {
+                session,
+                qpc,
+                hour,
+                load_signal,
+            } = control
+                && tails.iter().any(|(id, tail)| {
+                    id == session && tail.hour == *hour && tail.load_signal == *load_signal
+                })
+            {
+                observed
+                    .entry(*session)
+                    .and_modify(|time| *time = (*time).max(*qpc))
+                    .or_insert(*qpc);
+            }
+        }
+        for control in &self.controls {
+            let ControlRecord::PlayerCommands { session, packet } = control else {
+                continue;
+            };
+            let Some(phase) = &packet.phase else {
+                continue;
+            };
+            let previous = tails.iter().position(|(id, _)| id == session);
+            if previous.is_some() && !observed.contains_key(session) {
+                return Err(invalid(
+                    "frame and command phase order has no clock witness",
+                ));
+            }
+            if observed.get(session).is_some_and(|time| *time >= phase.qpc) {
+                continue;
+            }
+            let tail = SessionTail {
+                branch: packet.branch,
+                hour: phase.hour,
+                load_signal: phase.load_marker(),
+                recorded: false,
+            };
+            if let Some(index) = previous {
+                tails[index].1 = tail;
+            } else {
+                engine_allocation::reserve(&mut tails, 1)?;
+                tails.push((*session, tail));
+            }
+            observed.insert(*session, phase.qpc);
         }
         Ok(CampaignHistory {
             campaign_id: self.campaign_id,
@@ -1135,6 +1218,7 @@ impl Replay {
         }
         validate_metadata(
             &identity,
+            &campaign_id,
             &sessions,
             &branches,
             &mut gaps,
@@ -2113,6 +2197,36 @@ fn collect<R: SpoolRecord>(
 }
 
 /// [`collect`]'s records in order, each finished block handed to `packer`.
+fn declare_command_branch(
+    control: &ControlRecord,
+    campaign_id: &[u8],
+    branches: &mut BTreeMap<BranchId, BranchStart>,
+    pending: &mut Pending,
+) -> io::Result<()> {
+    if let ControlRecord::PlayerCommands { session, packet } = control
+        && let Some(phase) = &packet.phase
+    {
+        phase.validate()?;
+        if phase.start.session != *session
+            || phase.start.id != packet.branch
+            || !phase.campaign.eq_ignore_ascii_case(campaign_id)
+        {
+            return Err(invalid(
+                "command phase has conflicting campaign or branch context",
+            ));
+        }
+        if let Some(previous) = branches.get(&phase.start.id) {
+            if previous != &phase.start {
+                return Err(invalid("conflicting command branch declaration"));
+            }
+        } else {
+            branches.insert(phase.start.id, phase.start.clone());
+            pending.branches.push(phase.start.clone());
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_blocks<R: SpoolRecord>(
     packer: &mut pack::Packer<'_, grouped::BlockWriter, CompressedBlock>,
@@ -2320,6 +2434,7 @@ fn write_blocks<R: SpoolRecord>(
                     if current_session != Some(control.session()) {
                         return Err(invalid("control has no matching session context"));
                     }
+                    declare_command_branch(control, campaign_id, &mut branches, &mut pending)?;
                     // A writer retries an event loss whose segment failed after
                     // writing it; the same loss is kept once.
                     if !(matches!(control, ControlRecord::EventLoss { .. })
@@ -2473,6 +2588,7 @@ fn file_capture_mode(sessions: &[SessionStart]) -> io::Result<CaptureMode> {
 #[allow(clippy::too_many_arguments)]
 fn validate_metadata(
     identity: &Identity,
+    campaign_id: &[u8],
     sessions: &[SessionStart],
     branches: &[BranchStart],
     gaps: &mut Vec<Gap>,
@@ -2524,6 +2640,24 @@ fn validate_metadata(
     for control in controls {
         if !session_ids.contains(&control.session()) {
             return Err(invalid("replay control refers to an unknown session"));
+        }
+        if let ControlRecord::PlayerCommands { session, packet } = control {
+            if branch_ids.get(&packet.branch) != Some(session) {
+                return Err(invalid("player commands refer to another session's branch"));
+            }
+            if let Some(phase) = &packet.phase {
+                phase.validate()?;
+                if !phase.campaign.eq_ignore_ascii_case(campaign_id)
+                    || phase.start.id != packet.branch
+                    || phase.start.session != *session
+                    || branches.iter().find(|branch| branch.id == packet.branch)
+                        != Some(&phase.start)
+                {
+                    return Err(invalid(
+                        "player command phase conflicts with recording metadata",
+                    ));
+                }
+            }
         }
         if let ControlRecord::EventLoss {
             session, branch, ..

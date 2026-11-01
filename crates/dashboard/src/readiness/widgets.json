@@ -1,6 +1,22 @@
 {
   "widgets": [
     {
+      "kind": "campaign-clock",
+      "requests": [
+        {
+          "product": "campaign-clock",
+          "route": "product",
+          "params": {
+            "branchId": "$branch",
+            "firstHour": "$first",
+            "lastHour": "$first"
+          }
+        }
+      ]
+    },
+    {"kind": "apm-graph", "requests": [{"product": "player-apm", "route": "product", "params": {"branchId": "$branch", "group": "country", "registry": false, "firstHour": "$first", "lastHour": "$first", "tags": ["$tag"], "membership": null, "players": [], "buckets": 1}}]},
+    {"kind": "apm-table", "requests": [{"product": "player-apm", "route": "product", "params": {"branchId": "$branch", "group": "country", "registry": false, "firstHour": "$first", "lastHour": "$first", "tags": ["$tag"], "membership": null, "players": [], "buckets": 1}}]},
+    {
       "kind": "map",
       "map": true,
       "note": "The viewer's first frame at the opening hour, through committed checkpoints or the recording."

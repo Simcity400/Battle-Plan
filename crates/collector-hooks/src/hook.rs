@@ -47,6 +47,29 @@ const PUSH_FRAME_CODE: usize = 32;
 const PUSH_FRAME_UNWIND: usize = 64;
 const PUSH_FRAME_TABLE: usize = 80;
 
+fn allocate_near(site: usize, bytes: usize) -> *mut c_void {
+    let aligned = site & !0xffff;
+    for distance in (0x10000..0x7000_0000_usize).step_by(0x10000) {
+        for address in [aligned.checked_sub(distance), aligned.checked_add(distance)]
+            .into_iter()
+            .flatten()
+        {
+            let memory = unsafe {
+                VirtualAlloc(
+                    address as *const c_void,
+                    bytes,
+                    MEM_RESERVE | MEM_COMMIT,
+                    PAGE_READWRITE,
+                )
+            };
+            if !memory.is_null() {
+                return memory;
+            }
+        }
+    }
+    ptr::null_mut()
+}
+
 pub struct Hook {
     relocation: ManuallyDrop<RawDetour>,
     push_frame: bool,
@@ -109,29 +132,7 @@ impl Hook {
                 return Err("hook sentinel address overflow".into());
             }
             // A nearby relay lets retour relocate whole instructions covering the rel32 jump.
-            let aligned = site & !0xffff;
-            let mut relay = ptr::null_mut();
-            for distance in (0x10000..0x7000_0000_usize).step_by(0x10000) {
-                for address in [aligned.checked_sub(distance), aligned.checked_add(distance)]
-                    .into_iter()
-                    .flatten()
-                {
-                    relay = unsafe {
-                        VirtualAlloc(
-                            address as *const c_void,
-                            4096,
-                            MEM_RESERVE | MEM_COMMIT,
-                            PAGE_READWRITE,
-                        )
-                    };
-                    if !relay.is_null() {
-                        break;
-                    }
-                }
-                if !relay.is_null() {
-                    break;
-                }
-            }
+            let relay = allocate_near(site, 4096);
             if relay.is_null() {
                 return Err("cannot allocate a nearby detour relay".into());
             }

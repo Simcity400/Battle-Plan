@@ -1,6 +1,7 @@
 //! Immutable executable metadata loaded from a verified installation.
 
 pub mod auxiliary;
+pub mod commands;
 pub mod keywords;
 pub mod numeric;
 pub mod pe;
@@ -52,6 +53,7 @@ pub struct ExecutableTables {
     pub auxiliary: auxiliary::AuxiliaryTables,
     pub variables: variables::VariableTables,
     pub numeric: numeric::NumericTables,
+    pub commands: commands::CommandTables,
 }
 
 impl ExecutableTables {
@@ -95,6 +97,7 @@ fn initialize_from(exe_path: &Path, game_dir: &Path) -> io::Result<Arc<Executabl
     let auxiliary = auxiliary::AuxiliaryTables::decode(&image, &keywords)?;
     let variables = variables::VariableTables::decode(game_dir)?;
     let numeric = numeric::NumericTables::decode(&image, &keywords)?;
+    let commands = commands::CommandTables::decode(&image)?;
     let tables = Arc::new(ExecutableTables {
         identity,
         keywords,
@@ -102,6 +105,7 @@ fn initialize_from(exe_path: &Path, game_dir: &Path) -> io::Result<Arc<Executabl
         auxiliary,
         variables,
         numeric,
+        commands,
     });
     EXECUTABLE_TABLES
         .set(Arc::clone(&tables))

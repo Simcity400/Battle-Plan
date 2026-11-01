@@ -9,6 +9,120 @@ static SEEN: AtomicUsize = AtomicUsize::new(0);
 static FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn pause_comparisons_and_condition_results_refuse_stack_dependent_forms() {
+    let span = |instructions: &[u8]| {
+        let mut bytes = [0x90; 16];
+        bytes[..instructions.len()].copy_from_slice(instructions);
+        instruction_span(&bytes)
+    };
+    assert_eq!(span(&[0x80, 0x79, 3, 7, 0x0f, 0x94, 0xc0]), Ok(7));
+    assert_eq!(span(&[0x83, 0xfa, 17, 0x0f, 0x95, 0xc1]), Ok(6));
+    assert_eq!(span(&[0xb9, 23, 0, 0, 0]), Ok(5));
+    assert_eq!(span(&[0x41, 0xbc, 23, 0, 0, 0]), Ok(6));
+    assert!(span(&[0xbc, 23, 0, 0, 0]).is_err());
+    assert!(span(&[0x80, 0x7c, 0x24, 3, 7]).is_err());
+    assert!(span(&[0x83, 0xfc, 17, 0x90, 0x90]).is_err());
+    assert!(span(&[0x40, 0x0f, 0x94, 0xc4, 0x90]).is_err());
+    assert!(span(&[0x0f, 0x94, 0x04, 0x24, 0x90]).is_err());
+    assert!(span(&[0x80, 0x01, 7, 0x90, 0x90]).is_err());
+}
+
+#[test]
+fn rip_store_relocation_preserves_target_and_immediate_and_refuses_overflow() {
+    let site = 0x10000_usize;
+    let mut instructions = [0xc7, 0x05, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x78];
+    instructions[2..6].copy_from_slice(&(-731_i32).to_le_bytes());
+    let target = rip_store_target(site, &instructions).unwrap().unwrap();
+    let at = site + 0x20000;
+    relocate_rip_store(&mut instructions, at, target).unwrap();
+    assert_eq!(rip_store_target(at, &instructions), Ok(Some(target)));
+    assert_eq!(&instructions[6..], &[0x12, 0x34, 0x56, 0x78]);
+    assert!(rip_store_target(0, &[0xc7, 0x05, 0xf5, 0xff, 0xff, 0xff, 0, 0, 0, 0]).is_err());
+    assert!(rip_store_target(usize::MAX, &instructions).is_err());
+    assert!(relocate_rip_store(&mut instructions, usize::MAX, target).is_err());
+    assert!(relocate_rip_store(&mut instructions, 0, usize::MAX).is_err());
+    assert!(rip_store_target(site, &instructions[..9]).is_err());
+}
+
+#[test]
+fn rip_relative_store_tap_preserves_native_value_flags_and_destination() {
+    unsafe extern "system-unwind" fn observed(registers: &Registers, tag: usize) {
+        assert_eq!(registers.rax, 17);
+        assert_ne!(registers.flags & 1, 0);
+        unsafe { (&*(tag as *const AtomicUsize)).fetch_add(1, Ordering::Relaxed) };
+    }
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let target = code.0 as usize + 2048;
+    let mut bytes = vec![0xb8, 17, 0, 0, 0, 0xf9];
+    let site = code.0 as usize + bytes.len();
+    bytes.extend([0xc7, 0x05]);
+    bytes.extend(
+        i32::try_from(target as isize - (site + 10) as isize)
+            .unwrap()
+            .to_le_bytes(),
+    );
+    bytes.extend(0x7152_934b_u32.to_le_bytes());
+    bytes.extend([0x0f, 0x92, 0xc2, 0x0f, 0xb6, 0xd2, 0x01, 0xd0, 0xc3]);
+    bytes.extend([0x90; 16]);
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len()) };
+    let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+        .try_into()
+        .unwrap();
+    let count = AtomicUsize::new(0);
+    let mut tap = unsafe {
+        Tap::new(
+            site,
+            observed,
+            &count as *const AtomicUsize as usize,
+            sentinel,
+        )
+    }
+    .unwrap();
+    let invoke: unsafe extern "system" fn() -> u32 = unsafe { std::mem::transmute(code.0) };
+    for enabled in [false, true, false] {
+        if enabled {
+            assert!(tap.set_enabled(true).unwrap());
+        }
+        unsafe { ptr::write(target as *mut u32, 0) };
+        assert_eq!(unsafe { invoke() }, 18);
+        assert_eq!(unsafe { ptr::read(target as *const u32) }, 0x7152_934b);
+        if enabled {
+            assert!(tap.set_enabled(false).unwrap());
+        }
+    }
+    assert_eq!(count.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn register_xor_taps_relocate_after_restoring_native_registers_and_flags() {
+    for instructions in [
+        [0x49, 0x89, 0xc9, 0x31, 0xdb],
+        [0x49, 0x89, 0xd9, 0x33, 0xc0],
+    ] {
+        let mut bytes = [0x90; 16];
+        bytes[..5].copy_from_slice(&instructions);
+        assert_eq!(instruction_span(&bytes), Ok(5));
+        let bridge = bridge_code(1, 0, &instructions);
+        assert_eq!(
+            &bridge.code[bridge.continuation..bridge.completion],
+            &instructions
+        );
+    }
+    for instructions in [
+        [0x48, 0x31, 0xe0, 0x90, 0x90],
+        [0x48, 0x33, 0xc4, 0x90, 0x90],
+        [0x31, 0x03, 0x90, 0x90, 0x90],
+    ] {
+        let mut bytes = [0x90; 16];
+        bytes[..5].copy_from_slice(&instructions);
+        assert!(instruction_span(&bytes).is_err());
+    }
+}
+
+#[test]
 fn faction_store_taps_accept_indexed_values_and_immediates_but_refuse_stack_operands() {
     let span = |value: &[u8]| {
         let mut bytes = [0x90; 16];

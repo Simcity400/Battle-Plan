@@ -6,6 +6,9 @@ import { useIdeaTimelinePresets } from './idea-timeline/ideaTimelinePresets';
 // Game windows a widget can open (Industrial organisations' policy chooser).
 import '../components/gameWindowRegistry';
 const renderers = {
+  'campaign-clock': lazyWidget('campaign-clock', ['render']),
+  'apm-graph': lazyWidget('apm-graph', ['render']),
+  'apm-table': lazyWidget('apm-table', ['render']),
   'war-goals': lazyWidget('war-goals', ['render']),
   'next-elections': lazyWidget('next-elections', ['render']),
   'balance-of-power': lazyWidget('balance-of-power', ['render']),

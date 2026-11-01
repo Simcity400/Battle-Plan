@@ -69,6 +69,7 @@ runtime_families! {
     ProvinceCombats => ("province_combat_changes", crate::province_combat_changes::Hooks),
     AirBaseCarry => ("air_base_carry_changes", crate::air_base_carry_changes::Hooks),
     Experience => ("experience_gains", crate::experience_gains::Hooks),
+    PlayerCommands => ("player_commands", crate::player_commands::Hooks),
     Fuel => ("fuel_awards", crate::fuel_awards::Hooks),
     OperationOutcomes => ("operation_outcomes", crate::operation_outcomes::Hooks),
     Politics => ("politics_changes", crate::politics_changes::Hooks),
@@ -292,6 +293,7 @@ impl Family {
             Self::ProvinceCombats => &[NavalProvinceCombats],
             Self::AirBaseCarry => &[AirBases, AirBaseRegistrations],
             Self::Experience => &[CountryExperienceGains],
+            Self::PlayerCommands => &[],
             Self::Fuel => &[CountryFuel],
             Self::OperationOutcomes => &[OperationCompletions],
             Self::Politics => &[
@@ -959,6 +961,7 @@ family_hooks!(
     province_combat_changes,
     air_base_carry_changes,
     experience_gains,
+    player_commands,
     fuel_awards,
     operation_outcomes,
     politics_changes,

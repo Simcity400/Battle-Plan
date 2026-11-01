@@ -4,6 +4,8 @@
 pub const SIZE: usize = 0x510;
 /// Primary template vtable.
 pub const VTABLE_RVA: usize = 0x0286_1968;
+/// Native missing-definition sentinel.
+pub const NULL_VTABLE_RVA: usize = 0x0286_1a50;
 /// Signed naval, military, general and rocket production words, reduced with wrapping i32 arithmetic.
 pub const WAR_OVERVIEW_PRODUCTION: [usize; 4] = [0x2f8, 0x2fc, 0x300, 0x30c];
 /// Lexer token id, u32.

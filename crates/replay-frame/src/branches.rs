@@ -25,7 +25,7 @@ pub struct BranchStart {
     /// The clock at the first callback entry after loading. Unknown if that
     /// callback was lost; a later callback's clock is not the save's origin.
     pub loaded_hour: Option<Hour>,
-    /// The first observed post-tick clock, even if writing that frame later fails.
+    /// The first observed clock, including a command phase before any hourly frame.
     pub first_hour: Hour,
     pub parent: Parentage,
     pub reason: BranchReason,
@@ -198,6 +198,7 @@ struct LastObservation {
     branch: BranchId,
     hour: Hour,
     load_signal: Option<i64>,
+    frame_hour: Option<Hour>,
 }
 
 #[derive(Debug)]
@@ -334,6 +335,7 @@ impl BranchTracker {
             branch,
             hour,
             load_signal,
+            frame_hour: Some(hour),
         });
         Ok(())
     }
@@ -368,7 +370,24 @@ impl BranchTracker {
             branch,
             hour,
             load_signal,
+            frame_hour: Some(hour),
         });
+        Ok(())
+    }
+
+    /// A command clock can precede the first frame at that same hour.
+    pub fn resume_commands(
+        &mut self,
+        session: SessionId,
+        branch: BranchId,
+        hour: Hour,
+        load_signal: Option<i64>,
+    ) -> io::Result<()> {
+        self.resume_observation(session, branch, hour, load_signal)?;
+        let frame_hour = self
+            .history(branch)
+            .and_then(|history| history.recorded.last().copied());
+        self.last.as_mut().unwrap().frame_hour = frame_hour;
         Ok(())
     }
 
@@ -406,7 +425,7 @@ impl BranchTracker {
     /// A failed signal read retains the last known value. The caller records that
     /// read failure separately in the frame. Errors leave the tracker unchanged.
     /// Call this once per callback: a storage retry reuses the returned observation
-    /// and branch start. Observing the same clock again means an actual discontinuity.
+    /// and branch start. Repeating a frame clock means an actual discontinuity.
     /// The caller must write the supplied gap notes as well as tracking them here.
     pub fn observe(
         &mut self,
@@ -414,6 +433,49 @@ impl BranchTracker {
         recorded_hour: Hour,
         load_signal: Option<i64>,
         known_gaps: &[Gap],
+    ) -> io::Result<Observation> {
+        self.observe_clock(loaded_hour, recorded_hour, load_signal, known_gaps, true)
+    }
+
+    pub fn observe_commands(
+        &mut self,
+        hour: Hour,
+        load_signal: Option<i64>,
+    ) -> io::Result<Observation> {
+        self.observe_clock(None, hour, load_signal, &[], false)
+    }
+
+    pub fn past_commands(&mut self, hour: Hour) -> io::Result<BranchId> {
+        let session = self
+            .session
+            .ok_or_else(|| invalid("begin a session before observing"))?;
+        let id = self
+            .next_branch
+            .ok_or_else(|| invalid("branch id space exhausted"))?;
+        engine_allocation::reserve(&mut self.branches, 1)?;
+        self.branches.push(BranchHistory {
+            start: BranchStart {
+                id,
+                session,
+                loaded_hour: None,
+                first_hour: hour,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            },
+            recorded: Vec::new(),
+            pending: Vec::new(),
+        });
+        self.next_branch = id.checked_add(1);
+        Ok(id)
+    }
+
+    fn observe_clock(
+        &mut self,
+        loaded_hour: Option<Hour>,
+        recorded_hour: Hour,
+        load_signal: Option<i64>,
+        known_gaps: &[Gap],
+        frame: bool,
     ) -> io::Result<Observation> {
         let session = self
             .session
@@ -441,6 +503,12 @@ impl BranchTracker {
             Some(_) if self.world_changed => Some(BranchReason::LoadSignal),
             Some(last) if matches!((last.load_signal, load_signal), (Some(a), Some(b)) if a != b) => {
                 Some(BranchReason::LoadSignal)
+            }
+            Some(last)
+                if last.hour == recorded_hour
+                    && (!frame || last.frame_hour != Some(recorded_hour)) =>
+            {
+                None
             }
             Some(last) if !continues(last.hour, recorded_hour, known_gaps)? => {
                 Some(BranchReason::HourDiscontinuity)
@@ -470,14 +538,14 @@ impl BranchTracker {
 
         if start.is_some() {
             engine_allocation::reserve(&mut self.branches, 1)?;
-        } else {
+        } else if frame {
             engine_allocation::reserve(
                 &mut self.history_mut(self.last.unwrap().branch).unwrap().pending,
                 1,
             )?;
         }
         let mut first_pending = Vec::new();
-        if start.is_some() {
+        if start.is_some() && frame {
             engine_allocation::reserve(&mut first_pending, 1)?;
             first_pending.push((recorded_hour, false));
         }
@@ -503,7 +571,7 @@ impl BranchTracker {
             }
             None => self.last.unwrap().branch,
         };
-        if start.is_none() {
+        if start.is_none() && frame {
             self.history_mut(branch)
                 .unwrap()
                 .pending
@@ -513,6 +581,13 @@ impl BranchTracker {
             branch,
             hour: recorded_hour,
             load_signal: load_signal.or(self.last.and_then(|last| last.load_signal)),
+            frame_hour: if frame {
+                Some(recorded_hour)
+            } else if start.is_none() {
+                self.last.and_then(|last| last.frame_hour)
+            } else {
+                None
+            },
         });
         self.world_changed = false;
         Ok(Observation { branch, start })
@@ -1129,5 +1204,89 @@ mod tests {
         decoder.finish().unwrap();
         bytes[12..16].copy_from_slice(&12_i32.to_le_bytes());
         assert!(Gap::decode(&mut Decoder::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn paused_commands_establish_a_branch_without_inventing_frames_or_parentage() {
+        let mut tracker = BranchTracker::new();
+        tracker.begin_session(1).unwrap();
+        let commands = tracker.observe_commands(10, Some(5)).unwrap();
+        assert_eq!(commands.start.as_ref().unwrap().loaded_hour, None);
+        assert!(tracker.recorded_hours(commands.branch).unwrap().is_empty());
+        assert!(tracker.record_hour(commands.branch, 10).is_err());
+        assert!(
+            tracker
+                .observe_commands(10, Some(5))
+                .unwrap()
+                .start
+                .is_none()
+        );
+        let frame = tracker.observe(Some(11), 11, Some(5), &[]).unwrap();
+        assert_eq!(frame.branch, commands.branch);
+        assert!(frame.start.is_none());
+        tracker.record_hour(frame.branch, 11).unwrap();
+        tracker.world_changed();
+        let replacement = tracker.observe_commands(10, Some(5)).unwrap();
+        assert_ne!(replacement.branch, commands.branch);
+        assert_eq!(replacement.start.unwrap().parent, Parentage::Unknown);
+        assert!(
+            tracker
+                .recorded_hours(replacement.branch)
+                .unwrap()
+                .is_empty()
+        );
+        let current = tracker.last_observation();
+        let past = tracker.past_commands(5).unwrap();
+        assert_eq!(tracker.last_observation(), current);
+        assert_ne!(past, replacement.branch);
+        assert!(tracker.record_hour(past, 5).is_err());
+    }
+
+    #[test]
+    fn a_command_clock_allows_its_first_frame_but_never_a_repeated_frame() {
+        for resumed in [false, true] {
+            for first_hour in [10, 11] {
+                let mut tracker = BranchTracker::new();
+                tracker.begin_session(1).unwrap();
+                let command = tracker.observe_commands(10, Some(5)).unwrap();
+                if resumed {
+                    let mut recovered = BranchTracker::new();
+                    recovered
+                        .seed_recorded_branch(
+                            command.start.clone().unwrap(),
+                            std::iter::empty::<Hour>(),
+                        )
+                        .unwrap();
+                    recovered
+                        .resume_commands(1, command.branch, 10, Some(5))
+                        .unwrap();
+                    tracker = recovered;
+                }
+                let frame = tracker
+                    .observe(Some(first_hour), first_hour, Some(5), &[])
+                    .unwrap();
+                assert_eq!(frame.branch, command.branch);
+                assert!(frame.start.is_none());
+                tracker.record_hour(frame.branch, first_hour).unwrap();
+                tracker.observe_commands(first_hour, Some(5)).unwrap();
+                let repeated = tracker
+                    .observe(Some(first_hour), first_hour, Some(5), &[])
+                    .unwrap();
+                assert_ne!(repeated.branch, frame.branch);
+                assert_eq!(
+                    repeated.start.unwrap().reason,
+                    BranchReason::HourDiscontinuity
+                );
+            }
+        }
+        let mut tracker = BranchTracker::new();
+        tracker.begin_session(1).unwrap();
+        let failed = tracker.observe(None, 10, Some(5), &[]).unwrap().branch;
+        tracker.lose_hour(failed, 10).unwrap();
+        tracker.observe_commands(10, Some(5)).unwrap();
+        assert_ne!(
+            tracker.observe(None, 10, Some(5), &[]).unwrap().branch,
+            failed
+        );
     }
 }

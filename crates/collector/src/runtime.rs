@@ -209,10 +209,9 @@ impl<'a> Owner<'a> {
     /// Refused while another collector, however it was loaded, runs in the game started at
     /// `process_start`.
     fn claim(process_start: u64, shared: &'a AtomicPtr<Shared>) -> Result<Self, &'static str> {
-        let name = format!(
-            "Local\\HOI4Replay.Collector.{}.{process_start}",
-            unsafe { GetCurrentProcessId() }
-        );
+        let name = format!("Local\\HOI4Replay.Collector.{}.{process_start}", unsafe {
+            GetCurrentProcessId()
+        });
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         unsafe { SetLastError(0) };
         let handle = unsafe { CreateMutexW(ptr::null(), 0, wide.as_ptr()) };
@@ -255,7 +254,10 @@ mod owner_tests {
             Owner::claim(process_start, &shared).err(),
             Some("another collector already runs in this game")
         );
-        assert!(Owner::claim(process_start + 1, &shared).is_ok(), "another game");
+        assert!(
+            Owner::claim(process_start + 1, &shared).is_ok(),
+            "another game"
+        );
         drop(first);
         assert!(Owner::claim(process_start, &shared).is_ok());
     }
@@ -1022,6 +1024,9 @@ fn run(
     let mut experience_hooks = FamilyHooks::construct(base, || {
         Ok(unsafe { crate::experience_gains::Hooks::new(&memory, base) })
     })?;
+    let mut command_hooks = FamilyHooks::construct(base, || {
+        Ok(unsafe { crate::player_commands::Hooks::new(&memory, base) })
+    })?;
     let mut air_loss_hooks = FamilyHooks::construct(base, || {
         Ok(unsafe { crate::air_losses::Hooks::new(&memory, base) })
     })?;
@@ -1355,6 +1360,7 @@ fn run(
     ranges.extend(destruction_hooks.executable_ranges());
     ranges.extend(naval_result_hooks.executable_ranges());
     ranges.extend(experience_hooks.executable_ranges());
+    ranges.extend(command_hooks.executable_ranges());
     ranges.extend(air_loss_hooks.executable_ranges());
     ranges.extend(bombing_hooks.executable_ranges());
     ranges.extend(nuclear_hooks.executable_ranges());
@@ -1667,6 +1673,7 @@ fn run(
                     ("experience_gains", &mut || {
                         experience_hooks.set_enabled(true)
                     }),
+                    ("player_commands", &mut || command_hooks.set_enabled(true)),
                     ("operation_outcomes", &mut || {
                         operation_hooks.set_enabled(true)
                     }),
@@ -1828,7 +1835,7 @@ fn run(
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
                     history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
-                    construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
+                    construction_hooks, experience_hooks, command_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
                     peace_hooks, shared, output_lock, _payload_pools, decode_panic_hook,
                 ));
@@ -1937,6 +1944,7 @@ fn run(
             RestoreFamily::ProvinceCombats => province_combat_hooks.set_enabled(false),
             RestoreFamily::AirBaseCarry => air_base_carry_hooks.set_enabled(false),
             RestoreFamily::Experience => experience_hooks.set_enabled(false),
+            RestoreFamily::PlayerCommands => command_hooks.set_enabled(false),
             RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
             RestoreFamily::Fuel => fuel_hooks.set_enabled(false),
             RestoreFamily::OperationOutcomes => operation_hooks
@@ -2164,6 +2172,9 @@ fn run(
         if let Some(hooks) = experience_hooks.inner.as_mut() {
             hooks.release_after_quiet();
         }
+        if let Some(hooks) = command_hooks.inner.as_mut() {
+            hooks.release_after_quiet();
+        }
         event_feed_detach = Some(
             match event_feed_hooks
                 .inner
@@ -2245,6 +2256,7 @@ fn run(
             prune_hooks,
             construction_hooks,
             experience_hooks,
+            command_hooks,
             event_feed_hooks,
             world_hooks,
             fuel_hooks,
@@ -2369,6 +2381,10 @@ use crate::hook_failures::{Family as RestoreFamily, FamilyHooks};
 impl RestoreFamily {
     fn observer_state(self) -> (bool, &'static str) {
         match self {
+            Self::PlayerCommands => (
+                crate::player_commands::active() != 0,
+                "command observers did not quiesce; collector retained",
+            ),
             Self::Hourly => (
                 ACTIVE.load(Ordering::SeqCst) != 0,
                 "hourly callbacks did not quiesce; collector retained",
@@ -2717,6 +2733,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::ProvinceCombats => "province_combat_changes",
         RestoreFamily::AirBaseCarry => "air_base_carry_changes",
         RestoreFamily::Experience => "experience_gains",
+        RestoreFamily::PlayerCommands => "player_commands",
         RestoreFamily::Fuel => "fuel_awards",
         RestoreFamily::OperationOutcomes => "operation_outcomes",
         RestoreFamily::Politics => "politics_changes",
@@ -3133,6 +3150,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "equipment_destruction": crate::equipment_destruction::status(),
         "naval_result_sources": crate::naval_result_sources::status(),
         "experience_gains": crate::experience_gains::status(),
+        "player_commands": crate::player_commands::status(),
         "event_feed": crate::event_feed_observer::status(),
         "world_lifetime": crate::world_lifetime::status(),
         "operation_outcomes": crate::operation_outcomes::status(),
@@ -4741,6 +4759,44 @@ impl Drop for StopRecordingOnSpoolExit<'_> {
     }
 }
 
+fn verify_content_roster(
+    shared: &Shared,
+    config: &Config,
+    session: &mut SessionStart,
+    processor: &mut Processor,
+    writer: &crate::status_writer::StatusHandle,
+) -> Result<(), &'static str> {
+    if !shared.roster_ready.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    if let Some(roster) = unsafe { (&mut *shared.roster.get()).take() } {
+        shared
+            .pool_bytes
+            .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
+        // Preserve the local diagnostic even when verification refuses capture.
+        let verification = roster.verify(
+            &mut session.identity,
+            &config.expected_mounts,
+            &config.mod_descriptors,
+            config.content_order_note.as_deref(),
+        );
+        let diagnostic =
+            roster.diagnostics(&config.expected_mounts, &session.identity.verification);
+        writer
+            .publish(&config.output_dir.join("content.json"), diagnostic)
+            .map_err(|e| error_reason(e, "content status allocation failed"))?;
+        verification.map_err(|e| error_reason(e, "content verification failed"))?;
+        processor
+            .set_verified_session(
+                session
+                    .try_clone()
+                    .map_err(|e| error_reason(e, "session allocation failed"))?,
+            )
+            .map_err(|e| error_reason(e, "verified session publication failed"))?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn spool_loop(
     shared: &Shared,
@@ -4786,6 +4842,7 @@ fn spool_loop(
             .prepare_clock_capture(&live)
             .map_err(|_| "clock preparation allocation failed")?;
         span.finish();
+        verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
         let mut received = false;
         while let Some(index) = shared.ready.pop() {
@@ -4834,31 +4891,7 @@ fn spool_loop(
                     .record_ticks(sampling::qpc() - service_started, shared.frequency);
                 continue;
             }
-            // Acquire above transfers the once-only roster from its callback
-            // writer. Future callbacks see ready and never touch its allocation.
-            if let Some(roster) = unsafe { (&mut *shared.roster.get()).take() } {
-                shared
-                    .pool_bytes
-                    .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
-                // Preserve the local diagnostic even when verification refuses capture.
-                let verification = roster.verify(
-                    &mut session.identity,
-                    &config.expected_mounts,
-                    &config.mod_descriptors,
-                    config.content_order_note.as_deref(),
-                );
-                let diagnostic =
-                    roster.diagnostics(&config.expected_mounts, &session.identity.verification);
-                writer
-                    .publish(&config.output_dir.join("content.json"), diagnostic)
-                    .map_err(|e| error_reason(e, "content status allocation failed"))?;
-                verification.map_err(|e| error_reason(e, "content verification failed"))?;
-                processor.set_verified_session(
-                    session
-                        .try_clone()
-                        .map_err(|e| error_reason(e, "session allocation failed"))?,
-                );
-            }
+            verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             // Campaign directories can still fail to open. Keep the buffer and
             // preceding witnesses until those operations succeed. History is ready.
             while let Err(error) = processor.prepare(frame) {
@@ -4995,6 +5028,9 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
+            if let Err(error) = processor.flush_commands(false) {
+                last_warning = Some(error_reason(error, "command capture publication failed"));
+            }
             history_requests.poll(&mut processor, &shared.history_frames);
         }
         crate::allocation::attempted_hour(None);
@@ -5077,6 +5113,7 @@ fn spool_loop(
                 continue;
             }
             let _teardown = crate::allocation::enter(crate::allocation::Phase::Teardown);
+            verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             crate::allocation::attempted_hour(None);
             let pending = unsafe { std::mem::take(&mut *shared.pending.get()) };
             match processor.prepare_losses(&pending) {

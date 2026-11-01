@@ -270,6 +270,7 @@ pub struct PackingBacklog {
 
 #[derive(Default)]
 struct CampaignAhead {
+    command_bootstrap: BTreeSet<BranchId>,
     /// Segments an earlier save of the session holds, never read again.
     saved: BTreeSet<u32>,
     tails: BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
@@ -345,6 +346,9 @@ impl Ahead {
                         ..CampaignAhead::default()
                     })
                 });
+            campaign.command_bootstrap = read_saved(&campaign_dir)
+                .map(|saved| saved.command_bootstrap)
+                .unwrap_or_default();
             for (number, path) in segment_paths(&campaign_dir)? {
                 if campaign.saved.contains(&number)
                     || campaign.through.is_some_and(|through| number > through)
@@ -472,6 +476,7 @@ impl Ahead {
                         branches.observe(record.view());
                     }
                 }
+                branches.restore_bootstrap(&campaign.command_bootstrap);
                 if branches.undecided(admissions.as_ref(), &name) {
                     return None;
                 }
@@ -596,7 +601,11 @@ impl Ahead {
                 let admitted = admissions
                     .as_ref()
                     .map(|admissions| admissions.loads.get(&name).cloned().unwrap_or_default());
-                let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
+                let segments = admitted_prefix(
+                    &campaign.tails,
+                    admitted.as_ref(),
+                    &campaign.command_bootstrap,
+                );
                 let Ok(id) = campaign_id(segments.iter().map(|(_, records)| *records)) else {
                     continue;
                 };
@@ -663,7 +672,7 @@ impl Ahead {
     pub fn outstanding(&self) -> replay::container::Outstanding {
         let mut total = replay::container::Outstanding::default();
         for campaign in self.campaigns.values() {
-            let segments = admitted_prefix(&campaign.tails, None);
+            let segments = admitted_prefix(&campaign.tails, None, &campaign.command_bootstrap);
             let work = campaign.debt(&segments).work;
             total.rows += work.rows;
             total.compression += work.compression;
@@ -677,7 +686,15 @@ impl Ahead {
     pub fn pending_blocks(&self) -> usize {
         self.campaigns
             .values()
-            .map(|campaign| campaign.debt(&admitted_prefix(&campaign.tails, None)).closed_blocks)
+            .map(|campaign| {
+                campaign
+                    .debt(&admitted_prefix(
+                        &campaign.tails,
+                        None,
+                        &campaign.command_bootstrap,
+                    ))
+                    .closed_blocks
+            })
             .sum()
     }
 
@@ -686,7 +703,11 @@ impl Ahead {
         let admissions = session_admissions(session_dir)?;
         let mut backlog = PackingBacklog::default();
         for (directory, campaign) in &self.campaigns {
-            let all = campaign.debt(&admitted_prefix(&campaign.tails, None));
+            let all = campaign.debt(&admitted_prefix(
+                &campaign.tails,
+                None,
+                &campaign.command_bootstrap,
+            ));
             let runnable = directory
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -694,15 +715,20 @@ impl Ahead {
                     if campaign.stopped {
                         return None;
                     }
-                    let admitted = admissions.as_ref().map(|admissions| {
-                        admissions.loads.get(name).cloned().unwrap_or_default()
-                    });
-                    let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
+                    let admitted = admissions
+                        .as_ref()
+                        .map(|admissions| admissions.loads.get(name).cloned().unwrap_or_default());
+                    let segments = admitted_prefix(
+                        &campaign.tails,
+                        admitted.as_ref(),
+                        &campaign.command_bootstrap,
+                    );
                     let id = campaign_id(segments.iter().map(|(_, records)| *records)).ok()?;
                     if campaign_filename(&id).ok() != Some(name)
-                        || campaign.written.as_ref().is_some_and(|(written, _)| {
-                            !written.continues(&segments)
-                        })
+                        || campaign
+                            .written
+                            .as_ref()
+                            .is_some_and(|(written, _)| !written.continues(&segments))
                     {
                         return None;
                     }
@@ -776,6 +802,7 @@ impl CampaignAhead {
 fn admitted_prefix<'a>(
     tails: &'a BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
     admitted: Option<&BTreeSet<i64>>,
+    command_bootstrap: &BTreeSet<BranchId>,
 ) -> Vec<(u32, &'a [Recovered])> {
     let all: Vec<(u32, &[Recovered])> = tails
         .iter()
@@ -788,6 +815,7 @@ fn admitted_prefix<'a>(
     for record in all.iter().flat_map(|(_, records)| records.iter()) {
         branches.observe(record.view());
     }
+    branches.restore_bootstrap(command_bootstrap);
     let mut prefix = Vec::new();
     for (number, records) in all {
         let mut current = None;
@@ -1216,20 +1244,32 @@ pub fn segment_paths(directory: &Path) -> Result<Vec<(u32, PathBuf)>> {
 }
 
 fn campaign_id<'a>(segments: impl IntoIterator<Item = &'a [Recovered]>) -> Result<Vec<u8>> {
-    segments
-        .into_iter()
-        .flatten()
-        .find_map(|record| match record {
+    let mut identity: Option<Vec<u8>> = None;
+    for record in segments.into_iter().flatten() {
+        let observed = match record {
             Recovered::Frame(frame) => match &frame.campaign {
                 TableUpdate::Snapshot(TableRows::Campaign(rows)) => match rows.as_slice() {
-                    [campaign] if !campaign.id.is_empty() => Some(campaign.id.clone()),
+                    [campaign] if !campaign.id.is_empty() => Some(campaign.id.as_slice()),
                     _ => None,
                 },
                 _ => None,
             },
+            Recovered::Control(ControlRecord::PlayerCommands { packet, .. }) => {
+                packet.phase.as_ref().map(|phase| phase.campaign.as_slice())
+            }
             _ => None,
-        })
-        .ok_or_else(|| "no complete campaign identity survived in the spool; directory names cannot establish identity".into())
+        };
+        if let Some(observed) = observed {
+            if identity
+                .as_ref()
+                .is_some_and(|known| !known.eq_ignore_ascii_case(observed))
+            {
+                return Err("conflicting campaign identity in spool observations".into());
+            }
+            identity.get_or_insert_with(|| observed.to_vec());
+        }
+    }
+    identity.ok_or_else(|| "no complete campaign identity survived in the spool; directory names cannot establish identity".into())
 }
 
 fn campaign_filename(id: &[u8]) -> Result<&str> {
@@ -1667,15 +1707,24 @@ fn first_witness(campaign_dir: &Path) -> Option<(u64, Option<i64>)> {
     let file = fs::File::open(&first).ok()?;
     let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
     let mut reader = RecordReader::new(Budgeted::new(file), length);
+    let mut first = None;
     while let Ok(Some(record)) = reader.next_record() {
-        if let Record::Control(ControlRecord::ClockWitness {
-            qpc, load_signal, ..
-        }) = record
+        let observed = match record {
+            Record::Control(ControlRecord::ClockWitness {
+                qpc, load_signal, ..
+            }) => Some((qpc, load_signal)),
+            Record::Control(ControlRecord::PlayerCommands { packet, .. }) => packet
+                .phase
+                .map(|phase| (phase.qpc, Some(phase.load_signal))),
+            _ => None,
+        };
+        if let Some(observed) = observed
+            && first.is_none_or(|(time, _)| observed.0 < time)
         {
-            return Some((qpc, load_signal));
+            first = Some(observed);
         }
     }
-    None
+    first
 }
 
 /// The capture mode a campaign's spool records, from its first segment's session.
@@ -1713,8 +1762,10 @@ pub fn first_spooled_campaign(session_dir: &Path) -> Option<String> {
 /// carry. A branch continuing into a later segment repeats its start there.
 #[derive(Default)]
 struct BranchLoads {
+    command_bootstrap: BTreeSet<BranchId>,
     order: Vec<BranchId>,
     loads: BTreeMap<BranchId, i64>,
+    sessions: BTreeMap<BranchId, SessionId>,
     first_qpc: BTreeMap<BranchId, u64>,
     hours: BTreeMap<BranchId, u64>,
     current: Option<BranchId>,
@@ -1725,6 +1776,7 @@ impl BranchLoads {
         match record {
             RecordRef::SessionStart(_) => self.current = None,
             RecordRef::BranchStart(branch) => {
+                self.sessions.entry(branch.id).or_insert(branch.session);
                 if !self.order.contains(&branch.id) {
                     self.order.push(branch.id);
                 }
@@ -1740,11 +1792,33 @@ impl BranchLoads {
                     }
                 }
             }
+            RecordRef::Control(ControlRecord::PlayerCommands { session, packet }) => {
+                self.sessions.entry(packet.branch).or_insert(*session);
+                if !self.order.contains(&packet.branch) {
+                    self.order.push(packet.branch);
+                }
+                if let Some(phase) = &packet.phase {
+                    self.first_qpc.entry(packet.branch).or_insert(phase.qpc);
+                    if phase.load_signal == 0 {
+                        self.command_bootstrap.insert(packet.branch);
+                        self.loads.insert(packet.branch, 0);
+                    } else {
+                        self.loads.entry(packet.branch).or_insert(phase.load_signal);
+                    }
+                }
+            }
             RecordRef::Frame(_) | RecordRef::Metadata(_) => {
                 let (branch, _, _) = record.frame().unwrap();
                 *self.hours.entry(branch).or_default() += 1;
             }
             _ => {}
+        }
+    }
+
+    fn restore_bootstrap(&mut self, branches: &BTreeSet<BranchId>) {
+        self.command_bootstrap.extend(branches.iter().copied());
+        for &branch in &self.command_bootstrap {
+            self.loads.insert(branch, 0);
         }
     }
 
@@ -1818,6 +1892,9 @@ fn read_branch_loads(campaign_dir: &Path) -> Result<BranchLoads> {
         )
         .map_err(|error| failure(&path, error))?;
     }
+    if let Some(saved) = read_saved(campaign_dir) {
+        branches.restore_bootstrap(&saved.command_bootstrap);
+    }
     Ok(branches)
 }
 
@@ -1859,6 +1936,7 @@ fn keep_admitted_loads(
     segments: &mut [(u32, Recovery<Recovered>)],
     admitted: &BTreeSet<i64>,
     known: &[(BranchId, i64)],
+    command_bootstrap: &BTreeSet<BranchId>,
 ) -> (BTreeSet<BranchId>, Vec<(Option<i64>, u64)>) {
     let mut branches = BranchLoads::default();
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
@@ -1867,10 +1945,14 @@ fn keep_admitted_loads(
     for (branch, load) in known {
         branches.loads.entry(*branch).or_insert(*load);
     }
+    branches.restore_bootstrap(command_bootstrap);
     let dropped = branches.dropped(admitted);
     for (_, recovery) in segments.iter_mut() {
         let mut dropping = false;
         recovery.records.retain(|record| {
+            if let Recovered::Control(ControlRecord::PlayerCommands { packet, .. }) = record {
+                return !dropped.contains(&packet.branch);
+            }
             match record {
                 Recovered::SessionStart(_) => dropping = false,
                 Recovered::BranchStart(branch) => dropping = dropped.contains(&branch.id),
@@ -2038,25 +2120,25 @@ pub fn finalize_session_ahead(
             // an admitted load; its hours are reported as left out.
             let admitted = match &admissions {
                 None => None,
-                Some(admissions) => match name.as_deref().and_then(|name| admissions.loads.get(name)) {
-                    Some(loads) => Some(loads),
-                    None => {
-                        if let Some(name) = &name {
-                            match spool_loads(&campaign_dir) {
-                                Ok(loads) => finalized.omitted.extend(
-                                    loads
-                                        .into_iter()
-                                        .map(|(load, hours)| admissions.omission(name, load, hours)),
-                                ),
-                                Err(error) => {
-                                    finalized.failed_campaigns.insert(name.clone());
-                                    finalized.errors.push(error);
+                Some(admissions) => {
+                    match name.as_deref().and_then(|name| admissions.loads.get(name)) {
+                        Some(loads) => Some(loads),
+                        None => {
+                            if let Some(name) = &name {
+                                match spool_loads(&campaign_dir) {
+                                    Ok(loads) => finalized.omitted.extend(loads.into_iter().map(
+                                        |(load, hours)| admissions.omission(name, load, hours),
+                                    )),
+                                    Err(error) => {
+                                        finalized.failed_campaigns.insert(name.clone());
+                                        finalized.errors.push(error);
+                                    }
                                 }
                             }
+                            continue;
                         }
-                        continue;
                     }
-                },
+                }
             };
             campaigns.push((campaign_dir, name, segments, admitted, unsaved));
         }
@@ -2750,8 +2832,9 @@ pub fn checkpoint_campaign(
                 .and_then(|outcome| outcome.replay.clone())
                 .or_else(|| read_saved(&campaign_dir).map(|saved| saved.replay));
             let adopted = (|| {
-                let recording = recording
-                    .ok_or_else(|| failure(&campaign_dir, "commit has no durable spool watermark"))?;
+                let recording = recording.ok_or_else(|| {
+                    failure(&campaign_dir, "commit has no durable spool watermark")
+                })?;
                 let replay = held_recording(&recording)?;
                 let saved = read_saved(&campaign_dir).ok_or_else(|| {
                     failure(
@@ -2771,6 +2854,7 @@ pub fn checkpoint_campaign(
                         .map_err(|error| failure(&campaign_dir, error))?;
                 }
                 campaign.saved.extend(saved.segments.keys().copied());
+                campaign.command_bootstrap = saved.command_bootstrap;
                 campaign.tails.retain(|number, _| *number > through);
                 campaign.through = None;
                 Ok(())
@@ -3105,17 +3189,10 @@ fn publish_captures(
         return Ok(());
     }
     captures.sort_unstable();
-    // The branches of the loads the session refused, which the save leaves out too.
-    let refused: BTreeSet<BranchId> = match admitted {
-        Some(admitted) => read_branch_loads(campaign_dir)
-            .map_err(std::io::Error::other)?
-            .loads
-            .into_iter()
-            .filter(|(_, load)| !admitted.contains(load))
-            .map(|(branch, _)| branch)
-            .collect(),
-        None => BTreeSet::new(),
-    };
+    let spooled = admitted
+        .map(|_| read_branch_loads(campaign_dir))
+        .transpose()
+        .map_err(std::io::Error::other)?;
     let folder = campaign_folder(replay_dir, campaign.as_encoded_bytes());
     let (published, mut next) = published_captures(&folder, session)?;
     let mut name = [0; CAPTURE_NAME_BYTES];
@@ -3136,8 +3213,8 @@ fn publish_captures(
                 Err(error) => return Err(error),
             }
         }
-        if !refused.is_empty() {
-            match keep_admitted(&finished, &refused) {
+        if let (Some(admitted), Some(spooled)) = (admitted, spooled.as_ref()) {
+            match keep_admitted(&finished, campaign_dir, replay_dir, spooled, admitted) {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
@@ -3213,24 +3290,40 @@ fn move_published(source: &Path, target: &Path) -> std::io::Result<()> {
 
 /// Finishes the columnar recording at `partial` an ended collector left, at the last revision
 /// it published, the capture recording that its hours stop there, and names it `finished`; not
-/// while its collector still writes it. One with no revision holding a capture and an hour is
-/// refused as invalid data.
+/// while its collector still writes it. One with no revision holding a capture and an hour or
+/// command is refused as invalid data.
 fn finish_unfinished_columnar(partial: &Path, finished: &Path) -> std::io::Result<bool> {
     use replay::columnar_file::{Settings, Stop, Unfinished};
     let Some(mut file) = open_unwritten(partial)? else {
         return Ok(false);
     };
     let unfinished = Unfinished::read(&mut file)?;
-    let (Some(mut capture), Some((branch, last_hour))) = (unfinished.capture.clone(), unfinished.last)
-    else {
+    let Some(mut capture) = unfinished.capture.clone() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "its last revision holds no capture or no hour",
+            "its last revision holds no capture",
         ));
     };
+    let mut branch = unfinished.last.map(|(branch, _)| branch);
+    if branch.is_none() {
+        for bytes in &capture.controls {
+            if let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
+                replay::spool::decode_record(bytes)?
+            {
+                branch = Some(packet.branch);
+            }
+        }
+    }
+    let branch = branch.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "its last revision holds no hours or commands",
+        )
+    })?;
+    let last_hour = unfinished.last.map(|(_, hour)| hour);
     capture.stop = Some(Stop {
         branch,
-        last_hour: Some(last_hour),
+        last_hour,
         reason: "the collector ended before finishing this file".into(),
     });
     unfinished.finish(
@@ -3242,21 +3335,26 @@ fn finish_unfinished_columnar(partial: &Path, finished: &Path) -> std::io::Resul
     )?;
     drop(file);
     fs::rename(partial, finished)?;
-    println!("Columnar recording recovered through hour {last_hour}");
+    if let Some(hour) = last_hour {
+        println!("Columnar recording recovered through hour {hour}");
+    } else {
+        println!("Columnar command recording recovered");
+    }
     Ok(true)
 }
 
-/// Rewrites the finished capture at `finished` in place without the runs of the branches
-/// `refused` names, as the save leaves their loads out; whether any run is left to publish. One
-/// holding none of them is left as it is.
-fn keep_admitted(finished: &Path, refused: &BTreeSet<BranchId>) -> std::io::Result<bool> {
+/// Checkpointed phase and saved-recording evidence still establish a capture's admitted loads.
+fn keep_admitted(
+    finished: &Path,
+    campaign_dir: &Path,
+    replay_dir: &Path,
+    spooled: &BranchLoads,
+    admitted: &BTreeSet<i64>,
+) -> std::io::Result<bool> {
     use replay::columnar_frames::{Limits, Recording};
     let native = Recording::open_path(finished, Limits::default())?;
-    let mut any = false;
-    for run in 0..native.run_count() {
-        any |= refused.contains(&native.run(run)?.branch);
-    }
-    if !any {
+    let refused = capture_refused_loads(&native, campaign_dir, replay_dir, spooled, admitted)?;
+    if refused.is_empty() {
         return Ok(true);
     }
     let staged = replay::publication::temporary_beside(finished, "admitted");
@@ -3288,6 +3386,136 @@ fn keep_admitted(finished: &Path, refused: &BTreeSet<BranchId>) -> std::io::Resu
         let _ = fs::remove_file(&staged);
     }
     placed
+}
+
+fn capture_refused_loads(
+    native: &replay::columnar_frames::Recording,
+    campaign_dir: &Path,
+    replay_dir: &Path,
+    spooled: &BranchLoads,
+    admitted: &BTreeSet<i64>,
+) -> std::io::Result<BTreeSet<BranchId>> {
+    let invalid = |reason| std::io::Error::new(std::io::ErrorKind::InvalidData, reason);
+    let capture = native
+        .capture()?
+        .ok_or_else(|| invalid("columnar capture metadata is absent"))?;
+    let root = native.root_identity();
+    if !root.campaign.eq_ignore_ascii_case(&capture.campaign_id)
+        || campaign_dir
+            .file_name()
+            .is_none_or(|name| !root.campaign.eq_ignore_ascii_case(name.as_encoded_bytes()))
+        || root.content != capture.content
+        || root.capture_mode != capture.capture_mode
+        || capture.run_sessions.len() != native.run_count() as usize
+    {
+        return Err(invalid(
+            "columnar capture identity differs from its recording",
+        ));
+    }
+    let run_sessions = engine_allocation::copy_vec(&capture.run_sessions)?;
+    let metadata = replay::commands::Recording::from_columnar(capture)?;
+    let mut branches: BTreeMap<_, _> = metadata
+        .branches
+        .iter()
+        .map(|start| (start.id, start.session))
+        .collect();
+    for run in 0..native.run_count() {
+        let session = metadata
+            .sessions
+            .get(run_sessions[run as usize] as usize)
+            .ok_or_else(|| invalid("columnar run session is absent"))?
+            .id;
+        let branch = native.run(run)?.branch;
+        if branches
+            .insert(branch, session)
+            .is_some_and(|previous| previous != session)
+        {
+            return Err(invalid("columnar branch has conflicting sessions"));
+        }
+    }
+    let mut known = BranchLoads::default();
+    for control in &metadata.controls {
+        known.observe(RecordRef::Control(control));
+    }
+    known.restore_bootstrap(&spooled.command_bootstrap);
+    for (&branch, &session) in &branches {
+        if spooled
+            .sessions
+            .get(&branch)
+            .is_some_and(|previous| *previous != session)
+        {
+            return Err(invalid("columnar and spool branch sessions differ"));
+        }
+        if let Some(&load) = spooled.loads.get(&branch) {
+            if known
+                .loads
+                .insert(branch, load)
+                .is_some_and(|previous| previous != load)
+            {
+                return Err(invalid("columnar and spool branch loads differ"));
+            }
+        }
+    }
+    let missing: Vec<_> = branches
+        .keys()
+        .filter(|branch| !known.loads.contains_key(*branch))
+        .copied()
+        .collect();
+    if !missing.is_empty() {
+        let _lock = NamesLock::wait(replay_dir).map_err(std::io::Error::other)?;
+        let name = campaign_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("campaign folder has no name"))?;
+        let sessions: Vec<_> = metadata.sessions.iter().map(|session| session.id).collect();
+        let base = save_base(
+            campaign_dir.parent().unwrap_or(campaign_dir),
+            replay_dir,
+            name,
+            &sessions,
+        )
+        .map_err(std::io::Error::other)?;
+        if let Some(base) = base {
+            let saved = held_recording(&base).map_err(std::io::Error::other)?;
+            saved.require_undamaged()?;
+            if !saved.campaign_id.eq_ignore_ascii_case(&root.campaign)
+                || metadata
+                    .sessions
+                    .iter()
+                    .any(|session| !saved.identity.same_content(&session.identity))
+            {
+                return Err(invalid("columnar and saved recording content differs"));
+            }
+            for branch in missing {
+                if let Some(start) = saved.branches.iter().find(|start| start.id == branch) {
+                    if start.session != branches[&branch]
+                        || metadata
+                            .sessions
+                            .iter()
+                            .filter(|session| session.id == start.session)
+                            .any(|session| !saved.sessions.contains(session))
+                    {
+                        return Err(invalid("columnar and saved branch sessions differ"));
+                    }
+                    if let Some(load) =
+                        held_signal(&saved, branch).map_err(std::io::Error::other)?
+                    {
+                        known.loads.insert(branch, load);
+                    }
+                }
+            }
+        }
+    }
+    Ok(branches
+        .keys()
+        .filter(|branch| {
+            !known
+                .loads
+                .get(*branch)
+                .is_some_and(|load| admitted.contains(load))
+        })
+        .copied()
+        .collect())
 }
 
 /// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.
@@ -3661,6 +3889,34 @@ fn save_recording_file(
     })
 }
 
+fn command_bootstrap_branch(record: &Recovered) -> Option<BranchId> {
+    match record {
+        Recovered::Control(ControlRecord::PlayerCommands { packet, .. })
+            if packet
+                .phase
+                .as_ref()
+                .is_some_and(|phase| phase.load_signal == 0) =>
+        {
+            Some(packet.branch)
+        }
+        _ => None,
+    }
+}
+
+fn admitted_branch(
+    admitted: Option<&BTreeSet<i64>>,
+    bootstrap: &BTreeSet<BranchId>,
+    branch: Option<BranchId>,
+    signal: Option<i64>,
+) -> bool {
+    let signal = if branch.is_some_and(|branch| bootstrap.contains(&branch)) {
+        Some(0)
+    } else {
+        signal
+    };
+    admitted.is_none_or(|admitted| signal.is_none_or(|signal| admitted.contains(&signal)))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_campaign_with_publisher(
     campaign_dir: &Path,
@@ -3729,6 +3985,16 @@ fn finalize_campaign_with_publisher(
     // Appends and publication preserve earlier saves even when their path or newest revision changes.
     let saved_record =
         verified_saved(campaign_dir, replay_dir, base.as_deref(), previous.as_ref())?;
+    let mut bootstrap = saved_record
+        .as_ref()
+        .map(|saved| saved.command_bootstrap.clone())
+        .unwrap_or_default();
+    bootstrap.extend(
+        tails
+            .values()
+            .flat_map(|(_, tail)| tail.records())
+            .filter_map(command_bootstrap_branch),
+    );
     let terminal_session = if paths.is_empty()
         && previous.is_none()
         && empty_prefix
@@ -3818,9 +4084,6 @@ fn finalize_campaign_with_publisher(
     });
     let lost_hours = !ranges.is_empty()
         || (failing_campaign && witness.is_some_and(|witness| witness.failed_hour.is_some()));
-    let admitted_load = |signal: Option<i64>| {
-        admitted.is_none_or(|admitted| signal.is_none_or(|signal| admitted.contains(&signal)))
-    };
     let mut failure_only = None;
     if paths.is_empty()
         && let (Some(witness), Some(recording), Some(path)) = (witness, &previous, &base)
@@ -3828,11 +4091,14 @@ fn finalize_campaign_with_publisher(
         failure_only = failure_segment_ranges(
             Held { recording, path },
             witness,
-            failing_campaign && admitted_load(witness.load_signal),
+            failing_campaign
+                && admitted_branch(admitted, &bootstrap, witness.branch, witness.load_signal),
             &ranges
                 .iter()
                 .copied()
-                .filter(|range| admitted_load(range.load_signal))
+                .filter(|range| {
+                    admitted_branch(admitted, &bootstrap, Some(range.branch), range.load_signal)
+                })
                 .collect::<Vec<_>>(),
             bundled,
         )
@@ -3892,6 +4158,7 @@ fn finalize_campaign_with_publisher(
                     saved,
                     covered_saved,
                     &omitted,
+                    &bootstrap,
                 )?;
             }
             placed
@@ -4032,13 +4299,26 @@ fn finalize_campaign_with_publisher(
             *process_context = Some(context);
         }
     }
+    bootstrap.extend(
+        segments
+            .iter()
+            .flat_map(|(_, recovery)| &recovery.records)
+            .filter_map(command_bootstrap_branch),
+    );
     let frameless = !segments.iter().any(|(_, recovery)| {
         recovery
             .records
             .iter()
             .any(|record| matches!(record, Recovered::Frame(_)))
     });
-    // A saved recording's frameless tail adds nothing or explicit loss; anything else is refused.
+    let commands = segments.iter().any(|(_, recovery)| {
+        recovery.records.iter().any(|record| {
+            matches!(
+                record,
+                Recovered::Control(ControlRecord::PlayerCommands { .. })
+            )
+        })
+    });
     let mut explicit_loss = witness.is_some()
         && previous.is_some()
         && frameless
@@ -4063,6 +4343,7 @@ fn finalize_campaign_with_publisher(
                 covered_saved,
                 lengths,
                 &omitted,
+                &bootstrap,
                 journaled,
             )?;
             return Ok(CampaignOutcome {
@@ -4076,21 +4357,27 @@ fn finalize_campaign_with_publisher(
                 ..CampaignOutcome::default()
             });
         }
-        match previous
-            .as_ref()
-            .and_then(|previous| loss_tail(previous, &segments))
+        if !(commands
+            && segments
+                .iter()
+                .all(|(_, recovery)| recovery.damage.is_none()))
         {
-            Some(loss) => {
-                segments = loss;
-                explicit_loss = true;
+            match previous
+                .as_ref()
+                .and_then(|previous| loss_tail(previous, &segments))
+            {
+                Some(loss) => {
+                    segments = loss;
+                    explicit_loss = true;
+                }
+                None if admitted.is_some() => {
+                    return Err(failure(
+                        campaign_dir,
+                        "frameless spool has damage or metadata not held by its saved recording; spool retained",
+                    ));
+                }
+                None => {}
             }
-            None if admitted.is_some() => {
-                return Err(failure(
-                    campaign_dir,
-                    "frameless spool has damage or metadata not held by its saved recording; spool retained",
-                ));
-            }
-            None => {}
         }
     }
     let id = match (
@@ -4102,7 +4389,7 @@ fn finalize_campaign_with_publisher(
         &previous,
     ) {
         // Checkpoints can leave a failed session only spool context; its recording names it.
-        (Err(_), Some(previous)) if frameless && (lost_hours || explicit_loss) => {
+        (Err(_), Some(previous)) if frameless && (lost_hours || explicit_loss || commands) => {
             previous.campaign_id.clone()
         }
         (Err(_), None) if frameless && !ranges.is_empty() => ranges[0].campaign_id.to_vec(),
@@ -4141,7 +4428,7 @@ fn finalize_campaign_with_publisher(
             )
             .collect();
         // A saved branch's loss has its saved hours' load; a new branch needs its own clock.
-        if (explicit_loss || witness.is_some())
+        if (explicit_loss || witness.is_some() || commands)
             && let Some(previous) = &previous
         {
             for branch in previous.branches.iter().filter(|branch| {
@@ -4150,6 +4437,7 @@ fn finalize_campaign_with_publisher(
                     .flat_map(|(_, recovery)| &recovery.records)
                     .any(|record| {
                         matches!(record, Recovered::BranchStart(start) if start == *branch)
+                            || matches!(record, Recovered::Control(ControlRecord::PlayerCommands { packet, .. }) if packet.branch == branch.id)
                     })
             }) {
                 if known.iter().any(|(id, _)| *id == branch.id) {
@@ -4165,13 +4453,17 @@ fn finalize_campaign_with_publisher(
         // Explicit loss of a load left out keeps its segment for a later admission.
         let counted = |record: &&Recovered| {
             matches!(record, Recovered::Frame(_))
+                || matches!(
+                    record,
+                    Recovered::Control(ControlRecord::PlayerCommands { .. })
+                )
                 || explicit_loss && matches!(record, Recovered::Gap(_))
         };
         let frames_before: BTreeMap<_, _> = segments
             .iter()
             .map(|(number, recovery)| (*number, recovery.records.iter().filter(counted).count()))
             .collect();
-        let (dropped, left_out) = keep_admitted_loads(&mut segments, admitted, &known);
+        let (dropped, left_out) = keep_admitted_loads(&mut segments, admitted, &known, &bootstrap);
         incomplete.extend(segments.iter().filter_map(|(number, recovery)| {
             let kept = recovery.records.iter().filter(counted).count();
             (frames_before[number] != kept).then_some(*number)
@@ -4191,15 +4483,23 @@ fn finalize_campaign_with_publisher(
         };
         failure_published = last_branch.is_none_or(|branch| kept(&branch))
             && (!failing_campaign
-                || witness
-                    .and_then(|witness| witness.load_signal)
-                    .is_none_or(|signal| admitted.contains(&signal)));
+                || witness.is_none_or(|witness| {
+                    admitted_branch(
+                        Some(admitted),
+                        &bootstrap,
+                        witness.branch,
+                        witness.load_signal,
+                    )
+                }));
         // Admitted hours of a load left out are not this recording's to gap.
         ranges.retain(|range| {
             kept(&range.branch)
-                && range
-                    .load_signal
-                    .is_none_or(|signal| admitted.contains(&signal))
+                && admitted_branch(
+                    Some(admitted),
+                    &bootstrap,
+                    Some(range.branch),
+                    range.load_signal,
+                )
         });
         let lost_hours = failure_only.is_some()
             || !ranges.is_empty()
@@ -4210,6 +4510,10 @@ fn finalize_campaign_with_publisher(
             && !segments.iter().any(|(_, recovery)| {
                 recovery.records.iter().any(|record| {
                     matches!(record, Recovered::Frame(_))
+                        || matches!(
+                            record,
+                            Recovered::Control(ControlRecord::PlayerCommands { .. })
+                        )
                         || explicit_loss && matches!(record, Recovered::Gap(_))
                 })
             })
@@ -4226,6 +4530,7 @@ fn finalize_campaign_with_publisher(
                         .filter(|(number, _)| !incomplete.contains(number))
                         .collect(),
                     &omitted,
+                    &bootstrap,
                     journaled,
                 )?;
                 return Ok(CampaignOutcome {
@@ -4527,6 +4832,7 @@ fn finalize_campaign_with_publisher(
         saved,
         covered_saved,
         &omitted,
+        &bootstrap,
     )?;
     if checkpoint && !unchanged {
         checkpoint_step(CheckpointStep::Watermarked, &destination)?;
@@ -4579,10 +4885,12 @@ fn write_saved_record(
     segments: BTreeMap<u32, u64>,
     covered: BTreeMap<u32, (u64, u64, Option<(Hour, Hour)>)>,
     omitted: &[(Option<i64>, u64)],
+    command_bootstrap: &BTreeSet<BranchId>,
 ) -> Result<()> {
     write_saved(
         campaign_dir,
         &Saved {
+            command_bootstrap: command_bootstrap.clone(),
             replay: destination.to_owned(),
             revision: replay.revision(),
             segments,
@@ -4603,7 +4911,8 @@ fn failure_tracker(
     let spool = Replay::from_recovered(campaign.to_vec(), segments)
         .and_then(Replay::into_history)
         .map_err(|error| error.to_string())?;
-    if let Some(found) = spool.sessions.iter().find(|known| known.id == session)
+    if held.is_none()
+        && let Some(found) = spool.sessions.iter().find(|known| known.id == session)
         && spool.session_tail(session).is_some()
         && contexts.is_empty()
     {
@@ -4623,6 +4932,7 @@ fn failure_tracker(
             .is_some_and(|history| history.branches.iter().any(|known| known.start.id == id))
     };
     let mut tracker = BranchTracker::new();
+    let mut missing_hours = BTreeMap::new();
     for branch in recorded.iter().flat_map(|history| &history.branches).chain(
         spool
             .branches
@@ -4630,6 +4940,7 @@ fn failure_tracker(
             .filter(|branch| !saved(branch.start.id)),
     ) {
         let mut hours = branch.hours.clone();
+        let mut last_missing_hour = branch.last_missing_hour;
         if saved(branch.start.id)
             && let Some(tail) = spool
                 .branches
@@ -4642,16 +4953,23 @@ fn failure_tracker(
             hours.extend_from_slice(&tail.hours);
             hours.sort_unstable();
             hours.dedup();
+            last_missing_hour = last_missing_hour.max(tail.last_missing_hour);
+        }
+        if let Some(hour) = last_missing_hour {
+            missing_hours.insert(branch.start.id, hour);
         }
         tracker
             .seed_recorded_branch(branch.start.clone(), hours)
             .map_err(|error| error.to_string())?;
     }
-    let tail = spool.session_tail(session).or_else(|| {
-        recorded
-            .as_ref()
-            .and_then(|history| history.session_tail(session))
-    });
+    let saved_tail = recorded
+        .as_ref()
+        .and_then(|history| history.session_tail(session));
+    let tail = spool
+        .session_tail(session)
+        .into_iter()
+        .chain(saved_tail)
+        .max_by_key(|tail| (tail.branch, tail.hour, tail.recorded));
     let latest = spool
         .branches
         .iter()
@@ -4679,12 +4997,18 @@ fn failure_tracker(
                 session,
                 branch.start.id,
                 observed,
-                range.and_then(|range| range.load_signal),
+                range
+                    .and_then(|range| range.load_signal)
+                    .and_then(replay::commands::load_marker),
             )
             .map_err(|error| error.to_string())?;
     } else {
         match tail {
-            Some(tail) => tracker.resume_session(session, tail.branch, tail.hour, tail.load_signal),
+            Some(tail) => tail.resume(
+                &mut tracker,
+                session,
+                missing_hours.get(&tail.branch).copied(),
+            ),
             None => tracker.begin_session(session),
         }
         .map_err(|error| error.to_string())?;
@@ -4700,7 +5024,16 @@ fn held_signal(recording: &Replay, branch: BranchId) -> Result<Option<i64>> {
         .rev()
         .find(|block| block.branch == branch)
     else {
-        return Ok(None);
+        return Ok(recording
+            .controls
+            .iter()
+            .rev()
+            .find_map(|control| match control {
+                ControlRecord::PlayerCommands { packet, .. } if packet.branch == branch => {
+                    packet.phase.as_ref().map(|phase| phase.load_signal)
+                }
+                _ => None,
+            }));
     };
     let mut decoder = FrameDecoder::for_tables(&[TableId::Clock]);
     let mut signal = None;
@@ -4878,6 +5211,7 @@ fn failure_observation(
     expected: Option<BranchId>,
     bundled: bool,
 ) -> Result<replay_frame::branches::Observation> {
+    let signal = signal.and_then(replay::commands::load_marker);
     let mut observation = tracker
         .observe(None, hour, signal, gaps)
         .map_err(|error| error.to_string())?;
@@ -4908,12 +5242,29 @@ fn failure_records_inner(
     partial_override: Option<&ControlRecord>,
     contexts: Option<&[UncommittedRange]>,
 ) -> Result<(Vec<Recovered>, bool)> {
+    use replay::commands::load_marker;
+    let tail_branch = segments
+        .iter()
+        .rev()
+        .find(|(_, recovery)| !recovery.records.is_empty())
+        .and_then(|(_, recovery)| {
+            recovery
+                .records
+                .iter()
+                .rev()
+                .find_map(|record| match record {
+                    Recovered::BranchStart(start) => Some(start.id),
+                    _ => None,
+                })
+        });
     let earlier_contexts = contexts.is_some();
     let mut current_branch: Option<BranchStart> = None;
     let mut current_signal = None;
     let mut current_observed = false;
     let mut matching_session = false;
     let mut recorded_branches = BTreeSet::new();
+    let mut last_clock = None;
+    let mut latest_phase: Option<&replay::commands::Phase> = None;
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         match record {
             Recovered::SessionStart(session) => {
@@ -4939,16 +5290,47 @@ fn failure_records_inner(
             Recovered::Control(ControlRecord::ClockWitness {
                 session,
                 load_signal,
+                qpc,
                 ..
             }) => {
                 if *session != witness.session {
                     return Err("failure witness does not match the spool clock session".into());
                 }
-                current_signal = *load_signal;
+                current_signal = load_signal.and_then(load_marker);
                 current_observed = true;
+                if let Some(branch) = &current_branch {
+                    last_clock = Some((branch.id, *qpc));
+                }
+            }
+            Recovered::Control(ControlRecord::PlayerCommands { session, packet }) => {
+                if *session != witness.session {
+                    return Err("failure witness does not match the command session".into());
+                }
+                if let Some(phase) = &packet.phase {
+                    recorded_branches.insert(phase.start.id);
+                    if latest_phase.is_none_or(|previous| previous.qpc < phase.qpc) {
+                        latest_phase = Some(phase);
+                    }
+                }
             }
             _ => {}
         }
+    }
+    if let Some(phase) = latest_phase
+        && (current_branch.is_none()
+            || last_clock.is_some_and(|(branch, time)| {
+                current_branch
+                    .as_ref()
+                    .is_some_and(|current| current.id == branch)
+                    && phase.qpc > time
+            }))
+        && current_branch
+            .as_ref()
+            .is_none_or(|current| current.id != phase.start.id)
+    {
+        current_branch = Some(phase.start.clone());
+        current_signal = phase.load_marker();
+        current_observed = false;
     }
     if !matching_session {
         return Err("failure witness has no recorded session identity".into());
@@ -4964,7 +5346,7 @@ fn failure_records_inner(
         {
             current_observed = true;
             if current_signal.is_none() {
-                current_signal = held_signal(held.recording, current.id)?;
+                current_signal = held_signal(held.recording, current.id)?.and_then(load_marker);
             }
         }
         current_observed |= current_branch.as_ref().is_some_and(|current| {
@@ -5013,6 +5395,11 @@ fn failure_records_inner(
             .flat_map(|(_, recovery)| &recovery.records)
             .find_map(|record| match record {
                 Recovered::BranchStart(start) if start.id == id => Some(start.clone()),
+                Recovered::Control(ControlRecord::PlayerCommands { packet, .. })
+                    if packet.branch == id =>
+                {
+                    packet.phase.as_ref().map(|phase| phase.start.clone())
+                }
                 _ => None,
             })
             .or_else(|| {
@@ -5025,6 +5412,9 @@ fn failure_records_inner(
                 })
             });
         let Some(start) = start else { return Ok(None) };
+        if start.session != witness.session {
+            return Err("failure witness does not match the saved branch session".into());
+        }
         let mut active = None;
         let mut signal = None;
         for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
@@ -5033,20 +5423,36 @@ fn failure_records_inner(
                 Recovered::Control(ControlRecord::ClockWitness { load_signal, .. })
                     if active == Some(id) =>
                 {
-                    signal = *load_signal
+                    signal = load_signal.and_then(load_marker)
                 }
                 _ => {}
             }
         }
+        if signal.is_none() {
+            signal = segments
+                .iter()
+                .flat_map(|(_, recovery)| &recovery.records)
+                .filter_map(|record| match record {
+                    Recovered::Control(ControlRecord::PlayerCommands { packet, .. })
+                        if packet.branch == id =>
+                    {
+                        packet.phase.as_ref()
+                    }
+                    _ => None,
+                })
+                .max_by_key(|phase| phase.qpc)
+                .and_then(|phase| phase.load_marker());
+        }
         if signal.is_none()
             && let Some(held) = held
         {
-            signal = held_signal(held.recording, id)?;
+            signal = held_signal(held.recording, id)?.and_then(load_marker);
         }
         signal = signal.or_else(|| {
             contexts
                 .and_then(|ranges| ranges.iter().find(|range| range.branch == id))
                 .and_then(|range| range.load_signal)
+                .and_then(load_marker)
         });
         Ok(Some((start, signal)))
     };
@@ -5062,7 +5468,7 @@ fn failure_records_inner(
             .find(|branch| branch.session == witness.session)
             .cloned();
         if let Some(branch) = &current_branch {
-            current_signal = held_signal(held.recording, branch.id)?;
+            current_signal = held_signal(held.recording, branch.id)?.and_then(load_marker);
             current_observed = true;
         }
     }
@@ -5072,7 +5478,8 @@ fn failure_records_inner(
             .and_then(|branch| {
                 contexts.and_then(|ranges| ranges.iter().find(|range| range.branch == branch.id))
             })
-            .and_then(|range| range.load_signal);
+            .and_then(|range| range.load_signal)
+            .and_then(load_marker);
     }
     let mut tracker: Option<BranchTracker> = None;
     // The admitted range precedes the attempt that failed: resolve it first.
@@ -5081,7 +5488,7 @@ fn failure_records_inner(
     if let Some(range) = uncommitted {
         if recorded_branches.contains(&range.branch) {
             if current_branch.as_ref().map(|branch| branch.id) != Some(range.branch) {
-                if !earlier_contexts {
+                if !earlier_contexts && current_branch.is_some() {
                     return Err("uncommitted range branch is not the last committed context".into());
                 }
                 let (start, signal) = known_context(range.branch)?
@@ -5090,7 +5497,8 @@ fn failure_records_inner(
                 current_branch = Some(start);
                 current_signal = signal;
             }
-            if let (Some(expected), Some(recorded)) = (range.load_signal, current_signal)
+            if let (Some(expected), Some(recorded)) =
+                (range.load_signal.and_then(load_marker), current_signal)
                 && expected != recorded
             {
                 return Err(
@@ -5124,14 +5532,14 @@ fn failure_records_inner(
             current_branch = Some(start.clone());
             range_start = Some(start);
         }
-        if earlier_contexts && !segments.iter().flat_map(|(_, recovery)| &recovery.records).any(|record| matches!(record, Recovered::BranchStart(start) if start.id == range.branch)) {
+        if tail_branch != Some(range.branch) {
             range_start = current_branch.clone();
         }
         let branch = current_branch.as_ref().unwrap();
         if range.first_hour < branch.first_hour {
             return Err("uncommitted range precedes the recorded branch context".into());
         }
-        current_signal = range.load_signal.or(current_signal);
+        current_signal = range.load_signal.and_then(load_marker).or(current_signal);
         current_observed = true;
         let mut first_hour = Some(range.first_hour);
         if committed_hour(range.branch).is_some_and(|hour| hour >= range.first_hour) {
@@ -5161,6 +5569,21 @@ fn failure_records_inner(
             });
         }
     }
+    if failing_campaign
+        && current_branch.is_none()
+        && let Some(branch) = witness.branch
+        && let Some((start, signal)) = known_context(branch)?
+    {
+        current_branch = Some(start);
+        current_signal = signal;
+        current_observed = held.is_some_and(|held| {
+            held.recording
+                .index
+                .iter()
+                .any(|block| block.branch == branch)
+                || held.recording.gaps.iter().any(|gap| gap.branch == branch)
+        });
+    }
     let mut resolved_branch = witness.branch;
     let mut attempt_start = None;
     if earlier_contexts
@@ -5179,12 +5602,12 @@ fn failure_records_inner(
             .failed_hour
             .is_some_and(|hour| (range.first_hour..=range.last_hour).contains(&hour))
             && witness.branch.is_none_or(|branch| branch == range.branch)
-            && !matches!((witness.load_signal, range.load_signal),
+            && !matches!((witness.load_signal.and_then(load_marker), range.load_signal.and_then(load_marker)),
                 (Some(attempted), Some(admitted)) if attempted != admitted)
     });
     if failing_campaign && in_range {
         resolved_branch = uncommitted.map(|range| range.branch);
-        current_signal = current_signal.or(witness.load_signal);
+        current_signal = current_signal.or(witness.load_signal.and_then(load_marker));
     } else if failing_campaign
         && let Some(failed_hour) = witness.failed_hour
         && witness
@@ -5228,13 +5651,13 @@ fn failure_records_inner(
             return Err("failure witness branch differs from the witnessed clock context".into());
         }
         resolved_branch = Some(observation.branch);
-        current_signal = witness.load_signal.or(current_signal);
+        current_signal = witness.load_signal.and_then(load_marker).or(current_signal);
         if let Some(start) = observation.start {
             current_branch = Some(start.clone());
             attempt_start = Some(start);
         }
     }
-    if earlier_contexts && failing_campaign && !segments.iter().flat_map(|(_, recovery)| &recovery.records).any(|record| matches!(record, Recovered::BranchStart(start) if Some(start.id) == resolved_branch)) {
+    if failing_campaign && tail_branch != resolved_branch {
         attempt_start = current_branch.clone();
     }
     let mut attempt_gap = None;
@@ -5244,7 +5667,7 @@ fn failure_records_inner(
         {
             return Err("failure witness branch has no matching committed context".into());
         }
-        if let Some(expected) = witness.load_signal
+        if let Some(expected) = witness.load_signal.and_then(load_marker)
             && current_signal != Some(expected)
         {
             // A context record can commit before the new branch's first clock.
@@ -5637,6 +6060,7 @@ fn remove_stale_copy(path: &Path) -> std::io::Result<()> {
 const SAVED_FILE: &str = "saved.json";
 
 struct Saved {
+    command_bootstrap: BTreeSet<BranchId>,
     replay: PathBuf,
     revision: Revision,
     /// Segment number to its length when saved.
@@ -5650,6 +6074,11 @@ fn read_saved(campaign_dir: &Path) -> Option<Saved> {
     let value: Value =
         serde_json::from_slice(&read_file(campaign_dir.join(SAVED_FILE)).ok()?).ok()?;
     Some(Saved {
+        command_bootstrap: value["command_bootstrap"]
+            .as_array()?
+            .iter()
+            .map(Value::as_u64)
+            .collect::<Option<_>>()?,
         replay: PathBuf::from(value["replay"].as_str()?),
         revision: revision_of(&value["revision"])?,
         segments: value["segments"]
@@ -5731,6 +6160,7 @@ fn write_saved(campaign_dir: &Path, saved: &Saved) -> Result<()> {
     write_json(
         &campaign_dir.join(SAVED_FILE),
         &json!({
+            "command_bootstrap": saved.command_bootstrap,
             "replay": saved.replay,
             "revision": revision_json(saved.revision),
             "segments": saved.segments.iter().map(|(number, bytes)| json!([number, bytes])).collect::<Vec<_>>(),
@@ -5841,6 +6271,9 @@ pub fn unsaved(session_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
         let mut branches = BranchLoads::default();
         for record in &recovery.records {
             branches.observe(record.view());
+        }
+        if let Some(saved) = read_saved(&campaign_dir) {
+            branches.restore_bootstrap(&saved.command_bootstrap);
         }
         summary.undecided |= branches.loads.values().any(|load| !decided(*load));
         for record in &recovery.records {
@@ -6047,6 +6480,11 @@ fn remove_held_branches(
             let mut session = None;
             let mut records = Vec::new();
             for record in &recovery.records {
+                if let Recovered::Control(control @ ControlRecord::PlayerCommands { .. }) = record
+                    && !previous.controls.contains(control)
+                {
+                    continue;
+                }
                 match record {
                     Recovered::SessionStart(_) => {
                         session = Some(record);
@@ -6083,6 +6521,9 @@ fn remove_held_branches(
     for (_, recovery) in segments {
         let mut taking = true;
         recovery.records.retain(|record| {
+            if let Recovered::Control(control @ ControlRecord::PlayerCommands { .. }) = record {
+                return !previous.controls.contains(control);
+            }
             match record {
                 Recovered::SessionStart(_) => taking = true,
                 Recovered::BranchStart(branch) => taking = !held.contains(&branch.id),
@@ -6134,6 +6575,7 @@ fn keep_saved_tail(
     mut covered: BTreeMap<u32, (u64, u64, Option<(Hour, Hour)>)>,
     lengths: BTreeMap<u32, u64>,
     omitted: &[(Option<i64>, u64)],
+    command_bootstrap: &BTreeSet<BranchId>,
     journaled: bool,
 ) -> Result<()> {
     covered.extend(
@@ -6145,6 +6587,7 @@ fn keep_saved_tail(
     write_saved(
         campaign_dir,
         &Saved {
+            command_bootstrap: command_bootstrap.clone(),
             replay: replay.to_owned(),
             revision,
             segments: saved,
@@ -6730,6 +7173,10 @@ pub fn inspect(path: &Path) -> Result<()> {
                 hour,
             } => println!(
                 "event_loss session={session} branch={branch} between_reads={after_hour}..{hour}: the collector was detached for part of this interval; every event family's record of it is incomplete"
+            ),
+            ControlRecord::PlayerCommands { session, packet } => println!(
+                "commands session={session} branch={} world={} packet={} lost_observations={}",
+                packet.branch, packet.world, packet.ordinal, packet.lost
             ),
             ControlRecord::ClockWitness { .. } => {}
         }
@@ -7415,6 +7862,7 @@ fn print_throughput<'a>(
             ) => {
                 throughput.previous.remove(session);
             }
+            Some(ControlRecord::PlayerCommands { .. }) => {}
             None => throughput.previous.clear(),
         }
     }
@@ -7472,13 +7920,26 @@ mod tests {
     /// A native recording of `runs`, each a branch, its first hour and its hours, of the
     /// allocation campaign, every hour of every table unread.
     pub(super) fn native_recording(runs: &[(u64, i32, i32)]) -> Vec<u8> {
+        native_recording_with_controls(runs, &[])
+    }
+
+    fn native_recording_with_controls(runs: &[(u64, i32, i32)], controls: &[Record]) -> Vec<u8> {
         use replay::{
             columnar_file::{Capture, FileWriter, Hour, Settings},
             columnar_frames::schema,
             native_frame::FrameWriter,
         };
+        use replay_data::identity::IdentityCodec;
         use replay_data::{identity::CaptureMode, rows::TABLE_COUNT};
         use replay_frame::frame::{FrameInput, Metrics, TableInput};
+        let Record::SessionStart(session) = crate::test_support::allocation_records().remove(0)
+        else {
+            unreachable!()
+        };
+        let mut session_bytes = Vec::new();
+        session.encode(&mut session_bytes).unwrap();
+        let mut content = Vec::new();
+        session.identity.encode(&mut content).unwrap();
         let campaign = recorder_test_support::test_support::ALLOCATION_CAMPAIGN.to_vec();
         let schema = schema().unwrap();
         let mut file = FileWriter::create(
@@ -7486,7 +7947,7 @@ mod tests {
             replay_columnar::envelope::Identity {
                 schema: replay_columnar::envelope::schema_digest(&schema),
                 campaign: campaign.clone(),
-                content: Vec::new(),
+                content: content.clone(),
                 capture_mode: CaptureMode::Full.byte(),
             },
             schema.iter().map(Vec::len).collect(),
@@ -7538,13 +7999,16 @@ mod tests {
         file.finish_with_capture(
             &Capture {
                 campaign_id: campaign,
-                content: Vec::new(),
+                content,
                 capture_mode: CaptureMode::Full.byte(),
-                sessions: vec![b"session".to_vec()],
+                sessions: vec![session_bytes],
                 run_sessions: vec![0; runs.len()],
                 stop: None,
                 format: replay_data::format::FormatVersion::CURRENT.version(),
-                controls: Vec::new(),
+                controls: controls
+                    .iter()
+                    .map(|record| replay::spool::encode_record(record).unwrap())
+                    .collect(),
             },
             |_| Ok(()),
         )
@@ -7667,6 +8131,778 @@ mod tests {
             .flat_map(|block| replay.read_block(block).unwrap())
             .map(|frame| (frame.branch, frame.hour))
             .collect()
+    }
+
+    #[test]
+    fn command_resume_preserves_failed_frames_from_saved_and_spooled_history() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_records};
+        use replay::commands::{Batch, Packet, Phase};
+
+        let directory = std::env::temp_dir()
+            .join(format!("hoi4-command-gap-resume-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let original = allocation_records();
+        let Record::SessionStart(session) = &original[0] else {
+            unreachable!()
+        };
+        let Record::BranchStart(mut start) = original[1].clone() else {
+            unreachable!()
+        };
+        start.loaded_hour = None;
+        let hour = start.first_hour;
+        let mut packet = Packet::pack(start.id, 1, 1, 0, 100, 200, 0, &Batch::default()).unwrap();
+        packet.phase = Some(Phase {
+            start: start.clone(),
+            campaign: *ALLOCATION_CAMPAIGN,
+            qpc: 100,
+            hour,
+            load_signal: 19,
+        });
+        let base = vec![
+            Record::SessionStart(session.clone()),
+            Record::Control(ControlRecord::PlayerCommands {
+                session: session.id,
+                packet,
+            }),
+        ];
+        let gap = Record::Gap(Gap {
+            branch: start.id,
+            first_hour: hour,
+            last_hour: hour,
+            reason: "synthetic failed frame".into(),
+        });
+        let with_gap = |mut records: Vec<Record>| {
+            records.push(Record::BranchStart(start.clone()));
+            records.push(gap.clone());
+            records
+        };
+        let recover = |records: &[Record]| -> Recovery<Recovered> {
+            let mut bytes = Vec::new();
+            for record in records {
+                bytes.extend(replay::spool::encode_record(record).unwrap());
+            }
+            let recovered = recover_reader(
+                std::io::Cursor::new(&bytes),
+                bytes.len(),
+                Recovered::keep,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
+            assert_eq!(recovered.valid_bytes, bytes.len());
+            assert_eq!(recovered.records.len(), records.len());
+            for record in records {
+                if let Record::Gap(gap) = record {
+                    assert!(recovered.records.contains(&Recovered::Gap(gap.clone())));
+                }
+            }
+            recovered
+        };
+        let failed = with_gap(base.clone());
+        let history = Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[failed.clone()])
+            .unwrap()
+            .into_history()
+            .unwrap();
+        assert!(history.branches[0].hours.is_empty());
+        assert_eq!(history.branches[0].last_missing_hour, Some(hour));
+        let mut live = BranchTracker::new();
+        live.seed_recorded_branch(start.clone(), std::iter::empty::<Hour>())
+            .unwrap();
+        live.resume_commands(session.id, start.id, hour, Some(19))
+            .unwrap();
+        assert_eq!(
+            live.observe(None, hour, Some(19), &[]).unwrap().branch,
+            start.id
+        );
+        live.lose_hour(start.id, hour).unwrap();
+        live.observe_commands(hour, Some(19)).unwrap();
+        let repeated = live.observe(None, hour, Some(19), &[]).unwrap().branch;
+        assert_ne!(repeated, start.id);
+        let mut restored = history.tracker_for(session).unwrap();
+        restored.observe_commands(hour, Some(19)).unwrap();
+        assert_eq!(
+            restored.observe(None, hour, Some(19), &[]).unwrap().branch,
+            repeated
+        );
+        assert!(restored.recorded_hours(start.id).unwrap().is_empty());
+        let mut later = history.tracker_for(session).unwrap();
+        assert_eq!(
+            later
+                .observe(Some(hour + 1), hour + 1, Some(19), &[])
+                .unwrap()
+                .branch,
+            start.id
+        );
+        assert!(later.recorded_hours(start.id).unwrap().is_empty());
+
+        let mut newer_command = base.clone();
+        let Record::Control(ControlRecord::PlayerCommands { packet, .. }) = &mut newer_command[1]
+        else {
+            unreachable!()
+        };
+        packet.phase.as_mut().unwrap().hour = hour + 1;
+        let newer_command = with_gap(newer_command);
+        let newer = Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[newer_command])
+            .unwrap()
+            .into_history()
+            .unwrap();
+        let mut later = newer.tracker_for(session).unwrap();
+        assert_eq!(
+            later.observe(None, hour + 1, Some(19), &[]).unwrap().branch,
+            start.id
+        );
+
+        for (spool_gap, saved_gap) in [(true, None), (false, Some(true)), (true, Some(false))] {
+            let mut records = base.clone();
+            if spool_gap {
+                records = with_gap(records);
+            }
+            let segments = [(0, recover(&records))];
+            let saved = saved_gap.map(|saved_gap| {
+                let mut records = base.clone();
+                if saved_gap {
+                    records = with_gap(records);
+                }
+                let path = directory.join("saved.battleplan");
+                Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[records])
+                    .unwrap()
+                    .write_atomic(&path)
+                    .unwrap();
+                path
+            });
+            for with_context in [false, true] {
+                let contexts = if with_context {
+                    vec![UncommittedRange {
+                        campaign_id: *ALLOCATION_CAMPAIGN,
+                        branch: start.id,
+                        load_signal: Some(19),
+                        first_hour: hour + 1,
+                        last_hour: hour + 1,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let mut restored = failure_tracker(
+                    ALLOCATION_CAMPAIGN,
+                    &segments,
+                    session.id,
+                    saved.as_deref(),
+                    &contexts,
+                )
+                .unwrap();
+                restored.observe_commands(hour, Some(19)).unwrap();
+                assert_eq!(
+                    restored.observe(None, hour, Some(19), &[]).unwrap().branch,
+                    repeated
+                );
+                assert!(restored.recorded_hours(start.id).unwrap().is_empty());
+            }
+        }
+        let mut recorded = original.clone();
+        recorded[1] = Record::BranchStart(start.clone());
+        let saved = directory.join("saved.battleplan");
+        Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[recorded])
+            .unwrap()
+            .write_atomic(&saved)
+            .unwrap();
+        let segments = [(0, recover(&base))];
+        let tracker = failure_tracker(
+            ALLOCATION_CAMPAIGN,
+            &segments,
+            session.id,
+            Some(&saved),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(tracker.last_observation(), Some((start.id, 4)));
+        assert_eq!(tracker.recorded_hours(start.id).unwrap(), [2, 3, 4]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn command_only_loads_finalize_filter_and_resume_through_the_recorder() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_records, write_campaign_spool};
+        use replay::{
+            columnar_file::{Capture, FileWriter, Settings},
+            commands::{Batch, Event, Origin, Packet, Phase},
+        };
+        use replay_data::identity::IdentityCodec;
+        for (prior_hours, bootstrap_load) in [(false, 0), (false, 19), (true, 19)] {
+            let root = std::env::temp_dir()
+                .join(format!(
+                    "hoi4-command-finalize-{}-{prior_hours}-{bootstrap_load}",
+                    std::process::id()
+                ));
+            let session_dir = root.join("session");
+            let target = root.join("output");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let mut original = allocation_records();
+            let Record::SessionStart(session) = &mut original[0] else {
+                unreachable!()
+            };
+            session.identity.verification = Verification::Verified {
+                launcher: Default::default(),
+                memory: Default::default(),
+            };
+            let session = session.clone();
+            let Record::BranchStart(mut start) = original[1].clone() else {
+                unreachable!()
+            };
+            let campaign = session_dir.join(name);
+            fs::create_dir_all(&campaign).unwrap();
+            begin_admissions(&session_dir, &target).unwrap();
+            let mut admissions = Admissions::default();
+            admissions
+                .admit(&session_dir, &target, name, bootstrap_load)
+                .unwrap();
+            if prior_hours {
+                write_campaign_spool(&session_dir, &original);
+                let initial = finalize_session_outcome(&session_dir, &target).unwrap();
+                assert!(initial.errors.is_empty(), "{:?}", initial.errors);
+                assert_eq!(initial.replays.len(), 1);
+            } else {
+                start.loaded_hour = None;
+            }
+            let from = if prior_hours { 500 } else { 100 };
+            let mut controls = Vec::new();
+            for (branch, load, qpc) in [(9, bootstrap_load, from), (10, 23, from + 200)] {
+                let mut branch_start = start.clone();
+                branch_start.id = branch;
+                if branch != 9 {
+                    branch_start.reason = BranchReason::LoadSignal;
+                }
+                let batch = Batch {
+                    events: vec![Event {
+                        paused: false,
+                        qpc: qpc + 1,
+                        hour: if prior_hours { 5 } else { 2 },
+                        actor: 0,
+                        player: 7,
+                        kind: 0,
+                        command_country: None,
+                        origin: Origin::Unresolved,
+                        sequence: branch as u32,
+                    }],
+                    ..Default::default()
+                };
+                let mut packet =
+                    Packet::pack(branch, branch, branch, 0, qpc, qpc + 100, 0, &batch).unwrap();
+                packet.phase = Some(Phase {
+                    start: branch_start,
+                    campaign: *ALLOCATION_CAMPAIGN,
+                    qpc,
+                    hour: if prior_hours { 5 } else { 2 },
+                    load_signal: load,
+                });
+                controls.push(ControlRecord::PlayerCommands {
+                    session: session.id,
+                    packet,
+                });
+            }
+            let mut records = vec![Record::SessionStart(session.clone())];
+            records.extend(controls.iter().cloned().map(Record::Control));
+            let bytes: Vec<_> = records
+                .iter()
+                .flat_map(|record| replay::spool::encode_record(record).unwrap())
+                .collect();
+            fs::write(
+                campaign.join(if prior_hours {
+                    "spool.0001.h4s"
+                } else {
+                    "spool.0000.h4s"
+                }),
+                bytes,
+            )
+            .unwrap();
+            let mut session_bytes = Vec::new();
+            session.encode(&mut session_bytes).unwrap();
+            let mut content = Vec::new();
+            session.identity.encode(&mut content).unwrap();
+            let schema = replay::columnar_frames::schema().unwrap();
+            let capture = Capture {
+                campaign_id: ALLOCATION_CAMPAIGN.to_vec(),
+                content: content.clone(),
+                capture_mode: session.capture_mode.byte(),
+                sessions: vec![session_bytes],
+                run_sessions: Vec::new(),
+                stop: None,
+                format: replay_data::FORMAT_VERSION,
+                controls: controls
+                    .iter()
+                    .map(|control| {
+                        replay::spool::encode_record(&Record::Control(control.clone())).unwrap()
+                    })
+                    .collect(),
+            };
+            let writer = FileWriter::create(
+                fs::File::create(campaign.join("columnar.0.h4col")).unwrap(),
+                replay_columnar::envelope::Identity {
+                    schema: replay_columnar::envelope::schema_digest(&schema),
+                    campaign: ALLOCATION_CAMPAIGN.to_vec(),
+                    content,
+                    capture_mode: session.capture_mode.byte(),
+                },
+                schema.iter().map(Vec::len).collect(),
+                Settings::RECORDING,
+            )
+            .unwrap();
+            let finished = writer
+                .finish_with_capture(&capture, |file| file.sync_data())
+                .unwrap();
+            drop(finished);
+            assert_eq!(
+                spool_loads(&campaign).unwrap(),
+                if prior_hours {
+                    vec![(Some(19), 3), (Some(23), 0)]
+                } else {
+                    vec![(Some(bootstrap_load), 0), (Some(23), 0)]
+                }
+            );
+            let finalized = finalize_session_outcome(&session_dir, &target).unwrap();
+            assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+            assert_eq!(finalized.replays.len(), 1);
+            let path = &finalized.replays[0];
+            let replay = Replay::open_path(path).unwrap();
+            let packets: Vec<_> = replay
+                .controls
+                .iter()
+                .filter_map(|control| match control {
+                    ControlRecord::PlayerCommands { packet, .. } => Some(packet),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(packets.len(), 1);
+            assert_eq!(packets[0].branch, 9);
+            assert_eq!(
+                packets[0].phase.as_ref().unwrap().load_signal,
+                bootstrap_load
+            );
+            assert_eq!(held_signal(&replay, 9).unwrap(), Some(bootstrap_load));
+            if bootstrap_load == 0 {
+                let range = UncommittedRange {
+                    campaign_id: *ALLOCATION_CAMPAIGN,
+                    branch: 9,
+                    load_signal: Some(19),
+                    first_hour: 2,
+                    last_hour: 2,
+                };
+                let witness = TerminalWitness {
+                    branch: Some(9),
+                    load_signal: Some(19),
+                    failed_hour: Some(3),
+                    uncommitted: Some(range),
+                    ..crate::test_support::allocation_witness(0)
+                };
+                let segments = [(
+                    0,
+                    Recovery {
+                        format: Some(FormatVersion::CURRENT),
+                        records: vec![Recovered::SessionStart(session.clone())],
+                        valid_bytes: 0,
+                        damage: None,
+                    },
+                )];
+                let (failed, _) = failure_records_inner(
+                    &segments,
+                    &witness,
+                    true,
+                    Some(&range),
+                    Some(Held {
+                        recording: &replay,
+                        path,
+                    }),
+                    None,
+                    Some(&[range]),
+                )
+                .unwrap();
+                let gaps: Vec<_> = failed.iter().filter_map(|record| match record {
+                    Recovered::Gap(gap) => Some((gap.branch, gap.first_hour, gap.last_hour)),
+                    _ => None,
+                }).collect();
+                assert_eq!(gaps, [(9, 2, 3)]);
+            }
+            let history = replay.into_history().unwrap();
+            assert_eq!(history.session_tail(session.id).unwrap().hour, if prior_hours { 5 } else { 2 });
+            assert!(!history.session_tail(session.id).unwrap().recorded);
+            let tracker = history.tracker_for(&session).unwrap();
+            assert_eq!(tracker.current_branch(), Some(9));
+            assert_eq!(
+                tracker.recorded_hours(9).unwrap().len(),
+                if prior_hours { 3 } else { 0 }
+            );
+            let columns = replay::columnar_file::campaign_folder(&target, ALLOCATION_CAMPAIGN);
+            let paths: Vec<_> = fs::read_dir(columns)
+                .unwrap()
+                .flatten()
+                .filter(|file| {
+                    file.path()
+                        .extension()
+                        .is_some_and(|extension| extension == "h4col")
+                })
+                .collect();
+            assert_eq!(paths.len(), 1);
+            let recording = replay::commands::Recording::open_path(&paths[0].path()).unwrap();
+            let packets: Vec<_> = recording
+                .controls
+                .iter()
+                .filter_map(|control| match control {
+                    ControlRecord::PlayerCommands { packet, .. } => Some(packet),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(packets.len(), 1);
+            assert_eq!(packets[0].branch, 9);
+            let saved = fs::read(path).unwrap();
+            let repeated = finalize_session_outcome(&session_dir, &target).unwrap();
+            assert!(repeated.errors.is_empty(), "{:?}", repeated.errors);
+            assert_eq!(fs::read(path).unwrap(), saved);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn bootstrap_failure_keeps_admitted_hours_with_and_without_a_spool_tail() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_records, allocation_witness, write_campaign_spool,
+        };
+        use replay::commands::{Batch, Packet, Phase};
+        for shape in [0, 1, 2] {
+            let root = std::env::temp_dir().join(format!(
+                "hoi4-command-bootstrap-failure-{}-{shape}",
+                std::process::id()
+            ));
+            let session_dir = root.join("session");
+            let target = root.join("output");
+            let original = allocation_records();
+            let Record::SessionStart(session) = &original[0] else {
+                unreachable!()
+            };
+            let Record::BranchStart(mut start) = original[1].clone() else {
+                unreachable!()
+            };
+            start.loaded_hour = None;
+            let mut packet = Packet::pack(9, 1, 1, 0, 100, 150, 0, &Batch::default()).unwrap();
+            packet.phase = Some(Phase {
+                start,
+                campaign: *ALLOCATION_CAMPAIGN,
+                qpc: 100,
+                hour: 2,
+                load_signal: 0,
+            });
+            let records = vec![
+                original[0].clone(),
+                Record::Control(ControlRecord::PlayerCommands { session: 7, packet }),
+            ];
+            let campaign = write_campaign_spool(&session_dir, &records);
+            begin_admissions(&session_dir, &target).unwrap();
+            Admissions::default()
+                .admit(
+                    &session_dir,
+                    &target,
+                    std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap(),
+                    0,
+                )
+                .unwrap();
+            let first = finalize_session_outcome(&session_dir, &target).unwrap();
+            assert!(first.errors.is_empty(), "{:?}", first.errors);
+            assert_eq!(first.replays.len(), 1);
+            assert!(
+                read_saved(&campaign)
+                    .unwrap()
+                    .command_bootstrap
+                    .contains(&9)
+            );
+            let spool = campaign.join("spool.0000.h4s");
+            let mut committed_bytes = fs::metadata(&spool).unwrap().len();
+            if shape != 0 {
+                let packet = Packet::pack(9, 1, 1, 1, 150, 200, 0, &Batch::default()).unwrap();
+                let bytes =
+                    replay::spool::encode_record(&Record::Control(ControlRecord::PlayerCommands {
+                        session: 7,
+                        packet,
+                    }))
+                    .unwrap();
+                if shape == 1 {
+                    use std::io::Write;
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(&spool)
+                        .unwrap()
+                        .write_all(&bytes)
+                        .unwrap();
+                    committed_bytes += bytes.len() as u64;
+                } else {
+                    let mut prefix = replay::spool::encode_record(&original[0]).unwrap();
+                    prefix.extend_from_slice(&bytes);
+                    committed_bytes = prefix.len() as u64;
+                    fs::write(campaign.join("spool.0001.h4s"), prefix).unwrap();
+                    fs::remove_file(&spool).unwrap();
+                }
+            } else {
+                fs::remove_file(&spool).unwrap();
+            }
+            let range = UncommittedRange {
+                campaign_id: *ALLOCATION_CAMPAIGN,
+                branch: 9,
+                load_signal: Some(19),
+                first_hour: 2,
+                last_hour: 2,
+            };
+            let witness = TerminalWitness {
+                failed_hour: Some(if shape == 2 { 2 } else { 3 }),
+                uncommitted: (shape != 2).then_some(range),
+                committed_segment: Some(if shape == 2 { 1 } else { 0 }),
+                ..allocation_witness(committed_bytes)
+            };
+            assert_eq!(witness.process_start_time, session.process_start_time);
+            fs::write(session_dir.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+            let finalized = finalize_session_outcome(&session_dir, &target).unwrap();
+            assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+            assert!(finalized.omitted.is_empty(), "{:?}", finalized.omitted);
+            let replay = Replay::open_path(&finalized.replays[0]).unwrap();
+            assert_eq!(
+                replay
+                    .gaps
+                    .iter()
+                    .map(|gap| (gap.branch, gap.first_hour, gap.last_hour))
+                    .collect::<Vec<_>>(),
+                [(9, 2, if shape == 2 { 2 } else { 3 })]
+            );
+            assert!(
+                replay
+                    .controls
+                    .iter()
+                    .any(|control| matches!(control, ControlRecord::Partial { .. }))
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn checkpoint_trim_keeps_admitted_columnar_commands_from_phase_or_saved_evidence() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_frame, allocation_records, write_campaign_spool,
+        };
+        use replay::commands::{Batch, Category, Event, Kind, Origin, Packet, Phase, Span};
+        use replay_frame::branches::BranchReason;
+        for (own_phase, bootstrap_load) in [(false, 0), (true, 0), (false, 19), (true, 19)] {
+            let root = std::env::temp_dir()
+                .join(format!(
+                    "hoi4-command-checkpoint-evidence-{}-{own_phase}-{bootstrap_load}",
+                    std::process::id()
+                ));
+            let session_dir = root.join("session");
+            let target = root.join("output");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let mut original = allocation_records();
+            let session = original[0].clone();
+            let Record::BranchStart(first) = original[1].clone() else {
+                unreachable!()
+            };
+            let command = |branch, world, ordinal, time, hour, load, start: Option<BranchStart>| {
+                let batch = Batch {
+                    kinds: if ordinal == 0 {
+                        vec![Kind {
+                            id: 0,
+                            token: 0,
+                            name: "synthetic command".into(),
+                            category: Category::Other,
+                        }]
+                    } else {
+                        Vec::new()
+                    },
+                    events: vec![Event {
+                        paused: false,
+                        qpc: time + 1,
+                        hour,
+                        actor: 0,
+                        player: 7,
+                        kind: 0,
+                        command_country: None,
+                        origin: Origin::Unresolved,
+                        sequence: ordinal as u32 + 1,
+                    }],
+                    spans: vec![Span {
+                        paused: false,
+                        hour,
+                        from_qpc: time,
+                        to_qpc: time + 50,
+                        complete: true,
+                    }],
+                    ..Default::default()
+                };
+                let mut packet =
+                    Packet::pack(branch, 1, world, ordinal, time, time + 50, 0, &batch).unwrap();
+                packet.phase = start.map(|start| Phase {
+                    start,
+                    campaign: *ALLOCATION_CAMPAIGN,
+                    qpc: time,
+                    hour,
+                    load_signal: load,
+                });
+                Record::Control(ControlRecord::PlayerCommands { session: 7, packet })
+            };
+            let first_packet = command(9, 1, 0, 100, 2, bootstrap_load, Some(first.clone()));
+            original.pop();
+            original.insert(2, first_packet.clone());
+            let campaign = write_campaign_spool(&session_dir, &original);
+            let second = BranchStart {
+                id: 10,
+                session: 7,
+                loaded_hour: Some(4),
+                first_hour: 6,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            };
+            let later = vec![
+                session,
+                Record::BranchStart(first.clone()),
+                Record::Frame(allocation_frame(9, 5, 19)),
+                Record::Control(ControlRecord::ClockWitness {
+                    session: 7,
+                    qpc: 500,
+                    hour: 5,
+                    load_signal: Some(19),
+                }),
+                Record::BranchStart(second.clone()),
+                Record::Frame(allocation_frame(10, 6, 23)),
+                Record::Control(ControlRecord::ClockWitness {
+                    session: 7,
+                    qpc: 600,
+                    hour: 6,
+                    load_signal: Some(23),
+                }),
+            ];
+            let bytes: Vec<_> = later
+                .iter()
+                .flat_map(|record| replay::spool::encode_record(record).unwrap())
+                .collect();
+            let suffix = campaign.join("spool.0001.h4s");
+            fs::write(&suffix, bytes).unwrap();
+            begin_admissions(&session_dir, &target).unwrap();
+            let mut admissions = Admissions::default();
+            admissions
+                .admit(&session_dir, &target, name, bootstrap_load)
+                .unwrap();
+            let checkpoint = checkpoint_campaign(
+                &session_dir,
+                &target,
+                name,
+                0,
+                false,
+                &mut Ahead::default(),
+                unnamed(),
+                &|| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(checkpoint.deleted, 1);
+            assert!(!campaign.join("spool.0000.h4s").exists());
+            let late = command(9, 1, 1, 400, 4, 19, None);
+            let refused = command(10, 2, 0, 600, 6, 23, Some(second.clone()));
+            let mut file = fs::OpenOptions::new().append(true).open(&suffix).unwrap();
+            use std::io::Write;
+            for record in [&refused, &late] {
+                file.write_all(&replay::spool::encode_record(record).unwrap())
+                    .unwrap();
+            }
+            drop(file);
+            assert_eq!(
+                read_branch_loads(&campaign).unwrap().loads.get(&9),
+                Some(&bootstrap_load)
+            );
+            let mut resumed = Ahead::default();
+            resumed.read(&session_dir, &target).unwrap();
+            assert_eq!(
+                resumed
+                    .backlog(&session_dir)
+                    .unwrap()
+                    .runnable
+                    .unwritten_hours,
+                1
+            );
+            if bootstrap_load == 0 {
+                assert!(
+                    read_saved(&campaign)
+                        .unwrap()
+                        .command_bootstrap
+                        .contains(&9)
+                );
+            }
+            let mut captured_first = first_packet;
+            if !own_phase {
+                let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
+                    &mut captured_first
+                else {
+                    unreachable!()
+                };
+                packet.phase = None;
+            }
+            let unknown = BranchStart {
+                id: 11,
+                session: 7,
+                loaded_hour: None,
+                first_hour: 7,
+                parent: Parentage::Unknown,
+                reason: BranchReason::LoadSignal,
+            };
+            let controls = vec![
+                Record::BranchStart(first),
+                captured_first,
+                Record::BranchStart(second),
+                refused,
+                late,
+                Record::BranchStart(unknown),
+            ];
+            fs::write(
+                campaign.join("columnar.0.h4col"),
+                native_recording_with_controls(&[(9, 2, 4), (10, 6, 1), (11, 7, 1)], &controls),
+            )
+            .unwrap();
+            let finalized = finalize_session_outcome(&session_dir, &target).unwrap();
+            assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+            assert_eq!(finalized.replays.len(), 1);
+            let rows = Replay::open_path(&finalized.replays[0]).unwrap();
+            let expected = replay::commands::analyze(&rows.sessions, &rows.controls, 9).unwrap();
+            let paths: Vec<_> = fs::read_dir(replay::columnar_file::campaign_folder(
+                &target,
+                ALLOCATION_CAMPAIGN,
+            ))
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "h4col")
+            })
+            .collect();
+            assert_eq!(paths.len(), 1);
+            let columns =
+                replay::columnar_frames::Recording::open_path(&paths[0].path(), Default::default())
+                    .unwrap();
+            assert_eq!(columns.hours(), 4);
+            assert_eq!(columns.run_count(), 1);
+            assert_eq!(columns.run(0).unwrap().branch, 9);
+            drop(columns);
+            let columns = replay::commands::Recording::open_path(&paths[0].path()).unwrap();
+            assert_eq!(
+                columns
+                    .branches
+                    .iter()
+                    .map(|branch| branch.id)
+                    .collect::<Vec<_>>(),
+                [9]
+            );
+            let actual =
+                replay::commands::analyze(&columns.sessions, &columns.controls, 9).unwrap();
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+            drop((rows, columns));
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]
@@ -8588,29 +9824,52 @@ mod tests {
             let mut healthy = allocation_records();
             for record in &mut healthy {
                 if let Record::Frame(frame) = record {
-                    frame.tables[TableId::Campaign.index()] = TableUpdate::Snapshot(
-                        TableRows::Campaign(vec![replay_data::rows::CampaignRow { id: HEALTHY.as_bytes().to_vec() }]),
-                    );
+                    frame.tables[TableId::Campaign.index()] =
+                        TableUpdate::Snapshot(TableRows::Campaign(vec![
+                            replay_data::rows::CampaignRow {
+                                id: HEALTHY.as_bytes().to_vec(),
+                            },
+                        ]));
                 }
             }
             let healthy_dir = session.join(HEALTHY);
             fs::create_dir_all(&healthy_dir).unwrap();
-            fs::write(healthy_dir.join("spool.0000.h4s"), healthy.iter()
-                .flat_map(|record| replay::spool::encode_record(record).unwrap()).collect::<Vec<_>>()).unwrap();
-            admissions.admit(&session, &target, HEALTHY, FIRST_LOAD).unwrap();
+            fs::write(
+                healthy_dir.join("spool.0000.h4s"),
+                healthy
+                    .iter()
+                    .flat_map(|record| replay::spool::encode_record(record).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            admissions
+                .admit(&session, &target, HEALTHY, FIRST_LOAD)
+                .unwrap();
             ahead.read(&session, &target).unwrap();
             // Inflate only blocked metadata, not files or allocations, past the row escalation threshold.
             let spool: Vec<_> = records.iter()
                 .flat_map(|record| replay::spool::encode_record(record).unwrap()).collect();
             let mut tail = Tail::default();
-            tail.grow(&mut std::io::Cursor::new(&spool), spool.len(), |record, placement| {
-                let mut record = Recovered::keep(record, placement);
-                if let Recovered::Frame(frame) = &mut record {
-                    frame.placement.length = 100_000_000;
-                }
-                record
-            }).unwrap();
-            ahead.campaigns.get_mut(&campaign).unwrap().tails.get_mut(&0).unwrap().1 = tail;
+            tail.grow(
+                &mut std::io::Cursor::new(&spool),
+                spool.len(),
+                |record, placement| {
+                    let mut record = Recovered::keep(record, placement);
+                    if let Recovered::Frame(frame) = &mut record {
+                        frame.placement.length = 100_000_000;
+                    }
+                    record
+                },
+            )
+            .unwrap();
+            ahead
+                .campaigns
+                .get_mut(&campaign)
+                .unwrap()
+                .tails
+                .get_mut(&0)
+                .unwrap()
+                .1 = tail;
             let before = ahead.backlog(&session).unwrap();
             assert_eq!(before.runnable.unwritten_hours, 3, "{state}");
             assert_eq!(before.runnable.closed_blocks, 2, "{state}");
@@ -8661,7 +9920,9 @@ mod tests {
 
     #[test]
     fn unreadable_admissions_leave_scheduling_debt_unavailable() {
-        use crate::test_support::{allocation_records, allocation_test_directory, write_campaign_spool};
+        use crate::test_support::{
+            allocation_records, allocation_test_directory, write_campaign_spool,
+        };
         let directory = allocation_test_directory("unknown-packing-backlog");
         let session = directory.join("session");
         let target = directory.join("target");
@@ -8849,7 +10110,7 @@ mod tests {
         .unwrap();
         let tails = BTreeMap::from([(0, (PathBuf::new(), tail))]);
         let count = |admitted: Option<&BTreeSet<i64>>| -> usize {
-            admitted_prefix(&tails, admitted)
+            admitted_prefix(&tails, admitted, &BTreeSet::new())
                 .iter()
                 .map(|(_, records)| records.len())
                 .sum()

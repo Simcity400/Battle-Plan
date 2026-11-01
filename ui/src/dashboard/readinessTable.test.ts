@@ -56,6 +56,7 @@ function bind(value: unknown, facts = bindings(TRACKS[0])): unknown {
 /** Widgets whose requests the UI builds in `widgetRequests`: what the widget sends at the opening hour. */
 type Built = (widget: WidgetSpec, track: BoundTrack, window: HourWindow) => (ProductRequest | null)[];
 const EXACT: Record<string, Built> = {
+  'campaign-clock': (widget, track, window) => [built.clockRequest(widget, track, window)],
   'air-missions': (widget, track) => [built.airMissionsRequest(widget, track)],
   'air-statistics': (widget, track) => [built.airStatisticsRequest(widget, track)],
   minefields: (widget, track) => [built.minefieldsRequest(widget, track)],
@@ -103,6 +104,7 @@ const loose = (kind: string, product: string) => LOOSE[kind]?.products.includes(
 /** Params that carry the hour a widget shows at its default time (`shownHour`), as a request index then a
  * path into its params; a window placeholder names the hour whose window it reads. */
 const SHOWN: Record<string, readonly string[]> = {
+  'campaign-clock': ['0.lastHour'],
   'national-focus': ['0.hour'],
   'active-research': ['0.reads.0.hour'],
   'political-power': ['0.to', '1.reads.0.hour'],

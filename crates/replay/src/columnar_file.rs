@@ -188,6 +188,11 @@ impl Capture {
     const VERSION: u64 = 2;
 
     pub fn write(&self) -> io::Result<Vec<u8>> {
+        self.write_with(&self.controls)
+    }
+
+    /// The record holding `controls` in place of the capture's own.
+    fn write_with(&self, controls: &[Vec<u8>]) -> io::Result<Vec<u8>> {
         let mut out = Bytes::new();
         out.varint(Self::VERSION)?;
         for bytes in [&self.campaign_id, &self.content] {
@@ -215,11 +220,7 @@ impl Capture {
             }
         }
         out.varint(u64::from(self.format))?;
-        out.varint(self.controls.len() as u64)?;
-        for control in &self.controls {
-            out.varint(control.len() as u64)?;
-            out.raw(control)?;
-        }
+        write_controls(&mut out, controls)?;
         Ok(out.into_bytes())
     }
 
@@ -283,11 +284,8 @@ impl Capture {
         };
         let format = u16::try_from(reader.varint()?)
             .map_err(|_| invalid("A capture's format passes 2^16"))?;
-        let controls_count = count(&mut reader)?;
-        let mut controls = engine_allocation::vec(controls_count)?;
-        for _ in 0..controls_count {
-            controls.push(owned(&mut reader)?);
-        }
+        let mut controls = Vec::new();
+        read_controls(&mut reader, bytes.len(), &mut controls)?;
         reader.finish()?;
         Ok(Self {
             campaign_id,
@@ -300,6 +298,48 @@ impl Capture {
             controls,
         })
     }
+}
+
+fn write_controls(out: &mut Bytes, controls: &[Vec<u8>]) -> io::Result<()> {
+    out.varint(controls.len() as u64)?;
+    for control in controls {
+        out.varint(control.len() as u64)?;
+        out.raw(control)?;
+    }
+    Ok(())
+}
+
+fn read_controls(reader: &mut Reader<'_>, limit: usize, into: &mut Vec<Vec<u8>>) -> io::Result<()> {
+    let count = usize::try_from(reader.varint()?)
+        .ok()
+        .filter(|&count| count <= limit)
+        .ok_or_else(|| invalid("A control count passes its record"))?;
+    engine_allocation::reserve(into, count)?;
+    for _ in 0..count {
+        let length = usize::try_from(reader.varint()?)
+            .map_err(|_| invalid("A control record passes the address space"))?;
+        into.push(engine_allocation::copy_vec(reader.raw(length)?)?);
+    }
+    Ok(())
+}
+
+/// The capture a root's control extents hold: a capture record, then each later revision's
+/// newly added control records.
+pub fn read_capture(
+    extents: &[Extent],
+    mut raw: impl FnMut(&Extent) -> io::Result<Vec<u8>>,
+) -> io::Result<Option<Capture>> {
+    let Some((first, rest)) = extents.split_first() else {
+        return Ok(None);
+    };
+    let mut capture = Capture::read(&raw(first)?)?;
+    for extent in rest {
+        let bytes = raw(extent)?;
+        let mut reader = Reader::new(&bytes);
+        read_controls(&mut reader, bytes.len(), &mut capture.controls)?;
+        reader.finish()?;
+    }
+    Ok(Some(capture))
 }
 
 /// A file whose writer stopped after publishing a revision, read back to that revision.
@@ -384,10 +424,7 @@ impl Unfinished {
     }
 
     fn from_root<F: Read + Seek>(file: &mut F, root: envelope::Root, length: u64) -> io::Result<Self> {
-        let capture = match root.controls.first() {
-            Some(controls) => Some(Capture::read(&extent_bytes(file, controls)?)?),
-            None => None,
-        };
+        let capture = read_capture(&root.controls, |extent| extent_bytes(file, extent))?;
         let mut last = None;
         for (index, run) in root.runs.iter().enumerate().rev() {
             let index = u32::try_from(index).map_err(|_| invalid("Runs pass 2^32"))?;
@@ -563,6 +600,9 @@ pub struct FileWriter<W: Write + Seek> {
     pieces: Vec<Extent>,
     /// The ordinal the open position's unpublished bytes start at, once a revision cut them.
     pending_from: Option<u32>,
+    /// Earlier revisions' extents of the control records they added, and how many those hold.
+    control_chunks: Vec<Extent>,
+    controls_written: usize,
 }
 
 impl<W: Write + Seek> FileWriter<W> {
@@ -603,6 +643,8 @@ impl<W: Write + Seek> FileWriter<W> {
             revision: 0,
             pieces: Vec::new(),
             pending_from: None,
+            control_chunks: Vec::new(),
+            controls_written: 0,
         })
     }
 
@@ -954,17 +996,34 @@ impl<W: Write + Seek> FileWriter<W> {
     }
 
     /// The root's control records: `capture`, which names a session for each of `runs` runs.
+    /// Its record holds no controls; earlier revisions' control extents are kept, and only
+    /// those added since are written.
     fn controls(&mut self, capture: Option<&Capture>, runs: usize) -> io::Result<Vec<Extent>> {
         let mut controls = Vec::new();
         if let Some(capture) = capture {
             if capture.run_sessions.len() != runs {
                 return Err(invalid("A capture names a session for every run"));
             }
-            let bytes = capture.write()?;
-            self.index_bytes += bytes.len() as u64;
+            let added = capture
+                .controls
+                .get(self.controls_written..)
+                .ok_or_else(|| invalid("A capture's control records only grow"))?;
             let window_log = self.settings.window_log;
-            engine_allocation::reserve(&mut controls, 1)?;
+            if !added.is_empty() {
+                let mut bytes = Bytes::new();
+                write_controls(&mut bytes, added)?;
+                let bytes = bytes.into_bytes();
+                self.index_bytes += bytes.len() as u64;
+                let chunk = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?;
+                engine_allocation::reserve(&mut self.control_chunks, 1)?;
+                self.control_chunks.push(chunk);
+                self.controls_written = capture.controls.len();
+            }
+            let bytes = capture.write_with(&[])?;
+            self.index_bytes += bytes.len() as u64;
+            engine_allocation::reserve(&mut controls, 1 + self.control_chunks.len())?;
             controls.push(self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?);
+            controls.extend_from_slice(&self.control_chunks);
         }
         Ok(controls)
     }
@@ -1305,7 +1364,17 @@ pub fn keep_branches<W: Write + Seek>(
             kept.push(run);
         }
     }
-    if kept.is_empty() {
+    let mut commands = false;
+    for bytes in &capture.controls {
+        if let crate::spool::Record::Control(crate::spool::ControlRecord::PlayerCommands {
+            packet,
+            ..
+        }) = crate::spool::decode_record(bytes)?
+        {
+            commands |= keep(packet.branch);
+        }
+    }
+    if kept.is_empty() && !commands {
         return Ok(None);
     }
     let columns =
@@ -1401,6 +1470,29 @@ pub fn keep_branches<W: Write + Seek>(
             controls.push(record);
         }
     }
+    let mut referenced_sessions = std::collections::BTreeSet::new();
+    for bytes in &controls {
+        match crate::spool::decode_record(bytes)? {
+            crate::spool::Record::Control(control) => {
+                referenced_sessions.insert(control.session());
+            }
+            crate::spool::Record::BranchStart(branch) => {
+                referenced_sessions.insert(branch.session);
+            }
+            _ => {}
+        }
+    }
+    for bytes in &capture.sessions {
+        use crate::identity::IdentityCodec;
+        let mut input = crate::codec::Decoder::new(bytes);
+        input.format = capture.format;
+        let session = crate::identity::SessionStart::decode(&mut input)?;
+        input.finish()?;
+        if referenced_sessions.contains(&session.id) && !sessions.contains(bytes) {
+            engine_allocation::reserve(&mut sessions, 1)?;
+            sessions.push(engine_allocation::copy_vec(bytes)?);
+        }
+    }
     let stop = capture.stop.filter(|stop| keep(stop.branch));
     writer
         .finish_with_capture(
@@ -1427,6 +1519,7 @@ fn of_left_out(record: &[u8], keep: &impl Fn(u64) -> bool) -> io::Result<bool> {
         Record::BranchStart(start) => Some(start.id),
         Record::Gap(gap) => Some(gap.branch),
         Record::Control(ControlRecord::EventLoss { branch, .. }) => Some(branch),
+        Record::Control(ControlRecord::PlayerCommands { packet, .. }) => Some(packet.branch),
         _ => None,
     };
     Ok(branch.is_some_and(|branch| !keep(branch)))

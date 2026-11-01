@@ -36,6 +36,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         | Family::ProvinceCombats
         | Family::AirBaseCarry
         | Family::Fuel
+        | Family::PlayerCommands
         | Family::Propaganda => &[],
         Family::EquipmentDestruction => &[EquipmentDestruction, DivisionEquipmentDeletions],
         Family::Land => &[LandCombatResults, DestroyedDivisions],
@@ -143,6 +144,10 @@ fn constructor_sites(family: Family) -> Vec<usize> {
         };
     }
     let mut sites = match family {
+        Family::PlayerCommands => engine_native::command_inputs::SITES
+            .iter()
+            .map(|site| site.rva)
+            .collect(),
         Family::Hourly => vec![cgame_state::HOURLY_UPDATE_RVA],
         Family::EquipmentDestruction => sites!(equipment_destruction::SITES, s => s.rva),
         Family::Land => [
@@ -648,7 +653,9 @@ fn real_silent_constructors_refuse_and_propagate_their_family() {
 #[test]
 fn template_rollback_failure_stays_fatal_with_fresh_read_fallback() {
     use replay_frame::frame::Metrics;
-    if !isolated("hook_failures::contract_tests::template_rollback_failure_stays_fatal_with_fresh_read_fallback") {
+    if !isolated(
+        "hook_failures::contract_tests::template_rollback_failure_stays_fatal_with_fresh_read_fallback",
+    ) {
         return;
     }
     reset_session();
@@ -662,13 +669,16 @@ fn template_rollback_failure_stays_fatal_with_fresh_read_fallback() {
     });
     assert!(result.is_err());
     assert!(fatal_installation_error().is_some());
-    assert!(!crate::template_changes::Changes::fresh_only(&crate::template_changes::Observer));
+    assert!(!crate::template_changes::Changes::fresh_only(
+        &crate::template_changes::Observer
+    ));
     let mut input = FrameInput {
         branch: 1,
         hour: 1,
         metrics: Metrics::default(),
-        tables: std::array::from_fn(|index| TableView::Complete(
-            replay_data::rows::TableRows::empty(TableId::ALL[index])).into()),
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(replay_data::rows::TableRows::empty(TableId::ALL[index])).into()
+        }),
     };
     assert!(apply(&mut input).is_err());
 }

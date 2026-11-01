@@ -1162,6 +1162,7 @@ recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
 recorder inspect <campaign.battleplan>
+recorder commands <recording.battleplan|recording.h4col> [--branch <id>] [--events]
 recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --branch <id>
 {}
 {}
@@ -1271,6 +1272,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     };
     if command == "inspect" && args.len() == 1 {
         return replay_io::inspect(Path::new(&args[0]));
+    }
+    if command == "commands" {
+        return crate::player_commands::command(args);
     }
     if command == "inspect" {
         return inspect_characters(&args);
@@ -1850,8 +1854,8 @@ pub(crate) fn capture(
         .read_version_banner(&mut executable)
         .map_err(|e| format!("game version text: {e}"))?;
     // Held until this capture ends, so no other recorder checks or injects this game meanwhile.
-    let _attachment = windows::Claim::take(&game_claim(pid, process.start_time))?
-        .ok_or(GAME_CLAIMED)?;
+    let _attachment =
+        windows::Claim::take(&game_claim(pid, process.start_time))?.ok_or(GAME_CLAIMED)?;
     let collector_loaded = windows::modules(pid)?.iter().any(|module| {
         module
             .path
@@ -4891,6 +4895,93 @@ mod tests {
             .unwrap();
         assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
         assert_eq!(ahead.written(), 2);
+    }
+
+    #[test]
+    fn a_paused_command_prefix_allows_automatic_hourly_checkpoints() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_frame, allocation_records,
+            recorded_frames, write_load_segment,
+        };
+        use replay::{
+            commands::{Batch, Packet, Phase},
+            spool::{ControlRecord, Record},
+        };
+        let root = std::env::temp_dir()
+            .join(format!("hoi4-command-automatic-checkpoint-{}", std::process::id()));
+        let session = root.join("session");
+        let target = root.join("recordings");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        fs::create_dir_all(&campaign).unwrap();
+        let mut source = allocation_records();
+        let start_session = source.remove(0);
+        let Record::BranchStart(mut start) = source.remove(0) else {
+            unreachable!()
+        };
+        start.loaded_hour = None;
+        let mut packet = Packet::pack(9, 1, 1, 0, 100, 200, 0, &Batch::default()).unwrap();
+        packet.phase = Some(Phase {
+            start: start.clone(),
+            campaign: *ALLOCATION_CAMPAIGN,
+            qpc: 100,
+            hour: 2,
+            load_signal: FIRST_LOAD,
+        });
+        let commands = Record::Control(ControlRecord::PlayerCommands {
+            session: start.session,
+            packet,
+        });
+        let records = [start_session.clone(), commands.clone()];
+        let bytes: Vec<_> = records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        let leading = campaign.join("spool.0000.h4s");
+        fs::write(&leading, bytes).unwrap();
+        let mut ahead = replay_io::Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        ahead.write(&session, &target, &|| false).unwrap();
+        assert_eq!(ahead.completed_through(&campaign), None);
+        let mut hours = vec![start_session, Record::BranchStart(start)];
+        for hour in 3..=4 {
+            hours.push(Record::Frame(allocation_frame(9, hour, FIRST_LOAD)));
+            hours.push(Record::Control(ControlRecord::ClockWitness {
+                session: 7,
+                qpc: hour as u64 * 100,
+                hour,
+                load_signal: Some(FIRST_LOAD),
+            }));
+        }
+        let bytes: Vec<_> = hours
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        fs::write(campaign.join("spool.0001.h4s"), bytes).unwrap();
+        write_load_segment(&campaign, 2, 10, 5..=6, RELOAD);
+        ahead.read(&session, &target).unwrap();
+        ahead.write(&session, &target, &|| false).unwrap();
+        assert_eq!(ahead.completed_through(&campaign), Some(1));
+        Checkpoints::default().run(
+            &session,
+            &target,
+            &mut ahead,
+            None,
+            unnamed(),
+            &AtomicBool::new(false),
+        );
+        assert!(!leading.exists());
+        let saved = replay::recording_files::recording_of(&target, ALLOCATION_CAMPAIGN)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded_frames(&saved), [(9, 3), (9, 4)]);
+        let saved = replay::container::Replay::open_path(&saved).unwrap();
+        let Record::Control(control) = commands else {
+            unreachable!()
+        };
+        assert!(saved.controls.contains(&control));
+        drop((saved, ahead));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

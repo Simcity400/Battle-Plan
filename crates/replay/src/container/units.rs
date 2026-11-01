@@ -32,6 +32,7 @@ pub(super) enum Written {
 fn plan<'r, R: SpoolRecord>(
     segments: &[&'r [R]],
     identity: &Identity,
+    campaign_id: &[u8],
     existing: Option<&Replay>,
     interval: u32,
 ) -> io::Result<(Pending, Vec<Planned<'r>>)> {
@@ -162,6 +163,7 @@ fn plan<'r, R: SpoolRecord>(
                     if current_session != Some(control.session()) {
                         return Err(invalid_static("control without its session"));
                     }
+                    declare_command_branch(control, campaign_id, &mut branches, &mut pending)?;
                     if !(matches!(control, ControlRecord::EventLoss { .. })
                         && pending.controls.contains(control))
                     {
@@ -466,6 +468,7 @@ impl Ahead {
             plan(
                 &records,
                 &identity,
+                campaign_id,
                 self.existing.as_ref(),
                 KEYFRAME_INTERVAL,
             )
@@ -600,12 +603,13 @@ impl Ahead {
             }
             let blocks = self.natural.partition_point(|at| *at < natural);
             if natural <= self.closed
-                && frames != 0
                 && self.blocks[..blocks]
                     .iter()
                     .all(|block| matches!(block, Finished::Packed(..)))
             {
-                through = Some(*number);
+                if frames != 0 {
+                    through = Some(*number);
+                }
             } else {
                 break;
             }
@@ -764,6 +768,7 @@ impl Ahead {
         let (mut pending, _) = plan(
             &records,
             &identity,
+            campaign,
             self.existing.as_ref(),
             KEYFRAME_INTERVAL,
         )?;
@@ -873,7 +878,8 @@ pub(super) fn write<R: SpoolRecord>(
     ahead: Option<Ahead>,
 ) -> io::Result<Written> {
     let reported_ahead = ahead.as_ref().map_or(0, Ahead::hours);
-    let Ok((mut pending, planned)) = plan(segments, identity, existing, interval) else {
+    let Ok((mut pending, planned)) = plan(segments, identity, campaign_id, existing, interval)
+    else {
         return Ok(Written::Stopped {
             hours: reported_ahead,
             progress: 0,

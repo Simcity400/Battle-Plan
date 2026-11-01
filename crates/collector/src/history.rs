@@ -185,8 +185,13 @@ impl PreparedCampaigns {
         let completion_sequence = completion_sequence(&replay)?;
         let naval_result_sequence = naval_result_sequence(&replay)?;
         let event_ledger_sequences = event_ledger_sequences(&replay)?;
-        let (event_feed_sequence, event_feed_generation, event_feed_counts) =
+        let (event_feed_sequence, mut event_feed_generation, event_feed_counts) =
             event_feed_history(&replay)?;
+        for control in &replay.controls {
+            if let replay::spool::ControlRecord::PlayerCommands { packet, .. } = control {
+                event_feed_generation = event_feed_generation.max(Some(packet.world));
+            }
+        }
         let politics_epoch = politics_epoch(&replay)?;
         let map_events = map_event_history(&replay)?;
         let history = replay.into_history()?;

@@ -11,6 +11,7 @@ use recorder_metrics::metrics;
 use recorder_movement_oracle::movement_oracle;
 use recorder_oracle::oracle;
 use recorder_platform::directories;
+mod player_commands;
 pub mod recording;
 mod ship_name_witness;
 use recorder_platform::windows;

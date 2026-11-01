@@ -40,6 +40,10 @@ pub enum Record {
 /// Per-hour trailer entries never reserve space for a frame or session identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlRecord {
+    PlayerCommands {
+        session: u64,
+        packet: crate::commands::Packet,
+    },
     Detach {
         session: u64,
         last_hour: Option<i32>,
@@ -84,6 +88,7 @@ impl ControlRecord {
     fn encoded_bytes(&self) -> io::Result<usize> {
         let tagged_session = size_of::<u8>() + size_of::<u64>();
         let (fields, reason) = match self {
+            Self::PlayerCommands { packet, .. } => (packet.encoded_bytes()?, None),
             Self::Detach { last_hour, .. } => (
                 size_of::<u8>() + usize::from(last_hour.is_some()) * size_of::<i32>(),
                 None,
@@ -114,6 +119,7 @@ impl ControlRecord {
 
     pub const fn session(&self) -> u64 {
         match self {
+            Self::PlayerCommands { session, .. } => *session,
             Self::Detach { session, .. }
             | Self::ClockWitness { session, .. }
             | Self::GapSummary { session, .. }
@@ -126,6 +132,11 @@ impl ControlRecord {
     pub fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
         engine_allocation::reserve(out, self.encoded_bytes()?)?;
         match self {
+            Self::PlayerCommands { session, packet } => {
+                out.push(9);
+                out.extend_from_slice(&session.to_le_bytes());
+                packet.encode(out)?;
+            }
             Self::EventLoss {
                 session,
                 branch,
@@ -209,6 +220,13 @@ impl ControlRecord {
     }
 
     fn decode_tag(tag: u8, input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
+        if tag == 9 {
+            format.require(RecordKind::PlayerCommands)?;
+            return Ok(Self::PlayerCommands {
+                session: input.u64()?,
+                packet: crate::commands::Packet::decode(input)?,
+            });
+        }
         format.require(match tag {
             4 => RecordKind::Detach,
             5 => RecordKind::ClockWitness,
@@ -322,7 +340,7 @@ impl Record {
             // decoding this payload.
             2 => Self::Frame(Frame::decode_version(input, None, format)?),
             3 => Self::Gap(Gap::decode(input)?),
-            tag @ 4..=8 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
+            tag @ 4..=9 => Self::Control(ControlRecord::decode_tag(tag, input, format)?),
             _ => return Err(invalid("unknown spool record tag")),
         })
     }
@@ -345,6 +363,18 @@ pub fn encode_record(record: &Record) -> io::Result<Vec<u8>> {
     out.resize(RECORD_HEADER_BYTES, 0);
     record.encode(&mut out)?;
     seal_record(out)
+}
+
+pub fn decode_record(bytes: &[u8]) -> io::Result<Record> {
+    let mut envelopes = Envelopes::new(io::Cursor::new(bytes), bytes.len());
+    let envelope = envelopes
+        .read(Vec::new())?
+        .ok_or_else(|| invalid_static("spool record is empty"))?;
+    let record = envelope.record()?;
+    if envelopes.read(Vec::new())?.is_some() {
+        return Err(invalid_static("expected one spool record"));
+    }
+    Ok(record)
 }
 
 fn encode_frame_record(frame: EncodedFrame) -> io::Result<Vec<u8>> {
@@ -435,6 +465,20 @@ impl SegmentState {
             ));
         }
         match record {
+            RecordRef::Control(ControlRecord::PlayerCommands { session, packet }) => {
+                self.require_session(*session)?;
+                if packet.world == 0 {
+                    return Err(invalid_static("player commands lack world context"));
+                }
+                if let Some(phase) = &packet.phase {
+                    phase.validate()?;
+                    if phase.start.session != *session || phase.start.id != packet.branch {
+                        return Err(invalid_static(
+                            "command phase has another branch or session",
+                        ));
+                    }
+                }
+            }
             RecordRef::SessionStart(session) => {
                 if self.records != 0 {
                     return Err(invalid_static("session start occurs inside a segment"));

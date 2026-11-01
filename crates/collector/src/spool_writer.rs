@@ -978,6 +978,35 @@ impl<B: SegmentBackend> Output<B> {
         context.push(record);
         self.append_context(context)
     }
+    pub(crate) fn append_tracked(
+        &mut self,
+        record: Record,
+        receipt_bytes: usize,
+    ) -> io::Result<Option<u64>> {
+        match self {
+            Self::Direct(spool) => spool.append(&record).map(|()| None),
+            Self::Queued {
+                shared,
+                campaign,
+                generation,
+                ..
+            } => {
+                let mut records = engine_allocation::vec(1)?;
+                records.push(SealedRecord::context(record)?);
+                shared
+                    .submit(
+                        *campaign,
+                        *generation,
+                        Command::Records {
+                            records,
+                            frame: false,
+                        },
+                        receipt_bytes,
+                    )
+                    .map(Some)
+            }
+        }
+    }
     pub(crate) fn append_context(&mut self, context: Vec<Record>) -> io::Result<()> {
         match self {
             Self::Direct(spool) => context.iter().try_for_each(|record| spool.append(record)),

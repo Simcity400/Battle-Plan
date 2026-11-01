@@ -780,3 +780,50 @@ fn kept_branches_rewrite_their_runs_hour_for_hour_and_name_only_their_sessions()
             .is_none()
     );
 }
+
+/// Each revision writes only the control records added since the last, and every reader
+/// joins them back into the capture in order.
+#[test]
+fn revisions_append_only_new_control_records() {
+    let noise = |seed: u64| {
+        let mut state = seed;
+        (0..64 * 1024)
+            .map(|_| {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (state >> 56) as u8
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut capture = Capture {
+        campaign_id: b"columnar file test".to_vec(),
+        content: Vec::new(),
+        capture_mode: CaptureMode::Full.byte(),
+        sessions: vec![b"session".to_vec()],
+        run_sessions: Vec::new(),
+        stop: None,
+        format: 1,
+        controls: vec![noise(1)],
+    };
+    let mut file = FileWriter::create(
+        Cursor::new(Vec::new()),
+        identity(),
+        FrameWriter::new().unwrap().columns().to_vec(),
+        Settings::RECORDING,
+    )
+    .unwrap();
+    file.revise(Some(&capture), |_| Ok(())).unwrap();
+    let first = file.file.get_ref().len();
+    capture.controls.push(b"later".to_vec());
+    file.revise(Some(&capture), |_| Ok(())).unwrap();
+    assert!(file.file.get_ref().len() - first < 4 * 1024);
+    let unfinished = Unfinished::read(&mut Cursor::new(file.file.get_ref().clone())).unwrap();
+    assert_eq!(unfinished.capture.as_ref(), Some(&capture));
+    capture.controls.push(b"last".to_vec());
+    let bytes = file
+        .finish_with_capture(&capture, |_| Ok(()))
+        .unwrap()
+        .file
+        .into_inner();
+    let recording = Recording::open(bytes, Limits::default()).unwrap();
+    assert_eq!(recording.capture().unwrap(), Some(capture));
+}

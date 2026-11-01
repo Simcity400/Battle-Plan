@@ -85,8 +85,16 @@ impl<R: Copy + Default> SharedLane<R> {
     pub fn required_entries(&self) -> usize {
         self.required_entries.load(Ordering::Relaxed)
     }
+    pub fn require_entries(&self, entries: usize) {
+        self.required_entries.fetch_max(entries, Ordering::Relaxed);
+    }
     pub fn rejected(&self) -> u64 {
         self.rejected.load(Ordering::Acquire)
+    }
+    pub fn pending(&self) -> usize {
+        self.reserved
+            .load(Ordering::Acquire)
+            .saturating_sub(self.tail.load(Ordering::Acquire)) as usize
     }
     /// Callback side: never waits. `None` when every slot holds an unreleased
     /// record; the refusal counts toward the demand the next lane must hold.

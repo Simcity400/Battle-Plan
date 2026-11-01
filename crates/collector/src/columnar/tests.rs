@@ -382,3 +382,23 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     assert_eq!(runs, [(1, envelope::epoch::START, 1), (2, envelope::epoch::BRANCH, 3)]);
     assert_eq!(recording.capture().unwrap().unwrap().run_sessions, [0, 0]);
 }
+
+/// Paused commands, with no hour to publish them, still reach a revision recovery can finish.
+#[test]
+fn commands_without_an_hour_publish_a_recoverable_revision() {
+    use replay::{
+        columnar_file::Unfinished,
+        commands::{Batch, Packet},
+        spool::{ControlRecord, Record, encode_record},
+    };
+    let folder = Folder::new("commands");
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();
+    let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
+    columnar.note(std::slice::from_ref(&record));
+    let mut file = fs::File::open(folder.0.join(PARTIAL)).unwrap();
+    let unfinished = Unfinished::read(&mut file).unwrap();
+    assert_eq!(unfinished.last, None);
+    let capture = unfinished.capture.expect("a capture in the revision");
+    assert_eq!(capture.controls, [encode_record(&record).unwrap()]);
+}

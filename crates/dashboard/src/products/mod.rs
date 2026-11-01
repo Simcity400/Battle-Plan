@@ -6,6 +6,7 @@
 //! its key.
 
 pub mod aircraft_catalogue;
+pub mod campaign_clock;
 pub mod country_flags;
 pub mod doctrines;
 pub mod event_feed;
@@ -13,6 +14,7 @@ pub mod focus_artwork;
 pub use identity::civil_war;
 pub mod land_owners;
 pub mod national_focus;
+pub mod player_apm;
 pub mod scoreboard;
 pub mod style_runs;
 pub mod technology_artwork;
@@ -108,6 +110,8 @@ dashboard_base::reply_warnings!(
     national_focus::FocusReply,
     technology_artwork::TechnologyArtworkReply,
     scoreboard::ScoreboardReply,
+    player_apm::ApmReply,
+    campaign_clock::CampaignClockReply,
 );
 
 /// A product erased to its key and JSON entry points.
@@ -315,6 +319,8 @@ fn types<P: Product>() -> Vec<String> {
 /// Every product the service answers. Add a product here and in the frontend
 /// widget registry; nothing else needs to change.
 pub static PRODUCTS: &[Registered] = &[
+    register::<campaign_clock::CampaignClock>(),
+    register::<player_apm::PlayerApm>(),
     register_prepared::<diplomacy_state::DiplomacyState>(),
     register::<national_focus::NationalFocus>(),
     register::<focus_artwork::FocusArtwork>(),

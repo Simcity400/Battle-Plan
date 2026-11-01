@@ -78,6 +78,7 @@ pub const RAID_DISPATCHERS_FORMAT: u16 = 125;
 pub const MARKET_AUTOMATION_FORMAT: u16 = 126;
 /// Exact combat base stats, accumulators and individual modifier values.
 pub const EXACT_COMBAT_FORMAT: u16 = 127;
+pub const PLAYER_COMMANDS_FORMAT: u16 = 131;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -758,10 +759,11 @@ pub enum RecordKind {
     LandBorderWarInputs,
     EventFeedEvent,
     EventLoss,
+    PlayerCommands,
 }
 
 impl RecordKind {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::ReplayHeader,
         Self::ReplayBlock,
         Self::ReplayTrailer,
@@ -781,6 +783,7 @@ impl RecordKind {
         Self::LandBorderWarInputs,
         Self::EventFeedEvent,
         Self::EventLoss,
+        Self::PlayerCommands,
     ];
 }
 
@@ -1221,6 +1224,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             RecordKind::LandBorderWarInputs => (RECORDER_INPUTS_FORMAT, "9d09404c0d"),
             RecordKind::EventFeedEvent => (SCRIPT_EVENT_FORMAT, "pol/capture-events-decisions"),
             RecordKind::EventLoss => (EVENT_LOSS_FORMAT, "record/reattach-loss"),
+            RecordKind::PlayerCommands => (PLAYER_COMMANDS_FORMAT, "record/player-commands"),
             _ => (1, "5d3b4dd945"),
         };
         history[i + r] = LastChange {
@@ -4473,9 +4477,7 @@ mod tests {
                 .max(retired);
             assert_eq!(history.format, current, "{:?}", field.table);
             assert!(
-                history
-                    .table_gap(field.table, field.retired - 1)
-                    .is_none(),
+                history.table_gap(field.table, field.retired - 1).is_none(),
                 "{:?}",
                 field.table
             );
@@ -4811,7 +4813,7 @@ mod tests {
                 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127
             ],
         );
-        assert_eq!(FORMAT_VERSION, EXACT_COMBAT_FORMAT);
+        assert_eq!(FORMAT_VERSION, PLAYER_COMMANDS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

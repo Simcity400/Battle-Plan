@@ -2,6 +2,9 @@ import { registerWidgets } from '../dashboard/definitions.ts';
 import type { WidgetRenderer } from '../dashboard/definitions.ts';
 import { widgetMetas } from './definitions.ts';
 export const rendererLoaders = {
+  'campaign-clock': () => import('./campaign-clock'),
+  'apm-graph': () => import('./apm-graph'),
+  'apm-table': () => import('./apm-table'),
   'war-goals': () => import('./war-goals'),
   'next-elections': () => import('./next-elections'),
   'balance-of-power': () => import('./balance-of-power'),

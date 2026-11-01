@@ -340,6 +340,18 @@ impl PeImage {
         &self.executable_ranges
     }
 
+    pub fn data_sections(&self) -> impl Iterator<Item = (u32, &[u8])> {
+        self.sections
+            .iter()
+            .filter(|section| !section.executable)
+            .map(|section| {
+                (
+                    section.rva,
+                    &self.bytes[section.raw_offset..section.raw_offset + section.raw_size as usize],
+                )
+            })
+    }
+
     fn is_executable_range(&self, start: u32, end: u32) -> bool {
         self.executable_ranges
             .iter()

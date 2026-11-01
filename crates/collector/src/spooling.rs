@@ -769,7 +769,11 @@ impl Campaign {
             validation_refusals: ValidationRefusals::default(),
             directory,
             session: session.try_clone()?,
-            resumed: tracker.last_observation(),
+            resumed: tracker.current_branch().and_then(|branch| {
+                tracker
+                    .recorded_hours(branch)
+                    .and_then(|hours| hours.last().map(|hour| (branch, *hour)))
+            }),
             tracker,
             encoder: FrameEncoder::new(),
             spool,
@@ -2648,10 +2652,20 @@ pub(crate) enum HistoryReply {
     },
 }
 
+struct CommandWrite {
+    id: String,
+    world: u64,
+    ordinal: u64,
+    record: Record,
+    attempted: bool,
+    storage: Option<crate::spool_writer::ReceiptStorage>,
+}
+
 pub struct Processor {
     root: PathBuf,
     history: PreparedCampaigns,
     session: SessionStart,
+    session_verified: bool,
     campaigns: Campaigns,
     stats: Statistics,
     unknown_pending: u64,
@@ -2675,6 +2689,15 @@ pub struct Processor {
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
     writer_error: Option<io::ErrorKind>,
+    command_drain: crate::player_commands::Drain,
+    command_pending: Vec<crate::player_commands::Drained>,
+    command_contexts: std::collections::BTreeMap<u64, (String, BranchId)>,
+    command_anchors: std::collections::BTreeMap<(u64, BranchId), (u64, i32, i64)>,
+    command_ordinals: std::collections::BTreeMap<u64, u64>,
+    command_definitions: std::collections::BTreeSet<(u64, BranchId)>,
+    command_last_flush: std::time::Instant,
+    command_ready: std::collections::BTreeMap<(u64, u64), CommandWrite>,
+    command_inflight: std::collections::BTreeMap<u64, CommandWrite>,
 }
 
 impl Drop for Processor {
@@ -2800,6 +2823,7 @@ impl Processor {
             root: root.into(),
             history,
             session,
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -2814,6 +2838,15 @@ impl Processor {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         })
     }
 
@@ -2833,10 +2866,20 @@ impl Processor {
         self.backlogged = backlogged;
     }
 
-    pub fn set_verified_session(&mut self, session: SessionStart) {
-        // The spool worker calls this exactly once, before its first observation.
-        assert!(self.campaigns.is_empty());
+    pub fn set_verified_session(&mut self, session: SessionStart) -> io::Result<()> {
+        if !self.campaigns.is_empty()
+            || !matches!(
+                session.identity.verification,
+                replay_data::identity::Verification::Verified { .. }
+            )
+        {
+            return Err(invalid(
+                "session verification must precede campaign publication",
+            ));
+        }
         self.session = session;
+        self.session_verified = true;
+        Ok(())
     }
 
     fn campaign(&mut self, id: &str) -> io::Result<&mut Campaign> {
@@ -3215,6 +3258,18 @@ impl Processor {
             failed_hour: Some(clock.hour),
         });
         *bound_branch = Some(branch);
+        self.command_contexts.insert(
+            captured.world_generation,
+            (engine_allocation::string(&id)?, branch),
+        );
+        if let Ok(qpc) = u64::try_from(captured.qpc)
+            && qpc != 0
+        {
+            self.command_anchors.insert(
+                (captured.world_generation, branch),
+                (qpc, clock.hour, clock.play_session_started_at),
+            );
+        }
         let conversion_started = current_qpc();
         let variables_baseline = campaign
             .encoder
@@ -3515,7 +3570,9 @@ impl Processor {
         let result = (|| {
             frame.storage = Some(self.receipt_storage(receipt_bytes, epoch, write_bytes)?);
             let campaign = self.campaigns.get_mut(&frame.id).unwrap();
-            campaign.tracker.admit_hour(frame.branch, frame.clock.hour)?;
+            campaign
+                .tracker
+                .admit_hour(frame.branch, frame.clock.hour)?;
             campaign.spool.write_frame(
                 work.staged.take().expect("queued frame was staged"),
                 receipt_bytes,
@@ -3637,6 +3694,17 @@ impl Processor {
         let mut failed = false;
         while let Some(completion) = self.writer.completion() {
             crate::allocation::set_context(completion.context);
+            if let Some(mut write) = self.command_inflight.remove(&completion.ticket) {
+                if completion.result.is_ok() {
+                    if let Some(campaign) = self.campaigns.get_mut(&write.id) {
+                        campaign.columnar.note(std::slice::from_ref(&write.record));
+                    }
+                } else {
+                    write.storage.take();
+                    self.command_ready
+                        .insert((write.world, write.ordinal), write);
+                }
+            }
             if completion.frame {
                 if self
                     .queued
@@ -4002,8 +4070,245 @@ impl Processor {
         Ok(())
     }
 
+    pub(crate) fn flush_commands(&mut self, final_drain: bool) -> io::Result<()> {
+        if !final_drain
+            && self.command_last_flush.elapsed() < std::time::Duration::from_secs(5)
+            && !crate::player_commands::urgent()
+        {
+            return Ok(());
+        }
+        let drained = self.command_drain.take(final_drain)?;
+        engine_allocation::reserve(&mut self.command_pending, drained.len())?;
+        self.command_pending.extend(drained);
+        self.command_last_flush = std::time::Instant::now();
+        if !self.session_verified {
+            return if final_drain && !self.command_pending.is_empty() {
+                Err(invalid("command capture session content was not verified"))
+            } else {
+                Ok(())
+            };
+        }
+        let mut index = 0;
+        while index < self.command_pending.len() {
+            let pending = &self.command_pending[index];
+            if !self.command_contexts.contains_key(&pending.world)
+                && let Some(context) = pending.context
+            {
+                let world = pending.world;
+                let id = campaign_name(&context.campaign)?;
+                let campaign = self.campaign(&id)?;
+                let branch = if campaign
+                    .world_generation
+                    .is_some_and(|current| current > world)
+                {
+                    campaign.tracker.past_commands(context.hour)?
+                } else {
+                    if campaign
+                        .world_generation
+                        .is_some_and(|previous| previous != world)
+                    {
+                        campaign.tracker.world_changed();
+                    }
+                    let branch = campaign
+                        .tracker
+                        .observe_commands(
+                            context.hour,
+                            replay::commands::load_marker(context.load_signal),
+                        )?
+                        .branch;
+                    campaign.world_generation = Some(world);
+                    branch
+                };
+                self.command_contexts.insert(world, (id, branch));
+                self.command_anchors.insert(
+                    (world, branch),
+                    (context.qpc, context.hour, context.load_signal),
+                );
+            }
+            let drained = &mut self.command_pending[index];
+            let Some((id, branch)) = self.command_contexts.get(&drained.world) else {
+                index += 1;
+                continue;
+            };
+            let campaign = self
+                .campaigns
+                .get_mut(id)
+                .ok_or_else(|| invalid("command campaign context disappeared"))?;
+            let ordinal = self.command_ordinals.entry(drained.world).or_default();
+            if *ordinal == 0 {
+                drained.batch.kinds = crate::player_commands::Drain::catalog()?;
+            }
+            let mut packet = replay::commands::Packet::pack(
+                *branch,
+                drained.capture,
+                drained.world,
+                *ordinal,
+                drained.from,
+                drained.to,
+                drained.lost,
+                &drained.batch,
+            )?;
+            if !self.command_definitions.contains(&(drained.world, *branch))
+                && let Some(context) = drained.context
+            {
+                let (qpc, hour, load_signal) = self
+                    .command_anchors
+                    .get(&(drained.world, *branch))
+                    .copied()
+                    .unwrap_or((context.qpc, context.hour, context.load_signal));
+                packet.phase = Some(replay::commands::Phase {
+                    start: campaign
+                        .tracker
+                        .branch_start(*branch)
+                        .ok_or_else(|| invalid("command branch context is missing"))?
+                        .clone(),
+                    campaign: context.campaign,
+                    qpc,
+                    hour,
+                    load_signal,
+                });
+            }
+            let write = CommandWrite {
+                id: engine_allocation::string(id)?,
+                world: drained.world,
+                ordinal: *ordinal,
+                record: Record::Control(ControlRecord::PlayerCommands {
+                    session: self.session.id,
+                    packet,
+                }),
+                attempted: false,
+                storage: None,
+            };
+            *ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| invalid("command packet ordinal exhausted"))?;
+            self.command_ready
+                .insert((write.world, write.ordinal), write);
+            self.command_definitions.insert((drained.world, *branch));
+            self.command_pending.remove(index);
+        }
+        if final_drain {
+            self.drain_writer()?;
+        }
+        self.submit_commands()?;
+        if final_drain {
+            self.drain_writer()?;
+            if !self.command_pending.is_empty()
+                || !self.command_ready.is_empty()
+                || !self.command_inflight.is_empty()
+            {
+                return Err(invalid(
+                    "command capture could not publish every packet before detach",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn submit_commands(&mut self) -> io::Result<()> {
+        let keys: Vec<_> = self.command_ready.keys().copied().collect();
+        for key in keys {
+            let Some(write) = self.command_ready.get(&key) else {
+                continue;
+            };
+            if !self.campaigns.contains_key(&write.id) {
+                return Err(invalid("command campaign context disappeared"));
+            }
+            if !write.attempted
+                && let Record::Control(ControlRecord::PlayerCommands { packet, .. }) = &write.record
+                && let Some(phase) = &packet.phase
+                && let Some(hour) = phase.start.loaded_hour
+                && self.queued.iter().any(|frame| {
+                    frame.id == write.id
+                        && frame.branch < phase.start.id
+                        && frame.clock.hour == hour
+                })
+            {
+                continue;
+            }
+            let bytes = match &write.record {
+                Record::Control(ControlRecord::PlayerCommands { packet, .. }) => {
+                    packet.storage_bytes()
+                }
+                _ => unreachable!(),
+            }
+            .checked_add(size_of::<CommandWrite>())
+            .and_then(|n| n.checked_add(write.id.capacity()))
+            .ok_or_else(engine_allocation::oom)?;
+            let storage = self.receipt_storage(bytes, self.writer.failure_epoch(), bytes)?;
+            if self
+                .command_ready
+                .range(..key)
+                .any(|(&(world, _), _)| world == key.0)
+            {
+                continue;
+            }
+            let mut write = self
+                .command_ready
+                .remove(&key)
+                .ok_or_else(|| invalid("command write disappeared"))?;
+            crate::allocation::set_context(crate::allocation::Context {
+                campaign_id: write.id.as_bytes().try_into().ok(),
+                ..Default::default()
+            });
+            let campaign_id = engine_allocation::string(&write.id)?;
+            let campaign = self.campaigns.get_mut(&write.id).unwrap();
+            if !write.attempted {
+                if let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
+                    &mut write.record
+                    && let Some(phase) = &mut packet.phase
+                {
+                    phase.start = campaign
+                        .tracker
+                        .branch_start(packet.branch)
+                        .ok_or_else(|| invalid("command branch context is missing"))?
+                        .clone();
+                }
+                write.attempted = true;
+            }
+            let standalone = !campaign.spool.is_open();
+            let result = (|| {
+                if standalone {
+                    let mut context = engine_allocation::vec(1)?;
+                    context.push(Record::SessionStart(campaign.session.try_clone()?));
+                    campaign.spool.start_context(context)?;
+                }
+                campaign.spool.append_tracked(write.record.clone(), bytes)
+            })();
+            match result {
+                Ok(Some(ticket)) => {
+                    write.storage = Some(storage);
+                    self.command_inflight.insert(ticket, write);
+                }
+                Ok(None) => self
+                    .campaigns
+                    .get_mut(&write.id)
+                    .unwrap()
+                    .columnar
+                    .note(std::slice::from_ref(&write.record)),
+                Err(error) => {
+                    self.campaigns
+                        .get_mut(&write.id)
+                        .unwrap()
+                        .reset_after_write_failure();
+                    self.command_ready.insert(key, write);
+                    return Err(error);
+                }
+            }
+            if standalone {
+                self.campaigns
+                    .get_mut(&campaign_id)
+                    .unwrap()
+                    .spool
+                    .finish_segment()?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn flush(&mut self) -> io::Result<()> {
         self.poll_writer()?;
+        self.flush_commands(false)?;
         match self.writer_error.take() {
             Some(kind) => Err(kind.into()),
             None => Ok(()),
@@ -4012,6 +4317,7 @@ impl Processor {
 
     pub fn detach(&mut self) -> io::Result<()> {
         self.drain_writer()?;
+        let command_error = self.flush_commands(true).err();
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Teardown);
         crate::allocation::attempted_hour(None);
@@ -4021,7 +4327,7 @@ impl Processor {
             }
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        let mut first_error = None;
+        let mut first_error = command_error;
         let summary_campaign = self
             .stats
             .campaign
@@ -5358,6 +5664,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -5373,6 +5680,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         let mut source = Captured::new();
         source.wars_snapshot_sampled = true;
@@ -5464,6 +5780,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -5479,6 +5796,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         let mut samples = vec![0];
         for floor_ms in [2, 4, 8, 16, 32, 64, 128, 256] {
@@ -5640,6 +5966,240 @@ mod tests {
         let retained = serde_json::to_value(&retained).unwrap();
         assert_eq!(retained, status["validation_refusals"]);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn paused_commands_publish_both_formats_with_or_without_a_later_hour() {
+        use replay::commands::{Batch, Event, Origin, Recording, Span};
+        for hourly in [None, Some(10), Some(11)] {
+            let directory = std::env::temp_dir().join(format!(
+                "hoi4-command-paused-{}-{}",
+                std::process::id(),
+                hourly.unwrap_or(-1)
+            ));
+            fs::create_dir_all(&directory).unwrap();
+            let mut processor =
+                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            processor
+                .command_pending
+                .push(crate::player_commands::Drained {
+                    capture: 1,
+                    world: 1,
+                    from: 100,
+                    to: 200,
+                    lost: 0,
+                    context: Some(crate::player_commands::WorldContext {
+                        campaign: ID.try_into().unwrap(),
+                        hour: 10,
+                        load_signal: 1234,
+                        qpc: 100,
+                    }),
+                    batch: Batch {
+                        events: vec![Event {
+                            paused: false,
+                            qpc: 150,
+                            hour: 10,
+                            actor: 0,
+                            player: 1,
+                            kind: 0,
+                            command_country: None,
+                            origin: Origin::Unresolved,
+                            sequence: 1,
+                        }],
+                        spans: vec![Span {
+                            paused: false,
+                            hour: 10,
+                            from_qpc: 100,
+                            to_qpc: 200,
+                            complete: true,
+                        }],
+                        ..Default::default()
+                    },
+                });
+            assert!(processor.flush_commands(true).is_err());
+            assert!(processor.campaigns.is_empty());
+            let mut verified = session();
+            verified.identity.verification = replay_data::identity::Verification::Verified {
+                launcher: Default::default(),
+                memory: Default::default(),
+            };
+            processor.set_verified_session(verified.clone()).unwrap();
+            processor.flush_commands(true).unwrap();
+            let command_branch = processor.command_contexts[&1].1;
+            assert!(
+                processor
+                    .campaigns
+                    .get_mut(std::str::from_utf8(ID).unwrap())
+                    .unwrap()
+                    .tracker
+                    .recorded_hours(command_branch)
+                    .unwrap()
+                    .is_empty()
+            );
+            if let Some(hour) = hourly {
+                let mut frame = captured(hour);
+                frame.world_generation = 1;
+                processor.frame(&frame).unwrap();
+                assert_eq!(processor.command_contexts[&1].1, command_branch);
+            }
+            processor.detach().unwrap();
+            drop(processor);
+            let campaign = directory.join(std::str::from_utf8(ID).unwrap());
+            let mut files: Vec<_> = fs::read_dir(&campaign)
+                .unwrap()
+                .flatten()
+                .filter(|file| file.file_name().to_string_lossy().starts_with("spool."))
+                .collect();
+            files.sort_by_key(|file| file.file_name());
+            let segments: Vec<_> = files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    (
+                        index as u32,
+                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    )
+                })
+                .collect();
+            let replay = replay::container::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+            let row_path = directory.join("paused.battleplan");
+            replay.write_atomic(&row_path).unwrap();
+            let history = replay.into_history().unwrap();
+            let tracker = history.tracker_for(&verified).unwrap();
+            assert_eq!(tracker.current_branch(), Some(command_branch));
+            assert_eq!(
+                tracker.recorded_hours(command_branch).unwrap().len(),
+                usize::from(hourly.is_some())
+            );
+            let mut prepared = PreparedCampaigns::load(&directory, &verified, |_| Ok(())).unwrap();
+            assert_eq!(
+                prepared.campaign_world_generation(std::str::from_utf8(ID).unwrap()),
+                Some(1)
+            );
+            let (resumed, lease) = prepared
+                .take(std::str::from_utf8(ID).unwrap(), &verified)
+                .unwrap();
+            assert_eq!(resumed.current_branch(), Some(command_branch));
+            drop((prepared, resumed, lease));
+            for path in [row_path, campaign.join("columnar.0.h4col")] {
+                let recording = Recording::open_path(&path).unwrap();
+                let commands: Vec<_> = recording
+                    .controls
+                    .iter()
+                    .filter_map(|control| match control {
+                        ControlRecord::PlayerCommands { packet, .. } => {
+                            Some(packet.unpack().unwrap())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    commands
+                        .iter()
+                        .map(|batch| batch.events.len())
+                        .sum::<usize>(),
+                    1
+                );
+                assert_eq!(commands[0].events[0].qpc, 150);
+                assert_eq!(recording.branches.len(), 1);
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn delayed_command_world_declares_its_branch_without_interrupting_hourly_frames() {
+        use replay::commands::{Batch, Span};
+        for later in [false, true] {
+            let directory = std::env::temp_dir()
+                .join(format!("hoi4-command-delayed-{}-{later}", std::process::id()));
+            let mut processor =
+                Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+            let mut verified = session();
+            verified.identity.verification = replay_data::identity::Verification::Verified {
+                launcher: Default::default(),
+                memory: Default::default(),
+            };
+            processor.set_verified_session(verified).unwrap();
+            let mut frame = captured(11);
+            frame.world_generation = 2;
+            processor.frame(&frame).unwrap();
+            let current = processor.command_contexts[&2].1;
+            processor
+                .command_pending
+                .push(crate::player_commands::Drained {
+                    capture: 1,
+                    world: 1,
+                    from: 100,
+                    to: 200,
+                    lost: 0,
+                    context: Some(crate::player_commands::WorldContext {
+                        campaign: ID.try_into().unwrap(),
+                        hour: 10,
+                        load_signal: 1234,
+                        qpc: 100,
+                    }),
+                    batch: Batch {
+                        spans: vec![Span {
+                            paused: false,
+                            hour: 10,
+                            from_qpc: 100,
+                            to_qpc: 200,
+                            complete: true,
+                        }],
+                        ..Default::default()
+                    },
+                });
+            processor.flush_commands(true).unwrap();
+            let past = processor.command_contexts[&1].1;
+            assert_ne!(past, current);
+            assert_eq!(
+                processor
+                    .campaigns
+                    .get_mut(std::str::from_utf8(ID).unwrap())
+                    .unwrap()
+                    .tracker
+                    .current_branch(),
+                Some(current)
+            );
+            if later {
+                let mut frame = captured(12);
+                frame.world_generation = 2;
+                processor.frame(&frame).unwrap();
+            }
+            processor.detach().unwrap();
+            drop(processor);
+            let campaign = directory.join(std::str::from_utf8(ID).unwrap());
+            let mut files: Vec<_> = fs::read_dir(&campaign)
+                .unwrap()
+                .flatten()
+                .filter(|file| file.file_name().to_string_lossy().starts_with("spool."))
+                .collect();
+            files.sort_by_key(|file| file.file_name());
+            let segments: Vec<_> = files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    (
+                        index as u32,
+                        replay::spool::recover_prefix(&fs::read(file.path()).unwrap()),
+                    )
+                })
+                .collect();
+            let row = Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+            assert_eq!(row.branches.len(), 2);
+            assert_eq!(
+                row.recorded_hours(current).unwrap().len(),
+                1 + usize::from(later)
+            );
+            assert!(row.recorded_hours(past).unwrap().is_empty());
+            let history = row.into_history().unwrap();
+            assert_eq!(history.session_tail(session().id).unwrap().branch, current);
+            let columns =
+                replay::commands::Recording::open_path(&campaign.join("columnar.0.h4col")).unwrap();
+            assert_eq!(columns.branches.len(), 2);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
@@ -6591,6 +7151,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -6606,6 +7167,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         let mut source = captured(10);
         prepare_order_counter_sample(&mut source, 10, 7);
@@ -6663,6 +7233,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -6678,6 +7249,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         for ns in [100, 200, 300] {
             processor.stats.callback.record_ns(ns);
@@ -6818,6 +7398,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -6833,6 +7414,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         assert_eq!(processor.json()["table_reads_recorded"], false);
         let counts = ReadCounts {
@@ -6878,6 +7468,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -6893,6 +7484,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         processor.stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()] = 11;
         processor.stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()] = 22;
@@ -8427,6 +9027,7 @@ mod tests {
             root: PathBuf::new(),
             history: PreparedCampaigns::default(),
             session: session(),
+            session_verified: false,
             campaigns: Campaigns::new(),
             stats: Statistics::default(),
             unknown_pending: 0,
@@ -8442,6 +9043,15 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
+            command_drain: Default::default(),
+            command_pending: Vec::new(),
+            command_contexts: Default::default(),
+            command_anchors: Default::default(),
+            command_ordinals: Default::default(),
+            command_definitions: Default::default(),
+            command_last_flush: std::time::Instant::now(),
+            command_ready: Default::default(),
+            command_inflight: Default::default(),
         };
         let loss = LostObservation {
             campaign_id: owned_text(b"../invalid"),

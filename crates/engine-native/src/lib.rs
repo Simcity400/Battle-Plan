@@ -135,6 +135,7 @@ pub mod coffer_air_base_access_relation;
 pub mod coffer_docking_rights_relation;
 pub mod coffer_military_access_relation;
 pub mod combat_sources;
+pub mod command_inputs;
 pub mod controller_areas;
 pub mod coperation;
 pub mod coperation_instance;

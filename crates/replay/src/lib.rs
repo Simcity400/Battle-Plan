@@ -4,6 +4,7 @@ pub mod columnar_file;
 pub mod columnar_frames;
 pub mod columnar_runs;
 pub mod columns;
+pub mod commands;
 pub mod compression;
 pub mod container;
 pub mod native_columns;

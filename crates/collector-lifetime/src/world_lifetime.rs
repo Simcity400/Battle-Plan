@@ -50,6 +50,10 @@ impl Signal {
         let admitted = self.admitted.load(Ordering::SeqCst);
         (admitted != 0 && admitted == self.generation.load(Ordering::SeqCst)).then_some(admitted)
     }
+    fn observed_generation(&self, enabled: bool) -> Option<u64> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        (enabled && generation != u64::MAX).then_some(generation)
+    }
 }
 static SIGNAL: Signal = Signal::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -59,6 +63,9 @@ static STATE_RELOAD_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
 pub fn generation() -> u64 {
     SIGNAL.generation.load(Ordering::SeqCst)
+}
+pub fn observed_generation() -> Option<u64> {
+    SIGNAL.observed_generation(ENABLED.load(Ordering::SeqCst))
 }
 pub fn token() -> Option<u64> {
     #[cfg(any(test, feature = "test-support"))]
@@ -379,6 +386,20 @@ mod tests {
         assert_eq!(signal.token(), None);
         signal.boundary(4, true);
         assert_eq!(signal.token(), Some(before + 3));
+    }
+    #[test]
+    fn command_generation_precedes_hourly_admission_without_admitting_other_observers() {
+        let signal = Signal::new();
+        assert_eq!(signal.observed_generation(false), None);
+        assert_eq!(signal.observed_generation(true), Some(1));
+        assert_eq!(signal.token(), None);
+        signal.invalidate();
+        assert_eq!(signal.observed_generation(true), Some(2));
+        assert_eq!(signal.token(), None);
+        signal.boundary(2, true);
+        assert_eq!(signal.token(), signal.observed_generation(true));
+        signal.generation.store(u64::MAX, Ordering::SeqCst);
+        assert_eq!(signal.observed_generation(true), None);
     }
     #[test]
     fn exhaustion_cannot_reopen_or_reuse_an_old_occurrence() {
