@@ -46,7 +46,7 @@ export default function RegionProvinces({ runtime, track, region, hour, active, 
       render: row => row.mud === null ? '—' : row.mud ? 'Mud' : '' },
   ], []);
   const current = state?.client === runtime.client && state.key === key ? state : undefined;
-  if (current?.error) return <WidgetState kind="error" what="the region's provinces" detail={current.error} />;
+  if (current?.error) return <WidgetState kind="error" what="the region’s provinces" detail={current.error} />;
   if (!current?.data) return <WidgetState kind="loading" label="Loading provinces…" />;
   if (!current.data.provinces.length) return <p className="drill-empty">No provinces are recorded for this region at this date.</p>;
   return <Table label="Provinces of this region" rows={current.data.provinces} columns={columns} rowKey={rowKey}

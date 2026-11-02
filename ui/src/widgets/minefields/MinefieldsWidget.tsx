@@ -177,7 +177,7 @@ function ReportTable({ reply, error, name, hoursPerSecond }: { reply?: ReportsRe
     { key: 'owner', header: 'Mines of', label: 'Mines of', width: 'minmax(80px, 1fr)', priority: 1, value: row => country(row.mineOwner) },
     { key: 'sunk', header: 'Sunk', label: 'Sunk', width: 'max-content', value: row => row.sunk ? 'Sunk' : 'Damaged' },
   ], [country]);
-  if (error) return <WidgetState kind="error" what="the region's reports" detail={error} />;
+  if (error) return <WidgetState kind="error" what="the region’s reports" detail={error} />;
   if (!reply) return <WidgetState kind="loading" label="Loading reports…" />;
   if (!reply.reports.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="Standing reports in this region were not recorded at this date." />
     : <p className="drill-empty">No standing reports in this region at this date.</p>;

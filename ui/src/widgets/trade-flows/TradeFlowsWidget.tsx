@@ -456,7 +456,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       {countryHolder ? countryReply.error && countryKey ? <WidgetState kind="error" detail={countryReply.error} onRetry={countryReply.retry} />
         : !countryData ? <WidgetState kind="loading" label="Loading this country's trade…" />
         // A failed read of one hovered hour says so and can be retried; the country's history stays.
-        : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour's trade" detail={countryPoint.error} onRetry={countryPoint.retry} />}
+        : <>{countryPoint.error && countryKey && <WidgetState kind="error" what="this hour’s trade" detail={countryPoint.error} onRetry={countryPoint.retry} />}
           <TradeCountryView holder={countryHolder} trade={countryData} prepared={countryPrepared} resources={resourceIds} track={track} runtime={runtime} measure={measure} from={from}
           hour={countryShown} extent={extent} playhead={effectiveDrill.follow ? Math.floor(playbackHour) + track.axisOffset : null}
           colours={resourceColour} tokens={tokens} active={active && effectiveDrill.breakdown != null}

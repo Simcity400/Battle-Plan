@@ -153,7 +153,7 @@ function WingTable({ reply, error, missions, hoursPerSecond }: { reply?: AirWing
     { key: 'efficiency', header: 'Efficiency', label: 'Efficiency', numeric: true, width: 'max-content', priority: 3,
       value: row => row.efficiency === null ? null : Number(row.efficiency), render: row => efficiencyText(row.efficiency) },
   ], [names]);
-  if (error) return <WidgetState kind="error" what="the region's wings" detail={error} />;
+  if (error) return <WidgetState kind="error" what="the region’s wings" detail={error} />;
   if (!reply) return <WidgetState kind="loading" label="Loading wings…" />;
   if (!reply.wings.length) return reply.readHour === null ? <WidgetState kind="unavailable" message="This region's wings were not recorded at this date." />
     : <WidgetState kind="empty" message="No wings are assigned here at this date." />;

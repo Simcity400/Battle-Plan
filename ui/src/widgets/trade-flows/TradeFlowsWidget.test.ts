@@ -214,7 +214,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     state.pointHour = 130; state.pointError = 'refused';
     markup = render();
     assert.ok(state.requests.some(request => (request as { params: { hours?: number[] } }).params.hours?.[0] === 130), 'the hovered hour is read');
-    assert.match(markup, /Couldn’t load this hour's trade\./);
+    assert.match(markup, /Couldn’t load this hour’s trade\./);
     assert.match(markup, /country view/, 'the history stays');
   } finally { await vite.close(); delete globals.__tradeCountry; }
 });
