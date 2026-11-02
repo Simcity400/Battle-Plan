@@ -257,6 +257,55 @@ export const useFollowedProducts = (client, requests, _moving, ...rest) => ({ ..
   } };
 }
 
+for (const mode of ['bars', 'time'] as const) {
+  test(`a saved stockpile with ${mode} settings reads only its dated country, without overview requests`, async () => {
+    const view = await fixture();
+    try {
+      host.__stockCatalogue = { branchId: '1', warnings: [], humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+        unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [
+          { tag: 'AAA', identities: [{ firstHour: 0, lastHour: 109, slot: 1, countryId: 10 }] },
+          { tag: 'Y', identities: [{ firstHour: 110, lastHour: 200, slot: 1, countryId: 10 }] },
+        ] };
+      host.__stockReplies = [reply, { ...reply, tag: 'Y', variants: reply.variants.map(variant => ({ ...variant, stock: raw('1300000') })) }];
+      const pinned = { ...view.widget, time: { mode: 'pin', windows: { track: { firstOffset: 112, lastOffset: 112 } } }, options: {
+        show: 'stockpile', view: mode, partGroup: setToken('mod/rifles'),
+        stockpileCountry: datedCountryToken({ campaign: 'campaign-a', branch: '1', tag: 'AAA', originOffset: 105 }),
+      } } as WidgetSpec;
+      view.render(pinned);
+      assert.deepEqual(host.__stockRequests!.filter(request => request.product === 'equipment-stockpile-catalogue').map(request => request.params), [
+        { branchId: '1', holders: [{ tag: 'AAA', within: [{ firstHour: 0, lastHour: 109 }] },
+          { tag: 'Y', within: [{ firstHour: 110, lastHour: 200 }] }], included: [] },
+      ]);
+      assert.deepEqual(host.__stockRequests!.filter(request => request.product === 'equipment-stockpile-at').map(request => request.params), [
+        { branchId: '1', tag: 'Y', hour: 112 }, { branchId: '1', tag: 'Y', hour: 112 },
+      ]);
+      assert.equal(host.__stockHour, 112);
+      assert.equal(host.__stockChip!.props.label!.name, 'Y at 112');
+      assert.deepEqual(host.__stockParts!.map(part => [part.label, part.raw]), [['Recorded rifles', 1300000n]]);
+      view.render(pinned, view.runtime, false);
+      assert.deepEqual(host.__stockRequests, []);
+    } finally { await view.close(); }
+  });
+
+  test(`the stockpile ${mode} overview reads its catalogue and displayed hour`, async () => {
+    const view = await fixture();
+    try {
+      host.__stockWithin = [span];
+      const widget = { ...view.widget, options: { view: mode } };
+      view.render(widget);
+      assert.deepEqual(host.__stockRequests!.filter(request => request.product === 'equipment-stockpile-catalogue').map(request => request.params), [
+        { branchId: '1', holders: [{ tag: 'AAA', within: [span] }], included: [] },
+      ]);
+      const hour = { branchId: '1', tag: 'AAA', hour: 150 };
+      assert.deepEqual(host.__stockRequests!.filter(request => request.product === 'equipment-stockpile-at').map(request => request.params),
+        mode === 'time' ? [hour, hour] : [hour]);
+      assert.equal(host.__stockCharts!.length, mode === 'time' ? 1 : 0);
+      view.render(widget, view.runtime, false);
+      assert.deepEqual(host.__stockRequests, []);
+    } finally { await view.close(); }
+  });
+}
+
 test('stockpile artwork slots use a fallback and best-design names appear only on hover', async () => {
   const view = await fixture();
   try {
@@ -368,7 +417,8 @@ test('an actual row opens inside, history holds its picked day, Follow uses play
         catalogueHolders.add(JSON.stringify(request.params.holders));
       }
     }
-    assert.deepEqual(catalogueHolders, new Set(['[{"tag":"AAA"}]', '[{"tag":"AAA","within":[{"firstHour":0,"lastHour":200}]}]']));
+    // The saved view reads only its dated country's catalogue, never the overview's.
+    assert.deepEqual(catalogueHolders, new Set(['[{"tag":"AAA","within":[{"firstHour":0,"lastHour":200}]}]']));
   } finally { await view.close(); }
 });
 

@@ -70,7 +70,8 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, holders, catalogue, data: reply, error, retry } = useEquipmentStockpile(widget, runtime, active, within);
+  const saved = options.show === BREAKDOWN.id;
+  const { track, tag, holders, catalogue, data: reply, error, retry } = useEquipmentStockpile(widget, runtime, active && !saved, within);
   const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
     balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
   const windowHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
@@ -93,7 +94,6 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
   const [drillOwner, setDrillOwner] = useState<object | null>(null);
   const [selection, setSelection] = useState<{ owner: object; key: string; mode: StockpileMode } | null>(null);
   const shownDrill = drillOwner === pickOwner ? drill : CLOSED;
-  const saved = options.show === BREAKDOWN.id;
   const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
   // The breakdown shows a type's models; the mode a pin records follows the row opened.
   const mode: StockpileMode = selection?.mode ?? 'stock';
@@ -161,7 +161,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     const playing = runtime.clock.getSnapshot().playing;
     act({ type: 'open', breakdown: BREAKDOWN.id, hour, playing, playhead: playhead ?? (playing ? playbackHour : null) });
   };
-  const main = data ? <div className="equipment-stockpile">
+  const main = !saved && data ? <div className="equipment-stockpile">
     {options.view === 'time'
       ? <OverTime data={data} catalogue={catalogue} holders={holders} included={included} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track}
         extent={extent} playhead={playhead} active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
