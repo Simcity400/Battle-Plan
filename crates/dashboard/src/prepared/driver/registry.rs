@@ -168,8 +168,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         status: &["occupation-reserve"],
         queries: &["occupation-reserve-manpower"],
         gates: &["occupation-reserve-manpower"],
-        // 2: the scan's runs on the segment driver, published as a series root.
-        version: 2,
+        // 4: every reserve view requires existence at its supplying read.
+        version: 4,
         ..family("occupation-reserve")
     },
     Descriptor {

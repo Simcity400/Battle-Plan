@@ -91,15 +91,10 @@ test('a country chosen by its old tag keeps its reserve in the race after it is 
   } finally { delete host.__occupationRenamed; await close(); }
 });
 
-test('All countries keeps every existing zero-reserve holder and excludes unused or other native holders at the supplying read', async () => {
-  const tags = Array.from({ length: 150 }, (_, index) => `Country ${String(index).padStart(3, '0')}`);
-  const unused = Array.from({ length: 72 }, (_, index) => `Unused ${index}`);
-  const holders = [...tags, ...unused, 'Future'].map((tag, index) => ({ tag, slot: index + 1 }));
-  holders.push({ tag: tags[0], slot: 9999 });
-  const groups: CountryGroupReply = { ...pendingGroups({ final: true }), countryIdentities: [
-    ...tags.map((tag, index) => ({ tag, identities: [{ firstHour: 100, lastHour: 125, slot: index + 1, countryId: index + 101 }] })),
-    { tag: 'Future', identities: [{ firstHour: 101, lastHour: 200, slot: holders.length - 1, countryId: 999 }] },
-  ] };
+test('All countries displays the filtered reserve reply without loading or gating on identities', async () => {
+  const tags = Array.from({ length: 1500 }, (_, index) => `Country ${String(index).padStart(4, '0')}`);
+  const holders = tags.map((tag, index) => ({ tag, slot: index + 1 }));
+  const groups = { ...pendingGroups({ final: true }), countryIdentities: [] } as CountryGroupReply;
   const state = { groups: groups as CountryGroupReply | undefined, error: undefined as Error | undefined,
     reply: { ...reply, holders, sources: {}, window: { ...reply.window, reads: [[100, 200, 100]],
       series: holders.map(holder => ({ name: `${holder.tag}@${holder.slot}|holder`, runs: [[100, 200, '1', true]] })) } } as OccupationReserveReply,
@@ -125,23 +120,64 @@ test('All countries keeps every existing zero-reserve holder and excludes unused
         trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'follow' }, options: {} },
       runtime: runtime(150), active: true, onDiagnostics() {} } as unknown as WidgetProps));
     };
-    render();
-    assert.equal(state.groupsActive, true);
-    assert.deepEqual(state.view!.ranked.map(entry => entry.tag), tags, 'existence uses native identities, independent of missing names or zero reserves');
-    assert.ok(state.view!.ranked.every(entry => entry.value === 0 && entry.label === '0'));
-    assert.deepEqual(state.view!.countryTags, tags);
-    assert.deepEqual(state.looks, [{ tags, hour: 100, exact: true }], 'all 150 existing countries are requested at the reserve read');
+    const assertRace = () => {
+      render();
+      assert.equal(state.groupsActive, false);
+      assert.deepEqual(state.view!.ranked.map(entry => entry.tag), tags);
+      assert.ok(state.view!.ranked.every(entry => entry.value === 0 && entry.label === '0'));
+      assert.deepEqual(state.view!.countryTags, tags);
+      assert.deepEqual(state.looks, [{ tags, hour: 100, exact: true }]);
+    };
+    assertRace();
     state.groups = undefined;
-    assert.match(render(), /Loading occupation manpower/);
-    assert.equal(state.view, undefined, 'unread identities cannot admit an empty race');
+    assertRace();
     state.error = new Error('Synthetic identity read failure');
-    assert.match(render(), /role="alert"/);
-    assert.equal(state.view, undefined);
+    assertRace();
     state.error = undefined;
     state.groups = { ...groups, coverage: { firstHour: 0, lastHour: 99, complete: false }, pending: [{ firstHour: 100, lastHour: 200 }] } as CountryGroupReply;
-    assert.match(render(), /This range is still being prepared/);
+    assertRace();
+    state.reply = { ...state.reply, window: { ...state.reply.window, known: [], series: [] } };
+    assert.match(render(), /Occupation manpower was not recorded at this time/);
     assert.equal(state.view, undefined);
   } finally { delete host.__occupationExisting; await close(); }
+});
+
+test('every race mode leaves nonexistent holders absent and top slots fill with real zeros', async () => {
+  const tags = ['DEAD', 'BORN', 'ZERO', 'DORMANT'];
+  const filtered: OccupationReserveReply = { ...reply, holders: tags.map((tag, index) => ({ tag, slot: index + 1 })), sources: {},
+    window: { ...reply.window, reads: [[0, 99, 0], [100, 149, 100], [150, 200, 150]], series: [
+      { name: 'DEAD@1|holder', runs: [[0, 99, '1', true]] },
+      { name: 'DEAD@1|0|amount', runs: [[0, 99, '700', true]] },
+      { name: 'BORN@2|holder', runs: [[100, 149, '1', true]] },
+      { name: 'BORN@2|0|amount', runs: [[100, 149, '500', true]] },
+      { name: 'ZERO@3|holder', runs: [[0, 200, '1', true]] },
+    ] } };
+  const groups = pendingGroups({ final: true, tags, humans: tags.map(tag => ({ tag, firstHour: 0, lastHour: 200 })) });
+  const state = { groups, reply: filtered, track: runtime(0).tracks[0], view: undefined as CountryRaceViewProps | undefined };
+  const host = globalThis as typeof globalThis & { __occupationLifecycle?: typeof state }; host.__occupationLifecycle = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>(
+    '/ui/src/widgets/occupation-reserve-manpower/OccupationReserveWidget.tsx', replacements('__occupationLifecycle'));
+  try {
+    const modes: WidgetProps['widget']['countries'][] = [
+      { kind: 'all' }, { kind: 'tags', tags }, { kind: 'selected' },
+      ...[1, 5].map(count => ({ kind: 'group' as const, group: { type: 'top' as const, count }, membership: 'hour' as const, aggregate: false })),
+      ...(['hour', 'end', 'ever'] as const).map(humansBy),
+    ];
+    for (const countries of modes) for (const hour of [50, 125, 175]) {
+      const alive = hour < 100 ? ['DEAD', 'ZERO'] : hour < 150 ? ['BORN', 'ZERO'] : ['ZERO'];
+      for (const selectedTag of ['DEAD', 'BORN']) {
+        state.view = undefined as CountryRaceViewProps | undefined;
+        renderToStaticMarkup(createElement(module.default, { widget: { id: 'occupation', kind: 'occupation-reserve-manpower',
+          trackIds: ['main'], countries, time: { mode: 'follow' }, options: {} },
+          runtime: { ...runtime(hour), tracks: [{ ...runtime(hour).tracks[0], selectedTag }] }, active: true, onDiagnostics() {} } as unknown as WidgetProps));
+        const expected = countries.kind === 'selected' ? alive.filter(tag => tag === selectedTag)
+          : countries.kind === 'group' && countries.group.type === 'top' ? alive.slice(0, countries.group.count) : alive;
+        assert.deepEqual(state.view?.ranked.map(entry => entry.tag), expected, `${JSON.stringify(countries)} at ${hour}`);
+        const zero = state.view?.ranked.find(entry => entry.tag === 'ZERO');
+        if (expected.includes('ZERO')) assert.equal(zero?.value, 0);
+      }
+    }
+  } finally { delete host.__occupationLifecycle; await close(); }
 });
 
 test('a group member renamed before the hour shown keeps its reserve under its earlier tag', async () => {

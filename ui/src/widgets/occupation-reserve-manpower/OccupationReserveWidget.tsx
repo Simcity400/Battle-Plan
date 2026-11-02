@@ -55,8 +55,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const all = widget.countries.kind === 'all';
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const manual = widget.countries.kind === 'tags' || widget.countries.kind === 'selected';
-  // Native identities distinguish real holders from unused slots and follow renames.
-  const groups = useCountryGroups(runtime, track, active && (all || grouped || manual || drill.breakdown !== null || widget.options?.show === 'breakdown'));
+  const groups = useCountryGroups(runtime, track, active && (grouped || manual || drill.breakdown !== null || widget.options?.show === 'breakdown'));
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
@@ -75,14 +74,11 @@ export default function OccupationReserveWidget(props: WidgetProps) {
     // Admitted holders and any with a recorded entry stay reachable, proven zeros included.
     const ranked = [...at.holders].filter(holder => holder.admitted || holder.entries.length > 0)
       .sort((a, b) => a.positive > b.positive ? -1 : a.positive < b.positive ? 1 : a.tag.localeCompare(b.tag));
-    if (all) return ranked.filter(holder => {
-      const identity = identities?.keyAt(holder.tag, readHour);
-      return identity != null && (JSON.parse(identity) as [number, number])[0] === countryPart(holder.holder)?.slot;
-    });
+    if (all) return ranked;
     const candidates = new Set(rankedCandidates(counted, moment, ranked.map(holder => holder.tag)));
     const kept = ranked.filter(holder => candidates.has(holder.tag));
     return resolved.top != null ? kept.slice(0, resolved.top) : kept;
-  }, [at, all, identities, readHour, counted, resolved.top, moment]);
+  }, [at, all, counted, resolved.top, moment]);
   const sources = useMemo(() => [...new Set(shown.flatMap(holder => holder.entries.map(entry => entry.source ?? UNRESOLVED)))], [shown]);
   const sourceTags = useMemo(() => sources.flatMap(source => source === UNRESOLVED ? [] : [countryPart(source)!.tag]), [sources]);
   const holderTags = useMemo(() => shown.map(holder => holder.tag), [shown]);
@@ -118,13 +114,13 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   if (!window && widget.time.mode !== 'campaign') return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} />;
   if (error) return <WidgetState kind="error" failure={asFailure(error)} onRetry={retry} />;
-  const groupFailure = (all || grouped) && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;
   if (resolved.reason && widget.countries.kind !== 'all') return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group with no member found at the moment says why once that moment is read, and loads until then.
   if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
-  if (!data || (all || grouped) && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
-  if (pendingReplyAt(data, moment) || all && pendingReplyAt(groups.data, readHour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
+  if (pendingReplyAt(data, moment)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   if (!at) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." /></>;
   const tooltip = (tag: string, _hour: number, name: string): TooltipContent[] | null => {
     const reserve = byTag.get(tag);

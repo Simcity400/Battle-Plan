@@ -681,3 +681,17 @@ test('the key check refuses every template it passes, other than a loose one, on
   }).map(({ kind, template }) => `${kind}: ${template.product}`);
   assert.deepEqual(lax, []);
 });
+
+test('every reserve race mode uses the same existence-filtered product contract', () => {
+  const widget = createWidget('occupation-reserve-manpower', 'main');
+  const selections: WidgetSpec['countries'][] = [
+    { kind: 'all' }, { kind: 'selected' }, { kind: 'tags', tags: ['GER'] },
+    { kind: 'group', group: { type: 'top', count: 10 }, membership: 'hour', aggregate: false },
+    { kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false },
+  ];
+  for (const countries of selections) {
+    const request = built.occupationReserveRequest({ ...widget, countries }, TRACKS[0]);
+    assert.deepEqual(request?.params, { branchId: TRACKS[0].branch.id, view: 'race',
+      ...countries.kind === 'tags' ? { tags: ['GER'] } : {} });
+  }
+});

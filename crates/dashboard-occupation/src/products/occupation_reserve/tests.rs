@@ -2,8 +2,8 @@ use super::*;
 use dashboard_base::test_fixtures::world_frame;
 use dashboard_keyed::{Scan, query};
 use replay_data::rows::{
-    CountryLinkRow, CountryOccupationReserveManpowerRow, CountryRow, OccupationSettingsRow,
-    TableRows,
+    CountryCounterInputRow, CountryLinkRow, CountryOccupationReserveManpowerRow, CountryRow,
+    OccupationSettingsRow, TableRows,
 };
 use replay_frame::frame::TableView;
 
@@ -61,6 +61,16 @@ fn frame(
                 .collect(),
         ));
     frame.metrics.table_ns[TableId::OccupationSettings.index()] = u64::from(fresh);
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(
+            (1..=count)
+                .map(|country| CountryCounterInputRow {
+                    country,
+                    owned_state_count: 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
     frame
 }
 fn params(value: serde_json::Value) -> OccupationReserveParams {
@@ -566,6 +576,296 @@ fn native_tables(walk: &mut replay::columnar_frames::synthetic::Synthetic, frame
     write::<tables::OccupationSettings>(walk, frame);
     write::<tables::CountryLinks>(walk, frame);
     write::<tables::Countries>(walk, frame);
+    write::<tables::CountryCounterInputs>(walk, frame);
+}
+
+fn existing_holders(reply: &OccupationReserveReply, hour: i32) -> Vec<String> {
+    let mut holders: Vec<_> = reply
+        .window
+        .series
+        .iter()
+        .filter(|series| {
+            series.name.ends_with("|holder")
+                && series.runs.iter().any(|run| run.0 <= hour && hour <= run.1)
+        })
+        .map(|series| series.name.strip_suffix("|holder").unwrap().to_owned())
+        .collect();
+    holders.sort();
+    holders
+}
+
+fn lifecycle_frames() -> Vec<DecodedFrame> {
+    (100..=104)
+        .map(|hour| {
+            let mut frame = frame(
+                hour,
+                Some(&[(1, 0, 4, 900), (3, 0, 4, 400), (4, 0, 5, 50)]),
+                hour % 2 == 0,
+                6,
+            );
+            if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+                &mut *frame.tables[TableId::CountryCounterInputs.index()]
+            {
+                for row in rows {
+                    row.owned_state_count = match row.country {
+                        2 => i32::from(hour >= 101),
+                        3 => i32::from(hour < 101),
+                        4 | 5 => 1,
+                        6 => -1,
+                        _ => 0,
+                    };
+                }
+            }
+            frame
+        })
+        .collect()
+}
+
+#[test]
+fn top_fills_only_from_existing_holders_at_the_supplying_read() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    for frame in lifecycle_frames() {
+        observe(&mut scan, &frame);
+    }
+    publish(&mut scan, &fixture);
+    for (hour, slots) in [
+        (100, vec![3, 4, 5]),
+        (101, vec![3, 4, 5]),
+        (102, vec![4, 2, 5]),
+    ] {
+        for count in [2, 5] {
+            let reply = load(
+                &fixture,
+                &params(serde_json::json!({"branchId":"1","top":count})),
+                100,
+                104,
+                Some(hour),
+            );
+            assert_eq!(
+                reply
+                    .holders
+                    .iter()
+                    .map(|holder| holder.slot)
+                    .collect::<Vec<_>>(),
+                slots.iter().copied().take(count).collect::<Vec<_>>(),
+                "top {count} at {hour}"
+            );
+            assert!(run(&reply, "Mod 1@1|0|amount").is_none());
+            assert!(run(&reply, "Mod 6@6|holder").is_none());
+        }
+    }
+}
+
+#[test]
+fn chosen_holders_are_absent_before_birth_and_after_death_at_reserve_reads() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    for frame in lifecycle_frames() {
+        observe(&mut scan, &frame);
+    }
+    publish(&mut scan, &fixture);
+    for selector in ["Mod 2", "Mod 2@2", "Mod 3", "Mod 3@3"] {
+        for selection in [
+            serde_json::json!({"branchId":"1","tags":[selector]}),
+            serde_json::json!({"branchId":"1","view":"holder","tag":selector}),
+        ] {
+            let reply = load(&fixture, &params(selection.clone()), 100, 104, None);
+            let born = selector.starts_with("Mod 2");
+            let key = if born { "Mod 2@2" } else { "Mod 3@3" };
+            let span = if born { (102, 104) } else { (100, 101) };
+            assert_eq!(
+                run(&reply, &format!("{key}|holder")).unwrap().runs,
+                [(span.0, span.1, "1".into(), true)]
+            );
+            for hour in 100..=104 {
+                assert_eq!(
+                    existing_holders(&reply, hour),
+                    if (span.0..=span.1).contains(&hour) {
+                        vec![key]
+                    } else {
+                        vec![]
+                    }
+                );
+            }
+            if !born {
+                assert_eq!(
+                    run(&reply, &format!("{key}|0|amount")).unwrap().runs,
+                    [(100, 101, "400".into(), true)]
+                );
+                assert_eq!(
+                    reply
+                        .sources
+                        .values()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>(),
+                    ["Mod 4@4"]
+                );
+            }
+            let absent = if born { (100, 101) } else { (102, 104) };
+            let absent = load(&fixture, &params(selection), absent.0, absent.1, None);
+            assert!(!absent.window.known.is_empty());
+            assert!(absent.holders.is_empty());
+            assert!(absent.window.series.is_empty());
+            assert!(absent.sources.is_empty());
+        }
+    }
+}
+
+#[test]
+fn existing_race_uses_owned_states_at_each_reserve_read_and_follows_renames() {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let mut scan = Scan::default();
+    let mut frames = Vec::new();
+    for hour in 100..=104 {
+        let mut frame = frame(
+            hour,
+            Some(&[(4, 0, 1, 900)]),
+            hour != 101 && hour != 103,
+            1500,
+        );
+        if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+            &mut *frame.tables[TableId::CountryCounterInputs.index()]
+        {
+            for row in rows {
+                row.owned_state_count = match row.country {
+                    1 => 1,
+                    2 => i32::from(hour >= 101),
+                    3 => i32::from(hour < 101),
+                    5 => -1,
+                    _ => 0,
+                };
+                row.controlled_state_count = 20;
+                if row.country == 3 {
+                    row.country = 9003;
+                }
+            }
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            rows.push(CountryLinkRow {
+                id: 9003,
+                canonical_slot: 3,
+            });
+        }
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            for (index, row) in rows.iter_mut().enumerate().skip(1428) {
+                row.tag = format!("D{}", index - 1428).into_bytes();
+            }
+            if hour == 104 {
+                rows[0].tag = b"Renamed holder".to_vec();
+            }
+        }
+        observe(&mut scan, &frame);
+        frames.push(frame);
+    }
+    dashboard_keyed::native::testing::assert_published_as_walked::<OccupationReserveObserver>(
+        &frames,
+        native_tables,
+        &[1, 2, 4],
+        &[101, 104],
+        Some(101),
+        "existence at supplying reads",
+    );
+    publish(&mut scan, &fixture);
+    let reply = load(
+        &fixture,
+        &params(serde_json::json!({"branchId":"1"})),
+        100,
+        104,
+        None,
+    );
+    assert_eq!(existing_holders(&reply, 100), ["Mod 1@1", "Mod 3@3"]);
+    assert_eq!(existing_holders(&reply, 101), ["Mod 1@1", "Mod 3@3"]);
+    assert_eq!(existing_holders(&reply, 102), ["Mod 1@1", "Mod 2@2"]);
+    assert_eq!(
+        existing_holders(&reply, 104),
+        ["Mod 2@2", "Renamed holder@1"]
+    );
+    assert!(
+        reply
+            .window
+            .series
+            .iter()
+            .all(|series| series.name.ends_with("|holder")),
+        "real zero reserves stay; a nonexistent holder's positive reserve cannot admit it"
+    );
+    assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
+    let top = load(
+        &fixture,
+        &params(serde_json::json!({"branchId":"1","top":2})),
+        100,
+        104,
+        None,
+    );
+    assert_eq!(existing_holders(&top, 104), ["Mod 2@2", "Renamed holder@1"]);
+    for selection in [
+        serde_json::json!({"tags":["Mod 4"]}),
+        serde_json::json!({"view":"holder","tag":"Mod 4@4"}),
+    ] {
+        let mut selection = selection;
+        selection["branchId"] = "1".into();
+        let selected = load(&fixture, &params(selection), 100, 104, None);
+        assert!(selected.window.series.is_empty());
+        assert!(selected.holders.is_empty());
+    }
+}
+
+#[test]
+fn missing_existence_is_unknown_in_every_view_until_a_new_reserve_read() {
+    for missing in [
+        TableView::Unavailable {
+            reason: "Synthetic count refusal".into(),
+        },
+        TableView::Truncated {
+            rows: TableRows::CountryCounterInputs(Vec::new()),
+            missing: 1,
+        },
+        TableView::Complete(TableRows::CountryCounterInputs(Vec::new())),
+    ] {
+        let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+        let mut scan = Scan::default();
+        let mut refused = frame(100, Some(&[]), true, 1);
+        *refused.tables[TableId::CountryCounterInputs.index()] = missing;
+        observe(&mut scan, &refused);
+        observe(&mut scan, &frame(101, Some(&[]), false, 1));
+        observe(&mut scan, &frame(102, Some(&[]), true, 1));
+        publish(&mut scan, &fixture);
+        for selection in [
+            serde_json::json!({"branchId":"1"}),
+            serde_json::json!({"branchId":"1","top":3}),
+            serde_json::json!({"branchId":"1","tags":["Mod 1"]}),
+            serde_json::json!({"branchId":"1","view":"holder","tag":"Mod 1@1"}),
+        ] {
+            let reply = load(&fixture, &params(selection.clone()), 100, 102, None);
+            assert_eq!(
+                reply
+                    .window
+                    .known
+                    .iter()
+                    .map(|span| (span.first_hour, span.last_hour))
+                    .collect::<Vec<_>>(),
+                [(102, 102)]
+            );
+            assert_eq!(
+                run(&reply, "Mod 1@1|holder").unwrap().runs,
+                [(102, 102, "1".into(), true)]
+            );
+            assert!(
+                reply
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("existence unavailable"))
+            );
+            let unknown = load(&fixture, &params(selection), 100, 101, None);
+            assert!(unknown.window.known.is_empty());
+            assert!(unknown.window.series.is_empty());
+            assert!(unknown.holders.is_empty());
+        }
+    }
 }
 
 /// GER holds ITA's 500 in reserve; ITA becomes RSI at hour 130, between the occupation walk's
@@ -588,8 +888,7 @@ fn reserve(hour: i32) -> DecodedFrame {
                 })
                 .into(),
         ));
-    *frame.tables[TableId::CountryOccupationReserveManpower.index()] = if (152..154)
-        .contains(&hour)
+    *frame.tables[TableId::CountryOccupationReserveManpower.index()] = if (152..154).contains(&hour)
     {
         TableView::Unavailable {
             reason: "Synthetic reserve refusal".into(),
@@ -617,7 +916,11 @@ fn the_native_publication_holds_what_the_walks_scan_holds() {
     for (starts, cuts, resume) in [
         (&[][..], &[160][..], None),
         (&[5, 10][..], &[127, 140, 160][..], Some(140)),
-        (&[1, 7, 24, 29, 30][..], &[129, 147, 152, 160][..], Some(147)),
+        (
+            &[1, 7, 24, 29, 30][..],
+            &[129, 147, 152, 160][..],
+            Some(147),
+        ),
     ] {
         let label = format!("starts {starts:?}, cuts {cuts:?}, resume {resume:?}");
         let (native, walked) = dashboard_keyed::native::testing::assert_published_as_walked::<

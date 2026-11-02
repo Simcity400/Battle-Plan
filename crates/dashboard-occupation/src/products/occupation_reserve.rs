@@ -12,11 +12,13 @@
 //! `TAG@slot`). An ordinal is list order, not a transfer or a lifetime. Positive
 //! amounts alone determine race order; negatives stay signed.
 
-use dashboard_base::products::{Product, check_reply_budget, validate_tag};
+use dashboard_base::products::{
+    Product, check_reply_budget, country_groups::HourSpan, validate_tag,
+};
 use dashboard_keyed::{
     Observer as KeyedObserver, Values,
     countries::{self, Countries},
-    query::{KeyedWindow, Opened, Query},
+    query::{KeyedSeries, KeyedWindow, Opened, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
@@ -76,12 +78,16 @@ pub struct OccupationReserveReply {
     pub warnings: Vec<String>,
 }
 
-const UNADMITTED: &str = "Reserve holders unavailable: occupation statuses not recorded at the supplying read (reads)";
+const UNADMITTED: &str =
+    "Reserve holders unavailable: occupation statuses not recorded at the supplying read (reads)";
 const UNJOINED: &str =
     "Reserve holder identities unavailable: countries not recorded at the supplying read (reads)";
 const UNSPELLED: &str =
     "Country tag cannot be represented by the keyed name grammar (holder observations)";
 const UNNAMED: &str = "Reserve holder identity unavailable (holder observations)";
+const UNEXISTING: &str =
+    "Country existence unavailable: owned-state counts missing at the reserve read (reads)";
+const EXISTENCE: &str = "existence";
 
 /// A supplying read's identity join and admitted holders, not the later playback hour's.
 #[derive(Default, Serialize, Deserialize)]
@@ -92,6 +98,7 @@ struct Bindings {
     holders: Vec<String>,
     /// Admitted holders the read cannot name: [tag outside the grammar, identity unresolved].
     unnamed: [u64; 2],
+    existing: Option<Vec<String>>,
 }
 
 impl Bindings {
@@ -131,6 +138,36 @@ impl Bindings {
                 None => unnamed[1] += 1,
             }
         }
+        let existing = frame
+            .complete::<tables::CountryCounterInputs>()
+            .ok()
+            .and_then(|rows| {
+                let counts: BTreeMap<_, _> = rows
+                    .iter()
+                    .filter_map(|row| Some((joined.slot(row.country)?, row.owned_state_count)))
+                    .collect();
+                let mut candidates: BTreeSet<_> = holders.iter().cloned().collect();
+                candidates.extend(
+                    frame
+                        .complete::<tables::CountryOccupationReserveManpower>()
+                        .ok()?
+                        .iter()
+                        .filter_map(|row| raw.get(&row.country).cloned()),
+                );
+                candidates
+                    .into_iter()
+                    .map(|part| {
+                        let (_, slot) = countries::split(&part)?;
+                        // The game's country-existence triggers test the signed owned-state count.
+                        Some((part, *counts.get(&slot)? > 0))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .map(|rows| {
+                        rows.into_iter()
+                            .filter_map(|(part, exists)| exists.then_some(part))
+                            .collect()
+                    })
+            });
         Ok(Self {
             countries: countries
                 .iter()
@@ -140,6 +177,7 @@ impl Bindings {
             raw,
             holders,
             unnamed,
+            existing,
         })
     }
     fn same(&self, frame: &DecodedFrame) -> bool {
@@ -171,6 +209,7 @@ pub struct OccupationReserveObserver {
     sources: BTreeMap<String, u32>,
     holders: BTreeMap<String, i32>,
     refusals: BTreeMap<String, u64>,
+    existence_refusals: u64,
 }
 
 impl KeyedObserver for OccupationReserveObserver {
@@ -190,6 +229,7 @@ impl KeyedObserver for OccupationReserveObserver {
         TableId::OccupationSettings,
         TableId::CountryLinks,
         TableId::Countries,
+        TableId::CountryCounterInputs,
     ];
     const READ: TableId = TableId::CountryOccupationReserveManpower;
     fn fields() -> io::Result<Vec<TableFields>> {
@@ -199,6 +239,7 @@ impl KeyedObserver for OccupationReserveObserver {
             TableFields::keys(TableId::OccupationSettings).when_read(),
             TableFields::all(TableId::CountryLinks),
             TableFields::named(TableId::Countries, &["canonical_slot", "tag"])?,
+            TableFields::named(TableId::CountryCounterInputs, &["owned_state_count"])?,
         ])
     }
     fn changed(changes: &dashboard_base::prepared::frame_changes::FrameChanges) -> bool {
@@ -218,7 +259,12 @@ impl KeyedObserver for OccupationReserveObserver {
         };
         if dashboard_text::metadata::slot_read(format, &frame.metrics, Self::READ, frame.hour) {
             self.bindings = match Bindings::read(frame) {
-                Ok(bindings) => Some(bindings),
+                Ok(bindings) => {
+                    if bindings.existing.is_none() {
+                        self.existence_refusals += 1;
+                    }
+                    Some(bindings)
+                }
                 Err(reason) => {
                     *self.refusals.entry(reason.into()).or_default() += 1;
                     None
@@ -228,6 +274,12 @@ impl KeyedObserver for OccupationReserveObserver {
         let Some(bindings) = self.bindings.as_ref().filter(|b| b.same(frame)) else {
             return Ok(false);
         };
+        if let Some(existing) = &bindings.existing {
+            values.push(EXISTENCE.into(), 1);
+            for holder in existing {
+                values.push(format!("{holder}|exists"), 1);
+            }
+        }
         for holder in &bindings.holders {
             values.push(format!("{holder}|holder"), 1);
             self.holders.entry(holder.clone()).or_insert(frame.hour);
@@ -307,7 +359,7 @@ impl Product for OccupationReserve {
             ReserveHolder::decl(),
             dashboard_keyed::query::KeyedSeries::decl(),
             KeyedWindow::decl(),
-            dashboard_base::products::country_groups::HourSpan::decl(),
+            HourSpan::decl(),
         ]
     }
 }
@@ -398,18 +450,28 @@ fn reply(
             .filter_map(|(name, key)| {
                 let (part, tail) = name.split_once('|')?;
                 let admission = tail == "holder";
-                ((admission || tail.ends_with("|amount")) && candidates.contains(part))
-                    .then_some((part.to_owned(), admission, key))
+                ((admission || tail == "exists" || tail.ends_with("|amount"))
+                    && candidates.contains(part))
+                .then_some((part.to_owned(), admission, tail == "exists", key))
             })
             .collect();
         dashboard_text::metadata::check_cancel(cancelled)?;
         let mut requested = vec![dashboard_keyed::KNOWN, dashboard_keyed::READ];
-        requested.extend(keys.iter().map(|(_, _, key)| *key));
+        requested.extend(keys.iter().map(|(_, _, _, key)| *key));
         let values = opened.values_at(&requested, end)?;
+        let existing: BTreeSet<_> = keys
+            .iter()
+            .zip(&values[2..])
+            .filter(|((_, _, existence, _), value)| *existence && value.is_some())
+            .map(|((part, _, _, _), _)| part.as_str())
+            .collect();
         let mut totals = BTreeMap::<String, i128>::new();
         if values[0].is_some() && values[1].is_some() {
             // An admitted holder without entries ranks as a proven zero.
-            for ((part, admission, _), value) in keys.iter().zip(&values[2..]) {
+            for ((part, admission, existence, _), value) in keys.iter().zip(&values[2..]) {
+                if *existence || !existing.contains(part.as_str()) {
+                    continue;
+                }
                 if let Some(value) = value {
                     let total = totals.entry(part.clone()).or_default();
                     if !admission {
@@ -424,11 +486,27 @@ fn reply(
     }
     let chosen: BTreeSet<_> = holders.iter().cloned().collect();
     reply.window = opened.window(first, last, through, |name| {
-        name.split_once('|')
-            .is_some_and(|(part, _)| chosen.contains(part))
+        name == EXISTENCE
+            || name
+                .split_once('|')
+                .is_some_and(|(part, _)| chosen.contains(part))
     })?;
+    retain_existing(&mut reply.window);
     // A carried baseline or a recording gap has no supplying-read certificate.
     retain_dated(&mut reply.window);
+    let present: BTreeSet<_> = reply
+        .window
+        .series
+        .iter()
+        .filter_map(|series| series.name.split_once('|').map(|(part, _)| part))
+        .collect();
+    holders.retain(|part| present.contains(part.as_str()));
+    if opened.scan.observer.existence_refusals > 0 {
+        reply.warnings.push(format!(
+            "{UNEXISTING}: {}.",
+            opened.scan.observer.existence_refusals
+        ));
+    }
     let ids: BTreeSet<_> = reply
         .window
         .series
@@ -469,11 +547,8 @@ fn reply(
     Ok(reply)
 }
 
-fn intersect_spans(
-    left: &[dashboard_base::products::country_groups::HourSpan],
-    right: &[dashboard_base::products::country_groups::HourSpan],
-) -> Vec<dashboard_base::products::country_groups::HourSpan> {
-    let mut out: Vec<dashboard_base::products::country_groups::HourSpan> = Vec::new();
+fn intersect_spans(left: &[HourSpan], right: &[HourSpan]) -> Vec<HourSpan> {
+    let mut out: Vec<HourSpan> = Vec::new();
     let (mut a, mut b) = (0, 0);
     while a < left.len() && b < right.len() {
         let first = left[a].first_hour.max(right[b].first_hour);
@@ -486,7 +561,7 @@ fn intersect_spans(
             }) {
                 held.last_hour = held.last_hour.max(last);
             } else {
-                out.push(dashboard_base::products::country_groups::HourSpan {
+                out.push(HourSpan {
                     first_hour: first,
                     last_hour: last,
                 });
@@ -505,28 +580,69 @@ fn retain_dated(window: &mut KeyedWindow) {
     let reads: Vec<_> = window
         .reads
         .iter()
-        .map(
-            |(first, last, _)| dashboard_base::products::country_groups::HourSpan {
-                first_hour: *first,
-                last_hour: *last,
-            },
-        )
+        .map(|(first, last, _)| HourSpan {
+            first_hour: *first,
+            last_hour: *last,
+        })
         .collect();
     window.known = intersect_spans(&window.known, &reads);
     for series in &mut window.series {
-        let mut runs = Vec::new();
-        for run in &series.runs {
-            let start = window.known.partition_point(|span| span.last_hour < run.0);
-            for span in window.known[start..]
-                .iter()
-                .take_while(|span| span.first_hour <= run.1)
-            {
-                let first = run.0.max(span.first_hour);
-                let last = run.1.min(span.last_hour);
-                runs.push((first, last, run.2.clone(), run.3 || first > run.0));
-            }
+        retain_series(series, &window.known);
+    }
+    window.series.retain(|series| !series.runs.is_empty());
+}
+
+fn retain_series(series: &mut KeyedSeries, spans: &[HourSpan]) {
+    let mut runs = Vec::new();
+    for run in &series.runs {
+        let start = spans.partition_point(|span| span.last_hour < run.0);
+        for span in spans[start..]
+            .iter()
+            .take_while(|span| span.first_hour <= run.1)
+        {
+            let first = run.0.max(span.first_hour);
+            runs.push((
+                first,
+                run.1.min(span.last_hour),
+                run.2.clone(),
+                run.3 || first > run.0,
+            ));
         }
-        series.runs = runs;
+    }
+    series.runs = runs;
+}
+
+fn retain_existing(window: &mut KeyedWindow) {
+    let mut existing = BTreeMap::new();
+    let mut known = Vec::new();
+    window.series.retain(|series| {
+        let spans = || {
+            series
+                .runs
+                .iter()
+                .map(|run| HourSpan {
+                    first_hour: run.0,
+                    last_hour: run.1,
+                })
+                .collect::<Vec<_>>()
+        };
+        if series.name == EXISTENCE {
+            known = spans();
+            return false;
+        }
+        if let Some((part, "exists")) = series.name.split_once('|') {
+            existing.insert(part.to_owned(), spans());
+            return false;
+        }
+        true
+    });
+    window.known = intersect_spans(&window.known, &known);
+    for series in &mut window.series {
+        let spans = series
+            .name
+            .split_once('|')
+            .and_then(|(part, _)| existing.get(part));
+        retain_series(series, spans.map(Vec::as_slice).unwrap_or_default());
     }
     window.series.retain(|series| !series.runs.is_empty());
 }
