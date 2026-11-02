@@ -41,6 +41,8 @@ DEADLINE = datetime.timedelta(hours=18)
 # Seconds a git command, or stopping a step that overran, may take.
 GIT_TIMEOUT = 600
 CLEANUP = 120
+# Both stop waits, then one minute to parse logs and write the child's result.
+REPORT_MARGIN = 2 * CLEANUP + 60
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
 # Owner decision 2026-10-23: run folders are kept 30 days; history.tsv keeps every run's line.
 KEEP = datetime.timedelta(days=30)
@@ -142,8 +144,12 @@ def duration(seconds):
     return f"{seconds / 60:.0f} min" if seconds >= 60 else f"{seconds:.0f} s"
 
 
+def report_text(heading, lines):
+    return "\n".join([f"# Daily tests: {heading}", "", *lines, ""])
+
+
 def write_report(heading, lines):
-    text = "\n".join([f"# Daily tests: {heading}", "", *lines, ""])
+    text = report_text(heading, lines)
     temporary = REPORTS / "latest.md.tmp"
     temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, REPORTS / "latest.md")
@@ -403,105 +409,151 @@ def prune(now):
             continue
 
 
+def run_checked_out(args):
+    commit, started, deadline, folder = args.continue_run
+    started = datetime.datetime.fromisoformat(started)
+    deadline, folder = float(deadline), Path(folder)
+    actual = git("rev-parse", "HEAD")
+    if actual != commit:
+        raise RuntimeError(f"checked-out runner expected {commit}, HEAD is {actual}")
+    heading = f"main {commit[:10]} {git('log', '-1', '--format=%s')}"
+    # A daily full build gains nothing from incremental files; they were most of the target.
+    environment = dict(
+        os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
+        CARGO_INCREMENTAL="0",
+    )
+    build = Build(target_dir())
+    size_at_start = size_of(build.target)
+    plan = steps()
+    rows, failures, passed, summary = [], None, set(), None
+    for name, slug, command, needs in plan:
+        log = folder / f"{slug}.log"
+        if needs is not None and needs not in passed:
+            rows.append(f"| {name} | not run: {needs} failed | | |")
+            continue
+        if time.monotonic() >= deadline:
+            rows.append(f"| {name} | not run: out of time | | |")
+            continue
+        began = time.monotonic()
+        if callable(command):
+            code, outcome = command(build, log)
+            if code == 0:
+                passed.add(slug)
+            took = duration(time.monotonic() - began)
+            rows.append(f"| {name} | {outcome} | {took} | {log.name} |")
+            continue
+        if slug == "rust":
+            with tempfile.TemporaryFile() as messages:
+                code = run_step(command, log, environment, deadline - began, messages)
+                units, finished = cargo_units(messages)
+        else:
+            code = run_step(command, log, environment, deadline - began)
+        took = duration(time.monotonic() - began)
+        if slug == "rust":
+            failures = not_passed(log)
+            text = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            summary = next((line.strip() for line in reversed(text) if SUMMARY.match(line)), None)
+            # nextest runs tests, and prints their summary, only once the build finished.
+            if code is not None and (finished or (finished is None and summary)):
+                build.units = units
+                passed.add("rust-build")
+        if code == 0:
+            passed.add(slug)
+            rows.append(f"| {name} | passed | {took} | {log.name} |")
+        elif code is None:
+            rows.append(f"| {name} | stopped: out of time | {took} | {log.name} |")
+        else:
+            rows.append(f"| {name} | failed (exit {code}) | {took} | {log.name} |")
+    result = "passed" if all(slug in passed for _, slug, _, _ in plan) else "failed"
+    lines = [
+        heading,
+        f"{started:%Y-%m-%d %H:%M} to {datetime.datetime.now():%H:%M}. Logs: {folder}",
+        f"Rust target {build.target}: {gigabytes(size_at_start)} at start, "
+        f"{gigabytes(size_of(build.target))} at end.",
+        "",
+        "| Step | Result | Time | Log |",
+        "|---|---|---|---|",
+        *rows,
+    ]
+    if summary:
+        lines += ["", summary]
+    if failures:
+        lines += ["", "## Tests that did not pass", "", *(f"- {test}" for test in failures)]
+    (folder / "result.json").write_text(json.dumps({
+        "result": result, "failed": None if failures is None else len(failures), "lines": lines,
+    }), encoding="utf-8")
+    return 0
+
+
 def run(args):
-    started = datetime.datetime.now()
+    if args.continue_run is not None:
+        return run_checked_out(args)
     lock = lock_runner()
     if lock is None:
         return 0
     deadline = time.monotonic() + DEADLINE.total_seconds()
-    commit, recorded = None, False
+    started = datetime.datetime.now()
+    commit, folder, log = None, None, None
     try:
-        MARKER.write_text(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n", encoding="utf-8")
-        write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
-        git("fetch", "--quiet", "origin", "main")
-        git("checkout", "--quiet", "--detach", "--force", "origin/main")
-        commit = git("rev-parse", "HEAD")
-        heading = f"main {commit[:10]} {git('log', '-1', '--format=%s')}"
-        folder = run_folder(started, commit)
-        # A daily full build gains nothing from incremental files; they were most of the target.
-        environment = dict(
-            os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
-            CARGO_INCREMENTAL="0",
-        )
-        build = Build(target_dir())
-        size_at_start = size_of(build.target)
-        plan = steps()
-        rows, failures, passed, summary = [], None, set(), None
-        for name, slug, command, needs in plan:
-            log = folder / f"{slug}.log"
-            if needs is not None and needs not in passed:
-                rows.append(f"| {name} | not run: {needs} failed | | |")
-                continue
-            if time.monotonic() >= deadline:
-                rows.append(f"| {name} | not run: out of time | | |")
-                continue
-            began = time.monotonic()
-            if callable(command):
-                code, outcome = command(build, log)
-                if code == 0:
-                    passed.add(slug)
-                took = duration(time.monotonic() - began)
-                rows.append(f"| {name} | {outcome} | {took} | {log.name} |")
-                continue
-            if slug == "rust":
-                with tempfile.TemporaryFile() as messages:
-                    code = run_step(command, log, environment, deadline - began, messages)
-                    units, finished = cargo_units(messages)
-            else:
-                code = run_step(command, log, environment, deadline - began)
-            took = duration(time.monotonic() - began)
-            if slug == "rust":
-                failures = not_passed(log)
-                text = log.read_text(encoding="utf-8", errors="replace").splitlines()
-                summary = next((line.strip() for line in reversed(text) if SUMMARY.match(line)), None)
-                # nextest runs tests, and prints their summary, only once the build finished.
-                if code is not None and (finished or (finished is None and summary)):
-                    build.units = units
-                    passed.add("rust-build")
-            if code == 0:
-                passed.add(slug)
-                rows.append(f"| {name} | passed | {took} | {log.name} |")
-            elif code is None:
-                rows.append(f"| {name} | stopped: out of time | {took} | {log.name} |")
-            else:
-                rows.append(f"| {name} | failed (exit {code}) | {took} | {log.name} |")
-        result = "passed" if all(slug in passed for _, slug, _, _ in plan) else "failed"
-        lines = [
-            heading,
-            f"{started:%Y-%m-%d %H:%M} to {datetime.datetime.now():%H:%M}. Logs: {folder}",
-            f"Rust target {build.target}: {gigabytes(size_at_start)} at start, "
-            f"{gigabytes(size_of(build.target))} at end.",
-            "",
-            "| Step | Result | Time | Log |",
-            "|---|---|---|---|",
-            *rows,
-        ]
-        if summary:
-            lines += ["", summary]
-        if failures:
-            lines += ["", "## Tests that did not pass", "", *(f"- {test}" for test in failures)]
-        record_history(started, commit, result, None if failures is None else len(failures))
-        recorded = True
-        report = write_report(result.upper(), lines)
-        (folder / "report.md").write_text(report, encoding="utf-8")
-        prune(started)
-        return 0 if result == "passed" else 1
-    except Exception:
-        # History first: it outlives a latest.md this run cannot replace.
-        error = traceback.format_exc().rstrip()
-        if not recorded:
-            try:
-                record_history(started, commit, "error", None)
-            except OSError:
-                pass
         try:
-            write_report("RUNNER ERROR", ["```", error, "```"])
+            MARKER.write_text(f"{os.getpid()} {started:%Y-%m-%d %H:%M}\n", encoding="utf-8")
+            write_report("RUNNING", [f"Started {started:%Y-%m-%d %H:%M}. Earlier runs: history.tsv."])
+            git("fetch", "--quiet", "origin", "main")
+            git("checkout", "--quiet", "--detach", "--force", "origin/main")
+            commit = git("rev-parse", "HEAD")
+            folder = run_folder(started, commit)
+            log = folder / "runner.log"
+            command = [
+                sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
+                "--game-dir", args.game_dir, "--continue-run", commit, started.isoformat(),
+                str(deadline - REPORT_MARGIN), str(folder),
+            ]
+            remaining = deadline - time.monotonic()
+            if remaining <= REPORT_MARGIN:
+                raise RuntimeError("out of time before starting the checked-out runner")
+            code = run_step(command, log, None, remaining)
+            if code is None:
+                raise RuntimeError("checked-out runner stopped: out of time")
+            if code != 0:
+                raise RuntimeError(f"checked-out runner failed (exit {code})")
+            completed = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+            result, failed, lines = completed["result"], completed["failed"], completed["lines"]
+            code = {"passed": 0, "failed": 1}[result]
+        except Exception:
+            error = traceback.format_exc().rstrip()
+            if log is not None:
+                try:
+                    error += "\n\n" + log.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+            result, failed, code = "error", None, 2
+            lines = ["```", error, "```"]
+        try:
+            record_history(started, commit, result, failed)
         except OSError:
-            pass
-        return 2
+            result, code = "error", 2
+            lines += ["", "Could not append history.tsv:", "```", traceback.format_exc().rstrip(), "```"]
+        heading = "RUNNER ERROR" if result == "error" else result.upper()
+        report = report_text(heading, lines)
+        try:
+            write_report(heading, lines)
+        except OSError:
+            code = 2
+        if folder is not None:
+            try:
+                (folder / "report.md").write_text(report, encoding="utf-8")
+            except OSError:
+                code = 2
+        try:
+            prune(started)
+        except OSError:
+            code = 2
+        return code
     finally:
-        MARKER.unlink(missing_ok=True)
-        os.close(lock)
+        try:
+            MARKER.unlink(missing_ok=True)
+        finally:
+            os.close(lock)
 
 
 TASK_XML = """<?xml version="1.0" encoding="UTF-16"?>
@@ -589,6 +641,8 @@ def parse(argv):
         )
         if name == "install":
             command.add_argument("--at", default="03:00", help="local start time, HH:MM")
+        else:
+            command.add_argument("--continue-run", nargs=4, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
