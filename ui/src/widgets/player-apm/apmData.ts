@@ -57,9 +57,9 @@ export const GAPS_NOTE = 'Part of this period was not recorded; its orders and m
 /** eAPM as text, starred where part of its period was not recorded. */
 export const apmValueText = (value: ApmValue | undefined) => value?.gaps && value.apm !== null ? `${apmText(value.apm)}*` : apmText(value?.apm);
 function rateNote(value: ApmValue): string {
-  if (!value.complete) return 'Capture coverage is incomplete; the rate is unknown.';
+  if (!value.complete) return 'Player orders or unpaused time were not fully recorded for this period; the rate is unknown.';
   if (value.unpausedMinutes === 0) return 'No unpaused time was observed in this period.';
-  if (value.apm === null) return `Some orders have unresolved provenance. Confirmed orders: ${apmText(value.confirmedApm)} per unpaused minute.`;
+  if (value.apm === null) return `It is unclear whether some orders count toward eAPM; the rate is unknown. Confirmed orders: ${apmText(value.confirmedApm)} per unpaused minute.`;
   return APM_EXPLANATION;
 }
 export function valueNote(value: ApmValue): string {

@@ -103,7 +103,7 @@ export function ApmWidget(props: WidgetProps & { graph: boolean }) {
   if (query.error) return <WidgetState kind="error" detail={query.error} onRetry={query.retry} />;
   if (!data || (players && !registry.data) || !query.known || (!graph && query.pending)) return <WidgetState kind="loading" label="Loading eAPM…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Player orders were not recorded in this campaign." />;
-  if (!rows.length && !graph) return <WidgetState kind="empty" message="No player order coverage matches these countries, players and dates." />;
+  if (!rows.length && !graph) return <WidgetState kind="empty" message="No eAPM is available for these countries, players and dates." />;
   if (!graph) return <Table label="eAPM over the selected period" rows={rows} rowKey={rowKey} columns={columns}
     sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} hoursPerSecond={motion}
