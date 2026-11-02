@@ -2195,6 +2195,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-events"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+ "replay-columnar",
+ "replay-data",
+ "replay-identity",
+ "test-unify",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
