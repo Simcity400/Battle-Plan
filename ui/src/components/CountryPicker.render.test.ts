@@ -175,3 +175,104 @@ test('playback days reuse the held flag timeline and a branch switch clears the 
     assert.equal(requests.length, 4);
   } finally { fixture.unmount(); await vite.close(); delete host.__pickerFlags; }
 });
+
+test('late branch timelines and drawings stay with their branch in the top bar and list', async () => {
+  const requests: { request: ProductRequest; signal: AbortSignal; answer: (reply: unknown) => void }[] = [];
+  const fixture = {
+    ...pickerHooks(),
+    product(_client: unknown, request: ProductRequest, signal: AbortSignal) {
+      return new Promise(answer => requests.push({ request, signal, answer }));
+    },
+    reads: new Map<string, unknown>(),
+  };
+  const host = globalThis as typeof globalThis & { __pickerLateFlags?: typeof fixture };
+  host.__pickerLateFlags = fixture;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'picker-late-flags-fixture', enforce: 'pre',
+      transform(source, id) {
+        const file = id.replaceAll('\\', '/');
+        if (file.endsWith('/components/CountryPicker.tsx') || file.endsWith('/dashboard/countryFlags.ts'))
+          return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__pickerLateFlags;');
+        if (file.endsWith('/components/Popover.tsx')) return 'export const usePopover = () => ({ open: true, trigger: { current: null } }); export const Popover = props => props.children;';
+        if (file.endsWith('/dashboard/products.ts')) return 'export const loadProduct = (...args) => globalThis.__pickerLateFlags.product(...args); export const loadTransientProduct = loadProduct;';
+        if (file.endsWith('/dashboard/contentRevision.ts')) return 'export const useContentRevision = () => 0;';
+        if (file.endsWith('/dashboard/countryNamesAt.ts')) return 'const names = new Map(); export const useCountryNamesAt = () => names; export const useCountryNamesRead = () => globalThis.__pickerLateFlags.reads; export const nameKey = () => "";';
+      },
+    }] });
+  try {
+    const { default: Picker } = await vite.ssrLoadModule('/ui/src/components/CountryPicker.tsx');
+    const countries = [{ id: '1', tag: 'mod-country', name: 'Country', observedBranchId: '1', observedHour: 12 }];
+    const branches = [{ id: '1', firstHour: 12, lastHour: 40 }, { id: '2', firstHour: 12, lastHour: 40 }];
+    const props: any = { client: {}, countries, selectedTag: 'mod-country', playerCountryId: '1', onChange() {}, allowedTags: ['mod-country'],
+      source: { id: 'lease-1', revision: 'revision-1', path: 'one.battleplan', metadata: { countries, branches } }, flagAt: { branchId: '1', hour: 12 } };
+    let output: unknown;
+    const settle = async () => {
+      for (let pass = 0; pass < 3; pass++) {
+        output = fixture.render(() => Picker(props)); fixture.commit();
+        if (props.flagAt.branchId === '2') assert.ok(images(output).every(image => image.key.startsWith('second-branch:')),
+          'every new-branch render excludes the earlier branch from the top bar and list');
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    };
+    const asked = () => requests.map(({ request }) => [request.product, request.params]);
+    const switchTo = async (branchId: string) => {
+      props.flagAt = { branchId, hour: 20 };
+      output = fixture.render(() => Picker(props));
+      assert.deepEqual(images(output), [], 'the top bar and list wait for this branch before effects');
+      fixture.commit(); await settle();
+    };
+    const firstTimeline = timeline('1', 'first-branch'), secondTimeline = timeline('2', 'second-branch');
+    await settle();
+    assert.deepEqual(asked(), [['country-facts', { branchId: '1' }]]);
+    await switchTo('2');
+    assert.deepEqual(asked(), [['country-facts', { branchId: '1' }], ['country-facts', { branchId: '2' }]]);
+    assert.equal(requests[0].signal.aborted, false, 'switching branches leaves the earlier timeline read running');
+    requests[0].answer(firstTimeline);
+    await settle();
+    assert.deepEqual(images(output), [], 'a late timeline cannot supply either flag on the new branch');
+    assert.equal(requests.length, 2, 'the late timeline draws nothing for an unwatched branch');
+    await switchTo('1');
+    assert.deepEqual(asked().slice(2), [
+      ['country-flags', { flags: firstTimeline.flags, size: 'panel' }],
+      ['country-flags', { flags: firstTimeline.flags, size: 'shield' }],
+    ], 'returning reuses the completed timeline and starts only its two drawings');
+    const firstDrawings = requests.slice(2);
+    await switchTo('2');
+    assert.equal(requests.length, 4, 'the second branch still shares its timeline read in flight');
+    for (const read of firstDrawings) {
+      assert.equal(read.signal.aborted, false, 'switching branches leaves the earlier drawing running');
+      read.answer(drawing(read.request.params as CountryFlagParams));
+      await settle();
+      assert.deepEqual(images(output), [], 'each late drawing leaves both new-branch flags pending');
+      assert.equal(requests.length, 4);
+    }
+    requests[1].answer(secondTimeline);
+    await settle();
+    assert.deepEqual(asked().slice(4), [
+      ['country-flags', { flags: secondTimeline.flags, size: 'panel' }],
+      ['country-flags', { flags: secondTimeline.flags, size: 'shield' }],
+    ]);
+    assert.deepEqual(images(output), [], 'the new timeline cannot use either old-branch drawing');
+    const secondPanel = drawing(requests[4].request.params as CountryFlagParams);
+    const secondShield = drawing(requests[5].request.params as CountryFlagParams);
+    requests[5].answer(secondShield);
+    await settle();
+    assert.deepEqual(images(output), secondShield.flags, 'only the new top-bar flag appears while its list drawing waits');
+    requests[4].answer(secondPanel);
+    await settle();
+    assert.deepEqual(images(output), [...secondShield.flags, ...secondPanel.flags], 'both flags belong only to the new branch');
+    props.flagAt = { branchId: '1', hour: 20 };
+    output = fixture.render(() => Picker(props));
+    const firstFlags = firstDrawings.flatMap(read => drawing(read.request.params as CountryFlagParams).flags).reverse();
+    assert.deepEqual(images(output), firstFlags, 'the earlier branch retained its late timeline and both drawings');
+    fixture.commit(); await settle();
+    assert.deepEqual(images(output), firstFlags);
+    assert.equal(requests.length, 6, 'returning to the earlier branch neither re-reads nor redraws');
+    props.flagAt = { branchId: '2', hour: 20 };
+    output = fixture.render(() => Picker(props));
+    assert.deepEqual(images(output), [...secondShield.flags, ...secondPanel.flags]);
+    fixture.commit(); await settle();
+    assert.deepEqual(images(output), [...secondShield.flags, ...secondPanel.flags]);
+    assert.equal(requests.length, 6);
+  } finally { fixture.unmount(); await vite.close(); delete host.__pickerLateFlags; }
+});
