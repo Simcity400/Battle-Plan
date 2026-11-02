@@ -168,7 +168,12 @@ test('air and navy share rough display publication, exact reached values and app
         assert.equal(rough.data.series.length, 5000);
         assert.ok(rough.data.series[4999].runs.every((run: any) => run.total === 7));
         assert.deepEqual(rough.approximate.get(tags[4999]), [{ firstHour: 0, lastHour: 31 }]);
-        assert.equal(native.counts().queries, 5, native.calls.join(", "));
+        assert.deepEqual(native.calls, [
+          'series-summary:9:9',
+          'series-state:31:5000',
+          'series-summary:0:31',
+          'series-state:1:5000',
+        ]);
         native.finish(); await flush();
         assert.deepEqual(hook.render().approximate.get(tags[0]), []);
         assert.ok(native.counts().queries <= 10);
